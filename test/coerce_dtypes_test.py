@@ -7,11 +7,8 @@ import pandas as pd
 from pandas.testing import assert_frame_equal, assert_series_equal
 import pytz
 
-if __name__ == "__main__":
-    from pathlib import Path
-    import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from datatube.dtype import coerce_dtypes
+from context import pdtypes
+from pdtypes.core import coerce_dtypes
 
 
 unittest.TestCase.maxDiff = None
@@ -2900,33 +2897,6 @@ class CoerceObjectDtypeTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        class NonCastableObject:
-            pass
-
-        class CastableObject:
-            
-            def to_datetime(self) -> datetime:
-                return datetime.fromtimestamp(random.randint(0, 86400),
-                                              tz=timezone.utc)
-
-            def to_timedelta(self) -> timedelta:
-                return timedelta(seconds=random.randint(0, 86400))
-            
-            def __int__(self) -> int:
-                return random.randint(0, 10)
-
-            def __float__(self) -> float:
-                return random.random()
-
-            def __complex__(self) -> complex:
-                return complex(random.random(), random.random())
-
-            def __str__(self) -> str:
-                return chr(random.randint(0, 26) + ord("a"))
-
-            def __bool__(self) -> bool:
-                return bool(random.randint(0, 1))
-
         size = 3
         cls.non_castable_objects = [NonCastableObject() for _ in range(size)]
         cls.castable_objects = [CastableObject() for _ in range(size)]

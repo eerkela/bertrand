@@ -5,11 +5,8 @@ import unittest
 import pandas as pd
 import pytz
 
-if __name__ == "__main__":
-    from pathlib import Path
-    import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from datatube.dtype import check_dtype
+from context import pdtypes
+from pdtypes.core import check_dtype
 
 
 class TestObj:
@@ -17,121 +14,6 @@ class TestObj:
 
 
 unittest.TestCase.maxDiff = None
-SIZE = 3
-TEST_DATA = {
-    int: {
-        "integers":
-            [-1 * SIZE // 2 + i + 1 for i in range(SIZE)],
-        "whole floats":
-            [-1 * SIZE // 2 + i + 1.0 for i in range(SIZE)],
-        "real whole complex":
-            [complex(-1 * SIZE // 2 + i + 1, 0) for i in range(SIZE)],
-    },
-    float: {
-        "decimal floats":
-            [-1 * SIZE // 2 + i + 1 + random.random() for i in range(SIZE)],
-        "real decimal complex":
-            [complex(-1 * SIZE // 2 + i + 1 + random.random(), 0)
-             for i in range(SIZE)],
-    },
-    complex: {
-        "imaginary complex":
-            [complex(-1 * SIZE // 2 + i + 1 + random.random(),
-                     -1 * SIZE // 2 + i + 1 + random.random())
-             for i in range(SIZE)],
-    },
-    str: {
-        "integer strings":
-            [str(-1 * SIZE // 2 + i + 1) for i in range(SIZE)],
-        "whole float strings":
-            [str(-1 * SIZE // 2 + i + 1.0) for i in range(SIZE)],
-        "decimal float strings":
-            [str(-1 * SIZE // 2 + i + 1 + random.random())
-             for i in range(SIZE)],
-        "real whole complex strings":
-            [str(complex(-1 * SIZE // 2 + i + 1, 0)) for i in range(SIZE)],
-        "real decimal complex strings":
-            [str(complex(-1 * SIZE // 2 + i + 1 + random.random(), 0))
-             for i in range(SIZE)],
-        "imaginary complex strings":
-            [str(complex(-1 * SIZE // 2 + i + 1 + random.random(),
-                         -1 * SIZE // 2 + i + 1 + random.random()))
-             for i in range(SIZE)],
-        "character strings":
-            [chr(i % 26 + ord("a")) for i in range(SIZE)],
-        "boolean strings":
-            [str(bool((i + 1) % 2)) for i in range(SIZE)],
-        "aware datetime strings":
-            [str(datetime.fromtimestamp(i, tz=timezone.utc))
-             for i in range(SIZE)],
-        "aware ISO 8601 strings":
-            [datetime.fromtimestamp(i, tz=timezone.utc).isoformat()
-             for i in range(SIZE)],
-        "naive datetime strings":
-            [str(datetime.fromtimestamp(i)) for i in range(SIZE)],
-        "naive ISO 8601 strings":
-            [datetime.fromtimestamp(i).isoformat() for i in range(SIZE)],
-        "aware/naive datetime strings":
-            [str(datetime.fromtimestamp(i, tz=timezone.utc)) if i % 2
-             else str(datetime.fromtimestamp(i)) for i in range(SIZE)],
-        "aware/naive ISO 8601 strings":
-            [datetime.fromtimestamp(i, tz=timezone.utc).isoformat() if i % 2
-             else datetime.fromtimestamp(i).isoformat()
-             for i in range(SIZE)],
-        "mixed timezone datetime strings":
-            [str(
-                datetime.fromtimestamp(
-                    i,
-                    tz=pytz.timezone(
-                        pytz.all_timezones[i % len(pytz.all_timezones)]
-                    )
-                )
-             ) for i in range(SIZE)],
-        "mixed timezone ISO 8601 strings":
-            [datetime.fromtimestamp(
-                i,
-                tz=pytz.timezone(
-                    pytz.all_timezones[i % len(pytz.all_timezones)]
-                )
-             ).isoformat() for i in range(SIZE)],
-        "timedelta strings":
-            [str(timedelta(seconds=i + 1)) for i in range(SIZE)],
-        "pd.Timedelta strings":
-            [str(pd.Timedelta(timedelta(seconds=i + 1))) for i in range(SIZE)]
-    },
-    bool: {
-       "booleans":
-            [bool((i + 1) % 2) for i in range(SIZE)] 
-    },
-    datetime: {
-        "aware datetimes":
-            [datetime.fromtimestamp(i, tz=timezone.utc) for i in range(SIZE)],
-        "naive datetimes":
-            [datetime.fromtimestamp(i) for i in range(SIZE)],
-        "aware/naive datetimes":
-            [datetime.fromtimestamp(i, tz=timezone.utc) if i % 2
-             else datetime.fromtimestamp(i) for i in range(SIZE)],
-        "mixed timezone datetimes":
-            [datetime.fromtimestamp(
-                i,
-                tz = pytz.timezone(
-                    pytz.all_timezones[i % len(pytz.all_timezones)]
-                )
-             ) for i in range(SIZE)]
-    },
-    timedelta: {
-        "timedeltas":
-            [timedelta(seconds=i + 1) for i in range(SIZE)]
-    },
-    object: {
-        "Nones":
-            [None for _ in range(SIZE)],
-        "custom objects":
-            [TestObj() for _ in range(SIZE)]
-    }
-}
-ALL_DATA = {col_name: data for v in TEST_DATA.values()
-            for col_name, data in v.items()}
 
 
 class CheckDtypeTests(unittest.TestCase):
