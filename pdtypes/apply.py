@@ -1,19 +1,417 @@
 from __future__ import annotations
 from functools import cache
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
 
 from pdtypes.error import error_trace
-from pdtypes.parse import parse_dtype, parse_string
+from pdtypes.parse import parse_dtype, parse_string, to_utc
+
+
+
+CONVERSIONS = {
+    int: {
+        float: _integer_to_float,
+        complex: _integer_to_complex,
+        str: _integer_to_string,
+        bool: _integer_to_boolean,
+        datetime: _integer_to_datetime,
+        timedelta: _integer_to_timedelta
+    }
+}
+
+
+def _integer_to_float(
+    element: int,
+    return_type: type = float
+) -> float:
+    if pd.isnull(element):
+        return np.nan
+    return return_type(element)
+
+
+def _integer_to_complex(
+    element: int,
+    return_type: type = complex
+) -> complex:
+    if pd.isnull(element):
+        return np.nan
+    return return_type(element, 0)
+
+
+def _integer_to_string(
+    element: int,
+    return_type: type = str
+) -> str:
+    if pd.isnull(element):
+        return pd.NA
+    return return_type(element)
+
+
+def _integer_to_boolean(
+    element: int,
+    force: bool = False,
+    return_type: type = bool
+) -> bool:
+    if pd.isnull(element):
+        return pd.NA
+    result = return_type(element)
+    if force or result == element:
+        return result
+    err_msg = (f"[{error_trace()}] could not convert int to bool: "
+               f"{repr(element)}")
+    raise ValueError(err_msg)
+
+
+def _integer_to_datetime(
+    element: int,
+    return_type: type = pd.Timestamp
+) -> datetime | pd.Timestamp:
+    if pd.isnull(element):
+        return pd.NaT
+    return return_type(element, "UTC")
+
+
+def _integer_to_timedelta(
+    element: int,
+    return_type: type = pd.Timedelta
+) -> timedelta | pd.Timedelta:
+    if pd.isnull(element):
+        return pd.NaT
+    return return_type(seconds=element)
+
+
+def _float_to_integer(
+    element: float,
+    force: bool = False,
+    round: bool = False,
+    ftol: float = 1e-6,
+    return_type: type = int
+) -> int:
+    if pd.isnull(element):
+        return np.nan
+    if round:
+        return return_type(np.round(element))
+    result = return_type(element)
+    if force or abs(result - element) < ftol:
+        return result
+    err_msg = (f"[{error_trace()}] could not convert float to int: "
+               f"{repr(element)}")
+    raise ValueError(err_msg)
+
+
+def _float_to_complex(
+    element: float,
+    return_type: complex
+) -> complex:
+    if pd.isnull(element):
+        return np.nan
+    return return_type(element)
+
+
+def _float_to_string(
+    element: float,
+    return_type: str
+) -> str:
+    if pd.isnull(element):
+        return pd.NA
+    return return_type(element)
+
+
+def _float_to_boolean(
+    element: float,
+    force: bool = False,
+    ftol: float = 1e-6,
+    return_type: type = bool
+) -> bool:
+    if pd.isnull(element):
+        return pd.NA
+    result = return_type(element)
+    if force or abs(result - element) < 1e-6:
+        return result
+    err_msg = (f"[{error_trace()}] could not convert float to bool: "
+               f"{repr(element)}")
+    raise ValueError(err_msg)
+
+
+def _float_to_datetime(
+    element: float,
+    return_type: type = pd.Timestamp
+) -> datetime | pd.Timestamp:
+    if pd.isnull(element):
+        return pd.NaT
+    return return_type.fromtimestamp(element, tz=timezone.utc)
+
+
+def _float_to_timedelta(
+    element: float,
+    return_type: type = pd.Timedelta
+) -> timedelta | pd.Timedelta:
+    if pd.isnull(element):
+        return pd.NaT
+    return return_type(seconds=element)
+
+
+def _complex_to_integer(
+    element: complex,
+    force: bool = False,
+    round: bool = False,
+    ftol: float = 1e-6,
+    return_type: type = int
+) -> int:
+    if pd.isnull(element):
+        return np.nan
+    if round:
+        result = return_type(np.round(element.real))
+    else:
+        result = return_type(element.real)
+    if force or abs(result - element) < ftol:
+        return result
+    err_msg = (f"[{error_trace()}] could not convert complex to int: "
+               f"{repr(element)}")
+    raise ValueError(err_msg)
+
+
+def _complex_to_float(
+    element: complex,
+    force: bool = False,
+    return_type: type = float
+) -> float:
+    if pd.isnull(element):
+        return np.nan
+    if force or not element.imag:
+        return return_type(element.real)
+    err_msg = (f"[{error_trace()}] could not convert complex to float: "
+               f"{repr(element)}")
+    raise ValueError(err_msg)
+
+
+def _complex_to_string(
+    element: complex,
+    return_type: type = str
+) -> str:
+    if pd.isnull(element):
+        return pd.NA
+    return return_type(element)
+
+
+def _complex_to_boolean(
+    element: complex,
+    force: bool = False,
+    ftol: float = 1e-6,
+    return_type: type = bool
+) -> bool:
+    if pd.isnull(element):
+        return pd.NA
+    result = return_type(element.real)
+    if force or abs(result - element) < ftol:
+        return result
+    err_msg = (f"[{error_trace()}] could not convert complex to bool: "
+               f"{repr(element)}")
+    raise ValueError(err_msg)
+
+
+def _complex_to_datetime(
+    element: complex,
+    force: bool = False,
+    return_type: type = pd.Timestamp
+) -> datetime | pd.Timestamp:
+    if pd.isnull(element):
+        return pd.NaT
+    if force or not element.imag:
+        return return_type.fromtimestamp(element.real, "UTC")
+    err_msg = (f"[{error_trace()}] could not convert complex to datetime: "
+               f"{repr(element)}")
+    raise ValueError(err_msg)
+
+
+def _complex_to_timedelta(
+    element: complex,
+    force: bool = False,
+    return_type: type = pd.Timedelta
+) -> timedelta | pd.Timedelta:
+    if pd.isnull(element):
+        return pd.NaT
+    if force or not element.imag:
+        return return_type(seconds=element.real)
+    err_msg = (f"[{error_trace()}] could not convert complex to timedelta: "
+               f"{repr(element)}")
+    raise ValueError(err_msg)
+
+
+def _string_to_integer(
+    element: str,
+    force: bool = False,
+    round: bool = False,
+    ftol: float = 1e-6,
+    return_type: type = int
+) -> int:
+    if pd.isnull(element):
+        return np.nan
+
+    parsed = parse_string(element)
+    parsed_dtype = parse_dtype(parsed)
+    err_msg = (f"[{error_trace()}] could not convert str to int: "
+               f"{repr(element)}")
+
+    if parsed_dtype == int:
+        return return_type(parsed)
+
+    if parsed_dtype == float:
+        if round:
+            return return_type(np.round(parsed))
+        result = return_type(parsed)
+        if force or abs(result - parsed) < ftol:
+            return result
+        raise ValueError(err_msg)
+
+    if parsed_dtype == complex:
+        result = return_type(parsed.real)
+        if force or abs(result - parsed) < ftol:
+            return result
+        raise ValueError(err_msg)
+
+    if parsed_dtype == str:
+        raise ValueError(err_msg)
+
+    if parsed_dtype == bool:
+        return return_type(parsed)
+
+    if parsed_dtype == datetime:
+        utc = to_utc(parsed)
+        timestamp = utc.timestamp()
+        if round:
+            return return_type(np.round(timestamp))
+        result = return_type(timestamp)
+        if abs(result - timestamp) < ftol or force:
+            return result
+        raise ValueError(err_msg)
+
+    if parsed_dtype == timedelta:
+        seconds = parsed.total_seconds()
+        if round:
+            return return_type(np.round(seconds))
+        result = return_type(seconds)
+        if abs(result - seconds) < ftol or force:
+            return result
+        raise ValueError(err_msg)
+
+    raise ValueError(err_msg)
+
+
+def _string_to_float(
+    element: str,
+    force: bool = False,
+    ftol: float = 1e-6,
+    return_type: type = float
+) -> float:
+    if pd.isnull(element):
+        return np.nan
+
+    parsed = parse_string(element)
+    parsed_dtype = parse_dtype(parsed)
+    err_msg = (f"[{error_trace()}] could not convert str to int: "
+               f"{repr(element)}")
+
+    if parsed_dtype == int:
+        return return_type(parsed)
+
+    if parsed_dtype == float:
+        return return_type(parsed)
+
+    if parsed_dtype == complex:
+        result = return_type(parsed.real)
+        if parsed.imag < ftol or force:
+            return result
+        raise ValueError(err_msg)
+
+    if parsed_dtype == str:
+        raise ValueError(err_msg)
+
+    if parsed_dtype == bool:
+        return return_type(parsed)
+
+    if parsed_dtype == datetime:
+        utc = to_utc(parsed)
+        return return_type(utc.timestamp())
+
+    if parsed_dtype == timedelta:
+        return return_type(parsed.total_seconds())
+
+    raise ValueError(err_msg)
+
+
+def _string_to_complex(
+    element: str,
+    return_type: type = float
+) -> complex:
+    if pd.isnull(element):
+        return np.nan
+
+    parsed = parse_string(element)
+    parsed_dtype = parse_dtype(parsed)
+    err_msg = (f"[{error_trace()}] could not convert str to complex: "
+               f"{repr(element)}")
+
+    if parsed_dtype == int:
+        return return_type(parsed)
+
+    if parsed_dtype == float:
+        return return_type(parsed)
+
+    if parsed_dtype == complex:
+        return return_type(parsed)
+
+    if parsed_dtype == str:
+        return return_type(parsed)
+
+    if parsed_dtype == bool:
+        return return_type(parsed)
+
+    if parsed_dtype == datetime:
+        utc = to_utc(parsed)
+        return return_type(utc.timestamp())
+
+    if parsed_dtype == timedelta:
+        return return_type(parsed.total_seconds())
+
+    raise ValueError(err_msg)
+
+
+def _string_to_boolean(
+    element: str,
+    force: bool = False,
+    ftol: float = 1e-6,
+    return_type: type = bool
+) -> bool:
+    if pd.isnull(element):
+        return pd.NA
+
+    parsed = parse_string(element)
+    parsed_dtype = parse_dtype(parsed)
+    err_msg = (f"[{error_trace()}] could not convert str to bool: "
+               f"{repr(element)}")
+
+    if parsed_dtype == int:
+        result = return_type(parsed)
+        if abs(result - parsed) < ftol or force:
+            return result
+        raise ValueError(err_msg)
+
+
+
+
+
+
 
 
 @cache
 def to_integer(element: Any,
                force: bool = False,
-               ftol: float = 1e-6) -> np.nan | int:
+               ftol: float = 1e-6,
+               round: bool = False) -> np.nan | int:
     if pd.isnull(element):
         return np.nan
 
@@ -42,12 +440,12 @@ def to_integer(element: Any,
         if dtype == int:
             return parsed
         if dtype == float:
-            result = int(np.round(parsed))
+            result = int(parsed)
             if force or result == parsed:
                 return result
             raise ValueError(err_msg)
         if dtype == complex:
-            result = int(np.round(parsed.real))
+            result = int(parsed.real)
             if force or result == parsed:
                 return result
             raise ValueError(err_msg)
@@ -56,14 +454,15 @@ def to_integer(element: Any,
         if dtype == bool:
             return int(parsed)
         if dtype == datetime:
-            timestamp = parsed.timestamp()
-            result = int(np.round(timestamp))
+            utc = to_utc(parsed)
+            timestamp = utc.timestamp()
+            result = int(timestamp)
             if force or result == timestamp:
                 return result
             raise ValueError(err_msg)
         if dtype == timedelta:
             seconds = parsed.total_seconds()
-            result = int(np.round(seconds))
+            result = int(seconds)
             if force or result == seconds:
                 return result
             raise ValueError(err_msg)
@@ -72,7 +471,8 @@ def to_integer(element: Any,
         return int(element)
 
     if from_type == datetime:
-        timestamp = element.timestamp()
+        utc = to_utc(element)
+        timestamp = utc.timestamp()
         result = int(timestamp)
         if force or result == timestamp:
             return result

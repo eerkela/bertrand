@@ -1,8 +1,10 @@
 from __future__ import annotations
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import cache
 
 import pandas as pd
+from tzlocal import get_localzone, get_localzone_name
+
 
 from pdtypes.error import error_trace
 
@@ -82,3 +84,13 @@ def parse_string(
         return False
 
     return string
+
+
+def to_utc(dt: datetime | pd.Timestamp) -> datetime | pd.Timestamp:
+    if isinstance(dt, pd.Timestamp):
+        if dt.tzinfo is None:
+            dt = dt.tz_localize(get_localzone_name())
+        return dt.tz_convert("UTC")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=get_localzone())
+    return dt.astimezone(timezone.utc)
