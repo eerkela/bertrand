@@ -114,61 +114,7 @@ def _coerce_series_dtype(series: pd.Series,
             return pd.to_datetime(series, infer_datetime_format=True)
         if to_type == timedelta:
             return pd.to_timedelta(series)
-    return series.apply(do_coercion)
-
-
-
-
-
-
-def _downcast_series(series: pd.Series) -> pd.Series:
-    series_dtype = parse_dtype(series.dtype)
-
-    if series_dtype == int:
-        extension_type = pd.api.types.is_extension_array_dtype(series_dtype)
-        series_min = series.min()  # faster than series.quantile([0, 1])
-        series_max = series.max()
-        if series_min >= 0:  # unsigned
-            if extension_type:
-                integer_types = (pd.UInt8Dtype(), pd.UInt16Dtype(),
-                                 pd.UInt32Dtype(), pd.UInt64Dtype())
-            else:
-                integer_types = (np.dtype(np.uint8), np.dtype(np.uint16),
-                                 np.dtype(np.uint32), np.dtype(np.uint64))
-            for typespec in integer_types:
-                max_int = 2 ** (typespec.itemsize * 8)
-                if series_max < max_int:
-                    return series.astype(typespec)
-        else:  # signed
-            if extension_type:
-                integer_types = (pd.Int8Dtype(), pd.Int16Dtype(),
-                                 pd.Int32Dtype(), pd.Int64Dtype())
-            else:
-                integer_types = (np.dtype(np.int8), np.dtype(np.int16),
-                                 np.dtype(np.int32), np.dtype(np.int64))
-            for typespec in integer_types:
-                max_int = 2 ** (typespec.itemsize * 8 - 1)
-                if series_max < max_int:
-                    return series.astype(typespec)
-        err_msg = (f"[{error_trace()}] could not downcast series "
-                    f"(head: {list(series.head())})")
-        raise ValueError(err_msg)
-
-    if series_dtype == float:
-        extension_type = pd.api.types.is_extension_array_dtype(series_dtype)
-        series_min = series.min()  # faster than series.quantile([0, 1])
-        series_max = series.max()
-        # TODO: count significant digits for downcast
-        #   fp32 carries 24 bits of precision data, so minimum precision
-        #   cannot be less than 1/(2^23).
-        #       min/max = +/- 2^2^(exponent bitcount - 1 due to bias) * (2 - precision) / 2
-        #       precision = 1/2^(mantissa bitcount)
-        #       fp16 -> +/-
-        #       fp32 -> min/max: +/-2^128 (2^127 from exponent, 2 from mantissa)
-        #               precision: 1/(2^23)
-        #   https://www.h-schmidt.net/FloatConverter/IEEE754.html
-        
-    
+    return series.apply(do_coercion)    
 
 
 def get_dtypes(data: pd.Series | pd.DataFrame, exact: bool = False) -> type:
