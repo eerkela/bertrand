@@ -1,8 +1,10 @@
 from __future__ import annotations
+from functools import partial
 import struct
 
 import numpy as np
 
+from pdtypes.parse import parse_dtype
 from pdtypes.error import error_trace
 
 
@@ -22,48 +24,61 @@ def float_bits(observation: float, endian: str = ">") -> str:
     return "".join([f"{b:08b}" for b in list(byte_str)])
 
 
+def downcast_int(i: int, signed: bool = True) -> int:
+    if signed or i < 0:
+        signed_types = (np.int8, np.int16, np.int32)
+        for int_type in signed_types:
+            if abs(i) < 2**(np.dtype(int_type).itemsize * 8 - 1):
+                return int_type(i)
+    else:
+        unsigned_types = (np.uint8, np.uint16, np.uint32)
+        for int_type in unsigned_types:
+            if i < 2**(np.dtype(int_type).itemsize * 8):
+                return int_type(i)
+    err_msg = (f"[{error_trace()}] could not downcast int: {i}")
+    raise ValueError(err_msg)
+
+
 def downcast_float(f: float) -> float:
     # IEEE 754 floating point bit layouts:
     #   fp16 -> sign (1), exponent (5), mantissa (10)
     #   fp32 -> sign (1), exponent (8), mantissa (23)
     #   fp64 -> sign (1), exponent (11), mantissa (52)
-    bit_str = float_bits(f)
+    bit_str = float_bits(f, endian=">")
     if len(bit_str) == 64:
-        exponent = int(bit_str[1:12], 2) - (2**10 - 1)  # bias
+        exponent = int(bit_str[1:12], 2) - (2**10 - 1)  # accounting for bias
         mantissa = int(bit_str[12:], 2)
         if not exponent >> 5 and not mantissa & int("0" * 10 + "1" * 42, 2):
             return np.float16(f)
         if not exponent >> 8 and not mantissa & int("0" * 23 + "1" * 29, 2):
             return np.float32(f)
     elif len(bit_str) == 32:
-        exponent = int(bit_str[1:9], 2) - (2**7 - 1)  # bias
+        exponent = int(bit_str[1:9], 2) - (2**7 - 1)  # accounting for bias
         mantissa = int(bit_str[9:], 2)
         if not exponent >> 5 and not mantissa & int("0" * 10 + "1" * 13, 2):
             return np.float16(f)
-    return f
-
-
-def downcast_int(i: int, signed: bool = True) -> int:
-    if signed or i < 0:
-        signed_types = (np.int8, np.int16, np.int32, np.int64)
-        for int_type in signed_types:
-            if abs(i) < 2**(np.dtype(int_type).itemsize * 8 - 1):
-                return int_type(i)
-    else:
-        unsigned_types = (np.uint8, np.uint16, np.uint32, np.uint64)
-        for int_type in unsigned_types:
-            if i < 2**(np.dtype(int_type).itemsize * 8):
-                return int_type(i)
-    return i
+    err_msg = (f"[{error_trace()}] could not downcast float: {f}")
+    raise ValueError(err_msg)
 
 
 def downcast_complex(c: complex) -> complex:
-    real = downcast_float(c.real)
-    imag = downcast_float(c.imag)
-    down = (np.float32, np.float16)
-    if type(real) in down and type(imag) in down:
+    try:
+        real = downcast_float(c.real)
+        imag = downcast_float(c.imag)
         return np.complex64(f"{real}+{imag}j")
-    return c
+    except ValueError as err:
+        err_msg = (f"[{error_trace()}] could not downcast complex: {c}")
+        raise ValueError(err_msg) from err
+
+
+def downcast(n: int | float | complex,
+             signed: bool = True) -> int | float | complex:
+    cast_map = {
+        int: partial(downcast_int, signed=signed),
+        float: downcast_float,
+        complex: downcast_complex
+    }
+    return cast_map[parse_dtype(type(n))](n)
 
 
 def _downcast_series(series: pd.Series) -> pd.Series:
