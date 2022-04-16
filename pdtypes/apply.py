@@ -59,7 +59,7 @@ def _integer_to_datetime(
 ) -> datetime | pd.Timestamp:
     if pd.isnull(element):
         return pd.NaT
-    return return_type(element, timezone.utc)
+    return return_type.fromtimestamp(element, tz=timezone.utc)
 
 
 def _integer_to_timedelta(
@@ -80,19 +80,19 @@ def _float_to_integer(
 ) -> int:
     if pd.isnull(element):
         return np.nan
-    if round:
-        return return_type(np.round(element))
-    result = return_type(element)
-    if force or abs(result - element) < ftol:
+    if force:
+        return return_type(element)
+    result = return_type(np.round(element))
+    if round or abs(result - element) < ftol:
         return result
-    err_msg = (f"[{error_trace()}] could not convert float to int: "
-               f"{repr(element)}")
+    err_msg = (f"[{error_trace()}] could not convert float to int without "
+               f"losing information: {repr(element)}")
     raise ValueError(err_msg)
 
 
 def _float_to_complex(
     element: float,
-    return_type: complex
+    return_type: type = complex
 ) -> complex:
     if pd.isnull(element):
         return np.nan
@@ -101,7 +101,7 @@ def _float_to_complex(
 
 def _float_to_string(
     element: float,
-    return_type: str
+    return_type: type = str
 ) -> str:
     if pd.isnull(element):
         return pd.NA
@@ -116,11 +116,13 @@ def _float_to_boolean(
 ) -> bool:
     if pd.isnull(element):
         return pd.NA
-    result = return_type(element)
-    if force or abs(result - element) < 1e-6:
+    if force:
+        return return_type(element)
+    result = return_type(np.round(element))
+    if abs(result - element) < ftol:
         return result
-    err_msg = (f"[{error_trace()}] could not convert float to bool: "
-               f"{repr(element)}")
+    err_msg = (f"[{error_trace()}] could not convert float to bool without "
+               f"losing information: {repr(element)}")
     raise ValueError(err_msg)
 
 
@@ -130,7 +132,7 @@ def _float_to_datetime(
 ) -> datetime | pd.Timestamp:
     if pd.isnull(element):
         return pd.NaT
-    return return_type.fromtimestamp(element, timezone.utc)
+    return return_type.fromtimestamp(element, tz=timezone.utc)
 
 
 def _float_to_timedelta(
@@ -211,7 +213,7 @@ def _complex_to_datetime(
     if pd.isnull(element):
         return pd.NaT
     if force or abs(element.imag) < ftol:
-        return return_type.fromtimestamp(element.real, timezone.utc)
+        return return_type.fromtimestamp(element.real, tz=timezone.utc)
     err_msg = (f"[{error_trace()}] could not convert complex to datetime: "
                f"{repr(element)}")
     raise ValueError(err_msg)
@@ -233,9 +235,10 @@ def _complex_to_timedelta(
 
 def _string_to_integer(
     element: str,
-    force: bool = False,
     round: bool = False,
+    force: bool = False,
     ftol: float = 1e-6,
+    format: str | None = None,
     return_type: type = int
 ) -> int:
     if pd.isnull(element):
@@ -258,7 +261,7 @@ def _string_to_integer(
             partial(_timedelta_to_integer, round=round, force=force,
                     ftol=ftol, return_type=return_type)
     }
-    parsed = parse_string(element)
+    parsed = parse_string(element, format=format)
     parsed_dtype = parse_dtype(parsed)
     try:
         return conversion_map[parsed_dtype](parsed)
@@ -272,6 +275,7 @@ def _string_to_float(
     element: str,
     force: bool = False,
     ftol: float = 1e-6,
+    format: str | None = None,
     return_type: type = float
 ) -> float:
     if pd.isnull(element):
@@ -291,7 +295,7 @@ def _string_to_float(
         timedelta:
             partial(_timedelta_to_float, return_type=return_type)
     }
-    parsed = parse_string(element)
+    parsed = parse_string(element, format=format)
     parsed_dtype = parse_dtype(parsed)    
     try:
         return conversion_map[parsed_dtype](parsed)
@@ -303,6 +307,7 @@ def _string_to_float(
 
 def _string_to_complex(
     element: str,
+    format: str | None = None,
     return_type: type = float
 ) -> complex:
     if pd.isnull(element):
@@ -321,7 +326,7 @@ def _string_to_complex(
         timedelta:
             partial(_timedelta_to_complex, return_type=return_type)
     }
-    parsed = parse_string(element)
+    parsed = parse_string(element, format=format)
     parsed_dtype = parse_dtype(parsed)
     try:
         return conversion_map[parsed_dtype](parsed)
@@ -335,6 +340,7 @@ def _string_to_boolean(
     element: str,
     force: bool = False,
     ftol: float = 1e-6,
+    format: str | None = None,
     return_type: type = bool
 ) -> bool:
     if pd.isnull(element):
@@ -357,7 +363,7 @@ def _string_to_boolean(
             partial(_timedelta_to_boolean, force=force, ftol=ftol,
                     return_type=return_type)
     }
-    parsed = parse_string(element)
+    parsed = parse_string(element, format=format)
     parsed_dtype = parse_dtype(parsed)
     try:
         return conversion_map[parsed_dtype](parsed)
@@ -371,6 +377,7 @@ def _string_to_datetime(
     element: str,
     force: bool = False,
     ftol: float = 1e-6,
+    format: str | None = None,
     return_type: type = pd.Timestamp
 ) -> pd.Timestamp | datetime:
     if pd.isnull(element):
@@ -390,7 +397,7 @@ def _string_to_datetime(
         timedelta:
             partial(_timedelta_to_datetime, return_type=return_type)
     }
-    parsed = parse_string(element)
+    parsed = parse_string(element, format=format)
     parsed_dtype = parse_dtype(parsed)
     try:
         return conversion_map[parsed_dtype](parsed)
@@ -403,6 +410,7 @@ def _string_to_datetime(
 def _string_to_timedelta(
     element: str,
     force: bool = False,
+    format: str | None = None,
     return_type: type = pd.Timedelta
 ) -> pd.Timedelta | timedelta:
     if pd.isnull(element):
@@ -422,7 +430,7 @@ def _string_to_timedelta(
         timedelta:
             lambda x: return_type(seconds=element.total_seconds())
     }
-    parsed = parse_string
+    parsed = parse_string(element, format=format)
     parsed_dtype = parse_dtype(parsed)
     try:
         return conversion_map[parsed_dtype](parsed)
@@ -474,7 +482,7 @@ def _boolean_to_datetime(
 ) -> pd.Timestamp | datetime:
     if pd.isnull(element):
         return pd.NaT
-    return return_type.fromtimestamp(element, timezone.utc)
+    return return_type.fromtimestamp(element, tz=timezone.utc)
 
 
 def _boolean_to_timedelta(
@@ -526,11 +534,14 @@ def _datetime_to_complex(
 
 def _datetime_to_string(
     element: pd.Timestamp | datetime,
+    format: str | None = None,
     return_type: type = str
 ) -> str:
     if pd.isnull(element):
         return pd.NA
-    return return_type(to_utc(element).isoformat())
+    if format is None:
+        return return_type(to_utc(element).isoformat())
+    return return_type(to_utc(element).strftime(format))
 
 
 def _datetime_to_boolean(
@@ -629,7 +640,7 @@ def _timedelta_to_datetime(
 ) -> pd.Timestamp | datetime:
     if pd.isnull(element):
         return pd.NaT
-    return return_type.fromtimestamp(element.total_seconds(), timezone.utc)
+    return return_type.fromtimestamp(element.total_seconds(), tz=timezone.utc)
 
 
 @cache
@@ -638,6 +649,7 @@ def to_integer(
     round: bool = False,
     force: bool = False,
     ftol: float = 1e-6,
+    format: str | None = None,
     return_type: type = int
 ) -> np.nan | int:
     if pd.isnull(element):
@@ -653,7 +665,7 @@ def to_integer(
                     return_type=return_type),
         str:
             partial(_string_to_integer, round=round, force=force, ftol=ftol,
-                    return_type=return_type),
+                    format=format, return_type=return_type),
         bool:
             partial(_boolean_to_integer, return_type=return_type),
         datetime:
@@ -661,7 +673,9 @@ def to_integer(
                     return_type=return_type),
         timedelta:
             partial(_timedelta_to_integer, round=round, force=force, ftol=ftol,
-                    return_type=return_type)
+                    return_type=return_type),
+        object:
+            lambda x: return_type(int(x))
     }
     from_type = parse_dtype(type(element))
     try:
@@ -671,23 +685,13 @@ def to_integer(
                    f"{repr(element)}")
         raise ValueError(err_msg) from err
 
-    # if from_type == object:
-    #     try:
-    #         try:
-    #             return int(element)
-    #         except TypeError as err:
-    #             context = f"[{error_trace()}] object has no __int__ method"
-    #             raise ValueError(context) from err
-    #     except ValueError as err:
-    #         raise ValueError(err_msg) from err
-
-
 
 @cache
 def to_float(
     element: Any,
     force: bool = False,
     ftol: float = 1e-6,
+    format: str | None = None,
     return_type: type = float
 ) -> np.nan | float:
     if pd.isnull(element):
@@ -702,13 +706,15 @@ def to_float(
                     return_type=return_type),
         str:
             partial(_string_to_float, force=force, ftol=ftol,
-                    return_type=return_type),
+                    format=format, return_type=return_type),
         bool:
             partial(_boolean_to_float, return_type=return_type),
         datetime:
             partial(_datetime_to_float, return_type=return_type),
         timedelta:
-            partial(_timedelta_to_float, return_type=return_type)
+            partial(_timedelta_to_float, return_type=return_type),
+        object:
+            lambda x: return_type(float(x))
     }
     from_type = parse_dtype(type(element))
     try:
@@ -718,22 +724,11 @@ def to_float(
                    f"{repr(element)}")
         raise ValueError(err_msg) from err
 
-    # if from_type == object:
-    #     try:
-    #         try:
-    #             return float(element)
-    #         except TypeError as err:
-    #             context = f"[{error_trace()}] object has no __float__ method"
-    #             raise ValueError(context) from err
-    #     except ValueError as err:
-    #         raise ValueError(err_msg) from err
-
-
 
 @cache
 def to_complex(
     element: Any,
-    force: bool = False,
+    format: str | None = None,
     return_type: type = complex
 ) -> np.nan | complex:
     if pd.isnull(element):
@@ -746,13 +741,15 @@ def to_complex(
         complex:
             lambda x: return_type(x),
         str:
-            partial(_string_to_complex, return_type=return_type),
+            partial(_string_to_complex, format=format, return_type=return_type),
         bool:
             partial(_boolean_to_complex, return_type=return_type),
         datetime:
             partial(_datetime_to_complex, return_type=return_type),
         timedelta:
-            partial(_timedelta_to_complex, return_type=return_type)
+            partial(_timedelta_to_complex, return_type=return_type),
+        object:
+            lambda x: return_type(complex(x))
     }
     from_type = parse_dtype(type(element))
     try:
@@ -762,22 +759,13 @@ def to_complex(
                    f"{repr(element)}")
         raise ValueError(err_msg)
 
-    # if from_type == object:
-    #     try:
-    #         try:
-    #             return complex(element)
-    #         except TypeError as err:
-    #             context = f"[{error_trace()}] object has no __complex__ method"
-    #             raise ValueError(context) from err
-    #     except ValueError as err:
-    #         raise ValueError(err_msg) from err
-
 
 @cache
 def to_boolean(
     element: Any,
     force: bool = False,
     ftol: float = 1e-6,
+    format: str | None = None,
     return_type: type = bool
 ) -> pd.NA | bool:
     if pd.isnull(element):
@@ -794,7 +782,7 @@ def to_boolean(
                     return_type=return_type),
         str:
             partial(_string_to_boolean, force=force, ftol=ftol,
-                    return_type=return_type),
+                    format=format, return_type=return_type),
         bool:
             lambda x: return_type(x),
         datetime:
@@ -802,7 +790,9 @@ def to_boolean(
                     return_type=return_type),
         timedelta:
             partial(_timedelta_to_boolean, force=force, ftol=ftol,
-                    return_type=return_type)
+                    return_type=return_type),
+        object:
+            lambda x: return_type(bool(x))
     }
     from_type = parse_dtype(type(element))
     try:
@@ -812,20 +802,11 @@ def to_boolean(
                    f"{repr(element)}")
         raise ValueError(err_msg) from err
 
-    # if from_type == object:
-    #     try:
-    #         try:
-    #             return bool(element)
-    #         except TypeError as err:
-    #             context = f"[{error_trace()}] object has no __bool__ method"
-    #             raise ValueError(context) from err
-    #     except ValueError as err:
-    #         raise ValueError(err_msg) from err
-
 
 @cache
 def to_string(
     element: Any,
+    format: str | None = None,
     return_type: type = str
 ) -> pd.NA | str:
     if pd.isnull(element):
@@ -842,9 +823,12 @@ def to_string(
         bool:
             partial(_boolean_to_string, return_type=return_type),
         datetime:
-            partial(_datetime_to_string, return_type=return_type),
+            partial(_datetime_to_string, format=format,
+                    return_type=return_type),
         timedelta:
             partial(_timedelta_to_string, return_type=return_type),
+        object:
+            lambda x: return_type(str(x))
     }
     from_type = parse_dtype(type(element))
     try:
@@ -854,28 +838,15 @@ def to_string(
                    f"{repr(element)}")
         raise ValueError(err_msg) from err
 
-    # if from_type == object:
-    #     try:
-    #         try:
-    #             return str(element)
-    #         except TypeError as err:
-    #             context = f"[{error_trace()}] object has no __str__ method"
-    #             raise ValueError(context) from err
-    #     except ValueError as err:
-    #         raise ValueError(err_msg) from err
-
-
 
 @cache
 def to_datetime(
     element: Any,
-    *args,
     force: bool = False,
     ftol: float = 1e-6,
     format: str | None = None,
     func: Callable | None = None,
-    return_type: type = pd.Timestamp,
-    **kwargs
+    return_type: type = pd.Timestamp
 ) -> pd.NaT | pd.Timestamp | datetime:
     if pd.isnull(element):
         return pd.NaT
@@ -889,7 +860,7 @@ def to_datetime(
                     return_type=return_type),
         str:
             partial(_string_to_datetime, force=force, ftol=ftol,
-                    return_type=return_type),
+                    format=format, return_type=return_type),
         bool:
             partial(_boolean_to_datetime, return_type=return_type),
         datetime:
@@ -905,17 +876,6 @@ def to_datetime(
         err_msg = (f"[{error_trace()}] could not convert element to datetime: "
                    f"{repr(element)}")
         raise ValueError(err_msg) from err
-
-    # if from_type == object:
-    #     try:
-    #         try:
-    #             timestamp = element.to_datetime()
-    #             return pd.Timestamp(timestamp.timestamp(), "UTC")
-    #         except TypeError as err:
-    #             context = f"[{error_trace()}] object has no to_datetime method"
-    #             raise ValueError(context) from err
-    #     except ValueError as err:
-    #         raise ValueError(err_msg) from err
 
 
 @cache
@@ -952,15 +912,3 @@ def to_timedelta(
         err_msg = (f"[{error_trace()}] could not convert element to timedelta: "
                    f"{repr(element)}")
         raise ValueError(err_msg) from err
-
-    # if from_type == object:
-    #     try:
-    #         try:
-    #             seconds = element.to_timedelta().total_seconds()
-    #             return pd.Timestamp.fromtimestamp(seconds, tz="UTC")
-    #         except TypeError as err:
-    #             context = f"[{error_trace()}] object has no to_timedelta method"
-    #             raise ValueError(context) from err
-    #     except ValueError as err:
-    #         raise ValueError(err_msg) from err
-

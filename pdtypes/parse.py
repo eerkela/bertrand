@@ -34,7 +34,8 @@ def parse_dtype(dtype: type) -> type:
 
 @cache
 def parse_string(
-    string: str
+    string: str,
+    format: str | None = None
 ) -> int | float | complex | pd.Timedelta | pd.Timestamp | bool | str:
     """If an arbitrary string can be interpreted as an atomic data type,
     convert it to that data type and return the result.
@@ -72,7 +73,7 @@ def parse_string(
         pass
 
     try:  # datetime string
-        return pd.to_datetime(string)
+        return pd.to_datetime(string, format=format)
     except ValueError:
         pass
 
