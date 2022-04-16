@@ -25,7 +25,7 @@ def _integer_to_complex(
 ) -> complex:
     if pd.isnull(element):
         return np.nan
-    return return_type(element, 0)
+    return return_type(element)
 
 
 def _integer_to_string(
@@ -40,16 +40,15 @@ def _integer_to_string(
 def _integer_to_boolean(
     element: int,
     force: bool = False,
-    ftol: float = 1e-6,
     return_type: type = bool
 ) -> bool:
     if pd.isnull(element):
         return pd.NA
     result = return_type(element)
-    if force or abs(result - element) < ftol:
+    if force or result == element:
         return result
-    err_msg = (f"[{error_trace()}] could not convert int to bool: "
-               f"{repr(element)}")
+    err_msg = (f"[{error_trace()}] could not convert int to bool without "
+               f"losing information: {repr(element)}")
     raise ValueError(err_msg)
 
 
@@ -68,7 +67,7 @@ def _integer_to_timedelta(
 ) -> timedelta | pd.Timedelta:
     if pd.isnull(element):
         return pd.NaT
-    return return_type(seconds=element)
+    return return_type(seconds=int(element))
 
 
 def _float_to_integer(
@@ -132,7 +131,7 @@ def _float_to_datetime(
 ) -> datetime | pd.Timestamp:
     if pd.isnull(element):
         return pd.NaT
-    return return_type.fromtimestamp(element, tz=timezone.utc)
+    return return_type.fromtimestamp(element, timezone.utc)
 
 
 def _float_to_timedelta(
@@ -141,7 +140,7 @@ def _float_to_timedelta(
 ) -> timedelta | pd.Timedelta:
     if pd.isnull(element):
         return pd.NaT
-    return return_type(seconds=element)
+    return return_type(seconds=float(element))
 
 
 def _complex_to_integer(

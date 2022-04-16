@@ -1,5 +1,5 @@
 from __future__ import annotations
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import random
 import unittest
 
@@ -167,29 +167,59 @@ class ApplyFloatToIntegerTests(unittest.TestCase):
     ####    Non-standard Return Types    ####
     #########################################
 
-    def test_numpy_float_type_to_integer_scalar(self):
+    def test_standard_float_to_numpy_signed_integer_scalar(self):
+        integer_types = [np.int8, np.int16, np.int32, np.int64]
+        integers = [integer_types[idx % len(integer_types)](i)
+                    for idx, i in enumerate([-2, -1, 0, 1, 2])]
+        floats = [float(i) for i in integers]
+        for f, i in zip(floats, integers):
+            result = pdtypes.apply._float_to_integer(f, return_type=type(i))
+            self.assertEqual(result, i)
+            self.assertEqual(type(result), type(i))
+
+    def test_standard_float_to_numpy_unsigned_integer_scalar(self):
+        integer_types = [np.uint8, np.uint16, np.uint32, np.uint64]
+        integers = [integer_types[idx % len(integer_types)](i)
+                    for idx, i in enumerate([0, 1, 2, 3, 4])]
+        floats = [float(i) for i in integers]
+        for f, i in zip(floats, integers):
+            result = pdtypes.apply._float_to_integer(f, return_type=type(i))
+            self.assertEqual(result, i)
+            self.assertEqual(type(result), type(i))
+
+    def test_numpy_float_to_standard_integer_scalar(self):
         integers = [-2, -1, 0, 1, 2]
         float_types = [np.float16, np.float32, np.float64]
-        floats = [ftype(i) for i, ftype in zip(integers, float_types)]
-        for f in floats:
-            result = pdtypes.apply._float_to_integer(f)
-            self.assertEqual(type(result), int)
+        floats = [float_types[idx % len(float_types)](i)
+                  for idx, i in enumerate(integers)]
+        for f, i in zip(floats, integers):
+            result = pdtypes.apply._float_to_integer(f, return_type=type(i))
+            self.assertEqual(result, i)
+            self.assertEqual(type(result), type(i))
 
-    def test_float_to_numpy_signed_integer_scalar(self):
-        integers = [-2, -1, 0, 1, 2]
-        floats = [float(i) for i in integers]
-        return_types = [np.int8, np.int16, np.int32, np.int64]
-        for f, rtype in zip(floats, return_types):
-            result = pdtypes.apply._float_to_integer(f, return_type=rtype)
-            self.assertEqual(type(result), rtype)
+    def test_numpy_float_to_numpy_signed_integer_scalar(self):
+        integer_types = [np.int8, np.int16, np.int32, np.int64]
+        integers = [integer_types[idx % len(integer_types)](i)
+                    for idx, i in enumerate([-2, -1, 0, 1, 2])]
+        float_types = [np.float16, np.float32, np.float64]
+        floats = [float_types[idx % len(float_types)](i)
+                  for idx, i in enumerate(integers)]
+        for f, i in zip(floats, integers):
+            result = pdtypes.apply._float_to_integer(f, return_type=type(i))
+            self.assertEqual(result, i)
+            self.assertEqual(type(result), type(i))
 
-    def test_float_to_numpy_unsigned_integer_scalar(self):
-        integers = [0, 1, 2, 3, 4, 5]
-        floats = [float(i) for i in integers]
-        return_types = [np.uint8, np.uint16, np.uint32, np.uint64]
-        for f, rtype in zip(floats, return_types):
-            result = pdtypes.apply._float_to_integer(f, return_type=rtype)
-            self.assertEqual(type(result), rtype)
+    def test_numpy_float_to_numpy_unsigned_integer_scalar(self):
+        integer_types = [np.uint8, np.uint16, np.uint32, np.uint64]
+        integers = [integer_types[idx % len(integer_types)](i)
+                    for idx, i in enumerate([0, 1, 2, 3, 4])]
+        float_types = [np.float16, np.float32, np.float64]
+        floats = [float_types[idx % len(float_types)](i)
+                  for idx, i in enumerate(integers)]
+        for f, i in zip(floats, integers):
+            result = pdtypes.apply._float_to_integer(f, return_type=type(i))
+            self.assertEqual(result, i)
+            self.assertEqual(type(result), type(i))
 
 
 class ApplyFloatToComplexTests(unittest.TestCase):
@@ -255,21 +285,40 @@ class ApplyFloatToComplexTests(unittest.TestCase):
     ####    Non-standard Return Types    ####
     #########################################
 
-    def test_numpy_float_type_to_complex_scalar(self):
-        integers = [-2, -1, 0, 1, 2]
-        float_types = [np.float16, np.float32, np.float64]
-        floats = [ftype(i) for i, ftype in zip(integers, float_types)]
-        for f in floats:
-            result = pdtypes.apply._float_to_complex(f)
-            self.assertEqual(type(result), complex)
-
-    def test_float_to_numpy_complex_scalar(self):
+    def test_standard_float_to_numpy_complex_scalar(self):
         integers = [-2, -1, 0, 1, 2]
         floats = [float(i) for i in integers]
-        return_types = [np.complex64, np.complex128]
-        for f, rtype in zip(floats, return_types):
-            result = pdtypes.apply._float_to_complex(f, return_type=rtype)
-            self.assertEqual(type(result), rtype)
+        complex_types = [np.complex64, np.complex128]
+        complexes = [complex_types[idx % len(complex_types)](i)
+                     for idx, i in enumerate(integers)]
+        for f, c in zip(floats, complexes):
+            result = pdtypes.apply._float_to_complex(f, return_type=type(c))
+            self.assertEqual(result, c)
+            self.assertEqual(type(result), type(c))
+
+    def test_numpy_float_type_to_standard_complex_scalar(self):
+        integers = [-2, -1, 0, 1, 2]
+        float_types = [np.float16, np.float32, np.float64]
+        floats = [float_types[idx % len(float_types)](i)
+                  for idx, i in enumerate(integers)]
+        complexes = [complex(f, 0) for f in floats]
+        for f, c in zip(floats, complexes):
+            result = pdtypes.apply._float_to_complex(f, return_type=type(c))
+            self.assertEqual(result, c)
+            self.assertEqual(type(result), type(c))
+
+    def test_numpy_float_type_to_numpy_complex_scalar(self):
+        integers = [-2, -1, 0, 1, 2]
+        float_types = [np.float16, np.float32, np.float64]
+        floats = [float_types[idx % len(float_types)](i)
+                  for idx, i in enumerate(integers)]
+        complex_types = [np.complex64, np.complex128]
+        complexes = [complex_types[idx % len(complex_types)](i)
+                     for idx, i in enumerate(integers)]
+        for f, c in zip(floats, complexes):
+            result = pdtypes.apply._float_to_complex(f, return_type=type(c))
+            self.assertEqual(result, c)
+            self.assertEqual(type(result), type(c))
 
 
 class ApplyFloatToStringTests(unittest.TestCase):
@@ -342,15 +391,18 @@ class ApplyFloatToStringTests(unittest.TestCase):
     def test_numpy_float_type_to_string_scalar(self):
         integers = [-2, -1, 0, 1, 2]
         float_types = [np.float16, np.float32, np.float64]
-        floats = [ftype(i) for i, ftype in zip(integers, float_types)]
-        for f in floats:
-            result = pdtypes.apply._float_to_string(f)
-            self.assertEqual(type(result), str)
+        floats = [float_types[idx % len(float_types)](i)
+                  for idx, i in enumerate(integers)]
+        strings = [str(f) for f in floats]
+        for f, s in zip(floats, strings):
+            result = pdtypes.apply._float_to_string(f, return_type=type(s))
+            self.assertEqual(result, s)
+            self.assertEqual(type(result), type(s))
 
     def test_float_to_custom_string_class_scalar(self):
         class CustomString:
-            def __init__(self, s: str):
-                self.string = s
+            def __init__(self, f: float):
+                self.string = str(f)
 
             def __str__(self) -> str:
                 return self.string
@@ -394,9 +446,9 @@ class ApplyFloatToBooleanTests(unittest.TestCase):
         expected = pd.Series(nans)
         pd.testing.assert_series_equal(result, expected)
 
-    #####################################################
-    ####    Float Boolean Flags [1, 0, 1, 0, ...]    ####
-    #####################################################
+    #############################################################
+    ####    Float Boolean Flags [1.0, 0.0, 1.0, 0.0, ...]    ####
+    #############################################################
 
     def test_float_bool_flag_to_boolean_scalar(self):
         integers = [1, 0, 1, 0, 1]
@@ -536,18 +588,10 @@ class ApplyFloatToBooleanTests(unittest.TestCase):
     ####    Non-standard Return Types    ####
     #########################################
 
-    def test_numpy_float_type_to_boolean_scalar(self):
-        integers = [1, 0, 1, 0, 1]
-        float_types = [np.float16, np.float32, np.float64]
-        floats = [ftype(i) for i, ftype in zip(integers, float_types)]
-        for f in floats:
-            result = pdtypes.apply._float_to_boolean(f)
-            self.assertEqual(type(result), bool)
-
-    def test_float_to_custom_boolean_class_scalar(self):
+    def test_standard_float_to_custom_boolean_class_scalar(self):
         class CustomBoolean:
-            def __init__(self, b: bool):
-                self.boolean = b
+            def __init__(self, f: float):
+                self.boolean = bool(f)
 
             def __bool__(self) -> bool:
                 return self.boolean
@@ -555,12 +599,23 @@ class ApplyFloatToBooleanTests(unittest.TestCase):
             def __sub__(self, other) -> int:
                 return self.boolean - other
 
-        integers = [-2, -1, 0, 1, 2]
+        integers = [1, 1, 0, 0, 1]
         floats = [float(i) for i in integers]
         for f in floats:
             result = pdtypes.apply._float_to_boolean(f,
                                                      return_type=CustomBoolean)
             self.assertEqual(type(result), CustomBoolean)
+
+    def test_numpy_float_type_to_boolean_scalar(self):
+        integers = [1, 0, 1, 0, 1]
+        float_types = [np.float16, np.float32, np.float64]
+        floats = [float_types[idx % len(float_types)](i)
+                  for idx, i in enumerate(integers)]
+        booleans = [bool(i) for i in integers]
+        for f, b in zip(floats, booleans):
+            result = pdtypes.apply._float_to_boolean(f, return_type=type(b))
+            self.assertEqual(result, b)
+            self.assertEqual(type(result), type(b))
 
 
 class ApplyFloatToDatetimeTests(unittest.TestCase):
@@ -626,33 +681,27 @@ class ApplyFloatToDatetimeTests(unittest.TestCase):
         expected = pd.Series(datetimes)
         pd.testing.assert_series_equal(result, expected)
 
-    # #########################################
-    # ####    Non-standard Return Types    ####
-    # #########################################
+    #########################################
+    ####    Non-standard Return Types    ####
+    #########################################
 
-    def test_numpy_float_type_to_datetime_scalar(self):
-        integers = [-2, -1, 0, 1, 2]
-        float_types = [np.float16, np.float32, np.float64]
-        floats = [ftype(i) for i, ftype in zip(integers, float_types)]
-        for f in floats:
-            result = pdtypes.apply._float_to_datetime(f)
-            self.assertEqual(type(result), pd.Timestamp)
-
-    def test_float_to_non_pandas_datetime_scalar(self):
+    def test_standard_float_to_standard_datetime_scalar(self):
         integers = [-2, -1, 0, 1, 2]
         floats = [i + random.random() for i in integers]
-        for f in floats:
-            result = pdtypes.apply._float_to_datetime(f, return_type=datetime)
-            self.assertEqual(type(result), datetime)
+        datetimes = [datetime.fromtimestamp(f, timezone.utc) for f in floats]
+        for f, d in zip(floats, datetimes):
+            result = pdtypes.apply._integer_to_datetime(f, return_type=type(d))
+            self.assertEqual(result, d)
+            self.assertEqual(type(result), type(d))
 
-    def test_float_to_custom_datetime_class_scalar(self):
+    def test_standard_float_to_custom_datetime_class_scalar(self):
         class CustomDatetime:
-            def __init__(self, d: pd.Timestamp):
-                self.timestamp = d
+            def __init__(self, f: float, tz):
+                self.timestamp = pd.Timestamp.fromtimestamp(f, tz)
 
             @classmethod
-            def fromtimestamp(cls, stamp: float, tz) -> CustomDatetime:
-                return cls(pd.Timestamp.fromtimestamp(stamp, tz))
+            def fromtimestamp(cls, f: float, tz) -> CustomDatetime:
+                return cls(f, tz)
 
             def to_datetime(self) -> pd.Timestamp:
                 return self.timestamp
@@ -663,6 +712,28 @@ class ApplyFloatToDatetimeTests(unittest.TestCase):
             result = pdtypes.apply._float_to_datetime(f,
                                                       return_type=CustomDatetime)
             self.assertEqual(type(result), CustomDatetime)
+
+    def test_numpy_float_to_pandas_timestamp_scalar(self):
+        integers = [-2, -1, 0, 1, 2]
+        float_types = [np.float16, np.float32, np.float64]
+        floats = [float_types[idx % len(float_types)](i)
+                  for idx, i in enumerate(integers)]
+        datetimes = [pd.Timestamp.fromtimestamp(f, "UTC") for f in floats]
+        for f, d in zip(floats, datetimes):
+            result = pdtypes.apply._integer_to_datetime(f, return_type=type(d))
+            self.assertEqual(result, d)
+            self.assertEqual(type(result), type(d))
+
+    def test_numpy_float_to_standard_datetime_scalar(self):
+        integers = [-2, -1, 0, 1, 2]
+        float_types = [np.float16, np.float32, np.float64]
+        floats = [float_types[idx % len(float_types)](i)
+                  for idx, i in enumerate(integers)]
+        datetimes = [datetime.fromtimestamp(f, timezone.utc) for f in floats]
+        for f, d in zip(floats, datetimes):
+            result = pdtypes.apply._integer_to_datetime(f, return_type=type(d))
+            self.assertEqual(result, d)
+            self.assertEqual(type(result), type(d))
 
 
 class ApplyFloatToTimedeltaTests(unittest.TestCase):
@@ -728,26 +799,20 @@ class ApplyFloatToTimedeltaTests(unittest.TestCase):
         expected = pd.Series(timedeltas)
         pd.testing.assert_series_equal(result, expected)
 
-    # #########################################
-    # ####    Non-standard Return Types    ####
-    # #########################################
+    #########################################
+    ####    Non-standard Return Types    ####
+    #########################################
 
-    def test_numpy_float_type_to_timedelta_scalar(self):
-        integers = [-2, -1, 0, 1, 2]
-        float_types = [np.float16, np.float32, np.float64]
-        floats = [ftype(i) for i, ftype in zip(integers, float_types)]
-        for f in floats:
-            result = pdtypes.apply._float_to_timedelta(f)
-            self.assertEqual(type(result), pd.Timedelta)
-
-    def test_float_to_non_pandas_timedelta_scalar(self):
+    def test_standard_float_to_standard_timedelta_scalar(self):
         integers = [-2, -1, 0, 1, 2]
         floats = [i + random.random() for i in integers]
-        for f in floats:
-            result = pdtypes.apply._float_to_timedelta(f, return_type=timedelta)
-            self.assertEqual(type(result), timedelta)
+        timedeltas = [timedelta(seconds=f) for f in floats]
+        for f, t in zip(floats, timedeltas):
+            result = pdtypes.apply._float_to_timedelta(f, return_type=type(t))
+            self.assertEqual(result, t)
+            self.assertEqual(type(result), type(t))
 
-    def test_float_to_custom_timedelta_class_scalar(self):
+    def test_standard_float_to_custom_timedelta_scalar(self):
         class CustomTimedelta:
             def __init__(self, seconds: float):
                 self.delta = pd.Timedelta(seconds=seconds)
@@ -760,6 +825,28 @@ class ApplyFloatToTimedeltaTests(unittest.TestCase):
         for f in floats:
             result = pdtypes.apply._float_to_timedelta(f, return_type=CustomTimedelta)
             self.assertEqual(type(result), CustomTimedelta)
+
+    def test_numpy_float_to_standard_timedelta_scalar(self):
+        integers = [-2, -1, 0, 1, 2]
+        float_types = [np.float16, np.float32, np.float64]
+        floats = [float_types[idx % len(float_types)](i)
+                  for idx, i in enumerate(integers)]
+        timedeltas = [pd.Timedelta(seconds=f) for f in floats]
+        for f, t in zip(floats, timedeltas):
+            result = pdtypes.apply._float_to_timedelta(f, return_type=type(t))
+            self.assertEqual(result, t)
+            self.assertEqual(type(result), type(t))
+
+    def test_numpy_float_to_standard_timedelta_scalar(self):
+        integers = [-2, -1, 0, 1, 2]
+        float_types = [np.float16, np.float32, np.float64]
+        floats = [float_types[idx % len(float_types)](i)
+                  for idx, i in enumerate(integers)]
+        timedeltas = [timedelta(seconds=float(f)) for f in floats]
+        for f, t in zip(floats, timedeltas):
+            result = pdtypes.apply._float_to_timedelta(f, return_type=type(t))
+            self.assertEqual(result, t)
+            self.assertEqual(type(result), type(t))
 
 
 if __name__ == "__main__":
