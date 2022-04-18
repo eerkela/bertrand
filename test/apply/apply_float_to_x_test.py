@@ -690,7 +690,7 @@ class ApplyFloatToDatetimeTests(unittest.TestCase):
         floats = [i + random.random() for i in integers]
         datetimes = [datetime.fromtimestamp(f, timezone.utc) for f in floats]
         for f, d in zip(floats, datetimes):
-            result = pdtypes.apply._integer_to_datetime(f, return_type=type(d))
+            result = pdtypes.apply._float_to_datetime(f, return_type=type(d))
             self.assertEqual(result, d)
             self.assertEqual(type(result), type(d))
 
@@ -720,7 +720,7 @@ class ApplyFloatToDatetimeTests(unittest.TestCase):
                   for idx, i in enumerate(integers)]
         datetimes = [pd.Timestamp.fromtimestamp(f, "UTC") for f in floats]
         for f, d in zip(floats, datetimes):
-            result = pdtypes.apply._integer_to_datetime(f, return_type=type(d))
+            result = pdtypes.apply._float_to_datetime(f, return_type=type(d))
             self.assertEqual(result, d)
             self.assertEqual(type(result), type(d))
 
@@ -731,7 +731,7 @@ class ApplyFloatToDatetimeTests(unittest.TestCase):
                   for idx, i in enumerate(integers)]
         datetimes = [datetime.fromtimestamp(f, timezone.utc) for f in floats]
         for f, d in zip(floats, datetimes):
-            result = pdtypes.apply._integer_to_datetime(f, return_type=type(d))
+            result = pdtypes.apply._float_to_datetime(f, return_type=type(d))
             self.assertEqual(result, d)
             self.assertEqual(type(result), type(d))
 

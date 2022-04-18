@@ -145,21 +145,22 @@ def _float_to_timedelta(
 
 def _complex_to_integer(
     element: complex,
+    round: bool = True,
     force: bool = False,
-    round: bool = False,
     ftol: float = 1e-6,
     return_type: type = int
 ) -> int:
     if pd.isnull(element):
         return np.nan
-    if round:
-        result = return_type(np.round(element.real))
+    rounded = np.round(element.real)
+    if round or abs(rounded - element) < ftol:
+        result = return_type(rounded)
     else:
         result = return_type(element.real)
     if force or abs(result - element) < ftol:
         return result
-    err_msg = (f"[{error_trace()}] could not convert complex to int: "
-               f"{repr(element)}")
+    err_msg = (f"[{error_trace()}] could not convert complex to int without "
+               f"losing information: {repr(element)}")
     raise ValueError(err_msg)
 
 
@@ -171,10 +172,10 @@ def _complex_to_float(
 ) -> float:
     if pd.isnull(element):
         return np.nan
-    if abs(element.imag) < ftol or force:
+    if force or abs(element.imag) < ftol:
         return return_type(element.real)
-    err_msg = (f"[{error_trace()}] could not convert complex to float: "
-               f"{repr(element)}")
+    err_msg = (f"[{error_trace()}] could not convert complex to float without "
+               f"losing information: {repr(element)}")
     raise ValueError(err_msg)
 
 
@@ -195,11 +196,15 @@ def _complex_to_boolean(
 ) -> bool:
     if pd.isnull(element):
         return pd.NA
-    result = return_type(element.real)
+    rounded = np.round(element.real)
+    if abs(rounded - element) < ftol:
+        result = return_type(rounded)
+    else:
+        result = return_type(element.real)
     if force or abs(result - element) < ftol:
         return result
-    err_msg = (f"[{error_trace()}] could not convert complex to bool: "
-               f"{repr(element)}")
+    err_msg = (f"[{error_trace()}] could not convert complex to bool without "
+               f"losing information: {repr(element)}")
     raise ValueError(err_msg)
 
 
@@ -213,22 +218,23 @@ def _complex_to_datetime(
         return pd.NaT
     if force or abs(element.imag) < ftol:
         return return_type.fromtimestamp(element.real, tz=timezone.utc)
-    err_msg = (f"[{error_trace()}] could not convert complex to datetime: "
-               f"{repr(element)}")
+    err_msg = (f"[{error_trace()}] could not convert complex to datetime "
+               f"without losing information: {repr(element)}")
     raise ValueError(err_msg)
 
 
 def _complex_to_timedelta(
     element: complex,
     force: bool = False,
+    ftol: float = 1e-6,
     return_type: type = pd.Timedelta
 ) -> timedelta | pd.Timedelta:
     if pd.isnull(element):
         return pd.NaT
-    if force or not element.imag:
-        return return_type(seconds=element.real)
-    err_msg = (f"[{error_trace()}] could not convert complex to timedelta: "
-               f"{repr(element)}")
+    if force or abs(element.imag) < ftol:
+        return return_type(seconds=float(element.real))
+    err_msg = (f"[{error_trace()}] could not convert complex to timedelta "
+               f"without losing information: {repr(element)}")
     raise ValueError(err_msg)
 
 
