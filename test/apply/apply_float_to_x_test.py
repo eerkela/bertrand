@@ -113,54 +113,65 @@ class ApplyFloatToIntegerTests(unittest.TestCase):
 
     def test_decimal_float_to_integer_forced_scalar(self):
         integers = [-2, -1, 0, 1, 2]
-        floats = [i + random.random() for i in integers]
-        for f in floats:
+        floats = [i + random.random() / 2 if idx % 2
+                  else i - random.random() / 2
+                  for idx, i in enumerate(integers)]
+        for f, i in zip(floats, integers):
             result = pdtypes.apply._float_to_integer(f, force=True)
-            expected = int(f)
-            self.assertEqual(result, expected)
-            self.assertEqual(type(result), type(expected))
+            self.assertEqual(result, i)
+            self.assertEqual(type(result), type(i))
 
     def test_decimal_float_to_integer_forced_vector(self):
         integers = [-2, -1, 0, 1, 2]
-        floats = [i + random.random() for i in integers]
+        floats = [i + random.random() / 2 if idx % 2
+                  else i - random.random() / 2
+                  for idx, i in enumerate(integers)]
         vec = np.vectorize(pdtypes.apply._float_to_integer)
         result = vec(np.array(floats), force=True)
-        expected = np.array([int(f) for f in floats])
+        expected = np.array(integers)
         np.testing.assert_array_equal(result, expected)
         self.assertEqual(result.dtype, expected.dtype)
 
     def test_decimal_float_to_integer_forced_series(self):
         integers = [-2, -1, 0, 1, 2]
-        floats = [i + random.random() for i in integers]
+        floats = [i + random.random() / 2 if idx % 2
+                  else i - random.random() / 2
+                  for idx, i in enumerate(integers)]
         result = pd.Series(floats).apply(pdtypes.apply._float_to_integer,
                                          force=True)
-        expected = pd.Series([int(f) for f in floats])
+        expected = pd.Series(integers)
         pd.testing.assert_series_equal(result, expected)
 
-    def test_decimal_float_to_integer_rounded_scalar(self):
+    def test_decimal_float_to_integer_forced_not_rounded_scalar(self):
         integers = [-2, -1, 0, 1, 2]
-        floats = [i + random.random() for i in integers]
+        floats = [i + random.random() / 2 if idx % 2
+                  else i - random.random() / 2
+                  for idx, i in enumerate(integers)]
         for f in floats:
-            result = pdtypes.apply._float_to_integer(f, round=True)
-            expected = int(np.round(f))
+            result = pdtypes.apply._float_to_integer(f, force=True, round=False)
+            expected = int(f)
             self.assertEqual(result, expected)
             self.assertEqual(type(result), type(expected))
 
-    def test_decimal_float_to_integer_rounded_vector(self):
+    def test_decimal_float_to_integer_forced_not_rounded_vector(self):
         integers = [-2, -1, 0, 1, 2]
-        floats = [i + random.random() for i in integers]
+        floats = [i + random.random() / 2 if idx % 2
+                  else i - random.random() / 2
+                  for idx, i in enumerate(integers)]
         vec = np.vectorize(pdtypes.apply._float_to_integer)
-        result = vec(np.array(floats), round=True)
-        expected = np.array([int(np.round(f)) for f in floats])
+        result = vec(np.array(floats), force=True, round=False)
+        expected = np.array([int(f) for f in floats])
         np.testing.assert_array_equal(result, expected)
         self.assertEqual(result.dtype, expected.dtype)
 
-    def test_decimal_float_to_integer_rounded_series(self):
+    def test_decimal_float_to_integer_forced_not_rounded_series(self):
         integers = [-2, -1, 0, 1, 2]
-        floats = [i + random.random() for i in integers]
+        floats = [i + random.random() / 2 if idx % 2
+                  else i - random.random() / 2
+                  for idx, i in enumerate(integers)]
         result = pd.Series(floats).apply(pdtypes.apply._float_to_integer,
-                                         round=True)
-        expected = pd.Series([int(np.round(f)) for f in floats])
+                                         force=True, round=False)
+        expected = pd.Series([int(f) for f in floats])
         pd.testing.assert_series_equal(result, expected)
 
     #########################################

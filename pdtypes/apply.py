@@ -73,16 +73,18 @@ def _integer_to_timedelta(
 def _float_to_integer(
     element: float,
     force: bool = False,
-    round: bool = False,
+    round: bool = True,
     ftol: float = 1e-6,
     return_type: type = int
 ) -> int:
     if pd.isnull(element):
         return np.nan
-    if force:
-        return return_type(element)
-    result = return_type(np.round(element))
-    if round or abs(result - element) < ftol:
+    rounded = np.round(element.real)
+    if round or abs(rounded - element) < ftol:
+        result = return_type(rounded)
+    else:
+        result = return_type(element.real)
+    if force or abs(result - element) < ftol:
         return result
     err_msg = (f"[{error_trace()}] could not convert float to int without "
                f"losing information: {repr(element)}")
@@ -115,10 +117,12 @@ def _float_to_boolean(
 ) -> bool:
     if pd.isnull(element):
         return pd.NA
-    if force:
-        return return_type(element)
-    result = return_type(np.round(element))
-    if abs(result - element) < ftol:
+    rounded = np.round(element.real)
+    if abs(rounded - element) < ftol:
+        result = return_type(rounded)
+    else:
+        result = return_type(element.real)
+    if force or abs(result - element) < ftol:
         return result
     err_msg = (f"[{error_trace()}] could not convert float to bool without "
                f"losing information: {repr(element)}")
@@ -240,7 +244,7 @@ def _complex_to_timedelta(
 
 def _string_to_integer(
     element: str,
-    round: bool = False,
+    round: bool = True,
     force: bool = False,
     ftol: float = 1e-6,
     format: str | None = None,
@@ -267,12 +271,12 @@ def _string_to_integer(
                     ftol=ftol, return_type=return_type)
     }
     parsed = parse_string(element, format=format)
-    parsed_dtype = parse_dtype(parsed)
+    parsed_dtype = parse_dtype(type(parsed))
     try:
         return conversion_map[parsed_dtype](parsed)
     except (KeyError, ValueError):
-        err_msg = (f"[{error_trace()}] could not convert str to int: "
-                   f"{repr(element)}")
+        err_msg = (f"[{error_trace()}] could not convert str to int without "
+                   f"losing information: {repr(element)}")
         raise ValueError(err_msg)
 
 
@@ -487,7 +491,7 @@ def _boolean_to_datetime(
 ) -> pd.Timestamp | datetime:
     if pd.isnull(element):
         return pd.NaT
-    return return_type.fromtimestamp(element, tz=timezone.utc)
+    return return_type.fromtimestamp(float(element), tz=timezone.utc)
 
 
 def _boolean_to_timedelta(
@@ -496,7 +500,7 @@ def _boolean_to_timedelta(
 ) -> pd.Timedelta | timedelta:
     if pd.isnull(element):
         return pd.NaT
-    return return_type.fromtimestamp(seconds=element)
+    return return_type(seconds=float(element))
 
 
 def _datetime_to_integer(
