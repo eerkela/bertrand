@@ -445,6 +445,90 @@ class ApplyStringToIntegerTests(unittest.TestCase):
         expected = pd.Series([int(c.real) for c in complexes])
         pd.testing.assert_series_equal(result, expected)
 
+    #################################
+    ####    Character Strings    ####
+    #################################
+
+    def test_character_string_to_integer_error(self):
+        strings = [chr(i % 26 + ord("a")) for i in range(5)]
+        err_msg = ("[pdtypes.apply._string_to_integer] could not convert "
+                   "str to int without losing information: ")
+        for s in strings:
+            with self.assertRaises(ValueError) as err:
+                pdtypes.apply._string_to_integer(s)
+            self.assertEqual(str(err.exception), err_msg + repr(s))
+
+    ###############################
+    ####    Boolean Strings    ####
+    ###############################
+
+    def test_boolean_string_to_integer_scalar(self):
+        integers = [1, 0, 1, 0, 1]
+        strings = [str(bool(i)) for i in integers]
+        for s, i in zip(strings, integers):
+            result = pdtypes.apply._string_to_integer(s)
+            self.assertEqual(result, i)
+            self.assertEqual(type(result), type(i))
+
+    def test_boolean_string_to_integer_vector(self):
+        integers = [1, 0, 1, 0, 1]
+        strings = [str(bool(i)) for i in integers]
+        vec = np.vectorize(pdtypes.apply._string_to_integer)
+        result = vec(np.array(strings))
+        expected = np.array(integers)
+        np.testing.assert_array_equal(result, expected)
+        self.assertEqual(result.dtype, expected.dtype)
+
+    def test_boolean_string_to_integer_series(self):
+        integers = [1, 0, 1, 0, 1]
+        strings = [str(bool(i)) for i in integers]
+        result = pd.Series(strings).apply(pdtypes.apply._string_to_integer)
+        expected = pd.Series(integers)
+        pd.testing.assert_series_equal(result, expected)
+
+    ######################################################
+    ####    Whole Timestamp Naive Datetime Strings    ####
+    ######################################################
+
+    ######################################################
+    ####    Whole Timestamp Aware Datetime Strings    ####
+    ######################################################
+
+    ##################################################################
+    ####    Whole Timestamp Mixed Aware/Naive Datetime Strings    ####
+    ##################################################################
+
+    ###############################################################
+    ####    Whole Timestamp Mixed Timezone Datetime Strings    ####
+    ###############################################################
+
+    ##############################################
+    ####    Generic Naive Datetime Strings    ####
+    ##############################################
+
+    ##############################################
+    ####    Generic Aware Datetime Strings    ####
+    ##############################################
+
+    ##########################################################
+    ####    Generic Mixed Aware/Naive Datetime Strings    ####
+    ##########################################################
+
+    #######################################################
+    ####    Generic Mixed Timezone Datetime Strings    ####
+    #######################################################
+
+    #######################################
+    ####    Whole Timedelta Strings    ####
+    #######################################
+
+    #########################################
+    ####    Generic Timedelta Strings    ####
+    #########################################
+
+    #########################################
+    ####    Non-standard Return Types    ####
+    #########################################
 
 
 

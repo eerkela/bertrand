@@ -8,6 +8,7 @@ from apply.apply_float_to_x_test import *
 from apply.apply_complex_to_x_test import *
 from apply.apply_string_to_x_test import *
 from apply.apply_boolean_to_x_test import *
+from apply.apply_datetime_to_x_test import *
 
 
 if __name__ == "__main__":

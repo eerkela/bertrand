@@ -490,6 +490,5 @@ class ApplyBooleanToTimedeltaTests(unittest.TestCase):
             self.assertEqual(type(result), CustomTimedelta)
 
 
-
 if __name__ == "__main__":
     unittest.main()

@@ -1133,7 +1133,7 @@ class ApplyComplexToDatetimeTests(unittest.TestCase):
         complex_types = [np.complex64, np.complex128]
         complexes = [complex_types[idx % len(complex_types)](i)
                      for idx, i in enumerate(integers)]
-        datetimes = [pd.Timestamp.fromtimestamp(c.real, "UTC")
+        datetimes = [pd.Timestamp.fromtimestamp(float(c.real), "UTC")
                      for c in complexes]
         for c, d in zip(complexes, datetimes):
             result = pdtypes.apply._complex_to_datetime(c, return_type=type(d))
@@ -1145,7 +1145,7 @@ class ApplyComplexToDatetimeTests(unittest.TestCase):
         complex_types = [np.complex64, np.complex128]
         complexes = [complex_types[idx % len(complex_types)](i)
                      for idx, i in enumerate(integers)]
-        datetimes = [datetime.fromtimestamp(c.real, timezone.utc)
+        datetimes = [datetime.fromtimestamp(float(c.real), timezone.utc)
                      for c in complexes]
         for c, d in zip(complexes, datetimes):
             result = pdtypes.apply._complex_to_datetime(c, return_type=type(d))

@@ -135,7 +135,7 @@ def _float_to_datetime(
 ) -> datetime | pd.Timestamp:
     if pd.isnull(element):
         return pd.NaT
-    return return_type.fromtimestamp(element, timezone.utc)
+    return return_type.fromtimestamp(float(element), timezone.utc)
 
 
 def _float_to_timedelta(
@@ -221,7 +221,7 @@ def _complex_to_datetime(
     if pd.isnull(element):
         return pd.NaT
     if force or abs(element.imag) < ftol:
-        return return_type.fromtimestamp(element.real, tz=timezone.utc)
+        return return_type.fromtimestamp(float(element.real), tz=timezone.utc)
     err_msg = (f"[{error_trace()}] could not convert complex to datetime "
                f"without losing information: {repr(element)}")
     raise ValueError(err_msg)
@@ -505,7 +505,7 @@ def _boolean_to_timedelta(
 
 def _datetime_to_integer(
     element: pd.Timestamp | datetime,
-    round: bool = False,
+    round: bool = True,
     force: bool = False,
     ftol: float = 1e-6,
     return_type: type = int
@@ -513,13 +513,15 @@ def _datetime_to_integer(
     if pd.isnull(element):
         return np.nan
     timestamp = to_utc(element).timestamp()
-    if round:
-        return return_type(np.round(timestamp))
-    result = return_type(timestamp)
-    if abs(result - timestamp) < ftol or force:
+    rounded = np.round(timestamp)
+    if round or abs(rounded - timestamp) < ftol:
+        result = return_type(rounded)
+    else:
+        result = return_type(timestamp)
+    if force or abs(result - timestamp) < ftol:
         return result
-    err_msg = (f"[{error_trace()}] could not convert datetime to int: "
-               f"{repr(element)}")
+    err_msg = (f"[{error_trace()}] could not convert datetime to int without "
+               f"losing information: {repr(element)}")
     raise ValueError(err_msg)
 
 
