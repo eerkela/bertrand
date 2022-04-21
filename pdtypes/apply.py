@@ -567,8 +567,8 @@ def _datetime_to_boolean(
     result = return_type(timestamp)
     if abs(result - timestamp) < ftol or force:
         return result
-    err_msg = (f"[{error_trace()}] could not convert datetime to bool: "
-               f"{repr(element)}")
+    err_msg = (f"[{error_trace()}] could not convert datetime to bool without "
+               f"losing information: {repr(element)}")
     raise ValueError(err_msg)
 
 
