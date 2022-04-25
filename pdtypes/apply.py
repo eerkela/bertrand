@@ -10,7 +10,7 @@ from pdtypes.error import error_trace
 from pdtypes.parse import parse_dtype, parse_string, to_utc
 
 
-def _integer_to_float(
+def integer_to_float(
     element: int,
     return_type: type = float
 ) -> float:
@@ -19,7 +19,7 @@ def _integer_to_float(
     return return_type(element)
 
 
-def _integer_to_complex(
+def integer_to_complex(
     element: int,
     return_type: type = complex
 ) -> complex:
@@ -28,16 +28,16 @@ def _integer_to_complex(
     return return_type(element)
 
 
-def _integer_to_string(
+def integer_to_string(
     element: int,
     return_type: type = str
 ) -> str:
     if pd.isnull(element):
-        return pd.NA
+        return None
     return return_type(element)
 
 
-def _integer_to_boolean(
+def integer_to_boolean(
     element: int,
     force: bool = False,
     return_type: type = bool
@@ -45,14 +45,14 @@ def _integer_to_boolean(
     if pd.isnull(element):
         return pd.NA
     result = return_type(element)
-    if force or result == element:
+    if result == element or force:
         return result
     err_msg = (f"[{error_trace()}] could not convert int to bool without "
                f"losing information: {repr(element)}")
     raise ValueError(err_msg)
 
 
-def _integer_to_datetime(
+def integer_to_datetime(
     element: int,
     return_type: type = pd.Timestamp
 ) -> datetime | pd.Timestamp:
@@ -61,7 +61,7 @@ def _integer_to_datetime(
     return return_type.fromtimestamp(element, tz=timezone.utc)
 
 
-def _integer_to_timedelta(
+def integer_to_timedelta(
     element: int,
     return_type: type = pd.Timedelta
 ) -> timedelta | pd.Timedelta:
@@ -583,7 +583,7 @@ def _datetime_to_timedelta(
 
 def _timedelta_to_integer(
     element: pd.Timedelta | timedelta,
-    round: bool = False,
+    round: bool = True,
     force: bool = False,
     ftol: float = 1e-6,
     return_type: type = int
@@ -591,13 +591,15 @@ def _timedelta_to_integer(
     if pd.isnull(element):
         return np.nan
     seconds = element.total_seconds()
-    if round:
-        return return_type(np.round(seconds))
-    result = return_type(seconds)
-    if abs(result - seconds) < ftol or force:
+    rounded = np.round(seconds)
+    if round or abs(rounded - seconds) < ftol:
+        result = return_type(rounded)
+    else:
+        result = return_type(seconds)
+    if force or abs(result - seconds) < ftol:
         return result
-    err_msg = (f"[{error_trace()}] could not convert timedelta to int: "
-               f"{repr(element)}")
+    err_msg = (f"[{error_trace()}] could not convert timedelta to int without "
+               f"losing information: {repr(element)}")
     raise ValueError(err_msg)
 
 

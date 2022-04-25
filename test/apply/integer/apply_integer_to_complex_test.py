@@ -1,4 +1,5 @@
-import random
+from __future__ import annotations
+from typing import Any
 import unittest
 
 import numpy as np
@@ -8,125 +9,638 @@ from context import pdtypes
 import pdtypes.apply
 
 
-class ApplyIntegerToComplexMissingValueTests(unittest.TestCase):
+class ApplyIntegerToComplexAccuracyTests(unittest.TestCase):
 
     ##############################
     ####    Missing Values    ####
     ##############################
 
-    def test_na_integer_to_complex_scalar(self):
-        na_val = None
-        expected = np.nan
-        result = pdtypes.apply._integer_to_complex(na_val)
-        np.testing.assert_array_equal(result, expected)
+    def test_na_integer_to_complex_returns_numpy_nan(self):
+        # Arrange
+        na_vals = [None, np.nan, pd.NA, pd.NaT]
 
-    def test_na_integer_to_complex_vector(self):
-        nones = [None, np.nan, pd.NA, pd.NaT]
-        nans = [np.nan, np.nan, np.nan, np.nan]
-        vec = np.vectorize(pdtypes.apply._integer_to_complex)
-        result = vec(np.array(nones))
-        expected = np.array(nans)
-        np.testing.assert_array_equal(result, expected)
-        self.assertEqual(result.dtype, expected.dtype)
+        # Act
+        result = [pdtypes.apply.integer_to_complex(na) for na in na_vals]
 
-    def test_na_integer_to_complex_series(self):
-        nones = [None, np.nan, pd.NA, pd.NaT]
-        nans = [np.nan, np.nan, np.nan, np.nan]
-        result = pd.Series(nones).apply(pdtypes.apply._integer_to_complex)
-        expected = pd.Series(nans)
-        pd.testing.assert_series_equal(result, expected)
-
-
-class ApplyIntegerToComplexAccuracyTests(unittest.TestCase):
+        # Assert
+        expected = [np.nan for _ in result]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     ################################
     ####    Generic Integers    ####
     ################################
 
-    def test_integer_to_complex_scalar(self):
+    def test_integer_to_complex_is_accurate_scalar(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        complexes = [complex(i, 0) for i in integers]
-        for i, c in zip(integers, complexes):
-            result = pdtypes.apply._integer_to_complex(i)
-            self.assertEqual(result, c)
-            self.assertEqual(type(result), type(c))
 
-    def test_integer_to_complex_vector(self):
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i) for i in integers]
+
+        # Assert
+        expected = [complex(i, 0) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_integer_to_complex_is_accurate_vector(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        complexes = [complex(i, 0) for i in integers]
-        vec = np.vectorize(pdtypes.apply._integer_to_complex)
-        result = vec(np.array(integers))
-        expected = np.array(complexes)
+        input_array = np.array(integers)
+        int_to_complex = np.vectorize(pdtypes.apply.integer_to_complex)
+
+        # Act
+        result = int_to_complex(input_array)
+
+        # Assert
+        expected = np.array([complex(i, 0) for i in integers])
         np.testing.assert_array_equal(result, expected)
         self.assertEqual(result.dtype, expected.dtype)
 
-    def test_integer_to_complex_series(self):
+    def test_integer_to_complex_is_accurate_series(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        complexes = [complex(i, 0) for i in integers]
-        result = pd.Series(integers).apply(pdtypes.apply._integer_to_complex)
-        expected = pd.Series(complexes)
+        input_series = pd.Series(integers)
+
+        # Act
+        result = input_series.apply(pdtypes.apply.integer_to_complex)
+
+        # Assert
+        expected = pd.Series([complex(i, 0) for i in integers])
         pd.testing.assert_series_equal(result, expected)
 
 
 class ApplyIntegerToComplexReturnTypeTests(unittest.TestCase):
 
-    #########################################
-    ####    Non-standard Return Types    ####
-    #########################################
+    #################################
+    ####    Standard Integers    ####
+    #################################
 
-    def test_standard_integer_to_numpy_complex_scalar(self):
+    def test_standard_integer_to_standard_complex_return_type(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        complex_types = [np.complex64, np.complex128]
-        complexes = [complex_types[idx % len(complex_types)](i)
-                     for idx, i in enumerate(integers)]
-        for i, c in zip(integers, complexes):
-            result = pdtypes.apply._integer_to_complex(i, return_type=type(c))
-            self.assertEqual(result, c)
-            self.assertEqual(type(result), type(c))
 
-    def test_numpy_signed_integer_to_standard_complex_scalar(self):
-        integer_types = [np.int8, np.int16, np.int32, np.int64]
-        integers = [integer_types[idx % len(integer_types)](i)
-                    for idx, i in enumerate([-2, -1, 0, 1, 2])]
-        complexes = [complex(i, 0) for i in integers]
-        for i, c in zip(integers, complexes):
-            result = pdtypes.apply._integer_to_complex(i, return_type=type(c))
-            self.assertEqual(result, c)
-            self.assertEqual(type(result), type(c))
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=complex)
+                  for i in integers]
 
-    def test_numpy_signed_integer_to_numpy_complex_scalar(self):
-        integer_types = [np.int8, np.int16, np.int32, np.int64]
-        integers = [integer_types[idx % len(integer_types)](i)
-                    for idx, i in enumerate([-2, -1, 0, 1, 2])]
-        complex_types = [np.complex64, np.complex128]
-        complexes = [complex_types[idx % len(complex_types)](i)
-                     for idx, i in enumerate(integers)]
-        for i, c in zip(integers, complexes):
-            result = pdtypes.apply._integer_to_complex(i, return_type=type(c))
-            self.assertEqual(result, c)
-            self.assertEqual(type(result), type(c))
+        # Assert
+        expected = [complex(i, 0) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
-    def test_numpy_unsigned_integer_to_standard_complex_scalar(self):
-        integer_types = [np.uint8, np.uint16, np.uint32, np.uint64]
-        integers = [integer_types[idx % len(integer_types)](i)
-                    for idx, i in enumerate([0, 1, 2, 3, 4])]
-        complexes = [complex(i, 0) for i in integers]
-        for i, c in zip(integers, complexes):
-            result = pdtypes.apply._integer_to_complex(i, return_type=type(c))
-            self.assertEqual(result, c)
-            self.assertEqual(type(result), type(c))
+    def test_standard_integer_to_numpy_complex64_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
 
-    def test_numpy_unsigned_integer_to_numpy_complex_scalar(self):
-        integer_types = [np.uint8, np.uint16, np.uint32, np.uint64]
-        integers = [integer_types[idx % len(integer_types)](i)
-                    for idx, i in enumerate([0, 1, 2, 3, 4])]
-        complex_types = [np.complex64, np.complex128]
-        complexes = [complex_types[idx % len(complex_types)](i)
-                     for idx, i in enumerate(integers)]
-        for i, c in zip(integers, complexes):
-            result = pdtypes.apply._integer_to_complex(i, return_type=type(c))
-            self.assertEqual(result, c)
-            self.assertEqual(type(result), type(c))
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex64)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex64(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_standard_integer_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex128)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex128(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_standard_integer_to_custom_complex_return_type(self):
+        class CustomComplex:
+            def __init__(self, i: int):
+                self.complex = complex(i, 0)
+
+            def __complex__(self) -> complex:
+                return self.complex
+
+            def __eq__(self, other: Any) -> bool:
+                return complex(self) == complex(other)
+
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=CustomComplex)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomComplex(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    #####################################
+    ####    Numpy Signed Integers    ####
+    #####################################
+
+    def test_numpy_signed_int8_to_standard_complex_return_type(self):
+        # Arrange
+        integers = [np.int8(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=complex)
+                  for i in integers]
+
+        # Assert
+        expected = [complex(i, 0) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int8_to_numpy_complex64_return_type(self):
+        # Arrange
+        integers = [np.int8(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex64)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex64(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int8_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [np.int8(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex128)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex128(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int8_to_custom_complex_return_type(self):
+        class CustomComplex:
+            def __init__(self, i: int):
+                self.complex = complex(i, 0)
+
+            def __complex__(self) -> complex:
+                return self.complex
+
+            def __eq__(self, other: Any) -> bool:
+                return complex(self) == complex(other)
+
+        # Arrange
+        integers = [np.int8(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=CustomComplex)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomComplex(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int16_to_standard_complex_return_type(self):
+        # Arrange
+        integers = [np.int16(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=complex)
+                  for i in integers]
+
+        # Assert
+        expected = [complex(i, 0) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int16_to_numpy_complex64_return_type(self):
+        # Arrange
+        integers = [np.int16(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex64)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex64(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int16_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [np.int16(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex128)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex128(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int16_to_custom_complex_return_type(self):
+        class CustomComplex:
+            def __init__(self, i: int):
+                self.complex = complex(i, 0)
+
+            def __complex__(self) -> complex:
+                return self.complex
+
+            def __eq__(self, other: Any) -> bool:
+                return complex(self) == complex(other)
+
+        # Arrange
+        integers = [np.int16(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=CustomComplex)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomComplex(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int32_to_standard_complex_return_type(self):
+        # Arrange
+        integers = [np.int32(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=complex)
+                  for i in integers]
+
+        # Assert
+        expected = [complex(i, 0) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int32_to_numpy_complex64_return_type(self):
+        # Arrange
+        integers = [np.int32(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex64)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex64(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int32_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [np.int32(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex128)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex128(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int32_to_custom_complex_return_type(self):
+        class CustomComplex:
+            def __init__(self, i: int):
+                self.complex = complex(i, 0)
+
+            def __complex__(self) -> complex:
+                return self.complex
+
+            def __eq__(self, other: Any) -> bool:
+                return complex(self) == complex(other)
+
+        # Arrange
+        integers = [np.int32(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=CustomComplex)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomComplex(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int64_to_standard_complex_return_type(self):
+        # Arrange
+        integers = [np.int64(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=complex)
+                  for i in integers]
+
+        # Assert
+        expected = [complex(i, 0) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int64_to_numpy_complex64_return_type(self):
+        # Arrange
+        integers = [np.int64(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex64)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex64(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int64_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [np.int64(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex128)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex128(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int64_to_custom_complex_return_type(self):
+        class CustomComplex:
+            def __init__(self, i: int):
+                self.complex = complex(i, 0)
+
+            def __complex__(self) -> complex:
+                return self.complex
+
+            def __eq__(self, other: Any) -> bool:
+                return complex(self) == complex(other)
+
+        # Arrange
+        integers = [np.int64(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=CustomComplex)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomComplex(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    #######################################
+    ####    Numpy Unsigned Integers    ####
+    #######################################
+
+    def test_numpy_unsigned_int8_to_standard_complex_return_type(self):
+        # Arrange
+        integers = [np.uint8(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=complex)
+                  for i in integers]
+
+        # Assert
+        expected = [complex(i, 0) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int8_to_numpy_complex64_return_type(self):
+        # Arrange
+        integers = [np.uint8(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex64)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex64(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int8_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [np.uint8(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex128)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex128(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int8_to_custom_complex_return_type(self):
+        class CustomComplex:
+            def __init__(self, i: int):
+                self.complex = complex(i, 0)
+
+            def __complex__(self) -> complex:
+                return self.complex
+
+            def __eq__(self, other: Any) -> bool:
+                return complex(self) == complex(other)
+
+        # Arrange
+        integers = [np.uint8(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=CustomComplex)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomComplex(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int16_to_standard_complex_return_type(self):
+        # Arrange
+        integers = [np.uint16(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=complex)
+                  for i in integers]
+
+        # Assert
+        expected = [complex(i, 0) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int16_to_numpy_complex64_return_type(self):
+        # Arrange
+        integers = [np.uint16(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex64)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex64(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int16_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [np.uint16(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex128)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex128(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int16_to_custom_complex_return_type(self):
+        class CustomComplex:
+            def __init__(self, i: int):
+                self.complex = complex(i, 0)
+
+            def __complex__(self) -> complex:
+                return self.complex
+
+            def __eq__(self, other: Any) -> bool:
+                return complex(self) == complex(other)
+
+        # Arrange
+        integers = [np.uint16(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=CustomComplex)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomComplex(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int32_to_standard_complex_return_type(self):
+        # Arrange
+        integers = [np.uint32(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=complex)
+                  for i in integers]
+
+        # Assert
+        expected = [complex(i, 0) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int32_to_numpy_complex64_return_type(self):
+        # Arrange
+        integers = [np.uint32(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex64)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex64(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int32_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [np.uint32(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex128)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex128(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int32_to_custom_complex_return_type(self):
+        class CustomComplex:
+            def __init__(self, i: int):
+                self.complex = complex(i, 0)
+
+            def __complex__(self) -> complex:
+                return self.complex
+
+            def __eq__(self, other: Any) -> bool:
+                return complex(self) == complex(other)
+
+        # Arrange
+        integers = [np.uint32(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=CustomComplex)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomComplex(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int64_to_standard_complex_return_type(self):
+        # Arrange
+        integers = [np.uint64(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=complex)
+                  for i in integers]
+
+        # Assert
+        expected = [complex(i, 0) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int64_to_numpy_complex64_return_type(self):
+        # Arrange
+        integers = [np.uint64(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex64)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex64(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int64_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [np.uint64(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=np.complex128)
+                  for i in integers]
+
+        # Assert
+        expected = [np.complex128(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int64_to_custom_complex_return_type(self):
+        class CustomComplex:
+            def __init__(self, i: int):
+                self.complex = complex(i, 0)
+
+            def __complex__(self) -> complex:
+                return self.complex
+
+            def __eq__(self, other: Any) -> bool:
+                return complex(self) == complex(other)
+
+        # Arrange
+        integers = [np.uint64(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_complex(i, return_type=CustomComplex)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomComplex(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
 
 if __name__ == "__main__":

@@ -12,136 +12,521 @@ import pdtypes.apply
 random.seed(12345)
 
 
-class ApplyIntegerToTimedeltaMissingValueTests(unittest.TestCase):
+class ApplyIntegerToTimedeltaAccuracyTests(unittest.TestCase):
 
     ##############################
     ####    Missing Values    ####
     ##############################
 
-    def test_na_integer_to_timedelta_scalar(self):
-        na_val = None
-        expected = pd.NaT
-        result = pdtypes.apply._integer_to_timedelta(na_val)
-        # numpy can't parse pd.NaT, and pd.NaT != pd.NaT, at least not directly
-        # np.testing.assert_array_equal(result, expected)
-        self.assertTrue(type(result) == type(expected))
+    def test_na_integer_to_timedelta_returns_pandas_nat(self):
+        # Arrange
+        na_vals = [None, np.nan, pd.NA, pd.NaT]
 
-    def test_na_integer_to_timedelta_vector(self):
-        nones = [None, np.nan, pd.NA, pd.NaT]
-        nans = [pd.NaT, pd.NaT, pd.NaT, pd.NaT]
-        vec = np.vectorize(pdtypes.apply._integer_to_timedelta)
-        result = vec(np.array(nones))
-        expected = np.array(nans)
-        # numpy can't parse pd.NA, and pd.NA != pd.NA, at least not directly
-        # np.testing.assert_array_equal(result, expected)
-        self.assertTrue(all(type(n) == type(pd.NaT) for n in result))
-        self.assertEqual(result.dtype, expected.dtype)
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(na) for na in na_vals]
 
-    def test_na_integer_to_timedelta_series(self):
-        nones = [None, np.nan, pd.NA, pd.NaT]
-        nans = [pd.NaT, pd.NaT, pd.NaT, pd.NaT]
-        result = pd.Series(nones).apply(pdtypes.apply._integer_to_timedelta)
-        expected = pd.Series(nans)
-        pd.testing.assert_series_equal(result, expected)
-
-
-class ApplyIntegerToTimedeltaAccuracyTests(unittest.TestCase):
+        # Assert
+        expected = [pd.NaT for _ in result]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     ################################
     ####    Generic Integers    ####
     ################################
 
-    def test_integer_to_timedelta_scalar(self):
+    def test_integer_to_timedelta_is_accurate_scalar(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        timedeltas = [pd.Timedelta(seconds=i) for i in integers]
-        for i, t in zip(integers, timedeltas):
-            result = pdtypes.apply._integer_to_timedelta(i)
-            self.assertEqual(result, t)
-            self.assertEqual(type(result), type(t))
 
-    def test_integer_to_timedelta_vector(self):
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i) for i in integers]
+
+        # Assert
+        expected = [pd.Timedelta(seconds=i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_integer_to_timedelta_is_accurate_vector(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        timedeltas = [pd.Timedelta(seconds=i) for i in integers]
-        vec = np.vectorize(pdtypes.apply._integer_to_timedelta)
-        result = vec(np.array(integers))
-        expected = np.array(timedeltas)
+        input_array = np.array(integers)
+        int_to_datetime = np.vectorize(pdtypes.apply.integer_to_timedelta)
+
+        # Act
+        result = int_to_datetime(input_array)
+
+        # Assert
+        expected = np.array([pd.Timedelta(seconds=i) for i in integers])
         np.testing.assert_array_equal(result, expected)
         self.assertEqual(result.dtype, expected.dtype)
 
-    def test_float_to_timedelta_series(self):
+    def test_integer_to_timedelta_is_accurate_series(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        timedeltas = [pd.Timedelta(seconds=i) for i in integers]
-        result = pd.Series(integers).apply(pdtypes.apply._integer_to_timedelta)
-        expected = pd.Series(timedeltas)
+        input_series = pd.Series(integers)
+
+        # Act
+        result = input_series.apply(pdtypes.apply.integer_to_timedelta)
+
+        # Assert
+        expected = pd.Series([pd.Timedelta(seconds=i) for i in integers])
         pd.testing.assert_series_equal(result, expected)
 
 
 class ApplyIntegerToTimedeltaReturnTypeTests(unittest.TestCase):
 
-    #########################################
-    ####    Non-standard Return Types    ####
-    #########################################
+    #################################
+    ####    Standard Integers    ####
+    #################################
 
-    def test_standard_integer_to_standard_timedelta_scalar(self):
+    def test_standard_integer_to_standard_timedelta_return_type(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        timedeltas = [timedelta(seconds=i) for i in integers]
-        for i, t in zip(integers, timedeltas):
-            result = pdtypes.apply._integer_to_timedelta(i, return_type=type(t))
-            self.assertEqual(result, t)
-            self.assertEqual(type(result), type(t))
 
-    def test_standard_integer_to_custom_timedelta_class_scalar(self):
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [timedelta(seconds=i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_standard_integer_to_pandas_timedelta_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=pd.Timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [pd.Timedelta(seconds=i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_standard_integer_to_custom_timedelta_return_type(self):
         class CustomTimedelta:
-            def __init__(self, seconds: int):
-                self.delta = pd.Timedelta(seconds=seconds)
+            def __init__(self, seconds: float):
+                self.timedelta = timedelta(seconds=seconds)
 
-            def to_timedelta(self) -> pd.Timedelta:
-                return self.delta
+            def total_seconds(self) -> float:
+                return self.timedelta.total_seconds()
 
+            def __eq__(self, other: timedelta) -> bool:
+                return self.total_seconds() == other.total_seconds()
+
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        for i in integers:
-            result = pdtypes.apply._integer_to_timedelta(i, return_type=CustomTimedelta)
-            self.assertEqual(type(result), CustomTimedelta)
 
-    def test_numpy_signed_integer_to_pandas_timedelta_scalar(self):
-        integer_types = [np.int8, np.int16, np.int32, np.int64]
-        integers = [integer_types[idx % len(integer_types)](i)
-                    for idx, i in enumerate([-2, -1, 0, 1, 2])]
-        timedeltas = [pd.Timedelta(seconds=i) for i in integers]
-        for i, t in zip(integers, timedeltas):
-            result = pdtypes.apply._integer_to_timedelta(i, return_type=type(t))
-            self.assertEqual(result, t)
-            self.assertEqual(type(result), type(t))
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=CustomTimedelta)
+                  for i in integers]
 
-    def test_numpy_signed_integer_to_standard_timedelta_scalar(self):
-        integer_types = [np.int8, np.int16, np.int32, np.int64]
-        integers = [integer_types[idx % len(integer_types)](i)
-                    for idx, i in enumerate([-2, -1, 0, 1, 2])]
-        timedeltas = [timedelta(seconds=int(i)) for i in integers]
-        for i, t in zip(integers, timedeltas):
-            result = pdtypes.apply._integer_to_timedelta(i, return_type=type(t))
-            self.assertEqual(result, t)
-            self.assertEqual(type(result), type(t))
+        # Assert
+        expected = [CustomTimedelta(seconds=i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
-    def test_numpy_unsigned_integer_to_pandas_timedelta_scalar(self):
-        integer_types = [np.uint8, np.uint16, np.uint32, np.uint64]
-        integers = [integer_types[idx % len(integer_types)](i)
-                    for idx, i in enumerate([0, 1, 2, 3, 4])]
-        timedeltas = [pd.Timedelta(seconds=i) for i in integers]
-        for i, t in zip(integers, timedeltas):
-            result = pdtypes.apply._integer_to_timedelta(i, return_type=type(t))
-            self.assertEqual(result, t)
-            self.assertEqual(type(result), type(t))
+    #####################################
+    ####    Numpy Signed Integers    ####
+    #####################################
 
-    def test_numpy_unsigned_integer_to_standard_timedelta_scalar(self):
-        integer_types = [np.uint8, np.uint16, np.uint32, np.uint64]
-        integers = [integer_types[idx % len(integer_types)](i)
-                    for idx, i in enumerate([0, 1, 2, 3, 4])]
-        timedeltas = [timedelta(seconds=int(i)) for i in integers]
-        for i, t in zip(integers, timedeltas):
-            result = pdtypes.apply._integer_to_timedelta(i, return_type=type(t))
-            self.assertEqual(result, t)
-            self.assertEqual(type(result), type(t))
+    def test_numpy_signed_int8_to_standard_timedelta_return_type(self):
+        # Arrange
+        integers = [np.int8(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int8_to_pandas_timedelta_return_type(self):
+        # Arrange
+        integers = [np.int8(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=pd.Timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [pd.Timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int8_to_custom_timedelta_return_type(self):
+        class CustomTimedelta:
+            def __init__(self, seconds: float):
+                self.timedelta = timedelta(seconds=seconds)
+
+            def total_seconds(self) -> float:
+                return self.timedelta.total_seconds()
+
+            def __eq__(self, other: timedelta) -> bool:
+                return self.total_seconds() == other.total_seconds()
+
+        # Arrange
+        integers = [np.int8(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=CustomTimedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomTimedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int16_to_standard_timedelta_return_type(self):
+        # Arrange
+        integers = [np.int16(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int16_to_pandas_timedelta_return_type(self):
+        # Arrange
+        integers = [np.int16(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=pd.Timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [pd.Timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int16_to_custom_timedelta_return_type(self):
+        class CustomTimedelta:
+            def __init__(self, seconds: float):
+                self.timedelta = timedelta(seconds=seconds)
+
+            def total_seconds(self) -> float:
+                return self.timedelta.total_seconds()
+
+            def __eq__(self, other: timedelta) -> bool:
+                return self.total_seconds() == other.total_seconds()
+
+        # Arrange
+        integers = [np.int16(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=CustomTimedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomTimedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int32_to_standard_timedelta_return_type(self):
+        # Arrange
+        integers = [np.int32(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int32_to_pandas_timedelta_return_type(self):
+        # Arrange
+        integers = [np.int32(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=pd.Timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [pd.Timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int32_to_custom_timedelta_return_type(self):
+        class CustomTimedelta:
+            def __init__(self, seconds: float):
+                self.timedelta = timedelta(seconds=seconds)
+
+            def total_seconds(self) -> float:
+                return self.timedelta.total_seconds()
+
+            def __eq__(self, other: timedelta) -> bool:
+                return self.total_seconds() == other.total_seconds()
+
+        # Arrange
+        integers = [np.int32(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=CustomTimedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomTimedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int64_to_standard_timedelta_return_type(self):
+        # Arrange
+        integers = [np.int64(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int64_to_pandas_timedelta_return_type(self):
+        # Arrange
+        integers = [np.int64(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=pd.Timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [pd.Timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int64_to_custom_timedelta_return_type(self):
+        class CustomTimedelta:
+            def __init__(self, seconds: float):
+                self.timedelta = timedelta(seconds=seconds)
+
+            def total_seconds(self) -> float:
+                return self.timedelta.total_seconds()
+
+            def __eq__(self, other: timedelta) -> bool:
+                return self.total_seconds() == other.total_seconds()
+
+        # Arrange
+        integers = [np.int64(i) for i in [-2, -1, 0, 1, 2]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=CustomTimedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomTimedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    #######################################
+    ####    Numpy Unsigned Integers    ####
+    #######################################
+
+    def test_numpy_unsigned_int8_to_standard_timedelta_return_type(self):
+        # Arrange
+        integers = [np.uint8(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int8_to_pandas_timedelta_return_type(self):
+        # Arrange
+        integers = [np.uint8(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=pd.Timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [pd.Timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int8_to_custom_timedelta_return_type(self):
+        class CustomTimedelta:
+            def __init__(self, seconds: float):
+                self.timedelta = timedelta(seconds=seconds)
+
+            def total_seconds(self) -> float:
+                return self.timedelta.total_seconds()
+
+            def __eq__(self, other: timedelta) -> bool:
+                return self.total_seconds() == other.total_seconds()
+
+        # Arrange
+        integers = [np.uint8(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=CustomTimedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomTimedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int16_to_standard_timedelta_return_type(self):
+        # Arrange
+        integers = [np.uint16(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int16_to_pandas_timedelta_return_type(self):
+        # Arrange
+        integers = [np.uint16(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=pd.Timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [pd.Timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int16_to_custom_timedelta_return_type(self):
+        class CustomTimedelta:
+            def __init__(self, seconds: float):
+                self.timedelta = timedelta(seconds=seconds)
+
+            def total_seconds(self) -> float:
+                return self.timedelta.total_seconds()
+
+            def __eq__(self, other: timedelta) -> bool:
+                return self.total_seconds() == other.total_seconds()
+
+        # Arrange
+        integers = [np.uint16(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=CustomTimedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomTimedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int32_to_standard_timedelta_return_type(self):
+        # Arrange
+        integers = [np.uint32(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int32_to_pandas_timedelta_return_type(self):
+        # Arrange
+        integers = [np.uint32(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=pd.Timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [pd.Timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int32_to_custom_timedelta_return_type(self):
+        class CustomTimedelta:
+            def __init__(self, seconds: float):
+                self.timedelta = timedelta(seconds=seconds)
+
+            def total_seconds(self) -> float:
+                return self.timedelta.total_seconds()
+
+            def __eq__(self, other: timedelta) -> bool:
+                return self.total_seconds() == other.total_seconds()
+
+        # Arrange
+        integers = [np.uint32(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=CustomTimedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomTimedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int64_to_standard_timedelta_return_type(self):
+        # Arrange
+        integers = [np.uint64(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int64_to_pandas_timedelta_return_type(self):
+        # Arrange
+        integers = [np.uint64(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=pd.Timedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [pd.Timedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int64_to_custom_timedelta_return_type(self):
+        class CustomTimedelta:
+            def __init__(self, seconds: float):
+                self.timedelta = timedelta(seconds=seconds)
+
+            def total_seconds(self) -> float:
+                return self.timedelta.total_seconds()
+
+            def __eq__(self, other: timedelta) -> bool:
+                return self.total_seconds() == other.total_seconds()
+
+        # Arrange
+        integers = [np.uint64(i) for i in [0, 1, 2, 3, 4]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_timedelta(i, return_type=CustomTimedelta)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomTimedelta(seconds=int(i)) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
 
 if __name__ == "__main__":

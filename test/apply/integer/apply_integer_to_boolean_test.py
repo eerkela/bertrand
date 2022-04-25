@@ -1,4 +1,5 @@
-import random
+from __future__ import annotations
+from typing import Any
 import unittest
 
 import numpy as np
@@ -8,70 +9,64 @@ from context import pdtypes
 import pdtypes.apply
 
 
-random.seed(12345)
-
-
-class ApplyIntegerToBooleanMissingValueTests(unittest.TestCase):
+class ApplyIntegerToBooleanAccuracyTests(unittest.TestCase):
 
     ##############################
     ####    Missing Values    ####
     ##############################
 
-    def test_na_integer_to_boolean_scalar(self):
-        na_val = None
-        expected = pd.NA
-        result = pdtypes.apply._integer_to_boolean(na_val)
-        # numpy can't parse pd.NA, and pd.NA != pd.NA, at least not directly
-        # np.testing.assert_array_equal(result, expected)
-        self.assertTrue(type(result) == type(expected))
+    def test_na_integer_to_boolean_returns_pandas_na(self):
+        # Arrange
+        na_vals = [None, np.nan, pd.NA, pd.NaT]
 
-    def test_na_integer_to_boolean_vector(self):
-        nones = [None, np.nan, pd.NA, pd.NaT]
-        nans = [pd.NA, pd.NA, pd.NA, pd.NA]
-        vec = np.vectorize(pdtypes.apply._integer_to_boolean)
-        result = vec(np.array(nones))
-        expected = np.array(nans)
-        # numpy can't parse pd.NA, and pd.NA != pd.NA, at least not directly
-        # np.testing.assert_array_equal(result, expected)
-        self.assertTrue(all(type(n) == type(pd.NA) for n in result))
-        self.assertEqual(result.dtype, expected.dtype)
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(na) for na in na_vals]
 
-    def test_na_integer_to_boolean_series(self):
-        nones = [None, np.nan, pd.NA, pd.NaT]
-        nans = [pd.NA, pd.NA, pd.NA, pd.NA]
-        result = pd.Series(nones).apply(pdtypes.apply._integer_to_boolean)
-        expected = pd.Series(nans)
-        pd.testing.assert_series_equal(result, expected)
-
-
-class ApplyIntegerToBooleanAccuracyTests(unittest.TestCase):
+        # Assert
+        expected = [pd.NA for _ in result]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     #######################################################
     ####    Integer Boolean Flags [1, 0, 1, 0, ...]    ####
     #######################################################
 
-    def test_integer_bool_flag_to_boolean_scalar(self):
-        integers = [1, 0, 1, 0, 1]
-        booleans = [bool(i) for i in integers]
-        for i, b in zip(integers, booleans):
-            result = pdtypes.apply._integer_to_boolean(i)
-            self.assertEqual(result, b)
-            self.assertEqual(type(result), type(b))
+    def test_integer_bool_flag_to_boolean_is_accurate_scalar(self):
+        # Arrange
+        integers = [1, 1, 0, 0, 1]
 
-    def test_integer_bool_flag_to_boolean_vector(self):
-        integers = [1, 0, 1, 0, 1]
-        booleans = [bool(i) for i in integers]
-        vec = np.vectorize(pdtypes.apply._integer_to_boolean)
-        result = vec(np.array(integers))
-        expected = np.array(booleans)
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i) for i in integers]
+
+        # Assert
+        expected = [bool(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_integer_bool_flag_to_boolean_is_accurate_vector(self):
+        # Arrange
+        integers = [1, 1, 0, 0, 1]
+        input_array = np.array(integers)
+        int_to_bool = np.vectorize(pdtypes.apply.integer_to_boolean)
+
+        # Act
+        result = int_to_bool(input_array)
+
+        # Assert
+        expected = np.array([bool(i) for i in integers])
         np.testing.assert_array_equal(result, expected)
         self.assertEqual(result.dtype, expected.dtype)
 
-    def test_integer_bool_flag_to_boolean_series(self):
-        integers = [1, 0, 1, 0, 1]
-        booleans = [bool(i) for i in integers]
-        result = pd.Series(integers).apply(pdtypes.apply._integer_to_boolean)
-        expected = pd.Series(booleans)
+    def test_integer_bool_flag_to_boolean_is_accurate_series(self):
+        # Arrange
+        integers = [1, 1, 0, 0, 1]
+        input_series = pd.Series(integers)
+
+        # Act
+        result = input_series.apply(pdtypes.apply.integer_to_boolean)
+
+        # Assert
+        expected = pd.Series([bool(i) for i in integers])
         pd.testing.assert_series_equal(result, expected)
 
     ################################
@@ -79,47 +74,78 @@ class ApplyIntegerToBooleanAccuracyTests(unittest.TestCase):
     ################################
 
     def test_integer_to_boolean_out_of_range_error(self):
+        # Arrange
         integers = [-3, -2, -1, 2, 3, 4]
-        err_msg = ("[pdtypes.apply._integer_to_boolean] could not convert int "
-                   "to bool without losing information: ")
+
+        # Act - error
         for i in integers:
             with self.assertRaises(ValueError) as err:
-                pdtypes.apply._integer_to_boolean(i)
-            self.assertEqual(str(err.exception), err_msg + repr(i))
+                pdtypes.apply.integer_to_boolean(i)
+            err_msg = (f"[pdtypes.apply.integer_to_boolean] could not convert int "
+                       f"to bool without losing information: {repr(i)}")
+            self.assertEqual(str(err.exception), err_msg)
 
     def test_integer_to_boolean_out_of_range_forced_scalar(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        booleans = [True, True, False, True, True]
-        for i, b in zip(integers, booleans):
-            result = pdtypes.apply._integer_to_boolean(i, force=True)
-            self.assertEqual(result, b)
-            self.assertEqual(type(result), type(b))
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, force=True)
+                  for i in integers]
+
+        # Assert
+        expected = [True, True, False, True, True]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     def test_integer_to_boolean_out_of_range_forced_vector(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        booleans = [True, True, False, True, True]
-        vec = np.vectorize(pdtypes.apply._integer_to_boolean)
-        result = vec(np.array(integers), force=True)
-        expected = np.array(booleans)
+        input_array = np.array(integers)
+        int_to_bool = np.vectorize(pdtypes.apply.integer_to_boolean)
+
+        # Act
+        result = int_to_bool(input_array, force=True)
+
+        # Assert
+        expected = np.array([bool(i) for i in integers])
         np.testing.assert_array_equal(result, expected)
         self.assertEqual(result.dtype, expected.dtype)
 
     def test_integer_to_boolean_out_of_range_forced_series(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        booleans = [True, True, False, True, True]
-        result = pd.Series(integers).apply(pdtypes.apply._integer_to_boolean,
-                                           force=True)
-        expected = pd.Series(booleans)
+        input_series = pd.Series(integers)
+
+        # Act
+        result = input_series.apply(pdtypes.apply.integer_to_boolean,
+                                    force=True)
+
+        # Assert
+        expected = pd.Series([bool(i) for i in integers])
         pd.testing.assert_series_equal(result, expected)
 
 
 class ApplyIntegerToBooleanReturnTypeTests(unittest.TestCase):
 
-    #########################################
-    ####    Non-standard Return Types    ####
-    #########################################
+    #################################
+    ####    Standard Integers    ####
+    #################################
 
-    def test_standard_integer_to_custom_boolean_class_scalar(self):
+    def test_standard_integer_to_standard_boolean_return_type(self):
+        # Arrange
+        integers = [1, 1, 0, 0, 1]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=bool)
+                  for i in integers]
+
+        # Assert
+        expected = [bool(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_standard_integer_to_custom_boolean_return_type(self):
         class CustomBoolean:
             def __init__(self, i: int):
                 self.boolean = bool(i)
@@ -127,34 +153,316 @@ class ApplyIntegerToBooleanReturnTypeTests(unittest.TestCase):
             def __bool__(self) -> bool:
                 return self.boolean
 
-            def __sub__(self, other) -> int:
-                return self.boolean - other
+            def __eq__(self, other: Any) -> bool:
+                return bool(self) == bool(other)
 
+        # Arrange
         integers = [1, 1, 0, 0, 1]
-        for i in integers:
-            result = pdtypes.apply._float_to_boolean(i,
-                                                     return_type=CustomBoolean)
-            self.assertEqual(type(result), CustomBoolean)
 
-    def test_numpy_signed_integer_to_standard_boolean_scalar(self):
-        integer_types = [np.int8, np.int16, np.int32, np.int64]
-        integers = [integer_types[idx % len(integer_types)](i)
-                    for idx, i in enumerate([1, 1, 0, 0, 1])]
-        booleans = [bool(i) for i in integers]
-        for i, b in zip(integers, booleans):
-            result = pdtypes.apply._integer_to_complex(i, return_type=type(b))
-            self.assertEqual(result, b)
-            self.assertEqual(type(result), type(b))
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=CustomBoolean)
+                  for i in integers]
 
-    def test_numpy_unsigned_integer_to_standard_boolean_scalar(self):
-        integer_types = [np.uint8, np.uint16, np.uint32, np.uint64]
-        integers = [integer_types[idx % len(integer_types)](i)
-                    for idx, i in enumerate([1, 1, 0, 0, 1])]
-        booleans = [bool(i) for i in integers]
-        for i, b in zip(integers, booleans):
-            result = pdtypes.apply._integer_to_complex(i, return_type=type(b))
-            self.assertEqual(result, b)
-            self.assertEqual(type(result), type(b))
+        # Assert
+        expected = [CustomBoolean(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    #####################################
+    ####    Numpy Signed Integers    ####
+    #####################################
+
+    def test_numpy_signed_int8_to_standard_boolean_return_type(self):
+        # Arrange
+        integers = [np.int8(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=bool)
+                  for i in integers]
+
+        # Assert
+        expected = [bool(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int8_to_custom_boolean_return_type(self):
+        class CustomBoolean:
+            def __init__(self, i: int):
+                self.boolean = bool(i)
+
+            def __bool__(self) -> bool:
+                return self.boolean
+
+            def __eq__(self, other: Any) -> bool:
+                return bool(self) == bool(other)
+
+        # Arrange
+        integers = [np.int8(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=CustomBoolean)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomBoolean(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int16_to_standard_boolean_return_type(self):
+        # Arrange
+        integers = [np.int16(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=bool)
+                  for i in integers]
+
+        # Assert
+        expected = [bool(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int16_to_custom_boolean_return_type(self):
+        class CustomBoolean:
+            def __init__(self, i: int):
+                self.boolean = bool(i)
+
+            def __bool__(self) -> bool:
+                return self.boolean
+
+            def __eq__(self, other: Any) -> bool:
+                return bool(self) == bool(other)
+
+        # Arrange
+        integers = [np.int16(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=CustomBoolean)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomBoolean(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int32_to_standard_boolean_return_type(self):
+        # Arrange
+        integers = [np.int32(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=bool)
+                  for i in integers]
+
+        # Assert
+        expected = [bool(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int32_to_custom_boolean_return_type(self):
+        class CustomBoolean:
+            def __init__(self, i: int):
+                self.boolean = bool(i)
+
+            def __bool__(self) -> bool:
+                return self.boolean
+
+            def __eq__(self, other: Any) -> bool:
+                return bool(self) == bool(other)
+
+        # Arrange
+        integers = [np.int32(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=CustomBoolean)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomBoolean(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int64_to_standard_boolean_return_type(self):
+        # Arrange
+        integers = [np.int64(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=bool)
+                  for i in integers]
+
+        # Assert
+        expected = [bool(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_signed_int64_to_custom_boolean_return_type(self):
+        class CustomBoolean:
+            def __init__(self, i: int):
+                self.boolean = bool(i)
+
+            def __bool__(self) -> bool:
+                return self.boolean
+
+            def __eq__(self, other: Any) -> bool:
+                return bool(self) == bool(other)
+
+        # Arrange
+        integers = [np.int64(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=CustomBoolean)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomBoolean(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    #######################################
+    ####    Numpy Unsigned Integers    ####
+    #######################################
+
+    def test_numpy_unsigned_int8_to_standard_boolean_return_type(self):
+        # Arrange
+        integers = [np.uint8(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=bool)
+                  for i in integers]
+
+        # Assert
+        expected = [bool(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int8_to_custom_boolean_return_type(self):
+        class CustomBoolean:
+            def __init__(self, i: int):
+                self.boolean = bool(i)
+
+            def __bool__(self) -> bool:
+                return self.boolean
+
+            def __eq__(self, other: Any) -> bool:
+                return bool(self) == bool(other)
+
+        # Arrange
+        integers = [np.uint8(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=CustomBoolean)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomBoolean(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int16_to_standard_boolean_return_type(self):
+        # Arrange
+        integers = [np.uint16(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=bool)
+                  for i in integers]
+
+        # Assert
+        expected = [bool(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int16_to_custom_boolean_return_type(self):
+        class CustomBoolean:
+            def __init__(self, i: int):
+                self.boolean = bool(i)
+
+            def __bool__(self) -> bool:
+                return self.boolean
+
+            def __eq__(self, other: Any) -> bool:
+                return bool(self) == bool(other)
+
+        # Arrange
+        integers = [np.uint16(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=CustomBoolean)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomBoolean(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int32_to_standard_boolean_return_type(self):
+        # Arrange
+        integers = [np.uint32(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=bool)
+                  for i in integers]
+
+        # Assert
+        expected = [bool(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int32_to_custom_boolean_return_type(self):
+        class CustomBoolean:
+            def __init__(self, i: int):
+                self.boolean = bool(i)
+
+            def __bool__(self) -> bool:
+                return self.boolean
+
+            def __eq__(self, other: Any) -> bool:
+                return bool(self) == bool(other)
+
+        # Arrange
+        integers = [np.uint32(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=CustomBoolean)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomBoolean(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int64_to_standard_boolean_return_type(self):
+        # Arrange
+        integers = [np.uint64(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=bool)
+                  for i in integers]
+
+        # Assert
+        expected = [bool(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_unsigned_int64_to_custom_boolean_return_type(self):
+        class CustomBoolean:
+            def __init__(self, i: int):
+                self.boolean = bool(i)
+
+            def __bool__(self) -> bool:
+                return self.boolean
+
+            def __eq__(self, other: Any) -> bool:
+                return bool(self) == bool(other)
+
+        # Arrange
+        integers = [np.uint64(i) for i in [1, 1, 0, 0, 1]]
+
+        # Act
+        result = [pdtypes.apply.integer_to_boolean(i, return_type=CustomBoolean)
+                  for i in integers]
+
+        # Assert
+        expected = [CustomBoolean(i) for i in integers]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
 
 if __name__ == "__main__":
