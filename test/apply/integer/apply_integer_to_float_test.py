@@ -129,15 +129,8 @@ class ApplyIntegerToFloatReturnTypeTests(unittest.TestCase):
         self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     def test_standard_integer_to_custom_float_return_type(self):
-        class CustomFloat:
-            def __init__(self, i: int):
-                self.float = float(i)
-
-            def __float__(self) -> float:
-                return self.float
-
-            def __eq__(self, other: Any) -> bool:
-                return float(self) == float(other)
+        class CustomFloat(float):
+            pass
 
         # Arrange
         integers = [-2, -1, 0, 1, 2]
@@ -208,15 +201,8 @@ class ApplyIntegerToFloatReturnTypeTests(unittest.TestCase):
         self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     def test_numpy_signed_int8_to_custom_float_return_type(self):
-        class CustomFloat:
-            def __init__(self, i: int):
-                self.float = float(i)
-
-            def __float__(self) -> float:
-                return self.float
-
-            def __eq__(self, other: Any) -> bool:
-                return float(self) == float(other)
+        class CustomFloat(float):
+            pass
 
         # Arrange
         integers = [np.int8(i) for i in [-2, -1, 0, 1, 2]]
@@ -283,15 +269,8 @@ class ApplyIntegerToFloatReturnTypeTests(unittest.TestCase):
         self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     def test_numpy_signed_int16_to_custom_float_return_type(self):
-        class CustomFloat:
-            def __init__(self, i: int):
-                self.float = float(i)
-
-            def __float__(self) -> float:
-                return self.float
-
-            def __eq__(self, other: Any) -> bool:
-                return float(self) == float(other)
+        class CustomFloat(float):
+            pass
 
         # Arrange
         integers = [np.int16(i) for i in [-2, -1, 0, 1, 2]]
@@ -433,15 +412,8 @@ class ApplyIntegerToFloatReturnTypeTests(unittest.TestCase):
         self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     def test_numpy_signed_int64_to_custom_float_return_type(self):
-        class CustomFloat:
-            def __init__(self, i: int):
-                self.float = float(i)
-
-            def __float__(self) -> float:
-                return self.float
-
-            def __eq__(self, other: Any) -> bool:
-                return float(self) == float(other)
+        class CustomFloat(float):
+            pass
 
         # Arrange
         integers = [np.int64(i) for i in [-2, -1, 0, 1, 2]]
@@ -512,15 +484,8 @@ class ApplyIntegerToFloatReturnTypeTests(unittest.TestCase):
         self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     def test_numpy_unsigned_int8_to_custom_float_return_type(self):
-        class CustomFloat:
-            def __init__(self, i: int):
-                self.float = float(i)
-
-            def __float__(self) -> float:
-                return self.float
-
-            def __eq__(self, other: Any) -> bool:
-                return float(self) == float(other)
+        class CustomFloat(float):
+            pass
 
         # Arrange
         integers = [np.uint8(i) for i in [0, 1, 2, 3, 4]]
@@ -587,15 +552,8 @@ class ApplyIntegerToFloatReturnTypeTests(unittest.TestCase):
         self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     def test_numpy_unsigned_int16_to_custom_float_return_type(self):
-        class CustomFloat:
-            def __init__(self, i: int):
-                self.float = float(i)
-
-            def __float__(self) -> float:
-                return self.float
-
-            def __eq__(self, other: Any) -> bool:
-                return float(self) == float(other)
+        class CustomFloat(float):
+            pass
 
         # Arrange
         integers = [np.uint16(i) for i in [0, 1, 2, 3, 4]]
@@ -662,15 +620,8 @@ class ApplyIntegerToFloatReturnTypeTests(unittest.TestCase):
         self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     def test_numpy_unsigned_int32_to_custom_float_return_type(self):
-        class CustomFloat:
-            def __init__(self, i: int):
-                self.float = float(i)
-
-            def __float__(self) -> float:
-                return self.float
-
-            def __eq__(self, other: Any) -> bool:
-                return float(self) == float(other)
+        class CustomFloat(float):
+            pass
 
         # Arrange
         integers = [np.uint32(i) for i in [0, 1, 2, 3, 4]]
@@ -737,15 +688,8 @@ class ApplyIntegerToFloatReturnTypeTests(unittest.TestCase):
         self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     def test_numpy_unsigned_int64_to_custom_float_return_type(self):
-        class CustomFloat:
-            def __init__(self, i: int):
-                self.float = float(i)
-
-            def __float__(self) -> float:
-                return self.float
-
-            def __eq__(self, other: Any) -> bool:
-                return float(self) == float(other)
+        class CustomFloat(float):
+            pass
 
         # Arrange
         integers = [np.uint64(i) for i in [0, 1, 2, 3, 4]]

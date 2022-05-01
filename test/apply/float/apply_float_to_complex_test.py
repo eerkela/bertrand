@@ -11,109 +11,323 @@ import pdtypes.apply
 random.seed(12345)
 
 
-class ApplyFloatToComplexMissingValueTests(unittest.TestCase):
+class ApplyFloatToComplexAccuracyTests(unittest.TestCase):
 
     ##############################
     ####    Missing Values    ####
     ##############################
 
-    def test_na_float_to_complex_scalar(self):
-        na_val = None
-        expected = np.nan
-        result = pdtypes.apply._float_to_complex(na_val)
-        np.testing.assert_array_equal(result, expected)
+    def test_na_float_to_complex_returns_numpy_nan(self):
+        # Arrange
+        na_vals = [None, np.nan, pd.NA, pd.NaT]
 
-    def test_na_float_to_complex_vector(self):
-        nones = [None, np.nan, pd.NA, pd.NaT]
-        nans = [np.nan, np.nan, np.nan, np.nan]
-        vec = np.vectorize(pdtypes.apply._float_to_complex)
-        result = vec(np.array(nones))
-        expected = np.array(nans)
-        np.testing.assert_array_equal(result, expected)
-        self.assertEqual(result.dtype, expected.dtype)
+        # Act
+        result = [pdtypes.apply.float_to_complex(na) for na in na_vals]
 
-    def test_na_float_to_complex_series(self):
-        nones = [None, np.nan, pd.NA, pd.NaT]
-        nans = [np.nan, np.nan, np.nan, np.nan]
-        result = pd.Series(nones).apply(pdtypes.apply._float_to_complex)
-        expected = pd.Series(nans)
-        pd.testing.assert_series_equal(result, expected)
-
-
-class ApplyFloatToComplexAccuracyTests(unittest.TestCase):
+        # Assert
+        expected = [np.nan for _ in result]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
     ##############################
     ####    Generic Floats    ####
     ##############################
 
-    def test_float_to_complex_scalar(self):
+    def test_float_to_complex_is_accurate_scalar(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
         floats = [i + random.random() for i in integers]
-        complexes = [complex(f, 0) for f in floats]
-        for f, c in zip(floats, complexes):
-            result = pdtypes.apply._float_to_complex(f)
-            self.assertEqual(result, c)
-            self.assertEqual(type(result), type(c))
 
-    def test_float_to_complex_vector(self):
+        # Act
+        result = [pdtypes.apply.float_to_complex(f) for f in floats]
+
+        # Assert
+        expected = [complex(f, 0) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_float_to_complex_is_accurate_vector(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
         floats = [i + random.random() for i in integers]
-        complexes = [complex(f, 0) for f in floats]
-        vec = np.vectorize(pdtypes.apply._float_to_complex)
-        result = vec(np.array(floats))
-        expected = np.array(complexes)
+        input_array = np.array(floats)
+        float_to_complex = np.vectorize(pdtypes.apply.float_to_complex)
+
+        # Act
+        result = float_to_complex(input_array)
+
+        # Assert
+        expected = np.array([complex(f, 0) for f in floats])
         np.testing.assert_array_equal(result, expected)
         self.assertEqual(result.dtype, expected.dtype)
 
-    def test_float_to_complex_series(self):
+    def test_float_to_complex_is_accurate_series(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
         floats = [i + random.random() for i in integers]
-        complexes = [complex(f, 0) for f in floats]
-        result = pd.Series(floats).apply(pdtypes.apply._float_to_complex)
-        expected = pd.Series(complexes)
+        input_series = pd.Series(floats)
+
+        # Act
+        result = input_series.apply(pdtypes.apply.float_to_complex)
+
+        # Assert
+        expected = pd.Series([complex(f, 0) for f in floats])
         pd.testing.assert_series_equal(result, expected)
 
 
 class ApplyFloatToComplexReturnTypeTests(unittest.TestCase):
 
-    #########################################
-    ####    Non-standard Return Types    ####
-    #########################################
+    ###############################
+    ####    Standard Floats    ####
+    ##############################
 
-    def test_standard_float_to_numpy_complex_scalar(self):
+    def test_standard_float_to_standard_complex_return_type(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        floats = [float(i) for i in integers]
-        complex_types = [np.complex64, np.complex128]
-        complexes = [complex_types[idx % len(complex_types)](i)
-                     for idx, i in enumerate(integers)]
-        for f, c in zip(floats, complexes):
-            result = pdtypes.apply._float_to_complex(f, return_type=type(c))
-            self.assertEqual(result, c)
-            self.assertEqual(type(result), type(c))
+        floats = [i + random.random() for i in integers]
 
-    def test_numpy_float_type_to_standard_complex_scalar(self):
-        integers = [-2, -1, 0, 1, 2]
-        float_types = [np.float16, np.float32, np.float64]
-        floats = [float_types[idx % len(float_types)](i)
-                  for idx, i in enumerate(integers)]
-        complexes = [complex(f, 0) for f in floats]
-        for f, c in zip(floats, complexes):
-            result = pdtypes.apply._float_to_complex(f, return_type=type(c))
-            self.assertEqual(result, c)
-            self.assertEqual(type(result), type(c))
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=complex)
+                  for f in floats]
 
-    def test_numpy_float_type_to_numpy_complex_scalar(self):
+        # Assert
+        expected = [complex(f, 0) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_standard_float_to_numpy_complex64_return_type(self):
+        # Arrange
         integers = [-2, -1, 0, 1, 2]
-        float_types = [np.float16, np.float32, np.float64]
-        floats = [float_types[idx % len(float_types)](i)
-                  for idx, i in enumerate(integers)]
-        complex_types = [np.complex64, np.complex128]
-        complexes = [complex_types[idx % len(complex_types)](i)
-                     for idx, i in enumerate(integers)]
-        for f, c in zip(floats, complexes):
-            result = pdtypes.apply._float_to_complex(f, return_type=type(c))
-            self.assertEqual(result, c)
-            self.assertEqual(type(result), type(c))
+        floats = [i + random.random() for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=np.complex64)
+                  for f in floats]
+
+        # Assert
+        expected = [np.complex64(f) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_standard_float_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=np.complex128)
+                  for f in floats]
+
+        # Assert
+        expected = [np.complex128(f) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_standard_float_to_custom_complex_return_type(self):
+        class CustomComplex(complex):
+            pass
+
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=CustomComplex)
+                  for f in floats]
+
+        # Assert
+        expected = [CustomComplex(f) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    ###################################
+    ####    Numpy 16-bit Floats    ####
+    ###################################
+
+    def test_numpy_float16_to_standard_complex_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [np.float16(i + random.random()) for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=complex)
+                  for f in floats]
+
+        # Assert
+        expected = [complex(f, 0) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_float16_to_numpy_complex64_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [np.float16(i + random.random()) for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=np.complex64)
+                  for f in floats]
+
+        # Assert
+        expected = [np.complex64(f) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_float16_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [np.float16(i + random.random()) for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=np.complex128)
+                  for f in floats]
+
+        # Assert
+        expected = [np.complex128(f) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_float16_to_custom_complex_return_type(self):
+        class CustomComplex(complex):
+            pass
+
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [np.float16(i + random.random()) for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=CustomComplex)
+                  for f in floats]
+
+        # Assert
+        expected = [CustomComplex(f) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    ###################################
+    ####    Numpy 32-bit Floats    ####
+    ###################################
+
+    def test_numpy_float32_to_standard_complex_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [np.float32(i + random.random()) for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=complex)
+                  for f in floats]
+
+        # Assert
+        expected = [complex(f, 0) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_float32_to_numpy_complex64_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [np.float32(i + random.random()) for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=np.complex64)
+                  for f in floats]
+
+        # Assert
+        expected = [np.complex64(f) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_float32_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [np.float32(i + random.random()) for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=np.complex128)
+                  for f in floats]
+
+        # Assert
+        expected = [np.complex128(f) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_float32_to_custom_complex_return_type(self):
+        class CustomComplex(complex):
+            pass
+
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [np.float32(i + random.random()) for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=CustomComplex)
+                  for f in floats]
+
+        # Assert
+        expected = [CustomComplex(f) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    ###################################
+    ####    Numpy 64-bit Floats    ####
+    ###################################
+
+    def test_numpy_float64_to_standard_complex_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [np.float64(i + random.random()) for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=complex)
+                  for f in floats]
+
+        # Assert
+        expected = [complex(f, 0) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_float64_to_numpy_complex64_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [np.float64(i + random.random()) for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=np.complex64)
+                  for f in floats]
+
+        # Assert
+        expected = [np.complex64(f) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_float64_to_numpy_complex128_return_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [np.float64(i + random.random()) for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=np.complex128)
+                  for f in floats]
+
+        # Assert
+        expected = [np.complex128(f) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
+
+    def test_numpy_float64_to_custom_complex_return_type(self):
+        class CustomComplex(complex):
+            pass
+
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        floats = [np.float64(i + random.random()) for i in integers]
+
+        # Act
+        result = [pdtypes.apply.float_to_complex(f, return_type=CustomComplex)
+                  for f in floats]
+
+        # Assert
+        expected = [CustomComplex(f) for f in floats]
+        self.assertEqual(result, expected)
+        self.assertEqual([type(r) for r in result], [type(e) for e in expected])
 
 
 if __name__ == "__main__":

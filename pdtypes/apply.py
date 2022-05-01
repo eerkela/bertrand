@@ -10,6 +10,11 @@ from pdtypes.error import error_trace
 from pdtypes.parse import parse_dtype, parse_string, to_utc
 
 
+"""
+TODO: add unit info to timedeltas
+"""
+
+
 def integer_to_float(
     element: int,
     return_type: type = float
@@ -70,7 +75,7 @@ def integer_to_timedelta(
     return return_type(seconds=int(element))
 
 
-def _float_to_integer(
+def float_to_integer(
     element: float,
     force: bool = False,
     round: bool = True,
@@ -91,7 +96,7 @@ def _float_to_integer(
     raise ValueError(err_msg)
 
 
-def _float_to_complex(
+def float_to_complex(
     element: float,
     return_type: type = complex
 ) -> complex:
@@ -100,12 +105,12 @@ def _float_to_complex(
     return return_type(element)
 
 
-def _float_to_string(
+def float_to_string(
     element: float,
     return_type: type = str
 ) -> str:
     if pd.isnull(element):
-        return pd.NA
+        return None
     return return_type(element)
 
 

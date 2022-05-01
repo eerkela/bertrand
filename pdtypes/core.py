@@ -220,4 +220,3 @@ def coerce_dtypes(
 
 def convert_dtypes(data: pd.DataFrame) -> pd.DataFrame:
     return coerce_dtypes(data, **check_dtypes(data))
-
