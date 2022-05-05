@@ -145,14 +145,22 @@ def float_to_integer(series: pd.Series,
     return series.astype(dtype)
 
 
-def float_to_complex(series: pd.Series) -> pd.Series:
-    if series.dtype.itemsize < 8:
-        return series.astype(np.dtype(np.complex64))
-    return series.astype(np.complex128)
+def float_to_complex(series: pd.Series,
+                     dtype: type = np.complex128) -> pd.Series:
+    if not pd.api.types.is_complex_dtype(dtype):
+        err_msg = (f"[{error_trace()}] `dtype` must be complex-like (received: "
+                   f"{dtype})")
+        raise TypeError(err_msg)
+    return series.astype(dtype)
 
 
-def float_to_string(series: pd.Series) -> pd.Series:
-    return series.astype(pd.StringDtype())
+def float_to_string(series: pd.Series,
+                    dtype: type = pd.StringDtype()) -> pd.Series:
+    if not pd.api.types.is_string_dtype(dtype):
+        err_msg = (f"[{error_trace()}] `dtype` must be string-like (received: "
+                   f"{dtype})")
+        raise TypeError(err_msg)
+    return series.astype(dtype)
 
 
 def float_to_boolean(series: pd.Series,

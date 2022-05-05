@@ -1888,9 +1888,9 @@ class CastFloatToIntegerOutputTypeTests(unittest.TestCase):
                    f"int-like (received: {pd.Timedelta})")
         self.assertEqual(str(err.exception), err_msg)
 
-    #################################
-    ####    Correct - Objects    ####
-    #################################
+    ###################################
+    ####    Incorrect - Objects    ####
+    ###################################
 
     def test_float_to_standard_object_output_type_error(self):
         # Arrange
