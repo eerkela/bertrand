@@ -483,7 +483,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_standard_integer_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -494,7 +496,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_unsigned_int8_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -505,7 +509,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_unsigned_int8_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -517,7 +523,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_unsigned_int8_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -528,7 +536,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_unsigned_int16_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -539,7 +549,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_unsigned_int16_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -551,7 +563,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_unsigned_int16_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -562,7 +576,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_unsigned_int32_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -573,7 +589,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_unsigned_int32_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -585,7 +603,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_unsigned_int32_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -596,7 +616,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_unsigned_int64_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -607,7 +629,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_unsigned_int64_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -619,7 +643,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_unsigned_int64_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -630,7 +656,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_signed_int8_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -641,7 +669,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_signed_int8_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -653,7 +683,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_signed_int8_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -664,7 +696,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_signed_int16_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -675,7 +709,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_signed_int16_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -687,7 +723,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_signed_int16_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -698,7 +736,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_signed_int32_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -709,7 +749,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_signed_int32_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -721,7 +763,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_signed_int32_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -732,7 +776,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_signed_int64_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -743,7 +789,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_signed_int64_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -755,7 +803,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_signed_int64_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -766,7 +816,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_pandas_unsigned_int8_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -777,7 +829,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_pandas_unsigned_int16_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -788,7 +842,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_pandas_unsigned_int32_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -799,7 +855,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_pandas_unsigned_int64_output_error(self):
         # Arrange
-        input_series = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -810,7 +868,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_pandas_signed_int8_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -821,7 +881,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_pandas_signed_int16_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -832,7 +894,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_pandas_signed_int32_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -843,7 +907,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_pandas_signed_int64_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -858,7 +924,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_standard_float_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -869,7 +937,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_float16_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -880,7 +950,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_float16_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -892,7 +964,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_float16_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -903,7 +977,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_float32_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -914,7 +990,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_float32_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -926,7 +1004,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_float32_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -937,7 +1017,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_float64_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -948,7 +1030,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_float64_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -960,7 +1044,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_float64_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -971,7 +1057,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_float128_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -982,7 +1070,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_float128_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -994,7 +1084,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_float128_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1009,7 +1101,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_standard_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1020,7 +1114,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_string_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1031,7 +1127,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_string_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1042,7 +1140,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_pandas_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1057,7 +1157,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_standard_boolean_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1068,7 +1170,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_boolean_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1079,7 +1183,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_boolean_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1090,7 +1196,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_pandas_boolean_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1105,7 +1213,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_standard_datetime_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1116,7 +1226,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_datetime64_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1127,7 +1239,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_datetime64_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1139,7 +1253,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_datetime64_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1150,7 +1266,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_datetime64_ns_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1161,7 +1279,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_pandas_timestamp_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1176,7 +1296,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_standard_timedelta_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1187,7 +1309,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_timedelta64_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1198,7 +1322,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_timedelta64_dtype_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1210,7 +1336,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_timedelta64_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1221,7 +1349,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_timedelta64_ns_array_protocol_type_string_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1232,7 +1362,9 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_pandas_timestamp_output_error(self):
         # Arrange
-        input_series = pd.Series([-2.0, -1.0, 0.0, 1.0, 2.0])
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
+        input_series = pd.Series(floats)
 
         # Act - Error
         with self.assertRaises(TypeError) as err:
@@ -1247,7 +1379,8 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_standard_object_output_error(self):
         # Arrange
-        floats = [0.0, 1.0, 2.0, 3.0, 4.0]
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
         input_series = pd.Series(floats)
 
         # Act - Error
@@ -1259,7 +1392,8 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_object_dtype_output_error(self):
         # Arrange
-        floats = [0.0, 1.0, 2.0, 3.0, 4.0]
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
         input_series = pd.Series(floats)
 
         # Act - Error
@@ -1271,7 +1405,8 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     def test_float_to_complex_numpy_object_array_protocol_type_string_output_error(self):
         # Arrange
-        floats = [0.0, 1.0, 2.0, 3.0, 4.0]
+        integers = [-2, -1, 0, 1, 2]
+        floats = [i + random.random() for i in integers]
         input_series = pd.Series(floats)
 
         # Act - Error
@@ -1280,7 +1415,6 @@ class CastFloatToComplexOutputTypeTests(unittest.TestCase):
         err_msg = (f"[pdtypes.cast.float_to_complex] `dtype` must be "
                    f"complex-like (received: O)")
         self.assertEqual(str(err.exception), err_msg)
-
 
 
 if __name__ == "__main__":

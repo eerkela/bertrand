@@ -156,10 +156,17 @@ def float_to_complex(series: pd.Series,
 
 def float_to_string(series: pd.Series,
                     dtype: type = pd.StringDtype()) -> pd.Series:
-    if not pd.api.types.is_string_dtype(dtype):
+    if (not pd.api.types.is_string_dtype(dtype) or
+        pd.api.types.is_object_dtype(dtype)):
         err_msg = (f"[{error_trace()}] `dtype` must be string-like (received: "
                    f"{dtype})")
         raise TypeError(err_msg)
+    if series.hasnans and dtype != pd.StringDtype():
+        # casting straight to str will turn None/nan into 'None'/'nan'
+        null_indices = series.isna()
+        result = series.astype(dtype)
+        result[null_indices] = None
+        return result
     return series.astype(dtype)
 
 
