@@ -69,9 +69,9 @@ class CastIntegerToFloatAccuracyTests(unittest.TestCase):
 
 class CastIntegerToFloatOutputTypeTests(unittest.TestCase):
 
-    #######################
-    ####    Correct    ####
-    #######################
+    #########################################
+    ####    Correct - Standard Floats    ####
+    #########################################
 
     def test_integer_to_float_standard_float_output_type(self):
         # Arrange
