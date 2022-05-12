@@ -1,198 +1,56 @@
 from __future__ import annotations
-from functools import cache, lru_cache, partial
+from functools import lru_cache
 import struct
 import sys
 
 import numpy as np
 
-from pdtypes.parse import parse_dtype
 from pdtypes.error import error_trace
 
 
-"""
-TODO: vectorize these using np.vectorize
-"""
+CACHE_SIZE = 2**10
 
 
+def big_endian(bit_string: str,
+               byte_order: str,
+               bit_order: str) -> str:
+    """Convert `bit_string` to big-endian format, given initial `byte_order`
+    and `bit_order`.
+    """
+    if byte_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `byte_order` must be either 'big' "
+                   f"or 'little', not {repr(byte_order)}")
+        raise ValueError(err_msg)
+    if bit_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `bit_order` must be either 'big' "
+                   f"or 'little', not {repr(bit_order)}")
+        raise ValueError(err_msg)
 
-# def integer_bits(integer: int,
-#                  byte_order: str = "big",
-#                  bit_order: str = "big",
-#                  twos_complement: bool = True) -> str:
-#     """Return the bit representation of an integer.
-
-#     Parameters
-#     ----------------
-#     integer : int
-#         integer to be converted.  Can be either a built-in int or one of
-#         numpy's various integer classes, signed or unsigned.
-#     byte_order : str
-#         byte endian-ness.  Can be `'big'` or `'little'`.  If `'big'`, the most
-#         significant byte will always be on the left.  If `'little'`, it will be
-#         on the right.
-#     bit_order : str
-#         endian-ness of bits within each byte.  Can be `'big'` or `'little'`.
-#         If `'big'`, the most significant bit within each byte will always be on
-#         the left.  If `'little'`, it will be on the right.
-#     twos_complement : bool
-#         determines how to represent negative integers in a signed binary number
-#         system.  If `True`, negative integers are represented by taking the
-#         so-called two's complement of their positive counterparts.  If `False`,
-#         they are shown as naive sign-magnitude strings, where the most
-#         significant bit is labelled with a `'+'` or `'-'` to mark the sign of
-#         `integer`.
-
-#     Returns
-#     ----------------
-#     str
-#         the bit representation of `integer`, arranged according to `byte_order`,
-#         `bit_order`, and `twos_complement`.
-#     """
-#     dtype = np.dtype(type(integer))
-
-#     # naive sign-magnitude representation
-#     if not twos_complement:
-#         # get explicit sign-magnitude string, padded to memory alignment
-#         bit_string = np.binary_repr(integer)
-#         if bit_string.startswith("-"):
-#             sign = "-"
-#             bit_string = bit_string[1:]
-#         else:
-#             sign = "+"
-#         padded = f"{sign}{bit_string:0>{dtype.itemsize*8 - 1}}"
-
-#         # convert to byte strings and sort out endian-ness
-#         byte_strings = [padded[i:i+8]
-#                         for i in range(0, dtype.itemsize * 8, 8)]
-#         if byte_order == "big":
-#             if bit_order == "big":
-#                 return padded
-#             return "".join(b[::-1] for b in byte_strings)
-#         if bit_order == "big":
-#             return "".join(b for b in reversed(byte_strings))
-#         return "".join(b[::-1] for b in reversed(byte_strings))
-
-#     # twos-complement, matches underlying memory array
-#     dtype_to_struct_char = {
-#         "b": "b",  # 1-byte signed integer
-#         "B": "B",  # 1-byte unsigned integer
-#         "h": "h",  # 2-byte signed integer
-#         "H": "H",  # 2-byte unsigned integer
-#         "i": "i",  # 4-byte signed integer
-#         "I": "I",  # 4-byte unsigned integer
-#         "l": "q",  # 8-byte signed integer
-#         "L": "Q"  # 8-byte unsigned integer
-#     }
-#     if byte_order == "big":  # endian-ness handled by struct package
-#         format_string = f">{dtype_to_struct_char[dtype.char]}"
-#     else:
-#         format_string = f"<{dtype_to_struct_char[dtype.char]}"
-#     byte_array = list(struct.pack(format_string, integer))
-#     if bit_order == "big":
-#         return "".join(f"{b:08b}" for b in byte_array)
-#     return "".join(f"{b:08b}"[::-1] for b in byte_array)
+    # convert to byte strings and reorder
+    byte_strings = [bit_string[i:i+8] for i in range(0, len(bit_string), 8)]
+    if byte_order in ("big", ">"):
+        if bit_order in ("big", ">"):
+            return bit_string
+        return "".join(b[::-1] for b in byte_strings)
+    if bit_order in ("big", ">"):
+        return "".join(b for b in reversed(byte_strings))
+    return "".join(b[::-1] for b in reversed(byte_strings))
 
 
-# def float_bits(floating_point: float,
-#                byte_order: str = "big",
-#                bit_order: str = "big",
-#                decompose: bool = False) -> str | dict[str, int]:
-#     """Return the bit representation of a floating point number.
-
-#     Parameters
-#     ----------------
-#     floating_point : float
-#         floating point number to be converted.  Can be either a built-in float
-#         or one of numpy's various float classes, including `numpy.longdouble`.
-#     byte_order : str
-#         byte endian-ness.  Can be `'big'` or `'little'`.  If `'big'`, the most
-#         significant byte will always be on the left.  If `'little'`, it will be
-#         on the right.
-#     bit_order : str
-#         endian-ness of bits within each byte.  Can be `'big'` or `'little'`.
-#         If `'big'`, the most significant bit within each byte will always be on
-#         the left.  If `'little'`, it will be on the right.
-#     decompose : bool
-#         if `True`, decompose the resulting bit string into sign, exponent, and
-#         mantissa.  If `floating_point` is a long double, it will decompose into
-#         sign, exponent, integer, and fraction instead.
-
-#     Returns
-#     ----------------
-#     str
-#         if `decompose=False`.  Contains the underlying bit representation of
-#         `floating_point`, organized according to `byte_order` and `bit_order`
-#     dict[str, int]
-#         if `decompose=True`.  Contains the individual components of
-#         `floating_point`, converted to integers to allow bit shift operations.
-#     """
-#     # struct package cannot interpret long doubles
-#     if type(floating_point) == np.longdouble:
-#         byte_strings = [f"{b:08b}" for b in list(bytes(floating_point))]
-
-#         if decompose:  # decompose into constituent parts
-#             if sys.byteorder == "big":
-#                 big_endian = "".join(byte_strings)
-#             else:
-#                 big_endian = "".join(reversed(byte_strings))
-#             size = len(big_endian)
-#             return {  # long double is really an 80-bit float, padded to 96/128
-#                 "sign": big_endian[size-80],
-#                 "exponent": big_endian[size-79:size-64],
-#                 "integer": big_endian[size-64:size-63],
-#                 "fraction": big_endian[size-63:]
-#             }
-
-#         # return as raw bit string
-#         if sys.byteorder == "big":
-#             if bit_order == "big":
-#                 return "".join(byte_strings)
-#             return "".join(b[::-1] for b in byte_strings)
-#         if bit_order == "big":
-#             return "".join(reversed(byte_strings))
-#         return "".join(b[::-1] for b in reversed(byte_strings))
-
-#     # 64-bit and under
-#     dtype = np.dtype(type(floating_point))
-#     if decompose:
-#         byte_array = list(struct.pack(f">{dtype.char}", floating_point))
-#         big_endian = "".join(f"{b:08b}" for b in byte_array)
-#         exp_length = {
-#             16: 5,
-#             32: 8,
-#             64: 11
-#         }
-#         return {
-#             "sign": big_endian[0],
-#             "exponent": big_endian[1:1+exp_length[len(big_endian)]],
-#             "mantissa": big_endian[1+exp_length[len(big_endian)]:]
-#         }
-#     if byte_order == "big":  # endian-ness handled by struct package
-#         format_string = f">{dtype.char}"
-#     else:
-#         format_string = f"<{dtype.char}"
-#     byte_array = list(struct.pack(format_string, floating_point))
-#     if bit_order == "big":
-#         return "".join(f"{b:08b}" for b in byte_array)
-#     return "".join(f"{b:08b}"[::-1] for b in byte_array)
-
-
-def bits(
-    number: int | float | complex,
-    byte_order: str = "big",
-    bit_order: str = "big",
-    twos_complement: bool = True,
-    decompose: bool = False
-) -> (str | dict[str, int] | 
-      tuple[str, str] | tuple[dict[str, int], dict[str, int]]):
-    """Return the bit representation of any numeric value, be it an integer,
-    float, or complex number.
+def bits(value: int | float | complex,
+         byte_order: str = "big",
+         bit_order: str = "big",
+         scheme: str = "sign magnitude") -> str | dict[str, str]:
+    """Return the bit representation of any numeric input.
 
     Parameters
     ----------------
-    number : int | float | complex
-        integer, float, or complex number to be converted.  Can be either
-        built-in or one of numpy's various numeric classes.
+    value : int | float | complex
+        numeric value to be converted into binary form.  Can be any of python's
+        built-in numeric classes (int, float, complex), or a numpy equivalent
+        (np.uint[size], np.int[size], np.float[size], np.complex[size]), with
+        the returned bit string(s) matching the footprint of these types in
+        working memory.
     byte_order : str
         byte endian-ness.  Can be `'big'` or `'little'`.  If `'big'`, the most
         significant byte will always be on the left.  If `'little'`, it will be
@@ -201,288 +59,770 @@ def bits(
         endian-ness of bits within each byte.  Can be `'big'` or `'little'`.
         If `'big'`, the most significant bit within each byte will always be on
         the left.  If `'little'`, it will be on the right.
-    twos_complement : bool
-        only applies to integer values of `number`.  If `True`, negative
-        integers are represented by taking the so-called two's complement of
-        their positive counterparts.  If `False`, they are shown as naive
-        sign-magnitude strings, where the most significant bit is labelled
-        with a `'+'` or `'-'` to mark the sign of `number`.
-    decompose : bool
-        only applies to floating-point and complex values of `number`.
-        If `True` and `number` is a float, the resulting bit string is
-        decomposed into sign, exponent, and mantissa (sign, exponent, integer,
-        and fraction if `number` is a long double).  If `number` is
-        a complex number, this is done for both its real and imaginary
-        components.
+    scheme : str
+        algorithm used to represent signed negative integers.  Can be
+        'sign magnitude', 'ones complement', or 'twos complement'.  See
+        Wikipedia for more information on how these work.
 
     Returns
     ----------------
     str
-        if `number` is an integer or float with `decompose=False`.  This
-        is the bit representation as it is stored in memory.
-    dict[str, int]
-        if `number` is a float and `decompose=True`.  These are the
-        individual components of the IEEE floating-point standard, converted
-        to integers to allow for bitwise operations.
-    tuple[str, str]
-        if `number` is a complex number and `decompose=False`.  The first
-        element represents the number's real component.  The second is its
-        imaginary component.
-    tuple[dict[str, int], dict[str, int]]
-        if `number` is a complex number and `decompose=True`.  The first
-        element represents the decomposed parts of the number's real component.
-        The second is the decomposed parts of its imaginary component.
+        if `value` is an integer or float.  This bit string always has a length
+        which matches the bit count of `value`'s underlying type.  For example,
+        `bits(np.int8(5))` gives the output `+0000101`, which matches the
+        8-bit limit of `np.int8`.  Running `bits(1 / 3)` will return a 64-bit
+        IEEE 754 floating point bit string, since that is the default for
+        built-in python floats.
+    dict[str, str]
+        if `value` is a complex number.  The keys of this dictionary are always
+        'real' and 'imag', with the associated values matching the binary
+        representations of the respective floats that comprise the complex
+        number in memory.
+
+    Raises
+    ----------------
+    TypeError
+        if `value` is not either an integer, float, or complex number.
+    ValueError
+        if `byte_order`/`bit_order`, or `scheme` is not one of the allowed
+        values ('big', 'little') or ('sign magnitude', 'ones complement',
+        'twos complement'), respectively.
+    """
+    if byte_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `byte_order` must be either 'big' "
+                   f"or 'little', not {repr(byte_order)}")
+        raise ValueError(err_msg)
+    if bit_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `bit_order` must be either 'big' "
+                   f"or 'little', not {repr(bit_order)}")
+        raise ValueError(err_msg)
+    if scheme not in ("sign magnitude", "ones complement", "twos complement"):
+        err_msg = (f"[{error_trace()}] `scheme` must be one of "
+                   f"['sign magnitude', 'ones complement', 'twos complement], "
+                   f"not {repr(scheme)}")
+        raise ValueError(err_msg)
+
+    # integers
+    if np.issubdtype(type(value), np.integer):
+        return integer_to_bits(value,
+                               byte_order=byte_order,
+                               bit_order=bit_order,
+                               scheme=scheme)
+
+    # floats
+    if np.issubdtype(type(value), np.floating):
+        return float_to_bits(value,
+                             byte_order=byte_order,
+                             bit_order=bit_order)
+
+    # complex numbers
+    if np.issubdtype(type(value), np.complexfloating):
+        return {
+            "real": float_to_bits(value.real,
+                                  byte_order=byte_order,
+                                  bit_order=bit_order),
+            "imag": float_to_bits(value.imag,
+                                  byte_order=byte_order,
+                                  bit_order=bit_order)
+        }
+
+    err_msg = (f"[{error_trace()}] `value` must be a numeric integer, float, "
+               f"or complex number, not {type(value)}")
+    raise TypeError(err_msg)
+
+
+@lru_cache(maxsize=CACHE_SIZE)
+def bits_to_integer(bit_string: str,
+                    signed: bool = True,
+                    byte_order: str = "big",
+                    bit_order: str = "big",
+                    scheme: str = "sign magnitude") -> int:
+    """Convert an integer bit string to the value it is meant to represent.
+
+    Parameters
+    -----------------
+    bit_string : str
+        integer bit string to be converted.  Must contain only ('0', '1',
+        '+', '-') characters, and can be of sign-magnitude, ones' complement,
+        or twos' complement form, as specified by `scheme`.
+    signed : bool
+        if False, attempt to return the associated value as an unsigned integer
+        (np.uint8, np.uint16, np.uint32, np.uint64, or built-in int if >64 bit).
+        If True, return as a signed integer (np.int8, np.int16, np.int32,
+        np.int64, or built-in int if >64-bit).
+    byte_order : str
+        byte endian-ness.  Can be `'big'` or `'little'`.  If `'big'`, the most
+        significant byte will always be on the left.  If `'little'`, it will be
+        on the right.
+    bit_order : str
+        endian-ness of bits within each byte.  Can be `'big'` or `'little'`.
+        If `'big'`, the most significant bit within each byte will always be on
+        the left.  If `'little'`, it will be on the right.
+    scheme : str
+        algorithm used to represent signed negative integers.  Can be
+        'sign magnitude', 'ones complement', or 'twos complement'.  See
+        Wikipedia for more information on how these work.
+
+    Returns
+    ----------------
+    int
+        the integer value associated with `bit_string`, obeying the convention
+        set out in `scheme`.  Based on the length of the input `bit_string`,
+        the type of this return will always match the minimum bit size
+        necessary to accurately represent its value, without overflow.  Padding
+        `bit_string` with leading zeros also serves to extend the required bit
+        count.  For example, `bits_to_integer('-101')` will return a signed
+        `np.int8` with value `-5`, while
+        `bits_to_integer('0000000000000101', signed=False)` will return an
+        unsigned `np.uint16` with value `5`.
 
     Raises
     ----------------
     ValueError
-        if byte_order or bit_order is not one of the allowed values (`'big'`,
-        `'little'`).
-    TypeError
-        if `number` is not an integer, float, or complex number.
+        if `bit_string` is not a string containing only ('0', '1', '+', '-')
+        characters, or if `byte_order`/`bit_order` or `scheme` is not one of
+        the allowed values ('big', 'little') or ('sign magnitude',
+        'ones complement', 'twos complement'), respectively.
+    RuntimeError
+        if `signed=False` and `bit_string` has a negative value.
     """
+    if (not isinstance(bit_string, str) or
+        any(c not in ("0", "1", "+", "-") for c in bit_string)):
+        err_msg = (f"[{error_trace()}] `bit_string` must be a string "
+                   f"containing only ['0', '1', '+', '-'] characters "
+                   f"(received: {repr(bit_string)})")
+        raise ValueError(err_msg)
     if byte_order not in ("big", "little"):
-        err_msg = (f"[{error_trace()}] `byte_order` must be either 'big' or "
-                   f"'little', not {repr(byte_order)}")
+        err_msg = (f"[{error_trace()}] `byte_order` must be either 'big' "
+                   f"or 'little', not {repr(byte_order)}")
         raise ValueError(err_msg)
     if bit_order not in ("big", "little"):
-        err_msg = (f"[{error_trace()}] `bit_order` must be either 'big' or "
-                   f"'little', not {repr(bit_order)}")
+        err_msg = (f"[{error_trace()}] `bit_order` must be either 'big' "
+                   f"or 'little', not {repr(bit_order)}")
+        raise ValueError(err_msg)
+    if scheme not in ("sign magnitude", "ones complement", "twos complement"):
+        err_msg = (f"[{error_trace()}] `scheme` must be one of "
+                   f"['sign magnitude', 'ones complement', 'twos complement], "
+                   f"not {repr(scheme)}")
         raise ValueError(err_msg)
 
-    # integers
-    if np.issubdtype(type(number), np.integer):
-        return integer_bits(number,
+    # convert bit_string to big endian IEEE 754 format
+    big = big_endian(bit_string,
+                     byte_order=byte_order,
+                     bit_order=bit_order)
+
+    # get value as arbitrarily sized python integer
+    if scheme == "sign magnitude" or big.startswith(("+", "0")):
+        value = int(big, 2)
+    else:
+        complement = "".join("0" if c in ("1", "-") else "1" for c in big)
+        if scheme == "ones complement":
+            value = -1 * int(complement, 2)
+        else:
+            value = -1 * (int(complement, 2) + 1)
+
+    # unsigned integers
+    if not signed:
+        if value < 0:
+            err_msg = (f"[{error_trace()}] could not convert bits to unsigned "
+                       f"integer: {value} < 0")
+            raise RuntimeError(err_msg)
+        maxima = {
+            np.uint8: 2**8 - 1,
+            np.uint16: 2**16 - 1,
+            np.uint32: 2**32 - 1,
+            np.uint64: 2**64 - 1
+        }
+        for uint_type, max_val in maxima.items():
+            if value <= max_val:
+                return uint_type(value)
+        return value
+
+    # signed integers
+    extrema = {
+        np.int8: (-2**7, 2**7 - 1),
+        np.int16: (-2**15, 2**15 - 1),
+        np.int32: (-2**31, 2**31 - 1),
+        np.int64: (-2**63, 2**63 - 1)
+    }
+    for int_type, (min_val, max_val) in extrema.items():
+        if min_val <= value <= max_val:
+            return int_type(value)
+    return value
+
+
+@lru_cache(maxsize=CACHE_SIZE)
+def bits_to_float(bit_string: str,
+                  byte_order: str = "big",
+                  bit_order: str = "big") -> float:
+    """Convert an IEEE 754 floating point bit string to the value it is meant
+    to represent.
+
+    Parameters
+    -----------------
+    bit_string : str
+        IEEE 754 floating point bit string to be converted.  Must be length
+        16, 32, 64, 96, or 128 based on desired precision, and contain only
+        ('0', '1') characters.
+    byte_order : str
+        byte endian-ness.  Can be `'big'` or `'little'`.  If `'big'`, the most
+        significant byte will always be on the left.  If `'little'`, it will be
+        on the right.
+    bit_order : str
+        endian-ness of bits within each byte.  Can be `'big'` or `'little'`.
+        If `'big'`, the most significant bit within each byte will always be on
+        the left.  If `'little'`, it will be on the right.
+
+    Returns
+    ----------------
+    float
+        the floating point value associated with `bit_string`.  The type of
+        this return will always match the bit count of the input `bit_string`
+        (np.float16 for length 16 bit strings, np.float32 for length 32 strings
+        np.float64 for 64-bit strings, and np.longdouble for 96 or 128-bit
+        input).
+
+    Raises
+    ----------------
+    ValueError
+        if `bit_string` is not a string of length (16, 32, 64, 96, or 128)
+        and containing only ('0', '1') characters, or if
+        `byte_order`/`bit_order` is not one of the allowed values ('big',
+        'little').
+    """
+    if (not isinstance(bit_string, str) or
+        any(c not in ("0", "1") for c in bit_string) or
+        len(bit_string) not in (16, 32, 64, 96, 128)):
+        err_msg = (f"[{error_trace()}] `bit_string` must be a 2-, 4-, 8-, 12-, "
+                   f"or 16-byte string containing only binary ['0', '1'] "
+                   f"characters (received: {repr(bit_string)})")
+        raise ValueError(err_msg)
+    if byte_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `byte_order` must be either 'big' "
+                   f"or 'little', not {repr(byte_order)}")
+        raise ValueError(err_msg)
+    if bit_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `bit_order` must be either 'big' "
+                   f"or 'little', not {repr(bit_order)}")
+        raise ValueError(err_msg)
+
+    if len(bit_string) in (96, 128):  # long double, 96 on 32-bit systems
+        big = big_endian(bit_string,
+                         byte_order=byte_order,
+                         bit_order=bit_order)
+
+        # split into consttuent parts
+        sign = int(big[len(big) - 80], 2)
+        exponent = int(big[len(big) - 79:len(big) - 64], 2)
+        integer = int(big[len(big) - 64], 2)
+        fraction = int(big[len(big) - 63:], 2)
+
+        # combine into final float
+        mantissa = np.longdouble(fraction) / np.longdouble(2**63) + integer
+        exponent_bias = 2**14 - 1  # 15-bit exponent width
+        magnitude = np.longdouble(2**(exponent - exponent_bias)) * mantissa
+        if sign:
+            return -1 * magnitude
+        return magnitude
+
+    # 16, 32, 64-bit floats -> unpack using struct package
+    float_types = {
+        16: (np.float16, "e"),
+        32: (np.float32, "f"),
+        64: (np.float64, "d")
+    }
+    ftype, fchar = float_types[len(bit_string)]
+    forder = ">" if byte_order == "big" else "<"
+    if bit_order == "big":
+        byte_array = [int(bit_string[i:i+8], 2)
+                      for i in range(0, len(bit_string), 8)]
+    else:
+        byte_array = [int(bit_string[i+8:i:-1], 2)
+                      for i in range(0, len(bit_string), 8)]
+    result = struct.unpack(f"{forder}{fchar}", bytes(byte_array))[0]
+    return ftype(result)
+
+
+@lru_cache(maxsize=CACHE_SIZE, typed=True)
+def integer_to_bits(integer: int,
+                    byte_order: str = "big",
+                    bit_order: str = "big",
+                    scheme: str = "sign magnitude") -> str:
+    """Convert an integer into its equivalent binary representation, as it is
+    stored in working memory.
+
+    Parameters
+    ----------------
+    integer : int
+        integer to be converted.  Can be either a built-in int or one of
+        numpy's various integer classes, signed or unsigned.
+    byte_order : str
+        byte endian-ness.  Can be `'big'` or `'little'`.  If `'big'`, the most
+        significant byte will always be on the left.  If `'little'`, it will be
+        on the right.
+    bit_order : str
+        endian-ness of bits within each byte.  Can be `'big'` or `'little'`.
+        If `'big'`, the most significant bit within each byte will always be on
+        the left.  If `'little'`, it will be on the right.
+    scheme : str
+        algorithm used to represent signed negative integers.  Can be
+        'sign magnitude', 'ones complement', or 'twos complement'.  See
+        Wikipedia for more information on how these work.
+
+    Returns
+    ----------------
+    str
+        binary representation of `integer`, as is actually stored in memory.
+        The length of this string reflects how many bits are allocated to store
+        the specified integer, and changes depending on the type of the input
+        value.  For example, `integer_to_bits(np.int8(1))` will return a
+        length-8 bit string, while `integer_to_bits(np.uint64(1))` will return
+        a length-64 bit string.  For integers greater than 64 bit, the python
+        pattern is followed, with successive 64-bit blocks added to the number
+        to represent its true value.  As such, `integer_to_bits(2**65)` will
+        return a length-128 bit string.
+
+    Raises
+    ----------------
+    TypeError
+        if `integer` is not a recognizable integer instance
+    ValueError
+        if `byte_order`/`bit_order`, or `scheme` is not one of the allowed
+        values ('big', 'little') or ('sign magnitude', 'ones complement',
+        'twos complement'), respectively.
+    """
+    if not np.issubdtype(type(integer), np.integer):
+        err_msg = (f"[{error_trace()}] `integer` must be an integer "
+                   f"(received: {type(integer)})")
+        raise TypeError(err_msg)
+    if byte_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `byte_order` must be either 'big' "
+                   f"or 'little', not {repr(byte_order)}")
+        raise ValueError(err_msg)
+    if bit_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `bit_order` must be either 'big' "
+                   f"or 'little', not {repr(bit_order)}")
+        raise ValueError(err_msg)
+    if scheme not in ("sign magnitude", "ones complement", "twos complement"):
+        err_msg = (f"[{error_trace()}] `scheme` must be one of "
+                   f"['sign magnitude', 'ones complement', 'twos complement], "
+                   f"not {repr(scheme)}")
+        raise ValueError(err_msg)
+
+    # unsigned integers
+    if np.issubdtype(type(integer), np.unsignedinteger):
+        dtype = np.dtype(type(integer))
+        final = f"{np.binary_repr(integer):0>{dtype.itemsize * 8}}"
+
+    # signed integers
+    else:
+        bit_string = np.binary_repr(integer)
+        if bit_string.startswith("-"):
+            sign = "-"
+            magnitude = bit_string[1:]
+        else:
+            sign = "+"
+            magnitude = bit_string
+
+        # pad to fit memory alignment
+        if len(magnitude) <= 63:
+            dtype = np.dtype(type(integer))
+            padded = f"{sign}{magnitude:0>{8 * dtype.itemsize - 1}}"
+        else:  # python appends new 64-bit blocks to represent larger ints
+            units = 1 + ((1 + len(magnitude)) // 64)
+            padded = f"{sign}{magnitude:0>{64 * units - 1}}"
+
+        # convert based on `scheme`
+        if scheme == "sign magnitude":
+            final = padded
+        elif scheme == "ones complement":
+            if sign == "+":
+                final = f"0{padded[1:]}"
+            else:
+                final = "".join("0" if c == "1" else "1" for c in padded)
+        else:  # twos complement
+            if sign == "+":
+                final = f"0{padded[1:]}"
+            else:
+                ones_comp = "".join("0" if c == "1" else "1" for c in padded)
+                final = np.binary_repr(int(ones_comp, 2) + 1)
+
+    # convert to byte strings and reorder to match `byte_order` and `bit_order`
+    byte_strings = [final[i:i+8] for i in range(0, len(final), 8)]
+    if byte_order == "big":
+        if bit_order == "big":
+            return final
+        return "".join(b[::-1] for b in byte_strings)
+    if bit_order == "big":
+        return "".join(b for b in reversed(byte_strings))
+    return "".join(b[::-1] for b in reversed(byte_strings))
+
+
+@lru_cache(maxsize=CACHE_SIZE, typed=True)
+def float_to_bits(floating_point: float,
+                  byte_order: str = "big",
+                  bit_order: str = "big") -> str:
+    """Convert a floating point number into its equivalent IEEE 754 binary
+    representation, as stored in working memory.
+
+    Parameters
+    ----------------
+    floating_point : float
+        floating point number to be converted.  Can be either a built-in float
+        or one of numpy's various float classes, including `numpy.longdouble`.
+    byte_order : str
+        byte endian-ness.  Can be `'big'` or `'little'`.  If `'big'`, the most
+        significant byte will always be on the left.  If `'little'`, it will be
+        on the right.
+    bit_order : str
+        endian-ness of bits within each byte.  Can be `'big'` or `'little'`.
+        If `'big'`, the most significant bit within each byte will always be on
+        the left.  If `'little'`, it will be on the right.
+
+    Returns
+    ----------------
+    str
+        binary representation of `floating_point`, as is actually stored in
+        memory. The length of this string reflects how many bits are allocated
+        to store the specified floating point number, and changes depending on
+        the type of the input value.  For example,
+        `float_to_bits(np.float16(1 / 3))` will return a length-16 bit string,
+        while `float_to_bits(np.float64(1 / 3))` will return a length-64 bit
+        string.  For long doubles, which are platform-specific, the 80-bit
+        IEEE 754 content is padded to fit the memory alignment of the system
+        (96 bits for 32-bit hardware, 128 bits for 64-bit).  In either case,
+        the numerical content of the long double is always contained in the
+        last 80 bits of the returned bit string.
+
+    Raises
+    ----------------
+    TypeError
+        if `floating_point` is not a recognizable float instance
+    ValueError
+        if `byte_order` or `bit_order` is not one of the allowed values
+        ('big', 'little').
+    """
+    if not np.issubdtype(type(floating_point), np.floating):
+        err_msg = (f"[{error_trace()}] `floating_point` must be a float "
+                   f"(received: {type(floating_point)})")
+        raise TypeError(err_msg)
+    if byte_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `byte_order` must be either 'big' "
+                   f"or 'little', not {repr(byte_order)}")
+        raise ValueError(err_msg)
+    if bit_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `bit_order` must be either 'big' "
+                   f"or 'little', not {repr(bit_order)}")
+        raise ValueError(err_msg)
+
+    # struct pacakge cannot interpret long doubles
+    if np.issubdtype(type(floating_point), np.longdouble):
+        if sys.byteorder == "big":
+            byte_array = list(bytes(floating_point))
+        else:
+            byte_array = reversed(list(bytes(floating_point)))
+        byte_strings = [f"{b:08b}" for b in byte_array]
+        if byte_order == "big":
+            if bit_order == "big":
+                return "".join(byte_strings)
+            return "".join(b[::-1] for b in byte_strings)
+        if bit_order == "big":
+            return "".join(reversed(byte_strings))
+        return "".join(b[::-1] for b in reversed(byte_strings))
+
+    # 64-bit and under
+    dtype = np.dtype(type(floating_point))
+    if byte_order == "big":
+        struct_format_string = f">{dtype.char}"
+    else:
+        struct_format_string = f"<{dtype.char}"
+    byte_array = list(struct.pack(struct_format_string, floating_point))
+    if bit_order == "big":
+        return "".join(f"{b:08b}" for b in byte_array)
+    return "".join(f"{b:08b}"[::-1] for b in byte_array)
+
+
+def decompose_integer_bits(bit_string: str,
+                           byte_order: str = "big",
+                           bit_order: str = "big",
+                           scheme: str = "sign magnitude") -> dict[str, str]:
+    """Split an integer bit string into sign and magnitude components.
+
+    Parameters
+    ----------------
+    bit_string : str
+        integer bit string to be decomposed.  Must contain only ('0', '1',
+        '+', '-') characters, and can be of sign-magnitude, ones' complement,
+        or twos' complement form, as specified by `scheme`.
+    byte_order : str
+        byte endian-ness.  Can be `'big'` or `'little'`.  If `'big'`, the most
+        significant byte will always be on the left.  If `'little'`, it will be
+        on the right.
+    bit_order : str
+        endian-ness of bits within each byte.  Can be `'big'` or `'little'`.
+        If `'big'`, the most significant bit within each byte will always be on
+        the left.  If `'little'`, it will be on the right.
+    scheme : str
+        algorithm used to represent signed negative integers.  Can be
+        'sign magnitude', 'ones complement', or 'twos complement'.  See
+        Wikipedia for more information on how these work.
+
+    Returns
+    ----------------
+    dict[str, str]
+        a dictionary describing the constituent parts (sign + magnitude) of
+        the associated `bit_string`.  This dictionary always contains the keys
+        'sign' and 'magnitude', whose values are '+'/'-', and an unsigned
+        binary integer string, respectively.
+
+    Raises
+    ----------------
+    ValueError
+        if `bit_string` is not a string containing only ('0', '1', '+', '-')
+        characters, or if `byte_order`/`bit_order` or `scheme` is not one of
+        the allowed values ('big', 'little') or ('sign magnitude',
+        'ones complement', 'twos complement'), respectively.
+    """
+    if (not isinstance(bit_string, str) or
+        any(c not in ("0", "1", "+", "-") for c in bit_string)):
+        err_msg = (f"[{error_trace()}] `bit_string` must be a string "
+                   f"(received: {type(bit_string)})")
+        raise ValueError(err_msg)
+    if byte_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `byte_order` must be either 'big' "
+                   f"or 'little', not {repr(byte_order)}")
+        raise ValueError(err_msg)
+    if bit_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `bit_order` must be either 'big' "
+                   f"or 'little', not {repr(bit_order)}")
+        raise ValueError(err_msg)
+    if scheme not in ("sign magnitude", "ones complement", "twos complement"):
+        err_msg = (f"[{error_trace()}] `scheme` must be one of "
+                   f"['sign magnitude', 'ones complement', 'twos complement], "
+                   f"not {repr(scheme)}")
+        raise ValueError(err_msg)
+
+    value = bits_to_integer(bit_string,
                             byte_order=byte_order,
                             bit_order=bit_order,
-                            twos_complement=twos_complement)
-
-    # floats
-    if np.issubdtype(type(number), np.floating):
-        return float_bits(number,
-                          byte_order=byte_order,
-                          bit_order=bit_order,
-                          decompose=decompose)
-
-    # complex numbers
-    if np.iscomplexobj(number):
-        real = float_bits(number.real,
-                          byte_order=byte_order,
-                          bit_order=bit_order,
-                          decompose=decompose)
-        imag = float_bits(number.imag,
-                          byte_order=byte_order,
-                          bit_order=bit_order,
-                          decompose=decompose)
-        return (real, imag)
-
-    err_msg = (f"[{error_trace()}] could not interpret `number` type: "
-               f"must be int, float, or complex (received: "
-               f"{type(number)})")
-    raise TypeError(err_msg)
+                            scheme=scheme)
+    if value < 0:
+        return {
+            "sign": "-",
+            "magnitude": np.binary_repr(abs(value))}
+    return {
+        "sign": "+",
+        "magnitude": np.binary_repr(value)
+    }
 
 
-# def bits_to_float(bit_string: str,
-#                   byte_order: str = "big",
-#                   bit_order: str = "big") -> float:
-#     """Convert a floating-point bit string (sign, exponent, mantissa) to the
-#     corresponding floating-point value.
+def decompose_float_bits(bit_string: str,
+                         byte_order: str = "big",
+                         bit_order: str = "big") -> dict[str, str]:
+    """Split a floating point bit string into sign, exponent, and mantissa.
 
-#     Parameters
-#     ----------------
-#     bit_string : str
-#         the floating-point bit string to convert to the corresponding value.
-#         Can be 16, 32, or 64 bit (the struct package does not support long
-#         doubles, unfortunately).
-#     byte_order : str
-#         byte endian-ness.  Can be `'big'` or `'little'`.  If `'big'`, the most
-#         significant byte will always be on the left.  If `'little'`, it will be
-#         on the right.
-#     bit_order : str
-#         endian-ness of bits within each byte.  Can be `'big'` or `'little'`.
-#         If `'big'`, the most significant bit within each byte will always be on
-#         the left.  If `'little'`, it will be on the right.
+    Parameters
+    ----------------
+    bit_string : str
+        IEEE 754 floating point bit string to be decomposed.  Must contain only
+        ('0', '1') characters and be length 16, 32, 64, 96, or 128, matching
+        the memory footprint of half, single, double, and extended precision
+        floats, respectively.
+    byte_order : str
+        byte endian-ness.  Can be `'big'` or `'little'`.  If `'big'`, the most
+        significant byte will always be on the left.  If `'little'`, it will be
+        on the right.
+    bit_order : str
+        endian-ness of bits within each byte.  Can be `'big'` or `'little'`.
+        If `'big'`, the most significant bit within each byte will always be on
+        the left.  If `'little'`, it will be on the right.
 
-#     Returns
-#     ----------------
-#     float
-#         the floating-point value associated with the given `bit_string`.
+    Returns
+    ----------------
+    dict[str, str]
+        a dictionary describing the constituent parts ('sign', 'exponent',
+        'mantissa') of the associated `bit_string`.  In the case of long
+        doubles (96/128-bit strings), 'mantissa' is replaced with separate
+        'integer' and 'fraction' components, to match the IEEE 754 standard.
+        Each of these components is represented as an unsigned binary integer
+        string, as contained in `bit_string`.
 
-#     Raises
-#     ----------------
-#     TypeError
-#         if `bit_string` is not a string.
-#     ValueError
-#         if byte_order or bit_order is not one of the allowed values (`'big'`,
-#         `'little'`).
-#     KeyError
-#         if `bit_string` is not of a recognized length (16, 32, 64).
-#     """
-#     if not isinstance(bit_string, str):
-#         err_msg = (f"[{error_trace()}] `bit_string` must be a string "
-#                    f"containing the bitwise representation of a "
-#                    f"floating-point number (received: {type(bit_string)})")
-#         raise TypeError(err_msg)
-#     if byte_order not in ("big", "little"):
-#         err_msg = (f"[{error_trace()}] `byte_order` must be either 'big' or "
-#                    f"'little', not {repr(byte_order)}")
-#         raise ValueError(err_msg)
-#     if bit_order not in ("big", "little"):
-#         err_msg = (f"[{error_trace()}] `bit_order` must be either 'big' or "
-#                    f"'little', not {repr(bit_order)}")
-#         raise ValueError(err_msg)
+    Raises
+    ----------------
+    ValueError
+        if `bit_string` is not a string of length (16, 32, 64, 96, or 128)
+        and containing only ('0', '1') characters, or if
+        `byte_order`/`bit_order` is not one of the allowed values ('big',
+        'little').
+    """
+    if (not isinstance(bit_string, str) or
+        any(c not in ("0", "1") for c in bit_string) or
+        len(bit_string) not in (16, 32, 64, 96, 128)):
+        err_msg = (f"[{error_trace()}] `bit_string` must be a 2-, 4-, 8-, 12-, "
+                   f"or 16-byte string containing only binary ['0', '1'] "
+                   f"characters (received: {repr(bit_string)})")
+        raise ValueError(err_msg)
+    if byte_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `byte_order` must be either 'big' "
+                   f"or 'little', not {repr(byte_order)}")
+        raise ValueError(err_msg)
+    if bit_order not in ("big", "little"):
+        err_msg = (f"[{error_trace()}] `bit_order` must be either 'big' "
+                   f"or 'little', not {repr(bit_order)}")
+        raise ValueError(err_msg)
 
-#     # struct package cannot interpret long doubles
-#     if len(bit_string) > 64:
-#         # convert to big endian format
-#         if byte_order == "big":
-#             if bit_order == "big":
-#                 big_endian = bit_string
-#             else:
-#                 byte_strings = [bit_string[i:i+8]
-#                                 for i in range(0, len(bit_string), 8)]
-#                 big_endian = "".join(b[::-1] for b in byte_strings)
-#         else:
-#             byte_strings = [bit_string[i:i+8]
-#                             for i in range(0, len(bit_string), 8)]
-#             if bit_order == "big":
-#                 big_endian = "".join(b for b in reversed(byte_strings))
-#             else:
-#                 big_endian = "".join(b[::-1] for b in reversed(byte_strings))
-#         print(big_endian)
+    # convert bit_string to big endian IEEE 754 format
+    big = big_endian(bit_string,
+                     byte_order=byte_order,
+                     bit_order=bit_order)
 
-#         # separate into constituent parts
-#         size = len(big_endian)
-#         sign = int(big_endian[size - 80], 2)
-#         exponent = int(big_endian[size - 79:size - 64], 2)
-#         integer = int(big_endian[size - 64: size - 63], 2)
-#         fraction = int(big_endian[size - 63:], 2)
+    # IEEE 754 long double is padded and uses an explicit 'integer' bit
+    if len(big) > 64:
+        return {  # only the last 80 bits are relevant
+            "sign": big[len(big) - 80],  # sign (1)
+            "exponent": big[len(big) - 79:len(big) - 64],  # exponent (15)
+            "integer": big[len(big) - 64],  # integer (1)
+            "fraction": big[len(big) - 63:]  # fraction (63)
+        }
 
-#         # combine into final float
-#         mantissa = np.longdouble(fraction) / np.longdouble(2.**63) + integer
-#         magnitude = np.longdouble(2.**(exponent - (2**14 - 1))) * mantissa
-#         if sign:
-#             return -1 * magnitude
-#         return magnitude
-
-#     # collect bits into bytes
-#     if bit_order == "big":
-#         byte_array = [int(bit_string[i:i+8], 2)
-#                       for i in range(0, len(bit_string), 8)]
-#     else:
-#         byte_array = [int(bit_string[i+8:i:-1], 2)
-#                       for i in range(0, len(bit_string), 8)]
-
-#     # unpack into numpy float using struct package
-#     float_char = {
-#         16: "e",
-#         32: "f",
-#         64: "d"
-#     }
-#     if byte_order == "big":
-#         format_string = f">{float_char[len(bit_string)]}"
-#     else:
-#         format_string = f"<{float_char[len(bit_string)]}"
-#     result = struct.unpack(format_string, bytes(byte_array))[0]
-#     float_types = {
-#         16: np.float16,
-#         32: np.float32,
-#         64: np.float64
-#     }
-#     return float_types[len(bit_string)](result)
-
-
-def downcast_int(i: int, signed: bool = True) -> int:
-    if signed or i < 0:
-        signed_types = (np.int8, np.int16, np.int32)
-        for int_type in signed_types:
-            if abs(i) < 2**(np.dtype(int_type).itemsize * 8 - 1):
-                return int_type(i)
-    else:
-        unsigned_types = (np.uint8, np.uint16, np.uint32)
-        for int_type in unsigned_types:
-            if i < 2**(np.dtype(int_type).itemsize * 8):
-                return int_type(i)
-    err_msg = (f"[{error_trace()}] could not downcast int: {i}")
-    raise ValueError(err_msg)
-
-
-def downcast_float(f: float) -> float:
-    # IEEE 754 floating point bit layouts:
+    # IEEE 754 floating point bit widths:
     #   fp16 -> sign (1), exponent (5), mantissa (10)
     #   fp32 -> sign (1), exponent (8), mantissa (23)
     #   fp64 -> sign (1), exponent (11), mantissa (52)
-    bit_str = float_bits(f, endian=">")
-    if len(bit_str) == 64:
-        exponent = int(bit_str[1:12], 2) - (2**10 - 1)  # accounting for bias
-        mantissa = int(bit_str[12:], 2)
-        if not exponent >> 5 and not mantissa & int("0" * 10 + "1" * 42, 2):
-            return np.float16(f)
-        if not exponent >> 8 and not mantissa & int("0" * 23 + "1" * 29, 2):
-            return np.float32(f)
-    elif len(bit_str) == 32:
-        exponent = int(bit_str[1:9], 2) - (2**7 - 1)  # accounting for bias
-        mantissa = int(bit_str[9:], 2)
-        if not exponent >> 5 and not mantissa & int("0" * 10 + "1" * 13, 2):
-            return np.float16(f)
-    err_msg = (f"[{error_trace()}] could not downcast float: {f}")
+    exponent_length = {
+        16: 5,
+        32: 8,
+        64: 11
+    }
+    return {
+        "sign": big[0],
+        "exponent": big[1:1 + exponent_length[len(big)]],
+        "mantissa": big[1 + exponent_length[len(big)]:]
+    }
+
+
+def downcast(value: int | float | complex,
+             signed: bool = True) -> int | float | complex:
+    # integers
+    if np.issubdtype(type(value), np.integer):
+        return downcast_integer(value, signed)
+
+    # floats
+    if np.issubdtype(type(value), np.floating):
+        return downcast_float(value)
+
+    # complex numbers
+    if np.issubdtype(type(value), np.complexfloating):
+        return downcast_complex(value)
+
+    err_msg = (f"[{error_trace()}] `value` must be a numeric integer, float, "
+               f"or complex number, not {type(value)}")
+    raise TypeError(err_msg)
+
+
+@lru_cache(maxsize=CACHE_SIZE, typed=True)
+def downcast_integer(integer: int, signed: bool = True) -> int:
+    if not np.issubdtype(type(integer), np.integer):
+        err_msg = (f"[{error_trace()}] `integer` must be an integer, not "
+                   f"{type(integer)}")
+        raise TypeError(err_msg)
+
+    # unsigned
+    if not signed:
+        if integer < 0:
+            err_msg = (f"[{error_trace()}] when `signed=False`, `integer` "
+                       f"must be positive (received: {integer})")
+            raise ValueError(err_msg)
+        maxima = {
+            np.uint8: 2**8 - 1,
+            np.uint16: 2**16 - 1,
+            np.uint32: 2**32 - 1,
+            np.uint64: 2**64 - 1
+        }
+        for uint_type, max_val in maxima.items():
+            if integer < max_val:
+                return uint_type(integer)
+        err_msg = (f"[{error_trace()}] could not downcast integer: {integer}")
+        raise ValueError(err_msg)
+
+    # signed
+    extrema = {
+        np.int8: (-2**7, 2**7 - 1),
+        np.int16: (-2**15, 2**15 - 1),
+        np.int32: (-2**31, 2**31 - 1),
+        np.int64: (-2**63, 2**63 - 1)
+    }
+    for int_type, (min_val, max_val) in extrema.items():
+        if min_val <= integer <= max_val:
+            return int_type(integer)
+    err_msg = (f"[{error_trace()}] could not downcast integer: {integer}")
     raise ValueError(err_msg)
 
 
-def downcast_complex(c: complex) -> complex:
-    try:
-        real = downcast_float(c.real)
-        imag = downcast_float(c.imag)
-        return np.complex64(f"{real}+{imag}j")
-    except ValueError as err:
-        err_msg = (f"[{error_trace()}] could not downcast complex: {c}")
-        raise ValueError(err_msg) from err
+@lru_cache(maxsize=CACHE_SIZE, typed=True)
+def downcast_float(floating_point: float) -> float:
+    if not np.issubdtype(type(floating_point), np.floating):
+        err_msg = (f"[{error_trace()}] `floating_point` must be a float, not "
+                   f"{type(floating_point)}")
+        raise TypeError(err_msg)
 
+    # 0, Inf, nan special cases
+    if (not floating_point or
+        np.isinf(floating_point) or
+        np.isnan(floating_point)):
+        return np.float16(floating_point)
 
-def downcast(n: int | float | complex,
-             signed: bool = True) -> int | float | complex:
-    cast_map = {
-        int: partial(downcast_int, signed=signed),
-        float: downcast_float,
-        complex: downcast_complex
+    # convert exponent and mantissa to integers, correcting for bias
+    bit_string = float_to_bits(floating_point)
+    components = decompose_float_bits(bit_string)
+    if len(bit_string) > 64:  # long double special case
+        if components["integer"] == "0":
+            # renormalize by increasing the fraction and reducing the exponent
+            # until we reach a 1 in the integer place
+            carry = components["fraction"].find("1") + 1
+            exponent = int(components["exponent"], 2) - (2**14 - 1 + carry)
+            mantissa = components["fraction"][carry:] + "0" * carry
+        else:
+            exponent = int(components["exponent"], 2) - (2**14 - 1)
+            mantissa = components["fraction"]
+    else:
+        exp_bias = {
+            16: 2**4 - 1,
+            32: 2**7 - 1,
+            64: 2**10 - 1
+        }
+        exponent = int(components["exponent"], 2) - exp_bias[len(bit_string)]
+        mantissa = components["mantissa"]
+
+    widths = {
+        np.float16: (-2**4 + 2, 2**4 - 1, 10),
+        np.float32: (-2**7 + 2, 2**7 - 1, 23),
+        np.float64: (-2**10 + 2, 2**10 - 1, 52),
+        np.longdouble: (-2**14 + 2, 2**10 - 1, 63),
     }
-    return cast_map[parse_dtype(type(n))](n)
+    for float_type, (min_exp, max_exp, man_width) in widths.items():
+        mask = mantissa[man_width:]
+        if min_exp <= exponent <= max_exp and (not mask or not int(mask, 2)):
+            return float_type(floating_point)
+    err_msg = (f"[{error_trace()}] could not downcast float: {floating_point}")
+    raise ValueError(err_msg)
 
 
-def _downcast_series(series: pd.Series) -> pd.Series:
-    series_dtype = parse_dtype(series.dtype)
+@lru_cache(maxsize=CACHE_SIZE, typed=True)
+def downcast_complex(complex_number: complex) -> complex:
+    if np.issubdtype(type(complex_number), np.complexfloating):
+        err_msg = (f"[{error_trace()}] `complex_number` must be a complex "
+                   f"type, not {type(complex_number)}")
+        raise TypeError(err_msg)
 
-    if series_dtype == int:
-        extension_type = pd.api.types.is_extension_array_dtype(series_dtype)
-        series_min = series.min()  # faster than series.quantile([0, 1])
-        series_max = series.max()
-        if series_min >= 0:  # unsigned
-            if extension_type:
-                integer_types = (pd.UInt8Dtype(), pd.UInt16Dtype(),
-                                 pd.UInt32Dtype(), pd.UInt64Dtype())
-            else:
-                integer_types = (np.dtype(np.uint8), np.dtype(np.uint16),
-                                 np.dtype(np.uint32), np.dtype(np.uint64))
-            for typespec in integer_types:
-                max_int = 2 ** (typespec.itemsize * 8)
-                if series_max < max_int:
-                    return series.astype(typespec)
-        else:  # signed
-            if extension_type:
-                integer_types = (pd.Int8Dtype(), pd.Int16Dtype(),
-                                 pd.Int32Dtype(), pd.Int64Dtype())
-            else:
-                integer_types = (np.dtype(np.int8), np.dtype(np.int16),
-                                 np.dtype(np.int32), np.dtype(np.int64))
-            for typespec in integer_types:
-                max_int = 2 ** (typespec.itemsize * 8 - 1)
-                if series_max < max_int:
-                    return series.astype(typespec)
-        err_msg = (f"[{error_trace()}] could not downcast series "
-                    f"(head: {list(series.head())})")
-        raise ValueError(err_msg)
-
-    if series_dtype == float:
-        extension_type = pd.api.types.is_extension_array_dtype(series_dtype)
-        series_min = series.min()  # faster than series.quantile([0, 1])
-        series_max = series.max()
+    # downcast real and imaginary components separately, then choose largest
+    real = downcast_float(complex_number.real)
+    imag = downcast_float(complex_number.imag)
+    largest = max((real, imag), key=lambda x: np.dtype(x).itemsize)
+    conversion_map = {
+        np.float16: np.complex64,
+        np.float32: np.complex64,
+        np.float64: np.complex128,
+        np.longdouble: np.clongdouble
+    }
+    return conversion_map[type(largest)](complex_number)

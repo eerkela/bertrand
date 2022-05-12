@@ -35,21 +35,25 @@ def integer_to_complex(series: pd.Series,
 def integer_to_string(series: pd.Series,
                       dtype: type = pd.StringDtype()) -> pd.Series:
     # pandas is not picky about what constitutes a string dtype
-    if (not pd.api.types.is_string_dtype(dtype) or
-        dtype in (datetime.datetime, pd.Timestamp) or
+    if (dtype in (datetime.datetime, pd.Timestamp) or
         dtype in (datetime.timedelta, pd.Timedelta) or
-        dtype == object):
+        pd.api.types.is_object_dtype(dtype) or
+        not pd.api.types.is_string_dtype(dtype)):
         err_msg = (f"[{error_trace()}] `dtype` must be string-like (received: "
                    f"{dtype})")
         raise TypeError(err_msg)
-    if pd.api.types.is_float_dtype(series.dtype):
-        series = series.convert_dtypes()
+    if series.hasnans and dtype != pd.StringDtype():
+        # casting straight to str will turn None/nan into 'None'/'nan'
+        null_indices = series.isna()
+        result = series.convert_dtypes().astype(dtype)
+        result[null_indices] = None
+        return result
     return series.astype(dtype)
 
 
 def integer_to_boolean(series: pd.Series,
-                       force: bool = False,
-                       dtype: type = bool) -> pd.Series:
+                       dtype: type = bool,
+                       force: bool = False) -> pd.Series:
     if not pd.api.types.is_bool_dtype(dtype):
         err_msg = (f"[{error_trace()}] `dtype` must be bool-like (received: "
                    f"{dtype})")
@@ -113,35 +117,25 @@ def float_to_integer(series: pd.Series,
                 raise TypeError(err_msg)
             if tol:
                 series = series.round()
-    if series.hasnans:
-        extension_types = {
-            int: pd.Int64Dtype(),
-            np.uint8: pd.UInt8Dtype(),
-            np.uint16: pd.UInt16Dtype(),
-            np.uint32: pd.UInt32Dtype(),
-            np.uint64: pd.UInt64Dtype(),
-            np.dtype(np.uint8): pd.UInt8Dtype(),
-            np.dtype(np.uint16): pd.UInt16Dtype(),
-            np.dtype(np.uint32): pd.UInt32Dtype(),
-            np.dtype(np.uint64): pd.UInt64Dtype(),
-            "u1": pd.UInt8Dtype(),
-            "u2": pd.UInt16Dtype(),
-            "u4": pd.UInt32Dtype(),
-            "u8": pd.UInt64Dtype(),
-            np.int8: pd.Int8Dtype(),
-            np.int16: pd.Int16Dtype(),
-            np.int32: pd.Int32Dtype(),
-            np.int64: pd.Int64Dtype(),
-            np.dtype(np.int8): pd.Int8Dtype(),
-            np.dtype(np.int16): pd.Int16Dtype(),
-            np.dtype(np.int32): pd.Int32Dtype(),
-            np.dtype(np.int64): pd.Int64Dtype(),
-            "i1": pd.Int8Dtype(),
-            "i2": pd.Int16Dtype(),
-            "i4": pd.Int32Dtype(),
-            "i8": pd.Int64Dtype(),
-        }
-        dtype = extension_types.get(dtype, dtype)
+    if series.hasnans and not pd.api.types.is_extension_dtype(dtype):
+        if np.issubdtype(np.unsignedinteger):
+            extension_types = {
+                np.uint8: pd.UInt8Dtype(),
+                np.uint16: pd.UInt16Dtype(),
+                np.uint32: pd.UInt32Dtype(),
+                np.uint64: pd.UInt64Dtype()
+            }
+        else:
+            extension_types = {
+                np.int8: pd.Int8Dtype(),
+                np.int16: pd.Int16Dtype(),
+                np.int32: pd.Int32Dtype(),
+                np.int64: pd.Int64Dtype()
+            }
+        for np_type, ext_type in extension_types.items():
+            if np.issubdtype(dtype, np_type):
+                dtype = ext_type
+                break
     return series.astype(dtype)
 
 
@@ -156,8 +150,8 @@ def float_to_complex(series: pd.Series,
 
 def float_to_string(series: pd.Series,
                     dtype: type = pd.StringDtype()) -> pd.Series:
-    if (not pd.api.types.is_string_dtype(dtype) or
-        pd.api.types.is_object_dtype(dtype)):
+    if (pd.api.types.is_object_dtype(dtype) or
+        not pd.api.types.is_string_dtype(dtype)):
         err_msg = (f"[{error_trace()}] `dtype` must be string-like (received: "
                    f"{dtype})")
         raise TypeError(err_msg)

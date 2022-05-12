@@ -1,9 +1,11 @@
 from __future__ import annotations
 from datetime import datetime, timedelta
+from functools import partial
 
 import numpy as np
 import pandas as pd
 
+import pdtypes.cast
 from pdtypes.error import error_trace
 
 
@@ -220,3 +222,69 @@ def coerce_dtypes(
 
 def convert_dtypes(data: pd.DataFrame) -> pd.DataFrame:
     return coerce_dtypes(data, **check_dtypes(data))
+
+
+
+def _convert_series_dtype(series: pd.Series,
+                          dtype: type,
+                          round: bool = False,
+                          force: bool = False,
+                          unit: str = "s",
+                          tol: float = 1e-6) -> pd.Series:
+    conversions = {
+        "integer": {
+            "boolean": partial(pdtypes.cast.integer_to_boolean, dtype=dtype,
+                               force=force),
+            "integer": lambda s: s.astype(dtype),
+            "float": partial(pdtypes.cast.integer_to_float, dtype=dtype),
+            "complex": partial(pdtypes.cast.integer_to_complex, dtype=dtype),
+            "datetime": partial(pdtypes.cast.integer_to_datetime, unit=unit),
+            "timedelta": partial(pdtypes.cast.integer_to_timedelta, unit=unit),
+            "object": lambda s: s.astype(dtype),
+            "string": partial(pdtypes.cast.integer_to_string, dtype=dtype)
+        },
+        "float": {
+            "boolean": partial(pdtypes.cast.float_to_boolean, dtype)
+        }
+    }
+    from_type = parse_dtype(series.dtype)
+    to_type = parse_dtype(dtype)
+    return conversions[from_type][to_type](series)
+
+
+def parse_dtype(dtype: type) -> str:
+    if pd.api.types.is_bool_dtype(dtype):
+        return "boolean"
+    if pd.api.types.is_integer_dtype(dtype):
+        return "integer"
+    if pd.api.types.is_float_dtype(dtype):
+        return "float"
+    if pd.api.types.is_complex_dtype(dtype):
+        return "complex"
+    if (dtype in (datetime, pd.Timestamp) or
+        pd.api.types.is_datetime64_any_dtype(dtype)):
+        return "datetime"
+    if (dtype in (timedelta, pd.Timedelta) or
+        pd.api.types.is_timedelta64_dtype(dtype)):
+        return "timedelta"
+    if pd.api.types.is_object_dtype(dtype):
+        return "object"
+    if pd.api.types.is_string_dtype(dtype):
+        return "string"
+    err_msg = (f"[{error_trace()}] could not interpret dtype: {dtype}")
+    raise TypeError(err_msg)
+
+
+def convert_dtypes(data: pd.Series | pd.DataFrame,
+                   typespec: type | dict[str | type] | None = None,
+                   
+                   
+                   downcast: bool = True,
+                   signed: bool = True,
+                   format: str | None = None) -> pd.Series | pd.DataFrame:
+    if isinstance(data, pd.Series):
+        if not isinstance(typespec, type):
+            err_msg = (f"[{error_trace()}] when used on a series, `typespec` "
+                       f"must be an atomic data type (received: {typespec})")
+            raise TypeError(err_msg)
+        from_type = pd.api.types.infer_dtype(data)

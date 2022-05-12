@@ -59,7 +59,7 @@ class CastFloatToComplexAccuracyTests(unittest.TestCase):
 class CastFloatToComplexOutputTypeTests(unittest.TestCase):
 
     ##########################################
-    ####    Correct - standard complex    ####
+    ####    Correct - Standard Complex    ####
     ##########################################
 
     def test_float_to_complex_standard_complex_output_no_na(self):

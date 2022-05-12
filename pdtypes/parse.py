@@ -107,6 +107,7 @@ def round_to_tol(series: pd.Series, tol: float) -> pd.Series:
 
 def localize_mixed_timezone(series: pd.Series,
                             naive_tz: str | None = None) -> pd.Series:
+    # TODO: change default to 'local' and have None just strip away the tzinfo
     naive = series.apply(lambda x: x.tzinfo is None)
     if naive_tz is None:
         naive_tz = get_localzone_name()
