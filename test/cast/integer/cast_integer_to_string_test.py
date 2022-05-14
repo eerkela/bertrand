@@ -14,7 +14,7 @@ class CastIntegerToStringAccuracyTests(unittest.TestCase):
     ####    Basic Integers    ####
     ##############################
 
-    def test_integer_to_string_no_na(self):
+    def test_basic_integer_to_string_no_na(self):
         # Arrange
         integers = [-2, -1, 0, 1, 2]
         input_series = pd.Series(integers)
@@ -26,7 +26,7 @@ class CastIntegerToStringAccuracyTests(unittest.TestCase):
         expected = pd.Series([str(i) for i in integers], dtype=pd.StringDtype())
         pd.testing.assert_series_equal(result, expected)
 
-    def test_integer_to_string_with_na(self):
+    def test_basic_integer_to_string_with_na(self):
         # Arrange
         integers = [-2, -1, 0, 1, 2]
         input_series = pd.Series(integers + [None])
@@ -39,7 +39,7 @@ class CastIntegerToStringAccuracyTests(unittest.TestCase):
                              dtype=pd.StringDtype())
         pd.testing.assert_series_equal(result, expected)
 
-    def test_integer_to_string_only_na(self):
+    def test_basic_integer_to_string_only_na(self):
         # Arrange
         input_series = pd.Series([None, None, None])
 
@@ -50,11 +50,7 @@ class CastIntegerToStringAccuracyTests(unittest.TestCase):
         expected = pd.Series([None, None, None], dtype=pd.StringDtype())
         pd.testing.assert_series_equal(result, expected)
 
-    ####################################
-    ####    Exceeds 64 bit limit    ####
-    ####################################
-
-    def test_integer_to_string_exceeds_64_bit_limit(self):
+    def test_integer_to_string_exceeds_64_bit_limit_no_na(self):
         # Arrange
         integers = [-2**128, 2**256]
         input_series = pd.Series(integers)
@@ -63,7 +59,20 @@ class CastIntegerToStringAccuracyTests(unittest.TestCase):
         result = pdtypes.cast.integer_to_string(input_series)
 
         # Assert
-        expected = pd.Series(integers, dtype=pd.StringDtype())
+        expected = pd.Series([str(i) for i in integers], dtype=pd.StringDtype())
+        pd.testing.assert_series_equal(result, expected)
+
+    def test_integer_to_string_exceeds_64_bit_limit_with_na(self):
+        # Arrange
+        integers = [-2**128, 2**256]
+        input_series = pd.Series(integers + [None])
+
+        # Act
+        result = pdtypes.cast.integer_to_string(input_series)
+
+        # Assert
+        expected = pd.Series([str(i) for i in integers] + [None],
+                             dtype=pd.StringDtype())
         pd.testing.assert_series_equal(result, expected)
 
 
@@ -94,7 +103,8 @@ class CastIntegerToStringOutputTypeTests(unittest.TestCase):
         result = pdtypes.cast.integer_to_string(input_series, dtype=str)
 
         # Assert
-        expected = pd.Series([str(i) for i in integers] + [None], dtype=str)
+        expected = pd.Series([str(i) for i in integers] + [None],
+                             dtype=pd.StringDtype())
         pd.testing.assert_series_equal(result, expected)
 
     def test_integer_to_string_standard_string_output_na_only(self):
@@ -105,7 +115,7 @@ class CastIntegerToStringOutputTypeTests(unittest.TestCase):
         result = pdtypes.cast.integer_to_string(input_series, dtype=str)
 
         # Assert
-        expected = pd.Series([None, None, None], dtype=str)
+        expected = pd.Series([None, None, None], dtype=pd.StringDtype())
         pd.testing.assert_series_equal(result, expected)
 
     ############################################
@@ -135,7 +145,8 @@ class CastIntegerToStringOutputTypeTests(unittest.TestCase):
                                                 dtype=np.dtype(str))
 
         # Assert
-        expected = pd.Series([str(i) for i in integers] + [None])
+        expected = pd.Series([str(i) for i in integers] + [None],
+                             dtype=pd.StringDtype())
         pd.testing.assert_series_equal(result, expected)
 
     def test_integer_to_string_numpy_string_dtype_output_na_only(self):
@@ -147,7 +158,7 @@ class CastIntegerToStringOutputTypeTests(unittest.TestCase):
                                                 dtype=np.dtype(str))
 
         # Assert
-        expected = pd.Series([None, None, None])
+        expected = pd.Series([None, None, None], dtype=pd.StringDtype())
         pd.testing.assert_series_equal(result, expected)
 
     def test_integer_to_string_numpy_string_array_protocol_type_string_output_no_na(self):
@@ -171,7 +182,8 @@ class CastIntegerToStringOutputTypeTests(unittest.TestCase):
         result = pdtypes.cast.integer_to_string(input_series, dtype="U")
 
         # Assert
-        expected = pd.Series([str(i) for i in integers] + [None])
+        expected = pd.Series([str(i) for i in integers] + [None],
+                             dtype=pd.StringDtype())
         pd.testing.assert_series_equal(result, expected)
 
     def test_integer_to_string_numpy_string_array_protocol_type_string_output_na_only(self):
@@ -182,7 +194,7 @@ class CastIntegerToStringOutputTypeTests(unittest.TestCase):
         result = pdtypes.cast.integer_to_string(input_series, dtype="U")
 
         # Assert
-        expected = pd.Series([None, None, None])
+        expected = pd.Series([None, None, None], dtype=pd.StringDtype())
         pd.testing.assert_series_equal(result, expected)
 
     #############################################

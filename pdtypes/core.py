@@ -231,6 +231,21 @@ def _convert_series_dtype(series: pd.Series,
                           force: bool = False,
                           unit: str = "s",
                           tol: float = 1e-6) -> pd.Series:
+    from_type = pd.api.types.infer_dtype(series)
+    if from_type == "integer":
+        if pd.api.types.is_integer_dtype(dtype):
+            return series.astype(dtype)
+        if pd.api.types.is_float_dtype(dtype):
+            return pdtypes.cast.integer_to_float(series, dtype=dtype)
+        if pd.api.types.is_complex_dtype(dtype):
+            return pdtypes.cast.integer_to_complex(series, dtype=dtype)
+        # decimal
+        # date
+        if pd.api.types.is_categorical_dtype(dtype) or dtype == "categorical":
+            pass
+        # time
+        # period
+    
     conversions = {
         "integer": {
             "boolean": partial(pdtypes.cast.integer_to_boolean, dtype=dtype,

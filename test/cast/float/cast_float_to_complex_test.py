@@ -12,11 +12,17 @@ import pdtypes.cast
 random.seed(12345)
 
 
+"""
+TODO: np.complex256 -> np.clongdouble
+"""
+
+
+
 class CastFloatToComplexAccuracyTests(unittest.TestCase):
 
-    ##############################
-    ####  Generic Integers    ####
-    ##############################
+    ############################
+    ####  Generic Floats    ####
+    ############################
 
     def test_float_to_complex_is_accurate_no_na(self):
         # Arrange

@@ -14,7 +14,7 @@ class CastIntegerToFloatAccuracyTests(unittest.TestCase):
     ####    Basic Integers    ####
     ##############################
 
-    def test_integer_to_float_no_na(self):
+    def test_basic_integer_to_float_no_na(self):
         # Arrange
         integers = [-2, -1, 0, 1, 2]
         input_series = pd.Series(integers)
@@ -26,10 +26,10 @@ class CastIntegerToFloatAccuracyTests(unittest.TestCase):
         expected = pd.Series([float(i) for i in integers])
         pd.testing.assert_series_equal(result, expected)
 
-    def test_integer_to_float_with_na(self):
+    def test_basic_integer_to_float_with_na_as_float(self):
         # Arrange
         integers = [-2, -1, 0, 1, 2]
-        input_series = pd.Series(integers + [None])
+        input_series = pd.Series(integers + [None])  # silently converts to float
 
         # Act
         result = pdtypes.cast.integer_to_float(input_series)
@@ -38,7 +38,19 @@ class CastIntegerToFloatAccuracyTests(unittest.TestCase):
         expected = pd.Series([float(i) for i in integers] + [None])
         pd.testing.assert_series_equal(result, expected)
 
-    def test_integer_to_float_all_na(self):
+    def test_basic_integer_to_float_with_na_as_extension_type(self):
+        # Arrange
+        integers = [-2, -1, 0, 1, 2]
+        input_series = pd.Series(integers + [None], dtype=pd.Int64Dtype())
+
+        # Act
+        result = pdtypes.cast.integer_to_float(input_series)
+
+        # Assert
+        expected = pd.Series([float(i) for i in integers] + [None])
+        pd.testing.assert_series_equal(result, expected)
+
+    def test_basic_integer_to_float_na_only(self):
         # Arrange
         input_series = pd.Series([None, None, None])
 
@@ -46,24 +58,30 @@ class CastIntegerToFloatAccuracyTests(unittest.TestCase):
         result = pdtypes.cast.integer_to_float(input_series)
 
         # Assert
-        expected = pd.Series([None, None, None], dtype=np.float64)
+        expected = pd.Series([None, None, None], dtype=float)
         pd.testing.assert_series_equal(result, expected)
 
-    ####################################
-    ####    Exceeds 64-bit limit    ####
-    ####################################
-
-    def test_integer_to_float_exceeds_64_bit_limit(self):
+    def test_integer_to_float_exceeds_64_bit_limit_no_na(self):
         # Arrange
         integers = [-2**128, 2**256]
         input_series = pd.Series(integers)
-        self.assertEqual(input_series.dtype, np.dtype("O"))
 
         # Act
         result = pdtypes.cast.integer_to_float(input_series)
 
         # Assert
         expected = pd.Series(integers, dtype=np.float64)
+        pd.testing.assert_series_equal(result, expected)
+
+    def test_integer_to_float_exceeds_64_bit_limit_with_na(self):
+        # Arrange
+        integers = [-2**128, 2**256]
+        input_series = pd.Series(integers + [None])
+        # Act
+        result = pdtypes.cast.integer_to_float(input_series)
+
+        # Assert
+        expected = pd.Series([float(i) for i in integers] + [None])
         pd.testing.assert_series_equal(result, expected)
 
 

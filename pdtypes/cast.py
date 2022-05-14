@@ -20,7 +20,7 @@ def integer_to_float(series: pd.Series,
         err_msg = (f"[{error_trace()}] `dtype` must be float-like (received: "
                    f"{dtype})")
         raise TypeError(err_msg)
-    return series.astype(np.dtype(dtype))
+    return series.astype(dtype)
 
 
 def integer_to_complex(series: pd.Series,
@@ -29,7 +29,7 @@ def integer_to_complex(series: pd.Series,
         err_msg = (f"[{error_trace()}] `dtype` must be complex-like "
                    f"(received: {dtype})")
         raise TypeError(err_msg)
-    return series.astype(np.dtype(dtype))
+    return series.astype(dtype)
 
 
 def integer_to_string(series: pd.Series,
@@ -42,23 +42,38 @@ def integer_to_string(series: pd.Series,
         err_msg = (f"[{error_trace()}] `dtype` must be string-like (received: "
                    f"{dtype})")
         raise TypeError(err_msg)
-    if series.hasnans and dtype != pd.StringDtype():
-        # casting straight to str will turn None/nan into 'None'/'nan'
-        null_indices = series.isna()
-        result = series.convert_dtypes().astype(dtype)
-        result[null_indices] = None
-        return result
+    if series.hasnans:
+        if pd.api.types.is_float_dtype(series):
+            # # can series be converted to integer?
+            # try:
+            #     series = float_to_integer(series)
+            # except ValueError as err:
+            #     err_msg = (f"[{error_trace()}] could not interpret series as "
+            #                f"containing integer data")
+            #     raise ValueError(err_msg) from err
+
+            # can series be represented as 64-bit integer?
+            min_val = series.min()
+            max_val = series.max()
+            if min_val >= -2**63 and max_val <= 2**63 - 1:  # signed
+                series = series.astype(pd.Int64Dtype())
+            elif min_val >= 0 and max_val <= 2**64 - 1:  # unsigned
+                series = series.astype(pd.UInt64Dtype())
+            else:  # integer floats > 64 bit limit
+                conv = lambda x: int(x) if not pd.isna(x) else None
+                series = series.apply(conv)
+        return series.astype(pd.StringDtype())
     return series.astype(dtype)
 
 
 def integer_to_boolean(series: pd.Series,
-                       dtype: type = bool,
-                       force: bool = False) -> pd.Series:
+                       force: bool = False,
+                       dtype: type = bool) -> pd.Series:
     if not pd.api.types.is_bool_dtype(dtype):
         err_msg = (f"[{error_trace()}] `dtype` must be bool-like (received: "
                    f"{dtype})")
         raise TypeError(err_msg)
-    if not series.isna().all():
+    if not series.isna().all():  # abs() throws error on all na
         if force:
             series = series.abs().clip(0, 1)
         else:
@@ -70,22 +85,15 @@ def integer_to_boolean(series: pd.Series,
                 raise TypeError(err_msg)
             series = adjusted
     if series.hasnans:
-        extension_types = {
-            bool: pd.BooleanDtype(),
-            np.dtype(bool): pd.BooleanDtype(),
-            "?": pd.BooleanDtype()
-        }
-        dtype = extension_types.get(dtype, dtype)
+        return series.astype(pd.BooleanDtype())
     return series.astype(dtype)
 
 
-def integer_to_datetime(series: pd.Series,
-                        unit: str = "s") -> pd.Series:
+def integer_to_datetime(series: pd.Series, unit: str = "s") -> pd.Series:
     return pd.to_datetime(series, unit=unit, utc=True)
 
 
-def integer_to_timedelta(series: pd.Series,
-                         unit: str = "s") -> pd.Series:
+def integer_to_timedelta(series: pd.Series, unit: str = "s") -> pd.Series:
     return pd.to_timedelta(series, unit=unit)
 
 
@@ -103,7 +111,7 @@ def float_to_integer(series: pd.Series,
         err_msg = (f"[{error_trace()}] `dtype` must be int-like (received: "
                    f"{dtype})")
         raise TypeError(err_msg)
-    if not series.isna().all():
+    if not series.isna().all():  # round() and trunc() throw errors on all na
         if round:
             series = series.round()
         elif force:
@@ -114,7 +122,7 @@ def float_to_integer(series: pd.Series,
                 err_msg = (f"[{error_trace()}] could not convert series to "
                            f"integer without losing information: "
                            f"{list(series.head())}")
-                raise TypeError(err_msg)
+                raise ValueError(err_msg)
             if tol:
                 series = series.round()
     if series.hasnans and not pd.api.types.is_extension_dtype(dtype):
@@ -156,6 +164,7 @@ def float_to_string(series: pd.Series,
                    f"{dtype})")
         raise TypeError(err_msg)
     if series.hasnans and dtype != pd.StringDtype():
+        # TODO: just use StringDtype()?
         # casting straight to str will turn None/nan into 'None'/'nan'
         null_indices = series.isna()
         result = series.astype(dtype)
@@ -166,19 +175,44 @@ def float_to_string(series: pd.Series,
 
 def float_to_boolean(series: pd.Series,
                      force: bool = False,
-                     round: bool = True,
-                     tol: float = 1e-6) -> pd.Series:
-    if force:
-        if round:
-            return series.abs().clip(0, 1).round().astype(pd.BooleanDtype())
-        else:
-            return np.ceil(series.abs().clip(0, 1)).astype(pd.BooleanDtype())
-    try:
+                     round: bool = False,
+                     tol: float = 1e-6,
+                     dtype: type = bool) -> pd.Series:
+    if not pd.api.types.is_bool_dtype(dtype):
+        err_msg = (f"[{error_trace()}] `dtype` must be bool-like (received: "
+                   f"{dtype})")
+        raise TypeError(err_msg)
+
+    # all na special case
+    if series.isna().all():
         return series.astype(pd.BooleanDtype())
-    except TypeError:
+
+    # handle rounding
+    if round:
+        transfer = series.round()
+    elif tol and not force:
+        rounded = series.round()
+        if ((series - rounded).abs() > tol).any():
+            err_msg = (f"[{error_trace()}] could not convert series to "
+                       f"boolean without losing information: "
+                       f"{list(series.head())}")
+            raise ValueError(err_msg)
+        transfer = rounded
+    else:
+        transfer = series.copy()
+
+    # check for information loss
+    if force:
+        transfer = np.ceil(transfer.abs().clip(0, 1))
+    elif not transfer.dropna().isin((0, 1)).all():
         err_msg = (f"[{error_trace()}] could not convert series to boolean "
                    f"without losing information: {list(series.head())}")
-        raise TypeError(err_msg)
+        raise ValueError(err_msg)
+
+    # convert and return
+    if transfer.hasnans:
+        return transfer.astype(pd.BooleanDtype())
+    return transfer.astype(dtype)
 
 
 def float_to_datetime(series: pd.Series,
@@ -189,8 +223,7 @@ def float_to_datetime(series: pd.Series,
     return pd.to_datetime(series, unit=unit).dt.tz_localize(timezone)
 
 
-def float_to_timedelta(series: pd.Series,
-                       unit: str = "s") -> pd.Series:
+def float_to_timedelta(series: pd.Series, unit: str = "s") -> pd.Series:
     return pd.to_timedelta(series, unit=unit)
 
 
