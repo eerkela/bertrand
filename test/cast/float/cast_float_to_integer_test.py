@@ -28,7 +28,7 @@ class CastFloatToIntegerAccuracyTests(unittest.TestCase):
         result = pdtypes.cast.float_to_integer(input_series)
 
         # Assert
-        expected = pd.Series([-2, -1, 0, 1, 2])
+        expected = pd.Series(integers)
         pd.testing.assert_series_equal(result, expected)
 
     def test_whole_float_to_integer_with_na(self):
@@ -41,7 +41,7 @@ class CastFloatToIntegerAccuracyTests(unittest.TestCase):
         result = pdtypes.cast.float_to_integer(input_series)
 
         # Assert
-        expected = pd.Series([-2, -1, 0, 1, 2] + [None], dtype=pd.Int64Dtype())
+        expected = pd.Series(integers + [None], dtype=pd.Int64Dtype())
         pd.testing.assert_series_equal(result, expected)
 
     def test_whole_float_to_integer_only_na(self):
@@ -54,8 +54,6 @@ class CastFloatToIntegerAccuracyTests(unittest.TestCase):
         # Assert
         expected = pd.Series([None, None, None], dtype=pd.Int64Dtype())
         pd.testing.assert_series_equal(result, expected)
-
-    # TODO: Larger than 64-bit?
 
     ##############################
     ####    Decimal Floats    ####
@@ -70,7 +68,7 @@ class CastFloatToIntegerAccuracyTests(unittest.TestCase):
         input_series = pd.Series(floats)
 
         # Act - Error
-        with self.assertRaises(TypeError) as err:
+        with self.assertRaises(ValueError) as err:
             pdtypes.cast.float_to_integer(input_series)
         err_msg = (f"[pdtypes.cast.float_to_integer] could not convert series "
                    f"to integer without losing information: "
@@ -188,6 +186,23 @@ class CastFloatToIntegerAccuracyTests(unittest.TestCase):
         expected = pd.Series([None, None, None], dtype=pd.Int64Dtype())
         pd.testing.assert_series_equal(result, expected)
 
+    ###############################
+    ####    > 64-bit Floats    ####
+    ###############################
+
+    def test_greater_than_64_bit_float_to_integer_no_na(self):
+        # Arrange
+        integers = [-2**64 - 1, 2**64]  # python integers can be any size
+        floats = [float(i) for i in integers]
+        input_series = pd.Series(floats)
+
+        # Act
+        result = pdtypes.cast.float_to_integer(input_series)
+
+        # Assert
+        expected = pd.Series([int(f) for f in floats])
+        pd.testing.assert_series_equal(result, expected)
+
 
 class CastFloatToIntegerOutputTypeTests(unittest.TestCase):
 
@@ -205,7 +220,7 @@ class CastFloatToIntegerOutputTypeTests(unittest.TestCase):
         result = pdtypes.cast.float_to_integer(input_series, dtype=int)
 
         # Assert
-        expected = pd.Series([-2, -1, 0, 1, 2])
+        expected = pd.Series(integers)
         pd.testing.assert_series_equal(result, expected)
 
     def test_float_to_integer_standard_integer_output_with_na(self):

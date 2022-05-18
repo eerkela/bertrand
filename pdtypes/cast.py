@@ -106,45 +106,69 @@ def float_to_integer(series: pd.Series,
                      force: bool = False,
                      round: bool = False,
                      tol: float = 1e-6,
-                     dtype: type = np.int64) -> pd.Series:
+                     dtype: type = int) -> pd.Series:
     if not pd.api.types.is_integer_dtype(dtype):
         err_msg = (f"[{error_trace()}] `dtype` must be int-like (received: "
                    f"{dtype})")
         raise TypeError(err_msg)
-    if not series.isna().all():  # round() and trunc() throw errors on all na
-        if round:
-            series = series.round()
-        elif force:
-            series = np.trunc(series)
-        else:  # round to nearest integer iff within tolerance
-            residuals = abs(series - series.round())
-            if (residuals > tol).any():
-                err_msg = (f"[{error_trace()}] could not convert series to "
-                           f"integer without losing information: "
-                           f"{list(series.head())}")
-                raise ValueError(err_msg)
-            if tol:
-                series = series.round()
-    if series.hasnans and not pd.api.types.is_extension_dtype(dtype):
-        if np.issubdtype(np.unsignedinteger):
-            extension_types = {
-                np.uint8: pd.UInt8Dtype(),
-                np.uint16: pd.UInt16Dtype(),
-                np.uint32: pd.UInt32Dtype(),
-                np.uint64: pd.UInt64Dtype()
-            }
-        else:
-            extension_types = {
-                np.int8: pd.Int8Dtype(),
-                np.int16: pd.Int16Dtype(),
-                np.int32: pd.Int32Dtype(),
-                np.int64: pd.Int64Dtype()
-            }
-        for np_type, ext_type in extension_types.items():
-            if np.issubdtype(dtype, np_type):
-                dtype = ext_type
-                break
-    return series.astype(dtype)
+
+    extension_types = {
+        np.dtype(np.uint8): pd.UInt8Dtype(),
+        np.dtype(np.uint16): pd.UInt16Dtype(),
+        np.dtype(np.uint32): pd.UInt32Dtype(),
+        np.dtype(np.uint64): pd.UInt64Dtype(),
+        np.dtype(np.int8): pd.Int8Dtype(),
+        np.dtype(np.int16): pd.Int16Dtype(),
+        np.dtype(np.int32): pd.Int32Dtype(),
+        np.dtype(np.int64): pd.Int64Dtype()
+    }
+
+    # all na special case - round() and trunc() throw errors if not handled
+    if series.isna().all():
+        if pd.api.types.is_extension_array_dtype(dtype):
+            return series.astype(dtype)
+        return series.astype(extension_types[np.dtype(dtype)])
+
+    if round:  # round
+        transfer = series.round()
+    elif force:  # truncate
+        transfer = np.trunc(series)
+    else:  # round if within tolerance
+        rounded = series.round()
+        if ((series - rounded).abs() > tol).any():
+            bad = series[(series - rounded).abs() > tol]
+            err_msg = (f"[{error_trace()}] could not convert series to "
+                       f"integer without losing information: "
+                       f"{list(bad.head())}")
+            raise ValueError(err_msg)
+        transfer = rounded
+
+    # check series values fit within specified dtype
+    min_val = transfer.min()
+    max_val = transfer.max()
+    if dtype == int and (min_val < -2**63 or max_val > 2**63 - 1):  # > 64-bit
+        # python ints can be arbitrarily large
+        return transfer.apply(lambda x: None if pd.isna(x) else int(x))
+    if not pd.api.types.is_extension_array_dtype(dtype):
+        # convert to explicit numpy dtype object to expose itemsize attribute
+        dtype = np.dtype(dtype)
+    if pd.api.types.is_unsigned_integer_dtype(dtype):
+        min_possible = 0
+        max_possible = 2**(8 * dtype.itemsize) - 1
+    else:
+        min_possible = -2**(8 * dtype.itemsize - 1)
+        max_possible = 2**(8 * dtype.itemsize - 1) - 1
+    if min_val < min_possible or max_val > max_possible:
+        bad = transfer[(transfer < min_possible) | (transfer > max_possible)]
+        err_msg = (f"[{error_trace()}] could not convert series to integer: "
+                   f"values exceed available range for {dtype} "
+                   f"({list(bad.head())})")
+        raise ValueError(err_msg)
+
+    # return
+    if series.hasnans and not pd.api.types.is_extension_array_dtype(dtype):
+        return transfer.astype(extension_types[np.dtype(dtype)])
+    return transfer.astype(dtype)
 
 
 def float_to_complex(series: pd.Series,
@@ -183,14 +207,14 @@ def float_to_boolean(series: pd.Series,
                    f"{dtype})")
         raise TypeError(err_msg)
 
-    # all na special case
+    # all na special case - round() throws errors unless this is handled
     if series.isna().all():
         return series.astype(pd.BooleanDtype())
 
-    # handle rounding
-    if round:
+    # rounding
+    if round:  # always round
         transfer = series.round()
-    elif tol and not force:
+    elif tol and not force:  # round if within tolerance
         rounded = series.round()
         if ((series - rounded).abs() > tol).any():
             err_msg = (f"[{error_trace()}] could not convert series to "
@@ -198,7 +222,7 @@ def float_to_boolean(series: pd.Series,
                        f"{list(series.head())}")
             raise ValueError(err_msg)
         transfer = rounded
-    else:
+    else:  # do not round
         transfer = series.copy()
 
     # check for information loss
