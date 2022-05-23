@@ -13,7 +13,7 @@ import pdtypes.cast.float
 def to_boolean(series: pd.Series, dtype: type = bool) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "boolean":
         err_msg = (f"[{error_trace()}] `series` must contain boolean data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     if not pd.api.types.is_bool_dtype(dtype):
         err_msg = (f"[{error_trace()}] `dtype` must be bool-like (received: "
@@ -27,7 +27,7 @@ def to_boolean(series: pd.Series, dtype: type = bool) -> pd.Series:
 def to_integer(series: pd.Series, dtype: type = int) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "boolean":
         err_msg = (f"[{error_trace()}] `series` must contain boolean data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     if not pd.api.types.is_integer_dtype(dtype):
         err_msg = (f"[{error_trace()}] `dtype` must be int-like (received: "
@@ -57,7 +57,7 @@ def to_integer(series: pd.Series, dtype: type = int) -> pd.Series:
 def to_float(series: pd.Series, dtype: type = float) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "boolean":
         err_msg = (f"[{error_trace()}] `series` must contain boolean data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     if not pd.api.types.is_float_dtype(dtype):
         err_msg = (f"[{error_trace()}] `dtype` must be float-like (received: "
@@ -69,7 +69,7 @@ def to_float(series: pd.Series, dtype: type = float) -> pd.Series:
 def to_complex(series: pd.Series, dtype: type = complex) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "boolean":
         err_msg = (f"[{error_trace()}] `series` must contain boolean data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     if not pd.api.types.is_complex_dtype(dtype):
         err_msg = (f"[{error_trace()}] `dtype` must be complex-like (received: "
@@ -81,7 +81,7 @@ def to_complex(series: pd.Series, dtype: type = complex) -> pd.Series:
 def to_decimal(series: pd.Series) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "boolean":
         err_msg = (f"[{error_trace()}] `series` must contain boolean data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     return series.apply(lambda x: decimal.Decimal(np.nan) if pd.isna(x)
                                   else decimal.Decimal(x))
@@ -93,7 +93,7 @@ def to_datetime(series: pd.Series,
                 tz: str | pytz.timezone | None = "local") -> pd.Series:
     if pd.api.types.infer_dtype(series) != "boolean":
         err_msg = (f"[{error_trace()}] `series` must contain boolean data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     try:
         return pdtypes.cast.float.to_datetime(to_float(series),
@@ -109,7 +109,7 @@ def to_timedelta(
     offset: datetime.timedelta | pd.Timedelta | None = None) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "boolean":
         err_msg = (f"[{error_trace()}] `series` must contain boolean data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     try:
         return pdtypes.cast.float.to_timedelta(to_float(series),
@@ -122,12 +122,10 @@ def to_timedelta(
 def to_string(series: pd.Series, dtype: type = str) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "boolean":
         err_msg = (f"[{error_trace()}] `series` must contain boolean data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     # pandas is not picky about what constitutes a string dtype
-    if (dtype in (datetime.datetime, pd.Timestamp) or
-        dtype in (datetime.timedelta, pd.Timedelta) or
-        pd.api.types.is_object_dtype(dtype) or
+    if (pd.api.types.is_object_dtype(dtype) or
         not pd.api.types.is_string_dtype(dtype)):
         err_msg = (f"[{error_trace()}] `dtype` must be string-like (received: "
                    f"{dtype})")

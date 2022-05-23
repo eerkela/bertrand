@@ -222,10 +222,6 @@ def coerce_dtypes(
     raise TypeError(err_msg)
 
 
-def convert_dtypes(data: pd.DataFrame) -> pd.DataFrame:
-    return coerce_dtypes(data, **check_dtypes(data))
-
-
 
 
 def parse_dtype(dtype: type) -> str:
@@ -278,22 +274,32 @@ def _convert_series_dtype(
     dayfirst: bool = False,
     yearfirst: bool = False,
 ) -> pd.Series:
+    # find the data type that best represents values of series
     from_type = pd.api.types.infer_dtype(series)
+    if from_type == "categorical":  # get dtype of categories
+        from_type = pd.api.types.infer_dtype(series.dtype.categories)
+
+    # edge cases of infer_dtypes -> attempt to repair
     if from_type == "mixed-integer-float":
-        series = series.astype(float)
+        float_type = series.apply(lambda x: np.dtype(type(x))).max()
+        series = series.astype(float_type)
         from_type = "float"
-    if from_type in ("datetime", "date"):
+    elif from_type in ("datetime", "date"):
         series = pd.to_datetime(series)
         from_type = "datetime64"
-    if from_type in ("time", "timedelta"):
+    elif from_type in ("time", "timedelta"):
         if from_type == "time":
             series = pd.to_timedelta(series.astype(pd.StringDtype()))
         else:
             series = pd.to_timedelta(series)
         from_type = "timedelta64"
-    if from_type in ("bytes", "mixed-integer", "mixed", "empty"):
+    elif from_type in ("bytes", "mixed", "mixed-integer", "empty"):
         from_type = "object"
+
+    # get category of conversion type
     to_type = parse_dtype(dtype)
+
+    # get conversion function with appropriate args
     conversions = {
         "boolean": {
             "boolean": partial(pdtypes.cast.boolean.to_boolean, dtype=dtype),
@@ -443,6 +449,8 @@ def _convert_series_dtype(
         #     # TODO
         # }
     }
+
+    # perform conversion
     return conversions[from_type][to_type](series)
 
 

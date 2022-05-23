@@ -10,7 +10,6 @@ import tzlocal
 from pdtypes.error import error_trace
 
 
-
 def to_boolean(series: pd.Series,
                force: bool = False,
                round: bool = False,
@@ -25,36 +24,32 @@ def to_boolean(series: pd.Series,
                    f"{dtype})")
         raise TypeError(err_msg)
 
-    # all na special case - round() throws errors unless this is handled
-    if series.isna().all():
-        return series.astype(pd.BooleanDtype())
-
-    # rounding
+    # round if appropriate
     if round:  # always round
-        transfer = series.round()
-    elif tol and not force:  # round if within tolerance
-        rounded = series.round()
-        if ((series - rounded).abs() > tol).any():
-            err_msg = (f"[{error_trace()}] could not convert series to "
-                       f"boolean without losing information: "
-                       f"{list(series.head())}")
-            raise ValueError(err_msg)
-        transfer = rounded
-    else:  # do not round
-        transfer = series.copy()
+        series = series.round()
+    elif tol:  # round if within tolerance
+        indices = (series - series.round()).abs() <= tol
+        series[indices] = series[indices].round()
 
     # check for information loss
     if force:
-        transfer = np.ceil(transfer.abs().clip(0, 1))
-    elif not transfer.dropna().isin((0, 1)).all():
-        err_msg = (f"[{error_trace()}] could not convert series to boolean "
-                   f"without losing information: {list(series.head())}")
+        series = np.ceil(series.abs().clip(0, 1))
+    elif not series.dropna().isin((0, 1)).all():
+        bad = series[~series.isin((0, 1))].index.values
+        if len(bad) == 1:  # singular
+            err_msg = (f"[{error_trace()}] could not convert float to boolean "
+                       f"without losing information: non-boolean value at "
+                       f"index {list(bad)}")
+        else:
+            err_msg = (f"[{error_trace()}] could not convert float to boolean "
+                       f"without losing information: non-boolean values at "
+                       f"indices {list(bad)}")
         raise ValueError(err_msg)
 
     # convert and return
-    if transfer.hasnans:
-        return transfer.astype(pd.BooleanDtype())
-    return transfer.astype(dtype)
+    if series.hasnans:
+        return series.astype(pd.BooleanDtype())
+    return series.astype(dtype)
 
 
 def to_integer(series: pd.Series,

@@ -15,23 +15,29 @@ def to_boolean(series: pd.Series,
                dtype: type = bool) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "integer":
         err_msg = (f"[{error_trace()}] `series` must contain integer data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     if not pd.api.types.is_bool_dtype(dtype):
         err_msg = (f"[{error_trace()}] `dtype` must be bool-like (received: "
                    f"{dtype})")
         raise TypeError(err_msg)
 
+    # check for information loss
     if force:
         series = series.abs().clip(0, 1)
-    else:
-        adjusted = series.abs()
-        if (adjusted > 1).any():
-            err_msg = (f"[{error_trace()}] could not convert series to "
-                        f"boolean without losing information: "
-                        f"{list(series.head())}")
-            raise TypeError(err_msg)
-        series = adjusted
+    elif series.min() < 0 or series.max() > 1:
+        bad = series[(series < 0) | (series > 1)].index.values
+        if len(bad) > 0:
+            err_msg = (f"[{error_trace()}] could not convert integer to "
+                       f"boolean without losing information: value out of "
+                       f"range at index {list(bad)}")
+        else:
+            err_msg = (f"[{error_trace()}] could not convert integer to "
+                       f"boolean without losing information: values out of "
+                       f"range at indices {list(bad)}")
+        raise ValueError(err_msg)
+
+    # return
     if series.hasnans:
         return series.astype(pd.BooleanDtype())
     return series.astype(dtype)
@@ -40,7 +46,7 @@ def to_boolean(series: pd.Series,
 def to_integer(series: pd.Series, dtype: type = int) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "integer":
         err_msg = (f"[{error_trace()}] `series` must contain integer data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     if not pd.api.types.is_integer_dtype(dtype):
         err_msg = (f"[{error_trace()}] `dtype` must be int-like (received: "
@@ -64,7 +70,7 @@ def to_integer(series: pd.Series, dtype: type = int) -> pd.Series:
 def to_float(series: pd.Series, dtype: type = float) -> pd.Series:
     if not pd.api.types.infer_dtype(series) == "integer":
         err_msg = (f"[{error_trace()}] `series` must contain integer data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     if not pd.api.types.is_float_dtype(dtype):
         err_msg = (f"[{error_trace()}] `dtype` must be float-like (received: "
@@ -76,7 +82,7 @@ def to_float(series: pd.Series, dtype: type = float) -> pd.Series:
 def to_complex(series: pd.Series, dtype: type = complex) -> pd.Series:
     if not pd.api.types.infer_dtype(series) == "integer":
         err_msg = (f"[{error_trace()}] `series` must contain integer data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     if not pd.api.types.is_complex_dtype(dtype):
         err_msg = (f"[{error_trace()}] `dtype` must be complex-like "
@@ -88,7 +94,7 @@ def to_complex(series: pd.Series, dtype: type = complex) -> pd.Series:
 def to_decimal(series: pd.Series) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "integer":
         err_msg = (f"[{error_trace()}] `series` must contain integer data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     return series.apply(lambda x: decimal.Decimal(np.nan) if pd.isna(x)
                                   else decimal.Decimal(x))
@@ -101,7 +107,7 @@ def to_datetime(
     tz: str | pytz.timezone | None = None) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "integer":
         err_msg = (f"[{error_trace()}] `series` must contain integer data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     try:
         return pdtypes.cast.float.to_datetime(to_float(series),
@@ -117,7 +123,7 @@ def to_timedelta(
     offset: pd.Timedelta | datetime.timedelta | None = None) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "integer":
         err_msg = (f"[{error_trace()}] `series` must contain integer data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     try:
         return pdtypes.cast.float.to_timedelta(to_float(series),
@@ -130,7 +136,7 @@ def to_timedelta(
 def to_string(series: pd.Series, dtype: type = str) -> pd.Series:
     if not pd.api.types.infer_dtype(series) == "integer":
         err_msg = (f"[{error_trace()}] `series` must contain integer data "
-                   f"(received: {series.dtype})")
+                   f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     # pandas is not picky about what constitutes a string dtype
     if (pd.api.types.is_object_dtype(dtype) or
