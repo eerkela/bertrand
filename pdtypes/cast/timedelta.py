@@ -1,7 +1,6 @@
 from __future__ import annotations
 import datetime
 import decimal
-from functools import lru_cache
 import re
 
 import numpy as np
@@ -18,11 +17,15 @@ Test cases:
 -   datetime.timedelta.max/min
 -   pd.Timedelta.max/min
 -   check every function returns a copy (no in-place modification)
+-   mixed series.  datetime.timedelta.max cannot be represented as timedelta64
 """
 
 
 _timedelta64_resolution_regex = re.compile(r'^[^\[]+\[([^\]]+)\]$')
-_ns_to_unit = {
+_to_ns = {
+    "as": 1e-9,
+    "fs": 1e-6,
+    "ps": 1e-3,
     "ns": 1,
     "nanosecond": 1,
     "nanoseconds": 1,
@@ -51,32 +54,19 @@ _ns_to_unit = {
 }
 
 
-@lru_cache(maxsize=2**10)
 def total_nanoseconds(
     t: datetime.timedelta | pd.Timedelta | np.timedelta64) -> int:
     if isinstance(t, pd.Timedelta):
         return t.asm8.astype(int)
     if isinstance(t, datetime.timedelta):
-        coefficients = [24 * 60 * 60 * int(1e9), int(1e9), int(1e3)]
-        components = [t.days, t.seconds, t.microseconds]
-        return sum(coef * c for coef, c in zip(coefficients, components))
+        # casting to dtype="O" allows for >64-bit arithmetic
+        coefficients = np.array([24 * 60 * 60 * int(1e9), int(1e9), int(1e3)],
+                                dtype="O")
+        components = np.array([t.days, t.seconds, t.microseconds], dtype="O")
+        return np.sum(coefficients * components)
     if isinstance(t, np.timedelta64):
-        integer_repr = t.astype(int)
         unit = _timedelta64_resolution_regex.match(str(t.dtype)).group(1)
-        scale_factors = {
-            "as": 1e-9,
-            "fs": 1e-6,
-            "ps": 1e-3,
-            "ns": 1,
-            "us": int(1e3),
-            "ms": int(1e6),
-            "s": int(1e9),
-            "m": 60 * int(1e9),
-            "h": 60 * 60 * int(1e9),
-            "D": 24 * 60 * 60 * int(1e9),
-            "W": 7 * 24 * 60 * 60 * int(1e9)
-        }
-        return int(integer_repr) * scale_factors[unit]
+        return int(t.astype(int)) * _to_ns[unit]
     err_msg = (f"[{error_trace()}] could not interpret timedelta of type "
                f"{type(t)}")
     raise TypeError(err_msg)
@@ -133,26 +123,18 @@ def to_integer(series: pd.Series,
 
     # convert to nanoseconds
     if pd.api.types.is_timedelta64_ns_dtype(series) and not series.hasnans:
-        if series.hasnans:  # prevent conversion to float
-            # TODO: this is slower than applying -> profile it
-            series = series.copy()
-            nans = series.isna()
-            series[~nans] = (series[~nans].astype(int) + offset_ns).astype("O")
-            series[nans] = None
-        else:
-            series = series.astype(int) + offset_ns
-    else:  # manually loop
+        series = series.astype(int) + offset_ns  # fast
+    else:  # slow, but universal
         series = series.apply(lambda x: None if pd.isna(x)
                                         else total_nanoseconds(x) + offset_ns,
                               convert_dtype=False)
 
     # round if appropriate
-    scale_factor = _ns_to_unit[unit]
+    scale_factor = _to_ns[unit]
     residuals = series % scale_factor
     series = series // scale_factor
     if round:  # always round
         round_up = (residuals >= scale_factor // 2)
-        residuals.loc[:] = 0
         series[round_up] = series[round_up] + 1
     elif tol:  # round if within tolerance
         round_up = (residuals >= scale_factor - int(tol * scale_factor))
@@ -161,7 +143,7 @@ def to_integer(series: pd.Series,
         series[round_up] = series[round_up] + 1
 
     # check for information loss
-    if not force and residuals.any():
+    if not (force or round) and residuals.any():
         bad = series[residuals > 0].index.values
         if len(bad) == 1:  # singular
             err_msg = (f"[{error_trace()}] could not convert timedelta to "
@@ -225,7 +207,7 @@ def to_float(series: pd.Series,
              offset: datetime.timedelta | pd.Timedelta | None = None,
              dtype: type = float) -> pd.Series:
     series = to_integer(series, unit="ns", offset=offset, tol=0)
-    series = series.astype(dtype) / _ns_to_unit[unit]
+    series = series.astype(dtype) / _to_ns[unit]
 
     # check for overflow (np.inf)
     if series[series == np.inf].any():
@@ -257,7 +239,7 @@ def to_complex(series: pd.Series,
         # astype(complex) can't parse pd.NA -> convert to None
         series = series.astype(object)
         series[series.isna()] = None
-    series = series.astype(dtype) / _ns_to_unit[unit]
+    series = series.astype(dtype) / _to_ns[unit]
 
     # check for overflow (np.inf)
     if series[series == np.inf].any():
@@ -287,7 +269,7 @@ def to_decimal(
     series = to_integer(series, unit="ns", offset=offset, tol=0)
     series = series.apply(lambda x: decimal.Decimal(np.nan) if pd.isna(x)
                                     else decimal.Decimal(x))
-    return series / decimal.Decimal(_ns_to_unit[unit])
+    return series / decimal.Decimal(_to_ns[unit])
 
 
 def to_datetime(
@@ -312,28 +294,61 @@ def to_datetime(
 def to_timedelta(
     series: pd.Series,
     offset: datetime.timedelta | pd.Timedelta | None = None) -> pd.Series:
-    # TODO: update this to work in the general case
-    if pd.api.types.is_timedelta64_dtype(series):
-        return series.copy()
+    original = series.copy()
 
-    # > 64-bit
-    nanoseconds = to_integer(series, unit="ns", offset=offset, tol=0)
-    max_val = nanoseconds.max()
-    min_val = nanoseconds.min()
-    units = ("ns", "us", "ms", "s", "m", "h", "D", "W")
-    index = 0
-    while min_val < -2**63 or max_val > 2**63 - 1:
-        unit = units[index]
-        scale_factor = _ns_to_unit[unit]
+    # attempt to return series as-is
+    if pd.api.types.is_timedelta64_dtype(series):
+        return original
+
+    # series has object dtype -> infer objects
+    series = series.infer_objects()
+    if pd.api.types.is_timedelta64_dtype(series):
+        return series
+
+    # timedeltas don't fit within timedelta64[ns] -> try datetime.timedelta
+    series = to_integer(series, unit="ns", offset=offset, tol=0)
+    min_val = series.min()
+    max_val = series.max()
+    if (min_val >= total_nanoseconds(datetime.timedelta.min) and 
+        max_val <= total_nanoseconds(datetime.timedelta.max)):
+        conv = lambda x: (pd.NaT if pd.isna(x)
+                          else datetime.timedelta(microseconds = x // 1000))
+        return series.apply(conv)
+
+    # timedeltas don't fit within datetime.timedelta -> try different units
+    selected = None
+    for unit in ("ms", "s", "m", "h", "D", "W"):
+        scale_factor = _to_ns[unit]
+        if (series % scale_factor).any():
+            break
         if (min_val // scale_factor >= -2**63 and
             max_val // scale_factor <= 2**63 - 1):
-            if (nanoseconds % scale_factor).any():
-                raise RuntimeError()
-                # TODO: attempt to return as datetime.timedelta?
-            return (nanoseconds // scale_factor).apply(lambda x: pd.NaT if pd.isna(x)
-                                                                 else np.timedelta64(x, unit))
-        index += 1
-    return pd.to_timedelta(series)
+            selected = unit
+    if selected:    
+        series = series // _to_ns[selected]
+        return series.apply(lambda x: pd.NaT if pd.isna(x)
+                                    else np.timedelta64(x, selected))
+
+    # timedeltas don't fit within consistent timedelta64 units -> return mixed
+    def to_timedelta64_any_precision(x):
+        if pd.isna(x):
+            return pd.NaT
+        result = None
+        for unit in ("ns", "us", "ms", "s", "m", "h", "D", "W"):
+            scale_factor = _to_ns[unit]
+            if x % scale_factor:
+                break
+            rescaled = x // scale_factor
+            if -2**63 <= rescaled <= 2**63 - 1:
+                result = np.timedelta64(rescaled, unit)
+        if result:
+            return result
+        raise ValueError()  # stop at first bad value
+
+    try:
+        return series.apply(to_timedelta64_any_precision)
+    except ValueError:  # everything else has failed, return original series
+        return original
 
 
 def to_string(series: pd.Series, dtype: type = str) -> pd.Series:
