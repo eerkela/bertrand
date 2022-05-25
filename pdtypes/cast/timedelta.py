@@ -9,6 +9,8 @@ import pytz
 import tzlocal
 
 from pdtypes.error import error_trace
+from pdtypes.cast.util import _to_ns, total_nanoseconds
+import pdtypes.cast.integer
 
 
 """
@@ -19,57 +21,6 @@ Test cases:
 -   check every function returns a copy (no in-place modification)
 -   mixed series.  datetime.timedelta.max cannot be represented as timedelta64
 """
-
-
-_timedelta64_resolution_regex = re.compile(r'^[^\[]+\[([^\]]+)\]$')
-_to_ns = {
-    "as": 1e-9,
-    "fs": 1e-6,
-    "ps": 1e-3,
-    "ns": 1,
-    "nanosecond": 1,
-    "nanoseconds": 1,
-    "us": int(1e3),
-    "microsecond": int(1e3),
-    "microseconds": int(1e3),
-    "ms": int(1e6),
-    "millisecond": int(1e6),
-    "milliseconds": int(1e6),
-    "s": int(1e9),
-    "sec": int(1e9),
-    "second": int(1e9),
-    "seconds": int(1e9),
-    "m": 60 * int(1e9),
-    "minute": 60 * int(1e9),
-    "minutes": 60 * int(1e9),
-    "h": 60 * 60 * int(1e9),
-    "hour": 60 * 60 * int(1e9),
-    "hours": 60 * 60 * int(1e9),
-    "D": 24 * 60 * 60 * int(1e9),
-    "day": 24 * 60 * 60 * int(1e9),
-    "days": 24 * 60 * 60 * int(1e9),
-    "W": 7 * 24 * 60 * 60 * int(1e9),
-    "week": 7 * 24 * 60 * 60 * int(1e9),
-    "weeks": 7 * 24 * 60 * 60 * int(1e9)
-}
-
-
-def total_nanoseconds(
-    t: datetime.timedelta | pd.Timedelta | np.timedelta64) -> int:
-    if isinstance(t, pd.Timedelta):
-        return t.asm8.astype(int)
-    if isinstance(t, datetime.timedelta):
-        # casting to dtype="O" allows for >64-bit arithmetic
-        coefficients = np.array([24 * 60 * 60 * int(1e9), int(1e9), int(1e3)],
-                                dtype="O")
-        components = np.array([t.days, t.seconds, t.microseconds], dtype="O")
-        return np.sum(coefficients * components)
-    if isinstance(t, np.timedelta64):
-        unit = _timedelta64_resolution_regex.match(str(t.dtype)).group(1)
-        return int(t.astype(int)) * _to_ns[unit]
-    err_msg = (f"[{error_trace()}] could not interpret timedelta of type "
-               f"{type(t)}")
-    raise TypeError(err_msg)
 
 
 def to_boolean(series: pd.Series,
@@ -294,61 +245,20 @@ def to_datetime(
 def to_timedelta(
     series: pd.Series,
     offset: datetime.timedelta | pd.Timedelta | None = None) -> pd.Series:
-    original = series.copy()
-
     # attempt to return series as-is
     if pd.api.types.is_timedelta64_dtype(series):
-        return original
+        return series
 
-    # series has object dtype -> infer objects
+    # series has object dtype -> attempt to infer objects
     series = series.infer_objects()
     if pd.api.types.is_timedelta64_dtype(series):
         return series
 
-    # timedeltas don't fit within timedelta64[ns] -> try datetime.timedelta
-    series = to_integer(series, unit="ns", offset=offset, tol=0)
-    min_val = series.min()
-    max_val = series.max()
-    if (min_val >= total_nanoseconds(datetime.timedelta.min) and 
-        max_val <= total_nanoseconds(datetime.timedelta.max)):
-        conv = lambda x: (pd.NaT if pd.isna(x)
-                          else datetime.timedelta(microseconds = x // 1000))
-        return series.apply(conv)
-
-    # timedeltas don't fit within datetime.timedelta -> try different units
-    selected = None
-    for unit in ("ms", "s", "m", "h", "D", "W"):
-        scale_factor = _to_ns[unit]
-        if (series % scale_factor).any():
-            break
-        if (min_val // scale_factor >= -2**63 and
-            max_val // scale_factor <= 2**63 - 1):
-            selected = unit
-    if selected:    
-        series = series // _to_ns[selected]
-        return series.apply(lambda x: pd.NaT if pd.isna(x)
-                                    else np.timedelta64(x, selected))
-
-    # timedeltas don't fit within consistent timedelta64 units -> return mixed
-    def to_timedelta64_any_precision(x):
-        if pd.isna(x):
-            return pd.NaT
-        result = None
-        for unit in ("ns", "us", "ms", "s", "m", "h", "D", "W"):
-            scale_factor = _to_ns[unit]
-            if x % scale_factor:
-                break
-            rescaled = x // scale_factor
-            if -2**63 <= rescaled <= 2**63 - 1:
-                result = np.timedelta64(rescaled, unit)
-        if result:
-            return result
-        raise ValueError()  # stop at first bad value
-
-    try:
-        return series.apply(to_timedelta64_any_precision)
-    except ValueError:  # everything else has failed, return original series
-        return original
+    try:  # attempt to reconstruct from integer representation
+        return pdtypes.cast.integer.to_timedelta(to_integer(series, unit="ns"),
+                                                 unit="ns", offset=offset)
+    except ValueError:  # failed, return original series
+        return series
 
 
 def to_string(series: pd.Series, dtype: type = str) -> pd.Series:

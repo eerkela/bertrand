@@ -7,4 +7,3 @@ from . import datetime
 from . import timedelta
 from . import object
 from . import string
-# from . import categorical
