@@ -2,6 +2,15 @@
 Pandas data types made easy.
 
 ## Why Use This Package?
+`pdtypes` combines several base pandas
+functions into a more intuitive and
+abstract interface, granting the user fine
+control over the data types they're working
+with.  Easily clean and manipulate data,
+validate schema, and optimize performance
+for all of the most commonly encountered
+datasets.
+
 ### 1. Versatile
 `pdtypes` works on a wide variety of data,
 from simple numerics to arbitrary precision
@@ -23,14 +32,14 @@ reversible (i.e. int -> timedelta -> int),
 without changing the underlying value in
 any way.  The only exception to this is
 the natural precision loss intrinsic to
-floating point numbers, though this is
+floating point numbers, though that is
 mitigated wherever possible.
 
 The only way `pdtypes` can change your
-data is if you explicitly tell it to.
-This allows the user to gain fine control
-over the data types they're working with,
-without fear of artifacts or bias.
+data is if you explicitly tell it to,
+allowing users to transform them
+without fear of introducing artifacts or
+bias.
 
 ### 3. Simple
 Unlike the utility functions found in
@@ -64,11 +73,14 @@ When `convert_dtypes` is used without
 type arguments, it attempts to convert
 to extension types and infer/repair
 malformed objects like
-`pandas.Series.convert_dtypes` and
-`pandas.Dataframe.convert_dtypes` methods.
-When used with type arguments, it functions
-Like `pandas.Series.astype`, with checks
-to prevent information loss and tune the
+`pandas.Series.convert_dtypes`, 
+`pandas.Dataframe.convert_dtypes`,
+`pandas.Series.infer_objects`, and
+`pandas.Dataframe.infer_objects`
+methods/functions.  When used with type
+arguments, it functions Like
+`pandas.Series.astype`, with checks to
+prevent information loss and tune the
 conversion.  If the provided type is
 unable to hold missing values (such as
 `numpy.int64`), then automatic conversion
