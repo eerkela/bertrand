@@ -55,7 +55,7 @@ When used with type arguments, it behaves
 like the various
 `pandas.api.types.is_[blank]_dtype`
 functions, with the added benefit of
-inferance allowing fuzzy matching of
+inferance, which allows fuzzy matching of
 malformed input.  When applied to a
 dataframe, it returns a schema outlining
 the type of each column.
@@ -63,7 +63,7 @@ the type of each column.
 When `convert_dtypes` is used without
 type arguments, it attempts to convert
 to extension types and infer/repair
-malformed objects like the
+malformed objects like
 `pandas.Series.convert_dtypes` and
 `pandas.Dataframe.convert_dtypes` methods.
 When used with type arguments, it functions
@@ -77,10 +77,10 @@ performed.  What's more, any type given to
 `convert_dtypes` will reflect the actual
 contents of the resulting series, meaning
 that
-`convert_dtypes(series, "timedelta64[s])"
+`convert_dtypes(series, "timedelta64[s])"`
 will result in a series whose values are
 actually stored as NumPy timedelta64
-objects, and not silently converted to
+objects, not silently converted to
 `pd.Timedelta`.
 
 ### 4. Powerful
