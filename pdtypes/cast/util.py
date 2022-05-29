@@ -5,8 +5,14 @@ import re
 
 import numpy as np
 import pandas as pd
+from sympy import N
 
 from pdtypes.error import error_trace
+
+
+"""
+TODO: have month/day conversions handle missing values
+"""
 
 
 _time_unit_regex = re.compile(r'^[^\[]+\[([^\]]+)\]$')
@@ -43,13 +49,14 @@ _to_ns = {
 
 
 def trunc_div(a: int | pd.Series | np.ndarray, b: int) -> int | pd.Series:
-    """Integer division `//` rounded toward 0 rather than +/- infinity."""
+    """Integer division `//` operator rounded toward 0 rather than -infinity."""
     if isinstance(a, (pd.Series, np.ndarray)):  # vectorized
         result = a.copy()
         positives = (a >= 0)
         result[positives] = a[positives] // b  # floor div
         result[~positives] = -(a[~positives] // -b)  # ceiling div
         return result
+
     # scalar
     if a * b > 0:
         return a // b
@@ -66,38 +73,14 @@ def n_leaps(year: int) -> int:
     return year // 4 - year // 100 + year // 400
 
 
-def years_to_days(years: int | pd.Series,
-                  starting_year: int = 1970) -> int | pd.Series:
-    """Convert an integer number of years to an integer number of days,
-    accounting for leap years.
-    """
-    # replicating the Gregorian calendar
-    start_leaps = n_leaps(starting_year - 1)
-    end_leaps = n_leaps(starting_year + years - 1)
-    leap_years = end_leaps - start_leaps
-    return (years - leap_years) * 365 + leap_years * 366
-
-
-def days_to_years(days: int | pd.Series,
-                  starting_year: int = 1970,
-                  force: bool = False) -> int:
-    """Convert an integer number of days to an integer number of years,
-    accounting for leap years.
-    """
-    start_leaps = n_leaps(starting_year - 1)
-    end_leaps = n_leaps(starting_year + trunc_div(days, 365) - 1)
-    leap_years = end_leaps - start_leaps
-    result = trunc_div(days - leap_years, 365)
-    if not force:  # check for information loss
-        reverse = years_to_days(result, starting_year=starting_year)
-        if not np.array_equal(reverse, days):
-            err_msg = (f"[{error_trace()}] could not convert days to years "
-                       f"without losing precision: {days}")
-            raise ValueError(err_msg)
-    return result
-
-
 def month_mask(month_span: int, starting_month: int = 1) -> list[int]:
+    """Convert an integer number of months into a 1x12 mask containing ones
+    indicating which months have been selected, starting from `starting_month`.
+
+    If `starting_month != 1` and `month_span` would carry over into a new year,
+    the mask values are wrapped to the beginning of the array, indicating
+    months in the following year.
+    """
     month_span = month_span % 12
     offset = (starting_month - 1) % 12
     wrap = (offset + month_span) // 12 * (offset + month_span) % 12
@@ -109,6 +92,18 @@ def month_mask(month_span: int, starting_month: int = 1) -> list[int]:
 
 
 def days_per_month(year: int, starting_month: int = 1) -> np.ndarray:
+    """Get a 1x12 array of days in each month for a given year.
+    
+    If `starting_month != 1`, any month below `starting_month` is wrapped into
+    the next year, with leap years taken into account.
+
+    `days_per_month(1967, starting_month: int = 2)`:
+    +----+----+----+----+----+----+----+----+----+----+----+----+
+    | 31 | 29 | 31 | 30 | 31 | 30 | 31 | 31 | 30 | 31 | 30 | 31 |
+    +----+----+----+----+----+----+----+----+----+----+----+----+
+    
+    ^ First 2 indices belong to January/February 1968, which was a leap year 
+    """
     offset = (starting_month - 1) % 12
     normal = np.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31])
     leap = np.array([31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31])
@@ -125,11 +120,58 @@ def days_per_month(year: int, starting_month: int = 1) -> np.ndarray:
     return normal
 
 
+def years_to_days(years: int | pd.Series | np.ndarray,
+                  starting_year: int = 1970) -> int | pd.Series | np.ndarray:
+    """Convert an integer number of years to an equivalent number of days,
+    accounting for leap years.
+
+    `starting_year` references January 1st of the given year, counting up/down
+    from there.  `years_to_days(1, 1970)` will count how many days there were
+    in 1970, and `years_to_days(-1, 1970)` will count the days in 1969.
+    """
+    # replicating the Gregorian calendar
+    start_leaps = n_leaps(starting_year - 1)
+    end_leaps = n_leaps(starting_year + years - 1)
+    leap_years = end_leaps - start_leaps
+    return (years - leap_years) * 365 + leap_years * 366
+
+
+def days_to_years(days: int | pd.Series | np.ndarray,
+                  starting_year: int = 1970,
+                  force: bool = False) -> int | pd.Series | np.ndarray:
+    """Convert an integer number of days to an equivalent number of years,
+    accounting for leap years.
+
+    `starting_year` references January 1st of the given year, counting up/down
+    from there.
+
+    `force=False` rejects any input that would lead to a non-integer number of
+    years.
+    """
+    start_leaps = n_leaps(starting_year - 1)
+    end_leaps = n_leaps(starting_year + trunc_div(days, 365) - 1)
+    leap_years = end_leaps - start_leaps
+    result = trunc_div(days - leap_years, 365)
+    if not force:  # check for information loss
+        reverse = years_to_days(result, starting_year=starting_year)
+        if not np.array_equal(reverse, days):
+            err_msg = (f"[{error_trace()}] could not convert days to years "
+                       f"without losing precision: {days}")
+            raise ValueError(err_msg)
+    return result
+
+
 def months_to_days(months: int | pd.Series | np.ndarray,
-                   starting_month: int = 1,
-                   starting_year: int = 1970) -> int | pd.Series | np.ndarray:
-    """Convert an integer number of months into an integer number of days,
-    accounting for leap years and unequal month lengths.
+                   starting_year: int = 1970,
+                   starting_month: int = 1) -> int | pd.Series | np.ndarray:
+    """Convert an integer number of months into an equivalent number of days,
+    accounting for unequal month lengths and leap years.
+
+    `starting_year` references the year to begin counting from, in order to
+    account for leap years.  `starting_month` references the month to count
+    from, between 1 (January) and 12 (December).  If `months` would carry over
+    into another year with `starting_month != 1`, leap years are still taken
+    into account.
     """
     # only have to figure out days in last year, else use years_to_days
     years = months // 12
@@ -140,8 +182,8 @@ def months_to_days(months: int | pd.Series | np.ndarray,
         # map month spans to masks, multiply by day count, then sum by row
         mapping = np.array([month_mask(i, starting_month) for i in range(12)])
         masks = mapping[months % 12]  # nx12
-        days = days_per_month(years, starting_month)  # nx12
-        return base_days + np.sum(np.multiply(masks, days), axis=1)  # nx1
+        calendar = days_per_month(starting_year + years, starting_month)  # nx12
+        return base_days + np.sum(np.multiply(masks, calendar), axis=1)  # nx1
 
     # scalar
     calendar = days_per_month(starting_year + years, starting_month)
@@ -150,20 +192,101 @@ def months_to_days(months: int | pd.Series | np.ndarray,
     return (base_days + np.sum(calendar[begin:end]))
 
 
-def days_to_months(days: int,
-                   starting_month: int = 1,
+def days_to_months(days: int | pd.Series | np.ndarray,
                    starting_year: int = 1970,
-                   force: bool = False) -> int:
-    pass
-    
+                   starting_month: int = 1,
+                   force: bool = False) -> int | pd.Series | np.ndarray:
+    """Convert an integer number of days into an equivalent number of months,
+    accounting for unequal month lengths and leap years.
 
+    `starting_year` references the year to begin counting from, in order to
+    account for leap years.  `starting_month` references the month to count
+    from, between 1 (January) and 12 (December).  If `days` would carry over
+    into another year with `starting_month != 1`, leap years are still taken
+    into account.
 
+    `force=False` rejects any input that would lead to a non-integer number of
+    months.
+    """
+    # only have to figure out months in last year, else use days_to_years
+    years = days_to_years(days, force=True)
+    result = years * 12
+
+    # vectorized
+    if isinstance(days, (pd.Series, np.ndarray)):
+        # have to handle positive and negative day spans differently
+        negative = (days < 0)
+
+        # set up calendar with days per month for each month in last year
+        calendar = np.full((len(days), 12), 0)
+        calendar[~negative] = days_per_month(starting_year + years,
+                                             starting_month=starting_month)
+        # negative days needs to use the previous year
+        calendar[negative] = days_per_month(starting_year + years - 1,
+                                            starting_month=starting_month)
+        # transform calendar into span thresholds using cumsum()
+        calendar = np.cumsum(calendar, axis=1)
+
+        # figure out how many days are in last year, modulo length of year
+        last_year = ((days - years_to_days(years,
+                                           starting_year=starting_year)) %
+                     calendar[:, -1])
+        # transform into same dimensions as calendar thresholds
+        last_year = np.array([last_year] * 12).T
+
+        # count thresholds that are over (negative) or under (positive)
+        result[~negative] += np.sum(calendar <= last_year, axis=1)
+        result[negative] -= np.sum(calendar > last_year, axis=1)
+
+    # scalar
+    else:
+        # get calendar with days in each month for last year
+        if days < 0:  # negative days use previous year
+            calendar = days_per_month(starting_year + years - 1,
+                                      starting_month=starting_month)
+        else:
+            calendar = days_per_month(starting_year + years,
+                                      starting_month=starting_month)
+        calendar = np.cumsum(calendar)
+
+        # figure out how many days are in last year, modulo length of year
+        last_year = ((days - years_to_days(years,
+                                          starting_year=starting_year)) %
+                     calendar[-1])
+        # transform into same dimensions as calendar thresholds
+        last_year = np.array([last_year] * 12)
+
+        # count thresholds that are over (negative) or under (positive)
+        if days < 0:
+            result -= np.sum(calendar > last_year)
+        else:
+            result += np.sum(calendar <= last_year)
+
+    # check for information loss
+    if not force:
+        reverse = months_to_days(result, starting_month=starting_month,
+                                 starting_year=starting_year)
+        if not np.array_equal(reverse, days):
+            err_msg = (f"[{error_trace()}] could not convert days to years "
+                    f"without losing precision: {days}")
+            raise ValueError(err_msg)
+    return result
 
 
 def total_nanoseconds(
     td: pd.Timedelta | datetime.timedelta | np.timedelta64,
     starting_year: int = 1970,
     starting_month: int = 1) -> int:
+    """Get the total number of nanoseconds stored in a timedelta object as an
+    integer.  Essentially the equivalent of timedelta.total_seconds(), except
+    it returns an integer number of nanoseconds rather than a float
+    representing seconds.
+    
+    timedelta64 units 'Y' and 'M' are supported via the `years_to_days` and
+    `months_to_days` functions defined above.  Leap years and unequal month
+    lengths are handled by the `starting_year` and `starting_month` arguments,
+    defaulting to UTC epoch time (1970-01-01).
+    """
     # pd.Timedelta
     if isinstance(td, pd.Timedelta):
         return td.asm8.astype(int)
@@ -196,6 +319,12 @@ def total_nanoseconds(
 
 
 def ns_since_epoch(dt: pd.Timestamp | datetime.datetime | np.datetime64) -> int:
+    """Returns the UTC timestamp of a datetime object as an integer number of
+    nanoseconds.
+    
+    datetime64 units 'Y' and 'M' are supported via the `years_to_days` and
+    `months_to_days` functions defined above.
+    """
     # pd.Timestamp
     if isinstance(dt, pd.Timestamp):
         return dt.asm8.astype(int)
@@ -229,6 +358,10 @@ def ns_since_epoch(dt: pd.Timestamp | datetime.datetime | np.datetime64) -> int:
 
 
 def time_unit(t: str | type | np.datetime64 | np.timedelta64) -> str:
+    """Returns the resolution of a datetime64 or timedelta64 object, dtype,
+    or array protocol type string.  Returns `None` if argument has no specified
+    resolution.
+    """
     if isinstance(t, (np.datetime64, np.timedelta64)):
         dtype_str = str(t.dtype)
     else:
