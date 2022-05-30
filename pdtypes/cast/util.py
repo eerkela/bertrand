@@ -1,11 +1,10 @@
 from __future__ import annotations
-from calendar import month
 import datetime
+from functools import wraps
 import re
 
 import numpy as np
 import pandas as pd
-from sympy import N
 
 from pdtypes.error import error_trace
 
@@ -63,14 +62,24 @@ def trunc_div(a: int | pd.Series | np.ndarray, b: int) -> int | pd.Series:
     return -(a // -b)
 
 
-def is_leap_year(year: int | pd.Series | np.ndarray) -> bool:
+def is_leap_year(
+    year: int | pd.Series | np.ndarray
+) -> bool | pd.Series | np.ndarray:
     """Returns True if given year is a leap year."""
     return (year % 4 == 0) & ((year % 100 != 0) | (year % 400 == 0))
 
 
-def n_leaps(year: int) -> int:
-    """Return the number of leap years between year 0 and the given year."""
-    return year // 4 - year // 100 + year // 400
+def leaps_between(
+    begin: int | pd.Series | np.ndarray,
+    end: int | pd.Series | np.ndarray
+) -> int | pd.Series | np.ndarray:
+    """Return the number of leap years between the years `begin` and `end`.
+
+    Counts from the beginning of each year.  This means that
+    `leaps_between(x, x + 1)` will return 1 if `x` was a leap year.
+    """
+    count = lambda x: x // 4 - x // 100 + x // 400
+    return count(end - 1) - count(begin - 1)  # Exclusive
 
 
 def month_mask(month_span: int, starting_month: int = 1) -> list[int]:
@@ -120,8 +129,34 @@ def days_per_month(year: int, starting_month: int = 1) -> np.ndarray:
     return normal
 
 
-def years_to_days(years: int | pd.Series | np.ndarray,
-                  starting_year: int = 1970) -> int | pd.Series | np.ndarray:
+def nullable(func):
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        array_like = args[0]
+        if isinstance(array_like, (pd.Series, np.ndarray)):
+            original_dtype = array_like.dtype
+            na_indices = pd.isna(array_like)
+            nans = array_like[na_indices]
+            array_like[na_indices] = 0
+
+            result = func(array_like.astype(int), *args[1:], **kwargs)
+
+            result[na_indices] = nans
+            if (result.min() >= -2**(8 * original_dtype.itemsize - 1) and
+                result.max() <= 2**(8 * original_dtype.itemsize - 1) - 1):
+                return result.astype(original_dtype)
+            return result
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+@nullable
+def years_to_days(
+    years: int | pd.Series | np.ndarray,
+    starting_year: int | pd.Series | np.ndarray = 1970
+) -> int | pd.Series | np.ndarray:
     """Convert an integer number of years to an equivalent number of days,
     accounting for leap years.
 
@@ -130,15 +165,25 @@ def years_to_days(years: int | pd.Series | np.ndarray,
     in 1970, and `years_to_days(-1, 1970)` will count the days in 1969.
     """
     # replicating the Gregorian calendar
-    start_leaps = n_leaps(starting_year - 1)
-    end_leaps = n_leaps(starting_year + years - 1)
-    leap_years = end_leaps - start_leaps
-    return (years - leap_years) * 365 + leap_years * 366
+    if isinstance(years, (pd.Series, np.ndarray)):
+        if (isinstance(starting_year, (pd.Series, np.ndarray)) and
+            len(starting_year) != len(years)):
+            err_msg = (f"[{error_trace()}] `days` and `starting_year` must be "
+                       f"the same length or scalar (days: {len(years)}, "
+                       f"starting_year: {len(starting_year)})")
+            raise ValueError(err_msg)
+        years = years.astype("O")  # prevents overflow
+
+    leaps = leaps_between(starting_year, starting_year + years)
+    return (years - leaps) * 365 + leaps * 366
 
 
-def days_to_years(days: int | pd.Series | np.ndarray,
-                  starting_year: int = 1970,
-                  force: bool = False) -> int | pd.Series | np.ndarray:
+@nullable
+def days_to_years(
+    days: int | pd.Series | np.ndarray,
+    starting_year: int | pd.Series | np.ndarray = 1970,
+    force: bool = False
+) -> int | pd.Series | np.ndarray:
     """Convert an integer number of days to an equivalent number of years,
     accounting for leap years.
 
@@ -148,17 +193,78 @@ def days_to_years(days: int | pd.Series | np.ndarray,
     `force=False` rejects any input that would lead to a non-integer number of
     years.
     """
-    start_leaps = n_leaps(starting_year - 1)
-    end_leaps = n_leaps(starting_year + trunc_div(days, 365) - 1)
-    leap_years = end_leaps - start_leaps
-    result = trunc_div(days - leap_years, 365)
-    if not force:  # check for information loss
-        reverse = years_to_days(result, starting_year=starting_year)
-        if not np.array_equal(reverse, days):
-            err_msg = (f"[{error_trace()}] could not convert days to years "
-                       f"without losing precision: {days}")
+    # TODO: profile this
+    # TODO: replace `force` with `residuals: bool = True` to return residuals
+    # as tuple.  Setting this false simulates `force=True`.  Have to invert
+    # negative residuals for this to be accurate
+
+    # vectorized case
+    vectorized_days = isinstance(days, (pd.Series, np.ndarray))
+    vectorized_start_years = isinstance(starting_year, (pd.Series, np.ndarray))
+    if (vectorized_days or vectorized_start_years):
+        # check input and cast to object to prevent overflow
+        if (vectorized_days and
+            vectorized_start_years and
+            len(starting_year) != len(days)):
+            err_msg = (f"[{error_trace()}] `days` and `starting_year` must be "
+                       f"the same length or scalar (days: {len(days)}, "
+                       f"starting_year: {len(starting_year)})")
             raise ValueError(err_msg)
-    return result
+        if vectorized_days:
+            days = days.astype("O")
+        if vectorized_start_years:
+            starting_year = starting_year.astype("O")
+
+        # use days since year 0 to enable accurate leap year estimation
+        since_0 = days + years_to_days(starting_year, starting_year=0)
+        year_estimate = (400 * since_0) // 146097  # gets within 1 year
+
+        # estimate sometimes undershoots by a year due to rounding errors
+        residuals = since_0 - years_to_days(year_estimate, starting_year=0)
+        div_correct = (days < 0) & (residuals > 0)  # correcting for floor div
+        carry = (residuals == years_to_days(1, starting_year=year_estimate))
+        year_estimate[div_correct | carry] += 1
+
+        # check for information loss
+        if not force:
+            residuals[carry] = 0
+            if residuals.any():
+                bad = residuals[residuals != 0].index.values
+                if len(bad) == 1:  # singular
+                    err_msg = (f"[{error_trace()}] could not convert days to "
+                               f"years without losing precision (index: "
+                               f"{list(bad)})")
+                elif len(bad) <= 5:  # plural
+                    err_msg = (f"[{error_trace()}] could not convert days to "
+                               f"years without losing precision (indices: "
+                               f"{list(bad)})")
+                else:  # plural, shortened for brevity
+                    shortened = ", ".join(str(i) for i in bad[:5])
+                    err_msg = (f"[{error_trace()}] could not convert days to "
+                               f"years without losing precision (indices: "
+                               f"[{shortened}, ...] ({len(bad)}))")
+                raise ValueError(err_msg)
+        return year_estimate - starting_year
+
+    # scalar case
+    # use days since year 0 to enable accurate leap year estimation
+    since_0 = days + years_to_days(starting_year, starting_year=0)
+    year_estimate = (400 * since_0) // 146097  # gets within 1 year
+
+    # estimate sometimes undershoots by a year due to rounding errors
+    residuals = since_0 - years_to_days(year_estimate, starting_year=0)
+    if days < 0 and residuals > 0:  # correct for floor div
+        year_estimate += 1
+    elif residuals == years_to_days(1, starting_year=year_estimate):  # carry
+        year_estimate += 1
+        residuals = 0
+
+    # check for information loss
+    if not force and residuals:
+        err_msg = (f"[{error_trace()}] could not convert days to years "
+                   f"without losing precision: {days}")
+        raise ValueError(err_msg)
+    return year_estimate - starting_year
 
 
 def months_to_days(months: int | pd.Series | np.ndarray,
@@ -179,17 +285,28 @@ def months_to_days(months: int | pd.Series | np.ndarray,
 
     # vectorized
     if isinstance(months, (pd.Series, np.ndarray)):
+        # get na indices
+        nan_indices = pd.isna(months)
+        nans = months[nan_indices]
+        original_dtype = months.dtype
+        months[nan_indices] = 0
+        months = months.astype(int)  # removes extension dtype
+
         # map month spans to masks, multiply by day count, then sum by row
         mapping = np.array([month_mask(i, starting_month) for i in range(12)])
         masks = mapping[months % 12]  # nx12
         calendar = days_per_month(starting_year + years, starting_month)  # nx12
-        return base_days + np.sum(np.multiply(masks, calendar), axis=1)  # nx1
+        result = base_days.astype(object) + np.sum(np.multiply(masks, calendar), axis=1).astype(object)  # nx1
+        result[nan_indices] = nans
+        return result.astype(original_dtype)
 
     # scalar
     calendar = days_per_month(starting_year + years, starting_month)
     begin = starting_month - 1
     end = (starting_month - 1 + months) % 12
     return (base_days + np.sum(calendar[begin:end]))
+    result[nan_indices] = nans
+    return result.astype(original_dtype)
 
 
 def days_to_months(days: int | pd.Series | np.ndarray,
@@ -266,7 +383,7 @@ def days_to_months(days: int | pd.Series | np.ndarray,
     if not force:
         reverse = months_to_days(result, starting_month=starting_month,
                                  starting_year=starting_year)
-        if not np.array_equal(reverse, days):
+        if not np.array_equal(reverse[pd.notna(reverse)], days[pd.notna(days)]):
             err_msg = (f"[{error_trace()}] could not convert days to years "
                     f"without losing precision: {days}")
             raise ValueError(err_msg)
