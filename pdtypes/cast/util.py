@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections import namedtuple
 import datetime
 from functools import wraps
 import re
@@ -77,6 +78,8 @@ def leaps_between(
 
     Counts from the beginning of each year.  This means that
     `leaps_between(x, x + 1)` will return 1 if `x` was a leap year.
+
+    Identical to `calendar.leapdays()` from the built-in `calendar` package.
     """
     count = lambda x: x // 4 - x // 100 + x // 400
     return count(end - 1) - count(begin - 1)  # Exclusive
@@ -130,6 +133,7 @@ def days_per_month(year: int, starting_month: int = 1) -> np.ndarray:
 
 
 def nullable(func):
+    """Allows a vectorized function to accept missing values as inputs"""
 
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -142,10 +146,19 @@ def nullable(func):
 
             result = func(array_like.astype(int), *args[1:], **kwargs)
 
-            result[na_indices] = nans
-            if (result.min() >= -2**(8 * original_dtype.itemsize - 1) and
-                result.max() <= 2**(8 * original_dtype.itemsize - 1) - 1):
-                return result.astype(original_dtype)
+            if isinstance(result, tuple):  # residuals present
+                result, residuals = result
+                result[na_indices] = nans
+                residuals[na_indices] = nans
+                if residuals.hasnans:
+                    residuals = residuals.astype(pd.Int16Dtype())
+                else:
+                    residuals = residuals.astype(np.int16)
+                if (result.min() >= -2**(8 * original_dtype.itemsize - 1) and
+                    result.max() <= 2**(8 * original_dtype.itemsize - 1) - 1):
+                    result = result.astype(original_dtype)
+                return result, residuals
+
             return result
         return func(*args, **kwargs)
 
@@ -164,15 +177,23 @@ def years_to_days(
     from there.  `years_to_days(1, 1970)` will count how many days there were
     in 1970, and `years_to_days(-1, 1970)` will count the days in 1969.
     """
+    vectorized_years = isinstance(years, (pd.Series, np.ndarray))
+    vectorized_start_years = isinstance(starting_year, (pd.Series, np.ndarray))
+
     # replicating the Gregorian calendar
-    if isinstance(years, (pd.Series, np.ndarray)):
-        if (isinstance(starting_year, (pd.Series, np.ndarray)) and
+    if (vectorized_years or vectorized_start_years):
+        # check input and cast to object to prevent overflow
+        if (vectorized_years and
+            vectorized_start_years and
             len(starting_year) != len(years)):
             err_msg = (f"[{error_trace()}] `days` and `starting_year` must be "
                        f"the same length or scalar (days: {len(years)}, "
                        f"starting_year: {len(starting_year)})")
             raise ValueError(err_msg)
-        years = years.astype("O")  # prevents overflow
+        if vectorized_years:
+            years = years.astype("O")
+        if vectorized_start_years:
+            starting_year = starting_year.astype("O")
 
     leaps = leaps_between(starting_year, starting_year + years)
     return (years - leaps) * 365 + leaps * 366
@@ -182,22 +203,18 @@ def years_to_days(
 def days_to_years(
     days: int | pd.Series | np.ndarray,
     starting_year: int | pd.Series | np.ndarray = 1970,
-    force: bool = False
+    residuals: bool = True
 ) -> int | pd.Series | np.ndarray:
     """Convert an integer number of days to an equivalent number of years,
-    accounting for leap years.
+    accounting for leap years according to the proleptic Gregorian calendar.
 
     `starting_year` references January 1st of the given year, counting up/down
     from there.
 
-    `force=False` rejects any input that would lead to a non-integer number of
-    years.
+    `residuals=True` returns the leftover days in addition to the estimated
+    year as the second element of a named tuple with fields
+    `(result, residual)`.
     """
-    # TODO: profile this
-    # TODO: replace `force` with `residuals: bool = True` to return residuals
-    # as tuple.  Setting this false simulates `force=True`.  Have to invert
-    # negative residuals for this to be accurate
-
     # vectorized case
     vectorized_days = isinstance(days, (pd.Series, np.ndarray))
     vectorized_start_years = isinstance(starting_year, (pd.Series, np.ndarray))
@@ -211,40 +228,28 @@ def days_to_years(
                        f"starting_year: {len(starting_year)})")
             raise ValueError(err_msg)
         if vectorized_days:
-            days = days.astype("O")
+            days = days.astype("O")  # prevents overflow
         if vectorized_start_years:
-            starting_year = starting_year.astype("O")
+            starting_year = starting_year.astype("O")  # prevents overflow
 
         # use days since year 0 to enable accurate leap year estimation
         since_0 = days + years_to_days(starting_year, starting_year=0)
         year_estimate = (400 * since_0) // 146097  # gets within 1 year
 
         # estimate sometimes undershoots by a year due to rounding errors
-        residuals = since_0 - years_to_days(year_estimate, starting_year=0)
-        div_correct = (days < 0) & (residuals > 0)  # correcting for floor div
-        carry = (residuals == years_to_days(1, starting_year=year_estimate))
+        res = since_0 - years_to_days(year_estimate, starting_year=0)
+        div_correct = (days < 0) & (res > 0)  # correcting for floor div
+        carry = (res == years_to_days(1, starting_year=year_estimate))
         year_estimate[div_correct | carry] += 1
+        if not residuals:
+            return year_estimate + starting_year  # fast path
 
-        # check for information loss
-        if not force:
-            residuals[carry] = 0
-            if residuals.any():
-                bad = residuals[residuals != 0].index.values
-                if len(bad) == 1:  # singular
-                    err_msg = (f"[{error_trace()}] could not convert days to "
-                               f"years without losing precision (index: "
-                               f"{list(bad)})")
-                elif len(bad) <= 5:  # plural
-                    err_msg = (f"[{error_trace()}] could not convert days to "
-                               f"years without losing precision (indices: "
-                               f"{list(bad)})")
-                else:  # plural, shortened for brevity
-                    shortened = ", ".join(str(i) for i in bad[:5])
-                    err_msg = (f"[{error_trace()}] could not convert days to "
-                               f"years without losing precision (indices: "
-                               f"[{shortened}, ...] ({len(bad)}))")
-                raise ValueError(err_msg)
-        return year_estimate - starting_year
+        # correct residuals -> zero out carried residuals and allow negative
+        ConversionResult = namedtuple("ConversionResult", ["result", "residual"])
+        res[carry] = 0
+        lengths = years_to_days(-1, starting_year=year_estimate[div_correct])
+        res[div_correct] = res[div_correct] + lengths
+        return ConversionResult(year_estimate - starting_year, res)
 
     # scalar case
     # use days since year 0 to enable accurate leap year estimation
@@ -252,19 +257,17 @@ def days_to_years(
     year_estimate = (400 * since_0) // 146097  # gets within 1 year
 
     # estimate sometimes undershoots by a year due to rounding errors
-    residuals = since_0 - years_to_days(year_estimate, starting_year=0)
-    if days < 0 and residuals > 0:  # correct for floor div
+    res = since_0 - years_to_days(year_estimate, starting_year=0)
+    if days < 0 and res > 0:  # correct for floor div
         year_estimate += 1
-    elif residuals == years_to_days(1, starting_year=year_estimate):  # carry
+        res = res + years_to_days(-1, starting_year=year_estimate)
+    elif res == years_to_days(1, starting_year=year_estimate):  # carry
         year_estimate += 1
-        residuals = 0
-
-    # check for information loss
-    if not force and residuals:
-        err_msg = (f"[{error_trace()}] could not convert days to years "
-                   f"without losing precision: {days}")
-        raise ValueError(err_msg)
-    return year_estimate - starting_year
+        res = 0
+    if not residuals:
+        return year_estimate - starting_year
+    ConversionResult = namedtuple("ConversionResult", ["result", "residual"])
+    return ConversionResult(year_estimate - starting_year, res)
 
 
 def months_to_days(months: int | pd.Series | np.ndarray,
