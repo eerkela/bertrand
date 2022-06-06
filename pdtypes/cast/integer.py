@@ -9,7 +9,7 @@ import pytz
 import tzlocal
 
 from pdtypes.error import error_trace
-from pdtypes.cast.util import _to_ns, ns_since_epoch, time_unit, total_nanoseconds
+from pdtypes.cast.util import _to_ns, ns_since_epoch, time_unit, total_nanoseconds, date_to_days
 
 
 """
@@ -213,6 +213,32 @@ def to_datetime(
                    f"numpy.datetime64, not {type(offset)}")
         raise TypeError(err_msg)
 
+    # handle irregular units
+    if unit in ("M", "month", "months", "Y", "year", "years"):
+        # get offset year, month, day
+        if offset is None:
+            offset_year = 1970,
+            offset_month = 1,
+            offset_day = 1
+        elif isinstance(offset, np.datetime64):
+            Y, M, D = [offset.astype(f"M8[{x}]") for x in "YMD"]
+            offset_year = int(Y.astype("i8") + 1970)
+            offset_month = int((M - Y).astype("i8") + 1)
+            offset_day = int((D - M).astype("i8") + 1)
+        else:
+            offset_year = offset.year
+            offset_month = offset.month
+            offset_day = offset.day
+
+        # TODO: maintain time offset
+
+        # convert to days
+        if unit in ("M", "month", "months"):
+            series = date_to_days(offset_year, offset_month + series, offset_day)
+        else:
+            series = date_to_days(offset_year + series, offset_month, offset_day)
+        unit = "D"
+
     # convert to nanoseconds since epoch and apply offset
     if offset:
         offset_ns = ns_since_epoch(offset)
@@ -256,7 +282,119 @@ def to_datetime(
             tz = tzlocal.get_localzone_name()
         return series.dt.tz_convert(tz)
 
-    # TODO: datetime.datetime, np.datetime64 with or without units
+
+    # datetime.datetime
+    if dtype in (datetime.datetime, "datetime.datetime"):
+        pass
+
+    #     # check whether series fits within datetime.datetime range/precision
+    #     if (min_val < ns_since_epoch(datetime.datetime.min) or
+    #         max_val > ns_since_epoch(datetime.datetime.max) or
+    #         (series % 1000).any()):
+    #         bad = series[(series < ns_since_epoch(datetime.datetime.min)) |
+    #                      (series > ns_since_epoch(datetime.datetime.max)) |
+    #                      (series % 1000 != 0)].index.values
+    #         if len(bad) == 1:  # singular
+    #             err_msg = (f"[{error_trace()}] integer series could not be "
+    #                        f"converted to {datetime.datetime}: values "
+    #                        f"exceed available range or have < us precision "
+    #                        f"(index: {list(bad)})")
+    #         elif len(bad) <= 5:  # plural
+    #             err_msg = (f"[{error_trace()}] integer series could not be "
+    #                        f"converted to {datetime.datetime}: values "
+    #                        f"exceed available range or have < us precision "
+    #                        f"(indices: {list(bad)})")
+    #         else:  # plural, shortened for brevity
+    #             shortened = ", ".join(str(i) for i in bad[:5])
+    #             err_msg = (f"[{error_trace()}] integer series could not be "
+    #                        f"converted to {datetime.datetime}: values "
+    #                        f"exceed available range or have < us precision "
+    #                        f"(indices: [{shortened}, ...] ({len(bad)}))")
+    #         raise OverflowError(err_msg)
+
+    #     # convert and return
+    #     make_td = lambda x: datetime.datetime(microseconds=int(x) // 1000)
+    #     return series.apply(lambda x: pd.NaT if pd.isna(x) else make_td(x))
+
+    # # np.timedelta64 - arbitrary precision
+    # if dtype in (np.timedelta64, "numpy.timedelta64", "np.timedelta64",
+    #              "timedelta64", np.dtype(np.timedelta64), "m8", "<m8", ">m8"):
+    #     # prefer nanosecond precision if possible to enable .dt namespace
+    #     if min_val >= -2**63 and max_val <= 2**63 - 1:
+    #         return pd.to_timedelta(series, unit="ns")
+
+    #     # attempt to select a non-ns unit based on series range
+    #     selected = None
+    #     for unit in ("us", "ms", "s", "m", "h", "D", "W"):
+    #         scale_factor = _to_ns[unit]
+    #         if (series % scale_factor).any():
+    #             break
+    #         if (min_val // scale_factor >= -2**63 and
+    #             max_val // scale_factor <= 2**63 - 1):
+    #             selected = unit
+    #     if selected:
+    #         scale_factor = _to_ns[selected]
+    #         make_td = lambda x: np.timedelta64(x // scale_factor, selected)
+    #         return series.apply(lambda x: pd.NaT if pd.isna(x) else make_td(x))
+
+    #     # if series does not fit within consistent units, return mixed
+    #     def to_timedelta64_any_precision(x):
+    #         if pd.isna(x):
+    #             return pd.NaT
+    #         result = None
+    #         for unit in ("ns", "us", "ms", "s", "m", "h", "D", "W"):
+    #             scale_factor = _to_ns[unit]
+    #             if x % scale_factor:
+    #                 break
+    #             rescaled = x // scale_factor
+    #             if -2**63 <= rescaled <= 2**63 - 1:
+    #                 result = np.timedelta64(rescaled, unit)
+    #         if result:
+    #             return result
+    #         raise OverflowError()  # stop at first bad value
+
+    #     try:
+    #         return series.apply(to_timedelta64_any_precision)
+    #     except OverflowError:
+    #         err_msg = (f"[{error_trace()}] series cannot be converted to "
+    #                    f"timedelta64 at any precision: values exceed 64-bit "
+    #                    f"limit for every choice of unit")
+    #         raise OverflowError(err_msg)
+
+    # # np.timedelta64 - specific units
+    # if pd.api.types.is_timedelta64_dtype(dtype):
+    #     # get units and scale factor from dtype
+    #     dtype_unit = time_unit(dtype)
+    #     scale_factor = _to_ns[dtype_unit]
+
+    #     # check whether series values fit within available range for dtype_unit
+    #     if (min_val // scale_factor < -2**63 or
+    #         max_val // scale_factor > 2**63 - 1 or
+    #         (series % scale_factor).any()):
+    #         bad = series[(series < -2**63 * scale_factor) |
+    #                      (series > (2**63 - 1) * scale_factor) |
+    #                      (series % scale_factor != 0)].index.values
+    #         if len(bad) == 1:  # singular
+    #             err_msg = (f"[{error_trace()}] integer series could not be "
+    #                        f"converted to timedelta64[{dtype_unit}]: values "
+    #                        f"exceed 64-bit range (index: {list(bad)})")
+    #         elif len(bad) <= 5:  # plural
+    #             err_msg = (f"[{error_trace()}] integer series could not be "
+    #                        f"converted to timedelta64[{dtype_unit}]: values "
+    #                        f"exceed 64-bit range (indices: {list(bad)})")
+    #         else:  # plural, shortened for brevity
+    #             shortened = ", ".join(str(i) for i in bad[:5])
+    #             err_msg = (f"[{error_trace()}] integer series could not be "
+    #                        f"converted to timedelta64[{dtype_unit}]: values "
+    #                        f"exceed 64-bit range (indices: [{shortened}, ...] "
+    #                        f"({len(bad)}))")
+    #         raise OverflowError(err_msg)
+
+    #     make_td = lambda x: np.timedelta64(x // scale_factor, dtype_unit)
+    #     return series.apply(lambda x: pd.NaT if pd.isna(x) else make_td(x))
+
+    # err_msg = (f"[{error_trace()}] could not interpret `dtype`: {dtype}")
+    # raise ValueError(err_msg)
 
 
 
