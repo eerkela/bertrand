@@ -25,6 +25,60 @@ Test Cases:
 #######################
 
 
+def _fits_within(min_val: int, max_val: int, dtype: type | str) -> bool:
+    size = 8 * dtype.itemsize
+    if pd.api.types.is_unsigned_integer_dtype(dtype):
+        return min_val >= 0 and max_val <= 2**size - 1
+    return min_val >= -2**(size - 1) and max_val <= 2**(size - 1) - 1
+
+
+def _downcast_int_dtype(min_val: int, max_val: int, dtype: type | str) -> type:
+    if dtype.itemsize == 1:
+        return dtype
+
+    # get type hierarchy
+    if pd.api.types.is_extension_array_dtype(dtype):
+        if pd.api.types.is_unsigned_integer_dtype(dtype):
+            type_hierarchy = {
+                8: pd.UInt64Dtype(),
+                4: pd.UInt32Dtype(),
+                2: pd.UInt16Dtype(),
+                1: pd.UInt8Dtype()
+            }
+        else:
+            type_hierarchy = {
+                8: pd.Int64Dtype(),
+                4: pd.Int32Dtype(),
+                2: pd.Int16Dtype(),
+                1: pd.Int8Dtype()
+            }
+    else:
+        if pd.api.types.is_unsigned_integer_dtype(dtype):
+            type_hierarchy = {
+                8: np.dtype(np.uint64),
+                4: np.dtype(np.uint32),
+                2: np.dtype(np.uint16),
+                1: np.dtype(np.uint8)
+            }
+        else:
+            type_hierarchy = {
+                8: np.dtype(np.int64),
+                4: np.dtype(np.int32),
+                2: np.dtype(np.int16),
+                1: np.dtype(np.int8)
+            }
+
+    # check for smaller dtypes that fit given range
+    size = dtype.itemsize
+    selected = dtype
+    while size > 1:
+        test = type_hierarchy[size // 2]
+        size = test.itemsize
+        if _fits_within(min_val, max_val, test):
+            selected = test
+    return selected
+
+
 def _to_pandas_timestamp(series: pd.Series,
                          tz: str | pytz.timezone | None,
                          min_val: int,
@@ -409,42 +463,52 @@ def to_integer(series: pd.Series,
                    f"{dtype})")
         raise TypeError(err_msg)
 
-    # check whether series fits within specified dtype
+    # get min/max to evaluate range
     min_val = series.min()
     max_val = series.max()
+
+    # built-in integer special case - can be arbitrarily large
     if ((min_val < -2**63 or max_val > 2**63 - 1) and
-        dtype in (int, "int", "i")):
+        dtype in (int, "int", "i", "integer", "integers")):
+        # these special cases are unaffected by downcast
         if min_val >= 0 and max_val <= 2**64 - 1:  # > int64 but < uint64
             if series.hasnans:
                 return series.astype(pd.UInt64Dtype())
             return series.astype(np.uint64)
-        return series.apply(lambda x: pd.NA if pd.isna(x) else int(x))
-    pandas_dtype = pd.api.types.pandas_dtype(dtype)
-    if pd.api.types.is_unsigned_integer_dtype(dtype):
-        min_poss = 0
-        max_poss = 2**(8 * pandas_dtype.itemsize) - 1
-    else:
-        min_poss = -2**(8 * pandas_dtype.itemsize - 1)
-        max_poss = 2**(8 * pandas_dtype.itemsize - 1) - 1
-    if min_val < min_poss or max_val > max_poss:
+        return series.astype(object).fillna(pd.NA)
+
+    # convert to pandas dtype to expose itemsize
+    dtype = pd.api.types.pandas_dtype(dtype)
+
+    # check that series fits within specified dtype
+    if not _fits_within(min_val, max_val, dtype):
+        if pd.api.types.is_unsigned_integer_dtype(dtype):
+            min_poss = 0
+            max_poss = 2**(8 * dtype.itemsize) - 1
+        else:
+            min_poss = -2**(8 * dtype.itemsize - 1)
+            max_poss = 2**(8 * dtype.itemsize - 1) - 1
         bad = series[(series < min_poss) | (series > max_poss)].index.values
         if len(bad) == 1:  # singular
             err_msg = (f"[{error_trace()}] series values do not fit within "
-                       f"available range for {pandas_dtype} (index: "
-                       f"{list(bad)})")
+                       f"available range for {dtype} (index: {list(bad)})")
         elif len(bad) <= 5:  # plural
             err_msg = (f"[{error_trace()}] series values do not fit within "
-                       f"available range for {pandas_dtype} (indices: "
-                       f"{list(bad)})")
+                       f"available range for {dtype} (indices: {list(bad)})")
         else:  # plural, shortened for brevity
             shortened = ", ".join(str(i) for i in bad[:5])
             err_msg = (f"[{error_trace()}] series values do not fit within "
-                       f"available range for {pandas_dtype} (indices: "
+                       f"available range for {dtype} (indices: "
                        f"[{shortened}, ...] ({len(bad)}))")
         raise OverflowError(err_msg)
 
+    # attempt to downcast if applicable
+    if downcast:
+        dtype = _downcast_int_dtype(min_val, max_val, dtype)
+
     # convert and return
-    if series.hasnans and not pd.api.types.is_extension_array_dtype(dtype):
+    if (series.hasnans and
+        not pd.api.types.is_extension_array_dtype(dtype)):
         extension_types = {
             np.dtype(np.uint8): pd.UInt8Dtype(),
             np.dtype(np.uint16): pd.UInt16Dtype(),
@@ -455,7 +519,7 @@ def to_integer(series: pd.Series,
             np.dtype(np.int32): pd.Int32Dtype(),
             np.dtype(np.int64): pd.Int64Dtype()
         }
-        return series.astype(extension_types[np.dtype(dtype)])
+        return series.astype(extension_types[dtype])
     return series.astype(dtype)
 
 
