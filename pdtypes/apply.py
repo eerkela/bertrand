@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from pdtypes.error import error_trace
-from pdtypes.parse import parse_dtype, parse_string, to_utc
+from pdtypes.util.parse import parse_dtype, parse_string, to_utc
 
 
 """

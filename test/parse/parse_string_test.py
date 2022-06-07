@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from context import pdtypes
-import pdtypes.parse
+import pdtypes.util.parse
 
 
 random.seed(12345)

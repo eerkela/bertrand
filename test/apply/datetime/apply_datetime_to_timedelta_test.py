@@ -8,7 +8,7 @@ import pytz
 
 from context import pdtypes
 import pdtypes.apply
-import pdtypes.parse
+import pdtypes.util.parse
 
 
 random.seed(12345)

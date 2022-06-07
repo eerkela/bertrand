@@ -9,7 +9,7 @@ import pytz
 import tzlocal
 
 from pdtypes.error import error_trace
-from pdtypes.cast.util import _to_ns, total_nanoseconds
+from pdtypes.util.time import _to_ns, total_nanoseconds
 import pdtypes.cast.integer
 
 

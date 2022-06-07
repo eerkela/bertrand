@@ -8,8 +8,10 @@ import pytz
 import tzlocal
 
 from pdtypes.error import error_trace
-from pdtypes.parse import to_utc
-from pdtypes.cast.util import _to_ns, days_to_date, ns_since_epoch, time_unit, total_nanoseconds, date_to_days
+from pdtypes.util.time import (
+    _to_ns, date_to_days, days_to_date, ns_since_epoch, time_unit,
+    to_utc, total_nanoseconds
+)
 
 
 """

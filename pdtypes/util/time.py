@@ -4,6 +4,7 @@ import re
 
 import numpy as np
 import pandas as pd
+import tzlocal
 
 from pdtypes.error import error_trace
 
@@ -331,57 +332,6 @@ def date_accuracy(low: int, high: int) -> None:
             raise AssertionError(err_msg)
 
 
-def total_nanoseconds(
-    td: pd.Timedelta | datetime.timedelta | np.timedelta64,
-    starting_from: tuple[int, int, int] = (1970, 1, 1)) -> int:
-    """Get the total number of nanoseconds stored in a timedelta object as an
-    integer.  Essentially the equivalent of timedelta.total_seconds(), except
-    it returns an integer number of nanoseconds rather than a float
-    representing seconds.
-
-    `np.timedelta64` units 'Y' and 'M' are supported through the `date_to_days`
-    function defined above.  Leap years and unequal month lengths are accounted
-    for, and their positions may be customized using the `starting_from`
-    argument, which describes a date from which to begin counting.  This
-    argument is only used for timedeltas that have units in years or months.
-    It defaults to the UTC epoch time (1970-01-01 00:00:00 UTC), causing this
-    function and `ns_since_epoch` to return identical results for dates and
-    their analogous UTC offsets.
-    """
-    # pd.Timedelta
-    if isinstance(td, pd.Timedelta):
-        return td.asm8.astype(int)
-
-    # datetime.timedelta
-    if isinstance(td, datetime.timedelta):
-        # casting to object dtype prevents overflow
-        coefficients = np.array([24 * 60 * 60 * int(1e9), int(1e9), int(1e3)],
-                                dtype="O")
-        components = np.array([td.days, td.seconds, td.microseconds], dtype="O")
-        return np.sum(coefficients * components)
-
-    # np.timedelta64
-    if isinstance(td, np.timedelta64):
-        unit = time_unit(td)
-        int_repr = int(td.astype(int))
-        if unit == "M":  # convert months to days, accounting for mixed length
-            Y, M, D = starting_from
-            conv = int_repr + M
-            int_repr = (date_to_days(Y, conv, D) - date_to_days(Y, M, D))[0]
-            unit = "D"
-        elif unit == "Y":  # convert years to days, accounting for leap years
-            Y, M, D = starting_from
-            conv = int_repr + Y
-            int_repr = (date_to_days(conv, M, D) - date_to_days(Y, M, D))[0]
-            unit = "D"
-        return int_repr * _to_ns[unit]
-
-    # unrecognized timedelta type
-    err_msg = (f"[{error_trace()}] could not interpret timedelta of type "
-               f"{type(td)}")
-    raise TypeError(err_msg)
-
-
 def ns_since_epoch(dt: pd.Timestamp | datetime.datetime | np.datetime64) -> int:
     """Returns the UTC timestamp of a datetime object as an integer number of
     nanoseconds.
@@ -433,3 +383,80 @@ def time_unit(t: str | type | np.datetime64 | np.timedelta64) -> str:
     if match:
         return match.group(1)
     return None
+
+
+def to_utc(
+    dt: pd.Timestamp | datetime.datetime
+) -> pd.Timestamp | datetime.datetime:
+    # pd.Timestamp
+    if isinstance(dt, pd.Timestamp):
+        if dt.tzinfo is None:
+            dt = dt.tz_localize(tzlocal.get_localzone_name())
+        return dt.tz_convert("UTC")
+
+    # datetime.datetime
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tzlocal.get_localzone())
+    return dt.astimezone(datetime.timezone.utc)
+
+
+def localize_mixed_timezone(series: pd.Series,
+                            naive_tz: str | None = None) -> pd.Series:
+    # TODO: change default to 'local' and have None just strip away the tzinfo
+    naive = series.apply(lambda x: x.tzinfo is None)
+    if naive_tz is None:
+        naive_tz = tzlocal.get_localzone_name()
+    series.loc[naive] = pd.to_datetime(series[naive]).dt.tz_localize(naive_tz)
+    return pd.to_datetime(series, utc=True)
+
+
+def total_nanoseconds(
+    td: pd.Timedelta | datetime.timedelta | np.timedelta64,
+    starting_from: tuple[int, int, int] = (1970, 1, 1)) -> int:
+    """Get the total number of nanoseconds stored in a timedelta object as an
+    integer.  Essentially the equivalent of timedelta.total_seconds(), except
+    it returns an integer number of nanoseconds rather than a float
+    representing seconds.
+
+    `np.timedelta64` units 'Y' and 'M' are supported through the `date_to_days`
+    function defined above.  Leap years and unequal month lengths are accounted
+    for, and their positions may be customized using the `starting_from`
+    argument, which describes a date from which to begin counting.  This
+    argument is only used for timedeltas that have units in years or months.
+    It defaults to the UTC epoch time (1970-01-01 00:00:00 UTC), causing this
+    function and `ns_since_epoch` to return identical results for dates and
+    their analogous UTC offsets.
+    """
+    # pd.Timedelta
+    if isinstance(td, pd.Timedelta):
+        return td.asm8.astype(int)
+
+    # datetime.timedelta
+    if isinstance(td, datetime.timedelta):
+        # casting to object dtype prevents overflow
+        coefficients = np.array([24 * 60 * 60 * int(1e9), int(1e9), int(1e3)],
+                                dtype="O")
+        components = np.array([td.days, td.seconds, td.microseconds], dtype="O")
+        return np.sum(coefficients * components)
+
+    # np.timedelta64
+    if isinstance(td, np.timedelta64):
+        unit = time_unit(td)
+        int_repr = int(td.astype(int))
+        if unit == "M":  # convert months to days, accounting for mixed length
+            Y, M, D = starting_from
+            conv = int_repr + M
+            int_repr = (date_to_days(Y, conv, D) - date_to_days(Y, M, D))[0]
+            unit = "D"
+        elif unit == "Y":  # convert years to days, accounting for leap years
+            Y, M, D = starting_from
+            conv = int_repr + Y
+            int_repr = (date_to_days(conv, M, D) - date_to_days(Y, M, D))[0]
+            unit = "D"
+        return int_repr * _to_ns[unit]
+
+    # unrecognized timedelta type
+    err_msg = (f"[{error_trace()}] could not interpret timedelta of type "
+               f"{type(td)}")
+    raise TypeError(err_msg)
+

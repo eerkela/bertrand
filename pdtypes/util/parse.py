@@ -87,34 +87,9 @@ def parse_string(
     return string
 
 
-def to_utc(
-    dt: pd.Timestamp | datetime.datetime
-) -> pd.Timestamp | datetime.datetime:
-    # pd.Timestamp
-    if isinstance(dt, pd.Timestamp):
-        if dt.tzinfo is None:
-            dt = dt.tz_localize(get_localzone_name())
-        return dt.tz_convert("UTC")
-
-    # datetime.datetime
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=get_localzone())
-    return dt.astimezone(datetime.timezone.utc)
-
-
 def round_to_tol(series: pd.Series, tol: float) -> pd.Series:
     # round to nearest integer if within tolerance
     residuals = abs(series - series.round())
     indices = (residuals > 0) & (residuals < tol)
     series.loc[indices] = series[indices].round()
     return series
-
-
-def localize_mixed_timezone(series: pd.Series,
-                            naive_tz: str | None = None) -> pd.Series:
-    # TODO: change default to 'local' and have None just strip away the tzinfo
-    naive = series.apply(lambda x: x.tzinfo is None)
-    if naive_tz is None:
-        naive_tz = get_localzone_name()
-    series.loc[naive] = pd.to_datetime(series[naive]).dt.tz_localize(naive_tz)
-    return pd.to_datetime(series, utc=True)
