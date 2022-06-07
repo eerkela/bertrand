@@ -1,10 +1,10 @@
 from __future__ import annotations
-from datetime import datetime, timedelta, timezone
+import datetime
 from functools import cache
 
 import pandas as pd
+import numpy as np
 from tzlocal import get_localzone, get_localzone_name
-
 
 from pdtypes.error import error_trace
 
@@ -19,11 +19,11 @@ def parse_dtype(dtype: type) -> type:
     if pd.api.types.is_bool_dtype(dtype):
         return bool
     if (pd.api.types.is_datetime64_any_dtype(dtype) or
-        dtype in (datetime, pd.Timestamp)):
-        return datetime
+        dtype in (datetime.datetime, pd.Timestamp)):
+        return datetime.datetime
     if (pd.api.types.is_timedelta64_dtype(dtype) or 
-        dtype in (timedelta, pd.Timedelta)):
-        return timedelta
+        dtype in (datetime.timedelta, pd.Timedelta)):
+        return datetime.timedelta
     if pd.api.types.is_object_dtype(dtype):
         return object
     if pd.api.types.is_string_dtype(dtype):
@@ -87,14 +87,19 @@ def parse_string(
     return string
 
 
-def to_utc(dt: datetime | pd.Timestamp) -> datetime | pd.Timestamp:
+def to_utc(
+    dt: pd.Timestamp | datetime.datetime
+) -> pd.Timestamp | datetime.datetime:
+    # pd.Timestamp
     if isinstance(dt, pd.Timestamp):
         if dt.tzinfo is None:
             dt = dt.tz_localize(get_localzone_name())
         return dt.tz_convert("UTC")
+
+    # datetime.datetime
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=get_localzone())
-    return dt.astimezone(timezone.utc)
+    return dt.astimezone(datetime.timezone.utc)
 
 
 def round_to_tol(series: pd.Series, tol: float) -> pd.Series:

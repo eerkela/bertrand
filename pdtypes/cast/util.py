@@ -407,10 +407,10 @@ def ns_since_epoch(dt: pd.Timestamp | datetime.datetime | np.datetime64) -> int:
         int_repr = int(dt.astype(int))
         unit = time_unit(dt)
         if unit == "M":  # convert months to days, accounting for mixed length
-            int_repr = date_to_days(1970 + int_repr, 1, 1)[0]
+            int_repr = date_to_days(1970, 1 + int_repr, 1)[0]
             unit = "D"
         elif unit == "Y":  # convert years to days, accounting for leap years
-            int_repr = date_to_days(1970, 1 + int_repr, 1)[0]
+            int_repr = date_to_days(1970 + int_repr, 1, 1)[0]
             unit = "D"
         return int_repr * _to_ns[unit]
 
