@@ -65,6 +65,39 @@ def leaps_between(
     return count(end - 1) - count(begin - 1)  # range must be 0-indexed
 
 
+def datetime64_components(dt: np.datetime64) -> tuple[int, int, int]:
+    """
+    Convert array of datetime64 to a calendar array of year, month, day, hour,
+    minute, seconds, microsecond with these quantites indexed on the last axis.
+
+    Parameters
+    ----------
+    dt : datetime64 array (...)
+        numpy.ndarray of datetimes of arbitrary shape
+
+    Returns
+    -------
+    cal : uint32 array (..., 7)
+        calendar array with last axis representing year, month, day, hour,
+        minute, second, microsecond
+    """
+    dtype = np.dtype([("year", "O"), ("month", "u1"), ("day", "u1"),
+                      ("hour", "u1"), ("minute", "u1"), ("second", "u1"),
+                      ("millisecond", "u2"), ("microsecond", "u4"),
+                      ("nanosecond", "u4")])
+    Y, M, D, h, m, s = [dt.astype(f"M8[{x}]") for x in "YMDhms"]
+    return np.rec.fromarrays([int(Y.astype(np.int64)) + 1970,  # year
+                              (M - Y) + 1,  # month
+                              (D - M) + 1,  # day
+                              (dt - D).astype("m8[h]"),  # hour
+                              (dt - h).astype("m8[m]"),  # minute
+                              (dt - m).astype("m8[s]"),  # second
+                              (dt - s).astype("m8[ms]"),  # millisecond
+                              (dt - s).astype("m8[us]"),  # microsecond
+                              (dt - s).astype("m8[ns]")],  # nanosecond
+                              dtype=dtype)
+
+
 def reconstructed_date_code(month: int, day_of_month: int, year: int) -> int:
     """An example from 1999 that does the same job as `date_to_days`.
     It has been reproduced here for testing purposes, and was originally

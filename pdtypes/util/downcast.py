@@ -810,7 +810,7 @@ def downcast_float(floating_point: float) -> float:
 
 @lru_cache(maxsize=CACHE_SIZE, typed=True)
 def downcast_complex(complex_number: complex) -> complex:
-    if np.issubdtype(type(complex_number), np.complexfloating):
+    if not np.issubdtype(type(complex_number), np.complexfloating):
         err_msg = (f"[{error_trace()}] `complex_number` must be a complex "
                    f"type, not {type(complex_number)}")
         raise TypeError(err_msg)

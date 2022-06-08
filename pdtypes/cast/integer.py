@@ -8,9 +8,10 @@ import pytz
 import tzlocal
 
 from pdtypes.error import error_trace
+from pdtypes.util.downcast import downcast_float, downcast_complex
 from pdtypes.util.time import (
-    _to_ns, date_to_days, days_to_date, ns_since_epoch, time_unit,
-    to_utc, total_nanoseconds
+    _to_ns, datetime64_components, date_to_days, days_to_date, ns_since_epoch,
+    time_unit, to_utc, total_nanoseconds
 )
 
 
@@ -553,8 +554,13 @@ def to_float(series: pd.Series,
         else:  # plural, shortened for brevity
             shortened = ", ".join(str(i) for i in bad[:5])
             err_msg = (f"[{error_trace()}] series values exceed available "
-                       f"range for {pandas_dtype} (indices: {list(bad)})")
+                       f"range for {pandas_dtype} (indices: "
+                       f"[{shortened, ...}] ({len(bad)}))")
         raise OverflowError(err_msg)
+
+    # attempt to downcast if applicable
+    if downcast:
+        return series.apply(downcast_float)
 
     # return
     return series
@@ -572,7 +578,10 @@ def to_complex(series: pd.Series,
                    f"(received: {dtype})")
         raise TypeError(err_msg)
 
-    # convert
+    # convert - have to handle nans differently from non-nans because
+    # astype(complex) does not automatically convert pd.NA
+    series = series.astype(object)
+    series[series.isna()] = np.nan
     series = series.astype(dtype)
 
     # check for overflow
@@ -590,6 +599,10 @@ def to_complex(series: pd.Series,
             err_msg = (f"[{error_trace()}] series values exceed available "
                        f"range for {pandas_dtype} (indices: {list(bad)})")
         raise OverflowError(err_msg)
+
+    # attempt to downcast if applicable
+    if downcast:
+        return series.apply(downcast_complex)
 
     # return
     return series
@@ -632,9 +645,10 @@ def to_datetime(
     elif unit in ("M", "month", "months"):
         series = pd.Series(date_to_days(1970, 1 + series, 1) * _to_ns["D"])
     else:  # unrecognized unit
-        # TODO: expand list
+        valid_units = (list(_to_ns) +
+                       ["M", "month", "months", "Y", "year", "years"])
         err_msg = (f"[{error_trace()}] could not interpret `unit` "
-                   f"{repr(unit)}.  Must be in {list(_to_ns)}")
+                   f"{repr(unit)}.  Must be in {valid_units}")
         raise ValueError(err_msg)
 
     # get offset in nanoseconds since epoch.
@@ -687,6 +701,7 @@ def to_timedelta(
     series: pd.Series,
     unit: str = "s",
     offset: pd.Timedelta | datetime.timedelta | np.timedelta64 | None = None,
+    calendar_offset: pd.Timestamp | datetime.datetime | np.datetime64 | None = None,
     dtype: type | str | np.dtype = "timedelta64") -> pd.Series:
     if pd.api.types.infer_dtype(series) != "integer":
         err_msg = (f"[{error_trace()}] `series` must contain integer data "
@@ -703,19 +718,36 @@ def to_timedelta(
     series = series.astype(object)  # prevents overflow
     if unit in _to_ns:
         series = series * _to_ns[unit]
-    elif unit in ("Y", "year", "years"):
-        # TODO: allow user to customize leap year calculations
-        series = pd.Series(date_to_days(1970 + series, 1, 1) * _to_ns["D"])
-    elif unit in ("M", "month", "months"):
-        # TODO: allow user to customize leap year calculations
-        series = pd.Series(date_to_days(1970, 1 + series, 1) * _to_ns["D"])
+    elif unit in ("M", "month", "months", "Y", "year", "years"):
+        # account for leap years, unequal month lengths
+        if calendar_offset:
+            if isinstance(calendar_offset, np.datetime64):
+                components = datetime64_components(calendar_offset)
+                Y = components["year"]
+                M = components["month"]
+                D = components["day"]
+            else:
+                Y = calendar_offset.year
+                M = calendar_offset.month
+                D = calendar_offset.day
+        else:
+            Y = 1970
+            M = 1
+            D = 1
+        if unit in ("Y", "year", "years"):
+            series = pd.Series(date_to_days(Y + series, M, D) -
+                               date_to_days(Y, M, D)) * _to_ns["D"]
+        else:  # unit in ("M", "month", "months")
+            series = pd.Series(date_to_days(Y, M + series, D) -
+                               date_to_days(Y, M, D)) * _to_ns["D"]
     else:  # unrecognized unit
-        # TODO: expand list
+        valid_units = (list(_to_ns) +
+                       ["M", "month", "months", "Y", "year", "years"])
         err_msg = (f"[{error_trace()}] could not interpret `unit` "
-                   f"{repr(unit)}.  Must be in {list(_to_ns)}")
+                   f"{repr(unit)}.  Must be in {valid_units}")
         raise ValueError(err_msg)
 
-    # get offset in nanoseconds since epoch
+    # get offset in nanoseconds
     if offset:
         offset_ns = total_nanoseconds(offset)
     else:
