@@ -8,15 +8,18 @@ import pytz
 import tzlocal
 
 from pdtypes.error import error_trace
-from pdtypes.util.downcast import downcast_float, downcast_complex
+from pdtypes.util.downcast import (
+    downcast_complex, downcast_float, downcast_int_dtype, int_fits_within
+)
 from pdtypes.util.time import (
-    _to_ns, datetime64_components, date_to_days, days_to_date, ns_since_epoch,
+    _to_ns, date_to_days, datetime64_components, days_to_date, ns_since_epoch,
     time_unit, to_utc, total_nanoseconds
 )
 
 
 """
 Test Cases:
+-   integer series as object
 -   greater than 64-bit
 -   integer series that fit within uint64, but not int64
 -   integer object series with None instead of nan or pd.NA
@@ -28,67 +31,16 @@ Test Cases:
 #######################
 
 
-def _fits_within(min_val: int, max_val: int, dtype: type | str) -> bool:
-    size = 8 * dtype.itemsize
-    if pd.api.types.is_unsigned_integer_dtype(dtype):
-        return min_val >= 0 and max_val <= 2**size - 1
-    return min_val >= -2**(size - 1) and max_val <= 2**(size - 1) - 1
-
-
-def _downcast_int_dtype(min_val: int, max_val: int, dtype: type | str) -> type:
-    if dtype.itemsize == 1:
-        return dtype
-
-    # get type hierarchy
-    if pd.api.types.is_extension_array_dtype(dtype):
-        if pd.api.types.is_unsigned_integer_dtype(dtype):
-            type_hierarchy = {
-                8: pd.UInt64Dtype(),
-                4: pd.UInt32Dtype(),
-                2: pd.UInt16Dtype(),
-                1: pd.UInt8Dtype()
-            }
-        else:
-            type_hierarchy = {
-                8: pd.Int64Dtype(),
-                4: pd.Int32Dtype(),
-                2: pd.Int16Dtype(),
-                1: pd.Int8Dtype()
-            }
-    else:
-        if pd.api.types.is_unsigned_integer_dtype(dtype):
-            type_hierarchy = {
-                8: np.dtype(np.uint64),
-                4: np.dtype(np.uint32),
-                2: np.dtype(np.uint16),
-                1: np.dtype(np.uint8)
-            }
-        else:
-            type_hierarchy = {
-                8: np.dtype(np.int64),
-                4: np.dtype(np.int32),
-                2: np.dtype(np.int16),
-                1: np.dtype(np.int8)
-            }
-
-    # check for smaller dtypes that fit given range
-    size = dtype.itemsize
-    selected = dtype
-    while size > 1:
-        test = type_hierarchy[size // 2]
-        size = test.itemsize
-        if _fits_within(min_val, max_val, test):
-            selected = test
-    return selected
-
-
 def _to_pandas_timestamp(series: pd.Series,
                          tz: str | pytz.timezone | None,
                          min_val: int,
                          max_val: int) -> pd.Series:
+    min_poss = -2**63 + 1
+    max_poss = 2**63 - 1
+
     # check whether series fits within datetime64[ns] range
-    if min_val < -2**63 + 1 or max_val > 2**63 - 1:
-        bad = series[(series < -2**63 + 1) | (series > 2**63 - 1)].index.values
+    if min_val < min_poss or max_val > max_poss:
+        bad = series[(series < min_poss) | (series > max_poss)].index.values
         if len(bad) == 1:  # singular
             err_msg = (f"[{error_trace(stack_index=2)}] integer series could "
                        f"not be converted to {pd.Timestamp}: values exceed "
@@ -122,12 +74,13 @@ def _to_datetime_datetime(series: pd.Series,
                           tz: str | pytz.timezone | None,
                           min_val: int,
                           max_val: int) -> pd.Series:
+    min_poss = ns_since_epoch(datetime.datetime.min)
+    max_poss = ns_since_epoch(datetime.datetime.max)
+
     # check whether series fits within datetime.datetime range/precision
-    if (min_val < ns_since_epoch(datetime.datetime.min) or
-        max_val > ns_since_epoch(datetime.datetime.max) or
-        (series % 1000).any()):
-        bad = series[(series < ns_since_epoch(datetime.datetime.min)) |
-                     (series > ns_since_epoch(datetime.datetime.max)) |
+    if min_val < min_poss or max_val > max_poss or (series % 1000).any():
+        bad = series[(series < min_poss) |
+                     (series > max_poss) |
                      (series % 1000 != 0)].index.values
         if len(bad) == 1:  # singular
             err_msg = (f"[{error_trace(stack_index=2)}] integer series could "
@@ -194,10 +147,9 @@ def _to_numpy_datetime64_any_unit(series: pd.Series,
                 if min_year >= min_poss and max_year <= max_poss - 1970:
                     make_dt = lambda x: np.datetime64(x, "Y")
                     return years.apply(lambda x: pd.NaT if pd.isna(x)
-                                                    else make_dt(x))
+                                                 else make_dt(x))
             # try months
-            months = pd.Series(12 * (dates["year"] - 1970) +
-                                dates["month"] - 1)
+            months = pd.Series(12 * (dates["year"] - 1970) + dates["month"] - 1)
             min_month = months.min()
             max_month = months.max()
             if min_month >= min_poss and max_month <= max_poss:
@@ -224,11 +176,11 @@ def _to_numpy_datetime64_any_unit(series: pd.Series,
             if (date["day"] == 1).all():
                 if (date["month"] == 1).all():  # try years
                     year = (date["year"] - 1970)[0]
-                    if year >= -2**63 + 1 and year <= max_poss - 1970:
+                    if min_poss <= year <= max_poss - 1970:
                         return year
                 # try months
                 month = (12 * (date["year"] - 1970) + date["month"] - 1)[0]
-                if month >= -2**63 + 1 and month <= max_poss:
+                if min_poss <= month <= max_poss:
                     return month
         raise OverflowError()  # stop at first bad value
 
@@ -245,16 +197,17 @@ def _to_numpy_datetime64_specific_unit(series: pd.Series,
                                        dtype_unit: str,
                                        min_val: int,
                                        max_val: int) -> pd.Series:
-    # get units and scale factor from dtype
+    min_poss = -2**63 + 1
+    max_poss = 2**63 - 1
     scale_factor = _to_ns[dtype_unit]
 
     # check whether series values fit within available range for dtype_unit
-    if (min_val // scale_factor < -2**63 + 1 or
-        max_val // scale_factor > 2**63 - 1 or
+    if (min_val // scale_factor < min_poss or
+        max_val // scale_factor > max_poss or
         (series % scale_factor).any()):
-        bad = series[(series < (-2**63 + 1) * scale_factor) |
-                        (series > (2**63 - 1) * scale_factor) |
-                        (series % scale_factor != 0)].index.values
+        bad = series[(series < min_poss * scale_factor) |
+                     (series > max_poss * scale_factor) |
+                     (series % scale_factor != 0)].index.values
         if len(bad) == 1:  # singular
             err_msg = (f"[{error_trace(stack_index=2)}] integer series could "
                        f"not be converted to datetime64[{dtype_unit}]: values "
@@ -278,9 +231,12 @@ def _to_numpy_datetime64_specific_unit(series: pd.Series,
 def _to_pandas_timedelta(series: pd.Series,
                          min_val: int,
                          max_val: int) -> pd.Series:
+    min_poss = -2**63 + 1
+    max_poss = 2**63 - 1
+
     # check whether series fits within timedelta64[ns] range
-    if min_val < -2**63 + 1 or max_val > 2**63 - 1:
-        bad = series[(series <  + 1) | (series > 2**63 - 1)].index.values
+    if min_val < min_poss or max_val > max_poss:
+        bad = series[(series < min_poss) | (series > max_poss)].index.values
         if len(bad) == 1:  # singular
             err_msg = (f"[{error_trace(stack_index=2)}] integer series could "
                        f"not be converted to {pd.Timedelta}: values exceed "
@@ -300,19 +256,21 @@ def _to_pandas_timedelta(series: pd.Series,
         raise OverflowError(err_msg)
 
     # convert and return
-    return pd.to_timedelta(series, unit="ns")
+    # pd.to_timedelta can't parse pd.NA by default for some reason
+    return pd.to_timedelta(series, unit="ns", errors="coerce")
 
 
 def _to_datetime_timedelta(series: pd.Series,
                            min_val: int,
                            max_val: int) -> pd.Series:
+    min_poss = total_nanoseconds(datetime.timedelta.min)
+    max_poss = total_nanoseconds(datetime.timedelta.max)
+
     # check whether series fits within datetime.timedelta range/precision
-    if (min_val < total_nanoseconds(datetime.timedelta.min) or
-        max_val > total_nanoseconds(datetime.timedelta.max) or
-        (series % 1000).any()):
-        bad = series[(series < total_nanoseconds(datetime.timedelta.min)) |
-                        (series > total_nanoseconds(datetime.timedelta.max)) |
-                        (series % 1000 != 0)].index.values
+    if min_val < min_poss or max_val > max_poss or (series % 1000).any():
+        bad = series[(series < min_poss) |
+                     (series > max_poss) |
+                     (series % 1000 != 0)].index.values
         if len(bad) == 1:  # singular
             err_msg = (f"[{error_trace(stack_index=2)}] integer series could "
                        f"not be converted to {datetime.timedelta}: values "
@@ -339,14 +297,17 @@ def _to_datetime_timedelta(series: pd.Series,
 def _to_numpy_timedelta64_any_unit(series: pd.Series,
                                    min_val: int,
                                    max_val: int) -> pd.Series:
+    min_poss = -2**63 + 1
+    max_poss = 2**63 - 1
+
     # attempt to select a non-ns unit based on series range
     selected = None
     for unit in ("us", "ms", "s", "m", "h", "D", "W"):
         scale_factor = _to_ns[unit]
         if (series % scale_factor).any():
             break
-        if (min_val // scale_factor >= -2**63 + 1 and
-            max_val // scale_factor <= 2**63 - 1):
+        if (min_val // scale_factor >= min_poss and
+            max_val // scale_factor <= max_poss):
             selected = unit
     if selected:
         scale_factor = _to_ns[selected]
@@ -363,7 +324,7 @@ def _to_numpy_timedelta64_any_unit(series: pd.Series,
             if x % scale_factor:
                 break
             rescaled = x // scale_factor
-            if -2**63 + 1 <= rescaled <= 2**63 - 1:
+            if min_poss <= rescaled <= max_poss:
                 result = np.timedelta64(rescaled, unit)
         if result:
             return result
@@ -382,14 +343,16 @@ def _to_numpy_timedelta64_specific_unit(series: pd.Series,
                                         dtype_unit: str,
                                         min_val: int,
                                         max_val: int) -> pd.Series:
+    min_poss = -2**63 + 1
+    max_poss = 2**63 - 1
     scale_factor = _to_ns[dtype_unit]
 
     # check whether series values fit within available range for dtype_unit
-    if (min_val // scale_factor < -2**63 + 1 or
-        max_val // scale_factor > 2**63 - 1 or
+    if (min_val // scale_factor < min_poss or
+        max_val // scale_factor > max_poss or
         (series % scale_factor).any()):
-        bad = series[(series < (-2**63 + 1) * scale_factor) |
-                     (series > (2**63 - 1) * scale_factor) |
+        bad = series[(series < min_poss * scale_factor) |
+                     (series > max_poss * scale_factor) |
                      (series % scale_factor != 0)].index.values
         if len(bad) == 1:  # singular
             err_msg = (f"[{error_trace(stack_index=2)}] integer series could "
@@ -448,7 +411,7 @@ def to_boolean(series: pd.Series,
                        f"[{shortened}, ...] ({len(bad)})")
         raise OverflowError(err_msg)
 
-    # return
+    # convert and return
     if series.hasnans:
         return series.astype(pd.BooleanDtype())
     return series.astype(dtype)
@@ -480,11 +443,11 @@ def to_integer(series: pd.Series,
             return series.astype(np.uint64)
         return series.astype(object).fillna(pd.NA)
 
-    # convert to pandas dtype to expose itemsize
+    # convert to pandas dtype to expose itemsize attribute
     dtype = pd.api.types.pandas_dtype(dtype)
 
     # check that series fits within specified dtype
-    if not _fits_within(min_val, max_val, dtype):
+    if not int_fits_within(min_val, max_val, dtype):
         if pd.api.types.is_unsigned_integer_dtype(dtype):
             min_poss = 0
             max_poss = 2**(8 * dtype.itemsize) - 1
@@ -507,7 +470,7 @@ def to_integer(series: pd.Series,
 
     # attempt to downcast if applicable
     if downcast:
-        dtype = _downcast_int_dtype(min_val, max_val, dtype)
+        dtype = downcast_int_dtype(min_val, max_val, dtype)
 
     # convert and return
     if (series.hasnans and
@@ -543,7 +506,7 @@ def to_float(series: pd.Series,
 
     # check for overflow
     if (series == np.inf).any():
-        pandas_dtype = pd.api.types.pand
+        pandas_dtype = pd.api.types.pandas_dtype(dtype)
         bad = series[series == np.inf].index.values
         if len(bad) == 1:  # singular
             err_msg = (f"[{error_trace()}] series values exceed available "
@@ -651,18 +614,15 @@ def to_datetime(
                    f"{repr(unit)}.  Must be in {valid_units}")
         raise ValueError(err_msg)
 
-    # get offset in nanoseconds since epoch.
+    # apply offset in nanoseconds since epoch
     if offset:
         # convert offset to UTC, assuming local time for naive offsets
         if isinstance(offset, (pd.Timestamp, datetime.datetime)):
             # np.datetime64 assumed UTC
             offset = to_utc(offset)
-        offset_ns = ns_since_epoch(offset)
-    else:
-        offset_ns = 0
+        series += ns_since_epoch(offset)
 
-    # apply offset and get min/max to evaluate range
-    series += offset_ns
+    # get min/max to evaluate range
     min_val = series.min()
     max_val = series.max()
 
@@ -699,10 +659,10 @@ def to_datetime(
 
 def to_timedelta(
     series: pd.Series,
-    unit: str = "s",
+    unit: str = "ns",
     offset: pd.Timedelta | datetime.timedelta | np.timedelta64 | None = None,
     calendar_offset: pd.Timestamp | datetime.datetime | np.datetime64 | None = None,
-    dtype: type | str | np.dtype = "timedelta64") -> pd.Series:
+    dtype: type | str | np.dtype = np.timedelta64) -> pd.Series:
     if pd.api.types.infer_dtype(series) != "integer":
         err_msg = (f"[{error_trace()}] `series` must contain integer data "
                    f"(received: {pd.api.types.infer_dtype(series)})")
@@ -747,14 +707,11 @@ def to_timedelta(
                    f"{repr(unit)}.  Must be in {valid_units}")
         raise ValueError(err_msg)
 
-    # get offset in nanoseconds
+    # apply offset in nanoseconds
     if offset:
-        offset_ns = total_nanoseconds(offset)
-    else:
-        offset_ns = 0
+        series += total_nanoseconds(offset)
 
-    # apply offset and get min/max to evaluate range
-    series += offset_ns
+    # get min/max to evaluate range
     min_val = series.min()
     max_val = series.max()
 
@@ -783,7 +740,7 @@ def to_timedelta(
         dtype_unit = time_unit(dtype)  # get units from dtype
         return _to_numpy_timedelta64_specific_unit(series, dtype_unit, min_val,
                                                    max_val)
-        
+
     # dtype is unrecognized
     err_msg = (f"[{error_trace()}] could not interpret `dtype`: {dtype}")
     raise ValueError(err_msg)
@@ -800,6 +757,7 @@ def to_string(series: pd.Series, dtype: type = str) -> pd.Series:
         err_msg = (f"[{error_trace()}] `dtype` must be string-like (received: "
                    f"{dtype})")
         raise TypeError(err_msg)
+
     if series.hasnans:
         return series.astype(pd.StringDtype())
     return series.astype(dtype)

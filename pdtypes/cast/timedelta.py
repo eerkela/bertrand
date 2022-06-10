@@ -32,40 +32,18 @@ def to_boolean(series: pd.Series,
                dtype: type = bool) -> pd.Series:
     series = to_integer(series, unit=unit, offset=offset, force=force,
                         round=round, tol=tol)
-
-    # check for information loss
-    if force:
-        series = series.abs().clip(0, 1)
-    elif series.min() < 0 or series.max() > 1:
-        bad = series[(series < 0) | (series > 1)].index.values
-        if len(bad) == 1:  # singular
-            err_msg = (f"[{error_trace()}] could not convert timedelta to "
-                       f"boolean without losing information (index: "
-                       f"{list(bad)})")
-        elif len(bad) <= 5:  # plural
-            err_msg = (f"[{error_trace()}] could not convert timedelta to "
-                       f"boolean without losing information (indices: "
-                       f"{list(bad)})")
-        else:  # plural, shortened for brevity
-            shortened = ", ".join(str(i) for i in bad[:5])
-            err_msg = (f"[{error_trace()}] could not convert timedelta to "
-                       f"boolean without losing information (indices: "
-                       f"[{shortened}, ...] ({len(bad)}))")
-        raise ValueError(err_msg)
-
-    # return
-    if series.hasnans:
-        return series.astype(pd.BooleanDtype())
-    return series.astype(dtype)
+    return pdtypes.cast.integer.to_boolean(series, force=force, dtype=dtype)
 
 
-def to_integer(series: pd.Series,
-               unit: str = "s",
-               offset: datetime.timedelta | pd.Timedelta | None = None,
-               force: bool = False,
-               round: bool = False,
-               tol: float = 1e-6,
-               dtype: type = int) -> pd.Series:
+def to_integer(
+    series: pd.Series,
+    unit: str = "ns",
+    offset: pd.Timedelta | datetime.timedelta | np.timedelta64 | None = None,
+    force: bool = False,
+    round: bool = False,
+    tol: float = 1e-6,
+    dtype: type = int
+) -> pd.Series:
     # determine offset amount in nanoseconds
     if offset is None:
         offset_ns = 0
@@ -156,6 +134,7 @@ def to_integer(series: pd.Series,
 def to_float(series: pd.Series,
              unit: str = "s",
              offset: datetime.timedelta | pd.Timedelta | None = None,
+             downcast: bool = False,
              dtype: type = float) -> pd.Series:
     series = to_integer(series, unit="ns", offset=offset, tol=0)
     series = series.astype(dtype) / _to_ns[unit]
@@ -226,39 +205,21 @@ def to_decimal(
 def to_datetime(
     series: pd.Series,
     offset: datetime.datetime | pd.Timestamp | None = None,
-    tz: str | pytz.timezone | None = "local") -> pd.Series:
-    # TODO: update this to work in the general case
-
-    # > 64 bit -> store as np.datetime64 objects
-    if tz == "local":
-        if offset and offset.tzinfo and offset.tzinfo.utcoffset(offset):
-            tz = offset.tzinfo
-        else:
-            tz = tzlocal.get_localzone_name()
-    if offset is None:
-        offset = pd.Timestamp.fromtimestamp(0, "UTC")
-    elif offset.tzinfo is None:
-        return (series + offset).dt.tz_localize(tz)
-    return (series + offset).dt.tz_convert(tz)
+    tz: str | pytz.timezone | None = "local",
+    dtype: type | str = np.datetime64
+) -> pd.Series:
+    series = to_integer(series, unit="ns")
+    return pdtypes.cast.integer.to_datetime(series, unit="ns", offset=offset,
+                                            tz=tz, dtype=dtype)
 
 
 def to_timedelta(
     series: pd.Series,
-    offset: datetime.timedelta | pd.Timedelta | None = None) -> pd.Series:
-    # attempt to return series as-is
-    if pd.api.types.is_timedelta64_dtype(series):
-        return series
-
-    # series has object dtype -> attempt to infer objects
-    series = series.infer_objects()
-    if pd.api.types.is_timedelta64_dtype(series):
-        return series
-
-    try:  # attempt to reconstruct from integer representation
-        return pdtypes.cast.integer.to_timedelta(to_integer(series, unit="ns"),
-                                                 unit="ns", offset=offset)
-    except ValueError:  # failed, return original series
-        return series
+    offset: datetime.timedelta | pd.Timedelta | None = None
+) -> pd.Series:
+    if offset:
+        return series.fillna(pd.NaT) + offset
+    return series.fillna(pd.NaT)
 
 
 def to_string(series: pd.Series, dtype: type = str) -> pd.Series:
