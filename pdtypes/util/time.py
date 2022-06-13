@@ -98,6 +98,14 @@ def datetime64_components(dt: np.datetime64) -> tuple[int, int, int]:
                               dtype=dtype)
 
 
+def decompose_date(dt: pd.Timestamp | datetime.datetime | np.datetime64):
+    """Splits a datetime object into years, months, and days."""
+    if isinstance(dt, np.datetime64):
+        parts = datetime64_components(dt)
+        return int(parts["year"]), int(parts["month"]), int(parts["day"])
+    return dt.year, dt.month, dt.day
+
+
 def reconstructed_date_code(month: int, day_of_month: int, year: int) -> int:
     """An example from 1999 that does the same job as `date_to_days`.
     It has been reproduced here for testing purposes, and was originally
@@ -368,7 +376,7 @@ def date_accuracy(low: int, high: int) -> None:
 def ns_since_epoch(dt: pd.Timestamp | datetime.datetime | np.datetime64) -> int:
     """Returns the UTC timestamp of a datetime object as an integer number of
     nanoseconds.
-    
+
     datetime64 units 'Y' and 'M' are supported via the `years_to_days` and
     `months_to_days` functions defined above.
     """

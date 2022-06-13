@@ -1,34 +1,81 @@
 from __future__ import annotations
 import datetime
+import decimal
 from functools import cache
 
-import pandas as pd
 import numpy as np
-from tzlocal import get_localzone, get_localzone_name
+import pandas as pd
 
 from pdtypes.error import error_trace
 
 
-def parse_dtype(dtype: type) -> type:
-    if pd.api.types.is_integer_dtype(dtype):
-        return int
-    if pd.api.types.is_float_dtype(dtype):
-        return float
-    if pd.api.types.is_complex_dtype(dtype):
-        return complex
+def parse_dtype(dtype: type) -> str:
+    """Effectively equivalent to pandas.api.types.infer_dtype, but operates on
+    atomic data types and type strings rather than scalar and array-like values.
+    """
+    # booleans - bool, "bool", "boolean", "?"
     if pd.api.types.is_bool_dtype(dtype):
-        return bool
-    if (pd.api.types.is_datetime64_any_dtype(dtype) or
-        dtype in (datetime.datetime, pd.Timestamp)):
-        return datetime.datetime
-    if (pd.api.types.is_timedelta64_dtype(dtype) or 
-        dtype in (datetime.timedelta, pd.Timedelta)):
-        return datetime.timedelta
+        return "boolean"
+
+    # integers - int, np.int, "int", "integer", "i", etc
+    if dtype == "integer" or pd.api.types.is_integer_dtype(dtype):
+        return "integer"
+
+    # floats - float, np.float, "float", "floating", "f", etc
+    if dtype == "floating" or pd.api.types.is_float_dtype(dtype):
+        return "floating"
+
+    # complex numbers - complex, np.complex, "complex", "c", etc
+    if dtype == "c" or pd.api.types.is_complex_dtype(dtype):
+        return "complex"
+
+    # arbitrary precision decimals
+    if dtype in (decimal.Decimal, "decimal"):
+        return "decimal"
+
+    # dates
+    if dtype in (datetime.date, "date"):
+        return "date"
+
+    # times
+    if dtype in (datetime.time, "time"):
+        return "time"
+
+    # datetimes - pd.Timestamp, datetime.datetime, np.datetime64, "datetime",
+    # "M8", etc.
+    if (dtype in (pd.Timestamp, datetime.datetime, np.datetime64, "datetime") or
+        pd.api.types.is_datetime64_any_dtype(dtype)):
+        return "datetime"
+
+    # timedeltas - pd.Timedelta, datetime.timedelta, np.timedelta64,
+    # "timedelta", "m8", etc.
+    if (dtype in (pd.Timedelta, datetime.timedelta, np.timedelta64,
+                  "timedelta") or
+        pd.api.types.is_timedelta64_dtype(dtype)):
+        return "timedelta"
+
+    # periods - pd.Period, "period", etc.
+    if dtype in (pd.Period, "period") or pd.api.types.is_period_dtype(dtype):
+        return "period"
+
+    # objects - object, "object", "O", etc.
     if pd.api.types.is_object_dtype(dtype):
-        return object
+        return "object"
+
+    # bytes - bytes, "bytes", "b", "B", "byte", "bytes"
+    if dtype in (bytes, "b", "B", "byte", "bytes"):
+        return "bytes"
+
+    # strings - str, "str", "string", "U", etc.
     if pd.api.types.is_string_dtype(dtype):
-        return str
-    err_msg = (f"[{error_trace()}] unrecognized dtype: {dtype}")
+        return "string"
+
+    # categoricals - "category", "categorical", etc.
+    if dtype == "categorical" or pd.api.types.is_categorical_dtype(dtype):
+        return "categorical"
+
+    # unrecognized dtype
+    err_msg = f"[{error_trace()}] could not interpret `dtype`: {dtype}"
     raise TypeError(err_msg)
 
 

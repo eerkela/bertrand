@@ -9,7 +9,7 @@ import tzlocal
 
 from pdtypes.error import error_trace
 from pdtypes.util.downcast import (
-    downcast_complex, downcast_float, downcast_int_dtype, int_fits_within
+    downcast_complex, downcast_float, downcast_int_dtype
 )
 from pdtypes.util.time import (
     _to_ns, date_to_days, datetime64_components, days_to_date, ns_since_epoch,
@@ -418,6 +418,25 @@ def to_integer(series: pd.Series,
                tol: float = 1e-6,
                downcast: bool = False,
                dtype: type = int) -> pd.Series:
+    """_summary_
+
+    Args:
+        series (pd.Series): _description_
+        force (bool, optional): _description_. Defaults to False.
+        round (bool, optional): _description_. Defaults to False.
+        tol (float, optional): _description_. Defaults to 1e-6.
+        downcast (bool, optional): _description_. Defaults to False.
+        dtype (type, optional): _description_. Defaults to int.
+
+    Raises:
+        TypeError: _description_
+        TypeError: _description_
+        ValueError: _description_
+        OverflowError: _description_
+
+    Returns:
+        pd.Series: _description_
+    """
     if pd.api.types.infer_dtype(series) != "floating":
         err_msg = (f"[{error_trace()}] `series` must contain float data "
                    f"(received: {pd.api.types.infer_dtype(series)})")
@@ -471,13 +490,13 @@ def to_integer(series: pd.Series,
     dtype = pd.api.types.pandas_dtype(dtype)
 
     # check that series fits within specified dtype
-    if not int_fits_within(min_val, max_val, dtype):
-        if pd.api.types.is_unsinged_integer_dtype(dtype):
-            min_poss = 0
-            max_poss = 2**(8 * dtype.itemsize) - 1
-        else:
-            min_poss = -2**(8 * dtype.itemsize - 1)
-            max_poss = 2**(8 * dtype.itemsize - 1) - 1
+    if pd.api.types.is_unsinged_integer_dtype(dtype):
+        min_poss = 0
+        max_poss = 2**(8 * dtype.itemsize) - 1
+    else:
+        min_poss = -2**(8 * dtype.itemsize - 1)
+        max_poss = 2**(8 * dtype.itemsize - 1) - 1
+    if min_val < min_poss or max_val > max_poss:
         bad = series[(series < min_poss) | (series > max_poss)].index.values
         if len(bad) == 1:  # singular
             err_msg = (f"[{error_trace()}] series values do not fit within "

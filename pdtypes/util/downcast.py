@@ -842,6 +842,16 @@ def downcast_complex(complex_number: complex) -> complex:
 
 
 def downcast_int_dtype(min_val: int, max_val: int, dtype: type) -> type:
+    """_summary_
+
+    Args:
+        min_val (int): _description_
+        max_val (int): _description_
+        dtype (type): _description_
+
+    Returns:
+        type: _description_
+    """
     if dtype.itemsize == 1:
         return dtype
 
@@ -883,13 +893,34 @@ def downcast_int_dtype(min_val: int, max_val: int, dtype: type) -> type:
     while size > 1:
         test = type_hierarchy[size // 2]
         size = test.itemsize
-        if int_fits_within(min_val, max_val, test):
+        if pd.api.types.is_unsigned_integer_dtype(test):
+            min_poss = 0
+            max_poss = 2**(8 * test.itemsize) - 1
+        else:
+            min_poss = -2**(8 * test.itemsize - 1)
+            max_poss = 2**(8 * test.itemsize - 1) - 1
+        if min_val >= min_poss and max_val <= max_poss:
             selected = test
     return selected
 
 
-def int_fits_within(min_val: int, max_val: int, dtype: type | str) -> bool:
-    size = 8 * dtype.itemsize
-    if pd.api.types.is_unsigned_integer_dtype(dtype):
-        return min_val >= 0 and max_val <= 2**size - 1
-    return min_val >= -2**(size - 1) and max_val <= 2**(size - 1) - 1
+# def int_to_bin(input_array: int | np.ndarray) -> np.ndarray:
+#     """Turn a 1D array of integers into a 2D array containing their binary
+#     representations.
+#     """
+#     input_array = np.array(input_array)
+#     reshaped = input_array.reshape(-1, 1)
+#     mask = 2**np.arange(8 * input_array.dtype.itemsize)
+#     return ((reshaped & mask) != 0).astype(int)[:,::-1]
+
+
+# def float_to_bin(input_array: float | np.ndarray) -> np.ndarray:
+#     """Turn a 1D array of floats into a 2D array containing their binary
+#     representations.
+#     """
+#     input_array = np.array(input_array)
+#     byte_str = input_array.tobytes()
+#     byte_array = np.array([list(reversed(byte_str[i:i + 8])) for i in range(0, len(byte_str), 8)],
+#                           dtype=np.uint8)
+#     bit_array = np.unpackbits(byte_array, axis=1)
+#     return bit_array

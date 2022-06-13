@@ -8,9 +8,12 @@ import pandas as pd
 import pytz
 import tzlocal
 
-from pdtypes.error import error_trace
-from pdtypes.util.time import _to_ns, total_nanoseconds
 import pdtypes.cast.integer
+from pdtypes.error import error_trace
+from pdtypes.util.downcast import (
+    downcast_complex, downcast_float, downcast_int_dtype
+)
+from pdtypes.util.time import _to_ns, total_nanoseconds
 
 
 """
@@ -24,7 +27,7 @@ Test cases:
 
 
 def to_boolean(series: pd.Series,
-               unit: str = "s",
+               unit: str = "ns",
                offset: datetime.timedelta | pd.Timestamp | None = None,
                force: bool = False,
                round: bool = False,
@@ -42,6 +45,7 @@ def to_integer(
     force: bool = False,
     round: bool = False,
     tol: float = 1e-6,
+    downcast: bool = False,
     dtype: type = int
 ) -> pd.Series:
     # determine offset amount in nanoseconds
@@ -87,33 +91,43 @@ def to_integer(
                        f"[{shortened}, ...] ({len(bad)}))")
         raise ValueError(err_msg)
 
-    # check whether results fit within specified dtype
+    # get min/max to evaluate range
     min_val = series.min()
     max_val = series.max()
+
+    # built-in integer special case - can be arbitrarily large
     if dtype in (int, "int", "i") and (min_val < -2**63 or max_val > 2**63 - 1):
         series[series.isna()] = None
         return series
-    pandas_dtype = pd.api.types.pandas_dtype(dtype)
+
+    # convert to pandas dtype to expose itemsize attribute
+    dtype = pd.api.types.pandas_dtype(dtype)
+
+    # check whether results fit within specified dtype
     if pd.api.types.is_unsigned_integer_dtype(dtype):
         min_poss = 0
-        max_poss = 2**(8 * pandas_dtype.itemsize) - 1
+        max_poss = 2**(8 * dtype.itemsize) - 1
     else:
-        min_poss = -2**(8 * pandas_dtype.itemsize - 1)
-        max_poss = 2**(8 * pandas_dtype.itemsize - 1) - 1
+        min_poss = -2**(8 * dtype.itemsize - 1)
+        max_poss = 2**(8 * dtype.itemsize - 1) - 1
     if min_val < min_poss or max_val > max_poss:
         bad = series[(series < min_poss) | (series > max_poss)].index.values
         if len(bad) == 1:  # singular
             err_msg = (f"[{error_trace()}] series values exceed available "
-                       f"range for {pandas_dtype} (index: {list(bad)})")
+                       f"range for {dtype} (index: {list(bad)})")
         elif len(bad) <= 5:  # plural
             err_msg = (f"[{error_trace()}] series values exceed available "
-                       f"range for {pandas_dtype} (indices: {list(bad)})")
+                       f"range for {dtype} (indices: {list(bad)})")
         else:  # plural, shortened for brevity
             shortened = ", ".join(str(i) for i in bad[:5])
             err_msg = (f"[{error_trace()}] series values exceed available "
-                       f"range for {pandas_dtype} (indices: "
+                       f"range for {dtype} (indices: "
                        f"[{shortened}, ...], ({len(bad)}))")
         raise OverflowError(err_msg)
+
+    # attempt to downcast if applicable
+    if downcast:
+        dtype = downcast_int_dtype(min_val, max_val, dtype)
 
     # convert and return
     if series.hasnans and not pd.api.types.is_extension_array_dtype(dtype):
@@ -137,7 +151,12 @@ def to_float(series: pd.Series,
              downcast: bool = False,
              dtype: type = float) -> pd.Series:
     series = to_integer(series, unit="ns", offset=offset, tol=0)
-    series = series.astype(dtype) / _to_ns[unit]
+    if np.issubdtype(dtype, np.longdouble):
+        # preserve longdouble precision
+        series = series.astype(dtype) / _to_ns[unit]
+    else:
+        # division automatically converts to np.float64
+        series = (series / _to_ns[unit]).astype(dtype)
 
     # check for overflow (np.inf)
     if series[series == np.inf].any():
@@ -155,6 +174,10 @@ def to_float(series: pd.Series,
                        f"range for {pandas_dtype} (indices: "
                        f"[{shortened}, ...] ({len(bad)}))")
         raise OverflowError(err_msg)
+
+    # attempt to downcast if applicable
+    if downcast:
+        series = series.apply(downcast_float)
 
     # return
     return series

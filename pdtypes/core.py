@@ -9,6 +9,7 @@ import pytz
 
 import pdtypes.cast
 from pdtypes.error import error_trace
+from pdtypes.util.parse import parse_dtype
 
 
 def _infer_series_dtype(series: pd.Series) -> type:
@@ -224,41 +225,6 @@ def coerce_dtypes(
 
 
 
-def parse_dtype(dtype: type) -> str:
-    if pd.api.types.is_bool_dtype(dtype):
-        return "boolean"
-    if pd.api.types.is_integer_dtype(dtype):
-        return "integer"
-    if pd.api.types.is_float_dtype(dtype):
-        return "float"
-    if pd.api.types.is_complex_dtype(dtype):
-        return "complex"
-    if dtype in (decimal.Decimal, "decimal"):
-        return "decimal"
-    if dtype in (datetime.date, "date"):
-        return "date"
-    if dtype in (datetime.time, "time"):
-        return "time"
-    if (dtype in (pd.Timestamp, datetime.datetime, "datetime") or
-        pd.api.types.is_datetime64_any_dtype(dtype)):
-        return "datetime"
-    if (dtype in (pd.Timedelta, datetime.timedelta, "timedelta") or
-        pd.api.types.is_timedelta64_dtype(dtype)):
-        return "timedelta"
-    if dtype == pd.Period or pd.api.types.is_period_dtype(dtype):
-        return "period"
-    if pd.api.types.is_object_dtype(dtype):
-        return "object"
-    if dtype in (bytes, "bytes", "byte"):
-        return "bytes"
-    if pd.api.types.is_string_dtype(dtype):
-        return "string"
-    if pd.api.types.is_categorical_dtype(dtype) or dtype == "categorical":
-        return "categorical"
-    err_msg = f"[{error_trace()}] could not interpret `dtype`: {dtype}"
-    raise TypeError(err_msg)
-
-
 def _convert_series_dtype(
     series: pd.Series,
     dtype: type,
@@ -313,7 +279,8 @@ def _convert_series_dtype(
                                  unit=unit, offset=offset),
             "object": lambda s: s.astype(object),
             "string": partial(pdtypes.cast.boolean.to_string, dtype=dtype),
-            "categorical": lambda s: s.astype("category")
+            "categorical": partial(pdtypes.cast.boolean.to_categorical,
+                                   categories=categories, ordered=ordered)
         },
         "integer": {
             "boolean": partial(pdtypes.cast.integer.to_boolean,
@@ -328,7 +295,8 @@ def _convert_series_dtype(
                                  unit=unit, offset=offset),
             "object": lambda s: s.astype(object),
             "string": partial(pdtypes.cast.integer.to_string, dtype=dtype),
-            "categorical": lambda s: s.astype("category")
+            "categorical": partial(pdtypes.cast.integer.to_categorical,
+                                   categories=categories, ordered=ordered)
         },
         "float": {
             "boolean": partial(pdtypes.cast.float.to_boolean,
@@ -344,7 +312,8 @@ def _convert_series_dtype(
                                  unit=unit, offset=offset),
             "object": lambda s: s.astype(object),
             "string": partial(pdtypes.cast.float.to_string, dtype=dtype),
-            "categorical": lambda s: s.astype("category")
+            "categorical": partial(pdtypes.cast.float.to_categorical,
+                                   categories=categories, ordered=ordered)
         },
         # "complex": {
         #     "boolean": partial(pdtypes.cast.complex.to_boolean,
