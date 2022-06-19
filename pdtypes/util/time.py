@@ -1,12 +1,24 @@
 from __future__ import annotations
 import datetime
+from lib2to3.pytree import convert
 import re
+from typing import Union
 
 import numpy as np
 import pandas as pd
+import pytz
 import tzlocal
 
 from pdtypes.error import error_trace
+
+
+"""
+TODO: https://i.stack.imgur.com/uiXQd.png
+"""
+
+
+datetime_like = Union[pd.Timestamp, datetime.datetime, np.datetime64]
+timedelta_like = Union[pd.Timedelta, datetime.timedelta, np.timedelta64]
 
 
 _time_unit_regex = re.compile(r'^[^\[]+\[([^\]]+)\]$')
@@ -81,12 +93,13 @@ def datetime64_components(dt: np.datetime64) -> tuple[int, int, int]:
         calendar array with last axis representing year, month, day, hour,
         minute, second, microsecond
     """
+    dt = np.array(dt)
     dtype = np.dtype([("year", "O"), ("month", "u1"), ("day", "u1"),
                       ("hour", "u1"), ("minute", "u1"), ("second", "u1"),
                       ("millisecond", "u2"), ("microsecond", "u4"),
                       ("nanosecond", "u4")])
     Y, M, D, h, m, s = [dt.astype(f"M8[{x}]") for x in "YMDhms"]
-    return np.rec.fromarrays([int(Y.astype(np.int64)) + 1970,  # year
+    return np.rec.fromarrays([Y.astype(np.int64).astype(object) + 1970,  # year
                               (M - Y) + 1,  # month
                               (D - M) + 1,  # day
                               (dt - D).astype("m8[h]"),  # hour
@@ -501,3 +514,345 @@ def total_nanoseconds(
                f"{type(td)}")
     raise TypeError(err_msg)
 
+
+
+
+def total_units(
+    td: pd.Timedelta | datetime.timedelta | np.timedelta64,
+    unit: str,
+    since: str | pd.Timestamp | datetime.datetime | np.datetime64 | None = None
+) -> tuple[int, int]:
+    """Get the total number of specified units that are contained in the
+    given timedelta.
+
+    Args:
+        td (pd.Timedelta | datetime.timedelta | np.timedelta64):
+            timedelta to be converted.
+        unit (str):
+            unit with which to interpret result.
+        since (str | pd.Timestamp | datetime.datetime | np.datetime64 | None,
+               optional):
+            begin counting from the chosen date, accounting for unequal month
+            lengths and leap years.  Only used for `unit='M'`, `unit='Y'`, or
+            numpy timedeltas measured in months or years.  Strings are
+            interpreted as ISO 8601 dates.  If None, starts from the beginning
+            of a 400-year Gregorian calendar cycle.  Defaults to None.
+
+    Raises:
+        TypeError: if `td` is not an instance of `pandas.Timedelta`,
+            `datetime.timedelta`, or `numpy.timedelta64`.
+
+    Returns:
+        tuple[int, int]: tuple `(result, residual)`, where `result` is measured
+            in the specified units and `residual` is the remainder in
+            nanoseconds.
+    """
+    # get start date, convert to days, and store as offset for units "M" and "Y"
+    if since is None:  # start at beginning of 400-year Gregorian cycle
+        start_year, start_month, start_day = (2001, 1, 1)
+    else:
+        if isinstance(since, str):  # interpret as ISO 8601 string
+            since = np.datetime64(since)
+        if isinstance(since, np.datetime64):
+            components = datetime64_components(since)
+            start_year = int(components["year"])
+            start_month = int(components["month"])
+            start_day = int(components["day"])
+        else:
+            start_year = since.year
+            start_month = since.month
+            start_day = since.day
+    day_offset = int(date_to_days(start_year, start_month, start_day))
+
+    # convert timedelta to nanoseconds
+    # pd.Timedelta
+    if isinstance(td, pd.Timedelta):
+        nanoseconds = int(td.asm8.astype(int))
+
+    # datetime.timedelta
+    elif isinstance(td, datetime.timedelta):
+        coefficients = np.array([24 * 60 * 60 * int(1e9), int(1e9), int(1e3)],
+                                dtype="O")
+        components = np.array([td.days, td.seconds, td.microseconds], dtype="O")
+        nanoseconds = int(np.sum(coefficients * components))
+
+    # np.timedelta64
+    elif isinstance(td, np.timedelta64):
+        # convert to underlying integer and gather unit info
+        int_repr = int(td.astype(int))
+        td_unit, _ = np.datetime_data(td)
+
+        # account for leap years/unequal month length, if appropriate
+        if td_unit in ("M", "Y"):
+            # add timedelta to start date as appropriate unit
+            if td_unit == "M":
+                conv = (start_year, start_month + int_repr, start_day)
+            else:
+                conv = (start_year + int_repr, start_month, start_day)
+            # convert years/months to days
+            int_repr = int(date_to_days(*conv)) - day_offset
+            td_unit = "D"
+
+        # multiply by appropriate scale factor to get nanoseconds
+        nanoseconds = int_repr * _to_ns[td_unit]
+
+    # unrecognized timedelta type
+    else:
+        err_msg = (f"[{error_trace()}] could not interpret timedelta of type "
+                   f"{type(td)}")
+        raise TypeError(err_msg)
+
+    # convert nanoseconds to final result with residual
+    if unit in ("M", "Y"):
+        # convert nanoseconds to days, then days to date
+        ns_per_day = 24 * 60 * 60 * int(1e9)
+        date = days_to_date(nanoseconds // ns_per_day + day_offset)
+        years = int(date["year"] - start_year)
+        months = int(date["month"] - start_month)
+        days = int(date["day"] - start_day)
+
+        # parse date as chosen unit
+        if unit == "M":
+            result = 12 * years + months
+            residual = ns_per_day * days + nanoseconds % ns_per_day
+        else:
+            # get days in last year
+            start = (start_year + years, start_month, start_day)
+            end = (start_year + years, start_month + months, start_day + days)
+            days_in_last_year = int(date_to_days(*start) - date_to_days(*end))
+
+            # convert days in last year to nanosecond residual
+            result = years
+            residual = ns_per_day * days_in_last_year + nanoseconds % ns_per_day
+        return result, residual
+    return nanoseconds // _to_ns[unit], nanoseconds % _to_ns[unit]
+
+
+def units_since_epoch(
+    dt: str | pd.Timestamp | datetime.datetime | np.datetime64,
+    unit: str
+) -> tuple[int, int]:
+    """Get the difference between the given datetime and the UTC epoch in the
+    specified units.
+
+    Args:
+        dt (str | pd.Timestamp | datetime.datetime | np.datetime64):
+            datetime to be converted.
+        unit (str):
+            unit with which to interpret result.
+
+    Returns:
+        tuple[int, int]: tuple `(result, residual)`, where `result` is measured
+            in the specified units and `residual` is the remainder in
+            nanoseconds.
+    """
+    # dt = pd.Series(dt)
+    # if pd.api.types.is_datetime64_ns_dtype(dt)
+    # if pd.api.types.infer_dtype(dt) == "datetime64"
+    # if pd.api.types.infer_dtype(dt) == "datetime"
+    # if pd.api.types.infer_dtype(dt) == "date"
+
+    # interpret string as ISO 8601
+    if isinstance(dt, str):
+        dt = np.datetime64(dt)
+
+    # pd.Timestamp
+    if isinstance(dt, pd.Timestamp):
+        if dt.tzinfo is None:  # localize
+            dt = dt.tz_localize(tzlocal.get_localzone_name())
+        epoch = pd.Timestamp.fromtimestamp(0, "UTC")
+
+    # datetime.datetime
+    elif isinstance(dt, datetime.datetime):
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=tzlocal.get_localzone())
+        epoch = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
+
+    # np.datetime64
+    elif isinstance(dt, np.datetime64):
+        dt_unit, _ = np.datetime_data(dt)
+        epoch = np.datetime64(0, dt_unit)
+
+    # unrecognized datetime
+    else:
+        err_msg = (f"[{error_trace()}] could not interpret datetime of type "
+                   f"{type(dt)}")
+        raise TypeError(err_msg)
+
+    return total_units(dt - epoch, unit=unit, since=epoch)
+
+
+
+
+
+
+
+
+
+def convert_datetime_type(dt: datetime_like,
+                          new_type: datetime_like) -> datetime_like:
+    """Convert a `pandas.Timestamp`, `datetime.timedelta`, or `np.timedelta64`
+    object into one of the other types.
+    """
+    def datetime64_to_datetime_datetime(dt: np.datetime64) -> datetime.datetime:
+        result = dt.item()
+        if isinstance(result, datetime.datetime):
+            return result
+        err_msg = (f"[{error_trace(stack_index=2)}] can't convert datetime64 "
+                   f"to datetime.datetime: {dt}")
+        raise ValueError(err_msg)
+
+    datetime_conversions = {
+        pd.Timestamp: {
+            pd.Timestamp: lambda dt: dt,
+            datetime.datetime: lambda dt: dt.to_pydatetime(warn=False),
+            np.datetime64: lambda dt: dt.to_datetime64()
+        },
+        datetime.datetime: {
+            pd.Timestamp: lambda dt: pd.Timestamp(dt),
+            datetime.datetime: lambda dt: dt,
+            np.datetime64: lambda dt: np.datetime64(dt)
+        },
+        np.datetime64: {
+            pd.Timestamp: lambda dt: pd.Timestamp(dt),
+            datetime.datetime: datetime64_to_datetime_datetime,
+            np.datetime64: lambda dt: dt
+        }
+    }
+    return datetime_conversions[type(dt)][new_type](dt)
+
+
+def convert_unit(
+    val: int,
+    before: str,
+    after: str,
+    starting_from: str | datetime_like = "1970-01-01 00:00:00+0000"
+) -> int:
+    """Convert an integer number of the given units to another unit."""
+    # val = np.array(val)
+    _from_ns = {
+        "ns": 1,
+        "us": int(1e3),
+        "ms": int(1e6),
+        "s": int(1e9),
+        "m": 60 * int(1e9),
+        "h": 60 * 60 * int(1e9),
+        "D": 24 * 60 * 60 * int(1e9),
+        "W": 7 * 24 * 60 * 60 * int(1e9),
+    }
+
+    # TODO: this is vectorized, but has wierd overflow behavior
+
+    # check units are valid
+    valid_units = list(_from_ns) + ["M", "Y"]
+    if not (before in valid_units and after in valid_units):
+        bad = before if before not in valid_units else after
+        err_msg = (f"[{error_trace()}] unit {repr(bad)} not recognized - "
+                   f"must be in {valid_units}")
+        raise ValueError(err_msg)
+
+    # trivial cases
+    if before == after:
+        return val
+    if before == "M" and after == "Y":
+        return val // 12
+    if before == "Y" and after == "M":
+        return val * 12
+
+    # get start date and establish year/month/day conversion functions
+    if isinstance(starting_from, (str, np.datetime64)):
+        components = datetime64_components(np.datetime64(starting_from))
+        start_year = int(components["year"])
+        start_month = int(components["month"])
+        start_day = int(components["day"])
+    else:
+        start_year = starting_from.year
+        start_month = starting_from.month
+        start_day = starting_from.day
+    y2d = lambda y: date_to_days(start_year + y, start_month, start_day)
+    m2d = lambda m: date_to_days(start_year, start_month + m, start_day)
+    d2y = lambda d: days_to_date(d)["year"]
+    d2m = lambda d: 12 * (cal := days_to_date(d))["year"] + cal["month"]
+
+    # convert to nanoseconds
+    if before == "M":
+        nanoseconds = int((m2d(val) - m2d(0)) * _from_ns["D"])
+    elif before == "Y":
+        nanoseconds = int((y2d(val) - y2d(0)) * _from_ns["D"])
+    else:
+        nanoseconds = val * _from_ns[before]
+
+    # convert nanoseconds to final unit
+    if after == "M":
+        start = 12 * (start_year) + start_month
+        return int(d2m(nanoseconds // _from_ns["D"] + m2d(0)) - start)
+    if after == "Y":
+        return int(d2y(nanoseconds // _from_ns["D"] + y2d(0)) - start_year)
+    return nanoseconds // _from_ns[after]
+
+
+def to_unit(
+    arg: tuple[int, str] | str | datetime_like | timedelta_like,
+    unit: str,
+    since: str | datetime_like = "1970-01-01 00:00:00+0000"
+) -> int:
+    """Convert a timedelta or an integer and associated unit into an integer
+    number of the specified unit.
+
+    Args:
+        arg (tuple[int, str] | pd.Timedelta | datetime.timedelta | np.timedelta64): _description_
+        unit (str): _description_
+
+    Raises:
+        ValueError: _description_
+
+    Returns:
+        int: _description_
+    """
+    # TODO: vectorize these
+    if isinstance(since, str):
+        since = np.datetime64(since)
+    if isinstance(arg, str):
+        arg = np.datetime64(arg)
+
+    # convert datetimes to timedeltas
+    # TODO: test each of these
+    if isinstance(arg, pd.Timestamp):
+        # TODO: handle timezone?
+        try:
+            offset = convert_datetime_type(since, pd.Timestamp)
+            arg -= offset
+        except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime:
+            arg = convert_datetime_type(arg, datetime.datetime)
+    if isinstance(arg, datetime.datetime):
+        # TODO: handle timezone?
+        try:
+            offset = convert_datetime_type(since, datetime.datetime)
+            arg -= offset
+        except Exception as err:
+            print(type(err))
+            raise err
+    if isinstance(arg, np.datetime64):
+        # TODO: strip timezone?
+        arg_unit, _ = np.datetime_data(arg)
+        offset = convert_datetime_type(since, np.datetime64)
+        arg -= np.datetime64(offset, arg_unit)
+
+    # convert timedeltas to final units
+    if isinstance(arg, tuple):
+        # arg = np.timedelta64(arg[0], arg[1])
+        return convert_unit(arg[0], arg[1], unit, since)
+    if isinstance(arg, pd.Timedelta):
+        nanoseconds = int(arg.asm8.astype(np.int64))
+        return convert_unit(nanoseconds, "ns", unit, since)
+    if isinstance(arg, datetime.timedelta):
+        coefs = np.array([24 * 60 * 60 * int(1e6), int(1e6), 1], dtype="O")
+        comps = np.array([arg.days, arg.seconds, arg.microseconds], dtype="O")
+        microseconds = int(np.sum(coefs * comps))
+        return convert_unit(microseconds, "us", unit, since)
+    if isinstance(arg, np.timedelta64):
+        arg_unit, _ = np.datetime_data(arg)
+        int_repr = int(arg.astype(np.int64))
+        return convert_unit(int_repr, arg_unit, unit, since)
+
+    raise RuntimeError()

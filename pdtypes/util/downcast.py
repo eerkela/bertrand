@@ -924,3 +924,19 @@ def downcast_int_dtype(min_val: int, max_val: int, dtype: type) -> type:
 #                           dtype=np.uint8)
 #     bit_array = np.unpackbits(byte_array, axis=1)
 #     return bit_array
+
+
+
+def to_sparse(series: pd.Series) -> pd.Series:
+    """Convert series into a sparse series, masking the most frequent value."""
+    # TODO: doesn't work for extension dtypes with fill_value != pd.NA
+    # value_counts(dropna=False) causes integers to be converted to float if dtype="O"
+    # TODO: sparse array protocol type strings: "Sparse[int]"
+    counts = series.value_counts()
+    val = counts.index[0]
+    if series.hasnans:
+        # count nans separately
+        nan_counts = series[series.isna()].value_counts(dropna=False)
+        if nan_counts.iloc[0] >= counts.iloc[0]:
+            val = nan_counts.index[0]
+    return series.astype(pd.SparseDtype(series.dtype, val))

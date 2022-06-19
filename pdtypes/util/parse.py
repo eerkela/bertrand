@@ -9,6 +9,31 @@ import pandas as pd
 from pdtypes.error import error_trace
 
 
+def available_range(
+    dtype: type | str | np.dtype | pd.api.extensions.ExtensionDtype |
+           pd.SparseDtype
+) -> tuple[int, int]:
+    """Return available range for integer dtype as the tuple `(min, max)`."""
+    if not pd.api.types.is_integer_dtype(dtype):
+        err_msg = (f"[{error_trace()}] can only be used on integer dtype, "
+                   f"not {dtype}")
+        raise TypeError(err_msg)
+    size = itemsize(dtype)
+    if pd.api.types.is_unsigned_integer_dtype(dtype):
+        return 0, 2**(8 * size) - 1
+    return -2**(8 * size - 1), 2**(8 * size - 1) - 1
+
+
+def itemsize(
+    dtype: type | str | np.dtype | pd.api.extensions.ExtensionDtype |
+           pd.SparseDtype
+) -> int:
+    """Get itemsize in bytes of the given, potentially sparse dtype."""
+    if isinstance(dtype, pd.SparseDtype):
+        return dtype.subtype.itemsize
+    return pd.api.types.pandas_dtype(dtype).itemsize
+
+
 def parse_dtype(dtype: type) -> str:
     """Effectively equivalent to pandas.api.types.infer_dtype, but operates on
     atomic data types and type strings rather than scalar and array-like values.
