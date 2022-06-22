@@ -19,9 +19,9 @@ from pdtypes.util.downcast import (
     downcast_complex, downcast_float, downcast_int_dtype, to_sparse
 )
 from pdtypes.util.time import (
-    _to_ns, date_to_days, datetime64_components, days_to_date, ns_since_epoch,
+    _to_ns, convert_datetime_type, convert_unit, date_to_days, datetime64_components, days_to_date, ns_since_epoch,
     to_utc, total_nanoseconds, total_units, units_since_epoch, to_unit,
-    datetime_like, timedelta_like
+    datetime_like, timedelta_like, convert_iso_string
 )
 
 
@@ -672,11 +672,16 @@ def to_decimal(series: pd.Series) -> pd.Series:
                                   else decimal.Decimal(x))
 
 
+
+
+
+
 def to_datetime(
     series: pd.Series,
     unit: str = "ns",
     offset: str | datetime_like = "1970-01-01 00:00:00+0000",
-    tz: str | datetime.tzinfo | None = "local"
+    tz: str | datetime.tzinfo | None = "local",
+    errors: str = "warn"
 ) -> pd.Series:
     """Convert a series containing integer data to datetimes of the given unit,
     counting from the provided offset (UTC if offset is None).
@@ -728,6 +733,8 @@ def to_datetime(
         - 'M' and 'Y' units.
         - tz=None, tz="local", tz="UTC", tz="Etc/GMT+12", tz="Etc/GMT-12".
         - offset provided.
+        - does not modify in place.
+        - ISO string offsets with or without timezones, in multiple regimes.
     """
     # vectorize input - object dtype prevents overflow
     series = pd.Series(series, dtype="O")
@@ -739,16 +746,35 @@ def to_datetime(
         raise TypeError(err_msg)
 
     # check unit is valid
-    if unit not in list(_to_ns) + ["M", "Y"]:
+    valid_units = list(_to_ns) + ["M", "Y"]
+    if unit not in valid_units:
         err_msg = (f"[{error_trace()}] `unit` {repr(unit)} not recognized - "
-                   f"must be in {list(_to_ns) + ['M', 'Y']}")
+                   f"must be in {valid_units}")
+        raise ValueError(err_msg)
+
+    # check error handling is one of the available settings
+    if errors not in ("raise", "warn", "ignore"):
+        err_msg = (f"[{error_trace()}] `errors` must one of "
+                   f"{['raise', 'warn', 'ignore']}, not {repr(errors)}")
         raise ValueError(err_msg)
 
     # convert tz to a tzinfo object, if provided
     if tz:
         if tz == "local":
             tz = tzlocal.get_localzone_name()
-        tz = pytz.timezone(tz)  # zoneinfo
+        tz = pytz.timezone(tz)  # TODO: zoneinfo?
+
+    # convert offset to a properly localized datetime object
+    if isinstance(offset, str):
+        offset = convert_iso_string(offset, tz)
+    if isinstance(offset, pd.Timestamp) and not offset.tzinfo:
+        if (offset < pd.Timestamp.min + pd.Timedelta(hours=12) or
+            offset > pd.Timestamp.max - pd.Timedelta(hours=12)):
+            offset = convert_datetime_type(offset, datetime.datetime)
+        else:
+            offset = offset.tz_localize(tz)
+    if isinstance(offset, datetime.datetime) and not offset.tzinfo:
+        offset = offset.astimezone(tzinfo=tz)
 
     # get min/max to evaluate range
     min_val = series.min()
@@ -756,16 +782,13 @@ def to_datetime(
 
     # pd.Timestamp - preferred to enable .dt namespace
     offset_ns = to_unit(offset, "ns")
-    min_ns = to_unit((min_val, unit), "ns") + offset_ns - 43200 * int(1e9)
-    max_ns = to_unit((max_val, unit), "ns") + offset_ns + 43200 * int(1e9)
-    if min_ns >= -2**63 + 1 and max_ns <= 2**63 - 1:
-        if unit in ("M", "Y"):  # prefer array.astype since it is exact
-            series = series.copy()
-            series[:] = np.array(series).astype(f"M8[{unit}]")
-            series = series.infer_objects()
-        else:
-            series = pd.to_datetime(series, unit=unit)
-        series += pd.Timedelta(nanoseconds=offset_ns)
+    min_ns = to_unit((min_val, unit), "ns") + offset_ns
+    max_ns = to_unit((max_val, unit), "ns") + offset_ns
+    if (min_ns >= -2**63 + 1 + 43200 * int(1e9) and
+        max_ns <= 2**63 - 1 - 43200 * int(1e9)):
+        series = pd.Series(to_unit((series, unit), "ns", since=offset) +
+                           offset_ns)
+        series = pd.to_datetime(series, unit="ns")
         if tz:
             return series.dt.tz_localize("UTC").dt.tz_convert(tz)
         return series
@@ -776,50 +799,64 @@ def to_datetime(
     max_us = to_unit((max_val, unit), "us") + offset_us
     if (min_us >= to_unit(datetime.datetime.min, "us") and
         max_us <= to_unit(datetime.datetime.max, "us")):
-        if unit == "ns":  # convert to us to avoid overflow
-            series = series // 1000  # range of M8[us] >> datetime.datetime
-            unit = "us"
-        series = series.copy()
-        nans = pd.isna(series)
-        series[nans] = pd.NaT  # handle missing values separately
-        # astype(object) converts datetime64 array to naive datetime.datetimes.
-        # Slicing like this prevents automatic coercion to pd.Timestamp.
-        series[~nans] = (series[~nans].array.astype(f"M8[{unit}]").astype(object) +
-                         datetime.timedelta(microseconds=offset_us))
-        if tz:  # localize to final tz
-            # no choice but to do this elementwise -> slow
-            make_utc = lambda dt: dt.replace(tzinfo=datetime.timezone.utc)
-            localize = lambda dt: dt.astimezone(tz)
-            series[~nans] = [localize(make_utc(dt)) for dt in series[~nans]]
-        return series
-
-    # np.datetime64 - widest range of all but no timezone; results are UTC
-    offset = to_unit(offset, unit)
-    if unit == "W":
-        # some wierd overflow going on here.  Values outside this range wrap
-        # around infinity, skipping "NaT".
-        min_poss = -((2**63 - 1) // 7) + 1566
-        max_poss = (2**63 - 1) // 7 + 1565
-    elif unit == "Y":
-        min_poss = -2**63 + 1
-        max_poss = 2**63 - 1 - 1970  # appears to be UTC offset
-    else:
-        min_poss = -2**63 + 1  # -2**63 reserved for np.datetime64("NaT")
-        max_poss = 2**63 - 1
-    if min_val + offset >= min_poss and max_val + offset <= max_poss:
-        # doing it like this prevents automatic coercion to pd.Timestamp
-        series = series.copy()
+        # to_unit converts to numpy array
+        series = to_unit((series, unit), "us", since=offset) + offset_us
         nans = pd.isna(series)
         series[nans] = pd.NaT
-        series[~nans] = list(series[~nans].array.astype(f"M8[{unit}]") + offset)
-        return series
+        series[~nans] = series[~nans].astype("M8[us]").astype(object)
+        if tz:  # localize to final tz
+            # no choice but to do this elementwise -> slow
+            make_utc = lambda dt: dt.astimezone(tzinfo=datetime.timezone.utc)
+            localize = lambda dt: dt.astimezone(tz)
+            series[~nans] = [localize(make_utc(dt)) for dt in series[~nans]]
+        return pd.Series(series, dtype="O")  # convert back to series
 
-    # outside datetime64 range - throw ValueError
-    err_msg = (f"[{error_trace()}] could not convert series to datetime: "
-               f"values cannot be represented as `pandas.Timestamp`, "
-               f"`datetime.datetime`, or `numpy.datetime64` with unit "
-               f"{repr(unit)}")
-    raise ValueError(err_msg)
+    # np.datetime64 - widest range of all but no timezone; results are UTC
+    # find appropriate unit
+    final_unit = None
+    for test_unit in valid_units[valid_units.index(unit):]:
+        if test_unit == "W":
+            # values outside this range wrap around infinity, skipping "NaT"
+            min_poss = -((2**63 - 1) // 7) + 1566
+            max_poss = (2**63 - 1) // 7 + 1565
+        elif test_unit == "Y":
+            min_poss = -2**63 + 1
+            max_poss = 2**63 - 1 - 1970  # appears to be UTC offset
+        else:
+            min_poss = -2**63 + 1  # -2**63 reserved for np.datetime64("NaT")
+            max_poss = 2**63 - 1
+        test_offset = to_unit(offset, test_unit)
+        if (to_unit((min_val, unit), test_unit) + test_offset >= min_poss and
+            to_unit((max_val, unit), test_unit) + test_offset <= max_poss):
+            final_unit = test_unit
+            break
+    if not final_unit:
+        err_msg = (f"[{error_trace()}] could not convert series to datetime: "
+                   f"values cannot be represented as `pandas.Timestamp`, "
+                   f"`datetime.datetime`, or `numpy.datetime64` with any "
+                   f"choice of unit")
+        raise ValueError(err_msg)
+    if final_unit != unit:
+        warn_msg = (f"values out of range for {repr(unit)} precision")
+        if errors == "raise":
+            raise RuntimeError(f"[{error_trace()}] {warn_msg}")
+        if errors == "warn":
+            warnings.warn(f"{warn_msg}: converting to {repr(final_unit)} "
+                          f"instead", RuntimeWarning)
+    if tz and tz not in (pytz.timezone("UTC"), zoneinfo.ZoneInfo("UTC")):
+        warn_msg = ("`numpy.datetime64` objects do not carry timezone "
+                    "information")
+        if errors == "raise":
+            raise RuntimeError(f"[{error_trace()}] {warn_msg}")
+        if errors == "warn":
+            warnings.warn(f"{warn_msg}: returned times are UTC", RuntimeWarning)
+    series = series.copy()
+    nans = pd.isna(series)
+    series[nans] = pd.NaT
+    result = (to_unit((series[~nans], unit), final_unit, since=offset) +
+              test_offset).astype(f"M8[{final_unit}]")
+    series[~nans] = list(result)
+    return series
 
 
 def to_timedelta(

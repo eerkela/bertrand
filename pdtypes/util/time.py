@@ -1,13 +1,14 @@
 from __future__ import annotations
 import datetime
-from lib2to3.pytree import convert
 import re
 from typing import Union
+import warnings
 
 import numpy as np
 import pandas as pd
 import pytz
 import tzlocal
+import zoneinfo
 
 from pdtypes.error import error_trace
 
@@ -27,30 +28,13 @@ _to_ns = {
     "fs": 1e-6,
     "ps": 1e-3,
     "ns": 1,
-    "nanosecond": 1,
-    "nanoseconds": 1,
     "us": int(1e3),
-    "microsecond": int(1e3),
-    "microseconds": int(1e3),
     "ms": int(1e6),
-    "millisecond": int(1e6),
-    "milliseconds": int(1e6),
     "s": int(1e9),
-    "sec": int(1e9),
-    "second": int(1e9),
-    "seconds": int(1e9),
     "m": 60 * int(1e9),
-    "minute": 60 * int(1e9),
-    "minutes": 60 * int(1e9),
     "h": 60 * 60 * int(1e9),
-    "hour": 60 * 60 * int(1e9),
-    "hours": 60 * 60 * int(1e9),
     "D": 24 * 60 * 60 * int(1e9),
-    "day": 24 * 60 * 60 * int(1e9),
-    "days": 24 * 60 * 60 * int(1e9),
     "W": 7 * 24 * 60 * 60 * int(1e9),
-    "week": 7 * 24 * 60 * 60 * int(1e9),
-    "weeks": 7 * 24 * 60 * 60 * int(1e9)
 }
 
 
@@ -709,12 +693,12 @@ def convert_datetime_type(dt: datetime_like,
             np.datetime64: lambda dt: dt.to_datetime64()
         },
         datetime.datetime: {
-            pd.Timestamp: lambda dt: pd.Timestamp(dt),
+            pd.Timestamp: pd.Timestamp,
             datetime.datetime: lambda dt: dt,
-            np.datetime64: lambda dt: np.datetime64(dt)
+            np.datetime64: np.datetime64
         },
         np.datetime64: {
-            pd.Timestamp: lambda dt: pd.Timestamp(dt),
+            pd.Timestamp: pd.Timestamp,
             datetime.datetime: datetime64_to_datetime_datetime,
             np.datetime64: lambda dt: dt
         }
@@ -723,28 +707,17 @@ def convert_datetime_type(dt: datetime_like,
 
 
 def convert_unit(
-    val: int,
+    val: int | np.ndarray | pd.Series,
     before: str,
     after: str,
     starting_from: str | datetime_like = "1970-01-01 00:00:00+0000"
-) -> int:
+) -> np.ndarray:
     """Convert an integer number of the given units to another unit."""
-    # val = np.array(val)
-    _from_ns = {
-        "ns": 1,
-        "us": int(1e3),
-        "ms": int(1e6),
-        "s": int(1e9),
-        "m": 60 * int(1e9),
-        "h": 60 * 60 * int(1e9),
-        "D": 24 * 60 * 60 * int(1e9),
-        "W": 7 * 24 * 60 * 60 * int(1e9),
-    }
-
-    # TODO: this is vectorized, but has wierd overflow behavior
+    # vectorize input
+    val = np.array(val, dtype="O")
 
     # check units are valid
-    valid_units = list(_from_ns) + ["M", "Y"]
+    valid_units = list(_to_ns) + ["M", "Y"]
     if not (before in valid_units and after in valid_units):
         bad = before if before not in valid_units else after
         err_msg = (f"[{error_trace()}] unit {repr(bad)} not recognized - "
@@ -776,25 +749,26 @@ def convert_unit(
 
     # convert to nanoseconds
     if before == "M":
-        nanoseconds = int((m2d(val) - m2d(0)) * _from_ns["D"])
+        nanoseconds = (m2d(val) - m2d(0)) * _to_ns["D"]
     elif before == "Y":
-        nanoseconds = int((y2d(val) - y2d(0)) * _from_ns["D"])
+        nanoseconds = (y2d(val) - y2d(0)) * _to_ns["D"]
     else:
-        nanoseconds = val * _from_ns[before]
+        nanoseconds = val * _to_ns[before]
 
     # convert nanoseconds to final unit
     if after == "M":
         start = 12 * (start_year) + start_month
-        return int(d2m(nanoseconds // _from_ns["D"] + m2d(0)) - start)
+        return d2m(nanoseconds // _to_ns["D"] + m2d(0)) - start
     if after == "Y":
-        return int(d2y(nanoseconds // _from_ns["D"] + y2d(0)) - start_year)
-    return nanoseconds // _from_ns[after]
+        return d2y(nanoseconds // _to_ns["D"] + y2d(0)) - start_year
+    return nanoseconds // _to_ns[after]
 
 
 def to_unit(
     arg: tuple[int, str] | str | datetime_like | timedelta_like,
     unit: str,
-    since: str | datetime_like = "1970-01-01 00:00:00+0000"
+    since: str | datetime_like = "1970-01-01 00:00:00+0000",
+    tz: str | datetime.tzinfo | None = None
 ) -> int:
     """Convert a timedelta or an integer and associated unit into an integer
     number of the specified unit.
@@ -809,29 +783,37 @@ def to_unit(
     Returns:
         int: _description_
     """
-    # TODO: vectorize these
-    if isinstance(since, str):
-        since = np.datetime64(since)
+    # TODO: allow both aware and naive args
+
     if isinstance(arg, str):
-        arg = np.datetime64(arg)
+        arg = convert_iso_string(arg, tz)
+    if isinstance(since, str):
+        since = convert_iso_string(since, tz)
+    if isinstance(tz, str):
+        tz = pytz.timezone(tz)
 
     # convert datetimes to timedeltas
     # TODO: test each of these
     if isinstance(arg, pd.Timestamp):
-        # TODO: handle timezone?
+        if not arg.tzinfo:
+            arg = arg.tz_localize(tz)
+        else:
+            arg = arg.tz_convert(tz)
         try:
-            offset = convert_datetime_type(since, pd.Timestamp)
-            arg -= offset
+            arg -= convert_datetime_type(since, pd.Timestamp)
         except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime:
             arg = convert_datetime_type(arg, datetime.datetime)
     if isinstance(arg, datetime.datetime):
-        # TODO: handle timezone?
+        if not arg.tzinfo:
+            arg = arg.replace(tzinfo=tz)
+        elif tz:
+            arg = arg.astimezone(tz)
+        else:
+            arg = arg.astimezone(datetime.timezone.utc).replace(tzinfo=None)
         try:
-            offset = convert_datetime_type(since, datetime.datetime)
-            arg -= offset
-        except Exception as err:
-            print(type(err))
-            raise err
+            arg -= convert_datetime_type(since, datetime.datetime)
+        except OverflowError:
+            arg = convert_datetime_type(arg, np.datetime64)
     if isinstance(arg, np.datetime64):
         # TODO: strip timezone?
         arg_unit, _ = np.datetime_data(arg)
@@ -840,7 +822,6 @@ def to_unit(
 
     # convert timedeltas to final units
     if isinstance(arg, tuple):
-        # arg = np.timedelta64(arg[0], arg[1])
         return convert_unit(arg[0], arg[1], unit, since)
     if isinstance(arg, pd.Timedelta):
         nanoseconds = int(arg.asm8.astype(np.int64))
@@ -856,3 +837,79 @@ def to_unit(
         return convert_unit(int_repr, arg_unit, unit, since)
 
     raise RuntimeError()
+
+
+def convert_iso_string(
+    iso_string: str,
+    tz: str | datetime.tzinfo,
+    errors: str = "warn"
+) -> datetime_like:
+    """Convert an ISO 8601 string into a datetime object.  Properly accounts
+    for timezone offsets in ISO format, and localizes to the timezone given by
+    `tz`.
+    """
+    if isinstance(tz, str):
+        tz = pytz.timezone(tz)
+
+    # try pd.Timestamp
+    try:
+        result = pd.Timestamp(iso_string)
+        if result.tzinfo is not None:  # iso_string has utc offset
+            return result.tz_convert("UTC").tz_convert(tz)
+        return result.tz_localize(tz)
+    except (pd._libs.tslibs.np_datetime.OutOfBoundsDatetime, ValueError):
+        pass
+
+    # extract utc offset, if present
+    utc_offset_regex = r"(\+|\-)([0-9]{4}|[0-9]{2}:[0-9]{2})\s*$"
+    utc_offset = re.search(utc_offset_regex, iso_string)
+    if utc_offset:  # iso string has an included utc offset
+        iso_string = iso_string[:utc_offset.start()]
+        offset_str = utc_offset.group()
+        sign = offset_str[0]
+        if ":" in offset_str:
+            hours = int(offset_str[1:offset_str.index(":")])
+            minutes = int(offset_str[offset_str.index(":") + 1:])
+        else:
+            hours = int(offset_str[1:3])
+            minutes = int(offset_str[3:])
+        if sign == "+":
+            delta = datetime.timedelta(hours=hours, minutes=minutes)
+        else:
+            delta = datetime.timedelta(hours=-hours, minutes=-minutes)
+        zone = datetime.timezone(delta)
+    else:  # iso string is naive
+        delta = datetime.timedelta()
+        zone = None
+
+    # try datetime.datetime
+    try:
+        result = datetime.datetime.fromisoformat(iso_string)
+        if zone:
+            result = result.astimezone(zone)
+        if tz is None:
+            return result.astimezone(datetime.timezone.utc).replace
+        return result.astimezone(tz)
+    except ValueError:
+        pass
+
+    # try np.datetime64
+    if tz and tz not in (pytz.timezone("UTC"), zoneinfo.ZoneInfo("UTC")):
+        warn_msg = ("datetime64 does not carry timezone information - "
+                    "returned time is UTC")
+        if errors == "raise":
+            raise RuntimeError(warn_msg)
+        if errors == "warn":
+            warnings.warn(warn_msg, RuntimeWarning)
+    result = np.datetime64(iso_string)
+    result_unit, _ = np.datetime_data(result)
+    result -= int(to_unit(delta, result_unit))
+    if str(result) != "NaT":
+        year_regex = r"\-{0,1}[0-9]+\-"
+        original_year = int(re.search(year_regex, iso_string).group()[:-1])
+        final_year = int(re.search(year_regex, str(result)).group()[:-1])
+        if abs(final_year - original_year) <= 1:
+            return result
+    err_msg = (f"[{error_trace()}] ISO string cannot be represented at the "
+                f"given precision: {repr(iso_string)}")
+    raise OverflowError(err_msg)
