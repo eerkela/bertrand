@@ -4,6 +4,7 @@ import re
 from typing import Union
 import warnings
 
+import dateutil
 import numpy as np
 import pandas as pd
 import pytz
@@ -24,9 +25,9 @@ timedelta_like = Union[pd.Timedelta, datetime.timedelta, np.timedelta64]
 
 _time_unit_regex = re.compile(r'^[^\[]+\[([^\]]+)\]$')
 _to_ns = {
-    "as": 1e-9,
-    "fs": 1e-6,
-    "ps": 1e-3,
+    # "as": 1e-9,
+    # "fs": 1e-6,
+    # "ps": 1e-3,
     "ns": 1,
     "us": int(1e3),
     "ms": int(1e6),
@@ -36,6 +37,25 @@ _to_ns = {
     "D": 24 * 60 * 60 * int(1e9),
     "W": 7 * 24 * 60 * 60 * int(1e9),
 }
+
+
+def replace_with_dict(array: np.ndarray | pd.Series,
+                      dictionary: dict) -> np.ndarray:
+    """Test using dictionaries to replace values in a vectorized fashion."""
+    keys = np.array(list(dictionary))
+    vals = np.array(list(dictionary.values()))
+
+    sorted_indices = keys.argsort()
+
+    keys_sorted = keys[sorted_indices]
+    vals_sorted = vals[sorted_indices]
+    return vals_sorted[np.searchsorted(keys_sorted, array)]
+
+
+
+
+
+
 
 
 def is_leap(
@@ -220,7 +240,8 @@ def date_to_days(year: int | list | tuple | np.ndarray,
     day_offset = np.array([0, 31, 61, 92, 122, 153, 184, 214, 245, 275, 306,
                            337, 366])
     leaps = leaps_between(0, year + 1) - 1
-    result = (day - 1) + (day_offset[month]) + (365 * year + leaps) + 60 - 719528  # utc epoch
+    result = (day - 1) + (day_offset[month]) + (365 * year + leaps) + 60
+    result -= 719528  # utc epoch
     result[nan_months] = np.nan  # correct for non-nan fill value
     return result
 
@@ -413,6 +434,7 @@ def time_unit(t: str | type | np.datetime64 | np.timedelta64) -> str:
     or array protocol type string.  Returns `None` if argument has no specified
     resolution.
     """
+    # TODO: use np.datetime_data instead
     if isinstance(t, (np.datetime64, np.timedelta64)):
         dtype_str = str(t.dtype)
     else:
@@ -669,10 +691,6 @@ def units_since_epoch(
 
 
 
-
-
-
-
 def convert_datetime_type(dt: datetime_like,
                           new_type: datetime_like) -> datetime_like:
     """Convert a `pandas.Timestamp`, `datetime.timedelta`, or `np.timedelta64`
@@ -703,72 +721,364 @@ def convert_datetime_type(dt: datetime_like,
             np.datetime64: lambda dt: dt
         }
     }
+    # TODO: have to vectorize this
     return datetime_conversions[type(dt)][new_type](dt)
 
 
-def convert_unit(
-    val: int | np.ndarray | pd.Series,
-    before: str,
-    after: str,
-    starting_from: str | datetime_like = "1970-01-01 00:00:00+0000"
-) -> np.ndarray:
-    """Convert an integer number of the given units to another unit."""
-    # vectorize input
-    val = np.array(val, dtype="O")
 
-    # check units are valid
-    valid_units = list(_to_ns) + ["M", "Y"]
-    if not (before in valid_units and after in valid_units):
-        bad = before if before not in valid_units else after
-        err_msg = (f"[{error_trace()}] unit {repr(bad)} not recognized - "
-                   f"must be in {valid_units}")
-        raise ValueError(err_msg)
 
-    # trivial cases
-    if before == after:
-        return val
-    if before == "M" and after == "Y":
-        return val // 12
-    if before == "Y" and after == "M":
-        return val * 12
-
-    # get start date and establish year/month/day conversion functions
-    if isinstance(starting_from, (str, np.datetime64)):
-        components = datetime64_components(np.datetime64(starting_from))
+def months_to_ns(
+    val: pd.Series,
+    since: str | datetime_like | datetime.date
+) -> pd.Series:
+    """Convert a number of months to a day offset from a given date."""
+    if isinstance(since, (str, np.datetime64)):
+        components = datetime64_components(np.datetime64(since))
         start_year = int(components["year"])
         start_month = int(components["month"])
         start_day = int(components["day"])
     else:
-        start_year = starting_from.year
-        start_month = starting_from.month
-        start_day = starting_from.day
-    y2d = lambda y: date_to_days(start_year + y, start_month, start_day)
-    m2d = lambda m: date_to_days(start_year, start_month + m, start_day)
-    d2y = lambda d: days_to_date(d)["year"]
-    d2m = lambda d: 12 * (cal := days_to_date(d))["year"] + cal["month"]
+        start_year = since.year
+        start_month = since.month
+        start_day = since.day
+    offset = date_to_days(start_year, start_month, start_day)
+    result = date_to_days(start_year, start_month + val, start_day)
+    return pd.Series(result - offset) * _to_ns["D"]
 
-    # convert to nanoseconds
-    if before == "M":
-        nanoseconds = (m2d(val) - m2d(0)) * _to_ns["D"]
-    elif before == "Y":
-        nanoseconds = (y2d(val) - y2d(0)) * _to_ns["D"]
+
+def years_to_ns(
+    val: pd.Series,
+    since: str | datetime_like | datetime.date
+) -> pd.Series:
+    """Convert a number of years to a day offset from a given date."""
+    if isinstance(since, (str, np.datetime64)):
+        components = datetime64_components(np.datetime64(since))
+        start_year = int(components["year"])
+        start_month = int(components["month"])
+        start_day = int(components["day"])
     else:
-        nanoseconds = val * _to_ns[before]
+        start_year = since.year
+        start_month = since.month
+        start_day = since.day
+    offset = date_to_days(start_year, start_month, start_day)
+    result = date_to_days(start_year + val, start_month, start_day)
+    return pd.Series(result - offset) * _to_ns["D"]
 
-    # convert nanoseconds to final unit
-    if after == "M":
-        start = 12 * (start_year) + start_month
-        return d2m(nanoseconds // _to_ns["D"] + m2d(0)) - start
-    if after == "Y":
-        return d2y(nanoseconds // _to_ns["D"] + y2d(0)) - start_year
-    return nanoseconds // _to_ns[after]
+
+def ns_to_months(
+    val: pd.Series,
+    since: str | datetime_like | datetime.date,
+    rounding: str = "floor"
+) -> pd.Series:
+    """Convert a number of days to a month offset from a given date."""
+    if isinstance(since, (str, np.datetime64)):
+        components = datetime64_components(np.datetime64(since))
+        start_year = int(components["year"])
+        start_month = int(components["month"])
+        start_day = int(components["day"])
+    else:
+        start_year = since.year
+        start_month = since.month
+        start_day = since.day
+    offset = date_to_days(start_year, start_month, start_day)
+    date = days_to_date(round_div(val, _to_ns["D"], rounding=rounding) + offset)
+    result = (date["year"] - start_year) * 12 + date["month"] - start_month
+    result -= date["day"] < start_day  # correct for offset day != 1
+    if rounding == "floor":  # TODO: add "truncate" to this check?
+        return pd.Series(result)
+
+    # compute residuals
+    result_ns = months_to_ns(result, since=since)
+    residuals = val - result_ns  # residual in nanoseconds
+    ns_in_last_month = months_to_ns(result + 1, since=since) - result_ns
+    result += round_div(residuals, ns_in_last_month, rounding=rounding)
+    return pd.Series(result)
+
+
+def ns_to_years(
+    val: pd.Series,
+    since: str | datetime_like | datetime.date,
+    rounding: str = "floor"
+) -> pd.Series:
+    """Convert a number of days to a month offset from a given date."""
+    if isinstance(since, (str, np.datetime64)):
+        components = datetime64_components(np.datetime64(since))
+        start_year = int(components["year"])
+        start_month = int(components["month"])
+        start_day = int(components["day"])
+    else:
+        start_year = since.year
+        start_month = since.month
+        start_day = since.day
+    offset = date_to_days(start_year, start_month, start_day)
+    date = days_to_date(round_div(val, _to_ns["D"], rounding=rounding) + offset)
+    result = date["year"] - start_year
+    result -= (date["month"] < start_month) | (date["day"] < start_day)
+    if rounding == "floor":  # TODO: add "truncate" to this check?
+        return pd.Series(result)
+
+    # compute residuals
+    residuals = val - years_to_ns(result, since=since)
+    ns_in_last_year = (365 + is_leap(start_year + result)) * _to_ns["D"]
+    result += round_div(residuals, ns_in_last_year, rounding=rounding)
+    return pd.Series(result)
+
+
+def round_div(
+    val: int | np.ndarray | pd.Series,
+    divisor: int | np.ndarray | pd.Series,
+    rounding: str = "floor"
+) -> np.ndarray | pd.Series:
+    """Divide integers and integer arrays with specified rounding rule."""
+    # round towards -infinity
+    if rounding == "floor":
+        return val // divisor
+
+    # round towards zero
+    if rounding == "truncate":
+        # vectorized
+        if (isinstance(val, (np.ndarray, pd.Series)) or
+            isinstance(divisor, (np.ndarray, pd.Series))):
+            if isinstance(val, np.ndarray):
+                val = np.atleast_1d(val)
+            if isinstance(divisor, np.ndarray):
+                divisor = np.atleast_1d(divisor)
+            result = val.copy()
+            neg = (val < 0) ^ (divisor < 0)
+            result[neg] = (val[neg] + divisor[neg] - 1) // divisor[neg]
+            result[~neg] = val[~neg] // divisor[~neg]
+            return result
+
+        # scalar
+        if (val < 0) ^ (divisor < 0):
+            return (val + divisor - 1) // divisor
+        return val // divisor
+
+    # round towards closest integer
+    if rounding == "round":
+        return (val + divisor // 2) // divisor
+
+    # round towards +infinity
+    if rounding == "ceiling":
+        return (val + divisor - 1) // divisor
+
+    # error - rounding not recognized
+    err_msg = (f"[{error_trace()}] `rounding` must be one of ['floor', "
+               f"'truncate', 'round', 'ceiling'], not {repr(rounding)}")
+    raise ValueError(err_msg)
+
+
+def convert_unit(
+    val: int | float | list | np.ndarray | pd.Series,
+    before: str | list | np.ndarray | pd.Series,
+    after: str | list | np.ndarray | pd.Series,
+    since: str | datetime_like | list | np.ndarray | pd.Series = "1970-01-01 00:00:00+0000",
+    rounding: str = "truncate"
+) -> pd.Series:
+    """Convert an integer number of the given units to another unit."""
+    # TODO: allow float values, with specified rounding rules applied
+    # -> they always get converted to an integer number of nanoseconds, then
+    # from nanoseconds to final unit just like any other integer.
+    # vectorize input and broadcast to match sizes
+    val = pd.Series(val, dtype="O")  # object dtype prevents overflow
+    before = np.broadcast_to(np.array(before), len(val))
+    after = np.broadcast_to(np.array(after), len(val))
+
+    # TODO: make sure rounding rules are correct for both positive and negative
+    # values of every unit combination
+
+    # check units are valid
+    valid_units = list(_to_ns) + ["M", "Y"]
+    if not np.isin(before, valid_units).all():
+        bad = list(before[~np.isin(before, valid_units)].unique())
+        err_msg = (f"[{error_trace()}] `before` unit {bad} not recognized: "
+                   f"must be in {valid_units}")
+        raise ValueError(err_msg)
+    if not np.isin(after, valid_units).all():
+        bad = list(after[~np.isin(after, valid_units)].unique())
+        err_msg = (f"[{error_trace()}] `after` unit {bad} not recognized: "
+                   f"must be in {valid_units}")
+        raise ValueError(err_msg)
+
+    # trivial case (no conversion)
+    if np.array_equal(before, after):
+        return val
+
+    # get indices where conversion is necessary
+    to_convert = (before != after)
+
+    # trivial year/month conversions
+    trivial_years = (before == "Y") & (after == "M")
+    val[trivial_years] *= 12  # multiply years by 12 to get months
+    to_convert ^= trivial_years  # ignore trivial indices
+
+    # trivial month/year conversions
+    trivial_months = (before == "M") & (after == "Y")
+    val[trivial_months] = round_div(val[trivial_months], 12, rounding=rounding)
+    to_convert ^= trivial_months
+
+    # check for completeness
+    if np.array_equal(before, after):
+        return val
+
+    # continue converting non-trivial indices
+    subset = val[to_convert]
+    subset_before = before[to_convert]
+    subset_after = after[to_convert]
+
+    # TODO: year <-> second conversions throw nans if vectorized
+
+    # convert subset to nanoseconds
+    months = (subset_before == "M")
+    years = (subset_before == "Y")
+    other = ~(months | years)
+    subset[months] = months_to_ns(subset[months], since)
+    subset[years] = years_to_ns(subset[years], since)
+    subset[other] *= replace_with_dict(subset_before[other], _to_ns)
+
+    # convert subset nanoseconds to final unit
+    months = (subset_after == "M")
+    years = (subset_after == "Y")
+    other = ~(months | years)
+    subset[months] = ns_to_months(subset[months], since, rounding=rounding)
+    subset[years] = ns_to_years(subset[years], since, rounding=rounding)
+    coefficients = replace_with_dict(subset_after[other], _to_ns)
+    subset[other] = round_div(subset[other], coefficients, rounding=rounding)
+
+    # reassign subset to val and return
+    val[to_convert] = subset
+    return val
+
+
+
+# def convert_unit(
+#     val: int | np.ndarray | pd.Series,
+#     before: str,
+#     after: str,
+#     since: str | datetime_like = "1970-01-01 00:00:00+0000",
+#     rounding: str = "floor"
+# ) -> pd.Series | tuple[pd.Series, pd.Series]:
+#     """Convert an integer number of the given units to another unit."""
+#     # vectorize input
+#     val = pd.Series(val, dtype="O")  # object dtype prevents overflow
+
+#     # check units are valid
+#     valid_units = list(_to_ns) + ["M", "Y"]
+#     if not (before in valid_units and after in valid_units):
+#         bad = before if before not in valid_units else after
+#         err_msg = (f"[{error_trace()}] unit {repr(bad)} not recognized - "
+#                    f"must be in {valid_units}")
+#         raise ValueError(err_msg)
+
+#     # trivial cases
+#     if before == after:
+#         return val
+#     if before == "Y" and after == "M":
+#         return val * 12
+#     if before == "M" and after == "Y":
+#         if rounding == "floor":
+#             return val // 12
+#         result = val // 12
+#         residuals = ((val % 12) / 12).astype(float)
+#         if rounding == "round":
+#             result[residuals >= 0.5] += 1
+#         else:  # rounding == "ceiling"
+#             result[residuals > 0] += 1
+#         return result
+
+#     # get start date and establish year/month/day conversion functions
+#     if isinstance(since, (str, np.datetime64)):
+#         components = datetime64_components(np.datetime64(since))
+#         start_year = int(components["year"])
+#         start_month = int(components["month"])
+#         start_day = int(components["day"])
+#     else:
+#         start_year = since.year
+#         start_month = since.month
+#         start_day = since.day
+#     y2d = lambda y: date_to_days(start_year + y, start_month, start_day)
+#     m2d = lambda m: date_to_days(start_year, start_month + m, start_day)
+#     d2y = lambda d: days_to_date(d)["year"]
+#     d2m = lambda d: 12 * (cal := days_to_date(d))["year"] + cal["month"]
+
+#     # convert to nanoseconds
+#     if before == "M":
+#         # TODO: if vectorizing units, just convert both entries to the
+#         # appropriate values
+#         nanoseconds = pd.Series(m2d(val) - m2d(0)) * _to_ns["D"]
+#     elif before == "Y":
+#         # TODO: if vectorizing units, just convert both entries to the
+#         # appropriate values
+#         nanoseconds = pd.Series(y2d(val) - y2d(0)) * _to_ns["D"]
+#     else:
+#         # TODO: use replace_with_dict to get a vector of ns coefficients from
+#         # _to_ns.  Multiply these to get nanoseconds
+#         nanoseconds = val * _to_ns[before]
+
+#     # convert nanoseconds to final unit
+#     if after == "M":  # convert nanoseconds to days, then days to months
+#         # TODO: apply this in a vectorized fashion wherever after == "M"
+#         # modify both entries, as with nanoseconds above
+#         days = nanoseconds // _to_ns["D"]
+#         day_offset = m2d(0)
+
+#         # get integer result
+#         start_offset = 12 * (start_year) + start_month
+#         result = pd.Series(d2m(days + day_offset) - start_offset)
+#         if rounding == "floor":  # fastpath: don't bother calculating residuals
+#             return result
+
+#         # compute residuals
+#         result_days = m2d(result)
+#         residual_days = days - result_days + day_offset
+#         days_in_last_month = m2d(1 + result) - result_days
+#         residuals = (residual_days / days_in_last_month).astype(float)
+#     elif after == "Y":  # convert nanoseconds to days, then days to years
+#         # TODO: apply this in a vectorized fashion wherever after == "Y"
+#         # modify both entries, as with nanoseconds above
+#         days = nanoseconds // _to_ns["D"]
+#         day_offset = y2d(0)
+
+#         # get integer result
+#         result = pd.Series(d2y(days + day_offset) - start_year)
+#         if rounding == "floor":  # fastpath: don't bother calculating residuals
+#             return result
+
+#         # compute residuals
+#         result_days = y2d(result)
+#         residual_days = days - result_days + day_offset
+#         days_in_last_year = 365 + is_leap(start_year + result)
+#         residuals = (residual_days / days_in_last_year).astype(float)
+#     else:  # use regular scale factor
+#         # TODO: vectorized access via array indexing -> stack unit coefficients
+#         # from lowest to highest and refer to them by index.
+#         # TODO: could also just manually compare
+#         result = nanoseconds // _to_ns[after]
+#         if rounding == "floor":  # fastpath: don't bother calculating residuals
+#             return result
+
+#         # compute residuals
+#         scale_factor = _to_ns[after]  # TODO: vectorized access via labeled array
+#         residuals = ((nanoseconds % scale_factor) / scale_factor).astype(float)
+
+#     # handle rounding if not floor
+#     if rounding == "round":
+#         result[residuals >= 0.5] += 1
+#     else:  # rounding == "ceiling"
+#         result[residuals > 0] += 1
+#     return result
 
 
 def to_unit(
     arg: tuple[int, str] | str | datetime_like | timedelta_like,
     unit: str,
     since: str | datetime_like = "1970-01-01 00:00:00+0000",
-    tz: str | datetime.tzinfo | None = None
+    tz: str | datetime.tzinfo = "UTC",
+    format: str | None = None,
+    day_first: bool = False,
+    year_first: bool = False,
+    fuzzy: bool = False,
+    errors: str = "warn"
 ) -> int:
     """Convert a timedelta or an integer and associated unit into an integer
     number of the specified unit.
@@ -783,7 +1093,69 @@ def to_unit(
     Returns:
         int: _description_
     """
+    # # vectorize inputs -> retain original arg if necessary
+    # if isinstance(arg, tuple):
+    #     series = pd.Series(arg[0], dtype="O")
+    # else:
+    #     series = pd.Series(arg, dtype="O")
+
+    # # convert IANA timezone key to pytz.timezone
+    # if isinstance(tz, str):
+    #     tz = pytz.timezone(tz)
+
+    # # convert ISO 8601 strings to datetimes
+    # if pd.api.types.infer_dtype(series) == "string":
+    #     series = string_to_datetime(series, tz=tz, format=format,
+    #                                 day_first=day_first, year_first=year_first,
+    #                                 fuzzy=fuzzy, errors=errors)
+    # if isinstance(since, str):
+    #     since = string_to_datetime(since, tz=tz, errors=errors)[0]
+
+    # # convert datetimes to timedeltas
+    # if pd.api.types.is_datetime64_any_dtype(series.infer_objects()):
+    #     # series contains pd.Timestamp objects
+    #     def localize_timestamp(timestamp: pd.Timestamp) -> pd.Timestamp:
+    #         if timestamp.tzinfo is None:  # assume utc
+    #             timestamp = timestamp.tz_localize(datetime.timezone.utc)
+    #         return timestamp.tz_convert(tz)
+
+    #     localize_timestamp = np.frompyfunc(localize_timestamp, 1, 1)
+    #     try:
+    #         offset = convert_datetime_type(since, pd.Timestamp)
+    #         series = localize_timestamp(series) - offset
+    #     except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime:
+    #         series = convert_datetime_type(series, datetime.datetime)
+    # if pd.api.types.infer_dtype(series) == "datetime":
+    #     # series contains datetime.datetime objects
+    #     def localize_datetime(dt: datetime.datetime) -> datetime.datetime:
+    #         if dt.tzinfo is None:
+    #             dt = dt.replace(tzinfo=datetime.timezone.utc)
+    #         return dt.astimezone(tz)
+
+    #     localize_datetime = np.frompyfunc(localize_datetime, 1, 1)
+    #     try:
+    #         offset = convert_datetime_type(since, pd.Timestamp)
+    #         series = localize_datetime(series) - offset
+    #     except OverflowError:
+    #         series = convert_datetime_type(series, np.datetime64)
+    # if pd.api.types.infer_dtype(series) == "datetime64":
+    #     # series contains np.datetime64 objects
+    #     pass
+
+
+    # return series
+
+    # # if pd.api.types.infer_dtype(arg) == "datetime"
+
+
+    # # return arg
+
+
+
+    original_arg = arg  # TODO: add an explicit type check at the top
+    # arg = np.array(arg, dtype="O")  # object dtype prevents overflow
     # TODO: allow both aware and naive args
+    # TODO: explicitly vectorize - use pd.api.types.infer_dtype for isinstance
 
     if isinstance(arg, str):
         arg = convert_iso_string(arg, tz)
@@ -836,80 +1208,125 @@ def to_unit(
         int_repr = int(arg.astype(np.int64))
         return convert_unit(int_repr, arg_unit, unit, since)
 
-    raise RuntimeError()
+    # TODO: fill out error message
+    err_msg = (f"[{error_trace()}] could not convert value to unit "
+               f"{repr(unit)}: {repr(original_arg)}")
+    raise RuntimeError(err_msg)
 
 
-def convert_iso_string(
-    iso_string: str,
-    tz: str | datetime.tzinfo,
+def string_to_datetime(
+    series: str | list | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo = "UTC",
+    format: str | None = None,
+    day_first: bool = False,
+    year_first: bool = False,
+    fuzzy: bool = False,
     errors: str = "warn"
-) -> datetime_like:
+) -> pd.Series:
     """Convert an ISO 8601 string into a datetime object.  Properly accounts
     for timezone offsets in ISO format, and localizes to the timezone given by
-    `tz`.
+    `tz`.  Naive ISO strings are interpreted as UTC.
     """
+    # TODO: replicate behavior of pandas errors arg {'ignore', 'raise', 'coerce'}
+
+    # vectorize input and check dtype
+    series = pd.Series(series)
+    if pd.api.types.infer_dtype(series) != "string":
+        err_msg = (f"[{error_trace()}] `series` must contain string data "
+                   f"(received: {pd.api.types.infer_dtype(series)})")
+        raise TypeError(err_msg)
+
+    # convert string timezone keys to tzinfo objects and check type
     if isinstance(tz, str):
+        # tz = zoneinfo.ZoneInfo(tz)
         tz = pytz.timezone(tz)
+    if not isinstance(tz, pytz.BaseTzInfo):
+        err_msg = (f"[{error_trace()}] `tz` must be a IANA timezone "
+                   f"string or a `pytz.timezone` object, not {type(tz)}")
+        raise TypeError(err_msg)
 
-    # try pd.Timestamp
+    # check format is a string or None
+    if format:
+        if day_first or year_first:
+            err_msg = (f"[{error_trace()}] `day_first` and `year_first` only "
+                       f"apply when no format is specified")
+            raise RuntimeError(err_msg)
+        if not isinstance(format, str):
+            err_msg = (f"[{error_trace()}] if given, `format` must be a "
+                       f"datetime format string, not {type(format)}")
+            raise TypeError(err_msg)
+
+    # check errors is valid
+    if errors not in ['raise', 'warn', 'ignore']:
+        err_msg = (f"[{error_trace(stack_index=2)}] `errors` must one of "
+                   f"{['raise', 'warn', 'ignore']}, not {repr(errors)}")
+        raise ValueError(err_msg)
+
+    # try pd.Timestamp -> use pd.to_datetime directly
     try:
-        result = pd.Timestamp(iso_string)
-        if result.tzinfo is not None:  # iso_string has utc offset
-            return result.tz_convert("UTC").tz_convert(tz)
-        return result.tz_localize(tz)
-    except (pd._libs.tslibs.np_datetime.OutOfBoundsDatetime, ValueError):
+        if format:  # use specified format
+            result = pd.to_datetime(series, utc=True, format=format,
+                                    exact=not fuzzy)
+        else:  # infer format
+            result = pd.to_datetime(series, utc=True, dayfirst=day_first,
+                                    yearfirst=year_first,
+                                    infer_datetime_format=True)
+        # make room for timezone -> reject timestamps within 12 hours of min/max
+        min_val = result.min()
+        max_val = result.max()
+        min_poss = pd.Timestamp.min.tz_localize("UTC") + pd.Timedelta(hours=12)
+        max_poss = pd.Timestamp.max.tz_localize("UTC") - pd.Timedelta(hours=12)
+        if min_val >= min_poss and max_val <= max_poss:
+            return result.dt.tz_convert(tz)
+    except (OverflowError, pd._libs.tslibs.np_datetime.OutOfBoundsDatetime,
+            dateutil.parser.ParserError):
         pass
 
-    # extract utc offset, if present
-    utc_offset_regex = r"(\+|\-)([0-9]{4}|[0-9]{2}:[0-9]{2})\s*$"
-    utc_offset = re.search(utc_offset_regex, iso_string)
-    if utc_offset:  # iso string has an included utc offset
-        iso_string = iso_string[:utc_offset.start()]
-        offset_str = utc_offset.group()
-        sign = offset_str[0]
-        if ":" in offset_str:
-            hours = int(offset_str[1:offset_str.index(":")])
-            minutes = int(offset_str[offset_str.index(":") + 1:])
-        else:
-            hours = int(offset_str[1:3])
-            minutes = int(offset_str[3:])
-        if sign == "+":
-            delta = datetime.timedelta(hours=hours, minutes=minutes)
-        else:
-            delta = datetime.timedelta(hours=-hours, minutes=-minutes)
-        zone = datetime.timezone(delta)
-    else:  # iso string is naive
-        delta = datetime.timedelta()
-        zone = None
-
-    # try datetime.datetime
+    # try datetime.datetime -> use an elementwise conversion ufunc + dateutil
+    if format:
+        def convert_to_datetime(datetime_string: str) -> datetime.datetime:
+            try:
+                result = datetime.datetime.strptime(datetime_string.strip(),
+                                                    format)
+            except ValueError as err:
+                err_msg = (f"[{error_trace(stack_index=4)}] unable to "
+                           f"interpret {repr(datetime_string)} according to "
+                           f"format {repr(format)}")
+                raise ValueError(err_msg) from err
+            if not result.tzinfo:
+                result = result.replace(tzinfo=datetime.timezone.utc)
+            return result.astimezone(tz)
+    else:
+        def convert_to_datetime(datetime_string: str) -> datetime.datetime:
+            result = dateutil.parser.parse(datetime_string, dayfirst=day_first,
+                                           yearfirst=year_first, fuzzy=fuzzy)
+            if not result.tzinfo:
+                result = result.replace(tzinfo=datetime.timezone.utc)
+            return result.astimezone(tz)
+    convert_to_datetime = np.frompyfunc(convert_to_datetime, 1, 1)
     try:
-        result = datetime.datetime.fromisoformat(iso_string)
-        if zone:
-            result = result.astimezone(zone)
-        if tz is None:
-            return result.astimezone(datetime.timezone.utc).replace
-        return result.astimezone(tz)
-    except ValueError:
+        return pd.Series(convert_to_datetime(np.array(series)), dtype="O")
+    except (OverflowError, dateutil.parser.ParserError):
         pass
 
-    # try np.datetime64
-    if tz and tz not in (pytz.timezone("UTC"), zoneinfo.ZoneInfo("UTC")):
-        warn_msg = ("datetime64 does not carry timezone information - "
-                    "returned time is UTC")
+    # try np.datetime64 -> requires ISO format and does not carry tzinfo
+    if format:
+        # TODO: this branch is never accessed.  Providing a format string to
+        # pd.to_datetime with data outside year [0000-9999] throws ValueError
+        # that cannot be easily distinguished from a simple failure to parse.
+        err_msg = (f"[{error_trace()}] `numpy.datetime64` objects do not "
+                   f"support arbitrary string parsing.  The provided string "
+                   f"must be ISO 8601-compliant, with `format=None`.")
+        raise NotImplementedError(err_msg)
+    if tz and tz != pytz.timezone("UTC"):
+        warn_msg = ("`numpy.datetime64` objects do not carry timezone "
+                    "information")
         if errors == "raise":
-            raise RuntimeError(warn_msg)
+            raise RuntimeError(f"[{error_trace()}] {warn_msg}")
         if errors == "warn":
-            warnings.warn(warn_msg, RuntimeWarning)
-    result = np.datetime64(iso_string)
-    result_unit, _ = np.datetime_data(result)
-    result -= int(to_unit(delta, result_unit))
-    if str(result) != "NaT":
-        year_regex = r"\-{0,1}[0-9]+\-"
-        original_year = int(re.search(year_regex, iso_string).group()[:-1])
-        final_year = int(re.search(year_regex, str(result)).group()[:-1])
-        if abs(final_year - original_year) <= 1:
-            return result
-    err_msg = (f"[{error_trace()}] ISO string cannot be represented at the "
-                f"given precision: {repr(iso_string)}")
-    raise OverflowError(err_msg)
+            warnings.warn(f"{warn_msg} - returned time is UTC", RuntimeWarning)
+    try:
+        return pd.Series(list(series.array.astype("M8")), dtype="O")
+    except ValueError as err:
+        err_msg = (f"[{error_trace()}] could not interpret series as datetime")
+        raise ValueError(err_msg) from err
