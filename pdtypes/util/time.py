@@ -8,6 +8,7 @@ import dateutil
 import numpy as np
 import pandas as pd
 import pytz
+from sympy import comp
 import tzlocal
 import zoneinfo
 
@@ -16,6 +17,7 @@ from pdtypes.error import error_trace
 
 """
 TODO: https://i.stack.imgur.com/uiXQd.png
+TODO: use numpy arrays (rather than pd.Series) for all functions in this module
 """
 
 
@@ -24,7 +26,7 @@ timedelta_like = Union[pd.Timedelta, datetime.timedelta, np.timedelta64]
 
 
 _time_unit_regex = re.compile(r'^[^\[]+\[([^\]]+)\]$')
-_to_ns = {
+_to_ns = {  # TODO: add a bunch of synonyms for maximum flexibility
     # "as": 1e-9,
     # "fs": 1e-6,
     # "ps": 1e-3,
@@ -42,6 +44,7 @@ _to_ns = {
 def replace_with_dict(array: np.ndarray | pd.Series,
                       dictionary: dict) -> np.ndarray:
     """Test using dictionaries to replace values in a vectorized fashion."""
+    # TODO: this should go in a separate module pdtypes.util.array
     keys = np.array(list(dictionary))
     vals = np.array(list(dictionary.values()))
 
@@ -727,132 +730,317 @@ def convert_datetime_type(dt: datetime_like,
 
 
 
+
+
+
+
+
+
+
+
+def _uniform_dt64_array_to_date(
+    dt64s: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # assumes no missing values
+
+    # get unit data, step size from array dtype
+    dt64_unit, step_size = np.datetime_data(dt64s.dtype)
+
+    # trivial units
+    if dt64_unit in ("M", "Y"):
+        dt64s = dt64s.view("i8").astype("O") * step_size
+        if dt64_unit == "M":
+            years = 1970 + (dt64s // 12)
+            months = (1 + dt64s) % 12
+            days = 1
+        else:
+            years = 1970 + dt64s
+            months = 1
+            days = 1
+        return years, months, days
+
+    # check for overflow due to nonstandard step size
+    if len(dt64s) > 0:  # max()/min() fail on len 0 arrays
+        max_ns = int(dt64s.max().view("i8")) * step_size * _to_ns[dt64_unit]
+        min_ns = int(dt64s.min().view("i8")) * step_size * _to_ns[dt64_unit]
+        if (min_ns < (-2**63 + 1) * _to_ns["D"] or
+            max_ns > (2**63 - 1) * _to_ns["D"]):
+            # astype("M8[D]") would exceed 64-bit range -> use days_to_date
+            # this is ~5 times slower than fastpath below
+            dt64s = dt64s.view("i8").astype("O") * step_size
+            dt64s = days_to_date((dt64s * _to_ns[dt64_unit]) // _to_ns["D"])
+            return dt64s["year"], dt64s["month"], dt64s["day"]
+
+    # fastpath: optimize for no overflow
+    Y, M, D = [dt64s.astype(f"M8[{x}]") for x in "YMD"]
+    years = 1970 + Y.view("i8").astype("O")
+    months = 1 + (M - Y).view("i8").astype("O")
+    days = 1 + (D - M).view("i8").astype("O")
+    return years, months, days
+
+
+def _mixed_dt64_array_to_date(
+    dt64s: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # assumes no missing values
+
+    # initialize results
+    years = np.full(dt64s.shape, pd.NA, dtype="O")
+    months = years.copy()
+    days = years.copy()
+
+    # get integer value (adjusted for step size), unit data from array elements
+    def val_unit(element: np.datetime64) -> tuple[int, str]:
+        dt64_unit, step_size = np.datetime_data(element)
+        return int(element.view("i8")) * step_size, dt64_unit
+
+    vals, dt64_unit = np.frompyfunc(val_unit, 1, 2)(dt64s)
+
+    # handle months separately
+    dt64_months = (dt64_unit == "M")
+    years[dt64_months] = 1970 + vals[dt64_months] // 12
+    months[dt64_months] = (1 + vals[dt64_months]) % 12
+    days[dt64_months] = 1
+
+    # handle years separately
+    dt64_years = (dt64_unit == "Y")
+    years[dt64_years] = 1970 + vals[dt64_years]
+    months[dt64_years] = 1
+    days[dt64_years] = 1
+
+    # handle all other values using days_to_date
+    other = ~(dt64_months | dt64_years)
+    vals = vals[other] * replace_with_dict(dt64_unit[other], _to_ns)
+    result = days_to_date(vals // _to_ns["D"])
+    years[other] = result["year"]
+    months[other] = result["month"]
+    days[other] = result["day"]
+    return years, months, days
+
+
+def _mixed_datelike_array_to_date(
+    datelikes: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # assumes no missing values
+
+    # initialize results
+    years = np.full(datelikes.shape, pd.NA, dtype="O")
+    months = years.copy()
+    days = years.copy()
+
+     # handle np.datetime64 elements separately
+    type_ufunc = np.frompyfunc(type, 1, 1)
+    dt64_indices = np.array(pd.Series(type_ufunc(datelikes)) == np.datetime64)
+
+    # dispatch np.datetime64 elements to _mixed_dt64_array_to_date
+    dt64_y, dt64_m, dt64_d = _mixed_dt64_array_to_date(datelikes[dt64_indices])
+
+    # assign np.datetime64 elements to results
+    years[dt64_indices] = dt64_y
+    months[dt64_indices] = dt64_m
+    days[dt64_indices] = dt64_d
+
+    # continue converting non-np.datetime64 elements
+    def datelike_to_date(element: datetime_like) -> tuple[int, int, int]:
+        return element.year, element.month, element.day
+
+    datelike_to_date = np.frompyfunc(datelike_to_date, 1, 3)
+    dt_y, dt_m, dt_d = datelike_to_date(datelikes[~dt64_indices])
+
+    # assign to results and return
+    years[~dt64_indices] = dt_y
+    months[~dt64_indices] = dt_m
+    days[~dt64_indices] = dt_d
+    return years, months, days
+
+
+def date_components(
+    date: datetime.date | datetime_like | list | np.ndarray | pd.Series
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Split a date-like object or series of objects into its constituent parts
+    (year, month, day).
+    """
+    # TODO: does this function need to tolerate missing values?
+
+    # np.datetime64 array with dtype == M8[(step_size)(dt64_unit)]
+    if isinstance(date, np.ndarray) and np.issubdtype(date.dtype, "M8"):
+        date = np.atleast_1d(date)  # ensure date can be indexed
+
+        # initialize results
+        years = np.full(date.shape, pd.NA, dtype="O")
+        months = years.copy()
+        days = years.copy()
+
+        # detect missing values
+        non_na = pd.notna(date)
+
+        # dispatch to _uniform_dt64_array_to_date
+        Y, M, D = _uniform_dt64_array_to_date(date[non_na])
+        years[non_na], months[non_na], days[non_na] = Y, M, D
+        return years, months, days
+
+    # pd.Timestamp series with dtype == datetime64[ns]
+    if (isinstance(date, pd.Series) and
+        pd.api.types.is_datetime64_ns_dtype(date)):
+        # initialize results
+        years = np.full(date.shape, pd.NA, dtype="O")
+        months = years.copy()
+        days = years.copy()
+
+        # detect missing values and subset
+        non_na = pd.notna(date)
+        subset = date[non_na]
+
+        # extract using .dt accessor
+        years[non_na] = subset.dt.year
+        months[non_na] = subset.dt.month
+        days[non_na] = subset.dt.day
+        return (years, months, days)
+
+    # scalar, list, or np.ndarray/pd.Series with dtype="O"
+    date = np.atleast_1d(np.array(date, dtype="O"))  # date can have mixed units
+
+    # initialize results
+    years = np.full(date.shape, pd.NA, dtype="O")
+    months = years.copy()
+    days = years.copy()
+
+    # detect missing values
+    non_na = pd.notna(date)
+
+    Y, M, D = _mixed_datelike_array_to_date(date[non_na])
+    years[non_na], months[non_na], days[non_na] = Y, M, D
+    return years, months, days
+
+
 def months_to_ns(
-    val: pd.Series,
-    since: str | datetime_like | datetime.date
-) -> pd.Series:
+    val: np.ndarray,
+    since: datetime.date | datetime_like | list | np.ndarray | pd.Series
+) -> np.ndarray:
     """Convert a number of months to a day offset from a given date."""
-    if isinstance(since, (str, np.datetime64)):
-        components = datetime64_components(np.datetime64(since))
-        start_year = int(components["year"])
-        start_month = int(components["month"])
-        start_day = int(components["day"])
-    else:
-        start_year = since.year
-        start_month = since.month
-        start_day = since.day
+    start_year, start_month, start_day = date_components(since)
     offset = date_to_days(start_year, start_month, start_day)
     result = date_to_days(start_year, start_month + val, start_day)
-    return pd.Series(result - offset) * _to_ns["D"]
+    return (result - offset) * _to_ns["D"]
 
 
 def years_to_ns(
-    val: pd.Series,
-    since: str | datetime_like | datetime.date
-) -> pd.Series:
+    val: np.ndarray,
+    since: datetime.date | datetime_like | list | np.ndarray | pd.Series
+) -> np.ndarray:
     """Convert a number of years to a day offset from a given date."""
-    if isinstance(since, (str, np.datetime64)):
-        components = datetime64_components(np.datetime64(since))
-        start_year = int(components["year"])
-        start_month = int(components["month"])
-        start_day = int(components["day"])
-    else:
-        start_year = since.year
-        start_month = since.month
-        start_day = since.day
+    start_year, start_month, start_day = date_components(since)
     offset = date_to_days(start_year, start_month, start_day)
     result = date_to_days(start_year + val, start_month, start_day)
-    return pd.Series(result - offset) * _to_ns["D"]
+    return (result - offset) * _to_ns["D"]
 
 
 def ns_to_months(
-    val: pd.Series,
-    since: str | datetime_like | datetime.date,
-    rounding: str = "floor"
-) -> pd.Series:
+    val: np.ndarray,
+    since: datetime.date | datetime_like | list | np.ndarray | pd.Series,
+    rounding: str = "truncate"
+) -> np.ndarray:
     """Convert a number of days to a month offset from a given date."""
-    if isinstance(since, (str, np.datetime64)):
-        components = datetime64_components(np.datetime64(since))
-        start_year = int(components["year"])
-        start_month = int(components["month"])
-        start_day = int(components["day"])
-    else:
-        start_year = since.year
-        start_month = since.month
-        start_day = since.day
+    # get (Y, M, D) components of `since` and establish UTC offset in days
+    start_year, start_month, start_day = date_components(since)
     offset = date_to_days(start_year, start_month, start_day)
-    date = days_to_date(round_div(val, _to_ns["D"], rounding=rounding) + offset)
-    result = (date["year"] - start_year) * 12 + date["month"] - start_month
-    result -= date["day"] < start_day  # correct for offset day != 1
-    if rounding == "floor":  # TODO: add "truncate" to this check?
-        return pd.Series(result)
 
-    # compute residuals
-    result_ns = months_to_ns(result, since=since)
-    residuals = val - result_ns  # residual in nanoseconds
-    ns_in_last_month = months_to_ns(result + 1, since=since) - result_ns
-    result += round_div(residuals, ns_in_last_month, rounding=rounding)
-    return pd.Series(result)
+    # convert val to days and add offset to compute final calendar date
+    val = round_div(val, _to_ns["D"], rounding=rounding) + offset
+    end_date = days_to_date(val)
+
+    # result is the difference between end month and start month, plus years
+    result = (12 * (end_date["year"] - start_year) +
+              end_date["month"] - start_month)
+
+    # correct for premature rollover and apply floor/ceiling rules
+    right = (end_date["day"] < start_day)
+    if rounding == "floor":  # emulate floor rounding to -infinity
+        return result - right
+    left = (end_date["day"] > start_day)
+    if rounding == "ceiling":  # emulate ceiling rounding to +infinity
+        return result + left
+
+    # truncate, using floor for positive values and ceiling for negative
+    positive = (result > 0)
+    negative = (result < 0)
+    result[positive] -= right[positive]
+    result[negative] += left[negative]
+    if rounding == "truncate":  # skip processing residuals
+        return result
+
+    # compute residuals and round
+    result_days = months_to_ns(result, since=since)
+    residuals = val - result_days  # residual in nanoseconds
+    days_in_last_month = months_to_ns(result + 1, since=since) // _to_ns["D"]
+    days_in_last_month -= result_days
+    return result + round_div(residuals, days_in_last_month, rounding="round")
 
 
 def ns_to_years(
-    val: pd.Series,
-    since: str | datetime_like | datetime.date,
-    rounding: str = "floor"
-) -> pd.Series:
+    val: np.ndarray,
+    since: datetime.date | datetime_like | list | np.ndarray | pd.Series,
+    rounding: str = "truncate"
+) -> np.ndarray:
     """Convert a number of days to a month offset from a given date."""
-    if isinstance(since, (str, np.datetime64)):
-        components = datetime64_components(np.datetime64(since))
-        start_year = int(components["year"])
-        start_month = int(components["month"])
-        start_day = int(components["day"])
-    else:
-        start_year = since.year
-        start_month = since.month
-        start_day = since.day
+    # get (Y, M, D) components of `since` and establish UTC offset in days
+    start_year, start_month, start_day = date_components(since)
     offset = date_to_days(start_year, start_month, start_day)
-    date = days_to_date(round_div(val, _to_ns["D"], rounding=rounding) + offset)
-    result = date["year"] - start_year
-    result -= (date["month"] < start_month) | (date["day"] < start_day)
-    if rounding == "floor":  # TODO: add "truncate" to this check?
-        return pd.Series(result)
 
-    # compute residuals
-    residuals = val - years_to_ns(result, since=since)
-    ns_in_last_year = (365 + is_leap(start_year + result)) * _to_ns["D"]
-    result += round_div(residuals, ns_in_last_year, rounding=rounding)
-    return pd.Series(result)
+    # convert val to days and add offset to compute final calendar date
+    val = round_div(val, _to_ns["D"], rounding=rounding) + offset
+    end_date = days_to_date(val)
+
+    # result is the difference between end year and start year
+    result = end_date["year"] - start_year
+
+    # correct for premature rollover and apply floor/ceiling rules
+    right = (end_date["month"] < start_month) | (end_date["day"] < start_day)
+    if rounding == "floor":  # emulate floor rounding to -infinity
+        return result - right
+    left = (end_date["month"] > start_month) | (end_date["day"] > start_day)
+    if rounding == "ceiling":  # emulate ceiling rounding to +infinity
+        return result + left
+
+    # truncate, using floor for positive values and ceiling for negative
+    positive = (result > 0)
+    negative = (result < 0)
+    result[positive] -= right[positive]
+    result[negative] += left[negative]
+    if rounding == "truncate":  # skip processing residuals
+        return result
+
+    # compute residuals and round
+    residuals = val - years_to_ns(result, since=since) // _to_ns["D"]
+    days_in_last_year = 365 + is_leap(start_year + result)
+    return result + round_div(residuals, days_in_last_year, rounding="round")
 
 
 def round_div(
-    val: int | np.ndarray | pd.Series,
+    val: int | list | np.ndarray | pd.Series,
     divisor: int | np.ndarray | pd.Series,
     rounding: str = "floor"
-) -> np.ndarray | pd.Series:
+) -> np.ndarray:
     """Divide integers and integer arrays with specified rounding rule."""
+    # TODO: this should go in a separate module pdtypes.util.array
+    # vectorize input
+    val = np.atleast_1d(np.array(val))
+    divisor = np.atleast_1d(np.array(divisor))
+
+    # broadcast to same size
+    val, divisor = np.broadcast_arrays(val, divisor)
+
     # round towards -infinity
     if rounding == "floor":
         return val // divisor
 
     # round towards zero
     if rounding == "truncate":
-        # vectorized
-        if (isinstance(val, (np.ndarray, pd.Series)) or
-            isinstance(divisor, (np.ndarray, pd.Series))):
-            if isinstance(val, np.ndarray):
-                val = np.atleast_1d(val)
-            if isinstance(divisor, np.ndarray):
-                divisor = np.atleast_1d(divisor)
-            result = val.copy()
-            neg = (val < 0) ^ (divisor < 0)
-            result[neg] = (val[neg] + divisor[neg] - 1) // divisor[neg]
-            result[~neg] = val[~neg] // divisor[~neg]
-            return result
-
-        # scalar
-        if (val < 0) ^ (divisor < 0):
-            return (val + divisor - 1) // divisor
-        return val // divisor
+        neg = (val < 0) ^ (divisor < 0)
+        result = val.copy()
+        result[neg] = (val[neg] + divisor[neg] - 1) // divisor[neg]  # ceiling
+        result[~neg] //= divisor[~neg]  # floor
+        return result
 
     # round towards closest integer
     if rounding == "round":
@@ -869,33 +1057,34 @@ def round_div(
 
 
 def convert_unit(
-    val: int | float | list | np.ndarray | pd.Series,
+    val: int | list | np.ndarray | pd.Series,
     before: str | list | np.ndarray | pd.Series,
     after: str | list | np.ndarray | pd.Series,
-    since: str | datetime_like | list | np.ndarray | pd.Series = "1970-01-01 00:00:00+0000",
+    since: datetime.date | datetime_like | list | np.ndarray | pd.Series,
     rounding: str = "truncate"
-) -> pd.Series:
+) -> np.ndarray:
     """Convert an integer number of the given units to another unit."""
-    # TODO: allow float values, with specified rounding rules applied
-    # -> they always get converted to an integer number of nanoseconds, then
-    # from nanoseconds to final unit just like any other integer.
-    # vectorize input and broadcast to match sizes
-    val = pd.Series(val, dtype="O")  # object dtype prevents overflow
-    before = np.broadcast_to(np.array(before), len(val))
-    after = np.broadcast_to(np.array(after), len(val))
+    # TODO: for float input, round to nearest nanosecond and change `before`
+    # to match prior to inputting to this function
+    # vectorize input
+    val = np.atleast_1d(np.array(val, dtype="O"))  # dtype="O" prevents overflow
+    before = np.atleast_1d(np.array(before))
+    after = np.atleast_1d(np.array(after))
+    since = np.atleast_1d(np.array(since))
 
-    # TODO: make sure rounding rules are correct for both positive and negative
-    # values of every unit combination
+    # broadcast inputs and initialize result
+    val, before, after, since = np.broadcast_arrays(val, before, after, since)
+    val = val.copy()  # converts memory view into assignable result
 
     # check units are valid
     valid_units = list(_to_ns) + ["M", "Y"]
     if not np.isin(before, valid_units).all():
-        bad = list(before[~np.isin(before, valid_units)].unique())
+        bad = list(np.unique(before[~np.isin(before, valid_units)]))
         err_msg = (f"[{error_trace()}] `before` unit {bad} not recognized: "
                    f"must be in {valid_units}")
         raise ValueError(err_msg)
     if not np.isin(after, valid_units).all():
-        bad = list(after[~np.isin(after, valid_units)].unique())
+        bad = list(np.unique(after[~np.isin(after, valid_units)]))
         err_msg = (f"[{error_trace()}] `after` unit {bad} not recognized: "
                    f"must be in {valid_units}")
         raise ValueError(err_msg)
@@ -915,39 +1104,49 @@ def convert_unit(
     # trivial month/year conversions
     trivial_months = (before == "M") & (after == "Y")
     val[trivial_months] = round_div(val[trivial_months], 12, rounding=rounding)
-    to_convert ^= trivial_months
+    to_convert ^= trivial_months  # ignore trivial indices
 
     # check for completeness
-    if np.array_equal(before, after):
+    if not to_convert.any():
         return val
 
     # continue converting non-trivial indices
     subset = val[to_convert]
-    subset_before = before[to_convert]
-    subset_after = after[to_convert]
-
-    # TODO: year <-> second conversions throw nans if vectorized
+    before = before[to_convert]
+    after = after[to_convert]
+    since = since[to_convert]
 
     # convert subset to nanoseconds
-    months = (subset_before == "M")
-    years = (subset_before == "Y")
+    months = (before == "M")
+    years = (before == "Y")
     other = ~(months | years)
-    subset[months] = months_to_ns(subset[months], since)
-    subset[years] = years_to_ns(subset[years], since)
-    subset[other] *= replace_with_dict(subset_before[other], _to_ns)
+    subset[months] = months_to_ns(subset[months], since[months])
+    subset[years] = years_to_ns(subset[years], since[years])
+    subset[other] *= replace_with_dict(before[other], _to_ns)
 
     # convert subset nanoseconds to final unit
-    months = (subset_after == "M")
-    years = (subset_after == "Y")
+    months = (after == "M")
+    years = (after == "Y")
     other = ~(months | years)
-    subset[months] = ns_to_months(subset[months], since, rounding=rounding)
-    subset[years] = ns_to_years(subset[years], since, rounding=rounding)
-    coefficients = replace_with_dict(subset_after[other], _to_ns)
+    subset[months] = ns_to_months(subset[months], since[months],
+                                  rounding=rounding)
+    subset[years] = ns_to_years(subset[years], since[years], rounding=rounding)
+    coefficients = replace_with_dict(after[other], _to_ns)
     subset[other] = round_div(subset[other], coefficients, rounding=rounding)
 
     # reassign subset to val and return
     val[to_convert] = subset
     return val
+
+
+
+
+
+
+
+
+
+
 
 
 
