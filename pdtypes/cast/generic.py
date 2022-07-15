@@ -1,6 +1,7 @@
 from __future__ import annotations
 import datetime
 import decimal
+from distutils.log import error
 import warnings
 
 import dateutil
@@ -11,6 +12,7 @@ import pytz
 import zoneinfo
 
 from pdtypes.error import error_trace
+from pdtypes.util.array import broadcast_args, replace_with_dict, round_div
 from pdtypes.util.parse import available_range
 from pdtypes.util.downcast import (
     downcast_complex, downcast_float, downcast_int_dtype, to_sparse
@@ -29,6 +31,7 @@ from pdtypes.util.time import (
 ####    Helpers    ####
 #######################
 
+
 def _validate_integer_series(series: np.ndarray | pd.Series) -> None:
     """Check whether a series contains integer data."""
     # option 1: series is properly formatted
@@ -45,27 +48,24 @@ def _validate_integer_series(series: np.ndarray | pd.Series) -> None:
     raise TypeError(err_msg)
 
 
-def _validate_pandas_timestamp_series(series: np.ndarray | pd.Series) -> None:
+def _validate_pandas_timestamp_array(array: np.ndarray | pd.Series) -> None:
     """Check whether a series contains `pandas.Timestamp` objects"""
-    # option 1: series is properly formatted
-    if pd.api.types.is_datetime64_ns_dtype(series):
+    # option 1: array is a properly initialized pd.Timestamp series
+    if (isinstance(array, pd.Series) and
+        pd.api.types.is_datetime64_ns_dtype(array)):
         return None
 
-    # option 2: series is object dtype and contains datetime-like elements
-    inferred = pd.api.types.infer_dtype(series)
-    if pd.api.types.is_object_dtype(series) and inferred == "datetime":
-        # verify objects are actually pd.Timestamps
-        type_ufunc = np.frompyfunc(type, 1, 1)
-        result = pd.unique(type_ufunc(series))
-        if len(result) == 1 and issubclass(result[0], pd.Timestamp):
-            return None
+    # option 2: array has dtype="O", but contains pd.Timestamp objects
+    type_ufunc = np.frompyfunc(type, 1, 1)
+    types = pd.unique(type_ufunc(array))
+    if len(types) == 1 and issubclass(types[0], pd.Timestamp):
+        return None
 
-        err_msg = (f"[{error_trace(stack_index=2)}] `series` must contain "
-                   f"`pandas.Timestamp` objects, not {list(result)}")
-        raise TypeError(err_msg)
-
+    types = list(types)
+    if pd.Timestamp in types:
+        types.remove(pd.Timestamp)
     err_msg = (f"[{error_trace(stack_index=2)}] `series` must contain "
-               f"`pandas.Timestamp` objects, not {inferred}")
+               f"`pandas.Timestamp` objects, not {types}")
     raise TypeError(err_msg)
 
 
@@ -89,23 +89,24 @@ def _validate_pydatetime_series(series: np.ndarray | pd.Series) -> None:
     raise TypeError(err_msg)
 
 
-def _validate_numpy_datetime64_series(series: np.ndarray | pd.Series) -> bool:
-    """Check whether a series contains `numpy.datetime64` objects."""
-    # check series is properly formatted
-    inferred = pd.api.types.infer_dtype(series)
-    if pd.api.types.is_object_dtype(series) and inferred == "datetime64":
-        # verify objects are actually numpy.datetime64s
-        type_ufunc = np.frompyfunc(type, 1, 1)
-        result = pd.unique(type_ufunc(series))
-        if len(result) == 1 and issubclass(result[0], np.datetime64):
-            return None
+def _validate_numpy_datetime64_array(array: np.ndarray | pd.Series) -> None:
+    """Check whether an array contains `numpy.datetime64` objects."""
+    # option 1: array has consistent M8 dtype
+    if isinstance(array, np.ndarray) and np.issubdtype(array.dtype, "M8"):
+        return None
 
-        err_msg = (f"[{error_trace(stack_index=2)}] `series` must contain "
-                   f"`numpy.datetime64` objects, not {list(result)}")
-        raise TypeError(err_msg)
+    # option 2: array has dtype="O", but contains M8 objects
+    type_ufunc = np.frompyfunc(type, 1, 1)
+    types = pd.unique(type_ufunc(array))
+    if len(types) == 1 and issubclass(types[0], np.datetime64):
+        return None
 
-    err_msg = (f"[{error_trace(stack_index=2)}] `series` must contain "
-               f"`numpy.datetime64` objects, not {inferred}")
+    # option 3: array is malformed
+    types = list(types)
+    if np.datetime64 in types:
+        types.remove(np.datetime64)
+    err_msg = (f"[{error_trace(stack_index=2)}] `series` must contain only "
+               f"`numpy.datetime64` objects, not {types}")
     raise TypeError(err_msg)
 
 
@@ -505,55 +506,56 @@ def pandas_timestamp_to_integer(
     since: str | datetime_like | list | np.ndarray | pd.Series = "1970-01-01 00:00:00+0000",
     rounding: str = "floor",
     downcast: bool = False,
-    dtype: type | str | np.dtype | pd.api.extensions.ExtensionDtype = int,
-    errors: str = "raise"
+    dtype: type | str | np.dtype | pd.api.extensions.ExtensionDtype = int
 ) -> pd.Series:
     """Convert a `pandas.Timestamp` series to integers."""
-    # vectorize input, detect missing values, and allocate result
-    series = pd.Series(series).infer_objects()
-    nans = pd.isna(series)
-    subset = series[~nans]
-    result = pd.Series(np.full(len(series), pd.NA), dtype="O")
+    # check if `since` is default (necessary later)
+    default_since = (since == "1970-01-01 00:00:00+0000")
 
-    # validate inputs
-    _validate_pandas_timestamp_series(subset)
+    # vectorize input, broadcasting to same size
+    series, unit, since = broadcast_args(series, unit, since)
+
+    # allocate result -> dtype="O" prevents overflow
+    result = np.full(series.shape, pd.NA, dtype="O")
+
+    # detect missing values and subset
+    to_convert = (pd.notna(series) & pd.notna(unit) & pd.notna(since))
+    series = series[to_convert]
+    unit = unit[to_convert]
+    since = since[to_convert]
+
+    # validate input
+    _validate_pandas_timestamp_array(series)
     _validate_unit(unit)
-    # since_offset = datetime_to_integer(since, unit="ns")
     _validate_rounding(rounding)
+    # TODO: _validate_integer_dtype(dtype)
 
+    # get series representation in nanoseconds
+    if (isinstance(series, pd.Series) and
+        pd.api.types.is_datetime64_ns_dtype(series)):
+        # series has dtype=datetime64[ns]
+        series = pd.to_numeric(series)
+    else:  # series has dtype="O" and contains pd.Timestamps
+        series = np.frompyfunc(lambda x: int(x.asm8), 1, 1)(series)
 
-    # convert since to pd.Timestamp and localize to UTC
-    # TODO: allow arbitrary offsets, not just pd.Timestamp
-    if isinstance(since, str):
-        since = string_to_pandas_timestamp(since, "UTC")[0]
-    elif isinstance(since, pd.Timestamp):
-        if since.tzinfo is None:  # assume UTC
-            since = since.tz_localize("UTC")
-        else:
-            since = since.tz_convert("UTC")
-    else:
-        err_msg = (f"[{error_trace()}] `since` must be an instance of "
-                   f"`pandas.Timestamp` or a valid datetime string, not "
-                   f"{type(since)}")
-        raise TypeError(err_msg)
+    # establish since_offset in given units
+    if default_since:  # breaks circular reference in datetime_to_integer
+        since_offset = 0
+    else:  # attempt to interpret
+        if pd.api.types.infer_dtype(since) == "string":
+            since = string_to_datetime(since, tz=None)
+        # TODO: finalize `since` handling and test
+        since_offset = datetime_to_integer(since, unit=unit, rounding=rounding)
 
+    # use convert_unit to get result in final units and apply since_offset
+    utc_epoch = datetime.date(1970, 1, 1)
+    series = convert_unit(series, "ns", unit, utc_epoch, rounding)
+    series -= since_offset
 
-    # pd.to_numeric fails on object-dtypes series (mixed tz, aware/naive)
-    if pd.api.types.is_object_dtype(series):
-        to_utc = (lambda dt: dt.tz_convert("UTC") if dt.tzinfo
-                             else dt.tz_localize("UTC"))
-        to_utc = np.frompyfunc(to_utc, 1, 1)
-        subset = to_utc(subset)  # convert all timestamps to UTC
-
-    # convert to nanoseconds since UTC and correct for offset
-    offset = int(since.asm8)  # TODO: use general datetime_to_integer instead
-    subset = pd.to_numeric(subset, errors=errors).astype("O") - offset
-
-    # convert to final unit and assign to result
-    result[~nans] = convert_unit(subset, "ns", unit, since=since,
-                                 rounding=rounding)
-    # TODO: run through integer_to_integer to handle dtype, downcast
-    return result
+    # assign subset to result and pass through integer_to_integer
+    result[to_convert] = series
+    # TODO: return integer_to_integer(result, downcast=downcast, dtype=dtype)
+    return pd.Series(result)
 
 
 def pydatetime_to_integer(
@@ -626,57 +628,55 @@ def numpy_datetime64_to_integer(
     dtype: type | str | np.dtype | pd.api.extensions.ExtensionDtype = int
 ) -> pd.Series:
     """Convert a `numpy.datetime64` series to integers."""
-    # vectorize input
-    if isinstance(series, np.ndarray) and np.issubdtype(series.dtype, "M8"):
-        # This prevents automatic M8 conversion, which can destroy information:
-        # -> series = [np.datetime64(2**63 - 1971, "Y"), np.datetime64(1, "M")]
-        # -> np.array(series) == ['-001-01', '1970-02']
-        # -> np.array(series, dtype="O") = ['9223372036854775807', '1970-02']
-        series = list(series)
-    series = np.atleast_1d(np.array(series, dtype="O"))
-    unit = np.atleast_1d(np.array(unit))
-    since = np.atleast_1d(np.array(since))
+    # check if `since` is default (necessary later)
+    default_since = (since == "1970-01-01 00:00:00+0000")
 
-    # broadcast to same size
-    series, unit, since = np.broadcast_arrays(series, unit, since)
-    series = series.copy()
+    # vectorize input, broadcasting to same size
+    series, unit, since = broadcast_args(series, unit, since)
+
+    # allocate result -> dtype="O" prevents overflow
+    result = np.full(series.shape, pd.NA, dtype="O")
 
     # detect missing values and subset
-    to_convert = pd.notna(series)
-    subset = series[to_convert]
-    sub_unit = unit[to_convert]
-    sub_since = since[to_convert]
-    series[~to_convert] = pd.NA  # missing values coerced to pd.NA
+    to_convert = (pd.notna(series) & pd.notna(unit) & pd.notna(since))
+    series = series[to_convert]
+    unit = unit[to_convert]
+    since = since[to_convert]
 
-    # validate input and establish since_offset in given units
-    _validate_numpy_datetime64_series(subset)
-    _validate_unit(sub_unit)
-    if (sub_since == "1970-01-01 00:00:00+0000").all():  # default
-        since_offset = 0  # breaks circular reference
-    else:  # attempt to interpret non-default `since` offset
-        if pd.api.types.infer_dtype(sub_since) == "string":
-            sub_since = string_to_datetime(sub_since, tz=None)
-        since_offset = datetime_to_integer(sub_since, unit=sub_unit,
-                                           rounding=rounding)
+    # validate input
+    _validate_numpy_datetime64_array(series)
+    _validate_unit(unit)
     _validate_rounding(rounding)
+    # TODO: _validate_integer_dtype(dtype)
 
-    # convert to integer representation in native units, adjusted for step size
-    def convert_to_integer(dt64: np.datetime64) -> tuple[int, str]:
-        dt64_unit, step_size = np.datetime_data(dt64.dtype)
-        return (int(dt64.view(np.int64)) * step_size, dt64_unit)
-    convert_to_integer = np.frompyfunc(convert_to_integer, 1, 2)
-    subset, dt64_unit = convert_to_integer(subset)
+    # convert to integer representation in native units, adjusting for step size
+    if np.issubdtype(series.dtype, "M8"):  # get unit, step size from dtype
+        dt64_unit, step_size = np.datetime_data(series.dtype)
+        series = series.view("i8").astype("O") * step_size
+    else:  # get unit, step size for each element individually
+        def val_plus_units(dt64: np.datetime64) -> tuple[int, str]:
+            dt64_unit, step_size = np.datetime_data(dt64.dtype)
+            return int(dt64.view("i8")) * step_size, dt64_unit
+        series, dt64_unit = np.frompyfunc(val_plus_units, 1, 2)(series)
 
-    # convert to given units and apply offset
+    # establish since_offset in given units
+    if default_since:  # breaks circular reference in datetime_to_integer
+        since_offset = 0
+    else:  # attempt to interpret
+        if pd.api.types.infer_dtype(since) == "string":
+            since = string_to_datetime(since, tz=None)
+        # TODO: finalize `since` handling and test
+        since_offset = datetime_to_integer(since, unit=unit, rounding=rounding)
+
+    # use convert_unit to get result in final units and apply since_offset
     utc_epoch = datetime.date(1970, 1, 1)
-    subset = convert_unit(subset, dt64_unit, sub_unit, utc_epoch, rounding)
-    subset -= since_offset
+    series = convert_unit(series, dt64_unit, unit, utc_epoch, rounding)
+    series -= since_offset
 
-    # reassign subset to series
-    series[to_convert] = subset
-
-    # TODO: run through integer_to_integer to sort out `dtype` and `downcast`
-    return pd.Series(series)
+    # assign subset to result and pass through integer_to_integer
+    result[to_convert] = series
+    # TODO: return integer_to_integer(result, downcast=downcast, dtype=dtype)
+    return pd.Series(result)
 
 
 

@@ -13,6 +13,7 @@ import tzlocal
 import zoneinfo
 
 from pdtypes.error import error_trace
+from pdtypes.util.array import broadcast_args, replace_with_dict, round_div
 
 
 """
@@ -39,26 +40,6 @@ _to_ns = {  # TODO: add a bunch of synonyms for maximum flexibility
     "D": 24 * 60 * 60 * int(1e9),
     "W": 7 * 24 * 60 * 60 * int(1e9),
 }
-
-
-def replace_with_dict(array: np.ndarray | pd.Series,
-                      dictionary: dict) -> np.ndarray:
-    """Test using dictionaries to replace values in a vectorized fashion."""
-    # TODO: this should go in a separate module pdtypes.util.array
-    keys = np.array(list(dictionary))
-    vals = np.array(list(dictionary.values()))
-
-    sorted_indices = keys.argsort()
-
-    keys_sorted = keys[sorted_indices]
-    vals_sorted = vals[sorted_indices]
-    return vals_sorted[np.searchsorted(keys_sorted, array)]
-
-
-
-
-
-
 
 
 def is_leap(
@@ -918,6 +899,7 @@ def months_to_ns(
     since: datetime.date | datetime_like | list | np.ndarray | pd.Series
 ) -> np.ndarray:
     """Convert a number of months to a day offset from a given date."""
+    # TODO: check if since is missing? -> leads to nan injection
     start_year, start_month, start_day = date_components(since)
     offset = date_to_days(start_year, start_month, start_day)
     result = date_to_days(start_year, start_month + val, start_day)
@@ -929,6 +911,7 @@ def years_to_ns(
     since: datetime.date | datetime_like | list | np.ndarray | pd.Series
 ) -> np.ndarray:
     """Convert a number of years to a day offset from a given date."""
+    # TODO: check if since is missing? -> leads to nan injection
     start_year, start_month, start_day = date_components(since)
     offset = date_to_days(start_year, start_month, start_day)
     result = date_to_days(start_year + val, start_month, start_day)
@@ -941,6 +924,7 @@ def ns_to_months(
     rounding: str = "truncate"
 ) -> np.ndarray:
     """Convert a number of days to a month offset from a given date."""
+    # TODO: check if since is missing? -> leads to nan injection
     # get (Y, M, D) components of `since` and establish UTC offset in days
     start_year, start_month, start_day = date_components(since)
     offset = date_to_days(start_year, start_month, start_day)
@@ -983,6 +967,7 @@ def ns_to_years(
     rounding: str = "truncate"
 ) -> np.ndarray:
     """Convert a number of days to a month offset from a given date."""
+    # TODO: check if since is missing? -> leads to nan injection
     # get (Y, M, D) components of `since` and establish UTC offset in days
     start_year, start_month, start_day = date_components(since)
     offset = date_to_days(start_year, start_month, start_day)
@@ -1014,46 +999,6 @@ def ns_to_years(
     residuals = val - years_to_ns(result, since=since) // _to_ns["D"]
     days_in_last_year = 365 + is_leap(start_year + result)
     return result + round_div(residuals, days_in_last_year, rounding="round")
-
-
-def round_div(
-    val: int | list | np.ndarray | pd.Series,
-    divisor: int | np.ndarray | pd.Series,
-    rounding: str = "floor"
-) -> np.ndarray:
-    """Divide integers and integer arrays with specified rounding rule."""
-    # TODO: this should go in a separate module pdtypes.util.array
-    # vectorize input
-    val = np.atleast_1d(np.array(val))
-    divisor = np.atleast_1d(np.array(divisor))
-
-    # broadcast to same size
-    val, divisor = np.broadcast_arrays(val, divisor)
-
-    # round towards -infinity
-    if rounding == "floor":
-        return val // divisor
-
-    # round towards zero
-    if rounding == "truncate":
-        neg = (val < 0) ^ (divisor < 0)
-        result = val.copy()
-        result[neg] = (val[neg] + divisor[neg] - 1) // divisor[neg]  # ceiling
-        result[~neg] //= divisor[~neg]  # floor
-        return result
-
-    # round towards closest integer
-    if rounding == "round":
-        return (val + divisor // 2) // divisor
-
-    # round towards +infinity
-    if rounding == "ceiling":
-        return (val + divisor - 1) // divisor
-
-    # error - rounding not recognized
-    err_msg = (f"[{error_trace()}] `rounding` must be one of ['floor', "
-               f"'truncate', 'round', 'ceiling'], not {repr(rounding)}")
-    raise ValueError(err_msg)
 
 
 def convert_unit(
