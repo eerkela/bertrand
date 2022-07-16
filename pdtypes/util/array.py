@@ -1,10 +1,28 @@
 from __future__ import annotations
-
+from typing import Union
 
 import numpy as np
 import pandas as pd
 
 from pdtypes.error import error_trace
+
+
+array_like = Union[list, np.ndarray, pd.Series]
+type_ufunc = np.frompyfunc(type, 1, 1)
+
+
+
+def vectorize(obj) -> np.ndarray | pd.Series:
+    """Convert any object into an array-like with at least 1 dimension.
+    `pandas.Series` objects are returned immediately.  `numpy.ndarray` objects
+    are reshaped to be at least 1 dimensional, but are otherwise unaffected.
+    All other inputs are converted to 1D object arrays.
+    """
+    if isinstance(obj, pd.Series):
+        return obj
+    if isinstance(obj, np.ndarray):
+        return np.atleast_1d(obj)
+    return np.atleast_1d(np.array(obj, dtype="O"))
 
 
 def broadcast_args(
@@ -20,25 +38,15 @@ def broadcast_args(
     without first copying them.  This forces reallocation of the underlying
     memory view and prevents unwanted side-effects.
     """
-    arrays = []
-    is_series = []
-    dtypes = []
-    for arg in args:
-        if isinstance(arg, np.ndarray):  # make 1D, preserving dtype
-            arrays.append(np.atleast_1d(arg))
-            is_series.append(False)
-            dtypes.append(None)
-        elif isinstance(arg, pd.Series):  # mark as series and note dtype
-            arrays.append(arg)
-            is_series.append(True)
-            dtypes.append(arg.dtype)
-        else:  # convert to 1D array with dtype="O"
-            arrays.append(np.atleast_1d(np.array(arg, dtype="O")))
-            is_series.append(False)
-            dtypes.append(None)
+    # identify which args are series and note their original dtype
+    arrays = [vectorize(a) for a in args]
+    is_series = [isinstance(a, pd.Series) for a in arrays]
+    series_dtypes = [a.dtype if s else None for a, s in zip(arrays, is_series)]
+
+    # broadcast args, then convert back to series where appropriate
     arrays = np.broadcast_arrays(*arrays)
-    return [pd.Series(a, dtype=d) if s else a
-            for a, s, d in zip(arrays, is_series, dtypes)]
+    generator = zip(arrays, is_series, series_dtypes)
+    return [pd.Series(a, dtype=d) if s else a for a, s, d in generator]
 
 
 def replace_with_dict(array: np.ndarray, dictionary: dict) -> np.ndarray:
@@ -90,3 +98,12 @@ def round_div(
     err_msg = (f"[{error_trace()}] `rounding` must be one of ['floor', "
                f"'truncate', 'round', 'ceiling'], not {repr(rounding)}")
     raise ValueError(err_msg)
+
+
+def object_types(array: np.ndarray | pd.Series) -> np.array | pd.Series:
+    """Get the type of each element in a given object array."""
+    if pd.api.types.is_object_dtype(array):
+        return type_ufunc(array)
+    err_msg = (f"[{error_trace()}] elementwise type detection is only valid "
+               f"for object arrays, not {array.dtype}")
+    raise TypeError(err_msg)
