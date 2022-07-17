@@ -1,7 +1,8 @@
 from __future__ import annotations
 import datetime
 import decimal
-from typing import Union
+from functools import partial
+from typing import Any, Union
 
 import numpy as np
 import pandas as pd
@@ -166,7 +167,8 @@ _type_aliases = {
     "d": decimal.Decimal,
 
     # datetimes
-    "datetime": "datetime",
+    "datetime": "datetime",  # TODO: something needs to be done with these
+    # "datetime": (pd.Timestamp, datetime.datetime, np.datetime64),
     pd.Timestamp: pd.Timestamp,
     "pd.timestamp": pd.Timestamp,
     "pandas.timestamp": pd.Timestamp,
@@ -174,12 +176,12 @@ _type_aliases = {
     "pydatetime": datetime.datetime,
     "datetime.datetime": datetime.datetime,
     np.datetime64: np.datetime64,
-    np.dtype(np.datetime64): np.datetime64,
     "np.datetime64": np.datetime64,
     "numpy.datetime64": np.datetime64,
 
     # timedeltas
-    "timedelta": "timedelta",
+    "timedelta": "timedelta",  # TODO: something needs to be done with these
+    # "timedelta": (pd.Timedelta, datetime.timedelta, np.timedelta64),
     pd.Timedelta: pd.Timedelta,
     "pd.timedelta": pd.Timedelta,
     "pandas.timedelta": pd.Timedelta,
@@ -187,7 +189,6 @@ _type_aliases = {
     "pytimedelta": datetime.timedelta,
     "datetime.timedelta": datetime.timedelta,
     np.timedelta64: np.timedelta64,
-    np.dtype(np.timedelta64): np.timedelta64,
     "np.timedelta64": np.timedelta64,
     "numpy.timedelta64": np.timedelta64,
 
@@ -207,23 +208,97 @@ _type_aliases = {
 }
 
 
+_supertypes = {
+    # booleans
+    bool: bool,
+    pd.BooleanDtype(): bool,
+
+    # integers
+    int: int,
+    np.int8: int,
+    np.int16: int,
+    np.int32: int,
+    np.int64: int,
+    np.uint8: int,
+    np.uint16: int,
+    np.uint32: int,
+    np.uint64: int,
+    pd.Int8Dtype(): int,
+    pd.Int16Dtype(): int,
+    pd.Int32Dtype(): int,
+    pd.Int64Dtype(): int,
+    pd.UInt8Dtype(): int,
+    pd.UInt16Dtype(): int,
+    pd.UInt32Dtype(): int,
+    pd.UInt64Dtype(): int,
+
+    # floats
+    float: float,
+    np.float16: float,
+    np.float32: float,
+    np.float64: float,
+    np.longdouble: float,
+
+    # complex numbers
+    complex: complex,
+    np.complex64: complex,
+    np.complex128: complex,
+    np.clongdouble: complex,
+
+    # decimals
+    decimal.Decimal: decimal.Decimal,
+
+    # datetimes
+    # "datetime": "datetime",
+    pd.Timestamp: "datetime",
+    datetime.datetime: "datetime",
+    np.datetime64: "datetime",
+
+    # timedeltas
+    # "timedelta": "timedelta",
+    pd.Timedelta: "timedelta",
+    datetime.timedelta: "timedelta",
+    np.timedelta64: "timedelta",
+
+    # objects
+    object: object,
+
+    # strings
+    str: str,
+    pd.StringDtype(): str,
+
+    # categorical
+    pd.Categorical: pd.Categorical
+}
+
+
 def resolve_dtype(
-    dtype: dtype_like,
-    allow_extensions: bool = True
+    dtype: dtype_like
 ) -> type | str | pd.api.extensions.ExtensionDtype:
     """Collapse abstract dtype aliases into their corresponding atomic type."""
-    # TODO: rename to resolve_dtype
+    # case 1: dtype is directly present in aliases
+    if dtype in _type_aliases:
+        return _type_aliases[dtype]
+
+    # case 2: dtype is a specified (case-insensitive) string dtype alias
     if isinstance(dtype, str) and dtype.lower() in _type_aliases:
         return _type_aliases[dtype.lower()]
 
-    # get preliminary result
-    try_lookup = lambda: _type_aliases[pd.api.types.pandas_dtype(dtype)]
-    dtype = _type_aliases.get(dtype, try_lookup())
+    # case 3: dtype is abstract and must be parsed
+    dtype = pd.api.types.pandas_dtype(dtype)
 
-    # if result is an extension type, apply collapse rule
-    if not allow_extensions and pd.api.types.is_extension_array_dtype(dtype):
-        return _type_aliases[dtype.numpy_dtype]
-    return dtype
+    # M8 and m8 must be handled separately due to differing units/step sizes
+    is_extension = pd.api.types.is_extension_array_dtype(dtype)
+    if not is_extension and np.issubdtype(dtype, "M8"):
+        return np.datetime64
+    if not is_extension and np.issubdtype(dtype, "m8"):
+        return np.timedelta64
+    return _type_aliases[dtype]
+
+
+def supertype(dtype: type | pd.api.extensions.ExtensionDtype()) -> type:
+    """Returns the atomic supertype associated with a given dtype"""
+    return _supertypes.get(dtype, _supertypes[resolve_dtype(dtype)])
 
 
 #######################
@@ -426,6 +501,73 @@ def is_float(
     return False
 
 
+###############################
+####    Complex Numbers    ####
+###############################
+
+
+def is_complex(
+    array: complex | array_like,
+    dtype: dtype_like = complex,
+    exact: bool = False
+) -> bool:
+    """Efficiently check whether a given scalar/sequence/array/series contains
+    complex floats of the specified dtype.
+
+    TODO: expand documentaion to match is_integer
+    """
+    # vectorize scalars and sequences
+    array = vectorize(array)
+
+    # collapse dtype aliases
+    dtype = resolve_dtype(dtype)
+
+    # case 1: array is properly initialized, with complex dtype
+    if pd.api.types.is_complex_dtype(array):
+        # option 1: dtype is complex supertype
+        if dtype == complex:
+            return not exact  # array cannot contain exactly python complexes
+
+        # option 2: dtype is complex subtype
+        return np.issubdtype(array.dtype, dtype)
+
+    # case 2: array has dtype="O", but contains complex numbers
+    if pd.api.types.is_object_dtype(array):
+        array = array[pd.notna(array)]
+        types = pd.unique(object_types(array))
+
+        # option 1: dtype is complex supertype
+        if dtype == complex and not exact:
+            # test array contains complex numbers of any kind and nothing else
+            return all(np.issubdtype(t, np.complex_) for t in types)
+
+        # option 2: dtype is complex subtype
+        return len(types) == 1 and issubclass(types[0], dtype)
+
+    return False
+
+
+########################
+####    Decimals    ####
+########################
+
+
+def is_decimal(array: decimal.Decimal | array_like) -> bool:
+    """Efficiently check whether a given scalar/sequence/array/series contains
+    arbitrary precision decimal numbers.
+    """
+    # vectorize scalars and sequences
+    array = vectorize(array)
+
+    # array has dtype="O" and contains decimals
+    if pd.api.types.is_object_dtype(array):
+        array = array[pd.notna(array)]
+        types = pd.unique(object_types(array))
+        return len(types) == 1 and issubclass(types[0], decimal.Decimal)
+
+    return False
+
+
 #########################
 ####    Datetimes    ####
 #########################
@@ -489,20 +631,13 @@ def is_numpy_datetime64(array: np.datetime64 | array_like) -> bool:
 
 
 def is_datetime(
-    array: pd.Timestamp | datetime.datetime | np.datetime64 | array_like,
-    dtype: dtype_like = "datetime",
-    exact: bool = False
+    array: pd.Timestamp | datetime.datetime | np.datetime64 | array_like
 ) -> bool:
     """Efficiently check whether a given scalar/sequence/array/series contains
     datetime objects of any type.
     """
     # vectorize scalars and sequences
     array = vectorize(array)
-
-    # collapse dtype aliases
-    dtype = resolve_dtype(dtype)
-
-    # TODO: treat like is_integer, is_float, etc
 
     # option 1: array/series is properly initialized and has datetime64 dtype
     if pd.api.types.is_datetime64_any_dtype(array):
@@ -601,3 +736,177 @@ def is_timedelta(
         return np.isin(types, valid).all()
 
     return False
+
+
+#######################
+####    Objects    ####
+#######################
+
+
+def is_object(array: object | array_like) -> bool:
+    """Efficiently check whether a given scalar/sequence/array/series contains
+    uncategorized objects (dtype="O"), excluding string objects.
+    """
+    # vectorize scalars and sequences
+    array = vectorize(array)
+
+    return (pd.api.types.is_object_dtype(array) and
+            pd.api.types.infer_dtype(array) != "string")
+
+
+#######################
+####    Strings    ####
+#######################
+
+
+def is_string(
+    array: str | array_like,
+    dtype: dtype_like = str,
+    exact: bool = False
+) -> bool:
+    """Efficiently check whether a given scalar/sequence/array/series contains
+    strings.
+    """
+    # vectorize scalars and sequences and note missing values
+    array = vectorize(array)
+    nans = pd.isna(array)
+
+    # collapse dtype aliases and not whether given dtype is extension type
+    dtype = resolve_dtype(dtype)
+    is_extension = pd.api.types.is_extension_array_dtype(dtype)
+
+    # exact, check that is_extension matches hasnans
+    if exact and is_extension ^ nans.any():
+        return False
+
+    # collapse to atomic type and disregard missing values
+    if is_extension:
+        dtype = str
+    array = array[~nans]
+
+    # option 1: series is pandas extension string dtype
+    if (pd.api.types.is_string_dtype(array) and
+        pd.api.types.is_extension_array_dtype(array)):
+        return True
+
+    # option 2: series is object dtype, but contains string objects.
+    # -> pandas isn't picky about what constitutes a string array.  By default,
+    # it includes object arrays that don't contain strings at all, so we need
+    # to differentiate between true string arrays and arrays that only pass a
+    # `pandas.api.types.is_string_dtype()` check because they have dtype="O".
+    if pd.api.types.is_object_dtype(array):
+        types = pd.unique(object_types(array))
+        return len(types) == 1 and issubclass(types[0], dtype)
+
+    return False
+
+
+############################
+####    Categoricals    ####
+############################
+
+
+def is_categorical(array: str | array_like) -> bool:
+    """Efficiently check whether a given scalar/sequence/array/series contains
+    categorical objects.
+    """
+    return pd.api.types.is_categorical_dtype(array)
+
+
+
+
+
+
+
+_typecheck_dispatch = {  # dispatch table for check_dtype
+    # Lambdas are used over functools.partial because they allow for a fixed
+    # calling signature.  This is helpful because not all helper functions
+    # accept the `dtype` and `exact` arguments.  In these cases, we accept the
+    # extra parameters and then simply discard them when invoking the
+    # associated type check, treating them as dummy args.  We can then compile
+    # each lambda into a dispatch table like this and avoid runtime
+    # instantiation.
+
+    # booleans
+    bool: lambda a, d, e: is_boolean(a, dtype=d, exact=e),
+    pd.BooleanDtype(): lambda a, d, e: is_boolean(a, dtype=d, exact=e),
+
+    # integers
+    int: lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    np.int8: lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    np.int16: lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    np.int32: lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    np.int64: lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    np.uint8: lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    np.uint16: lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    np.uint32: lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    np.uint64: lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    pd.Int8Dtype(): lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    pd.Int16Dtype(): lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    pd.Int32Dtype(): lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    pd.Int64Dtype(): lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    pd.UInt8Dtype(): lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    pd.UInt16Dtype(): lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    pd.UInt32Dtype(): lambda a, d, e: is_integer(a, dtype=d, exact=e),
+    pd.UInt64Dtype(): lambda a, d, e: is_integer(a, dtype=d, exact=e),
+
+    # floats
+    float: lambda a, d, e: is_float(a, dtype=d, exact=e),
+    np.float16: lambda a, d, e: is_float(a, dtype=d, exact=e),
+    np.float32: lambda a, d, e: is_float(a, dtype=d, exact=e),
+    np.float64: lambda a, d, e: is_float(a, dtype=d, exact=e),
+    np.longdouble: lambda a, d, e: is_float(a, dtype=d, exact=e),
+
+    # complex numbers
+    complex: lambda a, d, e: is_complex(a, dtype=d, exact=e),
+    np.complex64: lambda a, d, e: is_complex(a, dtype=d, exact=e),
+    np.complex128: lambda a, d, e: is_complex(a, dtype=d, exact=e),
+    np.clongdouble: lambda a, d, e: is_complex(a, dtype=d, exact=e),
+
+    # decimals
+    decimal.Decimal: lambda a, d, e: is_decimal(a),
+
+    # datetimes
+    # "datetime": lambda a, d, e: is_datetime(a),
+    pd.Timestamp: lambda a, d, e: is_pandas_timestamp(a),
+    datetime.datetime: lambda a, d, e: is_pydatetime(a),
+    np.datetime64: lambda a, d, e: is_numpy_datetime64(a),
+
+    # timedeltas
+    # "timedelta": lambda a, d, e: is_timedelta(a),
+    pd.Timedelta: lambda a, d, e: is_pandas_timedelta(a),
+    datetime.timedelta: lambda a, d, e: is_pytimedelta(a),
+    np.timedelta64: lambda a, d, e: is_numpy_timedelta64(a),
+
+    # objects
+    object: lambda a, d, e: is_object(a),
+
+    # strings
+    str: lambda a, d, e: is_string(a, dtype=d, exact=e),
+    pd.StringDtype(): lambda a, d, e: is_string(a, dtype=d, exact=e),
+
+    # categorical
+    pd.Categorical: lambda a, d, e: is_categorical(a)
+}
+
+
+def check_dtype(
+    array: Any | array_like,
+    dtype: dtype_like | array_like,
+    exact: bool = False
+) -> bool:
+    """test"""
+    # vectorize scalars and sequences
+    array = vectorize(array)
+
+    # collapse dtype aliases and allow multiple comparison
+    dtype = [resolve_dtype(d) for d in vectorize(dtype)]
+    dtype = tuple(pd.unique(dtype))
+
+    # dispatch to appropriate helper function, using a fixed signature
+    typecheck = lambda d: _typecheck_dispatch[d](array, d, exact)
+    if exact:
+        # TODO: this will either have to subset arrays of mixed types or use
+        # np.isin in individual type comparisons
+        return all(typecheck(d) for d in dtype)
+    return any(typecheck(d) for d in dtype)  # this works as intended
