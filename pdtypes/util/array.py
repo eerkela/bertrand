@@ -22,6 +22,8 @@ def vectorize(obj) -> np.ndarray | pd.Series:
         return obj
     if isinstance(obj, np.ndarray):
         return np.atleast_1d(obj)
+    if isinstance(obj, set):
+        obj = list(obj)
     return np.atleast_1d(np.array(obj, dtype="O"))
 
 
