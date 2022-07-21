@@ -12,6 +12,9 @@ import pytz
 import zoneinfo
 
 from pdtypes.error import error_trace
+from pdtypes import check_dtype
+
+
 from pdtypes.util.array import (
     array_like, broadcast_args, object_types, replace_with_dict, round_div
 )

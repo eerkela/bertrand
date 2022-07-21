@@ -10,10 +10,9 @@ from pdtypes.error import error_trace
 from pdtypes.util.array import array_like, object_types, vectorize
 
 
-# TODO: change supertype 'i' to include only signed integers
-# TODO: change supertype 'u' to include only unsigned integers
 # TODO: change numpy M8 and m8 comparisons to include unit/step size info
 # TODO: allow check_dtype to accept dtype_like args directly
+# TODO: verify support for period, interval (supertypes, aliases)
 
 
 ##########################
@@ -40,7 +39,6 @@ _type_aliases = {  # dtype alias to atomic type
     int: int,
     "int": int,
     "integer": int,
-    "i": int,
     np.dtype("i1"): np.int8,
     np.dtype("i2"): np.int16,
     np.dtype("i4"): np.int32,
@@ -83,7 +81,6 @@ _type_aliases = {  # dtype alias to atomic type
     "d": decimal.Decimal,
 
     # datetimes
-    "datetime": "datetime",
     pd.Timestamp: pd.Timestamp,
     "pd.timestamp": pd.Timestamp,
     "pandas.timestamp": pd.Timestamp,
@@ -95,7 +92,6 @@ _type_aliases = {  # dtype alias to atomic type
     "numpy.datetime64": np.datetime64,
 
     # timedeltas
-    "timedelta": "timedelta",
     pd.Timedelta: pd.Timedelta,
     "pd.timedelta": pd.Timedelta,
     "pandas.timedelta": pd.Timedelta,
@@ -108,7 +104,13 @@ _type_aliases = {  # dtype alias to atomic type
 
     # periods
     pd.Period: pd.Period,
+    # pd.PeriodDtype(): pd.Period,  # throws an AttributeError on load
     "period": pd.Period,
+
+    # intervals
+    pd.Interval: pd.Interval,
+    pd.IntervalDtype(): pd.Interval,
+    "interval": pd.Interval,
 
     # objects
     np.dtype(object): object,
@@ -139,7 +141,7 @@ _extension_types = {  # atomic type to associated extension type
 }
 
 
-_supertypes = {  # atomic type to associated supertype
+_supertype = {  # atomic type to associated supertype
     # booleans
     bool: bool,
     pd.BooleanDtype(): bool,
@@ -191,56 +193,50 @@ _supertypes = {  # atomic type to associated supertype
     datetime.timedelta: "timedelta",
     np.timedelta64: "timedelta",
 
-    # objects
-    object: object,
-
     # strings
     str: str,
-    pd.StringDtype(): str,
-
-    # categorical
-    pd.Categorical: pd.Categorical
+    pd.StringDtype(): str
 }
 
 
 _subtypes = {  # supertype to associated atomic types
     # boolean
-    bool: (bool, pd.BooleanDtype()),
+    bool: {bool, pd.BooleanDtype()},
 
     # integer
-    int: (int, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16,
+    int: {int, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16,
           np.uint32, np.uint64, pd.Int8Dtype(), pd.Int16Dtype(),
           pd.Int32Dtype(), pd.Int64Dtype(), pd.UInt8Dtype(), pd.UInt16Dtype(),
-          pd.UInt32Dtype(), pd.UInt64Dtype()),
-    np.int8: (np.int8, pd.Int8Dtype()),
-    np.int16: (np.int16, pd.Int16Dtype()),
-    np.int32: (np.int32, pd.Int32Dtype()),
-    np.int64: (np.int64, pd.Int64Dtype()),
-    np.uint8: (np.uint8, pd.UInt8Dtype()),
-    np.uint16: (np.uint16, pd.UInt16Dtype()),
-    np.uint32: (np.uint32, pd.UInt32Dtype()),
-    np.uint64: (np.uint64, pd.UInt64Dtype()),
+          pd.UInt32Dtype(), pd.UInt64Dtype()},
+    "i": {int, np.int8, np.int16, np.int32, np.int64, pd.Int8Dtype(),
+          pd.Int16Dtype(), pd.Int32Dtype(), pd.Int64Dtype()},
+    "u": {np.uint8, np.uint16, np.uint32, np.uint64, pd.UInt8Dtype(),
+          pd.UInt16Dtype(), pd.UInt32Dtype(), pd.UInt64Dtype()},
+    np.int8: {np.int8, pd.Int8Dtype()},
+    np.int16: {np.int16, pd.Int16Dtype()},
+    np.int32: {np.int32, pd.Int32Dtype()},
+    np.int64: {np.int64, pd.Int64Dtype()},
+    np.uint8: {np.uint8, pd.UInt8Dtype()},
+    np.uint16: {np.uint16, pd.UInt16Dtype()},
+    np.uint32: {np.uint32, pd.UInt32Dtype()},
+    np.uint64: {np.uint64, pd.UInt64Dtype()},
 
     # float
-    float: (float, np.float16, np.float32, np.float64, np.longdouble),
+    float: {float, np.float16, np.float32, np.float64, np.longdouble},
 
     # complex
-    complex: (complex, np.complex64, np.complex128, np.clongdouble),
-
-    # decimal
-    decimal.Decimal: (decimal.Decimal, ),
+    complex: {complex, np.complex64, np.complex128, np.clongdouble},
 
     # datetime
-    "datetime": (pd.Timestamp, datetime.datetime, np.datetime64),
+    "datetime": {pd.Timestamp, datetime.datetime, np.datetime64},
 
     # timedelta
-    "timedelta": (pd.Timedelta, datetime.timedelta, np.timedelta64),
+    "timedelta": {pd.Timedelta, datetime.timedelta, np.timedelta64},
 
-    # object
-    object: (object, ),
+    # object supertype must be expanded manually, catching 3rd-party type defs
 
     # string
-    str: (str, pd.StringDtype())
+    str: {str, pd.StringDtype()}
 }
 
 
@@ -249,9 +245,7 @@ _subtypes = {  # supertype to associated atomic types
 #################################
 
 
-def resolve_dtype(
-    dtype: dtype_like
-) -> atomic_type | str:
+def resolve_dtype(dtype: dtype_like) -> atomic_type:
     """Collapse abstract dtype aliases into their corresponding atomic type.
 
     Essentially an interface to _type_aliases lookup table.
@@ -265,7 +259,17 @@ def resolve_dtype(
         return _type_aliases[dtype.lower()]
 
     # case 3: dtype is abstract and must be parsed
-    dtype = pd.api.types.pandas_dtype(dtype)
+    if dtype in ("i", "u"):
+        bad = "signed" if dtype == "i" else "unsigned"
+        err_msg = (f"[{error_trace()}] {bad} integer alias {repr(dtype)} is "
+                   f"ambiguous.  Use a specific bit size instead.")
+        raise ValueError(err_msg)
+    try:  # resolve directly
+        dtype = pd.api.types.pandas_dtype(dtype)
+    except TypeError as err:  # dtype cannot be resolved, might be custom
+        if isinstance(dtype, type):  # element is 3rd-party type def
+            return dtype
+        raise err
 
     # M8 and m8 must be handled separately due to differing units/step sizes
     is_extension = pd.api.types.is_extension_array_dtype(dtype)
@@ -282,7 +286,7 @@ def resolve_dtype(
 
 
 def get_dtype(
-    array: scalar | array_like,
+    array: scalar | array_like
 ) -> atomic_type | tuple[atomic_type, ...]:
     """Retrieve the common atomic element types stored in `array`.
 
@@ -356,7 +360,7 @@ def get_dtype(
 
     # case 2: array has non-object dtype
     if isinstance(array, pd.Series):
-        # special cases for M8[ns], m8[ns], categorical, and period
+        # special cases for M8[ns], m8[ns], categorical, and period series
         if pd.api.types.is_datetime64_ns_dtype(array):
             return pd.Timestamp
         if pd.api.types.is_timedelta64_ns_dtype(array):
@@ -462,35 +466,23 @@ def check_dtype(
     # get unique element types present in `array` and convert to set
     observed = get_dtype(array)
     observed = set(vectorize(observed))
-
-    def resolve(element):
-        try:  # resolve directly
-            return resolve_dtype(element)
-        except TypeError as err:  # dtype cannot be resolved, might be custom
-            if isinstance(element, type):  # element is 3rd-party class def
-                return element
-            raise err
+    custom_types = {o for o in observed if o not in _supertype}
 
     # resolve `dtype` aliases and convert to set
-    dtype = np.frompyfunc(resolve, 1, 1)(vectorize(dtype))
-    dtype = set(dtype)
+    if exact:
+        dtype = np.frompyfunc(resolve_dtype, 1, 1)(vectorize(dtype))
+        dtype = set(dtype)
+    else:
+        def resolve_and_expand(element: dtype_like) -> set[atomic_type]:
+            if element in _subtypes:
+                return _subtypes[element]
+            resolved = resolve_dtype(element)
+            if resolved == object:
+                return custom_types
+            return _subtypes.get(resolved, {resolved})
 
-    # if exact=False, replace supertypes with their constituents
-    if not exact:
-        if object in dtype:  # object supertype must be handled separately
-            # Identify custom, user-defined object types present in array, if
-            # any exist.  Exchange object supertype for these types, emulating
-            # the tuple replacement below, but without requiring an explicit
-            # list of all possible user-defined classes.  If any such classes
-            # are present in `array`, this will dynamically include them in the
-            # object supertype catch-all.
-            custom_types = {o for o in observed if o not in _supertypes}
-            if len(custom_types) > 0:
-                dtype.update(custom_types)
-
-        # expand non-object supertypes as list of tuples, then flatten to set
-        expanded = [_subtypes.get(d, tuple([d])) for d in dtype]
-        dtype = {constituent for tup in expanded for constituent in tup}
+        dtype = np.frompyfunc(resolve_and_expand, 1, 1)(vectorize(dtype))
+        dtype = set().union(*dtype)
 
     # return, ensuring `dtype`` is more general than `observed`
     if observed - dtype:  # types present in `array` are missing from `dtype`
