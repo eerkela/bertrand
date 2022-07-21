@@ -11,7 +11,9 @@ from pdtypes.util.array import array_like, object_types, vectorize
 
 
 # TODO: change numpy M8 and m8 comparisons to include unit/step size info
-# TODO: allow check_dtype to accept dtype_like args directly
+#   -> if dtype has unit info, retrieve indices where type=np.datetime64 and
+#   -> gather unit info.  Cast to set, then compare units present in array with
+#   -> those given in `dtype`
 # TODO: verify support for period, interval (supertypes, aliases)
 
 
@@ -115,6 +117,7 @@ _type_aliases = {  # dtype alias to atomic type
     # objects
     np.dtype(object): object,
     "obj": object,
+    "o": object,
 
     # strings
     np.dtype(str): str,
@@ -259,11 +262,20 @@ def resolve_dtype(dtype: dtype_like) -> atomic_type:
         return _type_aliases[dtype.lower()]
 
     # case 3: dtype is abstract and must be parsed
-    if dtype in ("i", "u"):
+    if dtype in ("i", "u"):  # ambiguous without associated bit size
         bad = "signed" if dtype == "i" else "unsigned"
         err_msg = (f"[{error_trace()}] {bad} integer alias {repr(dtype)} is "
-                   f"ambiguous.  Use a specific bit size instead.")
+                   f"ambiguous.  Use a specific bit size or generalized `int` "
+                   f"instead.")
         raise ValueError(err_msg)
+    if isinstance(dtype, (np.bool_, np.integer, np.floating, np.complex_,
+                          np.datetime64, np.timedelta64)):
+        # pd.api.types.pandas_dtype() does not always throw an error on scalar
+        # input, so we have to do this manually.
+        err_msg = (f"[{error_trace()}] `dtype` must be a numpy/pandas dtype "
+                   f"specification or an associated alias, not a scalar of "
+                   f"type {type(dtype)}")
+        raise TypeError(err_msg)
     try:  # resolve directly
         dtype = pd.api.types.pandas_dtype(dtype)
     except TypeError as err:  # dtype cannot be resolved, might be custom
@@ -373,7 +385,7 @@ def get_dtype(
 
 
 def check_dtype(
-    array: scalar | array_like,
+    array: scalar | dtype_like | array_like,
     dtype: dtype_like | tuple,
     exact: bool = False
 ) -> bool:
@@ -458,33 +470,38 @@ def check_dtype(
     The given `dtype` must be at least as general as the types contained in
     `array`.
     """
-    # TODO: allow check_dtype to accept dtype_like args directly
-    # -> insert a resolve() step here and pass if a TypeError is encountered
-    # -> problem: resolve_dtype is greedy and converts scalars.
-    #   `None` -> np.float64.  No TypeError is thrown
+    def resolve_and_expand(element: dtype_like) -> set[atomic_type]:
+        if element in _subtypes:  # element is a defined supertype
+            return _subtypes[element]
+        resolved = resolve_dtype(element)
+        if resolved == object and custom_types:  # object supertype
+            return custom_types
+        return _subtypes.get(resolved, {resolved})
 
-    # get unique element types present in `array` and convert to set
-    observed = get_dtype(array)
-    observed = set(vectorize(observed))
-    custom_types = {o for o in observed if o not in _supertype}
+    # vectorized dtype resolution funcs, with and without supertype expansion
+    custom_types = None
+    resolve = np.frompyfunc(resolve_dtype, 1, 1)  # vectorized dtype resolution
+    resolve_and_expand = np.frompyfunc(resolve_and_expand, 1, 1)
+
+    # resolve observed dtypes from `array` and convert to set
+    try:  # case 1: `array` contains dtype-like objects -> resolve directly
+        if exact:
+            observed = set(resolve(vectorize(array)))
+        else:
+            observed = set().union(*resolve_and_expand(vectorize(array)))
+    except TypeError:  # case 2: `array` contains scalars -> interpret
+        observed = set(vectorize(get_dtype(array)))
 
     # resolve `dtype` aliases and convert to set
-    if exact:
-        dtype = np.frompyfunc(resolve_dtype, 1, 1)(vectorize(dtype))
-        dtype = set(dtype)
-    else:
-        def resolve_and_expand(element: dtype_like) -> set[atomic_type]:
-            if element in _subtypes:
-                return _subtypes[element]
-            resolved = resolve_dtype(element)
-            if resolved == object:
-                return custom_types
-            return _subtypes.get(resolved, {resolved})
+    if exact:  # resolve directly
+        dtype = set(resolve(vectorize(dtype)))
+    else:  # expand supertypes during alias resolution
+        # make a note of unrecognized object types.  These will be substituted
+        # in to account for the `object` supertype, if it is provided.
+        custom_types = {o for o in observed if o not in _supertype}
+        dtype = set().union(*resolve_and_expand(vectorize(dtype)))
 
-        dtype = np.frompyfunc(resolve_and_expand, 1, 1)(vectorize(dtype))
-        dtype = set().union(*dtype)
-
-    # return, ensuring `dtype`` is more general than `observed`
+    # return overlap exists, ensuring `dtype`` is more general than `observed`
     if observed - dtype:  # types present in `array` are missing from `dtype`
         return False
     return len(dtype.intersection(observed)) > 0
