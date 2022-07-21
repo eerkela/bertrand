@@ -1,13 +1,36 @@
+"""This module contains functions to get and check the dtypes present in numpy
+arrays, pandas series, and built-in sequences (list, tuple, set).
+
+It exposes 2 public-facing functions, `get_dtype()` and `check_dtype()`, which,
+when taken together, allow for virtually arbitrary type detection and checking
+on numpy arrays and related data structures.  They work on both explicitly-typed
+data (with a specified, non-object `.dtype` field) and implicit equivalents
+(with `dtype="O"`, or generic python sequences).
+
+`get_dtype()` functions like the `.dtype` accessor, but returns the underlying
+element type(s) present in the array, rather than a (sometimes) ambiguous
+`numpy.dtype` object.
+
+`check_dtype()` functions like the built-in `isinstance()` and `issubclass()`
+functions, creating a generalized interface for type checks, which can even
+include third-party or user-defined custom classes.  Checks can be concatenated
+using the tuple syntax of the aforementioned built-ins, and a shorthand syntax
+for commonly encountered supertype categories can be toggled on and off,
+allowing for both coarse and fine control.
+
+Using these functions, one can easily implement type introspection for almost
+any kind of input data or type specification, with maximal abstraction.
+"""
 from __future__ import annotations
 import datetime
 import decimal
-from typing import Any, Union
 
 import numpy as np
 import pandas as pd
 
 from pdtypes.error import error_trace
-from pdtypes.util.array import array_like, object_types, vectorize
+from pdtypes.util.array import object_types, vectorize
+from pdtypes.util.type_hints import array_like, atomic_type, dtype_like, scalar
 
 
 # TODO: change numpy M8 and m8 comparisons to include unit/step size info
@@ -15,16 +38,6 @@ from pdtypes.util.array import array_like, object_types, vectorize
 #   -> gather unit info.  Cast to set, then compare units present in array with
 #   -> those given in `dtype`
 # TODO: verify support for period, interval (supertypes, aliases)
-
-
-##########################
-####    Type Hints    ####
-##########################
-
-
-atomic_type = Union[type, pd.api.extensions.ExtensionDtype]
-dtype_like = Union[type, str, np.dtype, pd.api.extensions.ExtensionDtype]
-scalar = Any
 
 
 #############################

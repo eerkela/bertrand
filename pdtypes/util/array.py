@@ -1,15 +1,13 @@
 from __future__ import annotations
-from typing import Union
 
 import numpy as np
 import pandas as pd
 
 from pdtypes.error import error_trace
+from pdtypes.util.type_hints import array_like
 
 
-array_like = Union[list, np.ndarray, pd.Series]
 type_ufunc = np.frompyfunc(type, 1, 1)
-
 
 
 def vectorize(obj) -> np.ndarray | pd.Series:
@@ -64,14 +62,14 @@ def replace_with_dict(array: np.ndarray, dictionary: dict) -> np.ndarray:
 
 
 def round_div(
-    val: int | list | np.ndarray | pd.Series,
-    divisor: int | np.ndarray | pd.Series,
+    val: int | array_like,
+    divisor: int | array_like,
     rounding: str = "floor"
 ) -> np.ndarray:
     """Divide integers and integer arrays with specified rounding rule."""
     # vectorize input
-    val = np.atleast_1d(np.array(val))
-    divisor = np.atleast_1d(np.array(divisor))
+    val = vectorize(val)
+    divisor = vectorize(divisor)
 
     # broadcast to same size
     val, divisor = np.broadcast_arrays(val, divisor)
