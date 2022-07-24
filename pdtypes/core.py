@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytz
 
-import pdtypes.cast
+import pdtypes.cast_old
 from pdtypes.error import error_trace
 from pdtypes.util.parse import parse_dtype
 
@@ -268,51 +268,51 @@ def _convert_series_dtype(
     # get conversion function with appropriate args
     conversions = {
         "boolean": {
-            "boolean": partial(pdtypes.cast.boolean.to_boolean, dtype=dtype),
-            "integer": partial(pdtypes.cast.boolean.to_integer, dtype=dtype),
-            "float": partial(pdtypes.cast.boolean.to_float, dtype=dtype),
-            "complex": partial(pdtypes.cast.boolean.to_complex, dtype=dtype),
-            "decimal": pdtypes.cast.boolean.to_decimal,
-            "datetime": partial(pdtypes.cast.boolean.to_datetime,
+            "boolean": partial(pdtypes.cast_old.boolean.to_boolean, dtype=dtype),
+            "integer": partial(pdtypes.cast_old.boolean.to_integer, dtype=dtype),
+            "float": partial(pdtypes.cast_old.boolean.to_float, dtype=dtype),
+            "complex": partial(pdtypes.cast_old.boolean.to_complex, dtype=dtype),
+            "decimal": pdtypes.cast_old.boolean.to_decimal,
+            "datetime": partial(pdtypes.cast_old.boolean.to_datetime,
                                 unit=unit, offset=offset, tz=tz),
-            "timedelta": partial(pdtypes.cast.boolean.to_timedelta,
+            "timedelta": partial(pdtypes.cast_old.boolean.to_timedelta,
                                  unit=unit, offset=offset),
             "object": lambda s: s.astype(object),
-            "string": partial(pdtypes.cast.boolean.to_string, dtype=dtype),
-            "categorical": partial(pdtypes.cast.boolean.to_categorical,
+            "string": partial(pdtypes.cast_old.boolean.to_string, dtype=dtype),
+            "categorical": partial(pdtypes.cast_old.boolean.to_categorical,
                                    categories=categories, ordered=ordered)
         },
         "integer": {
-            "boolean": partial(pdtypes.cast.integer.to_boolean,
+            "boolean": partial(pdtypes.cast_old.integer.to_boolean,
                                force=force, dtype=dtype),
-            "integer": partial(pdtypes.cast.integer.to_integer, dtype=dtype),
-            "float": partial(pdtypes.cast.integer.to_float, dtype=dtype),
-            "complex": partial(pdtypes.cast.integer.to_complex, dtype=dtype),
-            "decimal": pdtypes.cast.integer.to_decimal,
-            "datetime": partial(pdtypes.cast.integer.to_datetime,
+            "integer": partial(pdtypes.cast_old.integer.to_integer, dtype=dtype),
+            "float": partial(pdtypes.cast_old.integer.to_float, dtype=dtype),
+            "complex": partial(pdtypes.cast_old.integer.to_complex, dtype=dtype),
+            "decimal": pdtypes.cast_old.integer.to_decimal,
+            "datetime": partial(pdtypes.cast_old.integer.to_datetime,
                                 unit=unit, offset=offset, tz=tz),
-            "timedelta": partial(pdtypes.cast.integer.to_timedelta,
+            "timedelta": partial(pdtypes.cast_old.integer.to_timedelta,
                                  unit=unit, offset=offset),
             "object": lambda s: s.astype(object),
-            "string": partial(pdtypes.cast.integer.to_string, dtype=dtype),
-            "categorical": partial(pdtypes.cast.integer.to_categorical,
+            "string": partial(pdtypes.cast_old.integer.to_string, dtype=dtype),
+            "categorical": partial(pdtypes.cast_old.integer.to_categorical,
                                    categories=categories, ordered=ordered)
         },
         "float": {
-            "boolean": partial(pdtypes.cast.float.to_boolean,
+            "boolean": partial(pdtypes.cast_old.float.to_boolean,
                                force=force, round=round, tol=tol, dtype=dtype),
-            "integer": partial(pdtypes.cast.float.to_integer,
+            "integer": partial(pdtypes.cast_old.float.to_integer,
                                force=force, round=round, tol=tol, dtype=dtype),
-            "float": partial(pdtypes.cast.float.to_float, dtype=dtype),
-            "complex": partial(pdtypes.cast.float.to_complex, dtype=dtype),
-            "decimal": pdtypes.cast.float.to_decimal,
-            "datetime": partial(pdtypes.cast.float.to_datetime,
+            "float": partial(pdtypes.cast_old.float.to_float, dtype=dtype),
+            "complex": partial(pdtypes.cast_old.float.to_complex, dtype=dtype),
+            "decimal": pdtypes.cast_old.float.to_decimal,
+            "datetime": partial(pdtypes.cast_old.float.to_datetime,
                                 unit=unit, offset=offset, tz=tz),
-            "timedelta": partial(pdtypes.cast.float.to_timedelta,
+            "timedelta": partial(pdtypes.cast_old.float.to_timedelta,
                                  unit=unit, offset=offset),
             "object": lambda s: s.astype(object),
-            "string": partial(pdtypes.cast.float.to_string, dtype=dtype),
-            "categorical": partial(pdtypes.cast.float.to_categorical,
+            "string": partial(pdtypes.cast_old.float.to_string, dtype=dtype),
+            "categorical": partial(pdtypes.cast_old.float.to_categorical,
                                    categories=categories, ordered=ordered)
         },
         # "complex": {

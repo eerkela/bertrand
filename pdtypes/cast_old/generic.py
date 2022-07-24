@@ -442,6 +442,7 @@ def pytimedelta_to_integer(
 
     # convert (n, 3) components to ns by scaling with appropriate coefficients
     coefficients = np.array([24*60*60*int(1e9), int(1e9), int(1e3)], dtype="O")
+    # _to_ns["D"], _to_ns["s"], _to_ns["us"]
     series *= coefficients
 
     # sum row-wise to get total ns

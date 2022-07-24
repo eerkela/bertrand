@@ -7,7 +7,7 @@ import pandas as pd
 import pytz
 
 from pdtypes.error import error_trace
-import pdtypes.cast.float
+import pdtypes.cast_old.float
 
 
 def round_decimal(series: pd.Series) -> pd.Series:
@@ -41,7 +41,7 @@ def to_boolean(series: pd.Series,
 
     try:
         series = to_float(series)
-        return pdtypes.cast.float.to_boolean(series, force=force, round=round,
+        return pdtypes.cast_old.float.to_boolean(series, force=force, round=round,
                                              tol=tol, dtype=dtype)
     except Exception as err:
         err_msg = (f"[{error_trace()}] could not convert decimal to boolean")

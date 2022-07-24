@@ -7,7 +7,7 @@ import pandas as pd
 import pytz
 
 from pdtypes.error import error_trace
-import pdtypes.cast.float
+import pdtypes.cast_old.float
 
 
 def to_boolean(series: pd.Series,
@@ -25,7 +25,7 @@ def to_boolean(series: pd.Series,
         raise TypeError(err_msg)
     try:  # convert to complex to float, then float to boolean
         series = to_float(series, force=force, tol=tol)
-        return pdtypes.cast.float.to_boolean(series, force=force, round=round,
+        return pdtypes.cast_old.float.to_boolean(series, force=force, round=round,
                                              tol=tol, dtype=dtype)
     except Exception as err:
         err_msg = (f"[{error_trace()}] could not convert complex to boolean")
@@ -46,7 +46,7 @@ def to_integer(series: pd.Series,
                    f"{dtype})")
         raise TypeError(err_msg)
     series = to_float(series, force=force, tol=tol)
-    return pdtypes.cast.float.to_integer(series, force=force, round=round,
+    return pdtypes.cast_old.float.to_integer(series, force=force, round=round,
                                          tol=tol, dtype=dtype)
 
 
@@ -126,7 +126,7 @@ def to_datetime(series: pd.Series,
                    f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     series = to_float(series, force=force, tol=tol)
-    return pdtypes.cast.float.to_datetime(series, unit=unit, offset=offset,
+    return pdtypes.cast_old.float.to_datetime(series, unit=unit, offset=offset,
                                           tz=tz)
 
 
@@ -139,7 +139,7 @@ def to_timedelta(series: pd.Series,
                    f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     series = to_float(series, force=force, tol=tol)
-    return pdtypes.cast.float.to_timedelta(series, unit=unit)
+    return pdtypes.cast_old.float.to_timedelta(series, unit=unit)
 
 
 def to_string(series: pd.Series, dtype: type = str) -> pd.Series:

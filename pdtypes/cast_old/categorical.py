@@ -8,15 +8,15 @@ import pandas as pd
 import pytz
 
 from pdtypes.error import error_trace
-import pdtypes.cast.boolean
-import pdtypes.cast.integer
-import pdtypes.cast.float
-import pdtypes.cast.complex
-import pdtypes.cast.decimal
-import pdtypes.cast.datetime
-import pdtypes.cast.timedelta
-import pdtypes.cast.object
-import pdtypes.cast.string
+import pdtypes.cast_old.boolean
+import pdtypes.cast_old.integer
+import pdtypes.cast_old.float
+import pdtypes.cast_old.complex
+import pdtypes.cast_old.decimal
+import pdtypes.cast_old.datetime
+import pdtypes.cast_old.timedelta
+import pdtypes.cast_old.object
+import pdtypes.cast_old.string
 
 
 def to_boolean(series: pd.Series, dtype:type = bool) -> pd.Series:
@@ -35,7 +35,7 @@ def to_boolean(series: pd.Series, dtype:type = bool) -> pd.Series:
     if categorical_type in ("bytes", "mixed", "mixed-integer", "empty"):
         categorical_type = "object"
     conversions = {
-        "string": partial(pdtypes.cast.string.to_boolean)  # TODO
+        "string": partial(pdtypes.cast_old.string.to_boolean)  # TODO
     }
     category_values = series.dtype.categories.values
     category_type = series.dtype.categories.values.dtype

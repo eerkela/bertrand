@@ -40,12 +40,15 @@ from pdtypes.util.type_hints import array_like, atomic_type, dtype_like, scalar
 # TODO: verify support for period, interval (supertypes, aliases)
 
 
+# TODO: add bytes dtypes aliases?
+
+
 #############################
 ####    Lookup Tables    ####
 #############################
 
 
-_type_aliases = {  # dtype alias to atomic type
+_atomic_type_aliases = {  # put aliases for atomic types here
     # booleans
     np.dtype(bool): bool,
     pd.BooleanDtype(): pd.BooleanDtype(),
@@ -215,7 +218,12 @@ _supertype = {  # atomic type to associated supertype
 }
 
 
-_subtypes = {  # supertype to associated atomic types
+_supertype_aliases = {  # put aliases for supertypes here
+    # atomic types are passed through resolve_dtype before querying.  Custom
+    # supertype aliases ('i', 'u', 'datetime', 'timedelta') are caught before
+    # resolution is applied, so they work despite not being present in
+    # _atomic_type_aliases.
+
     # boolean
     bool: {bool, pd.BooleanDtype()},
 
@@ -264,15 +272,15 @@ _subtypes = {  # supertype to associated atomic types
 def resolve_dtype(dtype: dtype_like) -> atomic_type:
     """Collapse abstract dtype aliases into their corresponding atomic type.
 
-    Essentially an interface to _type_aliases lookup table.
+    Essentially an interface to _atomic_type_aliases lookup table.
     """
     # case 1: dtype is directly present in aliases
-    if dtype in _type_aliases:
-        return _type_aliases[dtype]
+    if dtype in _atomic_type_aliases:
+        return _atomic_type_aliases[dtype]
 
     # case 2: dtype is a specified (case-insensitive) string dtype alias
-    if isinstance(dtype, str) and dtype.lower() in _type_aliases:
-        return _type_aliases[dtype.lower()]
+    if isinstance(dtype, str) and dtype.lower() in _atomic_type_aliases:
+        return _atomic_type_aliases[dtype.lower()]
 
     # case 3: dtype is abstract and must be parsed
     if dtype in ("i", "u"):  # ambiguous without associated bit size
@@ -302,7 +310,12 @@ def resolve_dtype(dtype: dtype_like) -> atomic_type:
         return np.datetime64
     if not is_extension and np.issubdtype(dtype, "m8"):
         return np.timedelta64
-    return _type_aliases[dtype]
+    return _atomic_type_aliases[dtype]
+
+
+def extension_type(dtype: dtype_like) -> atomic_type:
+    """Essentially an interface for the _extension_types lookup table"""
+    return _extension_types.get(dtype, _extension_types[resolve_dtype(dtype)])
 
 
 ##############################
@@ -414,7 +427,7 @@ def check_dtype(
     The specificity of this comparison can be tuned via the `exact` argument,
     which controls the expansion of supertypes into their constituent subtypes.
     When `exact=False`, the following conversions are performed, generalizing
-    commonly encountered data types into their most abstract forms as follows:
+    commonly encountered data types into their most abstract forms, as follows:
         - `bool` -> `(bool, pd.BooleanDtype())`
         - `int` -> `(int, np.int8, np.int16, np.int32, np.int64, np.uint8,
             np.uint16, np.uint32, np.uint64, pd.Int8Dtype(), pd.Int16Dtype(),
@@ -480,41 +493,39 @@ def check_dtype(
     Lastly, if the underlying array is composed of mixed types (both integer
     and float, for instance), then this function will return False for any
     `dtype` specification which does not include at least those element types.
-    The given `dtype` must be at least as general as the types contained in
-    `array`.
+    In other words, the given `dtype` must fully encapsulate the types that are
+    present in `array` for this function to return `True`.
     """
     def resolve_and_expand(element: dtype_like) -> set[atomic_type]:
-        if element in _subtypes:  # element is a defined supertype
-            return _subtypes[element]
-        resolved = resolve_dtype(element)
+        # 1st lookup pass -> element is already a pre-defined supertype alias
+        if element in _supertype_aliases:
+            return _supertype_aliases[element]
+        resolved = resolve_dtype(element)  # element resolution (atomic type)
         if resolved == object and custom_types:  # object supertype
-            return custom_types
-        return _subtypes.get(resolved, {resolved})
+            return custom_types  # set of unrecognized types in `array`
+        # 2nd lookup pass -> resolved element is a supertype alias
+        return _supertype_aliases.get(resolved, {resolved})
 
     # vectorized dtype resolution funcs, with and without supertype expansion
-    custom_types = None
-    resolve = np.frompyfunc(resolve_dtype, 1, 1)  # vectorized dtype resolution
+    custom_types = None  # initialize for 1st round of resolve_and_expand
+    resolve = np.frompyfunc(resolve_dtype, 1, 1)
     resolve_and_expand = np.frompyfunc(resolve_and_expand, 1, 1)
 
     # resolve observed dtypes from `array` and convert to set
-    try:  # case 1: `array` contains dtype-like objects -> resolve directly
+    try:  # case 1: `array` contains dtype-like objects
         if exact:
             observed = set(resolve(vectorize(array)))
         else:
             observed = set().union(*resolve_and_expand(vectorize(array)))
-    except TypeError:  # case 2: `array` contains scalars -> interpret
+    except TypeError:  # case 2: `array` contains scalars
         observed = set(vectorize(get_dtype(array)))
 
     # resolve `dtype` aliases and convert to set
     if exact:  # resolve directly
         dtype = set(resolve(vectorize(dtype)))
     else:  # expand supertypes during alias resolution
-        # make a note of unrecognized object types.  These will be substituted
-        # in to account for the `object` supertype, if it is provided.
         custom_types = {o for o in observed if o not in _supertype}
         dtype = set().union(*resolve_and_expand(vectorize(dtype)))
 
-    # return overlap exists, ensuring `dtype`` is more general than `observed`
-    if observed - dtype:  # types present in `array` are missing from `dtype`
-        return False
-    return len(dtype.intersection(observed)) > 0
+    # return True if `observed` is a subset of `dtype`
+    return not observed - dtype

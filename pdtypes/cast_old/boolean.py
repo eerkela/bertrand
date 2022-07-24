@@ -7,7 +7,7 @@ import pandas as pd
 import pytz
 
 from pdtypes.error import error_trace
-import pdtypes.cast.float
+import pdtypes.cast_old.float
 
 
 def to_boolean(series: pd.Series, dtype: type = bool) -> pd.Series:
@@ -96,7 +96,7 @@ def to_datetime(series: pd.Series,
                    f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     try:
-        return pdtypes.cast.float.to_datetime(to_float(series),
+        return pdtypes.cast_old.float.to_datetime(to_float(series),
                                               unit=unit, offset=offset, tz=tz)
     except Exception as err:
         err_msg = (f"[{error_trace()}] could not convert series to datetime")
@@ -112,7 +112,7 @@ def to_timedelta(
                    f"(received: {pd.api.types.infer_dtype(series)})")
         raise TypeError(err_msg)
     try:
-        return pdtypes.cast.float.to_timedelta(to_float(series),
+        return pdtypes.cast_old.float.to_timedelta(to_float(series),
                                                unit=unit, offset=offset)
     except Exception as err:
         err_msg = (f"[{error_trace()}] could not convert series to timedelta")

@@ -32,13 +32,13 @@ _to_ns = {  # TODO: add a bunch of synonyms for maximum flexibility
     # "fs": 1e-6,
     # "ps": 1e-3,
     "ns": 1,
-    "us": int(1e3),
-    "ms": int(1e6),
-    "s": int(1e9),
-    "m": 60 * int(1e9),
-    "h": 60 * 60 * int(1e9),
-    "D": 24 * 60 * 60 * int(1e9),
-    "W": 7 * 24 * 60 * 60 * int(1e9),
+    "us": 10**3,
+    "ms": 10**6,
+    "s": 10**9,
+    "m": 60 * 10**9,
+    "h": 60 * 60 * 10**9,
+    "D": 24 * 60 * 60 * 10**9,
+    "W": 7 * 24 * 60 * 60 * 10**9,
 }
 
 

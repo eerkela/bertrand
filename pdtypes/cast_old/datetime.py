@@ -7,7 +7,7 @@ import pandas as pd
 import pytz
 
 from pdtypes.error import error_trace
-import pdtypes.cast.float
+import pdtypes.cast_old.float
 
 
 """
@@ -43,7 +43,7 @@ def to_boolean(
     # convert
     try:
         series = to_float(series, unit=unit, offset=offset)
-        return pdtypes.cast.float.to_boolean(series, force=force, round=round,
+        return pdtypes.cast_old.float.to_boolean(series, force=force, round=round,
                                              tol=tol, dtype=dtype)
     except Exception as err:
         err_msg = f"[{error_trace()}] could not convert datetime to boolean"
