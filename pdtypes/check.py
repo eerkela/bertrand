@@ -517,7 +517,7 @@ def check_dtype(
             observed = set(resolve(vectorize(array)))
         else:
             observed = set().union(*resolve_and_expand(vectorize(array)))
-    except TypeError:  # case 2: `array` contains scalars
+    except (TypeError, ValueError):  # case 2: `array` contains scalars
         observed = set(vectorize(get_dtype(array)))
 
     # resolve `dtype` aliases and convert to set

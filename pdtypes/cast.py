@@ -1,6 +1,7 @@
 from __future__ import annotations
 import datetime
 import decimal
+import re
 
 import numpy as np
 import pandas as pd
@@ -25,11 +26,22 @@ from pdtypes.util.type_hints import (
 
 # TODO: when dispatching, use sparse and categorical boolean flags.  If the
 # provided dtype is SparseDtype(), set sparse=True and convert to base type.
+# If dtype is pd.CategoricalDtype() with or without `categories`, `ordered`,
+# then set categorical=True and convert to base type.  If none is provided,
+# use current element type.
+
+# TODO: when implementing series.coerce_dtypes(), apply downcast only if
+# dtype is int, float, complex, and remove it from individual conversions
 
 
 # TODO: implement a validate keyword, which controls argument validation.  This
 # defaults to True, but can be set False when one conversion function calls
 # another, giving significant performance increases on object arrays.
+
+
+
+# TODO: change all rounding rules to accept [floor, ceiling, down, up,
+# half_floor, half_ceiling, half_down, half_up]
 
 
 #############################################
@@ -188,17 +200,17 @@ def _validate_string_dtype(dtype: dtype_like) -> None:
 # def _validate_timezone(tz: str | datetime.tzinfo) -> datetime.tzinfo:
 
 
-def _validate_tolerance(tol: float) -> None:
-    """Raise a TypeError if `tol` isn't a float, and a ValueError if it is not
-    >= 0.
+def _validate_tolerance(tol: int | float | decimal.Decimal) -> None:
+    """Raise a TypeError if `tol` isn't a real numeric, and a ValueError if it
+    is not between 0 and 0.5.
     """
-    if not isinstance(tol, float):
-        err_msg = (f"[{error_trace(stack_index=2)}] `tol` must be a float "
-                   f"between 0 and 1, not {type(tol)}")
+    if not isinstance(tol, (int, float, decimal.Decimal)):
+        err_msg = (f"[{error_trace(stack_index=2)}] `tol` must be a real "
+                   f"numeric between 0 and 0.5, not {type(tol)}")
         raise TypeError(err_msg)
-    if not tol >= 0.0:
-        err_msg = (f"[{error_trace(stack_index=2)}] `tol` must be a float "
-                   f"between 0 and 1, not {tol}")
+    if not 0 <= tol <= 0.5:
+        err_msg = (f"[{error_trace(stack_index=2)}] `tol` must be a real "
+                   f"numeric between 0 and 0.5, not {tol}")
         raise ValueError(err_msg)
 
 
@@ -209,7 +221,8 @@ def _validate_rounding(rounding: str | None) -> None:
     """
     if rounding is None:
         return None
-    valid_rules = ("floor", "ceiling", "truncate", "infinity", "nearest")
+    valid_rules = ("floor", "ceiling", "down", "up", "half_floor",
+                   "half_ceiling", "half_down", "half_up", "half_even")
     if not isinstance(rounding, str):
         err_msg = (f"[{error_trace(stack_index=2)}] `rounding` must be a "
                    f"string {valid_rules}, not {type(rounding)}")
@@ -246,6 +259,47 @@ def _shorten_indices(indices: array_like, max_length: int = 5) -> str:
         return str(list(indices))
     shortened = ", ".join(str(i) for i in indices[:max_length])
     return f"[{shortened}, ...] ({len(indices)})"
+
+
+def _round_float(
+    num: float | np.ndarray | pd.Series,
+    rounding: None | str
+) -> float | np.ndarray | pd.Series:
+    switch = {  # C-style switch statement with lazy evaluation
+        "floor": lambda: np.floor(num),
+        "ceiling": lambda: np.ceil(num),
+        "down": lambda: np.trunc(num),
+        "up": lambda: np.sign(num) * np.ceil(np.abs(num)),
+        "half_floor": lambda: np.ceil(num - 0.5),
+        "half_ceiling": lambda: np.floor(num + 0.5),
+        "half_down": lambda: np.sign(num) * np.ceil(np.abs(num) - 0.5),
+        "half_up": lambda: np.sign(num) * np.floor(np.abs(num) + 0.5),
+        "half_even": lambda: np.round(num)
+    }
+    return switch[rounding]()
+
+
+def _round_decimal(
+    dec: decimal.Decimal | np.ndarray | pd.Series,
+    rounding: str
+) -> decimal.Decimal | np.ndarray | pd.Series:
+    if rounding == "down":
+        return dec // 1
+    switch = {  # C-style switch statement
+        "floor": lambda x: x.quantize(1, decimal.ROUND_FLOOR),
+        "ceiling": lambda x: x.quantize(1, decimal.ROUND_CEILING),
+        "up": lambda x: x.quantize(1, decimal.ROUND_UP),
+        "half_floor": (lambda x: x.quantize(1, decimal.ROUND_HALF_UP)
+                                 if x < 0 else
+                                 x.quantize(1, decimal.ROUND_HALF_DOWN)),
+        "half_ceiling": (lambda x: x.quantize(1, decimal.ROUND_HALF_DOWN)
+                                   if x < 0 else
+                                   x.quantize(1, decimal.ROUND_HALF_UP)),
+        "half_down": lambda x: x.quantize(1, decimal.ROUND_HALF_DOWN),
+        "half_up": lambda x: x.quantize(1, decimal.ROUND_HALF_UP),
+        "half_even": lambda x: x.quantize(1, decimal.ROUND_HALF_EVEN)
+    }
+    return np.frompyfunc(switch[rounding], 1, 1)(dec)
 
 
 #######################
@@ -607,7 +661,7 @@ def integer_to_decimal(
     if (pd.api.types.is_object_dtype(series) and
         not check_dtype(series, int, exact=True)):
         # handle these by casting to a string transfer format, then to decimal
-        series = integer_to_string(series).astype("O")
+        series = integer_to_string(series, dtype=str)
 
     # initialize result
     result = pd.Series(np.full(series.shape, pd.NA, dtype="O"))
@@ -682,7 +736,7 @@ def integer_to_string(
 
 def float_to_boolean(
     series: float | array_like,
-    tol: float = 1e-6,
+    tol: int | float | decimal.Decimal = 1e-6,
     rounding: str | None = None,
     dtype: dtype_like = bool,
     errors: str = "raise"
@@ -690,12 +744,8 @@ def float_to_boolean(
     """Convert a float series to booleans, using the specified rounding rule
     and floating point tolerance.
     """
-    # TODO: tolerance should only be defined wrt 0 and 1.  Enable values > 1
-
     # vectorize input
     series = pd.Series(vectorize(series))
-    if isinstance(tol, int):
-        tol = float(tol)
 
     # validate input
     _validate_float_series(series)
@@ -712,18 +762,21 @@ def float_to_boolean(
         result = series.copy()
 
     # round if applicable
-    if tol:  # round if within tolerance
-        within_tol = (result - result.round()).abs() <= tol
-        result[within_tol] = result[within_tol].round()
-    if rounding:  # apply specified rounding rule
-        switch = {  # C-style switch statement
-            "floor": lambda: np.floor(result),
-            "ceiling": lambda: np.ceil(result),
-            "nearest": lambda: result.round(),
-            "truncate": lambda: np.sign(result) * np.floor(np.abs(result)),
-            "infinity": lambda: np.sign(result) * np.ceil(np.abs(result))
-        }
-        result = switch[rounding]()
+    if rounding in ("half_floor", "half_ceiling", "half_down", "half_up",
+                    "half_even"):
+        # don't bother with tolerances
+        result = _round_float(result, rounding=rounding)
+    elif rounding:
+        if tol:  # round if within tolerance
+            rounded = _round_float(result, rounding="half_even")
+            within_tol = (result - rounded).abs() <= tol
+            result[within_tol] = rounded[within_tol]
+        if rounding:  # apply specified rounding rule
+            result = _round_float(result, rounding=rounding)
+    elif tol:  # round if within tolerance
+        rounded = _round_decimal(result, rounding="half_even")
+        within_tol = (result - rounded).abs() <= tol
+        result[within_tol] = rounded[within_tol]
 
     # coerce if applicable
     if errors == "raise" and not result.dropna().isin((0, 1)).all():
@@ -744,7 +797,7 @@ def float_to_boolean(
 
 def float_to_integer(
     series: float | array_like,
-    tol: float = 1e-6,
+    tol: int | float | decimal.Decimal = 1e-6,
     rounding: str | None = None,
     dtype: dtype_like = int,
     downcast: bool = False,
@@ -755,8 +808,6 @@ def float_to_integer(
     """
     # vectorize input
     series = pd.Series(vectorize(series))
-    if isinstance(tol, int):
-        tol = float(tol)
 
     # validate input
     _validate_float_series(series)
@@ -772,30 +823,34 @@ def float_to_integer(
     else:
         result = series.copy()
 
-    # apply rounding, if applicable
-    if tol:  # round if within tolerance
-        within_tol = (result - result.round()).abs() <= tol
-        result[within_tol] = result[within_tol].round()
-    if rounding:  # apply specified rounding rule
-        switch = {  # C-style switch statement
-            "floor": lambda: np.floor(result),
-            "ceiling": lambda: np.ceil(result),
-            "nearest": lambda: result.round(),
-            "truncate": lambda: np.sign(result) * np.floor(np.abs(result)),
-            "infinity": lambda: np.sign(result) * np.ceil(np.abs(result))
-        }
-        result = switch[rounding]()
+    # round if applicable
+    if rounding in ("half_floor", "half_ceiling", "half_down", "half_up",
+                    "half_even"):
+        # don't bother with tolerances
+        result = _round_float(result, rounding=rounding)
+    elif rounding:
+        if tol:  # round if within tolerance
+            rounded = _round_float(result, rounding="half_even")
+            within_tol = (result - rounded).abs() <= tol
+            result[within_tol] = rounded[within_tol]
+        if rounding:  # apply specified rounding rule
+            result = _round_float(result, rounding=rounding)
+    else:  # apply tolerance, then check for errors
+        rounded = _round_float(result, rounding="half_even")
+        if tol:  # round if within tolerance
+            within_tol = (result - rounded).abs() <= tol
+            result[within_tol] = rounded[within_tol]
 
-    # check for precision loss and apply error handling rule
-    if errors == "raise" and (result - result.round()).any():
-        bad = result[(result - result.round()) != 0].index.values
-        err_msg = (f"[{error_trace()}] non-integer value encountered at index "
-                   f"{_shorten_indices(bad)}")
-        raise ValueError(err_msg)
-    if errors == "ignore" and (result - result.round()).any():
-        return series
-    if errors == "coerce":  # truncate, just like int(float)
-        result = np.sign(result) * np.floor(np.abs(result))
+        # check for information loss
+        if errors == "raise" and (result - rounded).any():
+            bad = result[~result.isin((0, 1)) ^ result.isna()].index.values
+            err_msg = (f"[{error_trace()}] precision loss detected at index "
+                       f"{_shorten_indices(bad)}")
+            raise ValueError(err_msg)
+        if errors == "ignore" and (result - rounded).any():
+            return series
+        if errors == "coerce":  # int() rounds floats toward zero by default
+            result = _round_float(result, rounding="down")
 
     # get min/max to evaluate range - longdouble maintains integer precision
     # for entire 64-bit range, prevents inconsistent comparison
@@ -880,7 +935,9 @@ def float_to_float(
         if errors == "ignore" and (result - series).any():
             return series
         if errors == "coerce":
-            result[result.isin((-np.inf, np.inf))] = np.nan
+            overflow_infs = (series.isin((-np.inf, np.inf)) ^
+                             result.isin((-np.inf, np.inf)))
+            result[overflow_infs] = np.nan
 
     # return
     if downcast:
@@ -916,7 +973,9 @@ def float_to_complex(
     if errors == "ignore" and (result - series).any():
         return series
     if errors == "coerce":
-        result[result.isin((-np.inf, np.inf))] = complex(np.nan, np.nan)
+        overflow_infs = (series.isin((-np.inf, np.inf)) ^
+                         result.isin((-np.inf, np.inf)))
+        result[overflow_infs] = complex(np.nan, np.nan)
 
     # return
     if downcast:
@@ -942,7 +1001,7 @@ def float_to_decimal(
     if (pd.api.types.is_object_dtype(series) and
         not check_dtype(series, float, exact=True)):
         # handle these by casting to a string transfer format, then to decimal
-        series = float_to_string(series).astype("O")
+        series = float_to_string(series, dtype=str)
 
     # initialize result
     result = pd.Series(np.full(series.shape, pd.NA, dtype="O"))
@@ -1072,7 +1131,7 @@ def complex_to_integer(
 
 def complex_to_float(
     series: complex | array_like,
-    tol: float = 1e-6,
+    tol: int | float | decimal.Decimal = 1e-6,
     dtype: dtype_like = float,
     downcast: bool = False,
     errors: str = "raise"
@@ -1080,8 +1139,6 @@ def complex_to_float(
     """Convert a complex series into floats."""
     # vectorize input
     series = pd.Series(vectorize(series))
-    if isinstance(tol, int):
-        tol = float(tol)
 
     # validate input
     _validate_complex_series(series)
@@ -1144,7 +1201,9 @@ def complex_to_complex(
         if errors == "ignore" and (result - series).any():
             return series
         if errors == "coerce":
-            result[result.isin((-np.inf, np.inf))] = np.nan
+            overflow_infs = (series.isin((-np.inf, np.inf)) ^
+                             result.isin((-np.inf, np.inf)))
+            result[overflow_infs] = complex(np.nan, np.nan)
 
     # return
     if downcast:
@@ -1154,7 +1213,7 @@ def complex_to_complex(
 
 def complex_to_decimal(
     series: complex | array_like,
-    tol: float = 1e-6,
+    tol: int | float | decimal.Decimal = 1e-6,
     dtype: dtype_like = decimal.Decimal,
     errors: str = "raise"
 ) -> pd.Series:
@@ -1237,28 +1296,71 @@ def complex_to_string(
 
 def decimal_to_boolean(
     series: decimal.Decimal | array_like,
-    rounding: str | None = None,
-    dtype: dtype_like = bool
+    tol: int | float | decimal.Decimal = 0,
+    rounding: None | str = None,
+    dtype: dtype_like = bool,
+    errors: str = "raise"
 ) -> pd.Series:
     """Convert a decimal series to booleans, using the specified rounding rule.
     """
-    # TODO: bool() rounds toward infinity by default
     # vectorize input
     series = pd.Series(vectorize(series))
 
     # validate input
     _validate_decimal_series(series)
+    _validate_tolerance(tol)
+    _validate_rounding(rounding)
     _validate_dtype_is_scalar(dtype)
     _validate_boolean_dtype(dtype)
+    _validate_errors(errors)
 
-    raise NotImplementedError()
+    # subset `series` to avoid missing values
+    not_na = series.notna()
+    subset = series[not_na]
+
+    # round if applicable
+    if rounding in ("half_floor", "half_ceiling", "half_down", "half_up",
+                    "half_even"):
+        # don't bother with tolerances
+        subset = _round_decimal(subset, rounding=rounding)
+    elif rounding:  # apply tolerance first, then round
+        if tol:  # round if within tolerance
+            rounded = _round_decimal(subset, rounding="half_even")
+            within_tol = (subset - rounded).abs() <= tol
+            subset[within_tol] = rounded[within_tol]
+        if rounding:  # apply specified rounding rule
+            subset = _round_decimal(subset, rounding=rounding)
+    elif tol:  # round if within tolerance
+        rounded = _round_decimal(subset, rounding="half_even")
+        within_tol = (subset - rounded).abs() <= tol
+        subset[within_tol] = rounded[within_tol]
+
+    # check for information loss
+    if errors == "raise" and not subset.isin((0, 1)).all():
+        bad = subset[~subset.isin((0, 1))].index.values
+        err_msg = (f"[{error_trace()}] non-boolean value encountered at index "
+                   f"{_shorten_indices(bad)}")
+        raise ValueError(err_msg)
+    if errors == "ignore" and not subset.isin((0, 1)).all():
+        return series
+    if errors == "coerce":
+        subset = np.ceil(subset.abs().clip(0, 1))  # coerce to [0, 1]
+
+    # reassign subset back to series and return
+    series = pd.Series(np.full(series.shape, pd.NA, dtype="O"))
+    series[not_na] = subset.astype(bool)
+    if not not_na.all():
+        return series.astype(pd.BooleanDtype())
+    return series.astype(dtype)
 
 
 def decimal_to_integer(
     series: decimal.Decimal | array_like,
-    rounding: str | None = None,
+    tol: int | float | decimal.Decimal = 0,
+    rounding: None | str = None,
     dtype: dtype_like = int,
-    downcast: bool = False
+    downcast: bool = False,
+    errors: str = "raise"
 ) -> pd.Series:
     """Convert a decimal series to integers, using the specified rounding rule.
     """
@@ -1267,16 +1369,60 @@ def decimal_to_integer(
 
     # validate input
     _validate_decimal_series(series)
+    _validate_tolerance(tol)
+    _validate_rounding(rounding)
     _validate_dtype_is_scalar(dtype)
     _validate_integer_dtype(dtype)
+    _validate_errors(errors)
 
-    raise NotImplementedError()
+    # subset `series` to avoid missing values
+    not_na = series.notna()
+    subset = series[not_na]
+
+    # round if applicable
+    if rounding in ("half_floor", "half_ceiling", "half_down", "half_up",
+                    "half_even"):
+        # don't bother with tolerances
+        subset = _round_decimal(subset, rounding=rounding)
+    elif rounding:  # apply tolerance first, then round
+        if tol:  # round if within tolerance
+            rounded = _round_decimal(subset, rounding="half_even")
+            within_tol = (subset - rounded).abs() <= tol
+            subset[within_tol] = rounded[within_tol]
+        if rounding:  # apply specified rounding rule
+            subset = _round_decimal(subset, rounding=rounding)
+    else:  # apply tolerance, then check for errors
+        rounded = _round_decimal(subset, rounding="half_even")
+        if tol:  # round if within tolerance
+            within_tol = (subset - rounded).abs() <= tol
+            subset[within_tol] = rounded[within_tol]
+
+        # check for information loss
+        if errors == "raise" and (subset - rounded).any():
+            bad = subset[~subset.isin((0, 1))].index.values
+            err_msg = (f"[{error_trace()}] non-boolean value encountered at index "
+                        f"{_shorten_indices(bad)}")
+            raise ValueError(err_msg)
+        if errors == "ignore" and (subset - rounded).any():
+            return series
+        if errors == "coerce":
+            subset //= 1  # same rounding as current decimal context rule
+
+    # assign validated subset back to `series`, accounting for missing values
+    subset = np.frompyfunc(int, 1, 1)(subset)  # convert to python integers
+    series = pd.Series(np.full(series.shape, pd.NA, dtype="O"))
+    series[not_na] = subset
+
+    # pass through integer_to_integer to sort out dtype, downcast args
+    return integer_to_integer(series, dtype=dtype, downcast=downcast,
+                              errors=errors)
 
 
 def decimal_to_float(
     series: decimal.Decimal | array_like,
     dtype: dtype_like = float,
-    downcast: bool = False
+    downcast: bool = False,
+    errors: str = "raise"
 ) -> pd.Series:
     """Convert a decimal series into floats."""
     # vectorize input
@@ -1286,14 +1432,34 @@ def decimal_to_float(
     _validate_decimal_series(series)
     _validate_dtype_is_scalar(dtype)
     _validate_float_dtype(dtype)
+    _validate_errors(errors)
 
-    raise NotImplementedError()
+    # do conversion, then convert back to decimal to allow precision loss check
+    result = series.astype(dtype)
+    new_infs = result.isin((-np.inf, np.inf)) ^ series.isin((-np.inf, np.inf))
+
+    # check for precision loss
+    if errors == "raise" and new_infs.any():
+        bad = result[new_infs].index.values
+        err_msg = (f"[{error_trace()}] values exceed {dtype} range at index "
+                   f"{_shorten_indices(bad)}")
+        raise OverflowError(err_msg)
+    if errors == "ignore" and new_infs.any():
+        return series
+    if errors == "coerce":
+        result[new_infs] = np.nan
+
+    # return
+    if downcast:
+        return result.apply(downcast_float)
+    return result
 
 
 def decimal_to_complex(
     series: decimal.Decimal | array_like,
     dtype: dtype_like = complex,
-    downcast: bool = False
+    downcast: bool = False,
+    errors: str = "raise"
 ) -> pd.Series:
     """Convert a decimal series into another complex dtype."""
     # vectorize input
@@ -1303,8 +1469,27 @@ def decimal_to_complex(
     _validate_decimal_series(series)
     _validate_dtype_is_scalar(dtype)
     _validate_complex_dtype(dtype)
+    _validate_errors(errors)
 
-    raise NotImplementedError()
+    # do conversion, then convert back to decimal to allow precision loss check
+    result = series.astype(dtype)
+    new_infs = result.isin((-np.inf, np.inf)) ^ series.isin((-np.inf, np.inf))
+
+    # check for precision loss
+    if errors == "raise" and new_infs.any():
+        bad = result[new_infs].index.values
+        err_msg = (f"[{error_trace()}] values exceed {dtype} range at index "
+                   f"{_shorten_indices(bad)}")
+        raise OverflowError(err_msg)
+    if errors == "ignore" and new_infs.any():
+        return series
+    if errors == "coerce":
+        result[new_infs] = complex(np.nan, np.nan)
+
+    # return
+    if downcast:
+        return result.apply(downcast_complex)
+    return result
 
 
 def decimal_to_decimal(
@@ -1320,7 +1505,8 @@ def decimal_to_decimal(
     _validate_dtype_is_scalar(dtype)
     _validate_decimal_dtype(dtype)
 
-    raise NotImplementedError()
+    # currently, decimal.Decimal is the only decimal subclass that is allowed
+    return series.fillna(pd.NA)
 
 
 # def decimal_to_datetime(
@@ -1371,9 +1557,12 @@ def decimal_to_string(
     # validate input
     _validate_decimal_series(series)
     _validate_dtype_is_scalar(dtype)
-    _validate_timedelta_dtype(dtype)
+    _validate_string_dtype(dtype)
 
-    raise NotImplementedError()
+    # do conversion
+    if series.hasnans:
+        return series.astype(pd.StringDtype())
+    return series.astype(dtype)
 
 
 ########################
@@ -1393,3 +1582,261 @@ def decimal_to_string(
 ####    String    ####
 ######################
 
+
+def string_to_integer(
+    series: str | array_like,
+    dtype: dtype_like = int,
+    downcast: bool = False,
+    errors: str = "raise"
+) -> pd.Series:
+    """Convert a string series into integers."""
+    # vectorize input
+    series = pd.Series(vectorize(series))
+
+    # validate input
+    _validate_string_series(series)
+    _validate_dtype_is_scalar(dtype)
+    _validate_integer_dtype(dtype)
+    _validate_errors(errors)
+
+    # subset to avoid missing values
+    not_na = series.notna()
+    subset = series[not_na]
+
+    # for each element, attempt integer coercion and note errors
+    def transcribe(element: str) -> tuple[int, bool]:
+        try:
+            return (int(element.replace(" ", "")), False)
+        except ValueError:
+            return (pd.NA, True)
+
+    # if any transcription errors are encountered, apply specified error rule
+    subset, invalid = np.frompyfunc(transcribe, 1, 2)(subset)
+    if errors == "raise" and invalid.any():
+        bad = subset[invalid].index.values
+        err_msg = (f"[{error_trace()}] non-integer values detected at "
+                   f"index {_shorten_indices(bad)}")
+        raise ValueError(err_msg)
+    if errors == "ignore" and invalid.any():
+        return series
+
+    # assign subset to result, reintroducing missing values
+    series = pd.Series(np.full(series.shape, pd.NA, dtype="O"))
+    series[not_na] = subset
+
+    # TODO: errors on validation if subset contains only NAs
+
+    # pass through integer_to_integer to sort out dtype, downcast args
+    return integer_to_integer(series, dtype=dtype, downcast=downcast,
+                              errors=errors)
+
+
+def string_to_float(
+    series: str | array_like,
+    dtype: dtype_like = float,
+    downcast: bool = False,
+    errors: str = "raise"
+) -> pd.Series:
+    """Convert a string series into floats."""
+    # vectorize input
+    series = pd.Series(vectorize(series))
+
+    # validate input
+    _validate_string_series(series)
+    _validate_dtype_is_scalar(dtype)
+    _validate_float_dtype(dtype)
+    _validate_errors(errors)
+
+    # subset to avoid missing values
+    not_na = series.notna()
+    subset = series[not_na]
+
+    # strip internal whitespace and note original infinities
+    subset = subset.str.replace(" ", "")
+    inf_aliases = ("-inf", "-infinity", "inf", "infinity")
+    infinities = subset.str.replace(" ", "").str.lower().isin(inf_aliases)
+
+    # attempt conversion
+    try:  # all elements are valid
+        subset = subset.astype(dtype)
+    except ValueError as err:  # 1 or more parsing errors, apply `errors` rule
+        # ignore
+        if errors == "ignore":
+            return series
+
+        # find indices of elements that cannot be parsed
+        def transcribe(element: str) -> bool:
+            try:
+                float(element)
+                return False
+            except ValueError:
+                return True
+
+        # raise
+        invalid = np.frompyfunc(transcribe, 1, 1)(subset)
+        if errors == "raise":
+            bad = subset[invalid].index.values
+            err_msg = (f"[{error_trace()}] non-numeric values detected at "
+                       f"index {_shorten_indices(bad)}")
+            raise ValueError(err_msg) from err
+
+        # coerce
+        subset[invalid] = np.nan
+        subset = subset.astype(dtype)
+
+    # scan for new infinities introduced by coercion
+    new_infs = (subset.isin((-np.inf, np.inf)) ^ infinities)
+    if errors == "raise" and new_infs.any():
+        bad = subset[new_infs].index.values
+        err_msg = (f"[{error_trace()}] values exceed {dtype} range at index "
+                   f"{_shorten_indices(bad)}")
+        raise OverflowError(err_msg)
+    if errors == "ignore" and new_infs.any():
+        return series
+    if errors == "coerce":
+        subset[new_infs] = np.nan
+
+    # return
+    series = pd.Series(np.full(series.shape, np.nan, dtype=dtype))
+    series[not_na] = subset
+    if downcast:
+        series = series.apply(downcast_float)
+    return series
+
+
+def string_to_complex(
+    series: str | array_like,
+    dtype: dtype_like = complex,
+    downcast: bool = False,
+    errors: str = "raise"
+) -> pd.Series:
+    """Convert a string series into complex numbers."""
+    # vectorize input
+    series = pd.Series(vectorize(series))
+
+    # validate input
+    _validate_string_series(series)
+    _validate_dtype_is_scalar(dtype)
+    _validate_complex_dtype(dtype)
+    _validate_errors(errors)
+
+    # subset to avoid missing values
+    not_na = series.notna()
+    subset = series[not_na]
+
+    # strip internal whitespace and note original infinities
+    subset = subset.str.replace(" ", "")
+    infinities = subset.str.match(r".*(inf|infinity).*", case=False)
+
+    # attempt conversion
+    try:  # all elements are valid
+        subset = subset.astype(dtype)
+    except ValueError as err:  # 1 or more parsing errors, apply `errors` rule
+        # ignore
+        if errors == "ignore":
+            return series
+
+        # find indices of elements that cannot be parsed
+        def transcribe(element: str) -> bool:
+            try:
+                complex(element)
+                return False
+            except ValueError:
+                return True
+
+        # raise
+        invalid = np.frompyfunc(transcribe, 1, 1)(subset)
+        if errors == "raise":
+            bad = subset[invalid].index.values
+            err_msg = (f"[{error_trace()}] non-numeric values detected at "
+                       f"index {_shorten_indices(bad)}")
+            raise ValueError(err_msg) from err
+
+        # coerce
+        subset[invalid] = complex(np.nan, np.nan)
+        subset = subset.astype(dtype)
+
+    # scan for new infinities introduced by coercion
+    real_infs = np.isin(np.real(subset), (-np.inf, np.inf))
+    imag_infs = np.isin(np.imag(subset), (-np.inf, np.inf))
+    new_infs = (real_infs | imag_infs) ^ infinities
+    if errors == "raise" and new_infs.any():
+        bad = subset[new_infs].index.values
+        err_msg = (f"[{error_trace()}] values exceed {dtype} range at index "
+                   f"{_shorten_indices(bad)}")
+        raise OverflowError(err_msg)
+    if errors == "ignore" and new_infs.any():
+        return series
+    if errors == "coerce":
+        subset[new_infs] = np.nan
+
+    # return
+    series = np.full(series.shape, complex(np.nan, np.nan), dtype=dtype)
+    series = pd.Series(series)
+    series[not_na] = subset
+    if downcast:
+        series = series.apply(downcast_complex)
+    return series
+
+
+def string_to_decimal(
+    series: str | array_like,
+    dtype: dtype_like = decimal.Decimal,
+    errors: str = "raise"
+) -> pd.Series:
+    """convert strings to arbitrary precision decimal objects."""
+    # vectorize input
+    series = pd.Series(vectorize(series))
+
+    # validate input
+    _validate_string_dtype(series)
+    _validate_dtype_is_scalar(dtype)
+    _validate_decimal_dtype(dtype)
+    _validate_errors(errors)
+
+    # subset to avoid missing values
+    not_na = series.notna()
+    subset = series[not_na]
+
+    # for each element, attempt decimal coercion and note errors
+    def transcribe(element: str) -> tuple[decimal.Decimal, bool]:
+        try:
+            return (decimal.Decimal(element.replace(" ", "")), False)
+        except ValueError:
+            return (pd.NA, True)
+
+    # if any transcription errors are encountered, apply specified error rule
+    subset, invalid = np.frompyfunc(transcribe, 1, 2)(subset)
+    if errors == "raise" and invalid.any():
+        bad = subset[invalid].index.values
+        err_msg = (f"[{error_trace()}] non-decimal values detected at index "
+                   f"{_shorten_indices(bad)}")
+        raise ValueError(err_msg)
+    if errors == "ignore" and invalid.any():
+        return series
+
+    # assign subset to result, reintroducing missing values
+    series = pd.Series(np.full(series.shape, pd.NA, dtype="O"))
+    series[not_na] = subset
+    return series
+
+
+
+
+def string_to_string(
+    series: str | array_like,
+    dtype: dtype_like = pd.StringDtype()
+) -> pd.Series:
+    """Convert a string series to another string dtype."""
+    # vectorize input
+    series = pd.Series(vectorize(series))
+
+    # validate input
+    _validate_string_series(series)
+    _validate_dtype_is_scalar(dtype)
+    _validate_string_dtype(dtype)
+
+    # do conversion
+    if series.hasnans:
+        return series.astype(pd.StringDtype())
+    return series.astype(dtype)
