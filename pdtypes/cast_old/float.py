@@ -20,6 +20,9 @@ from pdtypes.util.time import (
 )
 
 
+# pd.Series([1.0, 2.0]).view("S8").astype("O")
+
+
 """
 Test Cases:
 -   infinities

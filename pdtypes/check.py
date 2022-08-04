@@ -40,18 +40,15 @@ from pdtypes.util.type_hints import array_like, atomic_type, dtype_like, scalar
 # TODO: verify support for period, interval (supertypes, aliases)
 
 
-# TODO: add bytes dtypes aliases?
-
-
 #############################
 ####    Lookup Tables    ####
 #############################
 
 
-_atomic_type_aliases = {  # put aliases for atomic types here
+_atomic_type_aliases = {  # aliases for atomic types
     # booleans
     np.dtype(bool): bool,
-    pd.BooleanDtype(): pd.BooleanDtype(),
+    pd.BooleanDtype(): bool,
 
     # integers
     int: int,
@@ -65,14 +62,14 @@ _atomic_type_aliases = {  # put aliases for atomic types here
     np.dtype("u2"): np.uint16,
     np.dtype("u4"): np.uint32,
     np.dtype("u8"): np.uint64,
-    pd.Int8Dtype(): pd.Int8Dtype(),
-    pd.Int16Dtype(): pd.Int16Dtype(),
-    pd.Int32Dtype(): pd.Int32Dtype(),
-    pd.Int64Dtype(): pd.Int64Dtype(),
-    pd.UInt8Dtype(): pd.UInt8Dtype(),
-    pd.UInt16Dtype(): pd.UInt16Dtype(),
-    pd.UInt32Dtype(): pd.UInt32Dtype(),
-    pd.UInt64Dtype(): pd.UInt64Dtype(),
+    pd.Int8Dtype(): np.int8,
+    pd.Int16Dtype(): np.int16,
+    pd.Int32Dtype(): np.int32,
+    pd.Int64Dtype(): np.int64,
+    pd.UInt8Dtype(): np.uint8,
+    pd.UInt16Dtype(): np.uint16,
+    pd.UInt32Dtype(): np.uint32,
+    pd.UInt64Dtype(): np.uint64,
 
     # floats
     float: float,
@@ -96,7 +93,6 @@ _atomic_type_aliases = {  # put aliases for atomic types here
     decimal.Decimal: decimal.Decimal,
     "decimal": decimal.Decimal,
     "decimal.decimal": decimal.Decimal,
-    "d": decimal.Decimal,
 
     # datetimes
     pd.Timestamp: pd.Timestamp,
@@ -120,15 +116,15 @@ _atomic_type_aliases = {  # put aliases for atomic types here
     "np.timedelta64": np.timedelta64,
     "numpy.timedelta64": np.timedelta64,
 
-    # periods
-    pd.Period: pd.Period,
-    # pd.PeriodDtype(): pd.Period,  # throws an AttributeError on load
-    "period": pd.Period,
+    # # periods
+    # pd.Period: pd.Period,
+    # # pd.PeriodDtype(): pd.Period,  # throws an AttributeError on load
+    # "period": pd.Period,
 
-    # intervals
-    pd.Interval: pd.Interval,
-    pd.IntervalDtype(): pd.Interval,
-    "interval": pd.Interval,
+    # # intervals
+    # pd.Interval: pd.Interval,
+    # pd.IntervalDtype(): pd.Interval,
+    # "interval": pd.Interval,
 
     # objects
     np.dtype(object): object,
@@ -137,11 +133,52 @@ _atomic_type_aliases = {  # put aliases for atomic types here
 
     # strings
     np.dtype(str): str,
-    pd.StringDtype(): pd.StringDtype()
+    pd.StringDtype(): str,
+
+    # bytes
+    bytes: bytes,
+    np.dtype("S"): bytes,
+    np.dtype("a"): bytes
 }
 
 
-_extension_types = {  # atomic type to associated extension type
+_supertype_aliases = {  # aliases for supertypes
+    # atomic types are the product of `resolve_dtype` and include .  Custom
+    # supertype aliases ('i', 'u', 'datetime', 'timedelta') are caught before
+    # resolution is applied, so they work despite not being present in
+    # _atomic_type_aliases.
+
+    # integer
+    int: {int, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16,
+          np.uint32, np.uint64},
+    np.integer: {np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16,
+                 np.uint32, np.uint64},
+    "i": {int, np.int8, np.int16, np.int32, np.int64},
+    "signed": {int, np.int8, np.int16, np.int32, np.int64},
+    np.signedinteger: {np.int8, np.int16, np.int32, np.int64},
+    "u": {np.uint8, np.uint16, np.uint32, np.uint64},
+    "unsigned": {np.uint8, np.uint16, np.uint32, np.uint64},
+    np.unsignedinteger: {np.uint8, np.uint16, np.uint32, np.uint64},
+
+    # float
+    float: {float, np.float16, np.float32, np.float64, np.longdouble},
+    np.floating: {np.float16, np.float32, np.float64, np.longdouble},
+
+    # complex
+    complex: {complex, np.complex64, np.complex128, np.clongdouble},
+    np.complexfloating: {np.complex64, np.complex128, np.clongdouble},
+
+    # datetime
+    "datetime": {pd.Timestamp, datetime.datetime, np.datetime64},
+
+    # timedelta
+    "timedelta": {pd.Timedelta, datetime.timedelta, np.timedelta64},
+
+    # object supertype must be expanded manually, catching 3rd-party type defs
+}
+
+
+_atomic_to_extension_type = {  # atomic type to associated extension type
     # boolean
     bool: pd.BooleanDtype(),
 
@@ -160,10 +197,10 @@ _extension_types = {  # atomic type to associated extension type
 }
 
 
-_supertype = {  # atomic type to associated supertype
+_atomic_to_supertype = {  # atomic type to associated supertype
     # booleans
     bool: bool,
-    pd.BooleanDtype(): bool,
+    # pd.BooleanDtype(): bool,
 
     # integers
     int: int,
@@ -175,14 +212,14 @@ _supertype = {  # atomic type to associated supertype
     np.uint16: int,
     np.uint32: int,
     np.uint64: int,
-    pd.Int8Dtype(): int,
-    pd.Int16Dtype(): int,
-    pd.Int32Dtype(): int,
-    pd.Int64Dtype(): int,
-    pd.UInt8Dtype(): int,
-    pd.UInt16Dtype(): int,
-    pd.UInt32Dtype(): int,
-    pd.UInt64Dtype(): int,
+    # pd.Int8Dtype(): int,
+    # pd.Int16Dtype(): int,
+    # pd.Int32Dtype(): int,
+    # pd.Int64Dtype(): int,
+    # pd.UInt8Dtype(): int,
+    # pd.UInt16Dtype(): int,
+    # pd.UInt32Dtype(): int,
+    # pd.UInt64Dtype(): int,
 
     # floats
     float: float,
@@ -214,53 +251,7 @@ _supertype = {  # atomic type to associated supertype
 
     # strings
     str: str,
-    pd.StringDtype(): str
-}
-
-
-_supertype_aliases = {  # put aliases for supertypes here
-    # atomic types are passed through resolve_dtype before querying.  Custom
-    # supertype aliases ('i', 'u', 'datetime', 'timedelta') are caught before
-    # resolution is applied, so they work despite not being present in
-    # _atomic_type_aliases.
-
-    # boolean
-    bool: {bool, pd.BooleanDtype()},
-
-    # integer
-    int: {int, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16,
-          np.uint32, np.uint64, pd.Int8Dtype(), pd.Int16Dtype(),
-          pd.Int32Dtype(), pd.Int64Dtype(), pd.UInt8Dtype(), pd.UInt16Dtype(),
-          pd.UInt32Dtype(), pd.UInt64Dtype()},
-    "i": {int, np.int8, np.int16, np.int32, np.int64, pd.Int8Dtype(),
-          pd.Int16Dtype(), pd.Int32Dtype(), pd.Int64Dtype()},
-    "u": {np.uint8, np.uint16, np.uint32, np.uint64, pd.UInt8Dtype(),
-          pd.UInt16Dtype(), pd.UInt32Dtype(), pd.UInt64Dtype()},
-    np.int8: {np.int8, pd.Int8Dtype()},
-    np.int16: {np.int16, pd.Int16Dtype()},
-    np.int32: {np.int32, pd.Int32Dtype()},
-    np.int64: {np.int64, pd.Int64Dtype()},
-    np.uint8: {np.uint8, pd.UInt8Dtype()},
-    np.uint16: {np.uint16, pd.UInt16Dtype()},
-    np.uint32: {np.uint32, pd.UInt32Dtype()},
-    np.uint64: {np.uint64, pd.UInt64Dtype()},
-
-    # float
-    float: {float, np.float16, np.float32, np.float64, np.longdouble},
-
-    # complex
-    complex: {complex, np.complex64, np.complex128, np.clongdouble},
-
-    # datetime
-    "datetime": {pd.Timestamp, datetime.datetime, np.datetime64},
-
-    # timedelta
-    "timedelta": {pd.Timedelta, datetime.timedelta, np.timedelta64},
-
-    # object supertype must be expanded manually, catching 3rd-party type defs
-
-    # string
-    str: {str, pd.StringDtype()}
+    # pd.StringDtype(): str
 }
 
 
@@ -269,11 +260,29 @@ _supertype_aliases = {  # put aliases for supertypes here
 #################################
 
 
-def resolve_dtype(dtype: dtype_like) -> atomic_type:
+def extension_type(
+    dtype: dtype_like
+) -> type | pd.api.extensions.ExtensionDtype:
+    """Essentially an interface for the _atomic_to_extension_type lookup table.
+    """
+    lookup = _atomic_to_extension_type
+    try:
+        return lookup.get(dtype, lookup[resolve_dtype(dtype)])
+    except KeyError:
+        return dtype
+
+
+def resolve_dtype(dtype: dtype_like, interpret_strings: bool = True) -> type:
     """Collapse abstract dtype aliases into their corresponding atomic type.
 
     Essentially an interface to _atomic_type_aliases lookup table.
     """
+    # possible exception: `dtype` is string and `interpret_strings=False`
+    if not interpret_strings and isinstance(dtype, str):
+        err_msg = (f"[{error_trace()}] `dtype` {repr(dtype)} could not be "
+                   f"interpreted while `interpret_strings=False`")
+        raise ValueError(err_msg)
+
     # case 1: dtype is directly present in aliases
     if dtype in _atomic_type_aliases:
         return _atomic_type_aliases[dtype]
@@ -282,25 +291,19 @@ def resolve_dtype(dtype: dtype_like) -> atomic_type:
     if isinstance(dtype, str) and dtype.lower() in _atomic_type_aliases:
         return _atomic_type_aliases[dtype.lower()]
 
-    # case 3: dtype is abstract and must be parsed
+    # possible exception: dtype is ambiguous
     if dtype in ("i", "u"):  # ambiguous without associated bit size
         bad = "signed" if dtype == "i" else "unsigned"
         err_msg = (f"[{error_trace()}] {bad} integer alias {repr(dtype)} is "
                    f"ambiguous.  Use a specific bit size or generalized `int` "
                    f"instead.")
         raise ValueError(err_msg)
-    if isinstance(dtype, (np.bool_, np.integer, np.floating, np.complex_,
-                          np.datetime64, np.timedelta64)):
-        # pd.api.types.pandas_dtype() does not always throw an error on scalar
-        # input, so we have to do this manually.
-        err_msg = (f"[{error_trace()}] `dtype` must be a numpy/pandas dtype "
-                   f"specification or an associated alias, not a scalar of "
-                   f"type {type(dtype)}")
-        raise TypeError(err_msg)
+
+    # case 3: dtype is abstract and must be parsed
     try:  # resolve directly
         dtype = pd.api.types.pandas_dtype(dtype)
-    except TypeError as err:  # dtype cannot be resolved, might be custom
-        if isinstance(dtype, type):  # element is 3rd-party type def
+    except TypeError as err:  # dtype might be a user-defined or 3rd-party type
+        if isinstance(dtype, type):
             return dtype
         raise err
 
@@ -313,14 +316,164 @@ def resolve_dtype(dtype: dtype_like) -> atomic_type:
     return _atomic_type_aliases[dtype]
 
 
-def extension_type(dtype: dtype_like) -> atomic_type:
-    """Essentially an interface for the _extension_types lookup table"""
-    return _extension_types.get(dtype, _extension_types[resolve_dtype(dtype)])
-
-
 ##############################
 ####    Core Functions    ####
 ##############################
+
+
+def check_dtype(
+    arg: scalar | dtype_like | array_like,
+    dtype: dtype_like | array_like,
+    exact: bool = False
+) -> bool:
+    """Check whether a scalar, sequence, array, or series contains elements
+    of the given type or supertype.
+
+    Parameters
+    ----------
+    arg (scalar | dtype_like | array_like):
+        The value whose type will be checked.  If a scalar is provided, its
+        type is checked directly.  If a sequence, array, or series is provided,
+        then its unique element types are checked collectively.
+    dtype (dtype_like | array_like):
+        The dtype to check against.  If a sequence, set, array, or series is
+        given, then it is interpreted in the same fashion as `isinstance`.
+        Namely, this function will return `True` if `arg` contains one or more
+        of the given dtypes.
+    exact (bool):
+        Controls whether to expand supertypes contained in `dtype` into their
+        constituents during comparison.  If this is `False`, supertypes are
+        interpreted as-is (i.e. not expanded), and will only match objects that
+        are of the equivalent type.  For instance, `int` will only match
+        actual, built-in python integers rather than numpy integers or their
+        tensorflow counterparts.
+
+    Returns
+    -------
+    bool: `True` if the element types of `arg` are a subset of those defined in
+        `dtype`.  `False` otherwise.
+
+    Raises
+    ------
+    TypeError
+        If any of the dtype specifications in `dtype` do not correspond to a
+        recognized atomic type, an associated alias, or a supertype with
+        `exact=False`.
+    ValueError
+        If `dtype` is of a form that could be interpreted by the `numpy.dtype`
+        constructor, but is malformed in some way.  For more detail, see the
+        [numpy documentation](https://numpy.org/doc/stable/reference/arrays.dtypes.html)
+        for all the ways in which dtype objects can be created.
+
+    Notes
+    -----
+    This is essentially the equivalent of the built-in `isinstance` and
+    `issubclass` functions, as applied to arrays and their contents.  It
+    supports a similar interface, including an allowance for sequence-based
+    multiple comparison just like the aforementioned functions.  In its base
+    form, it can be used for quick and easy schema validation with a
+    generalized framework similar to the built-in analogues.
+
+    The specificity of this comparison can be tuned via the `exact` argument,
+    which controls the expansion of supertypes into their constituent subtypes.
+    When `exact=False`, the following conversions are performed, generalizing
+    commonly encountered data types into their most abstract forms, as follows:
+        - `int` -> `(int, np.int8, np.int16, np.int32, np.int64, np.uint8,
+            np.uint16, np.uint32, np.uint64)`
+        - `np.integer` -> `(np.int8, np.int16, np.int32, np.int64, np.uint8,
+            np.uint16, np.uint32, np.uint64)`
+        - `'i'`/`signed` -> `(int, np.int8, np.int16, np.int32, np.int64)`
+        - `np.signedinteger` -> `(np.int8, np.int16, np.int32, np.int64)`
+        - `'u'`/`'unsigned'`/`np.unsignedinteger` -> `(np.uint8, np.uint16,
+            np.uint32, np.uint64)`
+        - `float` -> `(float, np.float16, np.float32, np.float64,
+            np.longdouble)`
+        - `np.floating` -> `(np.float16, np.float32, np.float64, np.longdouble)`
+        - `complex` -> `(complex, np.complex64, np.complex128, np.clongdouble)`
+        - `np.complexfloating` -> `(np.complex64, np.complex128,
+            np.clongdouble)`
+        - `'datetime'` -> `(pd.Timestamp, datetime.datetime, np.datetime64)`
+        - `'timedelta'` -> `(pd.Timedelta, datetime.timedetla, np.timedelta64)`
+        - `object` -> catch-all matching any custom third-party type definition
+            that is present in `arg`
+
+    If any of the types specified in `dtype` are coercible into one of the
+    aforementioned supertypes (as is the case for the `'int'`, `'float'`,
+    `'c'`, and `'O'` aliases, etc.), then they resolved before being expanded.
+
+    If this behavior is undesirable, it can be disabled by setting
+    `exact=True`, which interprets each dtype as-is, without expanding to
+    include any subtypes.  Having a togglable switch for this enables both
+    generalized categorization (does this array contain integers?) and fine
+    comparison (does this array contain specifically 8-bit, unsigned integers
+    with no missing values?) under the same interface and architecture.
+    Combined, this effectively replaces the following boolean type check
+    functions, found under `pd.api.types`:
+        - `pd.api.types.is_bool_dtype(series)` -> `check_dtype(series, bool)`
+        - `pd.api.types.is_integer_dtype(series)` -> `check_dtype(series, int)`
+        - `pd.api.types.is_signed_integer_dtype(series)` ->
+            `check_dtype(series, 'i')`
+        - `pd.api.types.is_unsigned_integer_dtype(series)` ->
+            `check_dtype(series, 'u')`
+        - `pd.api.types.is_int64_dtype(series)` -> `check_dtype(series, 'i8')`
+        - `pd.api.types.is_float_dtype(series)` -> `check_dtype(series, float)`
+        - `pd.api.types.is_complex_dtype(series)` ->
+            `check_dtype(series, complex)`
+        - `pd.api.types.is_numeric_dtype(series)` ->
+            `check_dtype(series, (int, float, complex, 'decimal'))`
+        - `pd.api.types.is_datetime64_dtype(series)` ->
+            `check_dtype(series, 'datetime')`
+        # - `pd.api.types.is_datetime64_ns_dtype(series)` ->
+        #     `check_dtype(series, (pd.Timestamp, 'M8[ns]')`
+        - `pd.api.types.is_timedelta64_dtype(series)` ->
+            `check_dtype(series, 'timedelta')`
+        # - `pd.api.types.is_timedelta64_ns_dtype(series)` ->
+        #     `check_dtype(series, (pd.Timedelta, 'm8[ns]'))`
+        - `pd.api.types.is_string_dtype(series)` -> `check_dtype(series, str)`
+        - `pd.api.types.is_period_dtype(series)` ->
+            `check_dtype(series, pd.Period)`
+
+    In many cases, the `check_dtype` formulations are even more generally
+    applicable than the pandas equivalents.  For one, they apply equally to
+    both explicitly-typed arrays with a well-defined `.dtype` field, and also
+    to generic sequences and pyObject arrays (`dtype='O'`).  In addition, the
+    string-specific comparison now properly excludes genuine object arrays,
+    which the default pandas equivalent does not.  Similarly, the `object`
+    dtype is restricted to only match those arrays that contain undefined,
+    third-party type definitions, which are supported by default under this
+    framework.
+
+    Lastly, if the underlying array is composed of mixed types (both integer
+    and float, for instance), then this function will return False for any
+    `dtype` specification which does not include at least those element types.
+    In other words, the given `dtype` must fully encapsulate the types that are
+    present in `array` for this function to return `True`.
+    """
+    # get unique element types contained in `arg`
+    observed = set(vectorize(get_dtype(arg)))
+
+    # get elementwise resolution function for `dtype`
+    if exact:
+        resolve_ufunc = np.frompyfunc(resolve_dtype, 1, 1)
+        resolve = lambda x: set(resolve_ufunc(vectorize(x)))
+    else:
+        def resolve_supertype(element: dtype_like) -> set[atomic_type]:
+            # 1st lookup pass -> element is a pre-defined supertype alias
+            if element in _supertype_aliases:  # catches 'i', 'u', etc.
+                return _supertype_aliases[element]
+
+            # 2nd lookup pass -> resolve before searching for supertype alias
+            resolved = resolve_dtype(element)
+            if resolved == object and custom_types:  # object supertype
+                return custom_types  # set of unrecognized types in `arg`
+            return _supertype_aliases.get(resolved, {resolved})
+
+        custom_types = {o for o in observed if o not in _atomic_to_supertype}
+        resolve_ufunc = np.frompyfunc(resolve_supertype, 1, 1)
+        resolve = lambda x: set().union(*resolve_ufunc(vectorize(x)))
+
+    # Set comparison.  Return True if `observed` is a subset of `dtype`
+    return not observed - resolve(dtype)
 
 
 def get_dtype(
@@ -379,17 +532,12 @@ def get_dtype(
 
     # case 1: array has dtype="O" -> scan elementwise
     if pd.api.types.is_object_dtype(array):
-        # disregard missing values
-        nans = pd.isna(array)
-        array = array[~nans]
+        array = array[pd.notna(array)]  # disregard missing values
         if len(array) == 0:  # trivial case: empty array
             return None
 
-        # get element types, converting to extension if nans were detected
+        # get unique element types
         types = pd.unique(object_types(array))
-        if nans.any():
-            to_extension = lambda d: _extension_types.get(d, d)
-            types = np.frompyfunc(to_extension, 1, 1)(types)
 
         # return
         if len(types) == 1:  # as scalar
@@ -410,122 +558,46 @@ def get_dtype(
     return resolve_dtype(array.dtype)
 
 
-def check_dtype(
-    array: scalar | dtype_like | array_like,
-    dtype: dtype_like | tuple,
+def is_dtype(
+    arg: dtype_like | array_like,
+    dtype: dtype_like | array_like,
     exact: bool = False
 ) -> bool:
-    """Check whether an array contains elements of the given type.
+    """_summary_
 
-    This is essentially the equivalent of the built-in `isinstance` and
-    `issubclass` functions, as applied to arrays and their contents.  It
-    supports a similar interface, allowing for tuple-based multiple comparison
-    just like the aforementioned functions.  In its base form, it can be used
-    for quick and easy schema validation with a generalized framework similar
-    to the built-in analogues.
+    Args:
+        arg (dtype_like | array_like): _description_
+        dtype (dtype_like | array_like): _description_
+        exact (bool, optional): _description_. Defaults to False.
 
-    The specificity of this comparison can be tuned via the `exact` argument,
-    which controls the expansion of supertypes into their constituent subtypes.
-    When `exact=False`, the following conversions are performed, generalizing
-    commonly encountered data types into their most abstract forms, as follows:
-        - `bool` -> `(bool, pd.BooleanDtype())`
-        - `int` -> `(int, np.int8, np.int16, np.int32, np.int64, np.uint8,
-            np.uint16, np.uint32, np.uint64, pd.Int8Dtype(), pd.Int16Dtype(),
-            pd.Int32Dtype(), pd.Int64Dtype(), pd.UInt8Dtype(), pd.UInt16Dtype(),
-            pd.UInt32Dtype(), pd.UInt64Dtype())`
-        - `float` -> `(float, np.float16, np.float32, np.float64,
-            np.longdouble)`
-        - `complex` -> `(complex, np.complex64, np.complex128, np.clongdouble)`
-        - `'datetime'` -> `(pd.Timestamp, datetime.datetime, np.datetime64)`
-        - `'timedelta'` -> `(pd.Timedelta, datetime.timedetla, np.timedelta64)`
-        - `object` -> catch-all matching any custom third-party type definition
-        - `str` -> `(str, pd.StringDtype())`
-
-    If any of the types specified in `dtype` are coercible into one of the
-    aforementioned supertypes (as is the case for the `'int'`, `'float'`, and
-    `'complex'` aliases, etc.), then they are treated as such and expanded
-    along with them.  Additionally, non-nullable integer types (such as `'i8'`,
-    `'u1'`, np.int16, etc.) are expanded to include their nullable counterparts.
-    If this behavior is undesirable, it can be disabled by setting
-    `exact=True`, which interprets each dtype as-is, without expanding to
-    include any subtypes.
-
-    Having a togglable switch for this enables both generalized categorization
-    (does this array contain integers?) and fine comparison (does this array
-    contain specifically 8-bit, unsigned integers with no missing values?)
-    under the same interface and architecture.  Combined, this effectively
-    replaces the following boolean comparison functions, found under
-    `pd.api.types`:
-        - `pd.api.types.is_bool_dtype(series)` -> `check_dtype(series, bool)`
-        - `pd.api.types.is_integer_dtype(series)` -> `check_dtype(series, int)`
-        - `pd.api.types.is_signed_integer_dtype(series)` ->
-            `check_dtype(series, 'i')`
-        - `pd.api.types.is_unsigned_integer_dtype(series)` ->
-            `check_dtype(series, 'u')`
-        - `pd.api.types.is_int64_dtype(series)` -> `check_dtype(series, 'i8')`
-        - `pd.api.types.is_float_dtype(series)` -> `check_dtype(series, float)`
-        - `pd.api.types.is_complex_dtype(series)` ->
-            `check_dtype(series, complex)`
-        - `pd.api.types.is_numeric_dtype(series)` ->
-            `check_dtype(series, (int, float, complex, 'decimal'))`
-        - `pd.api.types.is_datetime64_dtype(series)` ->
-            `check_dtype(series, 'datetime')`
-        # - `pd.api.types.is_datetime64_ns_dtype(series)` ->
-        #     `check_dtype(series, (pd.Timestamp, 'M8[ns]')`
-        - `pd.api.types.is_timedelta64_dtype(series)` ->
-            `check_dtype(series, 'timedelta')`
-        # - `pd.api.types.is_timedelta64_ns_dtype(series)` ->
-        #     `check_dtype(series, (pd.Timedelta, 'm8[ns]'))`
-        - `pd.api.types.is_string_dtype(series)` -> `check_dtype(series, str)`
-        - `pd.api.types.is_period_dtype(series)` ->
-            `check_dtype(series, pd.Period)`
-
-    In many cases, the `check_dtype` formulations are even more generally
-    applicable than the pandas equivalents.  For one, they apply equally to
-    both explicitly-typed arrays with a well-defined `.dtype` field, and also
-    to generic sequences and object arrays (`dtype='O'`).  In addition, the
-    string-specific comparison now properly excludes genuine object arrays,
-    which the default pandas equivalent does not.  Similarly, the `object`
-    dtype is restricted to only match those arrays that contain undefined,
-    third-party type definitions, which are supported by default under this
-    framework.
-
-    Lastly, if the underlying array is composed of mixed types (both integer
-    and float, for instance), then this function will return False for any
-    `dtype` specification which does not include at least those element types.
-    In other words, the given `dtype` must fully encapsulate the types that are
-    present in `array` for this function to return `True`.
+    Returns:
+        bool: _description_
     """
-    def resolve_and_expand(element: dtype_like) -> set[atomic_type]:
-        # 1st lookup pass -> element is already a pre-defined supertype alias
-        if element in _supertype_aliases:
-            return _supertype_aliases[element]
-        resolved = resolve_dtype(element)  # element resolution (atomic type)
-        if resolved == object and custom_types:  # object supertype
-            return custom_types  # set of unrecognized types in `array`
-        # 2nd lookup pass -> resolved element is a supertype alias
-        return _supertype_aliases.get(resolved, {resolved})
+    # get elementwise resolution function
+    if exact:
+        resolve_ufunc = np.frompyfunc(resolve_dtype, 1, 1)
+        resolve = lambda x: set(resolve_ufunc(vectorize(x)))
+    else:
+        def resolve_supertype(element: dtype_like) -> set[atomic_type]:
+            # 1st lookup pass -> element is a pre-defined supertype alias
+            if element in _supertype_aliases:  # catches 'i', 'u', etc.
+                return _supertype_aliases[element]
 
-    # vectorized dtype resolution funcs, with and without supertype expansion
-    custom_types = None  # initialize for 1st round of resolve_and_expand
-    resolve = np.frompyfunc(resolve_dtype, 1, 1)
-    resolve_and_expand = np.frompyfunc(resolve_and_expand, 1, 1)
+            # 2nd lookup pass -> resolve before searching for supertype alias
+            resolved = resolve_dtype(element)
+            if resolved == object and custom_types:  # object supertype
+                return custom_types  # set of unrecognized types in `arg`
+            return _supertype_aliases.get(resolved, {resolved})
 
-    # resolve observed dtypes from `array` and convert to set
-    try:  # case 1: `array` contains dtype-like objects
-        if exact:
-            observed = set(resolve(vectorize(array)))
-        else:
-            observed = set().union(*resolve_and_expand(vectorize(array)))
-    except (TypeError, ValueError):  # case 2: `array` contains scalars
-        observed = set(vectorize(get_dtype(array)))
+        custom_types = set()
+        resolve_ufunc = np.frompyfunc(resolve_supertype, 1, 1)
+        resolve = lambda x: set().union(*resolve_ufunc(vectorize(x)))
 
-    # resolve `dtype` aliases and convert to set
-    if exact:  # resolve directly
-        dtype = set(resolve(vectorize(dtype)))
-    else:  # expand supertypes during alias resolution
-        custom_types = {o for o in observed if o not in _supertype}
-        dtype = set().union(*resolve_and_expand(vectorize(dtype)))
+    try:  # case 1: `arg` contains resolvable dtype-like elements
+        observed = resolve(arg)
+    except (TypeError, ValueError):  # case 2: `arg` contains scalars
+        return False
 
-    # return True if `observed` is a subset of `dtype`
-    return not observed - dtype
+    if not exact:
+        custom_types = {o for o in observed if o not in _atomic_to_supertype}
+    return not observed - resolve(dtype)

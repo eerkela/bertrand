@@ -767,6 +767,7 @@ def downcast_integer(integer: int, signed: bool = True) -> int:
 
 @lru_cache(maxsize=CACHE_SIZE, typed=True)
 def downcast_float(floating_point: float) -> float:
+    """test"""
     if not np.issubdtype(type(floating_point), np.floating):
         err_msg = (f"[{error_trace()}] `floating_point` must be a float, not "
                    f"{type(floating_point)}")
