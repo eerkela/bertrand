@@ -1,4 +1,9 @@
+"""This module contains utility functions to help format errors raised by
+`pdtypes` internals.
+"""
 import inspect
+
+from pdtypes.util.type_hints import array_like
 
 
 def error_trace(self_name: str = "self",
@@ -42,3 +47,12 @@ def error_trace(self_name: str = "self",
     # avoid circular refs and frame leaks
     del parentframe, stack
     return ".".join(name)
+
+
+def shorten_list(list_like: array_like, max_length: int = 5) -> str:
+    """Converts a list-like into an abridged string for use in error messages.
+    """
+    if len(list_like) <= max_length:
+        return str(list(list_like))
+    shortened = ", ".join(str(i) for i in list_like[:max_length])
+    return f"[{shortened}, ...] ({len(list_like)})"

@@ -3,7 +3,7 @@ import unittest
 import pandas as pd
 
 from context import pdtypes
-import pdtypes.cast_old
+import pdtypes.cast_old_2
 
 
 class CastIntegerToDatetimeAccuracyTests(unittest.TestCase):

@@ -8,7 +8,7 @@ import pandas as pd
 import pytz
 import tzlocal
 
-import pdtypes.cast_old.integer
+import pdtypes.cast_old_2.integer
 from pdtypes.error import error_trace
 from pdtypes.util.downcast import (
     downcast_complex, downcast_float, downcast_int_dtype
@@ -35,7 +35,7 @@ def to_boolean(series: pd.Series,
                dtype: type = bool) -> pd.Series:
     series = to_integer(series, unit=unit, offset=offset, force=force,
                         round=round, tol=tol)
-    return pdtypes.cast_old.integer.to_boolean(series, force=force, dtype=dtype)
+    return pdtypes.cast_old_2.integer.to_boolean(series, force=force, dtype=dtype)
 
 
 def to_integer(
@@ -232,7 +232,7 @@ def to_datetime(
     dtype: type | str = np.datetime64
 ) -> pd.Series:
     series = to_integer(series, unit="ns")
-    return pdtypes.cast_old.integer.to_datetime(series, unit="ns", offset=offset,
+    return pdtypes.cast_old_2.integer.to_datetime(series, unit="ns", offset=offset,
                                             tz=tz, dtype=dtype)
 
 

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from context import pdtypes
-import pdtypes.cast_old
+import pdtypes.cast_old_2
 
 
 random.seed(12345)

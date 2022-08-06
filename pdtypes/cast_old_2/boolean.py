@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytz
 
-from pdtypes.cast_old.helpers import (
+from pdtypes.cast_old_2.helpers import (
     _validate_boolean_dtype, _validate_boolean_series, _validate_complex_dtype,
     _validate_decimal_dtype, _validate_dtype_is_scalar,
     _validate_integer_dtype, _validate_float_dtype,

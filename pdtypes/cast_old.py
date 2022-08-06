@@ -20,7 +20,7 @@ from pdtypes.check import check_dtype, extension_type, get_dtype, is_dtype, reso
 from pdtypes.util.array import vectorize, broadcast_args
 from pdtypes.util.time import _to_ns
 from pdtypes.util.type_hints import (
-    array_like, dtype_like, datetime_like, timedelta_like
+    array_like, dtype_like, datetime_like, timedelta_like, scalar
 )
 
 # TODO: memory management in pandas/numpy

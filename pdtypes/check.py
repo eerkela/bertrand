@@ -316,6 +316,15 @@ def resolve_dtype(dtype: dtype_like, interpret_strings: bool = True) -> type:
     return _atomic_type_aliases[dtype]
 
 
+def supertype(dtype: dtype_like) -> type | str:
+    """Essentially an interface for the _atomic_to_supertype lookup table."""
+    lookup = _atomic_to_supertype
+    try:
+        return lookup.get(dtype, lookup[resolve_dtype(dtype)])
+    except KeyError:
+        return dtype
+
+
 ##############################
 ####    Core Functions    ####
 ##############################
