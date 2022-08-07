@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from pdtypes.cast.helpers import (
-    downcast_int_dtype, int_dtype_range, SeriesWrapper
+    downcast_int_dtype, integral_range, SeriesWrapper, integral_range
 )
 from pdtypes.check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
@@ -74,15 +74,16 @@ class FloatSeries(SeriesWrapper):
             raise TypeError(err_msg)
 
         super().__init__(series)
-        self.series = FloatSeries.rectify(self.series, copy=True)
         self._infs = None
         self._hasinfs = None
 
     @property
     def infs(self) -> pd.Series:
         """test"""
-        if self._infs is not None:
+        if self._infs is not None:  # infs is cached
             return self._infs
+
+        # infs must be computed
         self._infs = np.isinf(self.series)
         self._hasinfs = self._infs.any()
         return self._infs
@@ -90,30 +91,25 @@ class FloatSeries(SeriesWrapper):
     @property
     def hasinfs(self) -> bool:
         """test"""
-        # _hasinfs is already cached
-        if self._hasinfs is not None:
+        if self._hasinfs is not None:  # hasinfs is cached
             return self._hasinfs
 
-        # _infs is cached, but _hasinfs has not been computed (shouldn't happen)
-        if self._infs is not None:
+        if self._infs is not None:  # infs is cached, but hasinfs isn't
             self._hasinfs = self._infs.any()
             return self._hasinfs
 
-        # _infs and _hasinfs must be computed
-        self.infs
+        # infs and hasinfs must be computed
+        self._infs = np.isinf(self.series)
+        self._hasinfs = self._infs.any()
         return self._hasinfs
 
-    @staticmethod
-    def rectify(
-        series: pd.Series | np.ndarray,
-        copy: bool = True
-    ) -> pd.Series | np.ndarray:
+    def rectify(self, copy: bool = True) -> pd.Series:
         """Standardize element types of a float series."""
-        if pd.api.types.is_object_dtype(series):
-            # standardize as float series with dtype = maximum element size
-            standard = max(np.dtype(t) for t in vectorize(get_dtype(series)))
-            return series.astype(standard, copy=copy)
-        return series
+        if pd.api.types.is_object_dtype(self.series):
+            element_types = get_dtype(self.series)
+            common = max(np.dtype(t) for t in vectorize(element_types))
+            return self.series.astype(common, copy=copy)
+        return self.series.copy() if copy else self.series
 
     def to_boolean(
         self,
@@ -129,8 +125,8 @@ class FloatSeries(SeriesWrapper):
         SeriesWrapper._validate_errors(errors)
 
         # rectify object series, apply tolerance, and round if applicable
-        # series = FloatSeries.rectify(self.series, copy=True)
-        series = round_within_tol(self.series, tol=tol, rounding=rounding)
+        series = self.rectify(copy=True)
+        series = round_within_tol(series, tol=tol, rounding=rounding)
 
         # check for precision loss
         if not series.dropna().isin((0, 1)).all():
@@ -163,8 +159,7 @@ class FloatSeries(SeriesWrapper):
         SeriesWrapper._validate_errors(errors)
 
         # rectify object series
-        # series = FloatSeries.rectify(self.series, copy=True)
-        series = self.series.copy()
+        series = self.rectify(copy=True)
         hasnans = self.hasnans
 
         # reject any series that contains infinity
@@ -219,7 +214,7 @@ class FloatSeries(SeriesWrapper):
             dtype = np.int64
 
         # check whether result fits within specified dtype
-        min_poss, max_poss = int_dtype_range(dtype)
+        min_poss, max_poss = integral_range(dtype)
         if min_val < min_poss or max_val > max_poss:
             if errors == "ignore":
                 return self.series
@@ -257,8 +252,7 @@ class FloatSeries(SeriesWrapper):
 
         # do conversion
         if is_dtype(dtype, float, exact=True):  # preserve precision
-            # series = FloatSeries.rectify(self.series, copy=True)
-            series = self.series.copy()
+            series = self.rectify(copy=True)
             dtype = resolve_dtype(series.dtype)
         else:
             series = self.series.astype(dtype, copy=True)
@@ -297,8 +291,7 @@ class FloatSeries(SeriesWrapper):
         SeriesWrapper._validate_errors(errors)
 
         if is_dtype(dtype, complex, exact=True):  # preserve precision
-            # series = FloatSeries.rectify(self.series, copy=True)
-            series = self.series.copy()
+            series = self.rectify(copy=True)
             equiv_complex = {
                 np.dtype(np.float16): np.complex64,
                 np.dtype(np.float32): np.complex64,
@@ -329,6 +322,6 @@ class FloatSeries(SeriesWrapper):
         """test"""
         with self.exclude_na(pd.NA) as ctx:
             # decimal.Decimal can't parse numpy ints in object array
-            # ctx.subset = FloatSeries.rectify(ctx.subset, copy=False)
+            ctx.subset = FloatSeries(ctx.subset).rectify(copy=False)
             ctx.subset = np.frompyfunc(decimal.Decimal, 1, 1)(ctx.subset)
         return ctx.result

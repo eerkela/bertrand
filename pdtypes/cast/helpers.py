@@ -14,6 +14,9 @@ from pdtypes.util.time import _to_ns
 from pdtypes.util.type_hints import array_like, dtype_like, scalar
 
 
+# TODO: consider using pyarrow string dtype for all to_string conversions
+
+
 def downcast_int_dtype(dtype, min_val, max_val) -> type:
     """Attempt to find a smaller dtype that can represent the given integer
     range defined by [min_val, max_val].
@@ -30,7 +33,7 @@ def downcast_int_dtype(dtype, min_val, max_val) -> type:
 
     # return smallest dtype that fully covers the given range
     for downcast_type in smaller:
-        min_poss, max_poss = int_dtype_range(downcast_type)
+        min_poss, max_poss = integral_range(downcast_type)
         if min_val >= min_poss and max_val <= max_poss:
             return downcast_type
 
@@ -38,14 +41,46 @@ def downcast_int_dtype(dtype, min_val, max_val) -> type:
     return dtype
 
 
-def int_dtype_range(dtype: dtype_like) -> tuple[int, int]:
-    """Get the available range of a given integer dtype."""
-    # convert to pandas dtype to expose .itemsize attribute
-    dtype = pd.api.types.pandas_dtype(dtype)
-    bit_size = 8 * dtype.itemsize
-    if pd.api.types.is_unsigned_integer_dtype(dtype):
-        return (0, 2**bit_size - 1)
-    return (-2**(bit_size - 1), 2**(bit_size - 1) - 1)
+def integral_range(dtype: dtype_like) -> tuple[int, int]:
+    """Get the integral range of a given integer, float, or complex dtype."""
+    dtype = resolve_dtype(dtype)
+
+    # integer case
+    if is_dtype(dtype, int):
+        # convert to pandas dtype to expose .itemsize attribute
+        dtype = pd.api.types.pandas_dtype(dtype)
+        bit_size = 8 * dtype.itemsize
+        if pd.api.types.is_unsigned_integer_dtype(dtype):
+            return (0, 2**bit_size - 1)
+        return (-2**(bit_size - 1), 2**(bit_size - 1) - 1)
+
+    # float case
+    if is_dtype(dtype, float):
+        significand_bits = {
+            np.float16: 11,
+            np.float32: 24,
+            float: 53,
+            np.float64: 53,
+            np.longdouble: 64
+        }
+        extreme = 2**significand_bits[dtype]
+        return (-extreme, extreme)
+
+    # complex case
+    if is_dtype(dtype, complex):
+        significand_bits = {
+            np.complex64: 24,
+            complex: 53,
+            np.complex128: 53,
+            np.clongdouble: 64
+        }
+        extreme = 2**significand_bits[dtype]
+        return (-extreme, extreme)
+
+    # unrecognized
+    err_msg = (f"[{error_trace()}] `dtype` must be int, float, or "
+               f"complex-like, not {dtype}")
+    raise TypeError(err_msg)
 
 
 @dataclass
@@ -60,8 +95,34 @@ class SeriesWrapper:
 
     def __init__(self, series: scalar | array_like) -> SeriesWrapper:
         self.series = pd.Series(vectorize(series), copy=False)
-        self.not_na = self.series.notna()
-        self.hasnans = (~self.not_na).any()
+        self._not_na = None
+        self._hasnans = None
+
+    @property
+    def not_na(self) -> pd.Series:
+        """test"""
+        if self._not_na is not None:
+            return self._not_na
+        self._not_na = self.series.notna()
+        self._hasnans = not self._not_na.all()
+        return self._not_na
+
+    @property
+    def hasnans(self) -> bool:
+        """test"""
+        # _hasnans is already cached
+        if self._hasnans is not None:
+            return self._hasnans
+
+        # _not_na is cached but _hasnans isn't (shouldn't happen)
+        if self._not_na is not None:
+            self._hasnans = not self._not_na.all()
+            return self._hasnans
+
+        # _not_na and _hasnans must be computed
+        self._not_na = self.series.notna()
+        self._hasnans = not self._not_na.all()
+        return self._hasnans
 
     @contextmanager
     def exclude_na(
