@@ -7,7 +7,9 @@ from typing import Any, Generator
 import numpy as np
 import pandas as pd
 
-from pdtypes.check import is_dtype, resolve_dtype, supertype
+from pdtypes.check import (
+    check_dtype, get_dtype, is_dtype, resolve_dtype, supertype
+)
 from pdtypes.error import error_trace, shorten_list
 from pdtypes.util.array import vectorize
 from pdtypes.util.time import _to_ns
@@ -93,36 +95,33 @@ class SubsetContainer:
 class SeriesWrapper:
     """test"""
 
-    def __init__(self, series: scalar | array_like) -> SeriesWrapper:
+    def __init__(
+        self,
+        series: scalar | array_like,
+        nans: None | bool | array_like = None
+    ) -> SeriesWrapper:
         self.series = pd.Series(vectorize(series), copy=False)
-        self._not_na = None
-        self._hasnans = None
 
-    @property
-    def not_na(self) -> pd.Series:
-        """test"""
-        if self._not_na is not None:
-            return self._not_na
-        self._not_na = self.series.notna()
-        self._hasnans = not self._not_na.all()
-        return self._not_na
-
-    @property
-    def hasnans(self) -> bool:
-        """test"""
-        # _hasnans is already cached
-        if self._hasnans is not None:
-            return self._hasnans
-
-        # _not_na is cached but _hasnans isn't (shouldn't happen)
-        if self._not_na is not None:
-            self._hasnans = not self._not_na.all()
-            return self._hasnans
-
-        # _not_na and _hasnans must be computed
-        self._not_na = self.series.notna()
-        self._hasnans = not self._not_na.all()
-        return self._hasnans
+        # gather nan mask/hasnans
+        if nans is None:  # nans=None, infer
+            self.is_na = self.series.isna()
+            self.hasnans = self.is_na.any()
+        elif isinstance(nans, bool) and nans:  # nans=True
+            self.hasnans = True
+            self.is_na = self.series.isna()
+        elif isinstance(nans, bool):  # nans=False
+            self.hasnans = False
+            self.is_na = pd.Series(np.full(self.series.shape, False, bool))
+        else:  # nans is array-like
+            nans = np.broadcast_to(nans, self.series.shape)
+            if not check_dtype(nans, bool):
+                err_msg = (f"[{error_trace()}] if `nans` is array-like, it "
+                           f"must contain a boolean mask indicating the "
+                           f"locations of missing values in `series` "
+                           f"(received: {get_dtype(nans)})")
+                raise TypeError(err_msg)
+            self.is_na = nans
+            self.hasnans = self.is_na.any()
 
     @contextmanager
     def exclude_na(
@@ -131,11 +130,11 @@ class SeriesWrapper:
         dtype: dtype_like = "O"
     ) -> Generator[SubsetContainer, None, None]:
         """test"""
-        ctx = SubsetContainer(self.series[self.not_na])
+        ctx = SubsetContainer(self.series[~self.is_na])
         yield ctx
         ctx.result = np.full(self.series.shape, fill_value, dtype=dtype)
         ctx.result = pd.Series(ctx.result)
-        ctx.result[self.not_na] = ctx.subset
+        ctx.result[~self.is_na] = ctx.subset
 
     @staticmethod
     def _validate_datetime_format(

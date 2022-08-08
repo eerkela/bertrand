@@ -23,6 +23,7 @@ class IntegerSeries(SeriesWrapper):
     def __init__(
         self,
         series: int | array_like,
+        nans: None | bool | array_like = None,
         validate: bool = True
     ) -> IntegerSeries:
         if validate and not check_dtype(series, int):
@@ -30,7 +31,7 @@ class IntegerSeries(SeriesWrapper):
                        f"data, not {get_dtype(series)}")
             raise TypeError(err_msg)
 
-        super().__init__(series)
+        super().__init__(series, nans)
         self._min_val = None
         self._max_val = None
 
@@ -158,7 +159,7 @@ class IntegerSeries(SeriesWrapper):
         # astype(float) is unstable for object series with pd.NA as missing val
         series = self.series.copy()
         if pd.api.types.is_object_dtype(series):
-            series[~self.not_na] = np.nan
+            series[self.is_na] = np.nan
         series = series.astype(dtype, copy=False)
 
         # check for precision loss.  Can only occur if series vals are outside
@@ -166,7 +167,7 @@ class IntegerSeries(SeriesWrapper):
         min_precise, max_precise = integral_range(dtype)
         if self.min_val < min_precise or self.max_val > max_precise:
             # series might be imprecise -> confirm by reversing conversion
-            reverse = FloatSeries(series, validate=False)
+            reverse = FloatSeries(series, validate=False, nans=self.is_na)
             if reverse.hasinfs:  # infs introduced during coercion (overflow)
                 if errors == "raise":
                     bad = series[reverse.infs].index.values
@@ -182,8 +183,8 @@ class IntegerSeries(SeriesWrapper):
                 if not self.to_integer().equals(reverse_result):
                     if errors == "ignore":
                         return self.series
-                    bad = series[(self.series != reverse_result) &
-                                 self.not_na].index.values
+                    bad = series[(self.series != reverse_result) ^
+                                 self.is_na].index.values
                     err_msg = (f"[{error_trace()}] precision loss detected at "
                                f"index {shorten_list(bad)} with dtype "
                                f"{repr(dtype.__name__)}")
@@ -208,7 +209,7 @@ class IntegerSeries(SeriesWrapper):
         # astype(complex) is unstable for object series with pd.NA as missing
         series = self.series.copy()
         if pd.api.types.is_object_dtype(series):
-            series[~self.not_na] = np.nan
+            series[self.is_na] = np.nan
         series = series.astype(dtype, copy=False)
 
         # TODO: missing values should be (nan+nanj)

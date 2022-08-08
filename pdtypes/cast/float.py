@@ -4,8 +4,9 @@ import decimal
 import numpy as np
 import pandas as pd
 
+from pdtypes.cast.complex import ComplexSeries
 from pdtypes.cast.helpers import (
-    downcast_int_dtype, integral_range, SeriesWrapper, integral_range
+    downcast_int_dtype, integral_range, SeriesWrapper
 )
 from pdtypes.check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
@@ -66,6 +67,7 @@ class FloatSeries(SeriesWrapper):
     def __init__(
         self,
         series: float | array_like,
+        nans: None | bool | array_like = None,
         validate: bool = True
     ) -> FloatSeries:
         if validate and not check_dtype(series, float):
@@ -73,7 +75,7 @@ class FloatSeries(SeriesWrapper):
                        f"not {get_dtype(series)}")
             raise TypeError(err_msg)
 
-        super().__init__(series)
+        super().__init__(series, nans)
         self._infs = None
         self._hasinfs = None
 
@@ -84,7 +86,7 @@ class FloatSeries(SeriesWrapper):
             return self._infs
 
         # infs must be computed
-        self._infs = np.isinf(self.series)
+        self._infs = np.isinf(self.rectify(copy=True))
         self._hasinfs = self._infs.any()
         return self._infs
 
@@ -99,16 +101,29 @@ class FloatSeries(SeriesWrapper):
             return self._hasinfs
 
         # infs and hasinfs must be computed
-        self._infs = np.isinf(self.series)
+        self._infs = np.isinf(self.rectify(copy=True))
         self._hasinfs = self._infs.any()
         return self._hasinfs
 
     def rectify(self, copy: bool = True) -> pd.Series:
         """Standardize element types of a float series."""
+        # rectification is only needed for improperly formatted object series
         if pd.api.types.is_object_dtype(self.series):
+            # get largest element type in series
             element_types = get_dtype(self.series)
             common = max(np.dtype(t) for t in vectorize(element_types))
-            return self.series.astype(common, copy=copy)
+
+            # if returning a copy, use series.where(..., inplace=False)
+            if copy:
+                series = self.series.where(~self.is_na, np.nan)
+                return series.astype(common, copy=False)
+
+            # modify in-place and return result
+            self.series.where(~self.is_na, np.nan, inplace=True)
+            self.series = self.series.astype(common, copy=False)
+            return self.series
+
+        # series is already rectified, return a copy or direct reference
         return self.series.copy() if copy else self.series
 
     def to_boolean(
@@ -131,7 +146,7 @@ class FloatSeries(SeriesWrapper):
         # check for precision loss
         if not series.dropna().isin((0, 1)).all():
             if errors == "raise":
-                bad = series[~series.isin((0, 1)) ^ ~self.not_na].index.values
+                bad = series[~series.isin((0, 1)) ^ self.is_na].index.values
                 err_msg = (f"[{error_trace()}] non-boolean value encountered "
                            f"at index {shorten_list(bad)}")
                 raise ValueError(err_msg)
@@ -181,7 +196,7 @@ class FloatSeries(SeriesWrapper):
         if not (rounding or series.equals(round_float(series, "half_even"))):
             if errors == "raise":
                 rounded = round_float(series, "half_even")
-                bad = series[(series != rounded) ^ ~self.not_na].index.values
+                bad = series[(series != rounded) ^ self.is_na].index.values
                 err_msg = (f"[{error_trace()}] precision loss detected at "
                            f"index {shorten_list(bad)}")
                 raise ValueError(err_msg)
@@ -251,17 +266,17 @@ class FloatSeries(SeriesWrapper):
         SeriesWrapper._validate_errors(errors)
 
         # do conversion
+        series = self.rectify(copy=True)
         if is_dtype(dtype, float, exact=True):  # preserve precision
-            series = self.rectify(copy=True)
             dtype = resolve_dtype(series.dtype)
         else:
-            series = self.series.astype(dtype, copy=True)
+            series = series.astype(dtype, copy=False)
             if (series - self.series).any():  # precision loss detected
                 if errors == "ignore":
                     return self.series
                 if errors == "raise":
-                    indices = (series != self.series) ^ ~self.not_na
-                    bad = series[indices].index.values
+                    bad = series[(series != self.series) ^
+                                 self.is_na].index.values
                     err_msg = (f"[{error_trace()}] precision loss detected at "
                                f"index {shorten_list(bad)}")
                     raise OverflowError(err_msg)
@@ -272,9 +287,9 @@ class FloatSeries(SeriesWrapper):
         if downcast:
             float_types = [np.float16, np.float32, np.float64, np.longdouble]
             smaller = float_types[:float_types.index(dtype)]
-            for dtype in smaller:
+            for downcast_type in smaller:
                 try:
-                    return self.to_float(dtype=dtype)
+                    return self.to_float(dtype=downcast_type)
                 except OverflowError:
                     pass
         return series
@@ -290,8 +305,10 @@ class FloatSeries(SeriesWrapper):
         SeriesWrapper._validate_dtype(dtype, complex)
         SeriesWrapper._validate_errors(errors)
 
+        # TODO: nans are not properly cast to nan+nanj
+
+        series = self.rectify(copy=True)
         if is_dtype(dtype, complex, exact=True):  # preserve precision
-            series = self.rectify(copy=True)
             equiv_complex = {
                 np.dtype(np.float16): np.complex64,
                 np.dtype(np.float32): np.complex64,
@@ -300,28 +317,40 @@ class FloatSeries(SeriesWrapper):
             }
             series = series.astype(equiv_complex[series.dtype], copy=False)
         else:
-            series = self.series.astype(dtype, copy=True)
+            series = series.astype(dtype, copy=False)
             if (series - self.series).any():
                 if errors == "ignore":
                     return self.series
                 if errors == "raise":
-                    indices = (series != self.series) ^ ~self.not_na
-                    bad = series[indices].index.values
+                    bad = series[(series != self.series) ^
+                                 self.is_na].index.values
                     err_msg = (f"[{error_trace()}] precision loss detected at "
                                f"index {shorten_list(bad)}")
                     raise OverflowError(err_msg)
                 # coerce infs introduced by coercion into nans
-                series[np.isinf(series) ^ self.infs] = np.nan
+                complex_nan = dtype("nan+nanj")
+                series[np.isinf(series) ^ self.infs] = complex_nan
 
         # return
         if downcast:
-            return _downcast_complex_series(series)
+            # TODO: pass nans to ComplexSeries
+            series = ComplexSeries(series, validate=False)
+            return series.to_complex(downcast=True)
         return series
 
     def to_decimal(self) -> pd.Series:
         """test"""
         with self.exclude_na(pd.NA) as ctx:
-            # decimal.Decimal can't parse numpy ints in object array
-            ctx.subset = FloatSeries(ctx.subset).rectify(copy=False)
-            ctx.subset = np.frompyfunc(decimal.Decimal, 1, 1)(ctx.subset)
+            # decimal.Decimal can't parse numpy floats by default
+            conv = lambda x: decimal.Decimal(str(x))
+            ctx.subset = np.frompyfunc(conv, 1, 1)(ctx.subset)
         return ctx.result
+
+    def to_string(self, dtype: dtype_like = pd.StringDtype()) -> pd.Series:
+        """test"""
+        dtype = resolve_dtype(dtype)
+        SeriesWrapper._validate_dtype(dtype, str)
+
+        if self.hasnans:
+            dtype = pd.StringDtype()
+        return self.series.astype(dtype, copy=True)

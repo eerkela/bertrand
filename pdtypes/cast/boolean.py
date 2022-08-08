@@ -18,6 +18,7 @@ class BooleanSeries(SeriesWrapper):
     def __init__(
         self,
         series: bool | array_like,
+        nans: None | bool | array_like = None,
         validate: bool = True
     ) -> BooleanSeries:
         if validate and not check_dtype(series, bool):
@@ -25,7 +26,7 @@ class BooleanSeries(SeriesWrapper):
                        f"data, not {get_dtype(series)}")
             raise TypeError(err_msg)
 
-        super().__init__(series)
+        super().__init__(series, nans)
 
     def to_boolean(
         self,
