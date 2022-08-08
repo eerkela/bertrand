@@ -209,15 +209,15 @@ class SeriesWrapper:
     @staticmethod
     def _validate_tolerance(tol: int | float | decimal.Decimal) -> None:
         """Raise a TypeError if `tol` isn't a real numeric, and a ValueError
-        if it is not between 0 and 0.5.
+        if it is less than 0.
         """
         if not isinstance(tol, (int, float, decimal.Decimal)):
             err_msg = (f"[{error_trace()}] `tol` must be a real numeric "
                        f"between 0 and 0.5, not {type(tol)}")
             raise TypeError(err_msg)
-        if not 0 <= tol <= 0.5:
-            err_msg = (f"[{error_trace()}] `tol` must be a real numeric "
-                       f"between 0 and 0.5, not {tol}")
+        if tol < 0:
+            err_msg = (f"[{error_trace()}] `tol` must be a real numeric >= 0,"
+                       f"not {tol}")
             raise ValueError(err_msg)
 
     @staticmethod

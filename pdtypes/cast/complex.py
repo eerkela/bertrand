@@ -4,7 +4,7 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from pdtypes.cast.float import FloatSeries
+import pdtypes.cast.float  # absolute path prevents circular ImportError
 from pdtypes.cast.helpers import SeriesWrapper
 from pdtypes.check import check_dtype, get_dtype, is_dtype, resolve_dtype
 from pdtypes.error import error_trace, shorten_list
@@ -74,19 +74,25 @@ class ComplexSeries(SeriesWrapper):
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
-        # TODO: _validate_tolerance should accept complex tolerances, with
-        # real and imaginary components applied independently.
-
         dtype = resolve_dtype(dtype)
-        SeriesWrapper._validate_tolerance(tol)
+        if isinstance(tol, (complex, np.complexfloating)):
+            real_tol = np.real(tol)
+            imag_tol = np.imag(tol)
+        else:
+            real_tol, imag_tol = (tol, tol)
+
+        # TODO: imaginary tolerances > 0.5 are now supported
+        SeriesWrapper._validate_tolerance(real_tol)
+        SeriesWrapper._validate_tolerance(imag_tol)
         SeriesWrapper._validate_rounding(rounding)
         SeriesWrapper._validate_dtype(dtype, bool)
         SeriesWrapper._validate_errors(errors)
 
         # 2 steps: complex -> float, then float -> boolean
-        series = self.to_float(tol=tol, errors=errors)
-        series = FloatSeries(series, nans=self.is_na, validate=False)
-        return series.to_boolean(tol=tol, rounding=rounding, dtype=dtype,
+        series = self.to_float(tol=imag_tol, errors=errors)
+        series = pdtypes.cast.float.FloatSeries(series, nans=self.is_na,
+                                                validate=False)
+        return series.to_boolean(tol=real_tol, rounding=rounding, dtype=dtype,
                                  errors=errors)
 
     def to_integer(
@@ -99,15 +105,23 @@ class ComplexSeries(SeriesWrapper):
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        SeriesWrapper._validate_tolerance(tol)
+        if isinstance(tol, (complex, np.complexfloating)):
+            real_tol = np.real(tol)
+            imag_tol = np.imag(tol)
+        else:
+            real_tol, imag_tol = (tol, tol)
+
+        SeriesWrapper._validate_tolerance(real_tol)
+        SeriesWrapper._validate_tolerance(imag_tol)
         SeriesWrapper._validate_rounding(rounding)
-        SeriesWrapper._validate_dtype(dtype, bool)
+        SeriesWrapper._validate_dtype(dtype, int)
         SeriesWrapper._validate_errors(errors)
 
         # 2 steps: complex -> float, then float -> integer
-        series = self.to_float(tol=tol, errors=errors)
-        series = FloatSeries(series, nans=self.is_na, validate=False)
-        return series.to_integer(tol=tol, rounding=rounding, dtype=dtype,
+        series = self.to_float(tol=imag_tol, errors=errors)
+        series = pdtypes.cast.float.FloatSeries(series, nans=self.is_na,
+                                               validate=False)
+        return series.to_integer(tol=real_tol, rounding=rounding, dtype=dtype,
                                  downcast=downcast, errors=errors)
 
     def to_float(
@@ -119,7 +133,13 @@ class ComplexSeries(SeriesWrapper):
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        SeriesWrapper._validate_tolerance(tol)
+        if isinstance(tol, (complex, np.complexfloating)):
+            real_tol = np.real(tol)
+            imag_tol = np.imag(tol)
+        else:
+            real_tol, imag_tol = (tol, tol)
+
+        SeriesWrapper._validate_tolerance(real_tol)
         SeriesWrapper._validate_dtype(dtype, float)
         SeriesWrapper._validate_errors(errors)
 
@@ -127,20 +147,19 @@ class ComplexSeries(SeriesWrapper):
         real = self.real
         imag = self.imag
 
-        # TODO: use real and imaginary components of tol, if it is complex
-
         # check imaginary component for information loss
-        if (np.abs(imag) > tol).any():
+        if (np.abs(imag) > imag_tol).any():
             if errors == "raise":
-                bad = imag[np.abs(imag) > tol].index.values
+                bad = imag[np.abs(imag) > imag_tol].index.values
                 err_msg = (f"[{error_trace()}] imaginary component exceeds "
-                           f"tolerance ({tol}) at index {shorten_list(bad)}")
+                           f"tolerance ({imag_tol}) at index "
+                           f"{shorten_list(bad)}")
                 raise ValueError(err_msg)
             if errors == "ignore":
                 return self.series
 
         # TODO: can't pass nans because real nans might not match imag nans
-        real = FloatSeries(real, validate=False)
+        real = pdtypes.cast.float.FloatSeries(real, validate=False)
         return real.to_float(dtype=dtype, downcast=downcast, errors=errors)
 
     def to_complex(
@@ -191,12 +210,20 @@ class ComplexSeries(SeriesWrapper):
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
-        SeriesWrapper._validate_tolerance(tol)
+        if isinstance(tol, (complex, np.complexfloating)):
+            real_tol = np.real(tol)
+            imag_tol = np.imag(tol)
+        else:
+            real_tol, imag_tol = (tol, tol)
+
+        SeriesWrapper._validate_tolerance(real_tol)
         SeriesWrapper._validate_errors(errors)
 
         # 2 steps: complex -> float, then float -> decimal
-        series = self.to_float(tol=tol, errors=errors)
-        return FloatSeries(series, nans=self.is_na, validate=False).to_decimal()
+        series = self.to_float(tol=imag_tol, errors=errors)
+        series = pdtypes.cast.float.FloatSeries(series, nans=self.is_na,
+                                                validate=False)
+        return series.to_decimal()
 
     def to_string(self, dtype: dtype_like = pd.StringDtype()) -> pd.Series:
         """test"""

@@ -4,7 +4,7 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from pdtypes.cast.complex import ComplexSeries
+import pdtypes.cast.complex  # absolute path prevents circular ImportError
 from pdtypes.cast.helpers import (
     downcast_int_dtype, integral_range, SeriesWrapper
 )
@@ -16,49 +16,123 @@ from pdtypes.util.array import vectorize
 from pdtypes.util.type_hints import array_like, dtype_like
 
 
-def round_float(
-    val: float | array_like,
-    rounding: str
-) -> float | np.ndarray | pd.Series:
-    """test"""
-    switch = {  # C-style switch statement with lazy evaluation
-        "floor": lambda: np.floor(val),
-        "ceiling": lambda: np.ceil(val),
-        "down": lambda: np.trunc(val),
-        "up": lambda: np.sign(val) * np.ceil(np.abs(val)),
-        "half_floor": lambda: np.ceil(val - 0.5),
-        "half_ceiling": lambda: np.floor(val + 0.5),
-        "half_down": lambda: np.sign(val) * np.ceil(np.abs(val) - 0.5),
-        "half_up": lambda: np.sign(val) * np.floor(np.abs(val) + 0.5),
-        "half_even": lambda: np.round(val)
-    }
-    return switch[rounding]()
-
-
-def round_within_tol(
-    series: pd.Series,
-    rounding: str | None,
-    tol: int | float | decimal.Decimal
+def apply_tolerance(
+    val: float | np.ndarray | pd.Series,
+    tol: int | float | decimal.Decimal,
+    copy: bool = True
 ) -> pd.Series:
     """test"""
-    # if rounding to nearest, don't bother computing tolerance
-    if rounding in ("half_floor", "half_ceiling", "half_down", "half_up",
-                    "half_even"):
-        return round_float(series, rounding=rounding)
+    rounded = round_float(val, "half_even", copy=True)
 
-    # apply tolerance if given
-    if tol:
-        series = series.copy()  # prevent in-place modification
-        rounded = round_float(series, rounding="half_even")
-        within_tol = np.abs(series - rounded) <= tol
-        series[within_tol] = rounded[within_tol]
+    # numpy array, using np.where
+    if isinstance(val, np.ndarray):
+        if copy:
+            return np.where(np.abs(val - rounded) > tol, val, rounded)
+        val[:] = np.where(np.abs(val - rounded) > tol, val, rounded)
+        return val
 
-    # apply rounding rule if given and skip checking precision loss
-    if rounding:
-        return round_float(series, rounding=rounding)
+    # pandas series, using Series.where
+    if isinstance(val, pd.Series):
+        if copy:
+            return val.where(np.abs(val - rounded) > tol, rounded)
+        val.where(np.abs(val - rounded) > tol, rounded, inplace=True)
+        return val
 
-    # return
-    return series
+    # scalar
+    if np.abs(val - rounded) > tol:
+        return val
+    return rounded
+
+
+def _round_up(
+    val: float | np.ndarray | pd.Series,
+    out: None | np.ndarray | pd.Series = None
+) -> float | np.ndarray | pd.Series:
+    sign = np.sign(val)
+    result = np.ceil(np.abs(val, out=out), out=out)
+    result *= sign
+    return result
+
+
+def _round_half_down(
+    val: float | np.ndarray | pd.Series,
+    out: None | np.ndarray | pd.Series = None
+) -> float | np.ndarray | pd.Series:
+    sign = np.sign(val)
+    result = np.ceil(np.abs(val, out=out) - 0.5, out=out)
+    result *= sign
+    return result
+
+
+def _round_half_floor(
+    val: float | np.ndarray | pd.Series,
+    out: None | np.ndarray | pd.Series = None
+) -> float | np.ndarray | pd.Series:
+    return np.ceil(val - 0.5, out=out)
+
+
+def _round_half_ceiling(
+    val: float | np.ndarray | pd.Series,
+    out: None | np.ndarray | pd.Series = None
+) -> float | np.ndarray | pd.Series:
+    return np.floor(val + 0.5, out=out)
+
+
+def _round_half_up(
+    val: float | np.ndarray | pd.Series,
+    out: None | np.ndarray | pd.Series = None
+) -> float | np.ndarray | pd.Series:
+    sign = np.sign(val)
+    result = np.floor(np.abs(val, out=out) + 0.5, out=out)
+    result *= sign
+    return result
+
+
+def round_float(
+    val: float | np.ndarray | pd.Series,
+    rule: str = "half_even",
+    decimals: int = 0,
+    copy: bool = True
+) -> float | np.ndarray | pd.Series:
+    """test"""
+    is_array_like = isinstance(val, (np.ndarray, pd.Series))
+
+    # optimization: hidden mutability.  A copy is (or is not) generated in this
+    # first scaling step.  All other operations are done in-place.
+    scale_factor = 10**decimals
+    if not copy and is_array_like:
+        val *= scale_factor  # no copy
+    else:
+        val = val * scale_factor  # implicit copy
+
+    # special case: pandas implementation of round() (=="half_even") does not
+    # support `out` parameter.  If `rule='half_even'` and `val` is a Series,
+    # convert to numpy array and use the numpy implementation instead.
+    bypass_pandas = (rule == "half_even" and isinstance(val, pd.Series))
+    if bypass_pandas:
+        val = np.array(val, copy=False)
+
+    # select rounding strategy
+    switch = {  # C-style switch statement
+        "floor": np.floor,
+        "ceiling": np.ceil,
+        "down": np.trunc,
+        "up": _round_up,
+        "half_floor": _round_half_floor,
+        "half_ceiling": _round_half_ceiling,
+        "half_down": _round_half_down,
+        "half_up": _round_half_up,
+        "half_even": np.round
+    }
+    round_func = switch[rule]
+
+    # do rounding in-place, undo scaling, and return
+    out = val if is_array_like else None  # `out` must be array-like
+    val = round_func(val, out=out)
+    val /= scale_factor
+    if bypass_pandas:  # restore Series
+        return pd.Series(val, copy=False)
+    return val
 
 
 class FloatSeries(SeriesWrapper):
@@ -126,6 +200,17 @@ class FloatSeries(SeriesWrapper):
         # series is already rectified, return a copy or direct reference
         return self.series.copy() if copy else self.series
 
+    def round(
+        self,
+        rule: str = "half_even",
+        decimals: int = 0,
+        copy: bool = True
+    ) -> pd.Series:
+        """test"""
+        # TODO: this can be attached directly to pd.Series
+        series = self.rectify(copy=copy)
+        return round_float(series, rule=rule, decimals=decimals, copy=copy)
+
     def to_boolean(
         self,
         tol: int | float | decimal.Decimal = 1e-6,
@@ -141,17 +226,24 @@ class FloatSeries(SeriesWrapper):
 
         # rectify object series, apply tolerance, and round if applicable
         series = self.rectify(copy=True)
-        series = round_within_tol(series, tol=tol, rounding=rounding)
+        if rounding in {"half_floor", "half_ceiling", "half_down", "half_up",
+                        "half_even"}:
+            series = round_float(series, rule=rounding, copy=False)
+        else:
+            if tol:
+                series = apply_tolerance(series, tol=tol, copy=False)
+            if rounding:
+                series = round_float(series, rule=rounding, copy=False)
 
         # check for precision loss
-        if not series.dropna().isin((0, 1)).all():
+        if not series.isin((0, 1, np.nan)).all():
             if errors == "raise":
-                bad = series[~series.isin((0, 1)) ^ self.is_na].index.values
+                bad = series[~series.isin((0, 1, np.nan))].index.values
                 err_msg = (f"[{error_trace()}] non-boolean value encountered "
                            f"at index {shorten_list(bad)}")
                 raise ValueError(err_msg)
             if errors == "ignore":
-                return series
+                return self.series
             return np.ceil(series.abs().clip(0, 1))  # coerce to [0, 1, np.nan]
 
         # return
@@ -189,8 +281,15 @@ class FloatSeries(SeriesWrapper):
             series[self.infs] = np.nan  # coerce
             hasnans = True
 
-        # apply tolerance and round, if applicable
-        series = round_within_tol(series, tol=tol, rounding=rounding)
+        # apply tolerance and round if applicable
+        if rounding in {"half_floor", "half_ceiling", "half_down", "half_up",
+                        "half_even"}:
+            series = round_float(series, rule=rounding, copy=False)
+        else:
+            if tol:
+                series = apply_tolerance(series, tol=tol, copy=False)
+            if rounding:
+                series = round_float(series, rule=rounding, copy=False)
 
         # check for precision loss
         if not (rounding or series.equals(round_float(series, "half_even"))):
@@ -201,8 +300,8 @@ class FloatSeries(SeriesWrapper):
                            f"index {shorten_list(bad)}")
                 raise ValueError(err_msg)
             if errors == "ignore":
-                return series
-            return round_float(series, rounding="down")  # coerce toward zero
+                return self.series
+            round_float(series, "down", copy=False)  # coerce toward zero
 
         # get min/max to evaluate range - longdouble maintains integer
         # precision for entire 64-bit range, prevents inconsistent comparison
@@ -211,22 +310,15 @@ class FloatSeries(SeriesWrapper):
 
         # built-in integer special case - can be arbitrarily large
         if is_dtype(dtype, int, exact=True):
-
-            # check if series exceeds int64 range
-            if min_val < -2**63 or max_val > 2**63 - 1:
-
-                # check if series fits within uint64 range
-                if min_val >= 0 and max_val <= np.uint64(2**64 - 1):
+            if min_val < -2**63 or max_val > 2**63 - 1:  # >int64
+                if min_val >= 0 and max_val <= np.uint64(2**64 - 1):  # <uint64
                     dtype = pd.UInt64Dtype() if hasnans else np.uint64
                     return series.astype(dtype, copy=False)
-
                 # series is >int64 and >uint64, return as built-in python ints
                 with self.exclude_na(pd.NA) as ctx:
                     ctx.subset = np.frompyfunc(int, 1, 1)(ctx.subset)
                 return ctx.result
-
-            # python extended integer range isn't needed, reduce to int64
-            dtype = np.int64
+            dtype = np.int64  # extended range isn't needed, demote to int64
 
         # check whether result fits within specified dtype
         min_poss, max_poss = integral_range(dtype)
@@ -252,7 +344,7 @@ class FloatSeries(SeriesWrapper):
         # convert and return
         if hasnans:
             dtype = extension_type(dtype)
-        return series.astype(dtype)
+        return series.astype(dtype, copy=False)
 
     def to_float(
         self,
@@ -334,7 +426,7 @@ class FloatSeries(SeriesWrapper):
         # return
         if downcast:
             # TODO: pass nans to ComplexSeries
-            series = ComplexSeries(series, validate=False)
+            series = pdtypes.cast.complex.ComplexSeries(series, validate=False)
             return series.to_complex(downcast=True)
         return series
 
@@ -350,6 +442,9 @@ class FloatSeries(SeriesWrapper):
         """test"""
         dtype = resolve_dtype(dtype)
         SeriesWrapper._validate_dtype(dtype, str)
+
+        # TODO: replace extension type support to resolve_dtype.
+        # TODO: consider using pyarrow string dtype to save memory.
 
         if self.hasnans:
             dtype = pd.StringDtype()
