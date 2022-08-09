@@ -49,9 +49,8 @@ class BooleanSeries(SeriesWrapper):
         dtype = resolve_dtype(dtype)
         SeriesWrapper._validate_dtype(dtype, int)
 
-        series = self.series.copy()
-
         # if series has missing values, convert to extension type first
+        series = self.series.copy()
         if self.hasnans and pd.api.types.is_object_dtype(series):
             series = series.astype(pd.BooleanDtype(), copy=False)
 
@@ -81,10 +80,15 @@ class BooleanSeries(SeriesWrapper):
         dtype = resolve_dtype(dtype)
         SeriesWrapper._validate_dtype(dtype, float)
 
+        # if series has missing values, convert to extension type first
+        series = self.series.copy()
+        if self.hasnans and pd.api.types.is_object_dtype(series):
+            series = series.astype(pd.BooleanDtype(), copy=False)
+
         # if `downcast=True`, return as float16
         if downcast:
             dtype = np.float16
-        return self.series.astype(dtype, copy=True)
+        return series.astype(dtype, copy=False)
 
     def to_complex(
         self,

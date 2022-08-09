@@ -4,7 +4,7 @@ import decimal
 import numpy as np
 import pandas as pd
 
-import pdtypes.cast.float  # absolute path prevents circular ImportError
+from pdtypes.cast.float import FloatSeries
 from pdtypes.cast.helpers import SeriesWrapper
 from pdtypes.check import check_dtype, get_dtype, is_dtype, resolve_dtype
 from pdtypes.error import error_trace, shorten_list
@@ -90,8 +90,7 @@ class ComplexSeries(SeriesWrapper):
 
         # 2 steps: complex -> float, then float -> boolean
         series = self.to_float(tol=imag_tol, errors=errors)
-        series = pdtypes.cast.float.FloatSeries(series, nans=self.is_na,
-                                                validate=False)
+        series = FloatSeries(series, nans=self.is_na, validate=False)
         return series.to_boolean(tol=real_tol, rounding=rounding, dtype=dtype,
                                  errors=errors)
 
@@ -119,8 +118,7 @@ class ComplexSeries(SeriesWrapper):
 
         # 2 steps: complex -> float, then float -> integer
         series = self.to_float(tol=imag_tol, errors=errors)
-        series = pdtypes.cast.float.FloatSeries(series, nans=self.is_na,
-                                               validate=False)
+        series = FloatSeries(series, nans=self.is_na, validate=False)
         return series.to_integer(tol=real_tol, rounding=rounding, dtype=dtype,
                                  downcast=downcast, errors=errors)
 
@@ -159,7 +157,7 @@ class ComplexSeries(SeriesWrapper):
                 return self.series
 
         # TODO: can't pass nans because real nans might not match imag nans
-        real = pdtypes.cast.float.FloatSeries(real, validate=False)
+        real = FloatSeries(real, validate=False)
         return real.to_float(dtype=dtype, downcast=downcast, errors=errors)
 
     def to_complex(
@@ -196,12 +194,10 @@ class ComplexSeries(SeriesWrapper):
         # downcast, if applicable
         if downcast:
             complex_types = [np.complex64, np.complex128, np.clongdouble]
-            smaller = complex_types[:complex_types.index(dtype)]
-            for downcast_type in smaller:
-                try:
-                    return self.to_complex(dtype=downcast_type)
-                except OverflowError:
-                    pass
+            for downcast_type in complex_types[:complex_types.index(dtype)]:
+                attempt = series.astype(downcast_type, copy=False)
+                if not (attempt - series).any():
+                    return attempt
         return series
 
     def to_decimal(
@@ -221,8 +217,7 @@ class ComplexSeries(SeriesWrapper):
 
         # 2 steps: complex -> float, then float -> decimal
         series = self.to_float(tol=imag_tol, errors=errors)
-        series = pdtypes.cast.float.FloatSeries(series, nans=self.is_na,
-                                                validate=False)
+        series = FloatSeries(series, nans=self.is_na, validate=False)
         return series.to_decimal()
 
     def to_string(self, dtype: dtype_like = pd.StringDtype()) -> pd.Series:

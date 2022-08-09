@@ -4,10 +4,7 @@ import decimal
 import numpy as np
 import pandas as pd
 
-import pdtypes.cast.complex  # absolute path prevents circular ImportError
-from pdtypes.cast.helpers import (
-    downcast_int_dtype, integral_range, SeriesWrapper
-)
+from pdtypes.cast.helpers import integral_range, SeriesWrapper
 from pdtypes.check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
 )
@@ -339,7 +336,15 @@ class FloatSeries(SeriesWrapper):
 
         # attempt to downcast if applicable
         if downcast:
-            dtype = downcast_int_dtype(dtype, min_val, max_val)
+            if is_dtype(dtype, "unsigned"):
+                int_types = [np.uint8, np.uint16, np.uint32, np.uint64]
+            else:
+                int_types = [np.int8, np.int16, np.int32, np.int64]
+            for downcast_type in int_types[:int_types.index(dtype)]:
+                min_poss, max_poss = integral_range(downcast_type)
+                if min_val >= min_poss and max_val <= max_poss:
+                    dtype = downcast_type
+                    break
 
         # convert and return
         if hasnans:
@@ -378,12 +383,10 @@ class FloatSeries(SeriesWrapper):
         # downcast if applicable
         if downcast:
             float_types = [np.float16, np.float32, np.float64, np.longdouble]
-            smaller = float_types[:float_types.index(dtype)]
-            for downcast_type in smaller:
-                try:
-                    return self.to_float(dtype=downcast_type)
-                except OverflowError:
-                    pass
+            for downcast_type in float_types[:float_types.index(dtype)]:
+                attempt = series.astype(downcast_type, copy=False)
+                if not (attempt - series).any():
+                    return attempt
         return series
 
     def to_complex(
@@ -397,8 +400,6 @@ class FloatSeries(SeriesWrapper):
         SeriesWrapper._validate_dtype(dtype, complex)
         SeriesWrapper._validate_errors(errors)
 
-        # TODO: nans are not properly cast to nan+nanj
-
         series = self.rectify(copy=True)
         if is_dtype(dtype, complex, exact=True):  # preserve precision
             equiv_complex = {
@@ -407,7 +408,8 @@ class FloatSeries(SeriesWrapper):
                 np.dtype(np.float64): np.complex128,
                 np.dtype(np.longdouble): np.clongdouble
             }
-            series = series.astype(equiv_complex[series.dtype], copy=False)
+            dtype = equiv_complex[series.dtype]
+            series = series.astype(dtype, copy=False)
         else:
             series = series.astype(dtype, copy=False)
             if (series - self.series).any():
@@ -420,14 +422,17 @@ class FloatSeries(SeriesWrapper):
                                f"index {shorten_list(bad)}")
                     raise OverflowError(err_msg)
                 # coerce infs introduced by coercion into nans
-                complex_nan = dtype("nan+nanj")
-                series[np.isinf(series) ^ self.infs] = complex_nan
+                series[np.isinf(series) ^ self.infs] += complex(np.nan, np.nan)
+
+        series[self.is_na] += complex(np.nan, np.nan)  # (nan+0j) -> (nan+nanj)
 
         # return
         if downcast:
-            # TODO: pass nans to ComplexSeries
-            series = pdtypes.cast.complex.ComplexSeries(series, validate=False)
-            return series.to_complex(downcast=True)
+            complex_types = [np.complex64, np.complex128, np.clongdouble]
+            for downcast_type in complex_types[:complex_types.index(dtype)]:
+                attempt = series.astype(downcast_type, copy=False)
+                if not (attempt - series).any():
+                    return attempt
         return series
 
     def to_decimal(self) -> pd.Series:

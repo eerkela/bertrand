@@ -19,30 +19,6 @@ from pdtypes.util.type_hints import array_like, dtype_like, scalar
 # TODO: consider using pyarrow string dtype for all to_string conversions
 
 
-def downcast_int_dtype(dtype, min_val, max_val) -> type:
-    """Attempt to find a smaller dtype that can represent the given integer
-    range defined by [min_val, max_val].
-    """
-    # resolve aliases
-    dtype = resolve_dtype(dtype)
-
-    # get all integer dtypes smaller than `dtype`
-    if is_dtype(dtype, "unsigned"):
-        int_types = [np.uint8, np.uint16, np.uint32, np.uint64]
-    else:
-        int_types = [np.int8, np.int16, np.int32, np.int64]
-    smaller = int_types[:int_types.index(dtype)]
-
-    # return smallest dtype that fully covers the given range
-    for downcast_type in smaller:
-        min_poss, max_poss = integral_range(downcast_type)
-        if min_val >= min_poss and max_val <= max_poss:
-            return downcast_type
-
-    # `dtype` could not be downcast.  Return original.
-    return dtype
-
-
 def integral_range(dtype: dtype_like) -> tuple[int, int]:
     """Get the integral range of a given integer, float, or complex dtype."""
     dtype = resolve_dtype(dtype)

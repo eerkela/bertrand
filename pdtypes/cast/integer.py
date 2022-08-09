@@ -1,20 +1,16 @@
 from __future__ import annotations
 import decimal
 
-import numba
 import numpy as np
 import pandas as pd
 
 from pdtypes.cast.float import FloatSeries
-from pdtypes.cast.helpers import (
-    downcast_int_dtype, integral_range, SeriesWrapper, integral_range
-)
+from pdtypes.cast.helpers import integral_range, SeriesWrapper
 from pdtypes.check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
 )
 from pdtypes.error import error_trace, shorten_list
 from pdtypes.util.type_hints import array_like, dtype_like
-
 
 
 class IntegerSeries(SeriesWrapper):
@@ -117,7 +113,8 @@ class IntegerSeries(SeriesWrapper):
                     return series.astype(dtype, copy=False)
                 # series is >int64 and >uint64, return as built-in python ints
                 series = series.astype("O", copy=False)
-                return series.fillna(pd.NA, inplace=True)
+                series[self.is_na] = pd.NA
+                return series
             dtype = np.int64  # extended range isn't needed, demote to int64
 
         # check whether min_val, max_val fit within `dtype` range
@@ -138,7 +135,15 @@ class IntegerSeries(SeriesWrapper):
 
         # attempt to downcast, if applicable
         if downcast:
-            dtype = downcast_int_dtype(dtype, min_val, max_val)
+            if is_dtype(dtype, "unsigned"):
+                int_types = [np.uint8, np.uint16, np.uint32, np.uint64]
+            else:
+                int_types = [np.int8, np.int16, np.int32, np.int64]
+            for downcast_type in int_types[:int_types.index(dtype)]:
+                min_poss, max_poss = integral_range(downcast_type)
+                if min_val >= min_poss and max_val <= max_poss:
+                    dtype = downcast_type
+                    break
 
         # convert and return
         if hasnans:
@@ -155,6 +160,8 @@ class IntegerSeries(SeriesWrapper):
         dtype = resolve_dtype(dtype)
         SeriesWrapper._validate_dtype(dtype, float)
         SeriesWrapper._validate_errors(errors)
+        if dtype == float:  # built-in `float` is identical to np.float64
+            dtype = np.float64
 
         # astype(float) is unstable for object series with pd.NA as missing val
         series = self.series.copy()
@@ -192,7 +199,11 @@ class IntegerSeries(SeriesWrapper):
 
         # return
         if downcast:
-            return FloatSeries(series, validate=False).to_float(downcast=True)
+            float_types = [np.float16, np.float32, np.float64, np.longdouble]
+            for downcast_type in float_types[:float_types.index(dtype)]:
+                attempt = series.astype(downcast_type, copy=False)
+                if not (attempt - series).any():
+                    return attempt
         return series
 
     def to_complex(
@@ -205,37 +216,60 @@ class IntegerSeries(SeriesWrapper):
         dtype = resolve_dtype(dtype)
         SeriesWrapper._validate_dtype(dtype, complex)
         SeriesWrapper._validate_errors(errors)
+        if dtype == complex:  # built-in complex is identical to np.complex128
+            dtype = np.complex128
 
-        # astype(complex) is unstable for object series with pd.NA as missing
+        # astype(complex) is unstable when used on pd.NA
         series = self.series.copy()
-        if pd.api.types.is_object_dtype(series):
-            series[self.is_na] = np.nan
+        if self.hasnans:
+            if pd.api.types.is_object_dtype(series):  # replace nans directly
+                series[self.is_na] = np.nan
+            else:  # cast to float, then to complex
+                float_equivalent = {
+                    np.complex64: np.float32,
+                    np.complex128: np.float64,
+                    np.clongdouble: np.longdouble
+                }
+                series = series.astype(float_equivalent[dtype], copy=False)
         series = series.astype(dtype, copy=False)
+        series[self.is_na] += complex(0, np.nan)  # (nan+0j) -> (nan+nanj)
 
-        # TODO: missing values should be (nan+nanj)
-
-        # separate into real and imaginary components
-        # TODO: this should be part of ComplexSeries
-        real = np.real(series)
-        imag = np.imag(series)
-
-        # TODO: change standard back to precision loss
-
-        # check for infinities introduced by coercion
-        overflow = np.isinf(real) | np.isinf(imag)
-        if overflow.any():
-            if errors == "raise":
-                bad = series[overflow].index.values
-                err_msg = (f"[{error_trace()}] values exceed {dtype.__name__} "
-                           f"range at index {shorten_list(bad)}")
-                raise OverflowError(err_msg)
-            if errors == "ignore":
-                return self.series
-            series[overflow] = complex(np.nan, np.nan)
+        # check for precision loss.  Can only occur if series vals are outside
+        # integral range of `dtype`, as determined by # of bits in significand
+        min_precise, max_precise = integral_range(dtype)
+        if self.min_val < min_precise or self.max_val > max_precise:
+            # series might be imprecise -> confirm by reversing conversion
+            reverse = FloatSeries(np.real(series), validate=False,
+                                  nans=self.is_na)
+            if reverse.hasinfs:  # infs introduced during coercion (overflow)
+                if errors == "raise":
+                    bad = series[reverse.infs].index.values
+                    err_msg = (f"[{error_trace()}] values exceed "
+                               f"{dtype.__name__} range at index "
+                               f"{shorten_list(bad)}")
+                    raise OverflowError(err_msg)
+                if errors == "ignore":
+                    return self.series
+                series[reverse.infs] += complex(np.nan, np.nan)
+            elif errors != "coerce":  # check for precision loss
+                reverse_result = reverse.to_integer(errors="coerce")
+                if not self.to_integer().equals(reverse_result):
+                    if errors == "ignore":
+                        return self.series
+                    bad = series[(self.series != reverse_result) ^
+                                 self.is_na].index.values
+                    err_msg = (f"[{error_trace()}] precision loss detected at "
+                               f"index {shorten_list(bad)} with dtype "
+                               f"{repr(dtype.__name__)}")
+                    raise ValueError(err_msg)
 
         # return
         if downcast:
-            return _downcast_complex_series(series, real, imag)
+            complex_types = [np.complex64, np.complex128, np.clongdouble]
+            for downcast_type in complex_types[:complex_types.index(dtype)]:
+                attempt = series.astype(downcast_type, copy=False)
+                if not (attempt - series).any():
+                    return attempt
         return series
 
     def to_decimal(self) -> pd.Series:
