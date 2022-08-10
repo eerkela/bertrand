@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 from pdtypes.error import error_trace
-from pdtypes.util.array import object_types, vectorize
+from pdtypes.util.array import vectorize
 from pdtypes.util.type_hints import array_like, atomic_type, dtype_like, scalar
 
 
@@ -45,56 +45,29 @@ from pdtypes.util.type_hints import array_like, atomic_type, dtype_like, scalar
 #############################
 
 
-_atomic_type_aliases = {  # aliases for atomic types
-    # booleans
-    np.dtype(bool): bool,
-    pd.BooleanDtype(): bool,
-
-    # integers
+custom_aliases = {  # applied before pandas.dtype() resolution
+    # integer
     int: int,
     "int": int,
     "integer": int,
-    np.dtype("i1"): np.int8,
-    np.dtype("i2"): np.int16,
-    np.dtype("i4"): np.int32,
-    np.dtype("i8"): np.int64,
-    np.dtype("u1"): np.uint8,
-    np.dtype("u2"): np.uint16,
-    np.dtype("u4"): np.uint32,
-    np.dtype("u8"): np.uint64,
-    pd.Int8Dtype(): np.int8,
-    pd.Int16Dtype(): np.int16,
-    pd.Int32Dtype(): np.int32,
-    pd.Int64Dtype(): np.int64,
-    pd.UInt8Dtype(): np.uint8,
-    pd.UInt16Dtype(): np.uint16,
-    pd.UInt32Dtype(): np.uint32,
-    pd.UInt64Dtype(): np.uint64,
 
-    # floats
+    # float
     float: float,
     "float": float,
     "floating": float,
     "f": float,
-    np.dtype("f2"): np.float16,
-    np.dtype("f4"): np.float32,
-    np.dtype("f8"): np.float64,
-    np.dtype(np.longdouble): np.longdouble,  # platform-specific
 
-    # complex numbers
+    # complex
     complex: complex,
     "complex": complex,
     "c": complex,
-    np.dtype("c8"): np.complex64,
-    np.dtype("c16"): np.complex128,
-    np.dtype(np.clongdouble): np.clongdouble,  # platform-specific
 
-    # decimals
+    # decimal
     decimal.Decimal: decimal.Decimal,
     "decimal": decimal.Decimal,
     "decimal.decimal": decimal.Decimal,
 
-    # datetimes
+    # datetime
     pd.Timestamp: pd.Timestamp,
     "pd.timestamp": pd.Timestamp,
     "pandas.timestamp": pd.Timestamp,
@@ -105,7 +78,7 @@ _atomic_type_aliases = {  # aliases for atomic types
     "np.datetime64": np.datetime64,
     "numpy.datetime64": np.datetime64,
 
-    # timedeltas
+    # timedelta
     pd.Timedelta: pd.Timedelta,
     "pd.timedelta": pd.Timedelta,
     "pandas.timedelta": pd.Timedelta,
@@ -116,69 +89,139 @@ _atomic_type_aliases = {  # aliases for atomic types
     "np.timedelta64": np.timedelta64,
     "numpy.timedelta64": np.timedelta64,
 
-    # # periods
-    # pd.Period: pd.Period,
-    # # pd.PeriodDtype(): pd.Period,  # throws an AttributeError on load
-    # "period": pd.Period,
+    # periods
+    pd.Period: pd.Period,
+    # pd.PeriodDtype(): pd.Period,  # throws an AttributeError on load
+    "period": pd.Period,
 
-    # # intervals
-    # pd.Interval: pd.Interval,
-    # pd.IntervalDtype(): pd.Interval,
-    # "interval": pd.Interval,
+    # intervals
+    pd.Interval: pd.Interval,
+    pd.IntervalDtype(): pd.Interval,
+    "interval": pd.Interval,
 
-    # objects
-    np.dtype(object): object,
+    # string
+    "char": str,
+    "character": str,
+
+    # object
     "obj": object,
     "o": object,
 
-    # strings
-    np.dtype(str): str,
-    pd.StringDtype(): str,
-
-    # bytes
-    bytes: bytes,
-    np.dtype("S"): bytes,
-    np.dtype("a"): bytes
+    # missing values
+    None: type(None),
+    "none": type(None),
+    "missing": type(None),
+    np.nan: type(None),
+    "nan": type(None),
+    "np.nan": type(None),
+    "numpy.nan": type(None),
+    pd.NA: type(None),
+    "na": type(None),
+    "n/a": type(None),
+    "pd.na": type(None),
+    "pandas.na": type(None),
+    pd.NaT: type(None),
+    "nat": type(None),
+    "pd.nat": type(None),
+    "pandas.nat": type(None)
 }
 
 
-_supertype_aliases = {  # aliases for supertypes
-    # atomic types are the product of `resolve_dtype` and include .  Custom
-    # supertype aliases ('i', 'u', 'datetime', 'timedelta') are caught before
-    # resolution is applied, so they work despite not being present in
-    # _atomic_type_aliases.
+fallback_aliases = {  # applied after pandas.dtype() resolution
+    # bool
+    np.dtype(bool): bool,
+    pd.BooleanDtype(): bool,
 
     # integer
-    int: {int, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16,
-          np.uint32, np.uint64},
-    np.integer: {np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16,
-                 np.uint32, np.uint64},
-    "i": {int, np.int8, np.int16, np.int32, np.int64},
-    "signed": {int, np.int8, np.int16, np.int32, np.int64},
-    np.signedinteger: {np.int8, np.int16, np.int32, np.int64},
-    "u": {np.uint8, np.uint16, np.uint32, np.uint64},
-    "unsigned": {np.uint8, np.uint16, np.uint32, np.uint64},
-    np.unsignedinteger: {np.uint8, np.uint16, np.uint32, np.uint64},
+    np.dtype(np.int8): np.int8,
+    np.dtype(np.int16): np.int16,
+    np.dtype(np.int32): np.int32,
+    np.dtype(np.int64): np.int64,
+    np.dtype(np.uint8): np.uint8,
+    np.dtype(np.uint16): np.uint16,
+    np.dtype(np.uint32): np.uint32,
+    np.dtype(np.uint64): np.uint64,
+    pd.Int8Dtype(): np.int8,
+    pd.Int16Dtype(): np.int16,
+    pd.Int32Dtype(): np.int32,
+    pd.Int64Dtype(): np.int64,
+    pd.UInt8Dtype(): np.uint8,
+    pd.UInt16Dtype(): np.uint16,
+    pd.UInt32Dtype(): np.uint32,
+    pd.UInt64Dtype(): np.uint64,
 
     # float
-    float: {float, np.float16, np.float32, np.float64, np.longdouble},
+    np.dtype(np.float16): np.float16,
+    np.dtype(np.float32): np.float32,
+    np.dtype(np.float64): np.float64,
+    np.dtype(np.longdouble): np.longdouble,
+
+    # complex
+    np.dtype(np.complex64): np.complex64,
+    np.dtype(np.complex128): np.complex128,
+    np.dtype(np.clongdouble): np.clongdouble,
+
+    # datetime
+    np.dtype(np.datetime64): np.datetime64,
+
+    # timedelta
+    np.dtype(np.timedelta64): np.timedelta64,
+
+    # string
+    np.dtype(str): str,
+    pd.StringDtype(): str,
+
+    # object
+    np.dtype(object): object,
+
+    # bytes
+    np.dtype("S"): bytes,
+    np.dtype("a"): bytes,
+    np.dtype("V"): bytes
+}
+
+
+custom_supertype_aliases = {  # applied before resolve_dtype()
+    # integer
+    np.integer: {np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16,
+                 np.uint32, np.uint64},
+    np.signedinteger: {np.int8, np.int16, np.int32, np.int64},
+    "signed": {int, np.int8, np.int16, np.int32, np.int64},
+    "i": {int, np.int8, np.int16, np.int32, np.int64},
+    np.unsignedinteger: {np.uint8, np.uint16, np.uint32, np.uint64},
+    "unsigned": {np.uint8, np.uint16, np.uint32, np.uint64},
+    "u": {np.uint8, np.uint16, np.uint32, np.uint64},
+
+    # float
     np.floating: {np.float16, np.float32, np.float64, np.longdouble},
 
     # complex
-    complex: {complex, np.complex64, np.complex128, np.clongdouble},
     np.complexfloating: {np.complex64, np.complex128, np.clongdouble},
+}
+
+
+fallback_supertype_aliases = {  # applied after resolve_dtype()
+    # integer
+    int: {int, np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16,
+          np.uint32, np.uint64},
+
+    # float
+    float: {float, np.float16, np.float32, np.float64, np.longdouble},
+
+    # complex
+    complex: {complex, np.complex64, np.complex128, np.clongdouble},
 
     # datetime
     "datetime": {pd.Timestamp, datetime.datetime, np.datetime64},
 
     # timedelta
-    "timedelta": {pd.Timedelta, datetime.timedelta, np.timedelta64},
+    "timedelta": {pd.Timedelta, datetime.timedelta, np.timedelta64}
 
-    # object supertype must be expanded manually, catching 3rd-party type defs
+    # object supertype expanded at runtime
 }
 
 
-_atomic_to_extension_type = {  # atomic type to associated extension type
+atomic_to_extension_type = {  # atomic type to associated extension type
     # boolean
     bool: pd.BooleanDtype(),
 
@@ -197,10 +240,9 @@ _atomic_to_extension_type = {  # atomic type to associated extension type
 }
 
 
-_atomic_to_supertype = {  # atomic type to associated supertype
+atomic_to_supertype = {  # atomic type to associated supertype
     # booleans
     bool: bool,
-    # pd.BooleanDtype(): bool,
 
     # integers
     int: int,
@@ -212,14 +254,6 @@ _atomic_to_supertype = {  # atomic type to associated supertype
     np.uint16: int,
     np.uint32: int,
     np.uint64: int,
-    # pd.Int8Dtype(): int,
-    # pd.Int16Dtype(): int,
-    # pd.Int32Dtype(): int,
-    # pd.Int64Dtype(): int,
-    # pd.UInt8Dtype(): int,
-    # pd.UInt16Dtype(): int,
-    # pd.UInt32Dtype(): int,
-    # pd.UInt64Dtype(): int,
 
     # floats
     float: float,
@@ -238,26 +272,24 @@ _atomic_to_supertype = {  # atomic type to associated supertype
     decimal.Decimal: decimal.Decimal,
 
     # datetimes
-    "datetime": "datetime",
     pd.Timestamp: "datetime",
     datetime.datetime: "datetime",
     np.datetime64: "datetime",
 
     # timedeltas
-    "timedelta": "timedelta",
     pd.Timedelta: "timedelta",
     datetime.timedelta: "timedelta",
     np.timedelta64: "timedelta",
 
     # strings
     str: str,
-    # pd.StringDtype(): str
+
+    # bytes
+    bytes: bytes,
+
+    # missing values
+    type(None): type(None)
 }
-
-
-#################################
-####    Utility Functions    ####
-#################################
 
 
 def extension_type(
@@ -265,31 +297,20 @@ def extension_type(
 ) -> type | pd.api.extensions.ExtensionDtype:
     """Essentially an interface for the _atomic_to_extension_type lookup table.
     """
-    lookup = _atomic_to_extension_type
-    try:
-        return lookup.get(dtype, lookup[resolve_dtype(dtype)])
-    except KeyError:
-        return dtype
+    return atomic_to_extension_type.get(resolve_dtype(dtype), dtype)
 
 
-def resolve_dtype(dtype: dtype_like, interpret_strings: bool = True) -> type:
+def resolve_dtype(dtype: dtype_like) -> type:
     """Collapse abstract dtype aliases into their corresponding atomic type.
 
-    Essentially an interface to _atomic_type_aliases lookup table.
+    Essentially an interface to the `custom_aliases` and `fallback_aliases`
+    lookup tables.
     """
-    # possible exception: `dtype` is string and `interpret_strings=False`
-    if not interpret_strings and isinstance(dtype, str):
-        err_msg = (f"[{error_trace()}] `dtype` {repr(dtype)} could not be "
-                   f"interpreted while `interpret_strings=False`")
-        raise ValueError(err_msg)
-
-    # case 1: dtype is directly present in aliases
-    if dtype in _atomic_type_aliases:
-        return _atomic_type_aliases[dtype]
-
-    # case 2: dtype is a specified (case-insensitive) string dtype alias
-    if isinstance(dtype, str) and dtype.lower() in _atomic_type_aliases:
-        return _atomic_type_aliases[dtype.lower()]
+    # case 1: `dtype` is a custom alias
+    if dtype in custom_aliases:
+        return custom_aliases[dtype]
+    elif isinstance(dtype, str) and dtype.lower() in custom_aliases:
+        return custom_aliases[dtype.lower()]
 
     # possible exception: dtype is ambiguous
     if dtype in ("i", "u"):  # ambiguous without associated bit size
@@ -299,30 +320,75 @@ def resolve_dtype(dtype: dtype_like, interpret_strings: bool = True) -> type:
                    f"instead.")
         raise ValueError(err_msg)
 
-    # case 3: dtype is abstract and must be parsed
-    try:  # resolve directly
+    # case 2: dtype is abstract and must be parsed
+    try:
         dtype = pd.api.types.pandas_dtype(dtype)
-    except TypeError as err:  # dtype might be a user-defined or 3rd-party type
+
+    # case 3: dtype can't be parsed, might be custom
+    except TypeError as err:
         if isinstance(dtype, type):
             return dtype
         raise err
 
     # M8 and m8 must be handled separately due to differing units/step sizes
-    is_extension = pd.api.types.is_extension_array_dtype(dtype)
-    if not is_extension and np.issubdtype(dtype, "M8"):
-        return np.datetime64
-    if not is_extension and np.issubdtype(dtype, "m8"):
-        return np.timedelta64
-    return _atomic_type_aliases[dtype]
+    if not pd.api.types.is_extension_array_dtype(dtype):  # would throw error
+        if np.issubdtype(dtype, "M8"):
+            return np.datetime64
+        if np.issubdtype(dtype, "m8"):
+            return np.timedelta64
+
+    # check against fallback_aliases lookup table
+    return fallback_aliases[dtype]
 
 
 def supertype(dtype: dtype_like) -> type | str:
-    """Essentially an interface for the _atomic_to_supertype lookup table."""
-    lookup = _atomic_to_supertype
-    try:
-        return lookup.get(dtype, lookup[resolve_dtype(dtype)])
-    except KeyError:
-        return dtype
+    """Essentially an interface for the atomic_to_supertype lookup table."""
+    return atomic_to_supertype.get(resolve_dtype(dtype), object)
+
+
+#################################
+####    Utility Functions    ####
+#################################
+
+
+def object_types(
+    series: np.ndarray | pd.Series,
+    supertypes: bool = False
+) -> np.ndarray | pd.Series:
+    """Get the type of each element in a given object series."""
+    # case 1: series is array-like and has dtype="O"
+    if pd.api.types.is_object_dtype(series):
+        if supertypes:
+            lookup = lambda x: supertype(x if pd.isna(x) else type(x))
+            return np.frompyfunc(lookup, 1, 1)(series)
+        return np.frompyfunc(type, 1, 1)(series)
+
+    # case 2: series is array-like and has non-nullable dtype
+    dtype = get_dtype(series)
+    is_series = isinstance(series, pd.Series)
+    if (is_dtype(dtype, (int, bool)) and
+        not pd.api.types.is_extension_array_dtype(series)):
+        if supertypes:
+            series = np.full(series.shape, supertype(dtype), dtype="O")
+        else:
+            series = np.full(series.shape, dtype, dtype="O")
+        return pd.Series(series) if is_series else series
+
+    # case 3: series is array-like and has nullable dtype
+    na_types = {
+        bool: type(pd.NA),
+        int: type(pd.NA),
+        float: float,
+        complex: complex,
+        "datetime": type(pd.NaT),
+        "timedelta": type(pd.NaT),
+        str: type(pd.NA)
+    }
+    if supertypes:
+        series = np.where(pd.isna(series), supertype(None), supertype(dtype))
+    else:
+        series = np.where(pd.isna(series), na_types[supertype(dtype)], dtype)
+    return pd.Series(series) if is_series else series
 
 
 ##############################
@@ -468,16 +534,16 @@ def check_dtype(
     else:
         def resolve_supertype(element: dtype_like) -> set[atomic_type]:
             # 1st lookup pass -> element is a pre-defined supertype alias
-            if element in _supertype_aliases:  # catches 'i', 'u', etc.
-                return _supertype_aliases[element]
+            if element in custom_supertype_aliases:  # catches 'i', 'u', etc.
+                return custom_supertype_aliases[element]
 
             # 2nd lookup pass -> resolve before searching for supertype alias
             resolved = resolve_dtype(element)
             if resolved == object and custom_types:  # object supertype
                 return custom_types  # set of unrecognized types in `arg`
-            return _supertype_aliases.get(resolved, {resolved})
+            return fallback_supertype_aliases.get(resolved, {resolved})
 
-        custom_types = {o for o in observed if o not in _atomic_to_supertype}
+        custom_types = {o for o in observed if o not in atomic_to_supertype}
         resolve_ufunc = np.frompyfunc(resolve_supertype, 1, 1)
         resolve = lambda x: set().union(*resolve_ufunc(vectorize(x)))
 
@@ -546,7 +612,7 @@ def get_dtype(
             return None
 
         # get unique element types
-        types = pd.unique(object_types(array))
+        types = pd.unique(object_types(array, supertypes=False))
 
         # return
         if len(types) == 1:  # as scalar
@@ -589,14 +655,14 @@ def is_dtype(
     else:
         def resolve_supertype(element: dtype_like) -> set[atomic_type]:
             # 1st lookup pass -> element is a pre-defined supertype alias
-            if element in _supertype_aliases:  # catches 'i', 'u', etc.
-                return _supertype_aliases[element]
+            if element in custom_supertype_aliases:  # catches 'i', 'u', etc.
+                return custom_supertype_aliases[element]
 
             # 2nd lookup pass -> resolve before searching for supertype alias
             resolved = resolve_dtype(element)
             if resolved == object and custom_types:  # object supertype
                 return custom_types  # set of unrecognized types in `arg`
-            return _supertype_aliases.get(resolved, {resolved})
+            return fallback_supertype_aliases.get(resolved, {resolved})
 
         custom_types = set()
         resolve_ufunc = np.frompyfunc(resolve_supertype, 1, 1)
@@ -608,5 +674,5 @@ def is_dtype(
         return False
 
     if not exact:
-        custom_types = {o for o in observed if o not in _atomic_to_supertype}
+        custom_types = {o for o in observed if o not in atomic_to_supertype}
     return not observed - resolve(dtype)

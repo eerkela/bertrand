@@ -7,10 +7,9 @@ only for internal pdtypes use.
     numpy broadcasting rules to standardize their shapes.
 `replace_with_dict()` performs vectorized dictionary lookup.
 `round_div()` does optimized integer division, with customizable rounding
-`object_types()` applies a vectorized `type` function across an object array's
-    constituent elements, returning their types.
 """
 from __future__ import annotations
+from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
@@ -19,7 +18,11 @@ from pdtypes.error import error_trace
 from pdtypes.util.type_hints import array_like, scalar
 
 
-type_ufunc = np.frompyfunc(type, 1, 1)
+def is_scalar(arg: Any) -> bool:
+    """Returns True if `arg` is a scalar, False if it is an array-like sequence
+    of any kind.
+    """
+    return not bool(np.array(arg).shape)
 
 
 def vectorize(obj: scalar | array_like) -> np.ndarray | pd.Series:
@@ -115,12 +118,3 @@ def round_div(
                    f"'half_down', 'half_up', 'half_even'], not "
                    f"{repr(rounding)}")
         raise ValueError(err_msg) from err
-
-
-def object_types(array: np.ndarray | pd.Series) -> type | array_like:
-    """Get the type of each element in a given object array."""
-    if pd.api.types.is_object_dtype(array):
-        return type_ufunc(array)
-    err_msg = (f"[{error_trace()}] elementwise type detection is only valid "
-               f"for object arrays, not {array.dtype}")
-    raise TypeError(err_msg)

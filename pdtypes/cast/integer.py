@@ -112,6 +112,7 @@ class IntegerSeries(SeriesWrapper):
                     dtype = pd.UInt64Dtype() if self.hasnans else np.uint64
                     return series.astype(dtype, copy=False)
                 # series is >int64 and >uint64, return as built-in python ints
+                # TODO: astype("O") doesn't actually coerce to python integer
                 series = series.astype("O", copy=False)
                 series[self.is_na] = pd.NA
                 return series
