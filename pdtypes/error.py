@@ -1,7 +1,10 @@
 """This module contains utility functions to help format errors raised by
 `pdtypes` internals.
 """
+from __future__ import annotations
 import inspect
+
+import pandas as pd
 
 from pdtypes.util.type_hints import array_like
 
@@ -56,3 +59,28 @@ def shorten_list(list_like: array_like, max_length: int = 5) -> str:
         return str(list(list_like))
     shortened = ", ".join(str(i) for i in list_like[:max_length])
     return f"[{shortened}, ...] ({len(list_like)})"
+
+
+class ConversionError(Exception):
+    """Custom error class raised when `pdtypes` encounters a bad value during
+    conversion.
+
+    The value(s) in question are attached to the error as a `pandas.Series`
+    object, which can be accessed under the `.bad_values` attribute.  These
+    values retain their original index.
+    """
+
+    # TODO: consider putting this under pdtypes.cast for more readable
+    # messages.
+    # TODO: Traces can be controlled globally from here
+
+    def __init__(
+        self,
+        msg: str,
+        values: pd.Series
+    ) -> ConversionError:
+        self.trace = error_trace(stack_index=2)
+        self.message = msg
+        super().__init__(f"[{self.trace}] {self.message}")
+        # super().__init__(self.message)
+        self.bad_values = values

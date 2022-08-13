@@ -4,21 +4,18 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from pdtypes.cast.helpers import SeriesWrapper
-from pdtypes.check import (
-    check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
-)
+from pdtypes.cast.helpers import _validate_dtype
+from pdtypes.check import check_dtype, get_dtype, is_dtype, resolve_dtype
 from pdtypes.error import error_trace
 from pdtypes.util.type_hints import array_like, dtype_like
 
 
-class BooleanSeries(SeriesWrapper):
+class BooleanSeries:
     """test"""
 
     def __init__(
         self,
         series: bool | array_like,
-        nans: None | bool | array_like = None,
         validate: bool = True
     ) -> BooleanSeries:
         if validate and not check_dtype(series, bool):
@@ -26,7 +23,7 @@ class BooleanSeries(SeriesWrapper):
                        f"data, not {get_dtype(series)}")
             raise TypeError(err_msg)
 
-        super().__init__(series, nans)
+        self.series = series
 
     def to_boolean(
         self,
@@ -34,10 +31,7 @@ class BooleanSeries(SeriesWrapper):
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        SeriesWrapper._validate_dtype(dtype, bool)
-
-        if self.hasnans:
-            dtype = extension_type(dtype)
+        _validate_dtype(dtype, bool)
         return self.series.astype(dtype, copy=True)
 
     def to_integer(
@@ -47,29 +41,12 @@ class BooleanSeries(SeriesWrapper):
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        SeriesWrapper._validate_dtype(dtype, int)
-
-        # if series has missing values, convert to extension type first
-        series = self.series.copy()
-        if self.hasnans and pd.api.types.is_object_dtype(series):
-            series = series.astype(pd.BooleanDtype(), copy=False)
+        _validate_dtype(dtype, int)
 
         # if `downcast=True`, return as 8-bit integer dtype
         if downcast:
-            if pd.api.types.is_unsigned_integer_dtype(dtype):
-                if self.hasnans:
-                    return series.astype(pd.UInt8Dtype(), copy=False)
-                return series.astype(np.uint8, copy=False)
-            if self.hasnans:
-                return series.astype(pd.Int8Dtype(), copy=False)
-            return series.astype(np.int8, copy=False)
-
-        # no extension type for built-in python integers
-        if is_dtype(dtype, int, exact=True):
-            dtype = np.int64
-        if self.hasnans:
-            dtype = extension_type(dtype)
-        return series.astype(dtype)
+            dtype = np.uint8 if is_dtype(dtype, "u") else np.int8
+        return self.series.astype(dtype, copy=True)
 
     def to_float(
         self,
@@ -78,17 +55,12 @@ class BooleanSeries(SeriesWrapper):
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        SeriesWrapper._validate_dtype(dtype, float)
-
-        # if series has missing values, convert to extension type first
-        series = self.series.copy()
-        if self.hasnans and pd.api.types.is_object_dtype(series):
-            series = series.astype(pd.BooleanDtype(), copy=False)
+        _validate_dtype(dtype, float)
 
         # if `downcast=True`, return as float16
         if downcast:
             dtype = np.float16
-        return series.astype(dtype, copy=False)
+        return self.series.astype(dtype, copy=True)
 
     def to_complex(
         self,
@@ -97,29 +69,29 @@ class BooleanSeries(SeriesWrapper):
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        SeriesWrapper._validate_dtype(dtype, complex)
+        _validate_dtype(dtype, complex)
 
-        # astype(complex) is unstable when converting missing values
-        dtype = np.complex64 if downcast else dtype
-        with self.exclude_na(complex(np.nan, np.nan), dtype=dtype) as ctx:
-            ctx.subset = ctx.subset.astype(dtype, copy=False)
-        return ctx.result
+        # if `downcast=True`, return as complex64
+        if downcast:
+            dtype = np.complex64
+        return self.series.astype(dtype, copy=True)
 
     def to_decimal(self) -> pd.Series:
         """test"""
-        with self.exclude_na(pd.NA) as ctx:
-            ctx.subset += decimal.Decimal(0)
-        return ctx.result
+        return self.series + decimal.Decimal(0)
 
     def to_string(
         self,
         dtype: dtype_like = pd.StringDtype()
     ) -> pd.Series:
         """test"""
-        dtype = resolve_dtype(dtype)
-        SeriesWrapper._validate_dtype(dtype, str)
+        dtype = resolve_dtype(dtype)  # TODO: erases extension type
+        _validate_dtype(dtype, str)
 
-        # use pandas string extension type, if applicable
-        if self.hasnans:
+        # TODO: consider using pyarrow string dtype to save memory
+
+        # TODO: make this less janky
+        if is_dtype(dtype, str, exact=True):
             dtype = pd.StringDtype()
+
         return self.series.astype(dtype, copy=True)

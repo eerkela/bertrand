@@ -313,12 +313,12 @@ def resolve_dtype(dtype: dtype_like) -> type:
         return custom_aliases[dtype.lower()]
 
     # possible exception: dtype is ambiguous
-    if dtype in ("i", "u"):  # ambiguous without associated bit size
-        bad = "signed" if dtype == "i" else "unsigned"
-        err_msg = (f"[{error_trace()}] {bad} integer alias {repr(dtype)} is "
-                   f"ambiguous.  Use a specific bit size or generalized `int` "
-                   f"instead.")
-        raise ValueError(err_msg)
+    # if dtype in ("i", "u"):  # ambiguous without associated bit size
+    #     bad = "signed" if dtype == "i" else "unsigned"
+    #     err_msg = (f"[{error_trace()}] {bad} integer alias {repr(dtype)} is "
+    #                f"ambiguous.  Use a specific bit size or generalized `int` "
+    #                f"instead.")
+    #     raise ValueError(err_msg)
 
     # case 2: dtype is abstract and must be parsed
     try:
@@ -344,51 +344,6 @@ def resolve_dtype(dtype: dtype_like) -> type:
 def supertype(dtype: dtype_like) -> type | str:
     """Essentially an interface for the atomic_to_supertype lookup table."""
     return atomic_to_supertype.get(resolve_dtype(dtype), object)
-
-
-#################################
-####    Utility Functions    ####
-#################################
-
-
-def object_types(
-    series: np.ndarray | pd.Series,
-    supertypes: bool = False
-) -> np.ndarray | pd.Series:
-    """Get the type of each element in a given object series."""
-    # case 1: series is array-like and has dtype="O"
-    if pd.api.types.is_object_dtype(series):
-        if supertypes:
-            lookup = lambda x: supertype(x if pd.isna(x) else type(x))
-            return np.frompyfunc(lookup, 1, 1)(series)
-        return np.frompyfunc(type, 1, 1)(series)
-
-    # case 2: series is array-like and has non-nullable dtype
-    dtype = get_dtype(series)
-    is_series = isinstance(series, pd.Series)
-    if (is_dtype(dtype, (int, bool)) and
-        not pd.api.types.is_extension_array_dtype(series)):
-        if supertypes:
-            series = np.full(series.shape, supertype(dtype), dtype="O")
-        else:
-            series = np.full(series.shape, dtype, dtype="O")
-        return pd.Series(series) if is_series else series
-
-    # case 3: series is array-like and has nullable dtype
-    na_types = {
-        bool: type(pd.NA),
-        int: type(pd.NA),
-        float: float,
-        complex: complex,
-        "datetime": type(pd.NaT),
-        "timedelta": type(pd.NaT),
-        str: type(pd.NA)
-    }
-    if supertypes:
-        series = np.where(pd.isna(series), supertype(None), supertype(dtype))
-    else:
-        series = np.where(pd.isna(series), na_types[supertype(dtype)], dtype)
-    return pd.Series(series) if is_series else series
 
 
 ##############################
@@ -676,3 +631,75 @@ def is_dtype(
     if not exact:
         custom_types = {o for o in observed if o not in atomic_to_supertype}
     return not observed - resolve(dtype)
+
+
+def object_types(
+    series: np.ndarray | pd.Series,
+    supertypes: bool = False
+) -> np.ndarray | pd.Series:
+    """Get the type of each element in an object series."""
+    # case 1: series is array-like and has dtype="O"
+    if pd.api.types.is_object_dtype(series):
+        if supertypes:
+            lookup = lambda x: supertype(x if pd.isna(x) else type(x))
+            return np.frompyfunc(lookup, 1, 1)(series)
+        return np.frompyfunc(type, 1, 1)(series)
+
+    # TODO: everything below this marker should be removed in favor of
+    # cythonized object_types implementation
+
+    # case 2: series is array-like and has non-nullable dtype
+    dtype = get_dtype(series)
+    is_series = isinstance(series, pd.Series)
+    if (is_dtype(dtype, (int, bool)) and
+        not pd.api.types.is_extension_array_dtype(series)):
+        if supertypes:
+            series = np.full(series.shape, supertype(dtype), dtype="O")
+        else:
+            series = np.full(series.shape, dtype, dtype="O")
+        return pd.Series(series) if is_series else series
+
+    # case 3: series is array-like and has nullable dtype
+    if supertypes:
+        series = np.where(pd.isna(series), supertype(None), supertype(dtype))
+    else:
+        na_types = {
+            bool: type(pd.NA),
+            int: type(pd.NA),
+            float: float,
+            complex: complex,
+            "datetime": type(pd.NaT),
+            "timedelta": type(pd.NaT),
+            str: type(pd.NA)
+        }
+        series = np.where(pd.isna(series), na_types[supertype(dtype)], dtype)
+    return pd.Series(series) if is_series else series
+
+
+
+test = pd.Series([
+    False,
+    True,
+    2,
+    np.int8(3),
+    np.int16(4),
+    np.int32(5),
+    np.int64(6),
+    np.uint8(7),
+    np.uint16(8),
+    np.uint32(9),
+    np.uint64(10),
+    11.0,
+    np.float16(12),
+    np.float32(13),
+    np.float64(14),
+    np.longdouble(15),
+    complex(16),
+    np.complex64(17),
+    np.complex128(18),
+    np.clongdouble(19),
+    decimal.Decimal(20),
+    None,
+    np.nan,
+    pd.NA
+], dtype="O")

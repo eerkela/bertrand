@@ -1,157 +1,274 @@
 from __future__ import annotations
-from typing import Any
+import inspect
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
 
 import pdtypes.cast.boolean
 import pdtypes.cast.complex
-import pdtypes.cast.empty
 import pdtypes.cast.float
 import pdtypes.cast.integer
 
-from pdtypes.cast.helpers import SeriesWrapper
-from pdtypes.check import get_dtype, object_types, supertype
-from pdtypes.util.type_hints import array_like
+from pdtypes.check import is_dtype, supertype, extension_type
+from pdtypes.cython.loops import object_types
+from pdtypes.util.array import vectorize
+from pdtypes.util.type_hints import array_like, scalar
 
-
-# TODO: consider adding `None` supertype for missing values, and accompanying
-# EmptySeries wrapper.
-# -> If compositing can be nailed down, then this could potentially replace all
-# missing value problems in the individual conversions.  Each series could be
-# assumed not to contain them, and if they all return an equivalently-dtyped
-# result, then .transform will match them up accordingly.  This would involve
-# running an extra .groupby for every incoming series, but it would likely be
-# more efficient than scanning through missing values for every input series.
-
-# extension types would be sorted out at the outer wrapper level.
-# SeriesWrapper: dispatches to multiple ConversionSeries
-#   ConversionSeries (IntegerSeries, ...): One for each supertype
-
-# Every conversion would have to return a like-indexed result for this to
-# work properly, but exclude_na would be unnecessary, which could alleviate
-# that.
-# -> np.frompyfunc preserves index
 
 wrappers = {
     bool: pdtypes.cast.boolean.BooleanSeries,
     int: pdtypes.cast.integer.IntegerSeries,
     float: pdtypes.cast.float.FloatSeries,
     complex: pdtypes.cast.complex.ComplexSeries,
-    type(None): pdtypes.cast.empty.EmptySeries
 }
 
 
-def dispatch(arg: Any | array_like) -> SeriesWrapper:
-    """test"""
-    wrappers = {
-        bool: pdtypes.cast.boolean.BooleanSeries,
-        int: pdtypes.cast.integer.IntegerSeries,
-        float: pdtypes.cast.float.FloatSeries,
-        complex: pdtypes.cast.complex.ComplexSeries
-    }
-
-    element_type = get_dtype(arg)
-    if isinstance(element_type, tuple):
-        element_type = {supertype(t) for t in element_type}
-        if len(element_type) > 1:
-            return CompositeSeries(arg)
-        element_type = element_type.pop()
-
-    wrap_class = wrappers[supertype(element_type)]
-    return wrap_class(arg)
+def filter_kwargs(func: Callable, **kwargs) -> dict[str, Any]:
+    """Filter out any arguments in **kwargs that don't match the signature of
+    `func`.
+    """
+    # TODO: there should be a better solution than direct filter, but for now,
+    # this worksfine.
+    sig = inspect.signature(func)
+    return {k: v for k, v in kwargs.items() if k in sig.parameters}
 
 
-class CompositeSeries(SeriesWrapper):
+class ConversionSeries:
     """test"""
 
     def __init__(
         self,
-        series: array_like,
-        nans: None | bool | array_like = None
-    ) -> CompositeSeries:
-        super().__init__(series, nans=nans)
-        # subset = self.series[~self.is_na]
-        subset = self.series
-        obj_types = object_types(subset, supertypes=True)
-        self.groups = subset.groupby(obj_types, sort=False)
+        series: scalar | array_like
+    ) -> ConversionSeries:
+        # vectorize input
+        series = pd.Series(vectorize(series), copy=False)
 
-    def to_boolean(
-        self,
-        *args,
-        **kwargs
-    ) -> pd.Series:
-        """test"""
-        wrap = lambda grp: wrappers[grp.name](grp, nans=False, validate=False)
-        compute = lambda wrapped: wrapped.to_boolean(*args, **kwargs)
-        return self.groups.transform(lambda x: compute(wrap(x)))
+        # identify missing values
+        is_extension = pd.api.types.is_extension_array_dtype(series)
+        not_nullable = is_dtype(series.dtype, (bool, int))
+        if not_nullable and not is_extension:  # series cannot contain NA
+            self.is_na = pd.Series(np.broadcast_to(False, series.shape))
+            self.is_na.index = series.index
+            self.hasnans = False
+        else:
+            self.is_na = pd.isna(series)
+            self.hasnans = self.is_na.any()
 
-    def to_integer(
-        self,
-        *args,
-        **kwargs
-    ) -> pd.Series:
-        """test"""
-        wrap = lambda grp: wrappers[grp.name](grp, nans=False, validate=False)
-        compute = lambda wrapped: wrapped.to_integer(*args, **kwargs)
-        return self.groups.transform(lambda x: compute(wrap(x)))
+        # strip missing values
+        if self.hasnans:
+            # store old NAs in case `errors='ignore'`
+            self.old_nans = series[self.is_na]
+            series = series[~self.is_na]
 
-    def to_float(
-        self,
-        *args,
-        **kwargs
-    ) -> pd.Series:
-        """test"""
-        wrap = lambda grp: wrappers[grp.name](grp, nans=False, validate=False)
-        compute = lambda wrapped: wrapped.to_float(*args, **kwargs)
-        return self.groups.transform(lambda x: compute(wrap(x)))
+        # generate wrapped series/groupby
+        if pd.api.types.is_object_dtype(series):  # might be composite
+            obj_types = object_types(series.to_numpy(), supertypes=True)
+            self.groups = series.groupby(obj_types, sort=False)
+        else:
+            self.series = wrappers[supertype(series.dtype)](series)
 
-    def to_complex(
-        self,
-        *args,
-        **kwargs
-    ) -> pd.Series:
-        """test"""
-        wrap = lambda grp: wrappers[grp.name](grp, nans=False, validate=False)
-        compute = lambda wrapped: wrapped.to_complex(*args, **kwargs)
-        return self.groups.transform(lambda x: compute(wrap(x)))
+    def compute(self, target: str, **kwargs) -> pd.Series:
+        """Compute partial result for target conversion, excluding missing
+        values.  Automatically handles grouped operations in the case of
+        object series.
+        """
+        # series is grouped, wrap each group and transform
+        if hasattr(self, "groups"):
+            def groupwise(grp) -> pd.Series:
+                wrapped = wrappers[grp.name](grp, validate=False)
+                conversion = getattr(wrapped, target)
+                return conversion(**filter_kwargs(conversion, **kwargs))
 
-    def to_decimal(
-        self,
-        *args,
-        **kwargs
-    ) -> pd.Series:
-        """test"""
-        wrap = lambda grp: wrappers[grp.name](grp, nans=False, validate=False)
-        compute = lambda wrapped: wrapped.to_decimal(*args, **kwargs)
-        return self.groups.transform(lambda x: compute(wrap(x)))
+            return self.groups.transform(groupwise)
 
-    def to_datetime(
-        self,
-        *args,
-        **kwargs
-    ) -> pd.Series:
-        """test"""
-        wrap = lambda grp: wrappers[grp.name](grp, nans=False, validate=False)
-        compute = lambda wrapped: wrapped.to_datetime(*args, **kwargs)
-        return self.groups.transform(lambda x: compute(wrap(x)))
+        # series is already wrapped
+        conversion = getattr(self.series, target)
+        return conversion(**filter_kwargs(conversion, **kwargs))
 
-    def to_timedelta(
-        self,
-        *args,
-        **kwargs
-    ) -> pd.Series:
-        """test"""
-        wrap = lambda grp: wrappers[grp.name](grp, nans=False, validate=False)
-        compute = lambda wrapped: wrapped.to_timedelta(*args, **kwargs)
-        return self.groups.transform(lambda x: compute(wrap(x)))
+    def reconstruct(self) -> pd.Series:
+        """Reconstruct the original series that was passed to this object's
+        constructor.  Ordinarily, this is only necessary when a conversion is
+        invoked with `errors='ignore'` and a `ConversionError` is encountered.
 
-    def to_string(
-        self,
-        *args,
-        **kwargs
-    ) -> pd.Series:
+        The output will be automatically converted to a `pandas.Series` object,
+        but is otherwise unmodified.  If the original series was a list-like
+        (without an explicit `.dtype` attribute), it will be returned with
+        `dtype='O'`.
+        """
+        # unwrap non-missing part of original series
+        if hasattr(self, "groups"):
+            series = self.groups.transform(lambda x: x)  # identity function
+        else:
+            series = self.series.series
+
+        # replace missing values
+        if hasattr(self, "old_nans"):
+            result = np.empty(self.is_na.shape, dtype="O")
+            result = pd.Series(result, dtype=series.dtype, copy=False)
+            result.index = self.is_na.index
+            result[~self.is_na] = series
+            result[self.is_na] = self.old_nans
+            return result
+
+        return series
+
+    def to_boolean(self, errors: str = "raise", **kwargs) -> pd.Series:
         """test"""
-        wrap = lambda grp: wrappers[grp.name](grp, nans=False, validate=False)
-        compute = lambda wrapped: wrapped.to_string(*args, **kwargs)
-        return self.groups.transform(lambda x: compute(wrap(x)))
+        try:
+            series = self.compute(target="to_boolean", errors=errors, **kwargs)
+        except pdtypes.error.ConversionError as err:
+            if errors == "ignore":
+                return self.reconstruct()  # reconstruct original series
+            raise err
+
+        # replace missing values
+        if self.hasnans:
+            dtype = extension_type(series.dtype)
+            result = np.empty(self.is_na.shape, dtype="O")
+            result = pd.Series(result, dtype=dtype, copy=False)
+            result.index = self.is_na.index
+            result[~self.is_na] = series
+            return result
+
+        return series
+
+    def to_integer(self, errors: str = "raise", **kwargs) -> pd.Series:
+        """test"""
+        try:
+            series = self.compute(target="to_integer", errors=errors, **kwargs)
+        except pdtypes.error.ConversionError as err:
+            if errors == "ignore":
+                return self.reconstruct()
+            raise err
+
+        # replace missing values
+        if self.hasnans:
+            dtype = extension_type(series.dtype)
+            result = np.full(self.is_na.shape, pd.NA, dtype="O")
+            result = pd.Series(result, dtype=dtype, copy=False)
+            result.index = self.is_na.index
+            result[~self.is_na] = series
+            return result
+
+        # no missing values to replace
+        return series
+
+    def to_float(self, errors: str = "raise", **kwargs) -> pd.Series:
+        """test"""
+        try:
+            series = self.compute(target="to_float", errors=errors, **kwargs)
+        except pdtypes.error.ConversionError as err:
+            if errors == "ignore":
+                return self.reconstruct()
+            raise err
+
+        # replace missing values
+        if self.hasnans:
+            result = np.full(self.is_na.shape, np.nan, dtype=series.dtype)
+            result = pd.Series(result, copy=False)
+            result.index = self.is_na.index
+            result[~self.is_na] = series
+            return result
+
+        return series
+
+    def to_complex(self, errors: str = "raise", **kwargs) -> pd.Series:
+        """test"""
+        try:
+            series = self.compute(target="to_complex", errors=errors, **kwargs)
+        except pdtypes.error.ConversionError as err:
+            if errors == "ignore":
+                return self.reconstruct()
+            raise err
+
+        # replace missing values
+        if self.hasnans:
+            result = np.full(self.is_na.shape, None, dtype=series.dtype)
+            result = pd.Series(result, copy=False)
+            result.index = self.is_na.index
+            result[~self.is_na] = series
+            return result
+
+        return series
+
+    def to_decimal(self, errors: str = "raise", **kwargs) -> pd.Series:
+        """test"""
+        try:
+            series = self.compute(target="to_decimal", errors=errors, **kwargs)
+        except pdtypes.error.ConversionError as err:
+            if errors == "ignore":
+                return self.reconstruct()
+            raise err
+
+        # replace missing values
+        if self.hasnans:
+            result = np.full(self.is_na.shape, pd.NA, dtype="O")
+            result = pd.Series(result, copy=False)
+            result.index = self.is_na.index
+            result[~self.is_na] = series
+            return result
+
+        return series
+
+    def to_datetime(self, errors: str = "raise", **kwargs) -> pd.Series:
+        """test"""
+        try:
+            series = self.compute(target="to_datetime", errors=errors, **kwargs)
+        except pdtypes.error.ConversionError as err:
+            if errors == "ignore":
+                return self.reconstruct()
+            raise err
+
+        # replace missing values
+        if self.hasnans:
+            # TODO: special handling of pd.Timestamp-dtyped result series
+            result = np.full(self.is_na.shape, pd.NaT, dtype="O")
+            result = pd.Series(result, copy=False)
+            result.index = self.is_na.index
+            result[~self.is_na] = series
+            return result
+
+        return series
+
+    def to_timedelta(self, errors: str = "raise", **kwargs) -> pd.Series:
+        """test"""
+        try:
+            series = self.compute(target="to_timedelta", errors=errors,
+                                  **kwargs)
+        except pdtypes.error.ConversionError as err:
+            if errors == "ignore":
+                return self.reconstruct()
+            raise err
+
+        # replace missing values
+        if self.hasnans:
+            # TODO: special handling of pd.Timestamp-dtyped result series
+            result = np.full(self.is_na.shape, pd.NaT, dtype="O")
+            result = pd.Series(result, copy=False)
+            result.index = self.is_na.index
+            result[~self.is_na] = series
+            return result
+
+        return series
+
+    def to_string(self, errors: str = "raise", **kwargs) -> pd.Series:
+        """test"""
+        try:
+            series = self.compute(target="to_string", errors=errors, **kwargs)
+        except pdtypes.error.ConversionError as err:
+            if errors == "ignore":
+                return self.reconstruct()
+            raise err
+
+        # TODO: ensure returned series is always pd.StringDtype()
+
+        # replace missing values
+        if self.hasnans:
+            result = np.full(self.is_na.shape, pd.NA, dtype="O")
+            result = pd.Series(result, dtype=series.dtype)
+            result.index = self.is_na.index
+            result[~self.is_na] = series
+            return result
+
+        return series
