@@ -4,16 +4,22 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from pdtypes.cast.helpers import (
+from ..check import (
+    check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
+)
+from ..error import ConversionError, error_trace, shorten_list
+from ..util.array import vectorize
+from ..util.type_hints import array_like, dtype_like
+
+from .helpers import (
     integral_range, _validate_dtype, _validate_errors, _validate_rounding,
     _validate_tolerance
 )
-from pdtypes.check import (
-    check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
-)
-from pdtypes.error import ConversionError, error_trace, shorten_list
-from pdtypes.util.array import vectorize
-from pdtypes.util.type_hints import array_like, dtype_like
+
+
+# TODO: because these classes use rectify(), I might be able to add consistent
+# type annotations to cython loops.
+# -> if overloading works as expected, I can do this for all possible c types
 
 
 def apply_tolerance(
@@ -107,12 +113,12 @@ def round_float(
         val = val * scale_factor  # implicit copy
 
     # special case: pandas implementation of round() (=="half_even") does not
-    # support `out` parameter.  If `rule='half_even'` and `val` is a Series,
-    # convert to numpy array and use the numpy implementation instead.
+    # support the `out` parameter.  If `rule='half_even'` and `val` is a
+    # Series, convert to numpy array and use the numpy implementation instead.
     bypass_pandas = (rule == "half_even" and isinstance(val, pd.Series))
     if bypass_pandas:
         index = val.index  # note original index
-        val = np.array(val, copy=False)
+        val = val.to_numpy()
 
     # select rounding strategy
     switch = {  # C-style switch statement
@@ -176,13 +182,8 @@ class FloatSeries:
         if self._hasinfs is not None:  # hasinfs is cached
             return self._hasinfs
 
-        if self._infs is not None:  # infs is cached, but hasinfs isn't
-            self._hasinfs = self._infs.any()
-            return self._hasinfs
-
-        # infs and hasinfs must be computed
-        self._infs = np.isinf(self.rectify(copy=True))
-        self._hasinfs = self._infs.any()
+        # hasinfs must be computed
+        self._hasinfs = self.infs.any()
         return self._hasinfs
 
     def rectify(self, copy: bool = True) -> pd.Series:
@@ -225,14 +226,12 @@ class FloatSeries:
         series = self.rectify(copy=True)
 
         # apply tolerance and rounding rules, if applicable
-        if rounding in ("half_floor", "half_ceiling", "half_down", "half_up",
-                        "half_even"):  # don't bother computing tolerances
+        nearest = ("half_floor", "half_ceiling", "half_down", "half_up",
+                   "half_even")
+        if tol and rounding not in nearest:
+            series = apply_tolerance(series, tol=tol, copy=False)
+        if rounding:
             series = round_float(series, rule=rounding, copy=False)
-        else:
-            if tol:
-                series = apply_tolerance(series, tol=tol, copy=False)
-            if rounding:
-                series = round_float(series, rule=rounding, copy=False)
 
         # check for precision loss
         if ((series != 0) & (series != 1)).any():
@@ -274,15 +273,13 @@ class FloatSeries:
             series[self.infs] = np.nan  # coerce
             coerced = True  # remember to convert to extension type later
 
-        # apply tolerance and round if applicable
-        if rounding in ("half_floor", "half_ceiling", "half_down", "half_up",
-                        "half_even"):  # don't bother computing tolerances
+        # apply tolerance and rounding rules, if applicable
+        nearest = ("half_floor", "half_ceiling", "half_down", "half_up",
+                   "half_even")
+        if tol and rounding not in nearest:
+            series = apply_tolerance(series, tol=tol, copy=False)
+        if rounding:
             series = round_float(series, rule=rounding, copy=False)
-        else:
-            if tol:
-                series = apply_tolerance(series, tol=tol, copy=False)
-            if rounding:
-                series = round_float(series, rule=rounding, copy=False)
 
         # check for precision loss
         if not (rounding or series.equals(round_float(series, "half_even"))):
@@ -320,7 +317,7 @@ class FloatSeries:
             series[(series < min_poss) | (series > max_poss)] = np.nan
             min_val = np.longdouble(series.min())
             max_val = np.longdouble(series.max())
-            coerced = True
+            coerced = True  # remember to convert to extension type later
 
         # attempt to downcast if applicable
         if downcast:
@@ -354,6 +351,9 @@ class FloatSeries:
 
         # rectify object series
         series = self.rectify(copy=True)
+
+        # TODO: downcast should go up here to prevent unnecessary casting
+        # operations
 
         # do naive conversion and check for precision loss/overflow afterwards
         if is_dtype(dtype, float, exact=True):  # preserve precision
@@ -394,6 +394,9 @@ class FloatSeries:
         # rectify object series
         series = self.rectify(copy=True)
 
+        # TODO: downcast should go up here to prevent unnecessary casting
+        # operations
+
         # do naive conversion and check for precision loss/overflow afterwards
         if is_dtype(dtype, complex, exact=True):  # preserve precision
             equiv_complex = {
@@ -428,9 +431,13 @@ class FloatSeries:
 
     def to_decimal(self) -> pd.Series:
         """test"""
-        # decimal.Decimal can't parse numpy floats
-        conv = lambda x: decimal.Decimal(str(x))  # string transfer format
-        return np.frompyfunc(conv, 1, 1)(self.series)
+        # decimal.Decimal can't parse np.longdouble by default
+        series = self.rectify(copy=True)
+        if is_dtype(series.dtype, np.longdouble):
+            conv = lambda x: decimal.Decimal(str(x))
+        else:
+            conv = decimal.Decimal
+        return np.frompyfunc(conv, 1, 1)(series)
 
     def to_string(self, dtype: dtype_like = pd.StringDtype()) -> pd.Series:
         """test"""

@@ -4,15 +4,14 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from pdtypes.cast.float import FloatSeries
-from pdtypes.cast.helpers import (
-    integral_range, _validate_dtype, _validate_errors
-)
-from pdtypes.check import (
+from ..check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
 )
-from pdtypes.error import ConversionError, error_trace, shorten_list
-from pdtypes.util.type_hints import array_like, dtype_like
+from ..error import ConversionError, error_trace, shorten_list
+from ..util.type_hints import array_like, dtype_like
+
+from .float import FloatSeries
+from .helpers import integral_range, _validate_dtype, _validate_errors
 
 
 class IntegerSeries:
@@ -130,6 +129,9 @@ class IntegerSeries:
         if dtype == float:  # built-in `float` is identical to np.float64
             dtype = np.float64
 
+        # TODO: downcast should go up here to prevent unnecessary casting
+        # operations
+
         # do naive conversion and check for overflow/precision loss afterwards
         series = self.series.astype(dtype, copy=True)
 
@@ -184,6 +186,9 @@ class IntegerSeries:
         if dtype == complex:  # built-in complex is identical to np.complex128
             dtype = np.complex128
 
+        # TODO: downcast should go up here to prevent unnecessary casting
+        # operations
+
         # do naive conversion and check for overflow/precision loss afterwards
         series = self.series.astype(dtype, copy=True)
 
@@ -227,7 +232,8 @@ class IntegerSeries:
 
     def to_decimal(self) -> pd.Series:
         """test"""
-        return self.series + decimal.Decimal(0)
+        conv = lambda x: decimal.Decimal(int(x))
+        return np.frompyfunc(conv, 1, 1)(self.series)  # as fast as cython
 
     def to_string(self, dtype: dtype_like = pd.StringDtype()) -> pd.Series:
         """test"""

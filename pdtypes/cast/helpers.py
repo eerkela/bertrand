@@ -14,6 +14,7 @@ from pdtypes.util.type_hints import dtype_like
 
 # TODO: `tolerance` should accept complex tolerances by default
 
+# TODO: all of these can be hoisted to __init__.py
 
 ####################################
 ####    Validation Functions    ####

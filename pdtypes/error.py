@@ -66,13 +66,10 @@ class ConversionError(Exception):
     conversion.
 
     The value(s) in question are attached to the error as a `pandas.Series`
-    object, which can be accessed under the `.bad_values` attribute.  These
+    object, which can be accessed under the `.values` attribute.  These
     values retain their original index.
     """
-
-    # TODO: consider putting this under pdtypes.cast for more readable
-    # messages.
-    # TODO: Traces can be controlled globally from here
+    append_trace: bool = True
 
     def __init__(
         self,
@@ -81,6 +78,8 @@ class ConversionError(Exception):
     ) -> ConversionError:
         self.trace = error_trace(stack_index=2)
         self.message = msg
-        super().__init__(f"[{self.trace}] {self.message}")
-        # super().__init__(self.message)
-        self.bad_values = values
+        if ConversionError.append_trace:
+            super().__init__(f"[{self.trace}] {self.message}")
+        else:
+            super().__init__(self.message)
+        self.values = values

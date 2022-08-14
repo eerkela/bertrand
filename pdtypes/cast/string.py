@@ -10,63 +10,93 @@ import numpy as np
 import pandas as pd
 import pytz
 
-from pdtypes.cast.helpers import (
-    _downcast_complex_series, _downcast_float_series, _downcast_int_dtype,
-    _parse_timezone, _shorten_list, _validate_boolean_dtype,
-    _validate_complex_dtype, _validate_datetime_dtype, _validate_decimal_dtype,
-    _validate_dtype_is_scalar, _validate_errors, _validate_float_dtype,
-    _validate_format, _validate_integer_dtype, _validate_string_dtype,
-    _validate_string_series, ExcludeNA
+from ..check import check_dtype, get_dtype, is_dtype, resolve_dtype
+from ..cython.loops import string_to_boolean
+from ..error import ConversionError, error_trace, shorten_list
+from ..util.array import vectorize
+from ..util.type_hints import array_like, dtype_like
+
+from .helpers import (
+    _validate_dtype, _validate_errors, _validate_rounding, _validate_tolerance
 )
-from pdtypes.check import is_dtype
-from pdtypes.error import error_trace
-from pdtypes.util.array import vectorize
-from pdtypes.util.type_hints import array_like, dtype_like
+from .integer import IntegerSeries
 
 
-def string_to_boolean(
-    series: str | array_like,
-    dtype: dtype_like = bool,
-    errors: str = "raise",
-    *,
-    validate: bool = True
-) -> pd.Series:
-    """Convert a string series into booleans."""
-    # vectorize input
-    series = pd.Series(vectorize(series))
+class StringSeries:
+    """test"""
 
-    # validate input
-    if validate:
-        _validate_string_series(series)
-        _validate_dtype_is_scalar(dtype)
-        _validate_boolean_dtype(dtype)
-    _validate_errors(errors)
+    def __init__(
+        self,
+        series: pd.Series,
+        validate: bool = True
+    ) -> StringSeries:
+        if validate and not check_dtype(series, str):
+            err_msg = (f"[{error_trace()}] `series` must contain decimal "
+                       f"data, not {get_dtype(series)}")
+            raise TypeError(err_msg)
 
-    # TODO: bool("False") == True
+        self.series = series
 
-    # for each element, attempt boolean coercion and note errors
-    def transcribe(element: str) -> tuple[bool, bool]:
-        try:
-            return (bool(element.replace(" ", "")), False)
-        except ValueError:
-            return (pd.NA, True)
+    def to_boolean(
+        self,
+        dtype: dtype_like = bool,
+        errors: str = "raise"
+    ) -> pd.Series:
+        """test"""
+        dtype = resolve_dtype(dtype)
+        _validate_dtype(dtype, bool)
+        _validate_errors(errors)
 
-    # subset to avoid missing values
-    with ExcludeNA(series, pd.NA) as ctx:
-        ctx.subset, invalid = np.frompyfunc(transcribe, 1, 2)(ctx.subset)
+        # for each element, attempt boolean coercion and note errors
+        series, invalid = string_to_boolean(self.series.to_numpy())
         if invalid.any():
-            if errors == "raise":
-                bad = ctx.subset[invalid].index.values
-                err_msg = (f"[{error_trace()}] non-boolean values detected at "
-                           f"index {_shorten_list(bad)}")
-                raise ValueError(err_msg)
-            if errors == "ignore":
-                return series
-            ctx.hasnans = True
+            if errors != "coerce":
+                bad_vals = self.series[invalid]
+                err_msg = (f"non-boolean values detected at index "
+                           f"{shorten_list(bad_vals.index.values)}")
+                raise ConversionError(err_msg, bad_vals)
+            series = pd.Series(series, dtype=pd.BooleanDtype())
+        else:
+            series = pd.Series(series, dtype=bool)
 
-    if ctx.hasnans:
-        return ctx.result.astype(pd.BooleanDtype(), copy=False)
-    return ctx.result.astype(bool, copy=False)
+        # replace index and return
+        series.index = self.series.index
+        return series
+
+    def to_integer(
+        self,
+        dtype: dtype_like = int,
+        downcast: bool = False,
+        errors: str = "raise"
+    ) -> pd.Series:
+        """test"""
+        dtype = resolve_dtype(dtype)
+        _validate_dtype(dtype, int)
+        _validate_errors(errors)
+
+        # for each element, attempt integer coercion and note errors
+        def transcribe(element: str) -> tuple[int, bool]:
+            try:
+                return (int(element.replace(" ", "")), False)
+            except ValueError:
+                return (pd.NA, True)
+
+        # TODO: series might have NAs
+
+        series, invalid = np.frompyfunc(transcribe, 1, 2)(self.series)
+        if invalid.any():
+            if errors != "coerce":
+                bad_vals = self.series[invalid]
+                err_msg = (f"non-integer values detected at index "
+                           f"{shorten_list(bad_vals.index.values)}")
+                raise ConversionError(err_msg, bad_vals)
+
+            # TODO: series has NAs.  Strip them out before passing to
+            # IntegerSeries, then merge them back in by constructing a new
+            # result series, as with SeriesWrapper.
+
+
+
 
 
 def string_to_integer(

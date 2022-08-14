@@ -61,7 +61,24 @@ cdef dict atomic_to_supertype = {  # atomic type to associated supertype
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def object_types(numpy.ndarray arr, bint supertypes = False):
-    # TODO: only a substantial increase when supertypes=True
+    """Return the type/supertype of each element in a numpy object array.
+
+    Parameters
+    ----------
+    arr (numpy.ndarray):
+        The array to analyze.  Must be a pyobject array with `dtype='O'` for
+        the returned types to be accurate.
+    supertypes (bint):
+        If `True`, return the supertype associated with each element, rather
+        than the element type directly.
+
+    Returns
+    -------
+    numpy.ndarray:
+        The result of doing elementwise type introspection on the object array
+        `arr`.
+    """
+    cdef int i
     cdef int arr_length = arr.shape[0]
     cdef numpy.ndarray result = numpy.empty(arr_length, dtype="O")
 
@@ -74,31 +91,83 @@ def object_types(numpy.ndarray arr, bint supertypes = False):
 
     return result
 
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
-def as_pyint(numpy.ndarray arr):
-    # TODO: not necessarily a performance increase over np.frompyfunc
+def quantize_decimal(numpy.ndarray arr, rule, bint copy = True):
+    """Performs fast rounding on decimal arrays, according to the given `rule`.
+
+    Parameters
+    ----------
+    arr (numpy.ndarray):
+        The array to round.  Must contain `decimal.Decimal` objects with
+        callable `.quantize()` methods.
+    rule:
+        A lambda function that accepts exactly one `decimal.Decimal` argument,
+        which is called within the body of the loop.  It should return a new
+        `decimal.Decimal` object representing the result of the desired
+        rounding behavior.  Most often, this will call `Decimal.quantize()`
+        with some combination of conditions and decimal rounding rules to
+        replicate the most commonly used rounding rules ('floor', 'ceiling',
+        ..., 'half_up', 'half_even', etc.).
+    copy (bint):
+        If `False`, modify `arr` in-place.  Else, return a copy.
+
+    Returns
+    -------
+    numpy.ndarray:
+        The result of doing elementwise rounding on the decimal array `arr`.
+        If `copy=False`, this is a direct reference to the modified array.
+    """
+    cdef int i
     cdef int arr_length = arr.shape[0]
+
+    # modify in-place
+    if not copy:
+        for i in range(arr_length):
+            arr[i] = rule(arr[i])
+        return arr
+
+    # return a copy
     cdef numpy.ndarray result = numpy.empty(arr_length, dtype="O")
+    for i in range(arr_length):
+        result[i] = rule(arr[i])
+    return result
+
+
+cdef dict bool_strings = {
+    # True
+    "y": True,
+    "yes": True,
+    "t": True,
+    "true": True,
+    "on": True,
+    "1": True,
+
+    # False
+    "n": False,
+    "no": False,
+    "f": False,
+    "false": False,
+    "off": False,
+    "0": False
+}
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def string_to_boolean(numpy.ndarray arr):
+    cdef int i
+    cdef int arr_length = arr.shape[0]
+    cdef str s
+    cdef numpy.ndarray[numpy.uint8_t, ndim=1, cast=True] invalid
+    cdef numpy.ndarray result
+
+    result = numpy.empty(arr_length, dtype="O")
+    invalid = numpy.empty(arr_length, dtype=bool)
 
     for i in range(arr_length):
-        result[i] = int(arr[i])
-
-    return result
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-def as_decimal(numpy.ndarray arr, preprocess = None):
-    # TODO: not a substantial performance increase over np.frompyfunc
-    cdef int arr_length = arr.shape[0]
-    cdef numpy.ndarray result = numpy.empty(arr_length, dtype="O")
-
-    if preprocess is not None:
-        for i in range(arr_length):
-            result[i] = decimal.Decimal(preprocess(arr[i]))
-    else:
-        for i in range(arr_length):
-            result[i] = decimal.Decimal(arr[i])
-
-    return result
+        s = arr[i].replace(" ", "").lower()
+        result[i] = bool_strings.get(s, pandas.NA)
+        invalid[i] = s not in bool_strings
+    return result, invalid

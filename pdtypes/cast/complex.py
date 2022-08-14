@@ -165,6 +165,9 @@ class ComplexSeries:
         # rectify object series
         series = self.rectify(copy=True)
 
+        # TODO: downcast should go up here to prevent unnecessary casting
+        # operations
+
         # do naive conversion and check for precision loss/overflow afterwards
         if is_dtype(dtype, complex, exact=True):  # preserve precision
             dtype = resolve_dtype(series.dtype)
