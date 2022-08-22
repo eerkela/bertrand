@@ -676,7 +676,6 @@ def object_types(
     return pd.Series(series) if is_series else series
 
 
-
 test = pd.Series([
     False,
     True,
@@ -699,6 +698,7 @@ test = pd.Series([
     np.complex128(18),
     np.clongdouble(19),
     decimal.Decimal(20),
+    "21",
     None,
     np.nan,
     pd.NA

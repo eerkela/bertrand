@@ -12,8 +12,8 @@ from ..util.array import vectorize
 from ..util.type_hints import array_like, dtype_like
 
 from .helpers import (
-    integral_range, _validate_dtype, _validate_errors, _validate_rounding,
-    _validate_tolerance
+    _validate_dtype, _validate_errors, _validate_rounding, integral_range,
+    tolerance, DEFAULT_STRING_TYPE
 )
 
 
@@ -211,16 +211,19 @@ class FloatSeries:
 
     def to_boolean(
         self,
-        tol: int | float | decimal.Decimal = 1e-6,
-        rounding: None | str = None,
         dtype: dtype_like = bool,
+        tol: int | float | complex | decimal.Decimal = 1e-6,
+        rounding: None | str = None,
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_tolerance(tol)
+        tol, _ = tolerance(tol)
         _validate_rounding(rounding)
         _validate_errors(errors)
+        if tol >= 0.5:
+            rounding = "half_even"
+            tol = 0
 
         # rectify object series
         series = self.rectify(copy=True)
@@ -247,17 +250,20 @@ class FloatSeries:
 
     def to_integer(
         self,
-        tol: int | float | decimal.Decimal = 1e-6,
-        rounding: None | str = None,
         dtype: dtype_like = int,
+        tol: int | float | complex | decimal.Decimal = 1e-6,
+        rounding: None | str = None,
         downcast: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_tolerance(tol)
+        tol, _ = tolerance(tol)
         _validate_rounding(rounding)
         _validate_errors(errors)
+        if tol >= 0.5:
+            rounding = "half_even"
+            tol = 0
 
         # rectify object series
         series = self.rectify(copy=True)
@@ -320,13 +326,11 @@ class FloatSeries:
             coerced = True  # remember to convert to extension type later
 
         # attempt to downcast if applicable
-        if downcast:
-            # get possible integer types
+        if downcast:  # search for smaller dtypes that can represent series
             if is_dtype(dtype, "unsigned"):
                 int_types = [np.uint8, np.uint16, np.uint32, np.uint64]
             else:
                 int_types = [np.int8, np.int16, np.int32, np.int64]
-            # search for smaller dtypes that cover observed range
             for downcast_type in int_types[:int_types.index(dtype)]:
                 min_poss, max_poss = integral_range(downcast_type)
                 if min_val >= min_poss and max_val <= max_poss:
@@ -352,9 +356,6 @@ class FloatSeries:
         # rectify object series
         series = self.rectify(copy=True)
 
-        # TODO: downcast should go up here to prevent unnecessary casting
-        # operations
-
         # do naive conversion and check for precision loss/overflow afterwards
         if is_dtype(dtype, float, exact=True):  # preserve precision
             dtype = resolve_dtype(series.dtype)
@@ -370,12 +371,12 @@ class FloatSeries:
                 series[np.isinf(series) ^ self.infs] = np.nan
 
         # downcast if applicable
-        if downcast:
+        if downcast:  # search for smaller dtypes that can represent series
             float_types = [np.float16, np.float32, np.float64, np.longdouble]
             for downcast_type in float_types[:float_types.index(dtype)]:
                 attempt = series.astype(downcast_type, copy=False)
-                if not (attempt - series).any():
-                    return attempt
+                if (attempt == series).all():
+                    return attempt  # stop at smallest
 
         # return
         return series
@@ -393,9 +394,6 @@ class FloatSeries:
 
         # rectify object series
         series = self.rectify(copy=True)
-
-        # TODO: downcast should go up here to prevent unnecessary casting
-        # operations
 
         # do naive conversion and check for precision loss/overflow afterwards
         if is_dtype(dtype, complex, exact=True):  # preserve precision
@@ -419,36 +417,36 @@ class FloatSeries:
                 series[np.isinf(series) ^ self.infs] += complex(np.nan, np.nan)
 
         # attempt to downcast, if applicable
-        if downcast:
+        if downcast:  # search for smaller dtypes that can represent series
             complex_types = [np.complex64, np.complex128, np.clongdouble]
             for downcast_type in complex_types[:complex_types.index(dtype)]:
                 attempt = series.astype(downcast_type, copy=False)
-                if not (attempt - series).any():
-                    return attempt
+                if (attempt == series).all():
+                    return attempt  # stop at smallest
 
         # return
         return series
 
     def to_decimal(self) -> pd.Series:
         """test"""
-        # decimal.Decimal can't parse np.longdouble by default
         series = self.rectify(copy=True)
+
+        # decimal.Decimal can't parse np.longdouble series by default
         if is_dtype(series.dtype, np.longdouble):
             conv = lambda x: decimal.Decimal(str(x))
         else:
             conv = decimal.Decimal
+
         return np.frompyfunc(conv, 1, 1)(series)
 
-    def to_string(self, dtype: dtype_like = pd.StringDtype()) -> pd.Series:
+    def to_string(self, dtype: dtype_like = str) -> pd.Series:
         """test"""
-        dtype = resolve_dtype(dtype)  # TODO: erases extension type
+        resolve_dtype(dtype)  # ensures scalar, resolvable
         _validate_dtype(dtype, str)
 
-        # TODO: consider using pyarrow string dtype to save memory
-
-        # TODO: make this less janky
-        if is_dtype(dtype, str, exact=True):
-            dtype = pd.StringDtype()
+        # force string extension type
+        if not pd.api.types.is_extension_array_dtype(dtype):
+            dtype = DEFAULT_STRING_TYPE
 
         # do conversion
         return self.series.astype(dtype, copy=True)

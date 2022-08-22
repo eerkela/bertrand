@@ -12,10 +12,10 @@ from ..error import ConversionError, error_trace, shorten_list
 from ..util.type_hints import dtype_like
 
 from .helpers import (
-    _validate_dtype, _validate_errors, _validate_rounding, _validate_tolerance,
-    integral_range
+    _validate_dtype, _validate_errors, _validate_rounding, integral_range,
+    tolerance, DEFAULT_STRING_TYPE
 )
-from .float import FloatSeries
+from .float_ import FloatSeries
 
 
 def apply_tolerance(
@@ -156,17 +156,20 @@ class DecimalSeries:
 
     def to_boolean(
         self,
+        dtype: dtype_like = bool,
         tol: int | float | decimal.Decimal = 0,
         rounding: None | str = None,
-        dtype: dtype_like = bool,
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
         _validate_dtype(dtype, bool)
-        _validate_tolerance(tol)
+        tol, _ = tolerance(tol)
         _validate_rounding(rounding)
         _validate_errors(errors)
+        if tol >= 0.5:
+            rounding = "half_even"
+            tol = 0
 
         # TODO: explicitly reject infinities?
 
@@ -194,9 +197,9 @@ class DecimalSeries:
 
     def to_integer(
         self,
+        dtype: dtype_like = int,
         tol: int | float | decimal.Decimal = 0,
         rounding: None | str = None,
-        dtype: dtype_like = int,
         downcast: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
@@ -206,9 +209,12 @@ class DecimalSeries:
         errors="coerce" <==> rounding="down" + overflow to nan
         """
         dtype = resolve_dtype(dtype)
-        _validate_tolerance(tol)
+        tol, _ = tolerance(tol)
         _validate_rounding(rounding)
         _validate_errors(errors)
+        if tol >= 0.5:
+            rounding = "half_even"
+            tol = 0
 
         series = self.series.copy()
         coerced = False  # NAs may be introduced by coercion
@@ -270,13 +276,11 @@ class DecimalSeries:
             coerced = True  # remember to convert to extension type later
 
         # attempt to downcast if applicable
-        if downcast:
-            # get possible integer types
+        if downcast:  # search for smaller dtypes that can represent series
             if is_dtype(dtype, "unsigned"):
                 int_types = [np.uint8, np.uint16, np.uint32, np.uint64]
             else:
                 int_types = [np.int8, np.int16, np.int32, np.int64]
-            # search for smaller dtypes that cover observed range
             for downcast_type in int_types[:int_types.index(dtype)]:
                 min_poss, max_poss = integral_range(downcast_type)
                 if min_val >= min_poss and max_val <= max_poss:
@@ -291,31 +295,30 @@ class DecimalSeries:
     def to_float(
         self,
         dtype: dtype_like = float,
+        tol: int | float | complex | decimal.Decimal = 1e-6,
         downcast: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
         _validate_dtype(dtype, float)
+        tol, _ = tolerance(tol)
         _validate_errors(errors)
         if dtype == float:  # built-in `float` is identical to np.float64
             dtype = np.float64
+        if tol == np.inf:  # infinite tolerance is equivalent to "coerce"
+            errors = "coerce"
 
-        series = self.series.copy()
-
-        # TODO: downcast should go up here to prevent unnecessary casting
-        # operations
-
-        # do naive conversion (decimal -> float), then reverse
-        # (float -> decimal) to detect precision loss/overflow
-        series = series.astype(dtype, copy=False)  # naive conversion
+        # do naive conversion, then reverse to detect precision loss/overflow
+        series = self.series.astype(dtype)  # naive conversion
         reverse = FloatSeries(series, validate=False)
         if errors == "coerce":
             series[reverse.infs ^ self.infs] = np.nan
-        else:
-            reverse_result = reverse.to_decimal()
-            if not reverse_result.equals(self.series):
-                bad_vals = series[(reverse_result != self.series)]
+        else:  # problem arises when subtracting infinities
+            reverse = reverse.to_decimal()[~self.infs]
+            outside_tol = np.abs(reverse - self.series[~self.infs]) > tol
+            if outside_tol.any():
+                bad_vals = series[outside_tol]
                 err_msg = (f"precision loss detected at index "
                            f"{shorten_list(bad_vals.index.values)}")
                 raise ConversionError(err_msg, bad_vals)
@@ -325,7 +328,7 @@ class DecimalSeries:
             float_types = [np.float16, np.float32, np.float64, np.longdouble]
             for downcast_type in float_types[:float_types.index(dtype)]:
                 attempt = series.astype(downcast_type, copy=False)
-                if not (attempt - series).any():
+                if (attempt == series).all():
                     return attempt
 
         # return
@@ -334,11 +337,13 @@ class DecimalSeries:
     def to_complex(
         self,
         dtype: dtype_like = complex,
+        tol: int | float | complex | decimal.Decimal = 1e-6,
         downcast: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
+        tol, _ = tolerance(tol)
         _validate_dtype(dtype, complex)
         _validate_errors(errors)
         if dtype == complex:  # built-in `complex` is identical to complex128
@@ -350,7 +355,7 @@ class DecimalSeries:
             np.complex128: np.float64,
             np.clongdouble: np.longdouble
         }
-        series = self.to_float(dtype=equiv_float[dtype], errors=errors)
+        series = self.to_float(dtype=equiv_float[dtype], tol=tol, errors=errors)
         series = FloatSeries(series, validate=False)
         return series.to_complex(dtype=dtype, downcast=downcast, errors=errors)
 
@@ -359,16 +364,14 @@ class DecimalSeries:
         # decimal.Decimal is the only recognized decimal implementation
         return self.series.copy()
 
-    def to_string(self, dtype: dtype_like = pd.StringDtype()) -> pd.Series:
+    def to_string(self, dtype: dtype_like = str) -> pd.Series:
         """test"""
-        dtype = resolve_dtype(dtype)  # TODO: erases extension type
+        resolve_dtype(dtype)  # ensures scalar, resolvable
         _validate_dtype(dtype, str)
 
-        # TODO: consider using pyarrow string dtype to save memory
-
-        # TODO: make this less janky
-        if is_dtype(dtype, str, exact=True):
-            dtype = pd.StringDtype()
+        # force string extension type
+        if not pd.api.types.is_extension_array_dtype(dtype):
+            dtype = DEFAULT_STRING_TYPE
 
         # do conversion
         return self.series.astype(dtype, copy=True)

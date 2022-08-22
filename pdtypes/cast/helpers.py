@@ -1,8 +1,11 @@
 from __future__ import annotations
+import datetime
 import decimal
 
 import numpy as np
 import pandas as pd
+import pytz
+import tzlocal
 
 from pdtypes.check import is_dtype, resolve_dtype, supertype
 from pdtypes.error import error_trace, shorten_list
@@ -10,11 +13,12 @@ from pdtypes.util.time import _to_ns
 from pdtypes.util.type_hints import dtype_like
 
 
-# TODO: consider using pyarrow string dtype for all to_string conversions
+# if pyarrow >= 1.0.0 is installed, use as default string storage backend
+try:
+    DEFAULT_STRING_TYPE = pd.StringDtype("pyarrow")
+except ImportError:
+    DEFAULT_STRING_TYPE = pd.StringDtype("python")
 
-# TODO: `tolerance` should accept complex tolerances by default
-
-# TODO: all of these can be hoisted to __init__.py
 
 ####################################
 ####    Validation Functions    ####
@@ -90,20 +94,6 @@ def _validate_rounding(rounding: None | str) -> None:
     return None
 
 
-def _validate_tolerance(tol: int | float | decimal.Decimal) -> None:
-    """Raise a TypeError if `tol` isn't a real numeric, and a ValueError
-    if it is less than 0.
-    """
-    if not isinstance(tol, (int, float, decimal.Decimal)):
-        err_msg = (f"[{error_trace()}] `tol` must be a real numeric between 0 "
-                   f"and 0.5, not {type(tol)}")
-        raise TypeError(err_msg)
-    if tol < 0:
-        err_msg = (f"[{error_trace()}] `tol` must be a real numeric >= 0, not "
-                   f"{tol}")
-        raise ValueError(err_msg)
-
-
 def _validate_unit(unit: str | np.ndarray | pd.Series) -> None:
     """Efficiently check whether an array of units is valid."""
     valid = list(_to_ns) + ["M", "Y"]
@@ -159,3 +149,72 @@ def integral_range(dtype: dtype_like) -> tuple[int, int]:
     err_msg = (f"[{error_trace()}] `dtype` must be int, float, or "
                f"complex-like, not {dtype}")
     raise TypeError(err_msg)
+
+
+def localize_pydatetime(
+    dt: datetime.datetime,
+    tz: None | datetime.tzinfo
+) -> datetime.datetime:
+    """test"""
+    # TODO: this is duplicated in cython.loops
+    if not tz:  # return naive
+        if dt.tzinfo:  # datetime is not naive
+            dt = dt.astimezone(datetime.timezone.utc)
+            return dt.replace(tzinfo=None)
+        return dt
+
+    # return aware
+    if not dt.tzinfo:  # datetime is naive
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(tz)
+
+
+def parse_timezone(tz: None | str | datetime.tzinfo) -> None | datetime.tzinfo:
+    """test"""
+    # validate timezone and convert to datetime.tzinfo object
+
+    # TODO: localize step uses LMT (local mean time) for dates prior
+    # to 1902 for some reason.  This appears to be a known pytz limitation.
+    # https://stackoverflow.com/questions/24188060/in-pandas-why-does-tz-convert-change-the-timezone-used-from-est-to-lmt
+    # https://github.com/pandas-dev/pandas/issues/41834
+    # solution: use zoneinfo.ZoneInfo instead once pandas supports it
+    # https://github.com/pandas-dev/pandas/pull/46425
+    if isinstance(tz, str):
+        if tz == "local":
+            return pytz.timezone(tzlocal.get_localzone_name())
+        return pytz.timezone(tz)
+    if tz and not isinstance(tz, pytz.BaseTzInfo):
+        err_msg = (f"[{error_trace(stack_index=2)}] `tz` must be a "
+                   f"datetime.tzinfo object or an IANA-recognized timezone "
+                   f"string, not {type(tz)}")
+        raise TypeError(err_msg)
+    return tz
+
+
+def tolerance(
+    tol: int | float | complex | decimal.Decimal
+) -> tuple[int | float | decimal.Decimal, int | float | decimal.Decimal]:
+    """test"""
+    valid_types = (int, np.integer, float, np.floating, complex,
+                   np.complexfloating, decimal.Decimal)
+    if not isinstance(tol, valid_types):
+        err_msg = (f"[{error_trace()}] `tol` must be a numeric >= 0, not "
+                   f"{type(tol)}")
+        raise TypeError(err_msg)
+
+    # split into real and imaginary components
+    if isinstance(tol, (complex, np.complexfloating)):
+        real = np.real(tol)
+        imag = np.imag(tol)
+    else:
+        real, imag = tol, tol
+
+    # check both components are positive
+    if real < 0 or imag < 0:
+        err_msg = (f"[{error_trace()}] `tol` must be a numeric >= 0, not "
+                   f"{tol}")
+        raise ValueError(err_msg)
+
+    return real, imag
+
+

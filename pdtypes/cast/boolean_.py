@@ -8,7 +8,7 @@ from ..check import check_dtype, get_dtype, is_dtype, resolve_dtype
 from ..error import error_trace
 from ..util.type_hints import array_like, dtype_like
 
-from .helpers import _validate_dtype
+from .helpers import _validate_dtype, DEFAULT_STRING_TYPE
 
 
 class BooleanSeries:
@@ -31,7 +31,7 @@ class BooleanSeries:
         dtype: dtype_like = bool
     ) -> pd.Series:
         """test"""
-        dtype = resolve_dtype(dtype)
+        dtype = resolve_dtype(dtype)  # TODO: erases extension type
         _validate_dtype(dtype, bool)
         return self.series.astype(dtype, copy=True)
 
@@ -81,18 +81,13 @@ class BooleanSeries:
         """test"""
         return self.series + decimal.Decimal(0)
 
-    def to_string(
-        self,
-        dtype: dtype_like = pd.StringDtype()
-    ) -> pd.Series:
+    def to_string(self, dtype: dtype_like = str) -> pd.Series:
         """test"""
-        dtype = resolve_dtype(dtype)  # TODO: erases extension type
+        resolve_dtype(dtype)  # ensures scalar, resolvable
         _validate_dtype(dtype, str)
 
-        # TODO: consider using pyarrow string dtype to save memory
-
-        # TODO: make this less janky
-        if is_dtype(dtype, str, exact=True):
-            dtype = pd.StringDtype()
+        # force string extension type
+        if not pd.api.types.is_extension_array_dtype(dtype):
+            dtype = DEFAULT_STRING_TYPE
 
         return self.series.astype(dtype, copy=True)

@@ -12,15 +12,17 @@ from pdtypes.error import ConversionError
 from pdtypes.util.array import vectorize
 from pdtypes.util.type_hints import array_like, scalar
 
-from .boolean import BooleanSeries
-from .integer import IntegerSeries
-from .float import FloatSeries
-from .complex import ComplexSeries
-from .decimal import DecimalSeries
-from .string import StringSeries
+from pdtypes.cast.boolean_ import BooleanSeries
+from pdtypes.cast.integer_ import IntegerSeries
+from pdtypes.cast.float_ import FloatSeries
+from pdtypes.cast.complex_ import ComplexSeries
+from pdtypes.cast.decimal_ import DecimalSeries
+from pdtypes.cast.string_ import StringSeries
 
 
 # TODO: https://www.fast.ai/2019/08/06/delegation/
+
+# TODO: https://python.plainenglish.io/easy-python-jump-tables-35e61ac48cab
 
 # TODO: pass errors="ignore" ConversionError up to convert_dtypes.  Eliminates
 # need for old_nans attribute + reconstruct() method, and increases performance
@@ -49,7 +51,13 @@ def filter_kwargs(func: Callable, **kwargs) -> dict[str, Any]:
     return {k: v for k, v in kwargs.items() if k in sig.parameters}
 
 
-class SeriesWrapper:
+
+# TODO: making this an actual, dynamic adapter class is probably the way to
+# go.  Adapt the slicing infrastructure to allow easy subsetting.  If given
+# a mask with len > series, subset the mask according to self.is_na
+
+
+class ConversionSeries:
     """test"""
 
     def __init__(

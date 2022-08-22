@@ -172,9 +172,6 @@ def _parse_timezone(tz: str | datetime.tzinfo | None) -> datetime.tzinfo | None:
     return tz
 
 
-
-
-
 class ObjectSeries(SeriesWrapper):
     """test"""
 
@@ -271,5 +268,3 @@ class ObjectSeries(SeriesWrapper):
         int_result = IntegerSeries(ctx.result, validate=False)
         return int_result.to_integer(dtype=dtype, downcast=downcast,
                                      errors=errors)
-
-
