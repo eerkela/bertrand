@@ -11,6 +11,8 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
+from pdtypes import PYARROW_INSTALLED
+
 from .supertypes cimport supertype_only
 
 
@@ -122,7 +124,7 @@ cdef dict default_dtype_aliases = {
 
     # string
     np.dtype(str): str,
-    pd.StringDtype(): str,  # TODO: optional `storage` argument?
+    pd.StringDtype("python"): str,
 
     # object
     np.dtype(object): object,
@@ -132,6 +134,8 @@ cdef dict default_dtype_aliases = {
     np.dtype("a"): bytes,
     np.dtype("V"): bytes
 }
+if PYARROW_INSTALLED:
+    default_dtype_aliases[pd.StringDtype("pyarrow")] = str
 
 
 @cython.boundscheck(False)

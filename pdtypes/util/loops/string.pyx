@@ -15,6 +15,10 @@ import pandas as pd
 import dateutil
 
 
+# TODO: rename path to pdtypes.loops.string.pxd/pyx
+# pdtypes.loops.decimal.pxd/pyx
+
+
 #######################
 ####    Strings    ####
 #######################

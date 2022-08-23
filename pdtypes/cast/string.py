@@ -11,24 +11,26 @@ import numpy as np
 import pandas as pd
 import pytz
 
-from ..check.check import (
+
+from pdtypes import DEFAULT_STRING_DTYPE
+
+from pdtypes.check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
 )
-from ..cython.loops import (
+from pdtypes.util.loops.string import (
     string_to_boolean, split_complex_strings, string_to_pydatetime,
     string_to_pytimedelta, string_to_numpy_timedelta64, localize
 )
-from ..error import ConversionError, error_trace, shorten_list
-from ..util.array import vectorize
-from ..util.time import _to_ns
-from ..util.type_hints import array_like, dtype_like
+from pdtypes.error import ConversionError, error_trace, shorten_list
+from pdtypes.util.array import vectorize
+from pdtypes.util.time import _to_ns
+from pdtypes.util.type_hints import array_like, dtype_like
 
 from .helpers import (
     _validate_datetime_format, _validate_dtype, _validate_errors,
-    DEFAULT_STRING_TYPE, integral_range, localize_pydatetime, parse_timezone,
-    tolerance
+    integral_range, localize_pydatetime, parse_timezone, tolerance
 )
-from .decimal_ import DecimalSeries
+from .decimal import DecimalSeries
 
 
 # TODO: timedelta parsing should be cythonized and go in its own .pyx file
@@ -707,6 +709,6 @@ class StringSeries:
 
         # force string extension type
         if not pd.api.types.is_extension_array_dtype(dtype):
-            dtype = DEFAULT_STRING_TYPE
+            dtype = DEFAULT_STRING_DTYPE
 
         return self.series.astype(dtype, copy=True)

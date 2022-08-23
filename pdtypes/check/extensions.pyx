@@ -8,6 +8,8 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
+from pdtypes import DEFAULT_STRING_DTYPE
+
 from .resolve cimport _resolve_dtype
 
 
@@ -29,7 +31,7 @@ cdef dict atomic_to_extension_type = {
     np.uint64: pd.UInt64Dtype(),
 
     # string
-    str: pd.StringDtype()  # TODO: replace with DEFAULT_STRING_DTYPE
+    str: DEFAULT_STRING_DTYPE
 }
 
 

@@ -7,17 +7,10 @@ import pandas as pd
 import pytz
 import tzlocal
 
-from pdtypes.check.check import is_dtype, resolve_dtype, supertype
+from pdtypes.check import is_dtype, resolve_dtype, supertype
 from pdtypes.error import error_trace, shorten_list
 from pdtypes.util.time import _to_ns
 from pdtypes.util.type_hints import dtype_like
-
-
-# if pyarrow >= 1.0.0 is installed, use as default string storage backend
-try:
-    DEFAULT_STRING_TYPE = pd.StringDtype("pyarrow")
-except ImportError:
-    DEFAULT_STRING_TYPE = pd.StringDtype("python")
 
 
 ####################################

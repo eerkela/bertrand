@@ -4,14 +4,16 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from pdtypes.check.check import check_dtype, get_dtype, is_dtype, resolve_dtype
+from pdtypes import DEFAULT_STRING_DTYPE
+
+from pdtypes.check import check_dtype, get_dtype, is_dtype, resolve_dtype
 from pdtypes.error import ConversionError, error_trace, shorten_list
 from pdtypes.util.array import vectorize
 from pdtypes.util.type_hints import array_like, dtype_like
 
-from .float_ import FloatSeries
+from .float import FloatSeries
 from .helpers import (
-    _validate_dtype, _validate_errors, _validate_rounding, tolerance, DEFAULT_STRING_TYPE
+    _validate_dtype, _validate_errors, _validate_rounding, tolerance
 )
 
 # TODO: in the case of (1+nanj)/(nan+1j), retain non-nan real/imag component
@@ -195,7 +197,7 @@ class ComplexSeries:
 
         # force string extension type
         if not pd.api.types.is_extension_array_dtype(dtype):
-            dtype = DEFAULT_STRING_TYPE
+            dtype = DEFAULT_STRING_DTYPE
 
         # do conversion
         return self.series.astype(dtype, copy=True)

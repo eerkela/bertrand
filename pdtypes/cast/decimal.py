@@ -4,18 +4,23 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from pdtypes.check.check import (
+from pdtypes import DEFAULT_STRING_DTYPE
+
+from pdtypes.check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
 )
-from pdtypes.cython.decimal import quantize_decimal
+from pdtypes.util.loops.decimal import quantize_decimal
 from pdtypes.error import ConversionError, error_trace, shorten_list
 from pdtypes.util.type_hints import dtype_like
 
 from .helpers import (
     _validate_dtype, _validate_errors, _validate_rounding, integral_range,
-    tolerance, DEFAULT_STRING_TYPE
+    tolerance
 )
-from .float_ import FloatSeries
+from .float import FloatSeries
+
+
+# TODO: these helpers should be offloaded to cython
 
 
 def apply_tolerance(
@@ -372,7 +377,7 @@ class DecimalSeries:
 
         # force string extension type
         if not pd.api.types.is_extension_array_dtype(dtype):
-            dtype = DEFAULT_STRING_TYPE
+            dtype = DEFAULT_STRING_DTYPE
 
         # do conversion
         return self.series.astype(dtype, copy=True)
