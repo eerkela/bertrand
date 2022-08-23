@@ -4,7 +4,7 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from ..check import check_dtype, get_dtype, is_dtype, resolve_dtype
+from ..check.check import check_dtype, get_dtype, is_dtype, resolve_dtype
 from ..error import error_trace
 from ..util.type_hints import array_like, dtype_like
 

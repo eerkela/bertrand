@@ -8,7 +8,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from pdtypes.check import (
+from pdtypes.check.check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype, supertype
 )
 from pdtypes.error import error_trace, shorten_list

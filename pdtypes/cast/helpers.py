@@ -7,7 +7,7 @@ import pandas as pd
 import pytz
 import tzlocal
 
-from pdtypes.check import is_dtype, resolve_dtype, supertype
+from pdtypes.check.check import is_dtype, resolve_dtype, supertype
 from pdtypes.error import error_trace, shorten_list
 from pdtypes.util.time import _to_ns
 from pdtypes.util.type_hints import dtype_like

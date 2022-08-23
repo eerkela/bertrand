@@ -4,12 +4,12 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from ..check import (
+from pdtypes.check.check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
 )
-from ..cython.loops import quantize_decimal
-from ..error import ConversionError, error_trace, shorten_list
-from ..util.type_hints import dtype_like
+from pdtypes.cython.decimal import quantize_decimal
+from pdtypes.error import ConversionError, error_trace, shorten_list
+from pdtypes.util.type_hints import dtype_like
 
 from .helpers import (
     _validate_dtype, _validate_errors, _validate_rounding, integral_range,
@@ -56,11 +56,12 @@ def round_decimal(
     """test"""
     is_array_like = isinstance(val, (np.ndarray, pd.Series))
 
-    # optimization: hidden mutability.  Explicitly copy if directed, then
-    # apply all further modifications in-place.
-    if not is_array_like:  # input is scalar -> always copy
-        val = val + 0  # forces a copy
-    elif copy:  # input is array-like -> apply `copy` rule
+    # This function implements an optimization known as hidden mutability.
+    # Internally, any statement that modifies `val` is done in-place, with
+    # an explicit copy generated (optionally) beforehand.
+    if not is_array_like:  # scalars are always copied
+        val = val + 0
+    elif copy:  # optionally copy if array-like
         val = val.copy()
 
     # optimization: only scale if `decimals != 0`

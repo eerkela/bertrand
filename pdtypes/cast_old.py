@@ -16,7 +16,7 @@ import pytz
 import tzlocal
 
 from pdtypes.error import error_trace
-from pdtypes.check import check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
+from pdtypes.check.check import check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
 from pdtypes.util.array import vectorize, broadcast_args
 from pdtypes.util.time import _to_ns
 from pdtypes.util.type_hints import (

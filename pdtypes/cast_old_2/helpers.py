@@ -8,7 +8,7 @@ import pandas as pd
 import pytz
 import tzlocal
 
-from pdtypes.check import check_dtype, get_dtype, is_dtype
+from pdtypes.check.check import check_dtype, get_dtype, is_dtype
 from pdtypes.error import error_trace
 from pdtypes.util.time import _to_ns
 from pdtypes.util.type_hints import (

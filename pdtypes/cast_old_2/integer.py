@@ -14,7 +14,7 @@ from pdtypes.cast_old_2.helpers import (
     _validate_float_dtype, _validate_integer_dtype, _validate_integer_series,
     _validate_string_dtype
 )
-from pdtypes.check import extension_type, is_dtype
+from pdtypes.check.check import extension_type, is_dtype
 from pdtypes.error import error_trace
 from pdtypes.util.array import vectorize
 from pdtypes.util.type_hints import array_like, dtype_like

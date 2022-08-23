@@ -6,7 +6,7 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 
-from pdtypes.check import is_dtype, supertype, extension_type
+from pdtypes.check.check import is_dtype, supertype, extension_type
 from pdtypes.cython.loops import object_types
 from pdtypes.error import ConversionError
 from pdtypes.util.array import vectorize

@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytz
 
-from ..check import (
+from ..check.check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
 )
 from ..cython.loops import (

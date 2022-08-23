@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from pdtypes.check import check_dtype, get_dtype
+from pdtypes.check.check import check_dtype, get_dtype
 from pdtypes.util.type_hints import array_like, dtype_like
 
 
