@@ -10,9 +10,9 @@ from pdtypes.check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
 )
 from pdtypes.error import ConversionError, error_trace, shorten_list
+from pdtypes.round import apply_tolerance, round_generic
 from pdtypes.util.array import vectorize
 from pdtypes.util.downcast import integral_range
-from pdtypes.util.float import apply_tolerance, round_float
 from pdtypes.util.type_hints import array_like, dtype_like
 from pdtypes.util.validate import (
     validate_dtype, validate_errors, validate_rounding, tolerance
@@ -78,7 +78,7 @@ class FloatSeries:
         """test"""
         # TODO: this can be attached directly to pd.Series
         series = self.rectify(copy=copy)
-        return round_float(series, rule=rule, decimals=decimals, copy=copy)
+        return round_generic(series, rule=rule, decimals=decimals, copy=copy)
 
     def to_boolean(
         self,
@@ -105,7 +105,7 @@ class FloatSeries:
         if tol and rounding not in nearest:
             series = apply_tolerance(series, tol=tol, copy=False)
         if rounding:
-            series = round_float(series, rule=rounding, copy=False)
+            series = round_generic(series, rule=rounding, copy=False)
 
         # check for precision loss
         if ((series != 0) & (series != 1)).any():
@@ -156,16 +156,16 @@ class FloatSeries:
         if tol and rounding not in nearest:
             series = apply_tolerance(series, tol=tol, copy=False)
         if rounding:
-            series = round_float(series, rule=rounding, copy=False)
+            series = round_generic(series, rule=rounding, copy=False)
 
         # check for precision loss
-        if not (rounding or series.equals(round_float(series, "half_even"))):
+        if not (rounding or series.equals(round_generic(series, "half_even"))):
             if errors != "coerce":
-                bad_vals = series[(series != round_float(series)) ^ self.infs]
+                bad_vals = series[(series != round_generic(series)) ^ self.infs]
                 err_msg = (f"precision loss detected at index "
                            f"{shorten_list(bad_vals.index.values)}")
                 raise ConversionError(err_msg, bad_vals)
-            round_float(series, "down", copy=False)  # coerce toward zero
+            round_generic(series, "down", copy=False)  # coerce toward zero
 
         # get min/max to evaluate range - longdouble maintains integer
         # precision for entire 64-bit range, prevents inconsistent comparison

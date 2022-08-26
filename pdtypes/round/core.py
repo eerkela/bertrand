@@ -5,7 +5,7 @@ efficient, customizable rounding on arbitrary numeric inputs.
 between precise and imprecise formats to compensate for possible floating
 point rounding errors.
 
-`round_numeric` is generically useful wherever rounding is necessary.  It is
+`round_generic` is generically useful wherever rounding is necessary.  It is
 intended as a drop-in replacement for `numpy.round()`, with the addition of
 customizable rounding logic and wider support for the types that may be found
 in `pdtypes`-enhanced array and series objects.
@@ -57,7 +57,7 @@ def apply_tolerance(
     """
     if not tol:  # trivial case, tol=0
         return val
-    rounded = round_numeric(val, "half_even", decimals=0, copy=True)
+    rounded = round_generic(val, "half_even", decimals=0, copy=True)
 
     # numpy array, using np.where
     if isinstance(val, np.ndarray):
@@ -80,7 +80,7 @@ def apply_tolerance(
     return rounded
 
 
-def round_numeric(
+def round_generic(
     val: int | float | complex | decimal.Decimal | np.ndarray | pd.Series,
     rule: str = "half_even",
     decimals: int = 0,
