@@ -19,17 +19,21 @@ from pdtypes.util.type_hints import array_like, scalar
 
 
 def is_scalar(arg: Any) -> bool:
-    """Returns True if `arg` is a scalar, False if it is an array-like sequence
-    of any kind.
-    """
-    return not bool(np.array(arg).shape)
+    """Return `True` if `arg` is scalar and `False` if it is array-like."""
+    return not np.array(arg).shape
 
 
 def vectorize(obj: scalar | array_like) -> np.ndarray | pd.Series:
-    """Convert any object into an array-like with at least 1 dimension.
-    `pandas.Series` objects are returned immediately.  `numpy.ndarray` objects
-    are reshaped to be at least 1 dimensional, but are otherwise unaffected.
-    All other inputs are converted to 1D object arrays.
+    """Construct an array-like from `obj`.
+
+    If `obj` is scalar, this will construct a 1-dimensional `ndarray` with
+    `dtype='O'` and a single element - the original object.  If `obj` is
+    list-like, the resulting `ndarray` will have dimensions equal to those of
+    the input list.
+
+    If `obj` is already array-like (`np.ndarray` or `pd.Series`), then it is
+    returned as-is, with scalar `ndarray`s reshaped to be at least
+    1-dimensional.
     """
     if isinstance(obj, pd.Series):
         return obj
@@ -43,29 +47,48 @@ def vectorize(obj: scalar | array_like) -> np.ndarray | pd.Series:
 def broadcast_args(
     *args: scalar | array_like
 ) -> tuple[np.ndarray | pd.Series, ...]:
-    """Broadcast a set of input arrays/series to equal size.  Series inputs
-    are returned as like objects, which reference a memory view of the given
-    input.
+    """Broadcast a set of input arrays/series to equal shape.
 
-    Array and series dtypes are preserved during broadcasting.
+    Each input is returned unmodified except for its shape, which is
+    standardized according to ordinary numpy broadcasting rules.  If a series
+    is provided as input, it is returned as such, with the same properties
+    as an array equivalent.  In both cases, array and series dtypes are
+    preserved during broadcasting.
 
-    None of the objects that are returned by this function should be written to
-    without first copying them.  This forces reallocation of the underlying
-    memory view and prevents unwanted side-effects.
+    Care should be taken when modifying the objects that are returned by this
+    function.  Since each one references a memory view on the original object,
+    any changes that are made will propagate to the original.  If one of these
+    objects needs to be written to, it is standard practice to copy it first
+    using `.copy()`.  This forces reallocation of the underlying memory view
+    and prevents unwanted side effects from propagating, at the cost of
+    increased overall memory usage.
     """
-    # identify which args are series and note their original dtype
-    arrays = [vectorize(a) for a in args]
-    is_series = [isinstance(a, pd.Series) for a in arrays]
-    series_dtypes = [a.dtype if s else None for a, s in zip(arrays, is_series)]
+    # vectorize args
+    args = [vectorize(a) for a in args]
+    target_shape = np.broadcast_shapes(*[a.shape for a in args])
 
-    # broadcast args, then convert back to series where appropriate
-    arrays = np.broadcast_arrays(*arrays)
-    generator = zip(arrays, is_series, series_dtypes)
-    return tuple(pd.Series(a, dtype=d) if s else a for a, s, d in generator)
+    # build up result
+    result = []
+    for array in args:
+        if isinstance(array, pd.Series):
+            dtype = array.dtype
+            index = np.broadcast_to(array.index, target_shape)
+            array = np.broadcast_to(array, target_shape)
+            result.append(pd.Series(array, dtype=dtype, index=index))
+        else:
+            result.append(np.broadcast_to(array, target_shape))
+    return tuple(result)
 
 
-def replace_with_dict(array: np.ndarray, dictionary: dict) -> np.ndarray:
-    """Vectorized dictionary lookup."""
+def replace_with_dict(
+    array: np.ndarray,
+    dictionary: dict
+) -> np.ndarray:
+    """Performs vectorized dictionary lookup, using the provided table.  The
+    keys in `dictionary` must be sortable.
+    """
+    # TODO: this would be a lot easier/more memory efficient/flexible in
+    # cython.  Take generic np.ndarray and dict as input.
     keys = np.array(list(dictionary))
     vals = np.array(list(dictionary.values()))
 
@@ -74,47 +97,3 @@ def replace_with_dict(array: np.ndarray, dictionary: dict) -> np.ndarray:
     keys_sorted = keys[sorted_indices]
     vals_sorted = vals[sorted_indices]
     return vals_sorted[np.searchsorted(keys_sorted, array)]
-
-
-def round_div(
-    num: int | np.ndarray | pd.Series,
-    div: int | np.ndarray | pd.Series,
-    rounding: str = "floor"
-) -> int | np.array | pd.Series:
-    """Vectorized integer division with customizable rounding."""
-    switch = {  # C-style switch statement with lazy evaluation
-        # round toward -infinity
-        "floor": lambda: num // div,
-
-        # round toward +infinity
-        "ceiling": lambda: (num + div - 1) // div,
-
-        # round toward zero
-        "down": lambda: (num + ((num < 0) ^ (div < 0)) * (div - 1)) // div,
-
-        # round away from zero
-        "up": lambda: (num + ((num > 0) ^ (div < 0)) * (div - 1)) // div,
-
-        # round toward nearest integer, half toward -infinity
-        "half_floor": lambda: (num + div // 2 - 1) // div,
-
-        # round toward nearest integer, half toward +infinity
-        "half_ceiling": lambda: (num + div // 2) // div,
-
-        # round toward nearest integer, half toward zero
-        "half_down": lambda: (num + div // 2 - ((num > 0) ^ (div < 0))) // div,
-
-        # round toward nearest integer, half away from zero
-        "half_up": lambda: (num + div // 2 - ((num < 0) ^ (div < 0))) // div,
-
-        # round toward nearest integer, half to even (~5x slower than others)
-        "half_even": lambda: (num + div // 2 + (num // div % 2 - 1)) // div
-    }
-    try:
-        return switch[rounding]()
-    except KeyError as err:  # error - rounding not recognized
-        err_msg = (f"[{error_trace()}] `rounding` must be one of ['floor', "
-                   f"'ceiling', 'down', 'up', 'half_floor', 'half_ceiling', "
-                   f"'half_down', 'half_up', 'half_even'], not "
-                   f"{repr(rounding)}")
-        raise ValueError(err_msg) from err

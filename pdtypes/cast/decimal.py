@@ -9,105 +9,15 @@ from pdtypes import DEFAULT_STRING_DTYPE
 from pdtypes.check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
 )
-from pdtypes.util.loops.decimal import quantize_decimal
 from pdtypes.error import ConversionError, error_trace, shorten_list
+from pdtypes.util.downcast import integral_range
+from pdtypes.util.decimal import apply_tolerance, round_decimal
 from pdtypes.util.type_hints import dtype_like
-
-from .helpers import (
-    _validate_dtype, _validate_errors, _validate_rounding, integral_range,
-    tolerance
+from pdtypes.util.validate import (
+    validate_dtype, validate_errors, validate_rounding, tolerance
 )
+
 from .float import FloatSeries
-
-
-# TODO: these helpers should be offloaded to cython
-
-
-def apply_tolerance(
-    val: decimal.Decimal | np.ndarray | pd.Series,
-    tol: int | float | decimal.Decimal,
-    copy: bool = True
-) -> pd.Series:
-    """test"""
-    rounded = round_decimal(val, "half_even", decimals=0, copy=True)
-
-    # numpy array, using np.where
-    if isinstance(val, np.ndarray):
-        if copy:
-            return np.where(np.abs(val - rounded) > tol, val, rounded)
-        val[:] = np.where(np.abs(val - rounded) > tol, val, rounded)
-        return val
-
-    # pandas series, using Series.where
-    if isinstance(val, pd.Series):
-        rounded.index = val.index  # match index
-        if copy:
-            return val.where(np.abs(val - rounded) > tol, rounded)
-        val.where(np.abs(val - rounded) > tol, rounded, inplace=True)
-        return val
-
-    # scalar
-    if np.abs(val - rounded) > tol:
-        return val
-    return rounded
-
-
-def round_decimal(
-    val: decimal.Decimal | np.ndarray | pd.Series,
-    rule: str = "half_even",
-    decimals: int = 0,
-    copy: bool = True
-) -> decimal.Decimal | np.ndarray | pd.Series:
-    """test"""
-    is_array_like = isinstance(val, (np.ndarray, pd.Series))
-
-    # This function implements an optimization known as hidden mutability.
-    # Internally, any statement that modifies `val` is done in-place, with
-    # an explicit copy generated (optionally) beforehand.
-    if not is_array_like:  # scalars are always copied
-        val = val + 0
-    elif copy:  # optionally copy if array-like
-        val = val.copy()
-
-    # optimization: only scale if `decimals != 0`
-    if decimals:
-        scale_factor = decimal.Decimal(10)**decimals
-        val *= scale_factor
-
-    switch = {  # C-style switch statement
-        "floor": lambda x: x.quantize(1, decimal.ROUND_FLOOR),
-        "ceiling": lambda x: x.quantize(1, decimal.ROUND_CEILING),
-        "down": lambda x: x.quantize(1, decimal.ROUND_DOWN),
-        "up": lambda x: x.quantize(1, decimal.ROUND_UP),
-        "half_floor": (lambda x: x.quantize(1, decimal.ROUND_HALF_UP)
-                                 if x < 0 else
-                                 x.quantize(1, decimal.ROUND_HALF_DOWN)),
-        "half_ceiling": (lambda x: x.quantize(1, decimal.ROUND_HALF_DOWN)
-                                   if x < 0 else
-                                   x.quantize(1, decimal.ROUND_HALF_UP)),
-        "half_down": lambda x: x.quantize(1, decimal.ROUND_HALF_DOWN),
-        "half_up": lambda x: x.quantize(1, decimal.ROUND_HALF_UP),
-        "half_even": lambda x: x.quantize(1, decimal.ROUND_HALF_EVEN)
-    }
-
-    # do rounding in-place
-    if is_array_like:
-        if isinstance(val, pd.Series):  # pandas.Series
-            index = val.index  # remember index
-            val = quantize_decimal(val.to_numpy(), switch[rule], copy=False)
-            val = pd.Series(val, copy=False)
-            val.index = index  # replace index
-        else:  # numpy.array
-            val = quantize_decimal(val, switch[rule], copy=False)
-    else:  # scalar
-        val = switch[rule](val)
-
-    # undo scaling
-    if decimals:
-        val /= scale_factor
-
-    # return
-    return val
 
 
 class DecimalSeries:
@@ -169,10 +79,10 @@ class DecimalSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, bool)
+        validate_dtype(dtype, bool)
         tol, _ = tolerance(tol)
-        _validate_rounding(rounding)
-        _validate_errors(errors)
+        validate_rounding(rounding)
+        validate_errors(errors)
         if tol >= 0.5:
             rounding = "half_even"
             tol = 0
@@ -216,8 +126,8 @@ class DecimalSeries:
         """
         dtype = resolve_dtype(dtype)
         tol, _ = tolerance(tol)
-        _validate_rounding(rounding)
-        _validate_errors(errors)
+        validate_rounding(rounding)
+        validate_errors(errors)
         if tol >= 0.5:
             rounding = "half_even"
             tol = 0
@@ -307,9 +217,9 @@ class DecimalSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, float)
+        validate_dtype(dtype, float)
         tol, _ = tolerance(tol)
-        _validate_errors(errors)
+        validate_errors(errors)
         if dtype == float:  # built-in `float` is identical to np.float64
             dtype = np.float64
         if tol == np.inf:  # infinite tolerance is equivalent to "coerce"
@@ -350,8 +260,8 @@ class DecimalSeries:
         """test"""
         dtype = resolve_dtype(dtype)
         tol, _ = tolerance(tol)
-        _validate_dtype(dtype, complex)
-        _validate_errors(errors)
+        validate_dtype(dtype, complex)
+        validate_errors(errors)
         if dtype == complex:  # built-in `complex` is identical to complex128
             dtype = np.complex128
 
@@ -373,7 +283,7 @@ class DecimalSeries:
     def to_string(self, dtype: dtype_like = str) -> pd.Series:
         """test"""
         resolve_dtype(dtype)  # ensures scalar, resolvable
-        _validate_dtype(dtype, str)
+        validate_dtype(dtype, str)
 
         # force string extension type
         if not pd.api.types.is_extension_array_dtype(dtype):

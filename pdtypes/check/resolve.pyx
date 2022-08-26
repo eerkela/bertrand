@@ -154,7 +154,7 @@ cdef object _resolve_dtype(object dtype):
             return custom_dtype_aliases[lower]
         if lower in supertype_only:
             raise ValueError(f"dtype {repr(dtype)} does not have an "
-                             f"associated atomic type (supertype-only)")
+                             f"associated atomic type (supertype only)")
 
     # case 2: dtype is abstract and must be parsed
     try:

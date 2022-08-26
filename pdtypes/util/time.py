@@ -1474,3 +1474,28 @@ def string_to_datetime(
     except ValueError as err:
         err_msg = (f"[{error_trace()}] could not interpret series as datetime")
         raise ValueError(err_msg) from err
+
+
+
+
+
+
+
+
+def localize_pydatetime(
+    dt: datetime.datetime,
+    tz: None | datetime.tzinfo
+) -> datetime.datetime:
+    """test"""
+    # TODO: this is duplicated in cython.loops
+    if not tz:  # return naive
+        if dt.tzinfo:  # datetime is not naive
+            dt = dt.astimezone(datetime.timezone.utc)
+            return dt.replace(tzinfo=None)
+        return dt
+
+    # return aware
+    if not dt.tzinfo:  # datetime is naive
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(tz)
+

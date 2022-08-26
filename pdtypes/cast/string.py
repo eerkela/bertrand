@@ -1,7 +1,6 @@
 from __future__ import annotations
 import datetime
 import decimal
-import functools
 import re
 import warnings
 import zoneinfo
@@ -10,7 +9,6 @@ import dateutil
 import numpy as np
 import pandas as pd
 import pytz
-
 
 from pdtypes import DEFAULT_STRING_DTYPE
 
@@ -22,175 +20,15 @@ from pdtypes.util.loops.string import (
     string_to_pytimedelta, string_to_numpy_timedelta64, localize
 )
 from pdtypes.error import ConversionError, error_trace, shorten_list
-from pdtypes.util.array import vectorize
-from pdtypes.util.time import _to_ns
-from pdtypes.util.type_hints import array_like, dtype_like
-
-from .helpers import (
-    _validate_datetime_format, _validate_dtype, _validate_errors,
-    integral_range, localize_pydatetime, parse_timezone, tolerance
+from pdtypes.util.downcast import integral_range
+from pdtypes.util.string import string_to_ns, parse_iso_8601_strings
+from pdtypes.util.type_hints import dtype_like
+from pdtypes.util.validate import (
+    validate_datetime_format, validate_dtype, validate_errors, timezone,
+    tolerance
 )
+
 from .decimal import DecimalSeries
-
-
-# TODO: timedelta parsing should be cythonized and go in its own .pyx file
-
-
-def timedelta_formats_regex():
-    """Compile a set of regular expressions to capture and parse recognized
-    timedelta strings.
-
-    Matches both abbreviated ('1h22m', '1 hour, 22 minutes', etc.) and
-    clock format ('01:22:00', '1:22', '00:01:22:00') strings, with precision up
-    to days and/or weeks and down to nanoseconds.
-    """
-    # capture groups - abbreviated units ('h', 'min', 'seconds', etc.)
-    # years = r"(?P<years>\d+)\s*(?:ys?|yrs?.?|years?)"
-    # months = r"(?P<months>\d+)\s*(?:mos?.?|mths?.?|months?)"
-    W = r"(?P<W>[\d.]+)\s*(?:w|wks?|weeks?)"
-    D = r"(?P<D>[\d.]+)\s*(?:d|dys?|days?)"
-    h = r"(?P<h>[\d.]+)\s*(?:h|hrs?|hours?)"
-    m = r"(?P<m>[\d.]+)\s*(?:m|(mins?)|(minutes?))"
-    s = r"(?P<s>[\d.]+)\s*(?:s|secs?|seconds?)"
-    ms = r"(?P<ms>[\d.]+)\s*(?:ms|msecs?|millisecs?|milliseconds?)"
-    us = r"(?P<us>[\d.]+)\s*(?:us|usecs?|microsecs?|microseconds?)"
-    ns = r"(?P<ns>[\d.]+)\s*(?:ns|nsecs?|nanosecs?|nanoseconds?)"
-
-    # capture groups - clock format (':' separated)
-    day_clock = r"(?P<D>\d+):(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2}(?:\.\d+)?)"
-    hour_clock = r"(?P<h>\d+):(?P<m>\d{2}):(?P<s>\d{2}(?:\.\d+)?)"
-    minute_clock =  r"(?P<m>\d{1,2}):(?P<s>\d{2}(?:\.\d+)?)"
-    second_clock = r":(?P<s>\d{2}(?:\.\d+)?)"
-
-    # wrapping functions for capture groups
-    separators = r"[,/]"  # these are ignored
-    optional = lambda x: rf"(?:{x}\s*(?:{separators}\s*)?)?"
-
-    # compiled timedelta formats
-    formats = [
-        (rf"{optional(W)}\s*{optional(D)}\s*{optional(h)}\s*{optional(m)}\s*"
-         rf"{optional(s)}\s*{optional(ms)}\s*{optional(us)}\s*{optional(ns)}"),
-        rf"{optional(W)}\s*{optional(D)}\s*{hour_clock}",
-        rf"{day_clock}",
-        rf"{minute_clock}",
-        rf"{second_clock}"
-    ]
-    return [re.compile(rf"\s*{fmt}\s*$") for fmt in formats]
-
-
-timedelta_regex = {
-    "sign": re.compile(r"\s*(?P<sign>[+|-])?\s*(?P<unsigned>.*)$"),
-    "formats": timedelta_formats_regex()
-}
-
-
-def string_to_ns(delta: str, as_hours: bool = False) -> int:
-    """Parse a timedelta string, returning its associated value as an integer
-    number of nanoseconds.
-
-    See also: https://github.com/wroberts/pytimeparse
-
-    Parameters
-    ----------
-    delta (str):
-        Timedelta string to parse.  Can be in either abbreviated ('1h22m',
-        '1 hour, 22 minutes', ...) or clock format ('01:22:00', '1:22',
-        '00:01:22:00', ...), with precision up to days/weeks and down to
-        nanoseconds.  Can be either signed or unsigned.
-    as_hours (bool):
-        Whether to parse ambiguous timedelta strings of the form '1:22' as
-        containing hours and minutes (`True`), or minutes and seconds
-        (`False`).  Does not affect any other string format.
-
-    Returns
-    -------
-    int:
-        An integer number of nanoseconds associated with the given timedelta
-        string.  If the string contains digits below nanosecond precision,
-        they are destroyed.
-
-    Raises
-    ------
-    ValueError:
-        If the passed timedelta string does not match any of the recognized
-        formats.
-
-    Examples
-    --------
-    >>> parse_timedelta('1:24')
-    84000000000
-    >>> parse_timedelta(':22')
-    22000000000
-    >>> parse_timedelta('1 minute, 24 secs')
-    84000000000
-    >>> parse_timedelta('1m24s')
-    84000000000
-    >>> parse_timedelta('1.2 minutes')
-    72000000000
-    >>> parse_timedelta('1.2 seconds')
-    1200000000
-
-    Time expressions can be signed.
-    >>> parse_timedelta('- 1 minute')
-    -60000000000
-    >>> parse_timedelta('+ 1 minute')
-    60000000000
-
-    If `as_hours=True`, then ambiguous digits following a colon will be
-    interpreted as minutes; otherwise they are considered to be seconds.
-    >>> timeparse('1:30', as_hours=False)
-    90000000000
-    >>> timeparse('1:30', as_hours=True)
-    5400000000000
-    """
-    # get sign if present
-    match = timedelta_regex["sign"].match(delta)
-    sign = -1 if match.groupdict()["sign"] == "-" else 1
-
-    # strip sign and test all possible formats
-    delta = match.groupdict()["unsigned"]
-    for time_format in timedelta_regex["formats"]:
-
-        # attempt match
-        match = time_format.match(delta)
-        if match and match.group().strip():  # match found and not empty
-
-            # get dict of named subgroups (?P<...>) and associated values
-            groups = match.groupdict()
-
-            # strings of the form '1:22' are ambiguous.  By default, we assume
-            # minutes and seconds, but if `as_hours=True`, we interpret as
-            # hours and minutes instead
-            if (as_hours and delta.count(":") == 1 and "." not in delta and
-                not any(groups.get(x, None) for x in ["h", "D", "W"])):
-                groups["h"] = groups["m"]
-                groups["m"] = groups["s"]
-                groups.pop("s")
-
-            # build result
-            result = sum(_to_ns[k] * decimal.Decimal(v)
-                         for k, v in groups.items() if v)
-            return int(sign * result)
-
-    # string could not be matched
-    raise ValueError(f"could not parse timedelta string: {repr(delta)}")
-
-
-def parse_iso_8601_strings(arr: np.ndarray) -> np.ndarray:
-    """test"""
-    arr = arr.astype("M8[us]")
-
-    # TODO: have to manually check for overflow
-
-    min_val = arr.min()
-    max_val = arr.max()
-    min_datetime = np.datetime64(datetime.datetime.min)
-    max_datetime = np.datetime64(datetime.datetime.max)
-
-    if min_val < min_datetime or max_val > max_datetime:
-        raise ValueError()
-
-    return arr.astype("O")
 
 
 # TODO: swap default tz to UTC?  -> Minor performance increase
@@ -218,8 +56,8 @@ class StringSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, bool)
-        _validate_errors(errors)
+        validate_dtype(dtype, bool)
+        validate_errors(errors)
 
         # for each element, attempt boolean coercion and note errors
         # TODO: `invalid` may be replaced by (series == pd.NA).any()
@@ -247,8 +85,8 @@ class StringSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, int)
-        _validate_errors(errors)
+        validate_dtype(dtype, int)
+        validate_errors(errors)
 
         # for each element, attempt integer coercion and note errors
         def transcribe(element: str) -> tuple[int, bool]:
@@ -322,8 +160,8 @@ class StringSeries:
         """test"""
         dtype = resolve_dtype(dtype)
         tol, _ = tolerance(tol)
-        _validate_dtype(dtype, float)
-        _validate_errors(errors)
+        validate_dtype(dtype, float)
+        validate_errors(errors)
 
         # 2 steps: string -> decimal, then decimal -> float
         series = self.to_decimal(errors=errors)
@@ -357,8 +195,8 @@ class StringSeries:
         """test"""
         dtype = resolve_dtype(dtype)
         real_tol, imag_tol = tolerance(tol)
-        _validate_dtype(dtype, complex)
-        _validate_errors(errors)
+        validate_dtype(dtype, complex)
+        validate_errors(errors)
         if dtype == complex:  # built-in complex is identical to np.complex128
             dtype = np.complex128
 
@@ -407,7 +245,7 @@ class StringSeries:
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
-        _validate_errors(errors)
+        validate_errors(errors)
 
         # for each element, attempt decimal coercion and note errors
         def transcribe(element: str) -> tuple[decimal.Decimal, bool]:
@@ -436,9 +274,9 @@ class StringSeries:
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
-        _validate_datetime_format(format, day_first, year_first)
-        tz = parse_timezone(tz)
-        _validate_errors(errors)
+        validate_datetime_format(format, day_first, year_first)
+        tz = timezone(tz)
+        validate_errors(errors)
 
         # set up pd.to_datetime args
         if errors == "ignore":  # can't catch unraised error
@@ -476,9 +314,9 @@ class StringSeries:
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
-        _validate_datetime_format(format, day_first, year_first)
-        tz = parse_timezone(tz)
-        _validate_errors(errors)
+        validate_datetime_format(format, day_first, year_first)
+        tz = timezone(tz)
+        validate_errors(errors)
 
         # TODO: localize step uses LMT (local mean time) for dates prior
         # to 1902 for some reason.  This appears to be a known pytz limitation.
@@ -518,11 +356,12 @@ class StringSeries:
 
     def _to_numpy_datetime64(self, errors: str = "raise") -> pd.Series:
         """test"""
-        _validate_errors(errors)
+        validate_errors(errors)
 
         # TODO: can't replicate errors="coerce"
 
         # TODO: this can silently overflow if unit is too small for value
+        # -> cython warnings might be good here.
 
         try:
             series = self.series.to_numpy().astype("M8")
@@ -546,12 +385,13 @@ class StringSeries:
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
-        if dtype != "datetime":
+        validate_dtype(dtype, "datetime")
+        if not (isinstance(dtype, str) and dtype.lower() == "datetime"):
             dtype = resolve_dtype(dtype)
-        # _validate_dtype(dtype, "datetime")  # TODO: fix in check.py
-        _validate_datetime_format(format, day_first, year_first)
-        tz = parse_timezone(tz)
-        _validate_errors(errors)
+        # validate_dtype(dtype, "datetime")  # TODO: fix in check.py
+        validate_datetime_format(format, day_first, year_first)
+        tz = timezone(tz)
+        validate_errors(errors)
 
         # TODO: new type identifiers, in same pattern as string extension type
         # "datetime"
@@ -611,7 +451,7 @@ class StringSeries:
 
     def _to_pandas_timedelta(self, errors: str = "raise") -> pd.Series:
         """test"""
-        _validate_errors(errors)
+        validate_errors(errors)
 
         # set up pd.to_timedelta args
         if errors == "ignore":  # can't catch unraised error
@@ -628,7 +468,7 @@ class StringSeries:
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
-        _validate_errors(errors)
+        validate_errors(errors)
 
         # implemented as a cython loop
         result = string_to_pytimedelta(self.series.to_numpy(),
@@ -641,7 +481,7 @@ class StringSeries:
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
-        _validate_errors(errors)
+        validate_errors(errors)
 
         # implemented as a cython loop
         result = string_to_numpy_timedelta64(self.series.to_numpy(),
@@ -656,8 +496,8 @@ class StringSeries:
         """test"""
         if dtype != "timedelta":  # can't directly resolve timedelta supertype
             dtype = resolve_dtype(dtype)
-        # _validate_dtype(dtype, "datetime")  # TODO: fix in check.py
-        _validate_errors(errors)
+        # validate_dtype(dtype, "datetime")  # TODO: fix in check.py
+        validate_errors(errors)
 
         # TODO: new type identifiers, in same pattern as string extension type
         # "timedelta"
@@ -705,7 +545,7 @@ class StringSeries:
     def to_string(self, dtype: dtype_like = str) -> pd.Series:
         """test"""
         resolve_dtype(dtype)  # ensures scalar, resolveable
-        _validate_dtype(dtype, str)
+        validate_dtype(dtype, str)
 
         # force string extension type
         if not pd.api.types.is_extension_array_dtype(dtype):

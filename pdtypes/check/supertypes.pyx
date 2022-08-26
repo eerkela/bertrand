@@ -118,6 +118,10 @@ cdef dict custom_to_default_supertype = {
 cdef list supertype_only = ["datetime", "timedelta", *custom_supertypes]
 
 
+# TODO: is_supertype?
+# TODO: is_subtype
+
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)

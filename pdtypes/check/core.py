@@ -34,16 +34,16 @@ from .resolve import resolve_dtype
 from .supertypes import subtypes, supertype
 
 
-# TODO: return to expand, extend, introspect, resolve paradigm and add
-# a core.py module with get_dtype, check_dtype, is_dtype.
-
 # TODO: change numpy M8 and m8 comparisons to include unit/step size info
 #   -> if dtype has unit info, retrieve indices where type=np.datetime64 and
 #   -> gather unit info.  Cast to set, then compare units present in array with
 #   -> those given in `dtype`
 
 
-def get_dtype(array: scalar | array_like) -> atomic_type | set[atomic_type]:
+def get_dtype(
+    array: scalar | array_like,
+    exact: bool = True
+) -> atomic_type | set[atomic_type]:
     """Retrieve the common atomic element types stored in `array`.
 
     This function operates in a manner similar to `pd.api.types.infer_dtype()`,
@@ -102,7 +102,8 @@ def get_dtype(array: scalar | array_like) -> atomic_type | set[atomic_type]:
             return None
 
         # get unique element types
-        element_types = set(object_types(array, supertypes=False))
+        array = array.to_numpy() if isinstance(array, pd.Series) else array
+        element_types = set(object_types(array, exact=exact))
 
         # return
         if len(element_types) == 1:  # as scalar
@@ -110,17 +111,23 @@ def get_dtype(array: scalar | array_like) -> atomic_type | set[atomic_type]:
         return element_types
 
     # case 2: array has non-object dtype
+    result = None
     if isinstance(array, pd.Series):
         # special cases for M8[ns], m8[ns], categorical, and period series
         if pd.api.types.is_datetime64_ns_dtype(array):
-            return pd.Timestamp
-        if pd.api.types.is_timedelta64_ns_dtype(array):
-            return pd.Timedelta
-        if pd.api.types.is_categorical_dtype(array):
-            return get_dtype(array.dtype.categories)  # recursive
-        if pd.api.types.is_period_dtype(array):
-            return pd.Period
-    return resolve_dtype(array.dtype)
+            result = pd.Timestamp
+        elif pd.api.types.is_timedelta64_ns_dtype(array):
+            result = pd.Timedelta
+        elif pd.api.types.is_categorical_dtype(array):
+            result = get_dtype(array.dtype.categories, exact=exact)
+        elif pd.api.types.is_period_dtype(array):
+            result = pd.Period
+    if result is None:
+        result = resolve_dtype(array.dtype)
+
+    if not exact:
+        return supertype(result)
+    return result
 
 
 def check_dtype(
@@ -252,13 +259,6 @@ def check_dtype(
     In other words, the given `dtype` must fully encapsulate the types that are
     present in `array` for this function to return `True`.
     """
-    # TODO: if put in a cython .pyx file, can use following cdefs
-    # cdef set observed_types
-    # cdef set dtype_types
-    # cdef set custom_types
-    # cdef object typespec
-    # cdef object subtype
-
     # get unique element types contained in `arg`
     observed = get_dtype(arg)
     if not isinstance(observed, set):  # coerce scalar to set of length 1
@@ -297,21 +297,14 @@ def is_dtype(
     Returns:
         bool: _description_
     """
-    # TODO: if put in a cython .pyx file, can use following cdefs
-    # cdef set arg_types
-    # cdef set dtype_types
-    # cdef set custom_types
-    # cdef object typespec
-    # cdef object subtype
-
     # expand dtypes in `arg` to set of atomic types
     if isinstance(arg, (tuple, list, set, np.ndarray, pd.Series)):
         # merge into single set
         arg = {subtype
                for typespec in arg
-               for subtype in subtypes(typespec, exact=True)}
+               for subtype in subtypes(typespec, exact=exact)}
     else:
-        arg = subtypes(arg, exact=True)
+        arg = subtypes(arg, exact=exact)
 
     # expand `dtype` to set of atomic types
     if isinstance(dtype, (tuple, list, np.ndarray, pd.Series)):

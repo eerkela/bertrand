@@ -9,8 +9,7 @@ from pdtypes import DEFAULT_STRING_DTYPE
 from pdtypes.check import check_dtype, get_dtype, is_dtype, resolve_dtype
 from pdtypes.error import error_trace
 from pdtypes.util.type_hints import array_like, dtype_like
-
-from .helpers import _validate_dtype
+from pdtypes.util.validate import validate_dtype
 
 
 class BooleanSeries:
@@ -34,7 +33,7 @@ class BooleanSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)  # TODO: erases extension type
-        _validate_dtype(dtype, bool)
+        validate_dtype(dtype, bool)
         return self.series.astype(dtype, copy=True)
 
     def to_integer(
@@ -44,7 +43,7 @@ class BooleanSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, int)
+        validate_dtype(dtype, int)
 
         # if `downcast=True`, return as 8-bit integer dtype
         if downcast:
@@ -58,7 +57,7 @@ class BooleanSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, float)
+        validate_dtype(dtype, float)
 
         # if `downcast=True`, return as float16
         if downcast:
@@ -72,7 +71,7 @@ class BooleanSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, complex)
+        validate_dtype(dtype, complex)
 
         # if `downcast=True`, return as complex64
         if downcast:
@@ -86,7 +85,7 @@ class BooleanSeries:
     def to_string(self, dtype: dtype_like = str) -> pd.Series:
         """test"""
         resolve_dtype(dtype)  # ensures scalar, resolvable
-        _validate_dtype(dtype, str)
+        validate_dtype(dtype, str)
 
         # force string extension type
         if not pd.api.types.is_extension_array_dtype(dtype):

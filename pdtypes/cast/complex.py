@@ -10,11 +10,12 @@ from pdtypes.check import check_dtype, get_dtype, is_dtype, resolve_dtype
 from pdtypes.error import ConversionError, error_trace, shorten_list
 from pdtypes.util.array import vectorize
 from pdtypes.util.type_hints import array_like, dtype_like
+from pdtypes.util.validate import (
+    validate_dtype, validate_errors, validate_rounding, tolerance
+)
 
 from .float import FloatSeries
-from .helpers import (
-    _validate_dtype, _validate_errors, _validate_rounding, tolerance
-)
+
 
 # TODO: in the case of (1+nanj)/(nan+1j), retain non-nan real/imag component
 # -> pd.isna() considers both of these to be NA
@@ -77,9 +78,9 @@ class ComplexSeries:
         """test"""
         dtype = resolve_dtype(dtype)
         real_tol, imag_tol = tolerance(tol)
-        _validate_rounding(rounding)
-        _validate_dtype(dtype, bool)
-        _validate_errors(errors)
+        validate_rounding(rounding)
+        validate_dtype(dtype, bool)
+        validate_errors(errors)
 
         # 2 steps: complex -> float, then float -> boolean
         series = self.to_float(tol=imag_tol, errors=errors)
@@ -98,9 +99,9 @@ class ComplexSeries:
         """test"""
         dtype = resolve_dtype(dtype)
         real_tol, imag_tol = tolerance(tol)
-        _validate_rounding(rounding)
-        _validate_dtype(dtype, int)
-        _validate_errors(errors)
+        validate_rounding(rounding)
+        validate_dtype(dtype, int)
+        validate_errors(errors)
 
         # 2 steps: complex -> float, then float -> integer
         series = self.to_float(tol=imag_tol, errors=errors)
@@ -118,8 +119,8 @@ class ComplexSeries:
         """test"""
         dtype = resolve_dtype(dtype)
         _, imag_tol = tolerance(tol)
-        _validate_dtype(dtype, float)
-        _validate_errors(errors)
+        validate_dtype(dtype, float)
+        validate_errors(errors)
         if imag_tol == np.inf:
             errors = "coerce"
 
@@ -145,8 +146,8 @@ class ComplexSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, complex)
-        _validate_errors(errors)
+        validate_dtype(dtype, complex)
+        validate_errors(errors)
 
         # rectify object series
         series = self.rectify(copy=True)
@@ -184,7 +185,7 @@ class ComplexSeries:
     ) -> pd.Series:
         """test"""
         _, imag_tol = tolerance(tol)
-        _validate_errors(errors)
+        validate_errors(errors)
 
         # 2 steps: complex -> float, then float -> decimal
         series = self.to_float(tol=imag_tol, errors=errors)
@@ -193,7 +194,7 @@ class ComplexSeries:
     def to_string(self, dtype: dtype_like = str) -> pd.Series:
         """test"""
         resolve_dtype(dtype)  # ensure scalar, resolvable
-        _validate_dtype(dtype, str)
+        validate_dtype(dtype, str)
 
         # force string extension type
         if not pd.api.types.is_extension_array_dtype(dtype):

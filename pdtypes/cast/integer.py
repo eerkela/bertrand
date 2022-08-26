@@ -10,10 +10,11 @@ from pdtypes.check import (
     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
 )
 from pdtypes.error import ConversionError, error_trace, shorten_list
+from pdtypes.util.downcast import integral_range
 from pdtypes.util.type_hints import array_like, dtype_like
+from pdtypes.util.validate import validate_dtype, validate_errors
 
 from .float import FloatSeries
-from .helpers import integral_range, _validate_dtype, _validate_errors
 
 
 class IntegerSeries:
@@ -41,8 +42,8 @@ class IntegerSeries:
         """test"""
         # validate input
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, bool)
-        _validate_errors(errors)
+        validate_dtype(dtype, bool)
+        validate_errors(errors)
 
         # check series fits within boolean range [0, 1]
         if self.min < 0 or self.max > 1:
@@ -65,8 +66,8 @@ class IntegerSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, int)
-        _validate_errors(errors)
+        validate_dtype(dtype, int)
+        validate_errors(errors)
 
         # copy base parameters
         series = self.series.copy()
@@ -124,8 +125,8 @@ class IntegerSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, float)
-        _validate_errors(errors)
+        validate_dtype(dtype, float)
+        validate_errors(errors)
         if dtype == float:  # built-in `float` is identical to np.float64
             dtype = np.float64
 
@@ -176,8 +177,8 @@ class IntegerSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, complex)
-        _validate_errors(errors)
+        validate_dtype(dtype, complex)
+        validate_errors(errors)
         if dtype == complex:  # built-in complex is identical to np.complex128
             dtype = np.complex128
 
@@ -232,7 +233,7 @@ class IntegerSeries:
     def to_string(self, dtype: dtype_like = str) -> pd.Series:
         """test"""
         resolve_dtype(dtype)  # ensures scalar, resolvable
-        _validate_dtype(dtype, str)
+        validate_dtype(dtype, str)
 
         # force string extension type
         if not pd.api.types.is_extension_array_dtype(dtype):

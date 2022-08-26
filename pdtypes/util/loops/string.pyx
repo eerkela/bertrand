@@ -6,6 +6,7 @@ Further reading:
 import datetime
 from cpython cimport datetime
 import decimal
+import re
 
 cimport cython
 import numpy as np
@@ -13,17 +14,6 @@ cimport numpy as np
 import pandas as pd
 
 import dateutil
-
-
-# TODO: rename path to pdtypes.loops.string.pxd/pyx
-# pdtypes.loops.decimal.pxd/pyx
-
-
-#######################
-####    Strings    ####
-#######################
-
-import re
 
 
 cdef dict bool_strings = {

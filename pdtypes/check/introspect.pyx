@@ -8,32 +8,30 @@ from .supertypes cimport atomic_to_supertype
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-@cython.nonecheck(False)
 cdef np.ndarray[object] _object_types(
     np.ndarray[object] arr,
-    bint supertypes = False
+    bint exact = True
 ):
     """Internal C interface for public-facing object_types() function."""
     cdef int arr_length = arr.shape[0]
     cdef int i
     cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
 
-    if supertypes:  # conditional hoisted out of loop
-        for i in range(arr_length):
-            result[i] = atomic_to_supertype.get(type(arr[i]), object)
-    else:
+    if exact:  # conditional hoisted out of loop
         for i in range(arr_length):
             result[i] = type(arr[i])
+    else:
+        for i in range(arr_length):
+            result[i] = atomic_to_supertype.get(type(arr[i]), object)
 
     return result
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-@cython.nonecheck(False)
 def object_types(
     np.ndarray[object] arr,
-    bint supertypes = False
+    bint exact = True
 ) -> np.ndarray[object]:
     """Return the type/supertype of each element in a numpy object array.
 
@@ -41,9 +39,9 @@ def object_types(
     ----------
     arr (np.ndarray[object]):
         The array to analyze.  Must be a pyobject array with `dtype='O'`.
-    supertypes (bint):
-        If `True`, return the supertype associated with each element, rather
-        than the element type directly.
+    exact (bint):
+        If `False`, return the supertype associated with each element, rather
+        than the element type directly.  Defaults to `True`.
 
     Returns
     -------
@@ -51,4 +49,4 @@ def object_types(
         The result of doing elementwise type introspection on the object array
         `arr`.
     """
-    return _object_types(arr, supertypes)
+    return _object_types(arr, exact)

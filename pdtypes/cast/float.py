@@ -11,143 +11,12 @@ from pdtypes.check import (
 )
 from pdtypes.error import ConversionError, error_trace, shorten_list
 from pdtypes.util.array import vectorize
+from pdtypes.util.downcast import integral_range
+from pdtypes.util.float import apply_tolerance, round_float
 from pdtypes.util.type_hints import array_like, dtype_like
-
-from .helpers import (
-    _validate_dtype, _validate_errors, _validate_rounding, integral_range,
-    tolerance
+from pdtypes.util.validate import (
+    validate_dtype, validate_errors, validate_rounding, tolerance
 )
-
-
-# TODO: because these classes use rectify(), I might be able to add consistent
-# type annotations to cython loops.
-# -> if overloading works as expected, I can do this for all possible c types
-
-
-def apply_tolerance(
-    val: float | np.ndarray | pd.Series,
-    tol: int | float | decimal.Decimal,
-    copy: bool = True
-) -> pd.Series:
-    """test"""
-    rounded = round_float(val, "half_even", copy=True)
-
-    # numpy array, using np.where
-    if isinstance(val, np.ndarray):
-        if copy:
-            return np.where(np.abs(val - rounded) > tol, val, rounded)
-        val[:] = np.where(np.abs(val - rounded) > tol, val, rounded)
-        return val
-
-    # pandas series, using Series.where
-    if isinstance(val, pd.Series):
-        rounded.index = val.index  # match index
-        if copy:
-            return val.where(np.abs(val - rounded) > tol, rounded)
-        val.where(np.abs(val - rounded) > tol, rounded, inplace=True)
-        return val
-
-    # scalar
-    if np.abs(val - rounded) > tol:
-        return val
-    return rounded
-
-
-def _round_up(
-    val: float | np.ndarray | pd.Series,
-    out: None | np.ndarray | pd.Series = None
-) -> float | np.ndarray | pd.Series:
-    sign = np.sign(val)
-    result = np.ceil(np.abs(val, out=out), out=out)
-    result *= sign
-    return result
-
-
-def _round_half_down(
-    val: float | np.ndarray | pd.Series,
-    out: None | np.ndarray | pd.Series = None
-) -> float | np.ndarray | pd.Series:
-    sign = np.sign(val)
-    result = np.ceil(np.abs(val, out=out) - 0.5, out=out)
-    result *= sign
-    return result
-
-
-def _round_half_floor(
-    val: float | np.ndarray | pd.Series,
-    out: None | np.ndarray | pd.Series = None
-) -> float | np.ndarray | pd.Series:
-    return np.ceil(val - 0.5, out=out)
-
-
-def _round_half_ceiling(
-    val: float | np.ndarray | pd.Series,
-    out: None | np.ndarray | pd.Series = None
-) -> float | np.ndarray | pd.Series:
-    return np.floor(val + 0.5, out=out)
-
-
-def _round_half_up(
-    val: float | np.ndarray | pd.Series,
-    out: None | np.ndarray | pd.Series = None
-) -> float | np.ndarray | pd.Series:
-    sign = np.sign(val)
-    result = np.floor(np.abs(val, out=out) + 0.5, out=out)
-    result *= sign
-    return result
-
-
-def round_float(
-    val: float | np.ndarray | pd.Series,
-    rule: str = "half_even",
-    decimals: int = 0,
-    copy: bool = True
-) -> float | np.ndarray | pd.Series:
-    """test"""
-    is_array_like = isinstance(val, (np.ndarray, pd.Series))
-
-    # optimization: hidden mutability.  A copy is (or is not) generated in this
-    # first scaling step.  All other operations are done in-place.
-    scale_factor = 10**decimals
-    if not copy and is_array_like:
-        val *= scale_factor  # no copy
-    else:
-        val = val * scale_factor  # implicit copy
-
-    # special case: pandas implementation of round() (=="half_even") does not
-    # support the `out` parameter.  If `rule='half_even'` and `val` is a
-    # Series, convert to numpy array and use the numpy implementation instead.
-    bypass_pandas = (rule == "half_even" and isinstance(val, pd.Series))
-    if bypass_pandas:
-        index = val.index  # note original index
-        val = val.to_numpy()
-
-    # select rounding strategy
-    switch = {  # C-style switch statement
-        "floor": np.floor,
-        "ceiling": np.ceil,
-        "down": np.trunc,
-        "up": _round_up,
-        "half_floor": _round_half_floor,
-        "half_ceiling": _round_half_ceiling,
-        "half_down": _round_half_down,
-        "half_up": _round_half_up,
-        "half_even": np.round
-    }
-    round_func = switch[rule]
-
-    # do rounding in-place
-    out = val if is_array_like else None  # `out` must be array-like
-    val = round_func(val, out=out)
-
-    # undo scaling
-    val /= scale_factor
-
-    # return
-    if bypass_pandas:  # restore Series
-        val = pd.Series(val, copy=False)
-        val.index = index  # replace index
-    return val
 
 
 class FloatSeries:
@@ -221,8 +90,8 @@ class FloatSeries:
         """test"""
         dtype = resolve_dtype(dtype)
         tol, _ = tolerance(tol)
-        _validate_rounding(rounding)
-        _validate_errors(errors)
+        validate_rounding(rounding)
+        validate_errors(errors)
         if tol >= 0.5:
             rounding = "half_even"
             tol = 0
@@ -261,8 +130,8 @@ class FloatSeries:
         """test"""
         dtype = resolve_dtype(dtype)
         tol, _ = tolerance(tol)
-        _validate_rounding(rounding)
-        _validate_errors(errors)
+        validate_rounding(rounding)
+        validate_errors(errors)
         if tol >= 0.5:
             rounding = "half_even"
             tol = 0
@@ -352,8 +221,8 @@ class FloatSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, float)
-        _validate_errors(errors)
+        validate_dtype(dtype, float)
+        validate_errors(errors)
 
         # rectify object series
         series = self.rectify(copy=True)
@@ -391,8 +260,8 @@ class FloatSeries:
     ) -> pd.Series:
         """test"""
         dtype = resolve_dtype(dtype)
-        _validate_dtype(dtype, complex)
-        _validate_errors(errors)
+        validate_dtype(dtype, complex)
+        validate_errors(errors)
 
         # rectify object series
         series = self.rectify(copy=True)
@@ -444,7 +313,7 @@ class FloatSeries:
     def to_string(self, dtype: dtype_like = str) -> pd.Series:
         """test"""
         resolve_dtype(dtype)  # ensures scalar, resolvable
-        _validate_dtype(dtype, str)
+        validate_dtype(dtype, str)
 
         # force string extension type
         if not pd.api.types.is_extension_array_dtype(dtype):
