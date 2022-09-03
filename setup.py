@@ -8,8 +8,9 @@ distutils.core.setup(
     ext_modules=cythonize(
         [
             "pdtypes/check/*.pyx",
-            "pdtypes/util/loops/*.pyx",
-            "pdtypes/util/round/*.pyx"
+            "pdtypes/round/*.pyx",
+            "pdtypes/time/*.pyx",
+            "pdtypes/util/loops/*.pyx"
         ],
         language_level="3"
     ),

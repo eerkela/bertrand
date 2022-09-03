@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 from pdtypes.util.array import vectorize
-from pdtypes.util.type_hints import array_like, atomic_type, dtype_like, scalar
+from pdtypes.util.type_hints import array_like, dtype_like, scalar
 
 from .introspect import object_types
 from .resolve import resolve_dtype
@@ -43,7 +43,7 @@ from .supertypes import subtypes, supertype
 def get_dtype(
     array: scalar | array_like,
     exact: bool = True
-) -> atomic_type | set[atomic_type]:
+) -> type | set[type]:
     """Retrieve the common atomic element types stored in `array`.
 
     This function operates in a manner similar to `pd.api.types.infer_dtype()`,
