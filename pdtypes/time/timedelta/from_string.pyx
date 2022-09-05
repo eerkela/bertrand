@@ -7,7 +7,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .time import _to_ns
+from ..unit cimport as_ns
 
 
 # TODO: can probably remove whitespace from patterns
@@ -101,7 +101,7 @@ cdef object _string_to_ns(
                 groups.pop("s")
 
             # build result
-            result = sum(_to_ns[k] * decimal.Decimal(v)
+            result = sum(as_ns[k] * decimal.Decimal(v)
                          for k, v in groups.items() if v)
             return int(sign * result)
 
@@ -175,6 +175,18 @@ def string_to_ns(
 
 
 
+
+
+# TODO: vectorize string_to_ns so it accepts scalar/array/Series
+
+# TODO: add string_to_pandas_timedelta
+# TODO: add string_to_timedelta that accepts arbitrary input
+
+
+
+
+
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def string_to_pytimedelta(
@@ -237,7 +249,7 @@ def string_to_numpy_timedelta64(
     cdef long long int scale_factor
     cdef bint converged = False
 
-    for unit, scale_factor in _to_ns.items():
+    for unit, scale_factor in as_ns.items():
         if (-2**63 + 1 <= min_ns // scale_factor and
             max_ns // scale_factor <= 2**63 - 1):
             converged = True

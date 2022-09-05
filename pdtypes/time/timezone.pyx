@@ -12,8 +12,10 @@ aware/naive or mixed timezone inputs, including mixed datetime types and
 object-dtyped arrays/Series.
 """
 import datetime
+import zoneinfo
 
 cimport cython
+import dateutil
 import numpy as np
 cimport numpy as np
 import pandas as pd
@@ -23,12 +25,23 @@ import tzlocal
 from pdtypes.check import get_dtype
 
 
-# TODO: pytz uses LMT (local mean time) for dates prior to 1902 for some
-# reason.  This appears to be a known pytz limitation.
-# https://stackoverflow.com/questions/24188060/in-pandas-why-does-tz-convert-change-the-timezone-used-from-est-to-lmt
-# https://github.com/pandas-dev/pandas/issues/41834
-# solution: use zoneinfo.ZoneInfo instead once pandas supports it
-# https://github.com/pandas-dev/pandas/pull/46425
+########################
+####   Constants    ####
+########################
+
+
+cdef tuple utc_timezones = (
+    datetime.timezone(datetime.timedelta(0)),
+    datetime.timezone.utc,
+    pytz.utc,
+    zoneinfo.ZoneInfo("UTC"),
+    dateutil.tz.UTC
+)
+
+
+#######################
+####    Private    ####
+#######################
 
 
 cdef object localize_pandas_timestamp(
@@ -133,6 +146,18 @@ cdef np.ndarray[object] localize_mixed_datetimelike_array(
     return result
 
 
+######################
+####    Public    ####
+######################
+
+
+def is_utc(
+    tz: None | str | datetime.tzinfo
+) -> bool:
+    """Check whether a timezone specifier is utc."""
+    return timezone(tz) in utc_timezones
+
+
 def localize(
     datetime_like: pd.Timestamp | datetime.datetime | np.ndarray | pd.Series,
     tz: None | str | datetime.tzinfo
@@ -212,6 +237,13 @@ def timezone(
     """Ensure an IANA timezone specifier `tz` is valid and return a
     corresponding `datetime.tzinfo` object.
     """
+    # TODO: pytz uses LMT (local mean time) for dates prior to 1902 for some
+    # reason.  This appears to be a known pytz limitation.
+    # https://stackoverflow.com/questions/24188060/in-pandas-why-does-tz-convert-change-the-timezone-used-from-est-to-lmt
+    # https://github.com/pandas-dev/pandas/issues/41834
+    # solution: use zoneinfo.ZoneInfo instead once pandas supports it
+    # https://github.com/pandas-dev/pandas/pull/46425
+
     # IANA strings
     if isinstance(tz, str):
         if tz == "local":

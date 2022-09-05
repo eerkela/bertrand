@@ -148,18 +148,22 @@ def decompose_date(
     return {"year": date.year, "month": date.month, "day": date.day}
 
 
+
+# TODO: fractional years, months
+
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def date_to_days(
     year: int | np.ndarray | pd.Series,
     month: int | np.ndarray | pd.Series,
     day: int | np.ndarray | pd.Series,
-    origin: str = "utc"
+    epoch: str = "utc"
 ) -> int | np.ndarray | pd.Series:
     """Convert a (proleptic) Gregorian calendar date `(year, month, day)` into
-    a day offset from the given origin.
+    a day offset from the given epoch.
 
-    The available origins are as follows (earliest - latest):
+    The available epochs are as follows (earliest - latest):
         - `'julian'`: indexes from the start of the Julian period, which
             corresponds to the historical date January 1st, 4713 BC (according
             to the proleptic Julian calendar) or November 24, 4714 BC
@@ -220,19 +224,19 @@ def date_to_days(
         Proleptic Gregorian calendar day, indexed from 1.  If a day value
         exceeds the maximum for the selected month, any excess is automatically
         carried over into `month` and `year`.
-    origin (str):
-        Origin point for the returned day offset.  See the descriptions above
-        for more details.  Defaults to `'utc'`.
+    epoch (str):
+        Epoch for the returned day offset.  See the descriptions above for more
+        details.  Defaults to `'utc'`.
 
     Returns
     -------
     int | np.ndarray | pd.Series:
-        The integer day offset from the given origin.
+        The integer day offset from the given epoch.
 
     Raises
     ------
     ValueError:
-        If `origin` is not one of the accepted origins `('julian', 'gregorian',
+        If `epoch` is not one of the accepted epochs `('julian', 'gregorian',
         'reduced_julian', 'lotus', 'sas', 'utc', 'gps', 'cocoa')`.
     """
     # normalize months to start with March 1st, indexed from 1 (January)
@@ -245,8 +249,8 @@ def date_to_days(
     result += days_per_month[month]
     result += day
 
-    # move origin from March 1st, year 0 toward specified origin
-    cdef dict origin_bias = {
+    # move origin from March 1st, year 0 toward specified epoch
+    cdef dict epoch_bias = {
         "julian": 1721118,            # (-4713, 11, 24)
         "gregorian": -578042,         # (1582, 10, 14)
         "reduced_julian": -678882,    # (1858, 11, 16)
@@ -257,9 +261,9 @@ def date_to_days(
         "cocoa": -730793              # (2001, 1, 1)
     }
     try:
-        result += origin_bias[origin]
+        result += epoch_bias[epoch]
     except KeyError as err:
-        err_msg = f"`origin` must be one of {tuple(origin_bias)}, not {origin}"
+        err_msg = f"`epoch` must be one of {tuple(epoch_bias)}, not {epoch}"
         raise ValueError(err_msg) from err
 
     # return
@@ -270,12 +274,12 @@ def date_to_days(
 @cython.wraparound(False)
 def days_to_date(
     days: int | np.ndarray | pd.Series,
-    origin: str = "utc"
+    epoch: str = "utc"
 ) -> dict[str, int] | dict[str, np.ndarray] | dict[str, pd.Series]:
-    """Convert a day offset from the given origin into the corresponding
+    """Convert a day offset from the given epoch into the corresponding
     (proleptic) Gregorian calendar date `(year, month, day)`.
 
-    The available origins are as follows (earliest - latest):
+    The available epochs are as follows (earliest - latest):
         - `'julian'`: indexes from the start of the Julian period, which
             corresponds to the historical date January 1st, 4713 BC (according
             to the proleptic Julian calendar) or November 24, 4714 BC
@@ -323,10 +327,10 @@ def days_to_date(
     Parameters
     ----------
     days (int | np.ndarray | pd.Series):
-        Integer day offset from the given `origin`.  
-    origin (str):
-        Origin point for the given day offset.  See the descriptions above for
-        more details.  Defaults to `'utc'`.
+        Integer day offset from the given `epoch`.  
+    epoch (str):
+        Epoch for the given day offset.  See the descriptions above for more
+        details.  Defaults to `'utc'`.
 
     Returns
     -------
@@ -346,12 +350,11 @@ def days_to_date(
     Raises
     ------
     ValueError:
-        If `origin` is not one of the accepted origins `('julian', 'gregorian',
+        If `epoch` is not one of the accepted epochs `('julian', 'gregorian',
         'reduced_julian', 'lotus', 'sas', 'utc', 'gps', 'cocoa')`.
     """
-    # move origin to March 1st, 2000 (start of 400-year Gregorian cycle,
-    # chosen to keep numbers small)
-    cdef dict origin_bias = {
+    # move origin to March 1st, 2000 (start of 400-year Gregorian cycle)
+    cdef dict epoch_bias = {
         "julian": -2451605,          # (-4713, 11, 24)
         "gregorian": -152445,        # (1582, 10, 14)
         "reduced_julian": -51605,    # (1858, 11, 16)
@@ -362,9 +365,9 @@ def days_to_date(
         "cocoa": 306                 # (2001, 1, 1)
     }
     try:
-        days = days + origin_bias[origin]
+        days = days + epoch_bias[epoch]
     except KeyError as err:
-        err_msg = f"`origin` must be one of {tuple(origin_bias)}, not {origin}"
+        err_msg = f"`epoch` must be one of {tuple(epoch_bias)}, not {epoch}"
         raise ValueError(err_msg) from err
 
     # count 400-year cycles

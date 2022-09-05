@@ -9,6 +9,8 @@ import pandas as pd
 # TODO: J2000 astronomical dates
 
 
+# TODO: this should be private and encapsulated in string_to_datetime
+
 def iso_8601_strings_to_pydatetime(
     np.ndarray[object] arr: np.ndarray
 ) -> np.ndarray:
@@ -26,5 +28,3 @@ def iso_8601_strings_to_pydatetime(
 
     # convert to datetime.datetime
     return arr.astype("O")
-
-

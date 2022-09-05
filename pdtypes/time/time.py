@@ -28,35 +28,6 @@ TODO: use numpy arrays (rather than pd.Series) for all functions in this module
 # TODO: remember to account for 12-hour gap around pd.Timestamp.max/min
 
 
-# TODO: exported functions:
-# (date.pyx) is_leap_year
-# (date.pyx) leaps_between - maybe accepts dates in decompose_date (tuple) form?
-# (date.pyx) decompose_date
-# (date.pyx) date_to_days - can be called as date_to_days(**decompose_date(dt))
-# (date.pyx) days_to_date - returns same dictionary object as decompose_date
-# (datetime.pyx) localize
-# (datetime.pyx) timezone
-# (datetime.pyx) ns_since_epoch
-# (datetime.pyx) string_to_datetime (including string-based J2000 dates)
-# (timedelta.pyx) total_ns
-# (core.py) convert_unit
-
-
-
-_to_ns = {  # TODO: add a bunch of synonyms for maximum flexibility
-    # "as": 1e-9,
-    # "fs": 1e-6,
-    # "ps": 1e-3,
-    "ns": 1,
-    "us": 10**3,
-    "ms": 10**6,
-    "s": 10**9,
-    "m": 60 * 10**9,
-    "h": 60 * 60 * 10**9,
-    "D": 24 * 60 * 60 * 10**9,
-    "W": 7 * 24 * 60 * 60 * 10**9,
-}
-
 
 
 

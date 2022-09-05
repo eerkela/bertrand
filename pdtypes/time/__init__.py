@@ -3,4 +3,4 @@ from .leap import is_leap_year, leaps_between
 from .timedelta import (
     string_to_ns, string_to_numpy_timedelta64, string_to_pytimedelta
 )
-from .timezone import localize, timezone
+from .timezone import is_utc, localize, timezone
