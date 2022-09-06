@@ -37,7 +37,11 @@ from .supertypes import subtypes, supertype
 # TODO: change numpy M8 and m8 comparisons to include unit/step size info
 #   -> if dtype has unit info, retrieve indices where type=np.datetime64 and
 #   -> gather unit info.  Cast to set, then compare units present in array with
-#   -> those given in `dtype`
+#   -> those given in `dtype`.  Or, modify object_types to also capture unit
+#   -> information with an optional flag.
+
+# TODO: consider skipping over missing values in main object_types loop,
+# rather than filtering out in separate step.
 
 
 def get_dtype(

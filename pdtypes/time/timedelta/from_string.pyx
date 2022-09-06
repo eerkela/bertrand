@@ -12,6 +12,10 @@ from ..unit cimport as_ns
 
 # TODO: can probably remove whitespace from patterns
 
+#########################
+####    Constants    ####
+#########################
+
 
 cdef list[object] timedelta_formats_regex():
     """Compile a set of regular expressions to capture and parse recognized
@@ -60,6 +64,11 @@ cdef dict timedelta_regex = {
     "sign": re.compile(r"\s*(?P<sign>[+|-])?\s*(?P<unsigned>.*)$"),
     "formats": timedelta_formats_regex()
 }
+
+
+#######################
+####    Private    ####
+#######################
 
 
 cdef object _string_to_ns(

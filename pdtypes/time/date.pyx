@@ -29,7 +29,17 @@ from pdtypes.util.type_hints import date_like
 from .leap import leaps_between
 
 
-# constants for `days_to_date`
+# TODO: epoch.pyx?
+# epoch_date(tuple | str | date_like)
+# epoch_days(tuple | str | date_like, since='utc')
+# epoch_ns(tuple | str | date_like, since='utc')
+
+
+#########################
+####    Constants    ####
+#########################
+
+
 cdef unsigned int days_per_400_years = 146097
 cdef unsigned short days_per_100_years = 36524
 cdef unsigned short days_per_4_years = 1461
@@ -37,14 +47,33 @@ cdef unsigned short days_per_year = 365
 
 
 # cumulative days per month, starting from March 1st
-cdef np.ndarray days_per_month
-days_per_month = np.array([0, 31, 61, 92, 122, 153, 184, 214, 245, 275, 306,
-                           337, 366], dtype="i2")
+cdef np.ndarray days_per_month = np.array(
+    [0, 31, 61, 92, 122, 153, 184, 214, 245, 275, 306, 337, 366],
+    dtype="i2"
+)
+
+
+# common epochs
+cdef dict epoch_date = {
+    "julian": (-4713, 11, 24),
+    "gregorian": (1582, 10, 14),
+    "reduced_julian": (1858, 11, 16),
+    "lotus": (1899, 12, 30),
+    "sas": (1960, 1, 1),
+    "utc": (1970, 1, 1),
+    "gps": (1980, 1, 6),
+    "cocoa": (2001, 1, 1)
+}
+
+
+#######################
+####    Private    ####
+#######################
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef dict decompose_datelike_objects(
+cdef dict _decompose_datelike_objects(
     np.ndarray[object] arr
 ):
     """Internal C interface for public-facing decompose_date() function when
@@ -64,6 +93,11 @@ cdef dict decompose_datelike_objects(
         day[i] = element.day
 
     return {"year": year, "month": month, "day": day}
+
+
+######################
+####    Public    ####
+######################
 
 
 def decompose_date(
@@ -100,24 +134,32 @@ def decompose_date(
         raise TypeError(f"`date` must have homogenous, date-like element "
                         f"types, not {dtype}")
 
-    # case 1: pd.Timestamp
+    # pd.Timestamp
     if dtype == pd.Timestamp:
+        # np.array
         if isinstance(date, np.ndarray):
-            return decompose_datelike_objects(date)
+            return _decompose_datelike_objects(date)
+
+        # pd.Series
         if isinstance(date, pd.Series):
+            # M8 dtype
             if pd.api.types.is_datetime64_ns_dtype(date):
                 return {
                     "year": date.dt.year,
                     "month": date.dt.month,
                     "day": date.dt.day
                 }
+
+            # object dtype
             index = date.index
-            result = decompose_datelike_objects(date.to_numpy())
+            result = _decompose_datelike_objects(date.to_numpy())
             return {k: pd.Series(v, index=index, copy=False)
                     for k, v in result.items()}
+
+        # scalar
         return {"year": date.year, "month": date.month, "day": date.day}
 
-    # case 2: np.datetime64
+    # np.datetime64
     if dtype == np.datetime64:
         # use numpy implementation for series input
         is_series = isinstance(date, pd.Series)
@@ -131,7 +173,7 @@ def decompose_date(
         day = (D - M).astype(np.int64).astype("O") + 1
 
         # return
-        if is_series:
+        if is_series:  # copy index and convert back to series
             index = date.index
             return {
                 "year": pd.Series(year, index=index, copy=False),
@@ -140,11 +182,13 @@ def decompose_date(
             }
         return {"year": year, "month": month, "day": day}
 
-    # case 3: datetime.datetime-like (duck-type)
+    # datetime.datetime-like (duck-type)
     if isinstance(date, np.ndarray):
-        return decompose_datelike_objects(date)
+        return _decompose_datelike_objects(date)
+
     if isinstance(date, pd.Series):
-        return decompose_datelike_objects(date.to_numpy())
+        return _decompose_datelike_objects(date.to_numpy())
+
     return {"year": date.year, "month": date.month, "day": date.day}
 
 
@@ -243,6 +287,8 @@ def date_to_days(
     month = month - 3
     year = year + month // 12
     month %= 12  # residual as integer index
+    if isinstance(month, (np.ndarray, pd.Series)):
+        month = month.astype("i1")  # to be used as index
 
     # build result
     result = 365 * year + leaps_between(0, year + 1)

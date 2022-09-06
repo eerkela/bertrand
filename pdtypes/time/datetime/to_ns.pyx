@@ -1,3 +1,17 @@
+"""Implements a single function `datetime_to_ns()`, which takes arbitrary
+datetime objects and converts them into (integer) nanosecond offsets from the
+UTC epoch ("1970-01-01 00:00:00+0000").
+
+A specialized variant of this function is also exported for every included
+datetime type, as follows:
+    - `pandas_timestamp_to_ns()` - for converting `pd.Timestamp` objects.
+    - `pydatetime_to_ns()` - for converting `datetime.datetime` objects.
+    - `numpy_datetime64_to_ns()` - for converting `np.timedelta64` objects.
+
+These specialized variants aren't part of the standard `pdtypes` interface, but
+they can be imported for a modest performance increase where the datetime type
+is known ahead of time.
+"""
 import datetime
 
 cimport cython
@@ -9,8 +23,9 @@ from pdtypes.check import check_dtype, get_dtype
 from pdtypes.util.type_hints import datetime_like
 
 from ..date import decompose_date, date_to_days
+from ..timedelta.to_ns cimport pytimedelta_to_ns_scalar
 from ..timezone import is_utc, timezone, localize
-from ..unit import as_ns
+from ..unit cimport as_ns
 
 
 # datetime_to_ns
@@ -43,6 +58,9 @@ from ..unit import as_ns
 #         unit.pyx
 
 
+# TODO: include datetime.date?
+
+
 #########################
 ####    Constants    ####
 #########################
@@ -59,24 +77,12 @@ cdef object utc_pydatetime
 utc_pydatetime = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
 
 
-cdef dict epoch_bias = {
-    "julian": 2440588 * as_ns["D"],
-    "gregorian": 141428 * as_ns["D"],
-    "reduced_julian": 40588 * as_ns["D"],
-    "lotus": 25569 * as_ns["D"],
-    "sas": 3653 * as_ns["D"],
-    "utc": 0,
-    "gps": -3657 * as_ns["D"],
-    "cocoa": -11323 * as_ns["D"]
-}
-
-
 #######################
 ####    Private    ####
 #######################
 
 
-cdef object pandas_timestamp_to_ns(object timestamp):
+cdef inline long int pandas_timestamp_to_ns_scalar(object timestamp):
     """TODO"""
     # interpret naive as UTC
     if not timestamp.tzinfo:
@@ -84,7 +90,7 @@ cdef object pandas_timestamp_to_ns(object timestamp):
     return int(timestamp.asm8)
 
 
-cdef object pydatetime_to_ns(object pydatetime):
+cdef inline object pydatetime_to_ns_scalar(object pydatetime):
     """TODO"""
     # interpret naive as UTC
     if not pydatetime.tzinfo:
@@ -92,59 +98,68 @@ cdef object pydatetime_to_ns(object pydatetime):
 
     # convert to timedelta
     pydatetime -= utc_pydatetime
-    raise NotImplementedError()
+    return pytimedelta_to_ns_scalar(pydatetime)
 
 
-cdef object numpy_datetime64_to_ns(object datetime64):
+cdef inline object numpy_datetime64_to_ns_scalar(object datetime64):
     """TODO"""
     cdef str unit
     cdef int step_size
 
     # get integer representation, unit info from datetime64
-    unit, step_size = np.datetime_date(datetime64)
+    unit, step_size = np.datetime_data(datetime64)
     datetime64 = int(datetime64) * step_size
 
     # convert scaled integer repr to nanoseconds
+    # TODO: use convert_unit here, after it is finalized
     raise NotImplementedError()
 
 
-cdef np.ndarray[object] pandas_timestamp_objects_to_ns(np.ndarray[object] arr):
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef np.ndarray[long int] pandas_timestamp_to_ns_vector(np.ndarray[object] arr):
+    """TODO"""
+    cdef int arr_length = arr.shape[0]
+    cdef int i
+    cdef np.ndarray[long int] result = np.empty(arr_length, dtype="i8")
+
+    for i in range(arr_length):
+        result[i] = pandas_timestamp_to_ns_scalar(arr[i])
+
+    return result
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef np.ndarray[object] pydatetime_to_ns_vector(np.ndarray[object] arr):
     """TODO"""
     cdef int arr_length = arr.shape[0]
     cdef int i
     cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
 
     for i in range(arr_length):
-        result[i] = pandas_timestamp_to_ns(arr[i])
+        result[i] = pydatetime_to_ns_scalar(arr[i])
 
     return result
 
 
-cdef np.ndarray[object] pydatetime_objects_to_ns(np.ndarray[object] arr):
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef np.ndarray[object] numpy_datetime64_to_ns_vector(np.ndarray[object] arr):
     """TODO"""
     cdef int arr_length = arr.shape[0]
     cdef int i
     cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
 
     for i in range(arr_length):
-        result[i] = pydatetime_to_ns(arr[i])
+        result[i] = numpy_datetime64_to_ns_scalar(arr[i])
 
     return result
 
 
-cdef np.ndarray[object] numpy_datetime64_objects_to_ns(np.ndarray[object] arr):
-    """TODO"""
-    cdef int arr_length = arr.shape[0]
-    cdef int i
-    cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
-
-    for i in range(arr_length):
-        result[i] = numpy_datetime64_to_ns(arr[i])
-
-    return result
-
-
-cdef np.ndarray[object] mixed_datetime_objects_to_ns(np.ndarray[object] arr):
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef np.ndarray[object] mixed_datetime_to_ns_vector(np.ndarray[object] arr):
     """TODO"""
     cdef int arr_length = arr.shape[0]
     cdef int i
@@ -154,11 +169,11 @@ cdef np.ndarray[object] mixed_datetime_objects_to_ns(np.ndarray[object] arr):
     for i in range(arr_length):
         element = arr[i]
         if isinstance(element, pd.Timestamp):
-            result[i] = pandas_timestamp_to_ns(element)
+            result[i] = pandas_timestamp_to_ns_scalar(element)
         elif isinstance(element, datetime.datetime):
-            result[i] = pydatetime_to_ns(element)
+            result[i] = pydatetime_to_ns_scalar(element)
         else:
-            result[i] = numpy_datetime64_to_ns(element)
+            result[i] = numpy_datetime64_to_ns_scalar(element)
 
     return result
 
@@ -168,12 +183,80 @@ cdef np.ndarray[object] mixed_datetime_objects_to_ns(np.ndarray[object] arr):
 ######################
 
 
-def datetime_to_ns(
-    arg: datetime_like | np.ndarray | pd.Series,
-    epoch: str = "utc"
+def pandas_timestamp_to_ns(
+    arg: pd.Timestamp | np.ndarray | pd.Series
 ) -> int | np.ndarray | pd.Series:
-    """convert generic datetime scalars, arrays, and sequences into nanosecond
-    offsets from the given epoch.
+    """TODO"""
+    # np.ndarray
+    if isinstance(arg, np.ndarray):
+        return pandas_timestamp_to_ns_vector(arg)
+
+    # pd.Series
+    if isinstance(arg, pd.Series):
+        if pd.api.types.is_datetime64_ns_dtype(arg):  # use `.dt` namespace
+            if not arg.dt.tz:  # series is naive, assume UTC
+                arg = arg.dt.tz_localize("UTC")
+            return arg.astype(np.int64)
+
+        index = arg.index
+        arg = arg.to_numpy(dtype="O")
+        arg = pandas_timestamp_to_ns_vector(arg)
+        return pd.Series(arg, index=index, copy=False)
+
+    # scalar
+    return pandas_timestamp_to_ns_scalar(arg)
+
+
+def pydatetime_to_ns(
+    arg: datetime.datetime | np.ndarray | pd.Series
+) -> int | np.ndarray | pd.Series:
+    """TODO"""
+    # np.ndarray
+    if isinstance(arg, np.ndarray):
+        return pydatetime_to_ns_vector(arg)
+
+    # pd.Series
+    if isinstance(arg, pd.Series):
+        index = arg.index
+        arg = arg.to_numpy(dtype="O")
+        arg = pydatetime_to_ns_vector(arg)
+        return pd.Series(arg, index=index, copy=False)
+
+    # scalar
+    return pydatetime_to_ns_scalar(arg)
+
+
+def numpy_datetime64_to_ns(
+    arg: np.datetime64 | np.ndarray | pd.Series
+) -> int | np.ndarray | pd.Series:
+    """TODO"""
+    # np.ndarray
+    if isinstance(arg, np.ndarray):
+        if np.issubdtype(arg.dtype, "M8"):
+            # get integer representation, unit info from datetime64
+            unit, step_size = np.datetime_data(arg.dtype)
+            arg = arg.astype(np.int64).astype("O") * step_size
+
+            # convert scaled integer repr to nanoseconds
+            # TODO: use convert_unit here, after it is finalized
+            raise NotImplementedError()
+        return numpy_datetime64_to_ns_vector(arg)
+
+    # pd.Series:
+    if isinstance(arg, pd.Series):
+        index = arg.index
+        arg = arg.to_numpy(dtype="O")
+        arg = numpy_datetime64_to_ns_vector(arg)
+        return pd.Series(arg, index=index, copy=False)
+
+    # scalar
+    return numpy_datetime64_to_ns_scalar(arg)
+
+
+def datetime_to_ns(
+    arg: datetime_like | np.ndarray | pd.Series
+) -> int | np.ndarray | pd.Series:
+    """Convert generic datetime objects to nanoseconds offsets from UTC.
     """
     # get exact element type(s) and ensure datetime-like
     dtype = get_dtype(arg)
@@ -181,80 +264,29 @@ def datetime_to_ns(
         raise TypeError(f"`datetime_like` must contain only datetime-like "
                         f"elements, not {dtype}")
 
-    # get nanosecond bias for given epoch (from utc)
-    # TODO: force scalar
-    if isinstance(epoch, str):
-        ns_bias = epoch_bias[epoch]
-    elif (isinstance(epoch, tuple) and
-          len(epoch) == 3 and
-          check_dtype(epoch, int)):
-        ns_bias = date_to_days(*epoch) * as_ns["D"]
-    elif check_dtype(epoch, ("datetime", datetime.date)):
-        ns_bias = date_to_days(**decompose_date(epoch)) * as_ns["D"]
-    else:
-        raise NotImplementedError()
-
-    # remember to -= ns_bias
-
     # pd.Timestamp
     if dtype == pd.Timestamp:
-        # np.array
-        if isinstance(arg, np.ndarray):
-            return pandas_timestamp_objects_to_ns(arg) - ns_bias
-
-        # pd.Series
-        if isinstance(arg, pd.Series):
-            if pd.api.types.is_datetime64_ns_dtype(arg):
-                raise NotImplementedError()
-
-            index = arg.index
-            arg = arg.to_numpy(dtype="O")
-            arg = pandas_timestamp_objects_to_ns(arg) - ns_bias
-            return pd.Series(arg, index=index, copy=False)
-
-        # scalar
-        return pandas_timestamp_to_ns(arg) - ns_bias
+        return pandas_timestamp_to_ns(arg)
 
     # datetime.datetime
     if dtype == datetime.datetime:
-        # np.array
-        if isinstance(arg, np.ndarray):
-            return pydatetime_objects_to_ns(arg) - ns_bias
+        return pydatetime_to_ns(arg)
 
+    # np.datetime64
+    if dtype == np.datetime64:
+        return numpy_datetime64_to_ns(arg)
+
+    # mixed element types
+    if isinstance(dtype, set):
         # pd.Series
         if isinstance(arg, pd.Series):
             index = arg.index
             arg = arg.to_numpy(dtype="O")
-            arg = pydatetime_objects_to_ns(arg) - ns_bias
+            arg = mixed_datetime_to_ns_vector(arg)
             return pd.Series(arg, index=index, copy=False)
 
-        # scalar
-        return pydatetime_to_ns(arg) - ns_bias
+        # np.ndarray
+        return mixed_datetime_to_ns_vector(arg)
 
-    # np.datetime64
-    if dtype == np.datetime64:
-        # np.array
-        if isinstance(arg, np.ndarray):
-            if np.issubdtype(arg.dtype, "M8"):
-                raise NotImplementedError()
-            return numpy_datetime64_objects_to_ns(arg) - ns_bias
-
-        # pd.Series:
-        if isinstance(arg, pd.Series):
-            index = arg.index
-            arg = arg.to_numpy(dtype="O")
-            arg = numpy_datetime64_objects_to_ns(arg) - ns_bias
-            return pd.Series(arg, index=index, copy=False)
-
-        # scalar
-        return numpy_datetime64_to_ns(arg) - ns_bias
-
-    # pd.Series (mixed element types)
-    if isinstance(arg, pd.Series):
-        index = arg.index
-        arg = arg.to_numpy(dtype="O")
-        arg = mixed_datetime_objects_to_ns(arg) - ns_bias
-        return pd.Series(arg, index=index, copy=False)
-
-    # np.ndarray (mixed element types)
-    return mixed_datetime_objects_to_ns(arg)
+    # unrecognized element type
+    raise TypeError(f"could not parse datetime of type {dtype}")
