@@ -5,7 +5,7 @@ cimport numpy as np
 cdef tuple utc_timezones
 cdef set valid_datetime_types
 
-# scalar localization functions
+# scalar functions
 cdef object localize_pandas_timestamp_scalar(
     object timestamp,
     datetime.tzinfo tz
@@ -15,7 +15,7 @@ cdef datetime.datetime localize_pydatetime_scalar(
     datetime.tzinfo tz
 )
 
-# vectorized localization functions
+# vectorized functions
 cdef np.ndarray[object] localize_pandas_timestamp_vector(
     np.ndarray[object] arr,
     datetime.tzinfo tz

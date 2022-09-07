@@ -10,7 +10,7 @@ from pdtypes.util.array import is_scalar
 from pdtypes.util.type_hints import date_like, timedelta_like
 
 from ..date import date_to_days, decompose_date
-from ..date cimport epoch_date
+from ..epoch import epoch_date
 from ..unit cimport as_ns
 
 
@@ -225,7 +225,7 @@ def _split_epoch_date(epoch: tuple | str | date_like) -> tuple[int, int, int]:
 
     # string epoch identifier
     if isinstance(epoch, str):
-        return epoch_date[epoch]
+        return tuple(epoch_date.values())
 
     # custom date-like
     if check_dtype(epoch, ("datetime", datetime.date)):

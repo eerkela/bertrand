@@ -29,11 +29,6 @@ from pdtypes.util.type_hints import date_like
 from .leap import leaps_between
 
 
-# TODO: remove epoch support; `days` are always counted from utc
-
-# TODO: consider using cdivision=True
-
-
 #########################
 ####    Constants    ####
 #########################
@@ -52,19 +47,6 @@ cdef np.ndarray days_per_month = np.array(
 )
 
 
-# common epochs
-cdef dict epoch_date = {
-    "julian": (-4713, 11, 24),
-    "gregorian": (1582, 10, 14),
-    "reduced_julian": (1858, 11, 16),
-    "lotus": (1899, 12, 30),
-    "sas": (1960, 1, 1),
-    "utc": (1970, 1, 1),
-    "gps": (1980, 1, 6),
-    "cocoa": (2001, 1, 1)
-}
-
-
 #######################
 ####    Private    ####
 #######################
@@ -72,7 +54,7 @@ cdef dict epoch_date = {
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef dict _decompose_datelike_objects(
+cdef dict decompose_datelike_objects(
     np.ndarray[object] arr
 ):
     """Internal C interface for public-facing decompose_date() function when
@@ -137,7 +119,7 @@ def decompose_date(
     if dtype == pd.Timestamp:
         # np.array
         if isinstance(date, np.ndarray):
-            return _decompose_datelike_objects(date)
+            return decompose_datelike_objects(date)
 
         # pd.Series
         if isinstance(date, pd.Series):
@@ -151,7 +133,7 @@ def decompose_date(
 
             # object dtype
             index = date.index
-            result = _decompose_datelike_objects(date.to_numpy())
+            result = decompose_datelike_objects(date.to_numpy())
             return {k: pd.Series(v, index=index, copy=False)
                     for k, v in result.items()}
 
@@ -183,10 +165,10 @@ def decompose_date(
 
     # datetime.datetime-like (duck-type)
     if isinstance(date, np.ndarray):
-        return _decompose_datelike_objects(date)
+        return decompose_datelike_objects(date)
 
     if isinstance(date, pd.Series):
-        return _decompose_datelike_objects(date.to_numpy())
+        return decompose_datelike_objects(date.to_numpy())
 
     return {"year": date.year, "month": date.month, "day": date.day}
 
@@ -200,44 +182,10 @@ def decompose_date(
 def date_to_days(
     year: int | np.ndarray | pd.Series,
     month: int | np.ndarray | pd.Series,
-    day: int | np.ndarray | pd.Series,
-    epoch: str = "utc"
+    day: int | np.ndarray | pd.Series
 ) -> int | np.ndarray | pd.Series:
     """Convert a (proleptic) Gregorian calendar date `(year, month, day)` into
-    a day offset from the given epoch.
-
-    The available epochs are as follows (earliest - latest):
-        - `'julian'`: indexes from the start of the Julian period, which
-            corresponds to the historical date January 1st, 4713 BC (according
-            to the proleptic Julian calendar) or November 24, 4714 BC
-            (according to the proleptic Gregorian calendar).  Commonly used in
-            astronomical applications.
-        - `'gregorian'`: indexes from October 14th, 1582, the date at which
-            Pope Gregory XIII instituted the Gregorian calendar.
-        - `'reduced_julian'`: indexes from November 16th, 1858, which drops the
-            first two leading digits of the corresponding `'julian'` day
-            number.
-        - `'lotus'`: indexes from December 31st, 1899, which was incorrectly
-            identified as January 0, 1900 in the original Lotus 1-2-3
-            implementation.  Still used in a variety of spreadsheet
-            applications, including Microsoft Excel, Google Sheets, and
-            LibreOffice.
-        - `'sas'`: indexes from January 1st, 1960.  Used by the SAS statistical
-            software.
-        - `'utc'`: indexes from January 1st, 1970.  Represents Unix/POSIX day
-            number.
-        - `'gps'`: indexes from January 6th, 1980.  Used by most GPS systems,
-            which normally count weeks instead of days, as returned by this
-            function.
-        - `'cocoa'`: indexes from January 1st, 2001.  Used in Apple's Cocoa
-            framework, which drives macOS and related mobile devices.
-
-    Note: by convention, `'julian'` and `'reduced_julian'` dates increment at
-    noon (12:00:00 UTC) on the corresponding day.  For these to be proper
-    *Julian dates* (JD), a fractional component between -0.5 and +0.5 would
-    normally be added to the integer *Julian day number* (JDN, as returned by
-    this function).  -0.5 represents midnight (00:00:00 UTC) on the same day,
-    and +0.5 represents midnight (00:00:00 UTC) on the next day.
+    a day offset from the utc epoch (1970-01-01).
 
     Note: for the sake of efficiency, this function will not attempt to coerce
     numpy integers or integer arrays into their built-in python equivalents.
@@ -267,20 +215,11 @@ def date_to_days(
         Proleptic Gregorian calendar day, indexed from 1.  If a day value
         exceeds the maximum for the selected month, any excess is automatically
         carried over into `month` and `year`.
-    epoch (str):
-        Epoch for the returned day offset.  See the descriptions above for more
-        details.  Defaults to `'utc'`.
 
     Returns
     -------
     int | np.ndarray | pd.Series:
-        The integer day offset from the given epoch.
-
-    Raises
-    ------
-    ValueError:
-        If `epoch` is not one of the accepted epochs `('julian', 'gregorian',
-        'reduced_julian', 'lotus', 'sas', 'utc', 'gps', 'cocoa')`.
+        The integer day offset from utc.
     """
     # normalize months to start with March 1st, indexed from 1 (January)
     month = month - 3
@@ -294,22 +233,8 @@ def date_to_days(
     result += days_per_month[month]
     result += day
 
-    # move origin from March 1st, year 0 toward specified epoch
-    cdef dict epoch_bias = {
-        "julian": 1721118,            # (-4713, 11, 24)
-        "gregorian": -578042,         # (1582, 10, 14)
-        "reduced_julian": -678882,    # (1858, 11, 16)
-        "lotus": -693901,             # (1899, 12, 30)
-        "sas": -715817,               # (1960, 1, 1)
-        "utc": -719470,               # (1970, 1, 1)
-        "gps": -723127,               # (1980, 1, 6)
-        "cocoa": -730793              # (2001, 1, 1)
-    }
-    try:
-        result += epoch_bias[epoch]
-    except KeyError as err:
-        err_msg = f"`epoch` must be one of {tuple(epoch_bias)}, not {epoch}"
-        raise ValueError(err_msg) from err
+    # move origin from March 1st, year 0 to utc
+    result -= 719470
 
     # return
     return result
@@ -319,42 +244,9 @@ def date_to_days(
 @cython.wraparound(False)
 def days_to_date(
     days: int | np.ndarray | pd.Series,
-    epoch: str = "utc"
 ) -> dict[str, int] | dict[str, np.ndarray] | dict[str, pd.Series]:
-    """Convert a day offset from the given epoch into the corresponding
-    (proleptic) Gregorian calendar date `(year, month, day)`.
-
-    The available epochs are as follows (earliest - latest):
-        - `'julian'`: indexes from the start of the Julian period, which
-            corresponds to the historical date January 1st, 4713 BC (according
-            to the proleptic Julian calendar) or November 24, 4714 BC
-            (according to the proleptic Gregorian calendar).  Commonly used in
-            astronomical applications.
-        - `'gregorian'`: indexes from October 14th, 1582, the date at which
-            Pope Gregory XIII instituted the Gregorian calendar.
-        - `'reduced_julian'`: indexes from November 16th, 1858, which drops the
-            first two leading digits of the corresponding `'julian'` day
-            number.
-        - `'lotus'`: indexes from December 31st, 1899, which was incorrectly
-            identified as January 0, 1900 in the original Lotus 1-2-3
-            implementation.  Still used in a variety of spreadsheet
-            applications, including Microsoft Excel, Google Sheets, and
-            LibreOffice.
-        - `'sas'`: indexes from January 1st, 1960.  Used by the SAS statistical
-            software.
-        - `'utc'`: indexes from January 1st, 1970.  Represents Unix/POSIX day
-            number.
-        - `'gps'`: indexes from January 6th, 1980.  Used by most GPS systems,
-            which normally count weeks instead of days, like this function.
-        - `'cocoa'`: indexes from January 1st, 2001.  Used in Apple's Cocoa
-            framework, which drives macOS and related mobile devices.
-
-    Note: by convention, `'julian'` and `'reduced_julian'` dates increment at
-    noon (12:00:00 UTC) on the corresponding day.  For these to be proper
-    *Julian dates* (JD), a fractional component between -0.5 and +0.5 would
-    normally be added to the integer *Julian day number* (JDN, as accepted by
-    this function).  -0.5 represents midnight (00:00:00 UTC) on the same day,
-    and +0.5 represents midnight (00:00:00 UTC) on the next day.
+    """Convert a day offset from the utc epoch (1970-01-01) into the
+    corresponding (proleptic) Gregorian calendar date `(year, month, day)`.
 
     Note: for the sake of efficiency, this function will not attempt to coerce
     numpy integers or integer arrays into their built-in python equivalents.
@@ -372,10 +264,7 @@ def days_to_date(
     Parameters
     ----------
     days (int | np.ndarray | pd.Series):
-        Integer day offset from the given `epoch`.  
-    epoch (str):
-        Epoch for the given day offset.  See the descriptions above for more
-        details.  Defaults to `'utc'`.
+        Integer day offset from utc.  
 
     Returns
     -------
@@ -391,29 +280,9 @@ def days_to_date(
                 Proleptic Gregorian calendar month, indexed from 1 (January).
             - `'day'`:
                 Proleptic Gregorian calendar day, indexed from 1.
-
-    Raises
-    ------
-    ValueError:
-        If `epoch` is not one of the accepted epochs `('julian', 'gregorian',
-        'reduced_julian', 'lotus', 'sas', 'utc', 'gps', 'cocoa')`.
     """
     # move origin to March 1st, 2000 (start of 400-year Gregorian cycle)
-    cdef dict epoch_bias = {
-        "julian": -2451605,          # (-4713, 11, 24)
-        "gregorian": -152445,        # (1582, 10, 14)
-        "reduced_julian": -51605,    # (1858, 11, 16)
-        "lotus": -36586,             # (1899, 12, 30)
-        "sas": -14670,               # (1960, 1, 1)
-        "utc": -11017,               # (1970, 1, 1)
-        "gps": -7360,                # (1980, 1, 6)
-        "cocoa": 306                 # (2001, 1, 1)
-    }
-    try:
-        days = days + epoch_bias[epoch]
-    except KeyError as err:
-        err_msg = f"`epoch` must be one of {tuple(epoch_bias)}, not {epoch}"
-        raise ValueError(err_msg) from err
+    days = days - 11017
 
     # count 400-year cycles
     years = 400 * (days // days_per_400_years) + 2000

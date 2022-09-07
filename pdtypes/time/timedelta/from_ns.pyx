@@ -10,7 +10,6 @@ from pdtypes.util.array import is_scalar
 from pdtypes.util.type_hints import date_like, timedelta_like
 
 from ..date import date_to_days, decompose_date
-from ..date cimport epoch_date
 from ..unit cimport as_ns
 
 
