@@ -28,36 +28,6 @@ from ..timezone import is_utc, timezone, localize
 from ..unit cimport as_ns
 
 
-# datetime_to_ns
-# ns_to_pandas_timestamp (pd.to_datetime)
-# ns_to_pydatetime
-# ns_to_numpy_datetime64
-# string_to_pandas_timestamp (pd.to_datetime)
-# string_to_pydatetime
-# string_to_numpy_datetime64
-# datetime_to_datetime
-
-
-# pdtypes/
-#     time/
-#         datetime/
-#             __init__.py
-#             from_ns.pyx
-#             from_string.pyx
-#             to_datetime.pyx
-#             to_ns.pyx
-#           timedelta/
-#             __init__.py
-#             from_ns.pyx
-#             from_string.pyx
-#             to_timedelta.pyx
-#             to_ns.pyx
-#         __init__.py
-#         date.pyx
-#         timezone.pyx
-#         unit.pyx
-
-
 # TODO: include datetime.date?
 
 
@@ -108,11 +78,17 @@ cdef inline object numpy_datetime64_to_ns_scalar(object datetime64):
 
     # get integer representation, unit info from datetime64
     unit, step_size = np.datetime_data(datetime64)
-    datetime64 = int(datetime64) * step_size
+    datetime64 = int(np.int64(datetime64)) * step_size
 
-    # convert scaled integer repr to nanoseconds
-    # TODO: use convert_unit here, after it is finalized
-    raise NotImplementedError()
+    # scale to nanoseconds
+    if unit == "ns":
+        return datetime64
+    if unit in as_ns:
+        return datetime64 * as_ns[unit]
+    if unit == "M":
+        return date_to_days(1970, 1 + datetime64, 1) * as_ns["D"]
+    return date_to_days(1970 + datetime64, 1, 1) * as_ns["D"]
+
 
 
 @cython.boundscheck(False)
@@ -237,9 +213,15 @@ def numpy_datetime64_to_ns(
             unit, step_size = np.datetime_data(arg.dtype)
             arg = arg.astype(np.int64).astype("O") * step_size
 
-            # convert scaled integer repr to nanoseconds
-            # TODO: use convert_unit here, after it is finalized
-            raise NotImplementedError()
+            # scale to nanoseconds
+            if unit == "ns":
+                return arg
+            if unit in as_ns:
+                return arg * as_ns[unit]
+            if unit == "M":
+                return date_to_days(1970, 1 + arg, 1) * as_ns["D"]
+            return date_to_days(1970 + arg, 1, 1) * as_ns["D"]
+
         return numpy_datetime64_to_ns_vector(arg)
 
     # pd.Series:

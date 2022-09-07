@@ -7,6 +7,11 @@ from pdtypes.util.type_hints import date_like, datetime_like
 from .date import decompose_date
 
 
+# TODO: epoch() returns a datetime corresponding to the given epoch, which
+# can then be passed through decompose_date/datetime_to_ns to obtain the
+# required offsets
+
+
 #########################
 ####    Constants    ####
 #########################

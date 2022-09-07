@@ -29,10 +29,9 @@ from pdtypes.util.type_hints import date_like
 from .leap import leaps_between
 
 
-# TODO: epoch.pyx?
-# epoch_date(tuple | str | date_like)
-# epoch_days(tuple | str | date_like, since='utc')
-# epoch_ns(tuple | str | date_like, since='utc')
+# TODO: remove epoch support; `days` are always counted from utc
+
+# TODO: consider using cdivision=True
 
 
 #########################
@@ -439,15 +438,20 @@ def days_to_date(
     temp -= (temp == 4)
     years += temp
 
-    # convert residual days (ordinal) in last year to months
-    # searchsorted(..., side="right") - 1 puts ties on the right
+    # get index in days_per_month that matches residual days in last year
+    # `searchsorted(..., side="right") - 1` puts ties on the right
     month_index = days_per_month.searchsorted(days, side="right") - 1
-    months = (month_index + 2) % 12 + 1  # undo bias toward March 1st
-    years += (month_index >= 10)  # treat Jan, Feb as belonging to next year
+    month_index = month_index.astype("O")  # convert to python integers
 
-    # subtract off months to get final days in last month
+    # convert index to month, accounting for bias toward March 1st
+    months = (month_index + 2) % 12 + 1  # 1-indexed
+
+    # treat January, February as belonging to next year
+    years += (month_index >= 10) 
+
+    # subtract off months to get residual days in last month
     days -= days_per_month[month_index]
-    days += 1  # index from 1
+    days += 1  # 1-indexed
 
     # return as dict
     return {"year": years, "month": months, "day": days}

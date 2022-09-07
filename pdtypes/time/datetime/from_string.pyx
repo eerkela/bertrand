@@ -13,10 +13,10 @@ from ..timezone cimport localize_pydatetime_scalar
 
 
 # possible formats
-# iso 8601:     '1968-04-01'
-# J2000 years:  'J2000.123'
+# iso 8601:     '1968-04-01 08:47:13.123456789+0730'
+# J2000 years:  'J2000.12345'
 # quarters:     '4Q2023'
-# shorthand:    '4 jan 2022'
+# shorthand:    '4 jan 2022 at 7 AM'
 # relative:     'today'
 
 
