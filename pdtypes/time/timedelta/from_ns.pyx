@@ -9,9 +9,9 @@ from pdtypes.check import check_dtype, get_dtype
 from pdtypes.util.array import is_scalar
 from pdtypes.util.type_hints import datetime_like, timedelta_like
 
-from pdtypes.time.date import date_to_days, days_to_date, decompose_date
-from pdtypes.time.unit cimport as_ns
-from pdtypes.time.epoch import epoch_date
+from ..date import date_to_days, days_to_date, decompose_date
+from ..unit cimport as_ns
+from ..epoch import epoch_date
 
 
 #########################
@@ -130,6 +130,7 @@ def ns_to_pytimedelta(
 def ns_to_numpy_timedelta64(
     arg: int | np.ndarray | pd.Series,
     since: str | datetime_like = np.datetime64("2001-01-01"),
+    unit: str = None,
     min_ns: int = None,
     max_ns: int = None
 ) -> np.timedelta64 | np.ndarray | pd.Series:
@@ -146,56 +147,71 @@ def ns_to_numpy_timedelta64(
     # note original arg type
     original_type = type(arg)
 
-    # choose unit to fit range and rescale `arg` appropriately
-    choice = None
-    for unit, scale_factor in as_ns.items():
-        if unit == "ns" and min_ns > -2**63 and max_ns < 2**63:  # don't scale
-            choice = "ns"
-            break
-        elif min_ns // scale_factor > -2**63 and max_ns // scale_factor < 2**63:
-            choice = unit
+    # if `unit` is already defined, rescale `arg` to match
+    if unit is not None:
+        if unit in as_ns:  # unit is regular
+            scale_factor = as_ns[unit]
+            if (min_ns // scale_factor < -2**63 + 1 or
+                max_ns // scale_factor > 2**63 - 1):
+                raise OverflowError(f"`arg` exceeds np.timedelta64 range with "
+                                    f"unit={repr(unit)}")
             arg = arg // scale_factor
-            break
+        elif unit not in ("M", "Y"):
+            raise ValueError(f"unit {repr(unit)} not recognized; must be one "
+                             f"of {tuple(as_ns) + ('M', 'Y')}")
+    else:  # choose unit to fit range and rescale `arg` appropriately
+        for test_unit, scale_factor in as_ns.items():
+            if test_unit == "ns" and min_ns > -2**63 and max_ns < 2**63:
+                unit = "ns"
+                break
+            elif (min_ns // scale_factor > -2**63 and
+                  max_ns // scale_factor < 2**63):
+                unit = test_unit
+                arg = arg // scale_factor
+                break
 
-    # no choice was found among ('ns', 'us', 'ms', 's', 'm', 'h', 'D')
-    if not choice:  # try irregular units ('M', 'Y')
+    # no unit was found among ('ns', 'us', 'ms', 's', 'm', 'h', 'D')
+    if not unit or unit in ("M", "Y"):  # try irregular units ('M', 'Y')
         since = epoch_date(since)
         since_days = date_to_days(**since)
 
         # convert to days and pass through days_to_date
         min_ns = days_to_date(min_ns // as_ns["D"] + since_days)
         max_ns = days_to_date(max_ns // as_ns["D"] + since_days)
-
         min_ns["year"] -= since["year"]
         max_ns["year"] -= since["year"]
         min_ns["month"] -= since["month"]
         max_ns["month"] -= since["month"]
 
         # check for unit='M'
-        if (12 * min_ns["year"] + min_ns["month"] > -2**63 and
+        if (unit != "Y" and
+            12 * min_ns["year"] + min_ns["month"] > -2**63 and
             12 * max_ns["year"] + max_ns["month"] < 2**63):
-            choice = "M"
+            unit = "M"
             arg = days_to_date(arg // as_ns["D"] + since_days)
             arg["year"] -= since["year"]
             arg["month"] -= since["month"]
             arg = 12 * arg["year"] + arg["month"]
-        else:  # must be representable as 'Y' (passed overflow sentinel)
-            choice = "Y"
+        elif unit != "M":  # unit='Y' (sentinel check eliminates overflow)
+            unit = "Y"
             arg = days_to_date(arg // as_ns["D"] + since_days)
             arg = arg["year"] - since["year"]
+        else:
+            raise OverflowError(f"`arg` exceeds np.timedelta64 range with "
+                                f"unit={repr(unit)}")
 
     # np.ndarray
     if issubclass(original_type, np.ndarray):
-        return arg.astype(f"m8[{choice}]")
+        return arg.astype(f"m8[{unit}]")
 
     # pd.Series
     if issubclass(original_type, pd.Series):
         index = arg.index
-        arg = arg.to_numpy().astype(f"m8[{choice}]")
+        arg = arg.to_numpy().astype(f"m8[{unit}]")
         return pd.Series(list(arg), index=index, dtype="O")
 
     # scalar
-    return np.timedelta64(int(arg), choice)
+    return np.timedelta64(int(arg), unit)
 
 
 def ns_to_timedelta(
