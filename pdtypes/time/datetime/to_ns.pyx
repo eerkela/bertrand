@@ -23,7 +23,6 @@ from pdtypes.check import check_dtype, get_dtype
 from pdtypes.util.type_hints import datetime_like
 
 from ..date import decompose_date, date_to_days
-from ..timedelta.to_ns cimport pytimedelta_to_ns_scalar
 from ..timezone import is_utc, timezone, localize
 from ..unit cimport as_ns
 
@@ -43,8 +42,19 @@ cdef set valid_datetime_types = {
 }
 
 
-cdef object utc_pydatetime
-utc_pydatetime = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
+cdef object utc_naive_pydatetime = datetime.datetime.utcfromtimestamp(0)
+cdef object utc_aware_pydatetime
+utc_aware_pydatetime = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
+
+
+# importing this from timedelta.to_ns causes a circular import error
+cdef long int[:] pytimedelta_ns_coefs = np.array(
+    [
+        as_ns["D"],
+        as_ns["s"],
+        as_ns["us"]
+    ]
+)
 
 
 #######################
@@ -62,13 +72,23 @@ cdef inline long int pandas_timestamp_to_ns_scalar(object timestamp):
 
 cdef inline object pydatetime_to_ns_scalar(object pydatetime):
     """TODO"""
-    # interpret naive as UTC
-    if not pydatetime.tzinfo:
-        pydatetime = pydatetime.replace(tzinfo=datetime.timezone.utc)
-
     # convert to timedelta
-    pydatetime -= utc_pydatetime
-    return pytimedelta_to_ns_scalar(pydatetime)
+    if not pydatetime.tzinfo:
+        pydatetime = pydatetime - utc_naive_pydatetime
+    else:
+        pydatetime = pydatetime - utc_aware_pydatetime
+
+    # convert timedelta to ns
+    # importing this from timedelta.to_ns causes a circular import error
+    cdef np.ndarray[object] components = np.array(
+        [
+            pydatetime.days,
+            pydatetime.seconds,
+            pydatetime.microseconds
+        ],
+        dtype="O"
+    )
+    return np.dot(components, pytimedelta_ns_coefs)
 
 
 cdef inline object numpy_datetime64_to_ns_scalar(object datetime64):

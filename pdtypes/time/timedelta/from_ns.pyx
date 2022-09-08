@@ -9,9 +9,9 @@ from pdtypes.check import check_dtype, get_dtype
 from pdtypes.util.array import is_scalar
 from pdtypes.util.type_hints import datetime_like, timedelta_like
 
-from ..date import date_to_days, days_to_date, decompose_date
-from ..epoch import epoch_date
-from ..unit cimport as_ns
+from pdtypes.time.date import date_to_days, days_to_date, decompose_date
+from pdtypes.time.unit cimport as_ns
+from pdtypes.time.epoch import epoch_date
 
 
 #########################

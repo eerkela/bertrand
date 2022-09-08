@@ -7,10 +7,18 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
+from pdtypes.util.type_hints import datetime_like, timedelta_like
+
 from ..unit cimport as_ns
+
+from .from_ns import (
+    ns_to_pandas_timedelta, ns_to_pytimedelta, ns_to_numpy_timedelta64,
+    ns_to_timedelta
+)
 
 
 # TODO: can probably remove whitespace from patterns
+
 
 #########################
 ####    Constants    ####
@@ -71,8 +79,8 @@ cdef dict timedelta_regex = {
 #######################
 
 
-cdef object timedelta_string_to_ns(
-    str delta,
+cdef object timedelta_string_to_ns_scalar(
+    str string,
     bint as_hours = False
 ):
     """Internal C interface for public-facing `string_to_ns()` function."""
@@ -82,28 +90,28 @@ cdef object timedelta_string_to_ns(
     cdef dict groups
     cdef object result  # python integer
 
-    # preprocess delta string
-    delta = delta.replace(" ", "").lower()
+    # preprocess timedelta string
+    string = string.replace(" ", "").lower()
 
     # get sign if present
-    match = timedelta_regex["sign"].match(delta)
+    match = timedelta_regex["sign"].match(string)
     sign = -1 if match.groupdict()["sign"] == "-" else 1
 
     # strip sign and test all possible formats
-    delta = match.groupdict()["unsigned"]
+    string = match.groupdict()["unsigned"]
     for time_format in timedelta_regex["formats"]:
 
         # attempt match
-        match = time_format.match(delta)
+        match = time_format.match(string)
         if match and match.group().strip():  # match found and not empty
 
             # get dict of named subgroups (?P<...>) and associated values
             groups = match.groupdict()
 
-            # strings of the form '1:22' are ambiguous.  By default, we assume
-            # minutes and seconds, but if `as_hours=True`, we interpret as
-            # hours and minutes instead
-            if (as_hours and delta.count(":") == 1 and "." not in delta and
+            # strings of the form '1:22' are ambiguous; do they represent
+            # minutes and seconds or hours and minutes?  By default, we assume
+            # the former, but if `as_hours=True`, we reverse that assumption
+            if (as_hours and string.count(":") == 1 and "." not in string and
                 not any(groups.get(x, None) for x in ["h", "D", "W"])):
                 groups["h"] = groups["m"]
                 groups["m"] = groups["s"]
@@ -115,13 +123,44 @@ cdef object timedelta_string_to_ns(
             return int(sign * result)
 
     # string could not be matched
-    raise ValueError(f"could not parse timedelta string: {repr(delta)}")
+    raise ValueError(f"could not parse timedelta string: {repr(string)}")
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef tuple timedelta_string_to_ns_vector(
+    np.ndarray[str] arr,
+    bint as_hours = False,
+    str errors = "raise"
+):
+    """TODO"""
+    cdef int arr_length = arr.shape[0]
+    cdef int i
+    cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
+    cdef bint has_errors = False
+
+    for i in range(arr_length):
+        try:
+            result[i] = timedelta_string_to_ns_scalar(arr[i])
+        except ValueError as err:
+            if errors == "raise":
+                raise err
+            has_errors = True
+            result[i] = None
+
+    return result, has_errors
+
+
+######################
+####    Public    ####
+######################
 
 
 def string_to_ns(
-    str delta,
-    bint as_hours = False
-) -> int:
+    arg: str | np.ndarray | pd.Series,
+    as_hours: bool = False,
+    errors: str = "raise"
+) -> tuple[int | np.ndarray | pd.Series, bool]:
     """Parse a timedelta string, returning its associated value as an integer
     number of nanoseconds.
 
@@ -180,103 +219,183 @@ def string_to_ns(
     >>> timeparse('1:30', as_hours=True)
     5400000000000
     """
-    return timedelta_string_to_ns(delta, as_hours)
+    # np.ndarray
+    if isinstance(arg, np.ndarray):
+        # convert fixed-length numpy strings to python strings
+        if np.issubdtype(arg.dtype, "U"):
+            arg = arg.astype("O")
+
+        result, has_errors = timedelta_string_to_ns_vector(
+            arg,
+            as_hours=as_hours,
+            errors=errors
+        )
+        if errors == "ignore" and has_errors:
+            return arg, has_errors
+        return result, has_errors
+
+    # pd.Series
+    if isinstance(arg, pd.Series):
+        result, has_errors = timedelta_string_to_ns_vector(
+            arg.to_numpy(),
+            as_hours=as_hours,
+            errors=errors
+        )
+        if errors == "ignore" and has_errors:
+            return arg, has_errors
+        return pd.Series(result, index=arg.index, copy=False), has_errors
+
+    # scalar
+    try:
+        return (timedelta_string_to_ns_scalar(arg, as_hours=as_hours), False)
+    except ValueError as err:
+        if errors == "raise":
+            raise err
+        if errors == "ignore":
+            return (arg, True)
+        return (None, True)
 
 
+def string_to_pandas_timedelta(
+    arg: str | np.ndarray | pd.Series,
+    as_hours: bool = False,
+    errors: str = "raise"
+) -> pd.Timedelta | np.ndarray | pd.Series:
+    """TODO"""
+    # convert strings to ns, then ns to pd.Timedelta
+    result, has_errors = string_to_ns(arg, as_hours=as_hours, errors=errors)
+
+    # check for parsing errors
+    if has_errors:
+        if errors == "ignore":
+            return arg
+
+        # np.ndarray
+        if isinstance(arg, np.ndarray):
+            valid = (result != None)
+            result[valid] = ns_to_pandas_timedelta(result[valid])
+            result[~valid] = pd.NaT
+            return result
+
+        # pd.Series
+        if isinstance(arg, pd.Series):
+            valid = (result != None)
+            result[valid] = ns_to_pandas_timedelta(result[valid])
+            return result.infer_objects()
+
+        # scalar
+        return pd.NaT
+
+    # no errors encountered
+    return ns_to_pandas_timedelta(result)
 
 
-
-# TODO: vectorize string_to_ns so it accepts scalar/array/Series
-
-# TODO: add string_to_pandas_timedelta
-# TODO: add string_to_timedelta that accepts arbitrary input
-
-
-
-
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
 def string_to_pytimedelta(
-    np.ndarray[object] arr,
-    bint as_hours = False,
-    str errors = "raise"
-) -> np.ndarray[object]:
-    """test"""
-    cdef int arr_length = arr.shape[0]
-    cdef int i
-    cdef str element
-    cdef object us  # python integer
-    cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
+    arg: str | np.ndarray | pd.Series,
+    as_hours: bool = False,
+    errors: str = "raise"
+) -> datetime.timedelta | np.ndarray | pd.Series:
+    """TODO"""
+    # convert strings to ns, then ns to pd.Timedelta
+    result, has_errors = string_to_ns(arg, as_hours=as_hours, errors=errors)
 
-    for i in range(arr_length):
-        element = arr[i]
-        try:
-            us = timedelta_string_to_ns(element, as_hours=as_hours) // 1000
-            result[i] = datetime.timedelta(microseconds=us)
-        except (ValueError, OverflowError) as err:
-            if errors == "coerce":
-                result[i] = pd.NaT
-            else:
-                raise err
+    # check for parsing errors
+    if has_errors:
+        if errors == "ignore":
+            return arg
 
-    return result
+        # np.ndarray/pd.Series
+        if isinstance(arg, (np.ndarray, pd.Series)):
+            valid = (result != None)
+            result[valid] = ns_to_pytimedelta(result[valid])
+            result[~valid] = pd.NaT
+            return result
+
+        # scalar
+        return pd.NaT
+
+    # no errors encountered
+    return ns_to_pytimedelta(result)
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
 def string_to_numpy_timedelta64(
-    np.ndarray[object] arr,
-    bint as_hours = False,
-    str errors = "raise"
-) -> np.ndarray[object]:
-    """test"""
-    cdef int arr_length = arr.shape[0]
-    cdef int i
-    cdef np.ndarray[object] as_ns = np.empty(arr_length, dtype="O")
-    cdef object ns  # python integer
-    cdef object min_ns = 0  # python integer
-    cdef object max_ns = 0  # python integer
+    arg: str | np.ndarray | pd.Series,
+    as_hours: bool = False,
+    since: str | datetime_like = np.datetime64("2001-01-01 00:00:00"),
+    errors: str = "raise"
+) -> np.timedelta64 | np.ndarray | pd.Series:
+    """TODO"""
+    # convert strings to ns, then ns to pd.Timedelta
+    result, has_errors = string_to_ns(arg, as_hours=as_hours, errors=errors)
 
-    # convert each string to integer number of nanoseconds
-    for i in range(arr_length):
-        try:
-            ns = timedelta_string_to_ns(arr[i], as_hours=as_hours)
-        except ValueError as err:
-            if errors != "coerce":
-                raise err
-        else:
-            as_ns[i] = ns
-            if ns < min_ns:
-                min_ns = ns
-            elif ns > max_ns:
-                max_ns = ns
+    # check for parsing errors
+    if has_errors:
+        if errors == "ignore":
+            return arg
 
-    # identify smallest unit that can represent data, starting with ns
-    cdef str unit
-    cdef long long int scale_factor
-    cdef bint converged = False
+        # np.ndarray
+        if isinstance(arg, np.ndarray):
+            valid = (result != None)
+            arg = ns_to_numpy_timedelta64(result[valid])
+            result[valid] = arg
+            unit, _ = np.datetime_data(arg.dtype)
+            return result.astype(f"m8[{unit}]")
 
-    for unit, scale_factor in as_ns.items():
-        if (-2**63 + 1 <= min_ns // scale_factor and
-            max_ns // scale_factor <= 2**63 - 1):
-            converged = True
-            break
+        # pd.Series
+        if isinstance(arg, pd.Series):
+            valid = (result != None)
+            arg = ns_to_numpy_timedelta64(result[valid])
+            result[valid] = arg
+            unit, _ = np.datetime_data(arg.dtype)
+            result[~valid] = np.timedelta64("nat", unit)
+            return result
 
-    if not converged:  # no shared unit could be identified
-        raise ValueError("string values exceed numpy.timedelta64 range for "
-                         "every choice of unit up to 'W'")
+        # scalar
+        return np.timedelta64("nat")
 
-    # convert each nanosecond value to numpy.timedelta64 with appropriate unit
-    cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
+    # no errors encountered
+    return ns_to_numpy_timedelta64(result)
 
-    for i in range(arr_length):
-        ns = as_ns[i]
-        if ns is None:
-            result[i] = np.timedelta64("nat")
-        else:
-            result[i] = np.timedelta64(ns // scale_factor, unit)
 
-    # return
-    return result
+def string_to_timedelta(
+    arg: str | np.ndarray | pd.Series,
+    as_hours: bool = False,
+    since: str | datetime_like = np.datetime64("2001-01-01 00:00:00"),
+    errors: str = "raise"
+) -> timedelta_like | np.ndarray | pd.Series:
+    """TODO"""
+    # convert strings to ns, then ns to pd.Timedelta
+    result, has_errors = string_to_ns(arg, as_hours=as_hours, errors=errors)
+
+    # check for parsing errors
+    if has_errors:
+        if errors == "ignore":
+            return arg
+
+        # np.ndarray
+        if isinstance(arg, np.ndarray):  # return a timedelta64 array
+            valid = (result != None)
+            arg = ns_to_timedelta(result[valid], since=since)
+            result[valid] = arg
+            unit, _ = np.datetime_data(arg)
+            return result.astype(f"m8[{unit}]")
+
+        # pd.Series
+        if isinstance(arg, pd.Series):  # return an m8[ns] array, if possible
+            valid = (result != None)
+            arg = ns_to_timedelta(result[valid], since=since)
+            result[valid] = arg
+
+            # return as pd.Timedelta array
+            if pd.api.types.is_datetime64_ns_dtype(arg):
+                return result.infer_objects()
+
+            # return as object array
+            result[~valid] = pd.NaT
+            return result
+
+        # scalar
+        return pd.NaT
+
+    # no errors were encountered
+    return ns_to_timedelta(result, since=since)
