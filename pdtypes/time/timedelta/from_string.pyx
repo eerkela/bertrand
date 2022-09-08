@@ -71,7 +71,7 @@ cdef dict timedelta_regex = {
 #######################
 
 
-cdef object _string_to_ns(
+cdef object timedelta_string_to_ns(
     str delta,
     bint as_hours = False
 ):
@@ -180,7 +180,7 @@ def string_to_ns(
     >>> timeparse('1:30', as_hours=True)
     5400000000000
     """
-    return _string_to_ns(delta, as_hours)
+    return timedelta_string_to_ns(delta, as_hours)
 
 
 
@@ -213,7 +213,7 @@ def string_to_pytimedelta(
     for i in range(arr_length):
         element = arr[i]
         try:
-            us = _string_to_ns(element, as_hours=as_hours) // 1000
+            us = timedelta_string_to_ns(element, as_hours=as_hours) // 1000
             result[i] = datetime.timedelta(microseconds=us)
         except (ValueError, OverflowError) as err:
             if errors == "coerce":
@@ -242,7 +242,7 @@ def string_to_numpy_timedelta64(
     # convert each string to integer number of nanoseconds
     for i in range(arr_length):
         try:
-            ns = _string_to_ns(arr[i], as_hours=as_hours)
+            ns = timedelta_string_to_ns(arr[i], as_hours=as_hours)
         except ValueError as err:
             if errors != "coerce":
                 raise err

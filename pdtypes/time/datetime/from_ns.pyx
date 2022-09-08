@@ -81,16 +81,17 @@ cdef np.ndarray[object] ns_to_pydatetime_vector(
 
 def ns_to_pandas_timestamp(
     arg: int | np.ndarray | pd.Series,
-    tz: str | datetime.tzinfo | None = None
+    tz: str | datetime.tzinfo | None = None,
+    min_ns: int = None,
+    max_ns: int = None
 ) -> pd.Timestamp | np.ndarray | pd.Series:
     """TODO"""
     # ensure min/max fall within representable range
-    if isinstance(arg, (np.ndarray, pd.Series)):
-        min_ns = int(arg.min())
-        max_ns = int(arg.max())
-    else:
-        min_ns = int(arg)
-        max_ns = int(arg)
+    is_array_like = isinstance(arg, (np.ndarray, pd.Series))
+    if min_ns is None:
+        min_ns = int(arg.min()) if is_array_like else int(arg)
+    if max_ns is None:
+        max_ns = int(arg.max()) if is_array_like else int(arg)
     if min_ns < min_pandas_timestamp_ns or max_ns > max_pandas_timestamp_ns:
         raise OverflowError(f"`arg` exceeds pd.Timestamp range")
 
@@ -124,16 +125,17 @@ def ns_to_pandas_timestamp(
 
 def ns_to_pydatetime(
     arg: int | np.ndarray | pd.Series,
-    tz: str | datetime.tzinfo | None = None
+    tz: str | datetime.tzinfo | None = None,
+    min_ns: int = None,
+    max_ns: int = None
 ) -> datetime.datetime | np.ndarray | pd.Series:
     """TODO"""
     # ensure min/max fall within representable range
-    if isinstance(arg, (np.ndarray, pd.Series)):
-        min_ns = int(arg.min())
-        max_ns = int(arg.max())
-    else:
-        min_ns = int(arg)
-        max_ns = int(arg)
+    is_array_like = isinstance(arg, (np.ndarray, pd.Series))
+    if min_ns is None:
+        min_ns = int(arg.min()) if is_array_like else int(arg)
+    if max_ns is None:
+        max_ns = int(arg.max()) if is_array_like else int(arg)
     if min_ns < min_pydatetime_ns or max_ns > max_pydatetime_ns:
         raise OverflowError(f"`arg` exceeds datetime.datetime range")
 
@@ -176,16 +178,17 @@ def ns_to_pydatetime(
 
 
 def ns_to_numpy_datetime64(
-    arg: int | np.ndarray | pd.Series
+    arg: int | np.ndarray | pd.Series,
+    min_ns: int = None,
+    max_ns: int = None
 ) -> np.datetime64 | np.ndarray | pd.Series:
     """TODO"""
     # ensure min/max fall within representable range
-    if isinstance(arg, (np.ndarray, pd.Series)):
-        min_ns = int(arg.min())
-        max_ns = int(arg.max())
-    else:
-        min_ns = int(arg)
-        max_ns = int(arg)
+    is_array_like = isinstance(arg, (np.ndarray, pd.Series))
+    if min_ns is None:
+        min_ns = int(arg.min()) if is_array_like else int(arg)
+    if max_ns is None:
+        max_ns = int(arg.max()) if is_array_like else int(arg)
     if min_ns < min_numpy_datetime64_ns or max_ns > max_numpy_datetime64_ns:
         raise OverflowError(f"`arg` exceeds np.datetime64 range")
 
@@ -243,18 +246,28 @@ def ns_to_datetime(
     tz: str | datetime.tzinfo | None = None
 ) -> datetime_like | np.ndarray | pd.Series:
     """TODO"""
-    # resolve timezone
+    # ensure min/max fall within representable range
+    if isinstance(arg, (np.ndarray, pd.Series)):
+        min_ns = int(arg.min())
+        max_ns = int(arg.max())
+    else:
+        min_ns = int(arg)
+        max_ns = int(arg)
+
+    # resolve timezone and check if utc
     tz = timezone(tz)
 
-    # pd.Timestamp
-    try:
-        return ns_to_pandas_timestamp(arg, tz)
+    # if `arg` is a numpy array and `tz` is utc, skip straight to np.datetime64
+    if isinstance(arg, np.ndarray) and (not tz or is_utc(tz)):
+        return ns_to_numpy_datetime64(arg, min_ns=min_ns, max_ns=max_ns)
+
+    try:  # pd.Timestamp
+        return ns_to_pandas_timestamp(arg, tz, min_ns=min_ns, max_ns=max_ns)
     except OverflowError:
         pass
 
-    # datetime.datetime
-    try:
-        return ns_to_pydatetime(arg, tz)
+    try:  # datetime.datetime
+        return ns_to_pydatetime(arg, tz, min_ns=min_ns, max_ns=max_ns)
     except OverflowError:
         pass
 

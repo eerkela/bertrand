@@ -239,3 +239,17 @@ def string_to_pydatetime(
         return pd.NaT
 
     return localize_pydatetime_scalar(arg, tz)
+
+
+def string_to_numpy_datetime64(
+    arg: str | np.ndarray | pd.Series,
+    errors: str = "raise"
+) -> np.datetime64 | np.ndarray | pd.Series:
+    """TODO"""
+    # convert fixed-length numpy string arrays to python strings
+    if isinstance(arg, np.ndarray) and np.issubdtype(arg.dtype, "U"):
+        arg = arg.astype("O")
+
+    
+
+

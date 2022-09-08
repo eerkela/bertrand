@@ -5,9 +5,8 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdtypes.check import check_dtype, get_dtype
-from pdtypes.util.array import is_scalar
-from pdtypes.util.type_hints import date_like, timedelta_like
+from pdtypes.check import get_dtype
+from pdtypes.util.type_hints import datetime_like, timedelta_like
 
 from ..date import date_to_days, decompose_date
 from ..epoch import epoch_date
@@ -15,13 +14,6 @@ from ..unit cimport as_ns
 
 
 # TODO: include datetime.time?
-
-# TODO: delegate higher-level `epoch` handling to caller?
-# -> split into separate args, with (2001, 1, 1) as default
-# would allow ISO string/datetime epochs, fuzzy matching, etc. on `epoch input`
-
-
-# TODO: `epoch` handled in `epoch.pyx`, after defining string_to_datetime.
 
 
 #########################
@@ -96,14 +88,12 @@ cdef inline object numpy_timedelta64_to_ns_scalar(
         return int_repr * as_ns[unit]
 
     # unit is irregular ('M', 'Y')
-    cdef object start
+    cdef object start = date_to_days(start_year, start_month, start_day)
     cdef object end
 
     if unit == "Y":  # convert years to days, accounting for leap years
-        start = date_to_days(start_year, start_month, start_day)
         end = date_to_days(start_year + int_repr, start_month, start_day)
     elif unit == "M":  # convert months to days, accounting for unequal lengths
-        start = date_to_days(start_year, start_month, start_day)
         end = date_to_days(start_year, start_month + int_repr, start_day)
     else:
         raise ValueError(f"could not interpret timedelta64 with unit: {unit}")
@@ -209,32 +199,6 @@ cdef np.ndarray[object] mixed_timedelta_to_ns_vector(
 ######################
 
 
-def _split_epoch_date(epoch: tuple | str | date_like) -> tuple[int, int, int]:
-    """Split an epoch date/string specified into its individual components
-    `(year, month, day)`, for use in `date_to_days`.
-
-    TODO: this goes in date_to_days?
-    """
-    # base case - integer tuple `(year, month, day)`
-    if (isinstance(epoch, tuple) and len(epoch) == 3 and check_dtype(epoch, int)):
-        return epoch
-
-    # parsing required - ensure scalar
-    if not is_scalar(epoch):
-        raise ValueError(f"`epoch` must be scalar, not {type(epoch)}")
-
-    # string epoch identifier
-    if isinstance(epoch, str):
-        return tuple(epoch_date.values())
-
-    # custom date-like
-    if check_dtype(epoch, ("datetime", datetime.date)):
-        components = decompose_date(epoch)
-        return tuple(components.values())
-
-    raise TypeError(f"could not parse epoch: {epoch}")
-
-
 def pandas_timedelta_to_ns(
     arg: pd.Timedelta | np.ndarray | pd.Series
 ) -> int | np.ndarray | pd.Series:
@@ -305,7 +269,7 @@ def pytimedelta_to_ns(
 
 def numpy_timedelta64_to_ns(
     arg: np.timedelta64 | np.ndarray | pd.Series,
-    epoch: tuple | str | date_like = (2001, 1, 1)
+    since: str | datetime_like = np.datetime64("2001-01-01")
 ) -> int | np.ndarray | pd.Series:
     """Convert `np.timedelta64` objects into an equivalent number of
     nanoseconds.
@@ -316,7 +280,7 @@ def numpy_timedelta64_to_ns(
         Timedelta to convert.  Must be a scalar of type `np.timedelta64` or an
         array-like containing exclusively `np.timedelta64` objects.  Irregular
         units 'M' and 'Y' are supported through the optional `epoch` argument.
-    epoch (tuple | str | date_like):
+    since (str | datetime_like):
         The epoch to use for irregular timedelta64 units 'M' and 'Y', which
         need a specified starting point to maintain accuracy.  Custom epochs
         can be specified using direct `(year, month, day)` integer tuples,
@@ -331,8 +295,8 @@ def numpy_timedelta64_to_ns(
         The integer nanosecond equivalent for each `np.timedelta64` stored in
         `arg`.  Series inputs preserve the original index.
     """
-    # split epoch into year, month, day for timedelta64 units 'M' and 'Y'
-    start_year, start_month, start_day = _split_epoch_date(epoch)
+    # resolve `since` date and split into year, month, day
+    start_year, start_month, start_day = epoch_date(since).values()
 
     # np.array
     if isinstance(arg, np.ndarray):
@@ -373,7 +337,7 @@ def numpy_timedelta64_to_ns(
 
 def timedelta_to_ns(
     arg: timedelta_like | np.ndarray | pd.Series,
-    epoch: str | tuple | date_like = (2001, 1, 1)
+    since: str | datetime_like = np.datetime64("2001-01-01")
 ) -> int | np.ndarray | pd.Series:
     """Convert arbitrary timedeltas into an equivalent number of nanoseconds.
 
@@ -383,7 +347,7 @@ def timedelta_to_ns(
         Timedelta to convert.  If `np.timedelta64` objects with irregular units
         'M' and 'Y' are encountered, they are interpreted with respect to the
         given `epoch`.
-    epoch (tuple | str | date_like):
+    since (tuple | str | date_like):
         The epoch to use for irregular timedelta64 units 'M' and 'Y', which
         need a specified starting point to maintain accuracy.  Custom epochs
         can be specified using direct `(year, month, day)` integer tuples,
@@ -414,12 +378,12 @@ def timedelta_to_ns(
 
     # np.timedelta64
     if dtype == np.timedelta64:
-        return numpy_timedelta64_to_ns(arg, epoch)
+        return numpy_timedelta64_to_ns(arg, since)
 
     # mixed element types
     if isinstance(dtype, set):
-        # split epoch into year, month, day for timedelta64 units 'M' and 'Y'
-        start_year, start_month, start_day = _split_epoch_date(epoch)
+        # resolve `since` date and split into year, month, day
+        start_year, start_month, start_day = epoch_date(since).values()
 
         # pd.Series
         if isinstance(arg, pd.Series):
