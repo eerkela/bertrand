@@ -269,7 +269,7 @@ def pytimedelta_to_ns(
 
 def numpy_timedelta64_to_ns(
     arg: np.timedelta64 | np.ndarray | pd.Series,
-    since: str | datetime_like = np.datetime64("2001-01-01")
+    since: str | datetime_like = "2001-01-01"
 ) -> int | np.ndarray | pd.Series:
     """Convert `np.timedelta64` objects into an equivalent number of
     nanoseconds.
@@ -337,7 +337,7 @@ def numpy_timedelta64_to_ns(
 
 def timedelta_to_ns(
     arg: timedelta_like | np.ndarray | pd.Series,
-    since: str | datetime_like = np.datetime64("2001-01-01")
+    since: str | datetime_like = "2001-01-01"
 ) -> int | np.ndarray | pd.Series:
     """Convert arbitrary timedeltas into an equivalent number of nanoseconds.
 

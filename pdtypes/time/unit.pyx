@@ -41,9 +41,11 @@ cdef tuple valid_units = tuple(as_ns) + ("M", "Y")
 ######################
 
 
+# TODO: add support for fractional conversions, including with unit "M", "Y"
+
+
 # TODO: does not apply correct rounding rule for days -> month/year
 # TODO: overflow is common
-# TODO: split into helpers, like timedelta.to_ns?
 
 
 def convert_unit(

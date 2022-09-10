@@ -14,6 +14,9 @@ from ..unit cimport as_ns
 from ..epoch import epoch_date
 
 
+# TODO: import valid_units from ..unit and add sentinels?
+
+
 #########################
 ####    Constants    ####
 #########################
@@ -129,7 +132,7 @@ def ns_to_pytimedelta(
 
 def ns_to_numpy_timedelta64(
     arg: int | np.ndarray | pd.Series,
-    since: str | datetime_like = np.datetime64("2001-01-01"),
+    since: str | datetime_like = "2001-01-01",
     unit: str = None,
     min_ns: int = None,
     max_ns: int = None
@@ -216,7 +219,7 @@ def ns_to_numpy_timedelta64(
 
 def ns_to_timedelta(
     arg: int | np.ndarray | pd.Series,
-    since: str | datetime_like = np.datetime64("2001-01-01")
+    since: str | datetime_like = "2001-01-01"
 ) -> timedelta_like | np.ndarray | pd.Series:
     """TODO"""
     # ensure min/max fall within representable range

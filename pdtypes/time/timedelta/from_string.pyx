@@ -19,6 +19,8 @@ from .from_ns import (
 
 # TODO: can probably remove whitespace from patterns
 
+# TODO: consider adding support for "M", "Y" units in timedelta strings
+
 
 #########################
 ####    Constants    ####
@@ -156,7 +158,7 @@ cdef tuple timedelta_string_to_ns_vector(
 ######################
 
 
-def string_to_ns(
+def timedelta_string_to_ns(
     arg: str | np.ndarray | pd.Series,
     as_hours: bool = False,
     errors: str = "raise"
@@ -193,23 +195,23 @@ def string_to_ns(
 
     Examples
     --------
-    >>> string_to_ns('1:24')
+    >>> timedelta_string_to_ns('1:24')
     84000000000
-    >>> string_to_ns(':22')
+    >>> timedelta_string_to_ns(':22')
     22000000000
-    >>> string_to_ns('1 minute, 24 secs')
+    >>> timedelta_string_to_ns('1 minute, 24 secs')
     84000000000
-    >>> string_to_ns('1m24s')
+    >>> timedelta_string_to_ns('1m24s')
     84000000000
-    >>> string_to_ns('1.2 minutes')
+    >>> timedelta_string_to_ns('1.2 minutes')
     72000000000
-    >>> string_to_ns('1.2 seconds')
+    >>> timedelta_string_to_ns('1.2 seconds')
     1200000000
 
     Time expressions can be signed.
-    >>> string_to_ns('- 1 minute')
+    >>> timedelta_string_to_ns('- 1 minute')
     -60000000000
-    >>> string_to_ns('+ 1 minute')
+    >>> timedelta_string_to_ns('+ 1 minute')
     60000000000
 
     If `as_hours=True`, then ambiguous digits following a colon will be
@@ -263,7 +265,11 @@ def string_to_pandas_timedelta(
 ) -> pd.Timedelta | np.ndarray | pd.Series:
     """TODO"""
     # convert strings to ns, then ns to pd.Timedelta
-    result, has_errors = string_to_ns(arg, as_hours=as_hours, errors=errors)
+    result, has_errors = timedelta_string_to_ns(
+        arg,
+        as_hours=as_hours,
+        errors=errors
+    )
 
     # check for parsing errors
     if has_errors:
@@ -273,15 +279,17 @@ def string_to_pandas_timedelta(
         # np.ndarray
         if isinstance(arg, np.ndarray):
             valid = (result != None)
-            result[valid] = ns_to_pandas_timedelta(result[valid])
+            if valid.any():
+                result[valid] = ns_to_pandas_timedelta(result[valid])
             result[~valid] = pd.NaT
             return result
 
         # pd.Series
         if isinstance(arg, pd.Series):
             valid = (result != None)
-            result[valid] = ns_to_pandas_timedelta(result[valid])
-            return result.infer_objects()
+            if valid.any():
+                result[valid] = ns_to_pandas_timedelta(result[valid])
+            return result.astype("m8[ns]")
 
         # scalar
         return pd.NaT
@@ -297,7 +305,11 @@ def string_to_pytimedelta(
 ) -> datetime.timedelta | np.ndarray | pd.Series:
     """TODO"""
     # convert strings to ns, then ns to pd.Timedelta
-    result, has_errors = string_to_ns(arg, as_hours=as_hours, errors=errors)
+    result, has_errors = timedelta_string_to_ns(
+        arg,
+        as_hours=as_hours,
+        errors=errors
+    )
 
     # check for parsing errors
     if has_errors:
@@ -307,7 +319,8 @@ def string_to_pytimedelta(
         # np.ndarray/pd.Series
         if isinstance(arg, (np.ndarray, pd.Series)):
             valid = (result != None)
-            result[valid] = ns_to_pytimedelta(result[valid])
+            if valid.any():
+                result[valid] = ns_to_pytimedelta(result[valid])
             result[~valid] = pd.NaT
             return result
 
@@ -321,12 +334,17 @@ def string_to_pytimedelta(
 def string_to_numpy_timedelta64(
     arg: str | np.ndarray | pd.Series,
     as_hours: bool = False,
-    since: str | datetime_like = np.datetime64("2001-01-01 00:00:00"),
+    since: str | datetime_like = "2001-01-01 00:00:00",
+    unit: str = None,
     errors: str = "raise"
 ) -> np.timedelta64 | np.ndarray | pd.Series:
     """TODO"""
     # convert strings to ns, then ns to pd.Timedelta
-    result, has_errors = string_to_ns(arg, as_hours=as_hours, errors=errors)
+    result, has_errors = timedelta_string_to_ns(
+        arg,
+        as_hours=as_hours,
+        errors=errors
+    )
 
     # check for parsing errors
     if has_errors:
@@ -336,36 +354,46 @@ def string_to_numpy_timedelta64(
         # np.ndarray
         if isinstance(arg, np.ndarray):
             valid = (result != None)
-            arg = ns_to_numpy_timedelta64(result[valid])
-            result[valid] = arg
-            unit, _ = np.datetime_data(arg.dtype)
+            if valid.any():
+                arg = ns_to_numpy_timedelta64(result[valid], unit=unit)
+                result[valid] = arg
+                unit, _ = np.datetime_data(arg.dtype)
+                return result.astype(f"m8[{unit}]")
+
+            # no valid inputs
+            if unit is None:
+                unit = "ns"
             return result.astype(f"m8[{unit}]")
 
         # pd.Series
         if isinstance(arg, pd.Series):
             valid = (result != None)
-            arg = ns_to_numpy_timedelta64(result[valid])
-            result[valid] = arg
-            unit, _ = np.datetime_data(arg.dtype)
-            result[~valid] = np.timedelta64("nat", unit)
+            if valid.any():
+                arg = ns_to_numpy_timedelta64(result[valid], unit=unit)
+                result[valid] = arg
+            result[~valid] = np.timedelta64("nat")
             return result
 
         # scalar
         return np.timedelta64("nat")
 
     # no errors encountered
-    return ns_to_numpy_timedelta64(result)
+    return ns_to_numpy_timedelta64(result, unit=unit)
 
 
 def string_to_timedelta(
     arg: str | np.ndarray | pd.Series,
     as_hours: bool = False,
-    since: str | datetime_like = np.datetime64("2001-01-01 00:00:00"),
+    since: str | datetime_like = "2001-01-01 00:00:00",
     errors: str = "raise"
 ) -> timedelta_like | np.ndarray | pd.Series:
     """TODO"""
     # convert strings to ns, then ns to pd.Timedelta
-    result, has_errors = string_to_ns(arg, as_hours=as_hours, errors=errors)
+    result, has_errors = timedelta_string_to_ns(
+        arg,
+        as_hours=as_hours,
+        errors=errors
+    )
 
     # check for parsing errors
     if has_errors:
@@ -375,20 +403,23 @@ def string_to_timedelta(
         # np.ndarray
         if isinstance(arg, np.ndarray):  # return a timedelta64 array
             valid = (result != None)
-            arg = ns_to_timedelta(result[valid], since=since)
-            result[valid] = arg
-            unit, _ = np.datetime_data(arg)
-            return result.astype(f"m8[{unit}]")
+            if valid.any():
+                arg = ns_to_timedelta(result[valid], since=since)
+                result[valid] = arg
+                unit, _ = np.datetime_data(arg)
+                return result.astype(f"m8[{unit}]")
+
+            # no valid inputs
+            return result.astype(f"m8[ns]")
 
         # pd.Series
-        if isinstance(arg, pd.Series):  # return an m8[ns] array, if possible
+        if isinstance(arg, pd.Series):  # return an m8[ns] series, if possible
             valid = (result != None)
-            arg = ns_to_timedelta(result[valid], since=since)
-            result[valid] = arg
-
-            # return as pd.Timedelta array
-            if pd.api.types.is_datetime64_ns_dtype(arg):
-                return result.infer_objects()
+            if valid.any():
+                arg = ns_to_timedelta(result[valid], since=since)
+                result[valid] = arg
+                if pd.api.types.is_datetime64_ns_dtype(arg):
+                    return result.infer_objects()  # return as m8[ns] series
 
             # return as object array
             result[~valid] = pd.NaT

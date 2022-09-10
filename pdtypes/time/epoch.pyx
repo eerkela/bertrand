@@ -6,7 +6,7 @@ from pdtypes.util.array import is_scalar
 from pdtypes.util.type_hints import datetime_like
 
 from .date import decompose_date
-from .datetime import datetime_to_ns  # string_to_datetime
+from .datetime import datetime_to_ns, string_to_datetime
 
 
 #########################
@@ -98,9 +98,7 @@ def epoch(arg: str | datetime_like):
 
     # string
     if isinstance(arg, str):
-        # TODO
-        # return epoch_aliases.get(arg, string_to_datetime(arg))
-        return epoch_aliases[arg]
+        return epoch_aliases.get(arg, string_to_datetime(arg))
 
     # epoch type not recognized
     raise TypeError(f"`epoch` must be a datetime string or object, not "

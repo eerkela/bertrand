@@ -166,15 +166,9 @@ def decompose_date(
     # datetime.datetime-like (duck-type)
     if isinstance(date, np.ndarray):
         return decompose_datelike_objects(date)
-
     if isinstance(date, pd.Series):
         return decompose_datelike_objects(date.to_numpy())
-
     return {"year": date.year, "month": date.month, "day": date.day}
-
-
-
-# TODO: fractional years, months
 
 
 @cython.boundscheck(False)
@@ -230,7 +224,7 @@ def date_to_days(
 
     # build result
     result = 365 * year + leaps_between(0, year + 1)
-    result += days_per_month[month]
+    result += days_per_month[month].astype("O")  # convert to python integers
     result += day
 
     # move origin from March 1st, year 0 to utc
@@ -310,17 +304,13 @@ def days_to_date(
     # get index in days_per_month that matches residual days in last year
     # `searchsorted(..., side="right") - 1` puts ties on the right
     month_index = days_per_month.searchsorted(days, side="right") - 1
-    month_index = month_index.astype("O")  # convert to python integers
+    days -= days_per_month[month_index].astype("O")
+    days += 1  # 1-indexed
 
     # convert index to month, accounting for bias toward March 1st
+    month_index = month_index.astype("O")  # convert to python integers
     months = (month_index + 2) % 12 + 1  # 1-indexed
-
-    # treat January, February as belonging to next year
-    years += (month_index >= 10) 
-
-    # subtract off months to get residual days in last month
-    days -= days_per_month[month_index]
-    days += 1  # 1-indexed
+    years += (month_index >= 10)   # treat Jan, Feb as belonging to next year
 
     # return as dict
     return {"year": years, "month": months, "day": days}

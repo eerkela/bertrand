@@ -23,7 +23,7 @@ from .to_ns import timedelta_to_ns
 
 def timedelta_to_pandas_timedelta(
     arg: timedelta_like | np.ndarray | pd.Series,
-    since: str | datetime_like = np.datetime64("2001-01-01 00:00:00")
+    since: str | datetime_like = "2001-01-01 00:00:00"
 ) -> pd.Timedelta | np.ndarray | pd.Series:
     """TODO"""
     if check_dtype(arg, pd.Timedelta):
@@ -34,7 +34,7 @@ def timedelta_to_pandas_timedelta(
 
 def timedelta_to_pytimedelta(
     arg: timedelta_like | np.ndarray | pd.Series,
-    since: str | datetime_like = np.datetime64("2001-01-01 00:00:00")
+    since: str | datetime_like = "2001-01-01 00:00:00"
 ) -> datetime.timedelta | np.ndarray | pd.Series:
     """TODO"""
     if check_dtype(arg, datetime.timedelta):
@@ -45,7 +45,7 @@ def timedelta_to_pytimedelta(
 
 def timedelta_to_numpy_timedelta64(
     arg: timedelta_like | np.ndarray | pd.Series,
-    since: str | datetime_like = np.datetime64("2001-01-01 00:00:00"),
+    since: str | datetime_like = "2001-01-01 00:00:00",
     unit: str = None
 ) -> np.timedelta64 | np.ndarray | pd.Series:
     """TODO"""
@@ -55,7 +55,7 @@ def timedelta_to_numpy_timedelta64(
 
 def timedelta_to_timedelta(
     arg: timedelta_like | np.ndarray | pd.Series,
-    since: str | datetime_like = np.datetime64("2001-01-01 00:00:00")
+    since: str | datetime_like = "2001-01-01 00:00:00"
 ) -> timedelta_like | np.ndarray | pd.Series:
     """TODO"""
     # np.ndarray
@@ -65,7 +65,7 @@ def timedelta_to_timedelta(
             return arg
 
     # pd.Series
-    if isinstance(arg, pd.Series) and pd.api.types.is_datetime64_ns_dtype(arg):
+    if isinstance(arg, pd.Series) and pd.api.types.is_timedelta64_ns_dtype(arg):
         return arg
 
     # scalar

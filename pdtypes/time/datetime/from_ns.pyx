@@ -179,6 +179,7 @@ def ns_to_pydatetime(
 
 def ns_to_numpy_datetime64(
     arg: int | np.ndarray | pd.Series,
+    unit: str = None,
     min_ns: int = None,
     max_ns: int = None
 ) -> np.datetime64 | np.ndarray | pd.Series:
@@ -195,50 +196,69 @@ def ns_to_numpy_datetime64(
     # note original arg type
     original_type = type(arg)
 
-    # choose unit to fit range and rescale `arg` appropriately
-    choice = None
-    for unit, scale_factor in as_ns.items():
-        if unit == "ns" and min_ns > -2**63 and max_ns < 2**63:  # don't scale
-            choice = "ns"
-            break
-        elif unit == "W":  # skip weeks
-            # this unit has some really wierd (and inconsistent) overflow
-            # behavior that makes it practically useless over unit="D"
-            continue
-        elif min_ns // scale_factor > -2**63 and max_ns // scale_factor < 2**63:
-            choice = unit
+    # if `unit` is already defined, rescale `arg` to match
+    if unit is not None:
+        if unit in as_ns:  # unit is regular
+            before_substitution = unit
+            if unit == "W": # reject weeks due to inconsistent overflow
+                unit = "D"
+            scale_factor = as_ns[unit]
+            if (min_ns // scale_factor < -2**63 + 1 or
+                max_ns // scale_factor > 2**63 - 1):
+                raise OverflowError(f"`arg` exceeds np.timedelta64 range with "
+                                    f"unit={repr(before_substitution)}")
             arg = arg // scale_factor
-            break
+        elif unit not in ("M", "Y"):
+            raise ValueError(f"unit {repr(unit)} not recognized; must be one "
+                             f"of {tuple(as_ns) + ('M', 'Y')}")
+    else:  # choose unit to fit range and rescale `arg` appropriately
+        for test_unit, scale_factor in as_ns.items():
+            if test_unit == "ns" and min_ns > -2**63 and max_ns < 2**63:
+                unit = "ns"
+                break
+            elif test_unit == "W":  # skip weeks
+                # this unit has some really wierd (and inconsistent) overflow
+                # behavior that makes it practically useless over unit="D"
+                continue
+            elif (min_ns // scale_factor > -2**63 and
+                  max_ns // scale_factor < 2**63):
+                unit = test_unit
+                arg = arg // scale_factor
+                break
 
     # no choice was found among ('ns', 'us', 'ms', 's', 'm', 'h', 'D')
-    if not choice:  # try irregular units ('M', 'Y')
+    if not unit or unit in ("M", "Y"):  # try irregular units ('M', 'Y')
         # convert to days and pass through days_to_date
         min_ns = days_to_date(min_ns // as_ns["D"])
         max_ns = days_to_date(max_ns // as_ns["D"])
 
         # check for unit='M'
-        if (12 * (min_ns["year"] - 1970) + min_ns["month"] - 1 > -2**63 and
+        if (unit != "Y" and
+            12 * (min_ns["year"] - 1970) + min_ns["month"] - 1 > -2**63 and
             12 * (max_ns["year"] - 1970) + max_ns["month"] - 1 < 2**63):
-            choice = "M"
+            unit = "M"
             arg = days_to_date(arg // as_ns["D"])
             arg = 12 * (arg["year"] - 1970) + arg["month"] - 1
-        else:  # must be representable as 'Y' (passed overflow sentinel)
-            choice = "Y"
+        elif unit != "M":  # unit='Y' (sentinel check eliminates overflow)
+            unit = "Y"
             arg = days_to_date(arg // as_ns["D"])
             arg = arg["year"] - 1970
+        else:
+            raise OverflowError(f"`arg` exceeds np.datetime64 range with "
+                                f"unit={repr(unit)}")
 
     # np.ndarray
     if issubclass(original_type, np.ndarray):
-        return arg.astype(f"M8[{choice}]")
+        return arg.astype(f"M8[{unit}]")
 
     # pd.Series
     if issubclass(original_type, pd.Series):
         index = arg.index
-        arg = arg.to_numpy().astype(f"M8[{choice}]")
+        arg = arg.to_numpy().astype(f"M8[{unit}]")
         return pd.Series(list(arg), index=index, dtype="O")
 
     # scalar
-    return np.datetime64(int(arg), choice)
+    return np.datetime64(int(arg), unit)
 
 
 def ns_to_datetime(
