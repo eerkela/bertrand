@@ -4,6 +4,7 @@ cimport numpy as np
 # constants
 cdef object build_iso_8601_regex()
 cdef object iso_8601_pattern
+cdef np.ndarray month_length
 cdef object min_pydatetime
 cdef object max_pydatetime
 

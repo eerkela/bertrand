@@ -46,7 +46,7 @@ cdef inline long int pandas_timedelta_to_ns_scalar(object timedelta):
     """Internal C-style interface for pandas_timedelta_to_ns when applied to
     `pd.Timedelta` scalars.
     """
-    return int(timedelta.asm8)
+    return timedelta.value
 
 
 cdef inline object pytimedelta_to_ns_scalar(object pytimedelta):

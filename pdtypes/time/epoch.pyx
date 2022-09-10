@@ -9,6 +9,9 @@ from .date import decompose_date
 from .datetime import datetime_to_ns, string_to_datetime
 
 
+# TODO: allow vectorized epochs?
+
+
 #########################
 ####    Constants    ####
 #########################

@@ -11,6 +11,7 @@ import pandas as pd
 from pdtypes.util.type_hints import datetime_like
 
 from ..date import date_to_days
+from ..leap import is_leap_year
 from ..timezone import timezone, localize_pandas_timestamp, localize_pydatetime, is_utc
 from ..timezone cimport localize_pydatetime_scalar
 from ..unit cimport as_ns
@@ -64,6 +65,12 @@ cdef object build_iso_8601_regex():
 cdef object iso_8601_pattern = build_iso_8601_regex()
 
 
+cdef np.ndarray month_length = np.array(
+    [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
+    dtype="i2"
+)
+
+
 cdef object min_pydatetime = np.datetime64(datetime.datetime.min)
 
 
@@ -101,6 +108,18 @@ cdef object iso_8601_string_to_ns_scalar(str string):
     cdef char utc_sign = -1 if components["utc_sign"] == "-" else 1
     cdef long int utc_hour = int(components["utc_hour"] or 0)
     cdef long int utc_minute = int(components["utc_minute"] or 0)
+
+    # check values are within normal bounds
+    if not (
+        1 <= month <= 12 and
+        1 <= day <= month_length[month - 1] + is_leap_year(year) and
+        0 <= hour < 24 and
+        0 <= minute < 60 and
+        0 <= second < 60 and
+        0 <= utc_hour < 24 and
+        0 <= utc_minute < 60
+    ):
+        raise ValueError(f"invalid isoformat string {repr(string)}")
 
     # convert date to ns
     cdef object result = date_to_days(sign * year, month, day)

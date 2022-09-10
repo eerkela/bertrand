@@ -67,7 +67,7 @@ cdef inline long int pandas_timestamp_to_ns_scalar(object timestamp):
     # interpret naive as UTC
     if not timestamp.tzinfo:
         timestamp = timestamp.tz_localize("UTC")
-    return int(timestamp.asm8)
+    return timestamp.value
 
 
 cdef inline object pydatetime_to_ns_scalar(object pydatetime):
