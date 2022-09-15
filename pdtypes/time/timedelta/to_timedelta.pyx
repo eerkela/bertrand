@@ -26,10 +26,12 @@ def timedelta_to_pandas_timedelta(
     since: str | datetime_like = "2001-01-01 00:00:00"
 ) -> pd.Timedelta | np.ndarray | pd.Series:
     """TODO"""
+    # trivial case: no conversion necessary
     if check_dtype(arg, pd.Timedelta):
         return arg
-    arg = timedelta_to_ns(arg, since=since)
-    return ns_to_pandas_timedelta(arg)
+
+    # convert from ns
+    return ns_to_pandas_timedelta(timedelta_to_ns(arg, since=since))
 
 
 def timedelta_to_pytimedelta(
@@ -37,20 +39,36 @@ def timedelta_to_pytimedelta(
     since: str | datetime_like = "2001-01-01 00:00:00"
 ) -> datetime.timedelta | np.ndarray | pd.Series:
     """TODO"""
+    # trivial case: no conversion necessary
     if check_dtype(arg, datetime.timedelta):
         return arg
-    arg = timedelta_to_ns(arg, since=since)
-    return ns_to_pytimedelta(arg)
+
+    # convert from ns
+    return ns_to_pytimedelta(timedelta_to_ns(arg, since=since))
 
 
 def timedelta_to_numpy_timedelta64(
     arg: timedelta_like | np.ndarray | pd.Series,
     since: str | datetime_like = "2001-01-01 00:00:00",
-    unit: str = None
+    unit: str = None,
+    rounding: str = "down"
 ) -> np.timedelta64 | np.ndarray | pd.Series:
     """TODO"""
-    arg = timedelta_to_ns(arg, since=since)
-    return ns_to_numpy_timedelta64(arg, since=since, unit=unit)
+    # trivial case: no conversion necessary
+    if isinstance(arg, np.ndarray) and np.issubdtype(arg.dtype, "m8"):
+        arg_unit, step_size = np.datetime_data(arg.dtype)
+        if step_size == 1:
+            if ((unit and arg_unit == unit) or
+                (unit is None and arg_unit == "ns")):
+                return arg
+
+    # convert from ns
+    return ns_to_numpy_timedelta64(
+        timedelta_to_ns(arg, since=since),
+        since=since,
+        unit=unit,
+        rounding=rounding
+    )
 
 
 def timedelta_to_timedelta(

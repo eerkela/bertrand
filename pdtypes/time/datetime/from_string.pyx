@@ -10,13 +10,15 @@ import pandas as pd
 
 from pdtypes.util.type_hints import datetime_like
 
-from ..date import date_to_days
-from ..leap import is_leap_year
+from ..date import date_to_days, is_leap_year
 from ..timezone import timezone, localize_pandas_timestamp, localize_pydatetime, is_utc
 from ..timezone cimport localize_pydatetime_scalar
 from ..unit cimport as_ns
 
 from .from_ns import ns_to_pydatetime, ns_to_numpy_datetime64
+
+
+# TODO: support J2000 dates through float_to_ns?
 
 
 # possible formats
@@ -122,8 +124,7 @@ cdef object iso_8601_string_to_ns_scalar(str string):
         raise ValueError(f"invalid isoformat string {repr(string)}")
 
     # convert date to ns
-    cdef object result = date_to_days(sign * year, month, day)
-    result *= as_ns["D"]
+    cdef object result = date_to_days(sign * year, month, day) * as_ns["D"]
 
     # add time component
     result += hour * as_ns["h"] + minute * as_ns["m"] + int(second * as_ns["s"])
@@ -669,6 +670,7 @@ def string_to_pydatetime(
 def string_to_numpy_datetime64(
     arg: str | np.ndarray | pd.Series,
     unit: str = None,
+    rounding: str = "down",
     errors: str = "raise"
 ) -> np.datetime64 | np.ndarray | pd.Series:
     """TODO"""
@@ -684,7 +686,11 @@ def string_to_numpy_datetime64(
         if isinstance(arg, np.ndarray):
             valid = (result != None)
             if valid.any():
-                arg = ns_to_numpy_datetime64(result[valid], unit=unit)
+                arg = ns_to_numpy_datetime64(
+                    result[valid],
+                    unit=unit,
+                    rounding=rounding
+                )
                 result[valid] = arg
                 unit, _ = np.datetime_data(arg.dtype)
                 return result.astype(f"M8[{unit}]")
@@ -698,7 +704,11 @@ def string_to_numpy_datetime64(
         if isinstance(arg, pd.Series):
             valid = (result != None)
             if valid.any():
-                result[valid] = ns_to_numpy_datetime64(result[valid], unit=unit)
+                result[valid] = ns_to_numpy_datetime64(
+                    result[valid],
+                    unit=unit,
+                    rounding=rounding
+                )
             result[~valid] = np.datetime64("nat")
             return result
 
@@ -706,7 +716,11 @@ def string_to_numpy_datetime64(
         return np.datetime64("nat")
 
     # no errors encountered
-    return ns_to_numpy_datetime64(result, unit=unit)
+    return ns_to_numpy_datetime64(
+        result,
+        unit=unit,
+        rounding=rounding
+    )
 
 
 def string_to_datetime(

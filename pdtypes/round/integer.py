@@ -7,16 +7,103 @@ import numpy as np
 import pandas as pd
 
 
+def _bias_down(
+    n: int | np.ndarray | pd.Series,
+    d: int | np.ndarray | pd.Series
+) -> int | np.ndarray | pd.Series:
+    """Produce the appropriate numerator bias to replicate the 'down' rounding
+    strategy.
+
+    Applies 'floor' where `n` and `d` have the same sign, and 'ceiling'
+    where they differ.  This is equivalent to:
+        `((n < 0) ^ (d < 0)) * (d - sign(d))`
+    """
+    d_less_than_zero = (d < 0)
+    bias = d - (d > 0) + d_less_than_zero
+    bias *= ((n < 0) ^ d_less_than_zero)
+    return bias
+
+
+def _bias_up(
+    n: int | np.ndarray | pd.Series,
+    d: int | np.ndarray | pd.Series
+) -> int | np.ndarray | pd.Series:
+    """Produce the appropriate numerator bias to replicate the 'up' rounding
+    strategy.
+
+    Applies 'ceiling' where `n` and `d` have the same sign, and 'floor'
+    where they differ.  This is equivalent to:
+        `((n > 0) ^ (d < 0)) * (d - sign(d))`
+    """
+    d_less_than_zero = (d < 0)
+    bias = d - (d > 0) + d_less_than_zero
+    bias *= ((n > 0) ^ d_less_than_zero)
+    return bias
+
+
+def _bias_half_down(
+    n: int | np.ndarray | pd.Series,
+    d: int | np.ndarray | pd.Series
+) -> int | np.ndarray | pd.Series:
+    """Produce the appropriate numerator bias to replicate the 'half_down'
+    rounding strategy.
+
+    Applies 'half_floor' where `n` and `d` have the same sign, and
+    'half_ceiling' where they differ.  This is equivalent to:
+        `(d + (d < 0) - ((n > 0) ^ (d < 0)) * sign(d)) // 2`
+    """
+    d_less_than_zero = (d < 0)
+    bias = d + d_less_than_zero
+    bias -= ((n > 0) ^ d_less_than_zero) * (-1 * d_less_than_zero + (d > 0))
+    bias //= 2
+    return bias
+
+
+def _bias_half_up(
+    n: int | np.ndarray | pd.Series,
+    d: int | np.ndarray | pd.Series
+) -> int | np.ndarray | pd.Series:
+    """Produce the appropriate numerator bias to replicate the 'half_up'
+    rounding strategy.
+
+    Applies 'half_ceiling' where `n` and `d` have the same sign, and
+    'half_floor' where they differ.  This is equivalent to:
+        `(d + (d < 0) - ((n < 0) ^ (d < 0)) * sign(d)) // 2`
+    """
+    d_less_than_zero = (d < 0)
+    bias = d + d_less_than_zero
+    bias -= ((n < 0) ^ d_less_than_zero) * (-1 * d_less_than_zero + (d > 0))
+    bias //= 2
+    return bias
+
+
+def _bias_half_even(
+    n: int | np.ndarray | pd.Series,
+    d: int | np.ndarray | pd.Series
+) -> int | np.ndarray | pd.Series:
+    """Produce the appropriate numerator bias to replicate the 'half_even'
+    rounding strategy.
+
+    Applies 'half_ceiling' where the quotient `n // d` would be odd, and
+    'half_floor' where it would be even.  This is equivalent to:
+        `(d + (d < 0) + ((n // d) % 2 - 1) * sign(d)) // 2`
+    """
+    d_less_than_zero = (d < 0)
+    bias = d + d_less_than_zero
+    bias += ((n // d) % 2 - 1) * (-1 * d_less_than_zero + (d > 0))
+    bias //= 2
+    return bias
+
+
 integer_rounding_bias = {
-    "floor":        lambda n, d: 0,
-    "ceiling":      lambda n, d: d - 1,
-    "down":         lambda n, d: ((n < 0) ^ (d < 0)) * (d - 1),
-    "up":           lambda n, d: ((n > 0) ^ (d < 0)) * (d - 1),
-    "half_floor":   lambda n, d: d // 2 - 1,
-    "half_ceiling": lambda n, d: d // 2,
-    "half_down":    lambda n, d: d // 2 - ((n > 0) ^ (d < 0)),
-    "half_up":      lambda n, d: d // 2 - ((n < 0) ^ (d < 0)),
-    "half_even":    lambda n, d: d // 2 + (n // d % 2 - 1)
+    "ceiling":      lambda n, d: d - (d > 0) + (d < 0),
+    "down":         _bias_down,
+    "up":           _bias_up,
+    "half_floor":   lambda n, d: (d - (d > 0) + 2 * (d < 0)) // 2,
+    "half_ceiling": lambda n, d: (d + (d < 0)) // 2,
+    "half_down":    _bias_half_down,
+    "half_up":      _bias_half_up,
+    "half_even":    _bias_half_even
 }
 
 
@@ -30,9 +117,9 @@ def round_div(
 
     Unlike other approaches, this function does not perform float conversion
     at any point.  Instead, it replicates each rounding rule by adding a
-    simple integer bias at each index, before applying the `//` operator.  This
-    allows it to retain full integer precision for arbitrary choices of
-    `numerator` and `denominator`.
+    simple integer bias at each index before applying the `//` floor division
+    operator.  This allows it to retain full integer precision for arbitrary
+    choices of `numerator` and `denominator`.
 
     Parameters
     ----------
@@ -73,14 +160,22 @@ def round_div(
         'ceiling', 'down', 'up', 'half_floor', 'half_ceiling', 'half_down',
         'half_up', 'half_even').
     """
+    if rule == "floor":  # no bias to add, just use // directly
+        if copy:
+            return numerator // denominator
+        numerator //= denominator
+        return numerator
+
+    # get numerator bias for given rounding rule
     try:
         bias = integer_rounding_bias[rule](numerator, denominator)
     except KeyError as err:
-        err_msg = (f"`rule` must be one of {tuple(integer_rounding_bias)}, "
-                   f"not {repr(rule)}")
+        valid_rules = ('floor') + tuple(integer_rounding_bias)
+        err_msg = f"`rule` must be one of {valid_rules}, not {repr(rule)}"
         raise ValueError(err_msg) from err
 
-    if copy or not isinstance(numerator, (np.ndarray, pd.Series)):
+    # return
+    if copy:
         return (numerator + bias) // denominator
     numerator += bias
     numerator //= denominator

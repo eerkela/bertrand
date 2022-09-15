@@ -3,7 +3,9 @@ cimport numpy as np
 
 # constants
 cdef set valid_datetime_types
-cdef object utc_pydatetime
+cdef object utc_naive_pydatetime
+cdef object utc_aware_pydatetime
+cdef long int[:] pytimedelta_ns_coefs
 
 # scalar functions
 cdef long int pandas_timestamp_to_ns_scalar(object timestamp)

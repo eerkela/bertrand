@@ -22,7 +22,7 @@ import pandas as pd
 from pdtypes.check import check_dtype, get_dtype
 from pdtypes.util.type_hints import datetime_like
 
-from ..date import decompose_date, date_to_days
+from ..date import date_to_days
 from ..timezone import is_utc, timezone, localize
 from ..unit cimport as_ns
 
@@ -47,7 +47,8 @@ cdef object utc_aware_pydatetime
 utc_aware_pydatetime = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
 
 
-# importing this from timedelta.to_ns causes a circular import error
+# importing this from timedelta.to_ns causes a circular import error due to
+# epoch.pyx
 cdef long int[:] pytimedelta_ns_coefs = np.array(
     [
         as_ns["D"],
@@ -108,7 +109,6 @@ cdef inline object numpy_datetime64_to_ns_scalar(object datetime64):
     if unit == "M":
         return date_to_days(1970, 1 + datetime64, 1) * as_ns["D"]
     return date_to_days(1970 + datetime64, 1, 1) * as_ns["D"]
-
 
 
 @cython.boundscheck(False)

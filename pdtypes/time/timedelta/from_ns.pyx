@@ -9,9 +9,9 @@ from pdtypes.check import check_dtype, get_dtype
 from pdtypes.util.array import is_scalar
 from pdtypes.util.type_hints import datetime_like, timedelta_like
 
-from ..date import date_to_days, days_to_date, decompose_date
-from ..unit cimport as_ns
-from ..epoch import epoch_date
+from ..epoch import epoch
+from ..unit import convert_unit
+from ..unit cimport valid_units
 
 
 # TODO: import valid_units from ..unit and add sentinels?
@@ -64,6 +64,7 @@ cdef np.ndarray[object] ns_to_pandas_timedelta_vector(
 
 def ns_to_pandas_timedelta(
     arg: int | np.ndarray | pd.Series,
+    *,
     min_ns: int = None,
     max_ns: int = None
 ) -> pd.Timedelta | np.ndarray | pd.Series:
@@ -90,6 +91,7 @@ def ns_to_pandas_timedelta(
 
 def ns_to_pytimedelta(
     arg: int | np.ndarray | pd.Series,
+    *,
     min_ns: int = None,
     max_ns: int = None
 ) -> datetime.timedelta | np.ndarray | pd.Series:
@@ -132,8 +134,10 @@ def ns_to_pytimedelta(
 
 def ns_to_numpy_timedelta64(
     arg: int | np.ndarray | pd.Series,
-    since: str | datetime_like = "2001-01-01",
     unit: str = None,
+    since: datetime_like = "2001-01-01 00:00:00+0000",
+    rounding: str = "down",
+    *,
     min_ns: int = None,
     max_ns: int = None
 ) -> np.timedelta64 | np.ndarray | pd.Series:
@@ -147,68 +151,43 @@ def ns_to_numpy_timedelta64(
     if min_ns < min_numpy_timedelta64_ns or max_ns > max_numpy_timedelta64_ns:
         raise OverflowError(f"`arg` exceeds np.timedelta64 range")
 
-    # note original arg type
-    original_type = type(arg)
+    # kwargs for convert_unit
+    unit_kwargs = {"since": epoch(since), "rounding": rounding}
 
     # if `unit` is already defined, rescale `arg` to match
     if unit is not None:
-        if unit in as_ns:  # unit is regular
-            scale_factor = as_ns[unit]
-            if (min_ns // scale_factor < -2**63 + 1 or
-                max_ns // scale_factor > 2**63 - 1):
-                raise OverflowError(f"`arg` exceeds np.timedelta64 range with "
-                                    f"unit={repr(unit)}")
-            arg = arg // scale_factor
-        elif unit not in ("M", "Y"):
-            raise ValueError(f"unit {repr(unit)} not recognized; must be one "
-                             f"of {tuple(as_ns) + ('M', 'Y')}")
-    else:  # choose unit to fit range and rescale `arg` appropriately
-        for test_unit, scale_factor in as_ns.items():
-            if test_unit == "ns" and min_ns > -2**63 and max_ns < 2**63:
-                unit = "ns"
-                break
-            elif (min_ns // scale_factor > -2**63 and
-                  max_ns // scale_factor < 2**63):
-                unit = test_unit
-                arg = arg // scale_factor
-                break
+        min_ns = convert_unit(min_ns, "ns", unit, **unit_kwargs)
+        max_ns = convert_unit(max_ns, "ns", unit, **unit_kwargs)
 
-    # no unit was found among ('ns', 'us', 'ms', 's', 'm', 'h', 'D')
-    if not unit or unit in ("M", "Y"):  # try irregular units ('M', 'Y')
-        since = epoch_date(since)
-        since_days = date_to_days(**since)
-
-        # convert to days and pass through days_to_date
-        min_ns = days_to_date(min_ns // as_ns["D"] + since_days)
-        max_ns = days_to_date(max_ns // as_ns["D"] + since_days)
-        min_ns["year"] -= since["year"]
-        max_ns["year"] -= since["year"]
-        min_ns["month"] -= since["month"]
-        max_ns["month"] -= since["month"]
-
-        # check for unit='M'
-        if (unit != "Y" and
-            12 * min_ns["year"] + min_ns["month"] > -2**63 and
-            12 * max_ns["year"] + max_ns["month"] < 2**63):
-            unit = "M"
-            arg = days_to_date(arg // as_ns["D"] + since_days)
-            arg["year"] -= since["year"]
-            arg["month"] -= since["month"]
-            arg = 12 * arg["year"] + arg["month"]
-        elif unit != "M":  # unit='Y' (sentinel check eliminates overflow)
-            unit = "Y"
-            arg = days_to_date(arg // as_ns["D"] + since_days)
-            arg = arg["year"] - since["year"]
-        else:
+        # check for overflow
+        if min_ns < -2**63 + 1 or max_ns > 2**63 - 1:
             raise OverflowError(f"`arg` exceeds np.timedelta64 range with "
                                 f"unit={repr(unit)}")
+        arg = convert_unit(arg, "ns", unit, **unit_kwargs)
+
+    else:  # choose unit to fit range and rescale `arg` appropriately
+        for test_unit in valid_units:
+            if test_unit == "W":  # skip weeks
+                # this unit has some really wierd (inconsistent) overflow
+                # behavior that makes it practically useless over unit="D"
+                continue
+
+            # convert min/max to test unit
+            test_min = convert_unit(min_ns, "ns", test_unit, **unit_kwargs)
+            test_max = convert_unit(max_ns, "ns", test_unit, **unit_kwargs)
+
+            # check for overflow
+            if test_min >= -2**63 + 1 and test_max <= 2**63 - 1:
+                unit = test_unit
+                arg = convert_unit(arg, "ns", test_unit, **unit_kwargs)
+                break
 
     # np.ndarray
-    if issubclass(original_type, np.ndarray):
+    if isinstance(arg, np.ndarray):
         return arg.astype(f"m8[{unit}]")
 
     # pd.Series
-    if issubclass(original_type, pd.Series):
+    if isinstance(arg, pd.Series):
         index = arg.index
         arg = arg.to_numpy().astype(f"m8[{unit}]")
         return pd.Series(list(arg), index=index, dtype="O")
@@ -219,7 +198,7 @@ def ns_to_numpy_timedelta64(
 
 def ns_to_timedelta(
     arg: int | np.ndarray | pd.Series,
-    since: str | datetime_like = "2001-01-01"
+    since: str | datetime_like = "2001-01-01 00:00:00+0000"
 ) -> timedelta_like | np.ndarray | pd.Series:
     """TODO"""
     # ensure min/max fall within representable range

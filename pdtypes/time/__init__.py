@@ -1,8 +1,11 @@
 # internals
-from .date import date_to_days, days_to_date, decompose_date
+from .date import (
+    date_to_days, days_in_month, days_to_date, decompose_date, is_leap_year,
+    leaps_between
+)
 from .epoch import epoch, epoch_date, epoch_ns
-from .leap import is_leap_year, leaps_between
 from .timezone import is_utc, localize, timezone
+from .unit import convert_unit, float_to_ns
 
 # datetime
 from .datetime import (

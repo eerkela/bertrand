@@ -8,12 +8,9 @@ import pandas as pd
 from pdtypes.check import get_dtype
 from pdtypes.util.type_hints import datetime_like, timedelta_like
 
-from ..date import date_to_days, decompose_date
+from ..date import date_to_days
 from ..epoch import epoch_date
 from ..unit cimport as_ns
-
-
-# TODO: include datetime.time?
 
 
 #########################
@@ -269,7 +266,7 @@ def pytimedelta_to_ns(
 
 def numpy_timedelta64_to_ns(
     arg: np.timedelta64 | np.ndarray | pd.Series,
-    since: str | datetime_like = "2001-01-01"
+    since: str | datetime_like = "2001-01-01 00:00:00+0000"
 ) -> int | np.ndarray | pd.Series:
     """Convert `np.timedelta64` objects into an equivalent number of
     nanoseconds.

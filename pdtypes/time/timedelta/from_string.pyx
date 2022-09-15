@@ -9,17 +9,14 @@ import pandas as pd
 
 from pdtypes.util.type_hints import datetime_like, timedelta_like
 
+from ..epoch import epoch
+from ..unit import float_to_ns
 from ..unit cimport as_ns
 
 from .from_ns import (
     ns_to_pandas_timedelta, ns_to_pytimedelta, ns_to_numpy_timedelta64,
     ns_to_timedelta
 )
-
-
-# TODO: can probably remove whitespace from patterns
-
-# TODO: consider adding support for "M", "Y" units in timedelta strings
 
 
 #########################
@@ -36,16 +33,16 @@ cdef list[object] timedelta_formats_regex():
     to days and/or weeks and down to nanoseconds.
     """
     # capture groups - abbreviated units ('h', 'min', 'seconds', etc.)
-    # years = r"(?P<years>\d+)\s*(?:ys?|yrs?.?|years?)"
-    # months = r"(?P<months>\d+)\s*(?:mos?.?|mths?.?|months?)"
-    cdef str W = r"(?P<W>[\d.]+)\s*(?:w|wks?|weeks?)"
-    cdef str D = r"(?P<D>[\d.]+)\s*(?:d|dys?|days?)"
-    cdef str h = r"(?P<h>[\d.]+)\s*(?:h|hrs?|hours?)"
-    cdef str m = r"(?P<m>[\d.]+)\s*(?:m|(mins?)|(minutes?))"
-    cdef str s = r"(?P<s>[\d.]+)\s*(?:s|secs?|seconds?)"
-    cdef str ms = r"(?P<ms>[\d.]+)\s*(?:ms|msecs?|millisecs?|milliseconds?)"
-    cdef str us = r"(?P<us>[\d.]+)\s*(?:us|usecs?|microsecs?|microseconds?)"
-    cdef str ns = r"(?P<ns>[\d.]+)\s*(?:ns|nsecs?|nanosecs?|nanoseconds?)"
+    cdef str Y = r"(?P<Y>[\d.]+)(?:ys?|yrs?.?|years?)"
+    cdef str M = r"(?P<M>[\d.]+)(?:mos?.?|mths?.?|months?)"
+    cdef str W = r"(?P<W>[\d.]+)(?:w|wks?|weeks?)"
+    cdef str D = r"(?P<D>[\d.]+)(?:d|dys?|days?)"
+    cdef str h = r"(?P<h>[\d.]+)(?:h|hrs?|hours?)"
+    cdef str m = r"(?P<m>[\d.]+)(?:m|(mins?)|(minutes?))"
+    cdef str s = r"(?P<s>[\d.]+)(?:s|secs?|seconds?)"
+    cdef str ms = r"(?P<ms>[\d.]+)(?:ms|msecs?|millisecs?|milliseconds?)"
+    cdef str us = r"(?P<us>[\d.]+)(?:us|usecs?|microsecs?|microseconds?)"
+    cdef str ns = r"(?P<ns>[\d.]+)(?:ns|nsecs?|nanosecs?|nanoseconds?)"
 
     # capture groups - clock format (':' separated)
     cdef str day_clock = (r"(?P<D>\d+):(?P<h>\d{2}):(?P<m>\d{2}):"
@@ -56,22 +53,22 @@ cdef list[object] timedelta_formats_regex():
 
     # wrapping functions for capture groups
     cdef str separators = r"[,/]"  # these are ignored
-    optional = lambda x: rf"(?:{x}\s*(?:{separators}\s*)?)?"
+    optional = lambda x: rf"(?:{x}(?:{separators})?)?"
 
     # compiled timedelta formats
     return [
-        re.compile(rf"\s*{optional(W)}\s*{optional(D)}\s*{optional(h)}\s*"
-                   rf"{optional(m)}\s*{optional(s)}\s*{optional(ms)}\s*"
-                   rf"{optional(us)}\s*{optional(ns)}\s*$"),
-        re.compile(rf"\s*{optional(W)}\s*{optional(D)}\s*{hour_clock}\s*$"),
-        re.compile(rf"\s*{day_clock}\s*$"),
-        re.compile(rf"\s*{minute_clock}\s*$"),
-        re.compile(rf"\s*{second_clock}\s*$")
+        re.compile(rf"^{optional(Y)}{optional(M)}{optional(W)}{optional(D)}"
+                   rf"{optional(h)}{optional(m)}{optional(s)}{optional(ms)}"
+                   rf"{optional(us)}{optional(ns)}$"),
+        re.compile(rf"^{optional(W)}{optional(D)}{hour_clock}$"),
+        re.compile(rf"^{day_clock}$"),
+        re.compile(rf"^{minute_clock}$"),
+        re.compile(rf"^{second_clock}$")
     ]
 
 
 cdef dict timedelta_regex = {
-    "sign": re.compile(r"\s*(?P<sign>[+|-])?\s*(?P<unsigned>.*)$"),
+    "sign": re.compile(r"(?P<sign>[+|-])?(?P<unsigned>.*)$"),
     "formats": timedelta_formats_regex()
 }
 
@@ -83,14 +80,17 @@ cdef dict timedelta_regex = {
 
 cdef object timedelta_string_to_ns_scalar(
     str string,
-    bint as_hours = False
+    bint as_hours = False,
+    object since = pd.Timestamp("2001-01-01 00:00:00+0000")
 ):
     """Internal C interface for public-facing `string_to_ns()` function."""
-    cdef object match  # re.Match
+    cdef object match
     cdef int sign
-    cdef object time_format  # re.Pattern
+    cdef object time_format
     cdef dict groups
-    cdef object result  # python integer
+    cdef object result
+    cdef str k
+    cdef str v
 
     # preprocess timedelta string
     string = string.replace(" ", "").lower()
@@ -120,8 +120,14 @@ cdef object timedelta_string_to_ns_scalar(
                 groups.pop("s")
 
             # build result
-            result = sum(as_ns[k] * decimal.Decimal(v)
-                         for k, v in groups.items() if v)
+            result = 0
+            for k, v in groups.items():
+                if not v:
+                    continue
+                if k in ("M", "Y"):
+                    result += float_to_ns(decimal.Decimal(v), k, since=since)
+                else:
+                    result += as_ns[k] * decimal.Decimal(v)
             return int(sign * result)
 
     # string could not be matched
@@ -133,6 +139,7 @@ cdef object timedelta_string_to_ns_scalar(
 cdef tuple timedelta_string_to_ns_vector(
     np.ndarray[str] arr,
     bint as_hours = False,
+    object since = pd.Timestamp("2001-01-01 00:00:00+0000"),
     str errors = "raise"
 ):
     """TODO"""
@@ -143,7 +150,11 @@ cdef tuple timedelta_string_to_ns_vector(
 
     for i in range(arr_length):
         try:
-            result[i] = timedelta_string_to_ns_scalar(arr[i])
+            result[i] = timedelta_string_to_ns_scalar(
+                arr[i],
+                as_hours=as_hours,
+                since=since
+            )
         except ValueError as err:
             if errors == "raise":
                 raise err
@@ -161,6 +172,7 @@ cdef tuple timedelta_string_to_ns_vector(
 def timedelta_string_to_ns(
     arg: str | np.ndarray | pd.Series,
     as_hours: bool = False,
+    since: str | datetime_like = "2001-01-01 00:00:00+0000",
     errors: str = "raise"
 ) -> tuple[int | np.ndarray | pd.Series, bool]:
     """Parse a timedelta string, returning its associated value as an integer
@@ -221,6 +233,9 @@ def timedelta_string_to_ns(
     >>> timeparse('1:30', as_hours=True)
     5400000000000
     """
+    # resolve `since` epoch
+    since = epoch(since)
+
     # np.ndarray
     if isinstance(arg, np.ndarray):
         # convert fixed-length numpy strings to python strings
@@ -230,6 +245,7 @@ def timedelta_string_to_ns(
         result, has_errors = timedelta_string_to_ns_vector(
             arg,
             as_hours=as_hours,
+            since=since,
             errors=errors
         )
         if errors == "ignore" and has_errors:
@@ -241,6 +257,7 @@ def timedelta_string_to_ns(
         result, has_errors = timedelta_string_to_ns_vector(
             arg.to_numpy(),
             as_hours=as_hours,
+            since=since,
             errors=errors
         )
         if errors == "ignore" and has_errors:
@@ -249,7 +266,14 @@ def timedelta_string_to_ns(
 
     # scalar
     try:
-        return (timedelta_string_to_ns_scalar(arg, as_hours=as_hours), False)
+        return (
+            timedelta_string_to_ns_scalar(
+                arg,
+                as_hours=as_hours,
+                since=since
+            ),
+            False
+        )
     except ValueError as err:
         if errors == "raise":
             raise err
@@ -261,6 +285,7 @@ def timedelta_string_to_ns(
 def string_to_pandas_timedelta(
     arg: str | np.ndarray | pd.Series,
     as_hours: bool = False,
+    since: str | datetime_like = "2001-01-01 00:00:00+0000",
     errors: str = "raise"
 ) -> pd.Timedelta | np.ndarray | pd.Series:
     """TODO"""
@@ -268,6 +293,7 @@ def string_to_pandas_timedelta(
     result, has_errors = timedelta_string_to_ns(
         arg,
         as_hours=as_hours,
+        since=since,
         errors=errors
     )
 
@@ -301,6 +327,7 @@ def string_to_pandas_timedelta(
 def string_to_pytimedelta(
     arg: str | np.ndarray | pd.Series,
     as_hours: bool = False,
+    since: str | datetime_like = "2001-01-01 00:00:00+0000",
     errors: str = "raise"
 ) -> datetime.timedelta | np.ndarray | pd.Series:
     """TODO"""
@@ -308,6 +335,7 @@ def string_to_pytimedelta(
     result, has_errors = timedelta_string_to_ns(
         arg,
         as_hours=as_hours,
+        since=since,
         errors=errors
     )
 
@@ -334,8 +362,9 @@ def string_to_pytimedelta(
 def string_to_numpy_timedelta64(
     arg: str | np.ndarray | pd.Series,
     as_hours: bool = False,
-    since: str | datetime_like = "2001-01-01 00:00:00",
+    since: str | datetime_like = "2001-01-01 00:00:00+0000",
     unit: str = None,
+    rounding: str = "down",
     errors: str = "raise"
 ) -> np.timedelta64 | np.ndarray | pd.Series:
     """TODO"""
@@ -343,6 +372,7 @@ def string_to_numpy_timedelta64(
     result, has_errors = timedelta_string_to_ns(
         arg,
         as_hours=as_hours,
+        since=since,
         errors=errors
     )
 
@@ -355,7 +385,12 @@ def string_to_numpy_timedelta64(
         if isinstance(arg, np.ndarray):
             valid = (result != None)
             if valid.any():
-                arg = ns_to_numpy_timedelta64(result[valid], unit=unit)
+                arg = ns_to_numpy_timedelta64(
+                    result[valid],
+                    unit=unit,
+                    since=since,
+                    rounding=rounding
+                )
                 result[valid] = arg
                 unit, _ = np.datetime_data(arg.dtype)
                 return result.astype(f"m8[{unit}]")
@@ -369,7 +404,12 @@ def string_to_numpy_timedelta64(
         if isinstance(arg, pd.Series):
             valid = (result != None)
             if valid.any():
-                arg = ns_to_numpy_timedelta64(result[valid], unit=unit)
+                arg = ns_to_numpy_timedelta64(
+                    result[valid],
+                    unit=unit,
+                    since=since,
+                    rounding=rounding
+                )
                 result[valid] = arg
             result[~valid] = np.timedelta64("nat")
             return result
@@ -378,13 +418,18 @@ def string_to_numpy_timedelta64(
         return np.timedelta64("nat")
 
     # no errors encountered
-    return ns_to_numpy_timedelta64(result, unit=unit)
+    return ns_to_numpy_timedelta64(
+        result,
+        unit=unit,
+        since=since,
+        rounding=rounding
+    )
 
 
 def string_to_timedelta(
     arg: str | np.ndarray | pd.Series,
     as_hours: bool = False,
-    since: str | datetime_like = "2001-01-01 00:00:00",
+    since: str | datetime_like = "2001-01-01 00:00:00+0000",
     errors: str = "raise"
 ) -> timedelta_like | np.ndarray | pd.Series:
     """TODO"""
@@ -392,6 +437,7 @@ def string_to_timedelta(
     result, has_errors = timedelta_string_to_ns(
         arg,
         as_hours=as_hours,
+        since=since,
         errors=errors
     )
 

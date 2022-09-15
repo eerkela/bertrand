@@ -8,15 +8,18 @@ import pandas as pd
 
 from pdtypes.util.type_hints import datetime_like
 
-from ..date import days_to_date
 from ..timezone import is_utc, timezone
 from ..timezone cimport utc_timezones
-from ..unit cimport as_ns
+from ..unit import convert_unit
+from ..unit cimport as_ns, valid_units
 
 
 #########################
 ####    Constants    ####
 #########################
+
+
+cdef object utc_epoch = pd.Timestamp("1970-01-01 00:00:00+0000")
 
 
 cdef object utc_naive_pydatetime = datetime.datetime.utcfromtimestamp(0)
@@ -180,6 +183,8 @@ def ns_to_pydatetime(
 def ns_to_numpy_datetime64(
     arg: int | np.ndarray | pd.Series,
     unit: str = None,
+    rounding: str = "down",
+    *,
     min_ns: int = None,
     max_ns: int = None
 ) -> np.datetime64 | np.ndarray | pd.Series:
@@ -193,66 +198,61 @@ def ns_to_numpy_datetime64(
     if min_ns < min_numpy_datetime64_ns or max_ns > max_numpy_datetime64_ns:
         raise OverflowError(f"`arg` exceeds np.datetime64 range")
 
-    # note original arg type
-    original_type = type(arg)
+    # kwargs for convert_unit
+    unit_kwargs = {"since": utc_epoch, "rounding": rounding}
 
     # if `unit` is already defined, rescale `arg` to match
     if unit is not None:
-        if unit in as_ns:  # unit is regular
-            before_substitution = unit
-            if unit == "W": # reject weeks due to inconsistent overflow
-                unit = "D"
-            scale_factor = as_ns[unit]
-            if (min_ns // scale_factor < -2**63 + 1 or
-                max_ns // scale_factor > 2**63 - 1):
-                raise OverflowError(f"`arg` exceeds np.timedelta64 range with "
-                                    f"unit={repr(before_substitution)}")
-            arg = arg // scale_factor
-        elif unit not in ("M", "Y"):
-            raise ValueError(f"unit {repr(unit)} not recognized; must be one "
-                             f"of {tuple(as_ns) + ('M', 'Y')}")
-    else:  # choose unit to fit range and rescale `arg` appropriately
-        for test_unit, scale_factor in as_ns.items():
-            if test_unit == "ns" and min_ns > -2**63 and max_ns < 2**63:
-                unit = "ns"
-                break
-            elif test_unit == "W":  # skip weeks
-                # this unit has some really wierd (and inconsistent) overflow
-                # behavior that makes it practically useless over unit="D"
-                continue
-            elif (min_ns // scale_factor > -2**63 and
-                  max_ns // scale_factor < 2**63):
-                unit = test_unit
-                arg = arg // scale_factor
-                break
+        min_ns = convert_unit(min_ns, "ns", unit, **unit_kwargs)
+        max_ns = convert_unit(max_ns, "ns", unit, **unit_kwargs)
 
-    # no choice was found among ('ns', 'us', 'ms', 's', 'm', 'h', 'D')
-    if not unit or unit in ("M", "Y"):  # try irregular units ('M', 'Y')
-        # convert to days and pass through days_to_date
-        min_ns = days_to_date(min_ns // as_ns["D"])
-        max_ns = days_to_date(max_ns // as_ns["D"])
+        # get allowable limits for given unit
+        lower_lim = -2**63 + 1
+        upper_lim = 2**63 - 1
+        if unit == "W":
+            lower_lim //= 7  # wierd overflow behavior related to weeks
+            upper_lim //= 7
+        elif unit == "Y":
+            upper_lim -= 1970  # appears to be utc offset
 
-        # check for unit='M'
-        if (unit != "Y" and
-            12 * (min_ns["year"] - 1970) + min_ns["month"] - 1 > -2**63 and
-            12 * (max_ns["year"] - 1970) + max_ns["month"] - 1 < 2**63):
-            unit = "M"
-            arg = days_to_date(arg // as_ns["D"])
-            arg = 12 * (arg["year"] - 1970) + arg["month"] - 1
-        elif unit != "M":  # unit='Y' (sentinel check eliminates overflow)
-            unit = "Y"
-            arg = days_to_date(arg // as_ns["D"])
-            arg = arg["year"] - 1970
-        else:
+        # check for overflow
+        if min_ns < lower_lim or max_ns > upper_lim:
             raise OverflowError(f"`arg` exceeds np.datetime64 range with "
                                 f"unit={repr(unit)}")
+        arg = convert_unit(arg, "ns", unit, **unit_kwargs)
+
+    else:  # choose unit to fit range and rescale `arg` appropriately
+        for test_unit in valid_units:
+            if test_unit == "W":  # skip weeks
+                # this unit has some really wierd (inconsistent) overflow
+                # behavior that makes it practically useless over unit="D"
+                continue
+
+            # convert min/max to test unit
+            test_min = convert_unit(min_ns, "ns", test_unit, **unit_kwargs)
+            test_max = convert_unit(max_ns, "ns", test_unit, **unit_kwargs)
+
+            # get allowable limits for test unit
+            lower_lim = -2**63 + 1
+            upper_lim = 2**63 - 1
+            if unit == "W":
+                lower_lim //= 7  # wierd overflow behavior related to weeks
+                upper_lim //= 7
+            elif unit == "Y":
+                upper_lim -= 1970  # appears to be utc offset
+
+            # check for overflow
+            if test_min >= lower_lim and test_max <= upper_lim:
+                unit = test_unit
+                arg = convert_unit(arg, "ns", test_unit, **unit_kwargs)
+                break
 
     # np.ndarray
-    if issubclass(original_type, np.ndarray):
+    if isinstance(arg, np.ndarray):
         return arg.astype(f"M8[{unit}]")
 
     # pd.Series
-    if issubclass(original_type, pd.Series):
+    if isinstance(arg, pd.Series):
         index = arg.index
         arg = arg.to_numpy().astype(f"M8[{unit}]")
         return pd.Series(list(arg), index=index, dtype="O")
