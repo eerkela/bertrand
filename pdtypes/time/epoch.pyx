@@ -5,7 +5,7 @@ from pdtypes.check import check_dtype
 from pdtypes.util.array import is_scalar
 from pdtypes.util.type_hints import datetime_like
 
-from .date import decompose_date
+from .calendar import decompose_date
 from .datetime import datetime_to_ns, string_to_datetime
 
 

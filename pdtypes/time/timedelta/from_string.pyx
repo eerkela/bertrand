@@ -9,9 +9,8 @@ import pandas as pd
 
 from pdtypes.util.type_hints import datetime_like, timedelta_like
 
-from ..epoch import epoch
-from ..unit import float_to_ns
-from ..unit cimport as_ns
+from ..epoch import epoch_date
+from ..unit cimport as_ns, round_months_to_ns, round_years_to_ns
 
 from .from_ns import (
     ns_to_pandas_timedelta, ns_to_pytimedelta, ns_to_numpy_timedelta64,
@@ -80,8 +79,10 @@ cdef dict timedelta_regex = {
 
 cdef object timedelta_string_to_ns_scalar(
     str string,
-    bint as_hours = False,
-    object since = pd.Timestamp("2001-01-01 00:00:00+0000")
+    bint as_hours,
+    object start_year,
+    object start_month,
+    object start_day
 ):
     """Internal C interface for public-facing `string_to_ns()` function."""
     cdef object match
@@ -91,6 +92,7 @@ cdef object timedelta_string_to_ns_scalar(
     cdef object result
     cdef str k
     cdef str v
+    cdef object value
 
     # preprocess timedelta string
     string = string.replace(" ", "").lower()
@@ -124,11 +126,23 @@ cdef object timedelta_string_to_ns_scalar(
             for k, v in groups.items():
                 if not v:
                     continue
-                if k in ("M", "Y"):
-                    result += float_to_ns(decimal.Decimal(v), k, since=since)
+                if k == "M":
+                    result += round_months_to_ns(
+                        decimal.Decimal(v),
+                        start_year=start_year,
+                        start_month=start_month,
+                        start_day=start_day
+                    )
+                elif k == "Y":
+                    result += round_years_to_ns(
+                        decimal.Decimal(v),
+                        start_year=start_year,
+                        start_month=start_month,
+                        start_day=start_day
+                    )
                 else:
-                    result += as_ns[k] * decimal.Decimal(v)
-            return int(sign * result)
+                    result += int(as_ns[k] * decimal.Decimal(v))
+            return sign * result
 
     # string could not be matched
     raise ValueError(f"could not parse timedelta string: {repr(string)}")
@@ -138,9 +152,11 @@ cdef object timedelta_string_to_ns_scalar(
 @cython.wraparound(False)
 cdef tuple timedelta_string_to_ns_vector(
     np.ndarray[str] arr,
-    bint as_hours = False,
-    object since = pd.Timestamp("2001-01-01 00:00:00+0000"),
-    str errors = "raise"
+    bint as_hours,
+    object start_year,
+    object start_month,
+    object start_day,
+    str errors
 ):
     """TODO"""
     cdef int arr_length = arr.shape[0]
@@ -153,7 +169,9 @@ cdef tuple timedelta_string_to_ns_vector(
             result[i] = timedelta_string_to_ns_scalar(
                 arr[i],
                 as_hours=as_hours,
-                since=since
+                start_year=start_year,
+                start_month=start_month,
+                start_day=start_day
             )
         except ValueError as err:
             if errors == "raise":
@@ -234,7 +252,7 @@ def timedelta_string_to_ns(
     5400000000000
     """
     # resolve `since` epoch
-    since = epoch(since)
+    since = epoch_date(since)
 
     # np.ndarray
     if isinstance(arg, np.ndarray):
@@ -245,7 +263,9 @@ def timedelta_string_to_ns(
         result, has_errors = timedelta_string_to_ns_vector(
             arg,
             as_hours=as_hours,
-            since=since,
+            start_year=since["year"],
+            start_month=since["month"],
+            start_day=since["day"],
             errors=errors
         )
         if errors == "ignore" and has_errors:
@@ -257,7 +277,9 @@ def timedelta_string_to_ns(
         result, has_errors = timedelta_string_to_ns_vector(
             arg.to_numpy(),
             as_hours=as_hours,
-            since=since,
+            start_year=since["year"],
+            start_month=since["month"],
+            start_day=since["day"],
             errors=errors
         )
         if errors == "ignore" and has_errors:
@@ -270,7 +292,9 @@ def timedelta_string_to_ns(
             timedelta_string_to_ns_scalar(
                 arg,
                 as_hours=as_hours,
-                since=since
+                start_year=since["year"],
+                start_month=since["month"],
+                start_day=since["day"]
             ),
             False
         )

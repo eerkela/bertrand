@@ -10,11 +10,8 @@ from pdtypes.util.array import is_scalar
 from pdtypes.util.type_hints import datetime_like, timedelta_like
 
 from ..epoch import epoch
-from ..unit import convert_unit
+from ..unit import convert_unit_integer
 from ..unit cimport valid_units
-
-
-# TODO: import valid_units from ..unit and add sentinels?
 
 
 #########################
@@ -151,19 +148,24 @@ def ns_to_numpy_timedelta64(
     if min_ns < min_numpy_timedelta64_ns or max_ns > max_numpy_timedelta64_ns:
         raise OverflowError(f"`arg` exceeds np.timedelta64 range")
 
-    # kwargs for convert_unit
+    # ensure unit is valid
+    if unit not in valid_units:
+        raise ValueError(f"`unit` must be one of {valid_units}, not "
+                         f"{repr(unit)}")
+
+    # kwargs for convert_unit_integer
     unit_kwargs = {"since": epoch(since), "rounding": rounding}
 
     # if `unit` is already defined, rescale `arg` to match
     if unit is not None:
-        min_ns = convert_unit(min_ns, "ns", unit, **unit_kwargs)
-        max_ns = convert_unit(max_ns, "ns", unit, **unit_kwargs)
+        min_ns = convert_unit_integer(min_ns, "ns", unit, **unit_kwargs)
+        max_ns = convert_unit_integer(max_ns, "ns", unit, **unit_kwargs)
 
         # check for overflow
         if min_ns < -2**63 + 1 or max_ns > 2**63 - 1:
             raise OverflowError(f"`arg` exceeds np.timedelta64 range with "
                                 f"unit={repr(unit)}")
-        arg = convert_unit(arg, "ns", unit, **unit_kwargs)
+        arg = convert_unit_integer(arg, "ns", unit, **unit_kwargs)
 
     else:  # choose unit to fit range and rescale `arg` appropriately
         for test_unit in valid_units:
@@ -173,13 +175,23 @@ def ns_to_numpy_timedelta64(
                 continue
 
             # convert min/max to test unit
-            test_min = convert_unit(min_ns, "ns", test_unit, **unit_kwargs)
-            test_max = convert_unit(max_ns, "ns", test_unit, **unit_kwargs)
+            test_min = convert_unit_integer(
+                min_ns,
+                "ns",
+                test_unit,
+                **unit_kwargs
+            )
+            test_max = convert_unit_integer(
+                max_ns,
+                "ns",
+                test_unit,
+                **unit_kwargs
+            )
 
             # check for overflow
             if test_min >= -2**63 + 1 and test_max <= 2**63 - 1:
                 unit = test_unit
-                arg = convert_unit(arg, "ns", test_unit, **unit_kwargs)
+                arg = convert_unit_integer(arg, "ns", test_unit, **unit_kwargs)
                 break
 
     # np.ndarray

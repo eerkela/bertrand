@@ -10,7 +10,7 @@ from pdtypes.util.type_hints import datetime_like
 
 from ..timezone import is_utc, timezone
 from ..timezone cimport utc_timezones
-from ..unit import convert_unit
+from ..unit import convert_unit_integer
 from ..unit cimport as_ns, valid_units
 
 
@@ -198,13 +198,18 @@ def ns_to_numpy_datetime64(
     if min_ns < min_numpy_datetime64_ns or max_ns > max_numpy_datetime64_ns:
         raise OverflowError(f"`arg` exceeds np.datetime64 range")
 
-    # kwargs for convert_unit
+    # ensure unit is valid
+    if unit not in valid_units:
+        raise ValueError(f"`unit` must be one of {valid_units}, not "
+                         f"{repr(unit)}")
+
+    # kwargs for convert_unit_integer
     unit_kwargs = {"since": utc_epoch, "rounding": rounding}
 
     # if `unit` is already defined, rescale `arg` to match
     if unit is not None:
-        min_ns = convert_unit(min_ns, "ns", unit, **unit_kwargs)
-        max_ns = convert_unit(max_ns, "ns", unit, **unit_kwargs)
+        min_ns = convert_unit_integer(min_ns, "ns", unit, **unit_kwargs)
+        max_ns = convert_unit_integer(max_ns, "ns", unit, **unit_kwargs)
 
         # get allowable limits for given unit
         lower_lim = -2**63 + 1
@@ -219,7 +224,7 @@ def ns_to_numpy_datetime64(
         if min_ns < lower_lim or max_ns > upper_lim:
             raise OverflowError(f"`arg` exceeds np.datetime64 range with "
                                 f"unit={repr(unit)}")
-        arg = convert_unit(arg, "ns", unit, **unit_kwargs)
+        arg = convert_unit_integer(arg, "ns", unit, **unit_kwargs)
 
     else:  # choose unit to fit range and rescale `arg` appropriately
         for test_unit in valid_units:
@@ -229,8 +234,18 @@ def ns_to_numpy_datetime64(
                 continue
 
             # convert min/max to test unit
-            test_min = convert_unit(min_ns, "ns", test_unit, **unit_kwargs)
-            test_max = convert_unit(max_ns, "ns", test_unit, **unit_kwargs)
+            test_min = convert_unit_integer(
+                min_ns,
+                "ns",
+                test_unit,
+                **unit_kwargs
+            )
+            test_max = convert_unit_integer(
+                max_ns,
+                "ns",
+                test_unit,
+                **unit_kwargs
+            )
 
             # get allowable limits for test unit
             lower_lim = -2**63 + 1
@@ -244,7 +259,7 @@ def ns_to_numpy_datetime64(
             # check for overflow
             if test_min >= lower_lim and test_max <= upper_lim:
                 unit = test_unit
-                arg = convert_unit(arg, "ns", test_unit, **unit_kwargs)
+                arg = convert_unit_integer(arg, "ns", test_unit, **unit_kwargs)
                 break
 
     # np.ndarray

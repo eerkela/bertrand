@@ -8,7 +8,7 @@ import pandas as pd
 from pdtypes.check import get_dtype
 from pdtypes.util.type_hints import datetime_like, timedelta_like
 
-from ..date import date_to_days
+from ..calendar import date_to_days
 from ..epoch import epoch_date
 from ..unit cimport as_ns
 

@@ -10,15 +10,14 @@ import pandas as pd
 
 from pdtypes.util.type_hints import datetime_like
 
-from ..date import date_to_days, is_leap_year
-from ..timezone import timezone, localize_pandas_timestamp, localize_pydatetime, is_utc
-from ..timezone cimport localize_pydatetime_scalar
+from ..calendar import date_to_days, is_leap_year
+from ..timezone import timezone, is_utc
 from ..unit cimport as_ns
 
 from .from_ns import ns_to_pydatetime, ns_to_numpy_datetime64
 
 
-# TODO: support J2000 dates through float_to_ns?
+# TODO: support J2000 dates through convert_unit?
 
 
 # possible formats

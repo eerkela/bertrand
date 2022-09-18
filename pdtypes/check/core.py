@@ -40,13 +40,16 @@ from .supertypes import subtypes, supertype
 #   -> those given in `dtype`.  Or, modify object_types to also capture unit
 #   -> information with an optional flag.
 
-# TODO: consider skipping over missing values in main object_types loop,
-# rather than filtering out in separate step.
+
+# TODO: fill in na type for each scalar dtype
+na_values = {}
+
 
 
 def get_dtype(
     array: scalar | array_like,
-    exact: bool = True
+    exact: bool = True,
+    skip_na: bool = True
 ) -> type | set[type]:
     """Retrieve the common atomic element types stored in `array`.
 
@@ -101,8 +104,11 @@ def get_dtype(
 
     # case 1: array has dtype="O" -> scan elementwise
     if pd.api.types.is_object_dtype(array):
-        array = array[pd.notna(array)]  # disregard missing values
-        if len(array) == 0:  # trivial case: empty array
+        if skip_na:
+            array = array[pd.notna(array)]
+
+        # trivial case: empty array
+        if len(array) == 0:
             return None
 
         # get unique element types
@@ -129,8 +135,15 @@ def get_dtype(
     if result is None:
         result = resolve_dtype(array.dtype)
 
+    # resolve parent supertype, if directed
     if not exact:
-        return supertype(result)
+        result = supertype(result)
+
+    # is skip_na == False, include potential missing values
+    if not skip_na and pd.isna(array).any():
+        # TODO: define NA types for each scalar dtype
+        return {result, None}
+
     return result
 
 

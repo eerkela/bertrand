@@ -157,6 +157,8 @@ def days_in_month(
     """Get the length (in days) of a given month, taking leap years into
     account.
     """
+    if hasattr(month, "astype"):
+        month = month.astype(np.int8, copy=False)
     return days_per_month[month - 1] + ((month == 2) & is_leap_year(year))
 
 

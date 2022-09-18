@@ -6,6 +6,11 @@ import pandas as pd
 from .supertypes cimport atomic_to_supertype
 
 
+#######################
+####    Private    ####
+#######################
+
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef np.ndarray[object] _object_types(
@@ -27,8 +32,11 @@ cdef np.ndarray[object] _object_types(
     return result
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
+######################
+####    Public    ####
+######################
+
+
 def object_types(
     np.ndarray[object] arr,
     bint exact = True

@@ -3,7 +3,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .date import *
+from .calendar import *
 
 
 # np.datetime64
