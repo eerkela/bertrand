@@ -2,7 +2,6 @@ from cpython cimport datetime
 cimport numpy as np
 
 # constants
-cdef object utc_epoch
 cdef object utc_naive_pydatetime
 cdef object utc_aware_pydatetime
 cdef long int min_pandas_timestamp_ns

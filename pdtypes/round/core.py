@@ -23,6 +23,9 @@ from .float import round_float
 from .decimal import round_decimal
 
 
+# rename round_generic -> round, apply_tolerance -> snap
+
+
 def apply_tolerance(
     val: float | decimal.Decimal | np.ndarray | pd.Series,
     tol: int | float | decimal.Decimal,

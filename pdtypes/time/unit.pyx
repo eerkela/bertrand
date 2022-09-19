@@ -5,7 +5,6 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdtypes.check import check_dtype
 from pdtypes.round import round_div, round_generic
 from pdtypes.util.type_hints import datetime_like
 
@@ -409,8 +408,8 @@ def _convert_unit_integer_regular_to_irregular(
 ######################
 
 
-def convert_unit(
-    arg: int | np.ndarray | pd.Series,
+def convert_unit_float(
+    arg: float | complex | decimal.Decimal | np.ndarray | pd.Series,
     from_unit: str,
     to_unit: str,
     rounding: str | None = "down",
@@ -425,32 +424,6 @@ def convert_unit(
         raise ValueError(f"`to_unit` must be one of {valid_units}, not "
                          f"{repr(to_unit)}")
 
-    if check_dtype(arg, int):
-        return convert_unit_integer(
-            arg=arg,
-            from_unit=from_unit,
-            to_unit=to_unit,
-            rounding=rounding,
-            since=since
-        )
-
-    return convert_unit_float(
-        arg=arg,
-        from_unit=from_unit,
-        to_unit=to_unit,
-        rounding=rounding,
-        since=since
-    )
-
-
-def convert_unit_float(
-    arg: float | complex | decimal.Decimal | np.ndarray | pd.Series,
-    from_unit: str,
-    to_unit: str,
-    rounding: str | None = "down",
-    since: datetime_like = pd.Timestamp("2001-01-01 00:00:00+0000")
-) -> int | float | complex | decimal.Decimal | np.ndarray | pd.Series:
-    """TODO"""
     # trivial case - no conversion necessary
     if from_unit == to_unit:
         return arg if rounding is None else cast_to_int(arg, rounding=rounding)
@@ -499,6 +472,14 @@ def convert_unit_integer(
     since: datetime_like = pd.Timestamp("2001-01-01 00:00:00+0000")
 ) -> int | float | np.ndarray | pd.Series:
     """TODO"""
+    # ensure units are valid
+    if from_unit not in valid_units:
+        raise ValueError(f"`from_unit` must be one of {valid_units}, not "
+                         f"{repr(from_unit)}")
+    if to_unit not in valid_units:
+        raise ValueError(f"`to_unit` must be one of {valid_units}, not "
+                         f"{repr(to_unit)}")
+
     # trivial case - no conversion necessary
     if from_unit == to_unit:
         return 1.0 * arg if rounding is None else arg

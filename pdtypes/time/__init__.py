@@ -5,7 +5,7 @@ from .calendar import (
 )
 from .epoch import epoch, epoch_date, epoch_ns
 from .timezone import is_utc, localize, timezone
-from .unit import convert_unit, convert_unit_integer, convert_unit_float
+from .unit import convert_unit_float, convert_unit_integer
 
 # datetime
 from .datetime import (

@@ -5,8 +5,6 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdtypes.check import check_dtype, get_dtype
-from pdtypes.util.array import is_scalar
 from pdtypes.util.type_hints import datetime_like, timedelta_like
 
 from ..epoch import epoch
@@ -147,11 +145,6 @@ def ns_to_numpy_timedelta64(
         max_ns = int(arg.max()) if is_array_like else int(arg)
     if min_ns < min_numpy_timedelta64_ns or max_ns > max_numpy_timedelta64_ns:
         raise OverflowError(f"`arg` exceeds np.timedelta64 range")
-
-    # ensure unit is valid
-    if unit not in valid_units:
-        raise ValueError(f"`unit` must be one of {valid_units}, not "
-                         f"{repr(unit)}")
 
     # kwargs for convert_unit_integer
     unit_kwargs = {"since": epoch(since), "rounding": rounding}

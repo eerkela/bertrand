@@ -19,11 +19,11 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdtypes.check import check_dtype, get_dtype
+from pdtypes.check import get_dtype
 from pdtypes.util.type_hints import datetime_like
 
 from ..calendar import date_to_days
-from ..timezone import is_utc, timezone, localize
+from ..timezone import timezone, localize
 from ..unit cimport as_ns
 
 
