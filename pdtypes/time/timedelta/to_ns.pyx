@@ -1,3 +1,57 @@
+"""Convert timedelta objects into nanosecond offsets from a given origin.
+
+Functions
+---------
+    pandas_timedelta_to_ns(
+        arg: pd.Timedelta | np.ndarray | pd.Series
+    ) -> int | np.ndarray | pd.Series:
+        Convert `pandas.Timedelta` objects into an equivalent number of
+        nanoseconds.
+
+    pytimedelta_to_ns(
+        arg: datetime.timedelta | np.ndarray | pd.Series
+    ) -> int | np.ndarray | pd.Series:
+        Convert `datetime.timedelta` objects into an equivalent number of
+        nanoseconds.
+
+    numpy_timedelta64_to_ns(
+        arg: np.timedelta64 | np.ndarray | pd.Series,
+        since: str | datetime_like = "2001-01-01 00:00:00+0000"
+    ) -> int | np.ndarray | pd.Series:
+        Convert `numpy.timedelta64` objects into an equivalent number of
+        nanoseconds.
+
+    timedelta_to_ns(
+        arg: timedelta_like | np.ndarray | pd.Series,
+        since: str | datetime_like = "2001-01-01"
+    ) -> int | np.ndarray | pd.Series:
+        Convert arbitrary timedelta objects into an equivalent number of
+        nanoseconds.
+
+Examples
+--------
+    >>> pandas_timedelta_to_ns(pd.Timedelta(nanoseconds=123))
+    >>> pandas_timedelta_to_ns(pd.Series([1, 2, 3], dtype="m8[ns]"))
+
+    >>> pytimedelta_to_ns(datetime.timedelta(microseconds=123))
+    >>> pytimedelta_to_ns(np.array([datetime.timedelta(microseconds=i + 1) for i in range(3)]))
+
+    >>> numpy_timedelta64_to_ns(np.timedelta64(123, "ns"))
+    >>> numpy_timedelta64_to_ns(np.arange(1, 4, dtype="m8[ns]"))
+    >>> numpy_timedelta64_to_ns(np.timedelta64(1, "Y"), since="2000-01-01")
+    >>> numpy_timedelta64_to_ns(np.timedelta64(1, "Y"), since="2001-01-01")
+    >>> numpy_timedelta64_to_ns(np.timedelta64(1, "M"), since="2000-01-01")
+    >>> numpy_timedelta64_to_ns(np.timedelta64(1, "M"), since="2000-02-01")
+    >>> numpy_timedelta64_to_ns(np.timedelta64(1, "M"), since="2001-02-01")
+
+    >>> timedelta_to_ns(pd.Timedelta(nanoseconds=123))
+    >>> timedelta_to_ns(datetime.timedelta(microseconds=123))
+    >>> timedelta_to_ns(np.timedelta64(123, "ns"))
+    >>> timedelta_to_ns(pd.Series([1, 2, 3], dtype="m8[ns]"))
+    >>> timedelta_to_ns(np.array([datetime.timedelta(microseconds=i + 1) for i in range(3)]))
+    >>> timedelta_to_ns(np.arange(1, 4, dtype="m8[s]"))
+    >>> timedelta_to_ns(np.array([pd.Timedelta(nanoseconds=123), datetime.timedelta(microseconds=123), np.timedelta64(123, "ns")]))
+"""
 import datetime
 
 cimport cython
@@ -18,6 +72,7 @@ from ..unit cimport as_ns
 #########################
 
 
+# convertible timedelta types
 cdef set valid_timedelta_types = {
     pd.Timedelta,
     datetime.timedelta,
@@ -25,6 +80,7 @@ cdef set valid_timedelta_types = {
 }
 
 
+# nanosecond conversion factors for each field of a `datetime.timedelta` object
 cdef long int[:] pytimedelta_ns_coefs = np.array(
     [
         as_ns["D"],
@@ -40,15 +96,15 @@ cdef long int[:] pytimedelta_ns_coefs = np.array(
 
 
 cdef inline long int pandas_timedelta_to_ns_scalar(object timedelta):
-    """Internal C-style interface for pandas_timedelta_to_ns when applied to
-    `pd.Timedelta` scalars.
+    """Convert a scalar `pandas.Timedelta` object into an integer number of
+    nanoseconds.
     """
     return timedelta.value
 
 
 cdef inline object pytimedelta_to_ns_scalar(object pytimedelta):
-    """Internal C-style interface for pytimedelta_to_ns when applied to
-    `datetime.timedelta` scalars.
+    """Convert a scalar `datetime.timedelta` object into an integer number of
+    nanoseconds.
     """
     cdef np.ndarray[object] components = np.array(
         [
@@ -67,8 +123,8 @@ cdef inline object numpy_timedelta64_to_ns_scalar(
     object start_month,
     object start_day
 ):
-    """Internal C-style interface for numpy_timedelta64_to_ns when applied to
-    `np.timedelta64` scalars.  Also works for 'm8'-dtyped numpy arrays.
+    """Convert a scalar `numpy.timedelta64` object into an integer number of
+    nanoseconds, starting from the given date.
     """
     cdef str unit
     cdef int step_size
@@ -103,8 +159,8 @@ cdef inline object numpy_timedelta64_to_ns_scalar(
 cdef np.ndarray[long int] pandas_timedelta_to_ns_vector(
     np.ndarray[object] arr
 ):
-    """Internal C-style interface for pandas_timedelta_to_ns when applied to
-    object arrays that exclusively contain `pd.Timedelta` elements.
+    """Convert an array of `pandas.Timedelta` objects into their integer
+    nanosecond equivalents.
     """
     cdef int arr_length = arr.shape[0]
     cdef int i
@@ -119,8 +175,8 @@ cdef np.ndarray[long int] pandas_timedelta_to_ns_vector(
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef np.ndarray[object] pytimedelta_to_ns_vector(np.ndarray[object] arr):
-    """Internal C-style interface for pytimedelta_to_ns when applied to object
-    arrays that exclusively contain `datetime.timedelta` elements.
+    """Convert an array of `datetime.timedelta` objects into their integer
+    nanosecond equivalents.
     """
     cdef int arr_length = arr.shape[0]
     cdef int i
@@ -140,8 +196,8 @@ cdef np.ndarray[object] numpy_timedelta64_to_ns_vector(
     object start_month,
     object start_day
 ):
-    """Internal C-style interface for numpy_timedelta64_to_ns when applied to
-    object arrays that exclusively contain `numpy.timedelta64` elements.
+    """Convert an array of `numpy.timedelta64` objects into their integer
+    nanosecond equivalents.
     """
     cdef int arr_length = arr.shape[0]
     cdef int i
@@ -166,8 +222,8 @@ cdef np.ndarray[object] mixed_timedelta_to_ns_vector(
     object start_month,
     object start_day
 ):
-    """Internal C-style interface for timedelta_to_ns when applied to object
-    arrays that contain mixed and inconsistent timedelta types.
+    """Convert an array of mixed timedelta objects into their integer
+    nanosecond equivalents.
     """
     cdef int arr_length = arr.shape[0]
     cdef int i
@@ -199,19 +255,23 @@ cdef np.ndarray[object] mixed_timedelta_to_ns_vector(
 def pandas_timedelta_to_ns(
     arg: pd.Timedelta | np.ndarray | pd.Series
 ) -> int | np.ndarray | pd.Series:
-    """Convert `pd.Timedelta` objects into an equivalent number of nanoseconds.
+    """Convert `pandas.Timedelta` objects into an equivalent number of
+    nanoseconds.
     
     Parameters
     ----------
-    arg (pd.Timedelta | np.ndarray | pd.Series):
-        Timedelta to convert.  Must be a scalar of type `pd.Timedelta` or an
-        array-like containing exclusively `pd.Timedelta` objects.
+    arg : pd.Timedelta | array-like
+        A `pandas.Timedelta` object or a vector of such objects.
 
     Returns
     -------
-    int | np.ndarray | pd.Series:
-        The integer nanosecond equivalent for each `pd.Timedelta` stored in
-        `arg`.  Series inputs preserve the original index.
+    int | array-like
+        The integer nanosecond equivalent for each timedelta stored in `arg`.
+
+    Examples
+    --------
+        >>> pandas_timedelta_to_ns(pd.Timedelta(nanoseconds=123))
+        >>> pandas_timedelta_to_ns(pd.Series([1, 2, 3], dtype="m8[ns]"))
     """
     # np.array
     if isinstance(arg, np.ndarray):
@@ -239,15 +299,18 @@ def pytimedelta_to_ns(
     
     Parameters
     ----------
-    arg (datetime.timedelta | np.ndarray | pd.Series):
-        Timedelta to convert.  Must be a scalar of type `datetime.timedelta` or
-        an array-like containing exclusively `datetime.timedelta` objects.
+    arg : datetime.timedelta | array-like
+        A `datetime.timedelta` object or a vector of such objects.
 
     Returns
     -------
-    int | np.ndarray | pd.Series:
-        The integer nanosecond equivalent for each `datetime.timedelta` stored
-        in `arg`.  Series inputs preserve the original index.
+    int | array-like
+        The integer nanosecond equivalent for each timedelta stored in `arg`.
+
+    Examples
+    --------
+        >>> pytimedelta_to_ns(datetime.timedelta(microseconds=123))
+        >>> pytimedelta_to_ns(np.array([datetime.timedelta(microseconds=i + 1) for i in range(3)]))
     """
     # np.array
     if isinstance(arg, np.ndarray):
@@ -268,29 +331,38 @@ def numpy_timedelta64_to_ns(
     arg: np.timedelta64 | np.ndarray | pd.Series,
     since: str | datetime_like = "2001-01-01 00:00:00+0000"
 ) -> int | np.ndarray | pd.Series:
-    """Convert `np.timedelta64` objects into an equivalent number of
+    """Convert `numpy.timedelta64` objects into an equivalent number of
     nanoseconds.
     
     Parameters
     ----------
-    arg (np.timedelta64 | np.ndarray | pd.Series):
-        Timedelta to convert.  Must be a scalar of type `np.timedelta64` or an
-        array-like containing exclusively `np.timedelta64` objects.  Irregular
-        units 'M' and 'Y' are supported through the optional `epoch` argument.
-    since (str | datetime_like):
-        The epoch to use for irregular timedelta64 units 'M' and 'Y', which
-        need a specified starting point to maintain accuracy.  Custom epochs
-        can be specified using direct `(year, month, day)` integer tuples,
-        string specifiers ('utc', etc.), or date-like objects (anything that
-        can be decomposed into `(year, month, day)`).  Defaults to
-        `(2001, 1, 1)`, which represents the start of a 400-year Gregorian
-        cycle and puts leap years at the end of each 4-year period.
+    arg : np.timedelta64 | array-like
+        A `numpy.timedelta64` object or a vector of such objects.  Irregular
+        units 'M' and 'Y' are supported through the optional `since` argument.
+    since : str | datetime-like, default '2001-01-01 00:00:00+0000'
+        The date from which to begin counting.  This is only used for
+        `numpy.timedelta64` objects with unit 'M' or 'Y', in order to
+        accurately account for leap days and unequal month lengths.  Only the
+        `year`, `month`, and `day` components are used.  Defaults to
+        '2001-01-01 00:00:00+0000', which represents the start of a 400-year
+        Gregorian calendar cycle.
 
     Returns
     -------
-    int | np.ndarray | pd.Series:
-        The integer nanosecond equivalent for each `np.timedelta64` stored in
-        `arg`.  Series inputs preserve the original index.
+    int | array-like
+        The integer nanosecond equivalent for each timedelta stored in `arg`.
+
+    Examples
+    --------
+        >>> numpy_timedelta64_to_ns(np.timedelta64(123, "ns"))
+        >>> numpy_timedelta64_to_ns(np.arange(1, 4, dtype="m8[ns]"))
+
+        >>> numpy_timedelta64_to_ns(np.timedelta64(1, "Y"), since="2000-01-01")
+        >>> numpy_timedelta64_to_ns(np.timedelta64(1, "Y"), since="2001-01-01")
+
+        >>> numpy_timedelta64_to_ns(np.timedelta64(1, "M"), since="2000-01-01")
+        >>> numpy_timedelta64_to_ns(np.timedelta64(1, "M"), since="2000-02-01")
+        >>> numpy_timedelta64_to_ns(np.timedelta64(1, "M"), since="2001-02-01")
     """
     # resolve `since` date and split into year, month, day
     start_year, start_month, start_day = epoch_date(since).values()
@@ -336,28 +408,39 @@ def timedelta_to_ns(
     arg: timedelta_like | np.ndarray | pd.Series,
     since: str | datetime_like = "2001-01-01"
 ) -> int | np.ndarray | pd.Series:
-    """Convert arbitrary timedeltas into an equivalent number of nanoseconds.
-
+    """Convert arbitrary timedelta objects into an equivalent number of
+    nanoseconds.
+    
     Parameters
     ----------
-    arg (timedelta_like | np.ndarray | pd.Series):
-        Timedelta to convert.  If `np.timedelta64` objects with irregular units
-        'M' and 'Y' are encountered, they are interpreted with respect to the
-        given `epoch`.
-    since (tuple | str | date_like):
-        The epoch to use for irregular timedelta64 units 'M' and 'Y', which
-        need a specified starting point to maintain accuracy.  Custom epochs
-        can be specified using direct `(year, month, day)` integer tuples,
-        string specifiers ('utc', etc.), or date-like objects (anything that
-        can be decomposed into `(year, month, day)`).  Defaults to
-        `(2001, 1, 1)`, which represents the start of a 400-year Gregorian
-        cycle and puts leap years at the end of each 4-year period.
+    arg : timedelta-like | array-like
+        An arbitrary timedelta object or a vector of such objects.  Irregular
+        timedelta64 units 'M' and 'Y' are supported through the optional
+        `since` argument.
+    since : str | datetime-like, default '2001-01-01 00:00:00+0000'
+        The date from which to begin counting.  This is only used for
+        `numpy.timedelta64` objects with unit 'M' or 'Y', in order to
+        accurately account for leap days and unequal month lengths.  Only the
+        `year`, `month`, and `day` components are used.  Defaults to
+        '2001-01-01 00:00:00+0000', which represents the start of a 400-year
+        Gregorian calendar cycle.
 
     Returns
     -------
-    int | np.ndarray | pd.Series:
+    int | array-like
         The integer nanosecond equivalent for each timedelta stored in `arg`.
-        Series inputs preserve the original index.
+
+    Examples
+    --------
+        >>> timedelta_to_ns(pd.Timedelta(nanoseconds=123))
+        >>> timedelta_to_ns(datetime.timedelta(microseconds=123))
+        >>> timedelta_to_ns(np.timedelta64(123, "ns"))
+
+        >>> timedelta_to_ns(pd.Series([1, 2, 3], dtype="m8[ns]"))
+        >>> timedelta_to_ns(np.array([datetime.timedelta(microseconds=i + 1) for i in range(3)]))
+        >>> timedelta_to_ns(np.arange(1, 4, dtype="m8[s]"))
+
+        >>> timedelta_to_ns(np.array([pd.Timedelta(nanoseconds=123), datetime.timedelta(microseconds=123), np.timedelta64(123, "ns")]))
     """
     # get exact element type(s) and ensure timedelta-like
     dtype = get_dtype(arg)

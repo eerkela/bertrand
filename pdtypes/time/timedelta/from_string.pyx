@@ -1,3 +1,150 @@
+"""Convert timedelta strings to their corresponding timedelta representation.
+
+Supports a variety of timedelta string formats through custom regex patterns.
+These can include either clock format ('01:23:42', etc.) or abbreviated
+('1h23m42s', etc.) strings.  These cover all of the standard outputs from
+`str(timedelta)` for each of the timedelta types that are supported by
+`pdtypes`.
+
+Functions
+---------
+    timedelta_string_to_ns(
+        arg: str | np.ndarray | pd.Series,
+        as_hours: bool = False,
+        since: str | datetime_like = "2001-01-01 00:00:00+0000",
+        errors: str = "raise"
+    ) -> tuple[int | np.ndarray | pd.Series, bool]:
+        Parse a timedelta string, returning it as an integer number of
+        nanoseconds.
+
+    string_to_pandas_timedelta(
+        arg: str | np.ndarray | pd.Series,
+        as_hours: bool = False,
+        since: str | datetime_like = "2001-01-01 00:00:00+0000",
+        errors: str = "raise"
+    ) -> pd.Timedelta | np.ndarray | pd.Series:
+        Parse a timedelta string, returning it as a `pandas.Timedelta` object.
+
+    string_to_pytimedelta(
+        arg: str | np.ndarray | pd.Series,
+        as_hours: bool = False,
+        since: str | datetime_like = "2001-01-01 00:00:00+0000",
+        errors: str = "raise"
+    ) -> datetime.timedelta | np.ndarray | pd.Series:
+        Parse a timedelta string, returning it as a `datetime.timedelta` object.
+
+    string_to_numpy_timedelta64(
+        arg: str | np.ndarray | pd.Series,
+        as_hours: bool = False,
+        unit: str = None,
+        since: str | datetime_like = "2001-01-01 00:00:00+0000",
+        rounding: str = "down",
+        errors: str = "raise"
+    ) -> np.timedelta64 | np.ndarray | pd.Series:
+        Parse a timedelta string, returning it as a `numpy.timedelta64` object.
+
+    string_to_timedelta(
+        arg: str | np.ndarray | pd.Series,
+        as_hours: bool = False,
+        since: str | datetime_like = "2001-01-01 00:00:00+0000",
+        errors: str = "raise"
+    ) -> timedelta_like | np.ndarray | pd.Series:
+        Parse a timedelta string, returning it as an arbitrary timedelta object.
+
+Examples
+--------
+    >>> timedelta_string_to_ns(":24")  # :seconds
+    >>> timedelta_string_to_ns("1:24")  # minutes:seconds
+    >>> timedelta_string_to_ns("15:01:24")  # hours:minutes:seconds
+    >>> timedelta_string_to_ns("10:15:01:24")  # days:hours:minutes:seconds
+    >>> timedelta_string_to_ns("10 days 15:01:24")
+    >>> timedelta_string_to_ns("1 week, 3 days, 15:01:24")
+    >>> timedelta_string_to_ns("1 minute, 24 secs")
+    >>> timedelta_string_to_ns("1m24s")
+    >>> timedelta_string_to_ns("1.4 minutes")
+    >>> timedelta_string_to_ns("+1.4 minutes")
+    >>> timedelta_string_to_ns("-1.4 minutes")
+    >>> timedelta_string_to_ns("1:24", as_hours=False)
+    >>> timedelta_string_to_ns("1:24", as_hours=True)
+    >>> timedelta_string_to_ns("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+    >>> timedelta_string_to_ns("1y 2mo 3w 4d 5h")
+    >>> timedelta_string_to_ns("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+    >>> timedelta_string_to_ns("1 year", since="2001-01-01")
+    >>> timedelta_string_to_ns("1 year", since="2000-01-01")  # leap year
+    >>> timedelta_string_to_ns("1 month", since="2000-01-01")  # Jan 2000
+    >>> timedelta_string_to_ns("1 month", since="2000-02-01")  # Feb 2000
+    >>> timedelta_string_to_ns("1 month", since="2001-02-01")  # Feb 2001
+
+    >>> string_to_pandas_timedelta(":24")  # :seconds
+    >>> string_to_pandas_timedelta("1:24")  # minutes:seconds
+    >>> string_to_pandas_timedelta("15:01:24")  # hours:minutes:seconds
+    >>> string_to_pandas_timedelta("10:15:01:24")  # days:hours:minutes:seconds
+    >>> string_to_pandas_timedelta("10 days 15:01:24")
+    >>> string_to_pandas_timedelta("1 week, 3 days, 15:01:24")
+    >>> string_to_pandas_timedelta("1 minute, 24 secs")
+    >>> string_to_pandas_timedelta("1m24s")
+    >>> string_to_pandas_timedelta("1.4 minutes")
+    >>> string_to_pandas_timedelta("+1.4 minutes")
+    >>> string_to_pandas_timedelta("-1.4 minutes")
+    >>> string_to_pandas_timedelta("1:24", as_hours=False)
+    >>> string_to_pandas_timedelta("1:24", as_hours=True)
+    >>> string_to_pandas_timedelta("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+    >>> string_to_pandas_timedelta("1y 2mo 3w 4d 5h")
+    >>> string_to_pandas_timedelta("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+    >>> string_to_pandas_timedelta("1 year", since="2001-01-01")
+    >>> string_to_pandas_timedelta("1 year", since="2000-01-01")  # leap year
+    >>> string_to_pandas_timedelta("1 month", since="2000-01-01")  # Jan 2000
+    >>> string_to_pandas_timedelta("1 month", since="2000-02-01")  # Feb 2000
+    >>> string_to_pandas_timedelta("1 month", since="2001-02-01")  # Feb 2001
+
+    >>> string_to_numpy_timedelta64(":24")  # :seconds
+    >>> string_to_numpy_timedelta64("1:24")  # minutes:seconds
+    >>> string_to_numpy_timedelta64("15:01:24")  # hours:minutes:seconds
+    >>> string_to_numpy_timedelta64("10:15:01:24")  # days:hours:minutes:seconds
+    >>> string_to_numpy_timedelta64("10 days 15:01:24")
+    >>> string_to_numpy_timedelta64("1 week, 3 days, 15:01:24")
+    >>> string_to_numpy_timedelta64("1 minute, 24 secs")
+    >>> string_to_numpy_timedelta64("1m24s")
+    >>> string_to_numpy_timedelta64("1.4 minutes")
+    >>> string_to_numpy_timedelta64("+1.4 minutes")
+    >>> string_to_numpy_timedelta64("-1.4 minutes")
+    >>> string_to_numpy_timedelta64("1:24", as_hours=False)
+    >>> string_to_numpy_timedelta64("1:24", as_hours=True)
+    >>> string_to_numpy_timedelta64("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+    >>> string_to_numpy_timedelta64("1y 2mo 3w 4d 5h")
+    >>> string_to_numpy_timedelta64("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+    >>> string_to_numpy_timedelta64("1 year", since="2001-01-01")
+    >>> string_to_numpy_timedelta64("1 year", since="2000-01-01")  # leap year
+    >>> string_to_numpy_timedelta64("1 month", since="2000-01-01")  # Jan 2000
+    >>> string_to_numpy_timedelta64("1 month", since="2000-02-01")  # Feb 2000
+    >>> string_to_numpy_timedelta64("1 month", since="2001-02-01")  # Feb 2001
+
+    >>> string_to_timedelta(":24")  # :seconds
+    >>> string_to_timedelta("1:24")  # minutes:seconds
+    >>> string_to_timedelta("15:01:24")  # hours:minutes:seconds
+    >>> string_to_timedelta("10:15:01:24")  # days:hours:minutes:seconds
+    >>> string_to_timedelta("10 days 15:01:24")
+    >>> string_to_timedelta("1 week, 3 days, 15:01:24")
+    >>> string_to_timedelta("1 minute, 24 secs")
+    >>> string_to_timedelta("1m24s")
+    >>> string_to_timedelta("1.4 minutes")
+    >>> string_to_timedelta("+1.4 minutes")
+    >>> string_to_timedelta("-1.4 minutes")
+    >>> string_to_timedelta("1:24", as_hours=False)
+    >>> string_to_timedelta("1:24", as_hours=True)
+    >>> string_to_timedelta("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+    >>> string_to_timedelta("1y 2mo 3w 4d 5h")
+    >>> string_to_timedelta("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+    >>> string_to_timedelta("1 year", since="2001-01-01")
+    >>> string_to_timedelta("1 year", since="2000-01-01")  # leap year
+    >>> string_to_timedelta("1 month", since="2000-01-01")  # Jan 2000
+    >>> string_to_timedelta("1 month", since="2000-02-01")  # Feb 2000
+    >>> string_to_timedelta("1 month", since="2001-02-01")  # Feb 2001
+    >>> string_to_timedelta(f"{2**63 - 1} nanoseconds")
+    >>> string_to_timedelta(f"{2**63} nanoseconds")
+    >>> string_to_timedelta(f"{86399999999999999999000} nanoseconds")
+    >>> string_to_timedelta(f"{86399999999999999999000 + 1} nanoseconds")
+"""
 import datetime
 import decimal
 import re
@@ -24,12 +171,12 @@ from .from_ns import (
 
 
 cdef list[object] timedelta_formats_regex():
-    """Compile a set of regular expressions to capture and parse recognized
+    """Compile a list of regular expressions to capture and parse recognized
     timedelta strings.
 
-    Matches both abbreviated ('1h22m', '1 hour, 22 minutes', etc.) and
-    clock format ('01:22:00', '1:22', '00:01:22:00') strings, with precision up
-    to days and/or weeks and down to nanoseconds.
+    Matches both abbreviated ('1h22m', '1 hour, 22 minutes', etc.) and clock
+    format ('01:22:00', '1:22', '00:01:22:00') strings, with precision up to
+    years and months and down to nanoseconds.
     """
     # capture groups - abbreviated units ('h', 'min', 'seconds', etc.)
     cdef str Y = r"(?P<Y>[\d.]+)(?:ys?|yrs?.?|years?)"
@@ -66,6 +213,7 @@ cdef list[object] timedelta_formats_regex():
     ]
 
 
+# compiled timedelta string regex
 cdef dict timedelta_regex = {
     "sign": re.compile(r"(?P<sign>[+|-])?(?P<unsigned>.*)$"),
     "formats": timedelta_formats_regex()
@@ -84,7 +232,8 @@ cdef object timedelta_string_to_ns_scalar(
     object start_month,
     object start_day
 ):
-    """Internal C interface for public-facing `string_to_ns()` function."""
+    """Convert a scalar timedelta string into an integer number of nanoseconds.
+    """
     cdef object match
     cdef int sign
     cdef object time_format
@@ -158,7 +307,8 @@ cdef tuple timedelta_string_to_ns_vector(
     object start_day,
     str errors
 ):
-    """TODO"""
+    """Convert an array of timedelta strings into integer nanosecond offsets.
+    """
     cdef int arr_length = arr.shape[0]
     cdef int i
     cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
@@ -193,29 +343,45 @@ def timedelta_string_to_ns(
     since: str | datetime_like = "2001-01-01 00:00:00+0000",
     errors: str = "raise"
 ) -> tuple[int | np.ndarray | pd.Series, bool]:
-    """Parse a timedelta string, returning its associated value as an integer
-    number of nanoseconds.
+    """Parse a timedelta string, returning it as an integer number of
+    nanoseconds.
 
-    See also: https://github.com/wroberts/pytimeparse
+    Algorithm adapted from: https://github.com/wroberts/pytimeparse
 
     Parameters
     ----------
-    delta (str):
-        Timedelta string to parse.  Can be in either abbreviated ('1h22m',
-        '1 hour, 22 minutes', ...) or clock format ('01:22:00', '1:22',
-        '00:01:22:00', ...), with precision up to days/weeks and down to
-        nanoseconds.  Can be either signed or unsigned.
-    as_hours (bool):
+    delta : str | array-like
+        A timedelta string or vector of such strings.  Can be in either
+        abbreviated ('1h22m', '1 hour, 22 minutes', ...) or clock format
+        ('01:22:00', '1:22', '00:01:22:00', ...), with precision up to
+        months/years and down to nanoseconds.  Can be either signed or
+        unsigned.
+    as_hours : bool, default False
         Whether to parse ambiguous timedelta strings of the form '1:22' as
         containing hours and minutes (`True`), or minutes and seconds
         (`False`).  Does not affect any other string format.
+    since : str | datetime-like, default '2001-01-01 00:00:00+0000'
+        The date from which to begin counting.  This is only used for timedelta
+        strings that contain year and/or month components, in order to
+        accurately account for leap days and unequal month lengths.  Only the
+        `year`, `month`, and `day` components are used.  Defaults to
+        '2001-01-01 00:00:00+0000', which represents the start of a 400-year
+        Gregorian calendar cycle.
+    errors : {'raise', 'ignore', 'coerce'}, default 'raise'
+        The error-handling rule to use if an invalid timedelta string is
+        encountered during parsing.  The behaviors are as follows:
+            * `'raise'` - immediately raise a `ValueError`
+            * `'ignore'` - return `arg` unmodified
+            * `'coerce'` - fill with `None` and continue
 
     Returns
     -------
-    int:
-        An integer number of nanoseconds associated with the given timedelta
-        string.  If the string contains digits below nanosecond precision,
-        they are destroyed.
+    tuple[int | array-like, bool]
+        A 2-tuple, the first element of which contains the results of the
+        string to nanosecond conversion.  If a string contains digits below
+        nanosecond precision, they are lost during conversion.  The second
+        element indicates whether errors were encountered during parsing.  If
+        `errors='raise'` (the default), this will always be `False`.
 
     Raises
     ------
@@ -225,31 +391,32 @@ def timedelta_string_to_ns(
 
     Examples
     --------
-    >>> timedelta_string_to_ns('1:24')
-    84000000000
-    >>> timedelta_string_to_ns(':22')
-    22000000000
-    >>> timedelta_string_to_ns('1 minute, 24 secs')
-    84000000000
-    >>> timedelta_string_to_ns('1m24s')
-    84000000000
-    >>> timedelta_string_to_ns('1.2 minutes')
-    72000000000
-    >>> timedelta_string_to_ns('1.2 seconds')
-    1200000000
+    >>> timedelta_string_to_ns(":24")  # :seconds
+    >>> timedelta_string_to_ns("1:24")  # minutes:seconds
+    >>> timedelta_string_to_ns("15:01:24")  # hours:minutes:seconds
+    >>> timedelta_string_to_ns("10:15:01:24")  # days:hours:minutes:seconds
+    >>> timedelta_string_to_ns("10 days 15:01:24")
+    >>> timedelta_string_to_ns("1 week, 3 days, 15:01:24")
 
-    Time expressions can be signed.
-    >>> timedelta_string_to_ns('- 1 minute')
-    -60000000000
-    >>> timedelta_string_to_ns('+ 1 minute')
-    60000000000
+    >>> timedelta_string_to_ns("1 minute, 24 secs")
+    >>> timedelta_string_to_ns("1m24s")
+    >>> timedelta_string_to_ns("1.4 minutes")
+    >>> timedelta_string_to_ns("+1.4 minutes")
+    >>> timedelta_string_to_ns("-1.4 minutes")
 
-    If `as_hours=True`, then ambiguous digits following a colon will be
-    interpreted as minutes; otherwise they are considered to be seconds.
-    >>> timeparse('1:30', as_hours=False)
-    90000000000
-    >>> timeparse('1:30', as_hours=True)
-    5400000000000
+    >>> timedelta_string_to_ns("1:24", as_hours=False)
+    >>> timedelta_string_to_ns("1:24", as_hours=True)
+
+    >>> timedelta_string_to_ns("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+    >>> timedelta_string_to_ns("1y 2mo 3w 4d 5h")
+    >>> timedelta_string_to_ns("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+
+    >>> timedelta_string_to_ns("1 year", since="2001-01-01")
+    >>> timedelta_string_to_ns("1 year", since="2000-01-01")  # leap year
+
+    >>> timedelta_string_to_ns("1 month", since="2000-01-01")  # Jan 2000
+    >>> timedelta_string_to_ns("1 month", since="2000-02-01")  # Feb 2000
+    >>> timedelta_string_to_ns("1 month", since="2001-02-01")  # Feb 2001
     """
     # resolve `since` epoch
     since = epoch_date(since)
@@ -312,7 +479,81 @@ def string_to_pandas_timedelta(
     since: str | datetime_like = "2001-01-01 00:00:00+0000",
     errors: str = "raise"
 ) -> pd.Timedelta | np.ndarray | pd.Series:
-    """TODO"""
+    """Parse a timedelta string, returning it as a `pandas.Timedelta` object.
+
+    Parameters
+    ----------
+    delta : str | array-like
+        A timedelta string or vector of such strings.  Can be in either
+        abbreviated ('1h22m', '1 hour, 22 minutes', ...) or clock format
+        ('01:22:00', '1:22', '00:01:22:00', ...), with precision up to
+        months/years and down to nanoseconds.  Can be either signed or
+        unsigned.
+    as_hours : bool, default False
+        Whether to parse ambiguous timedelta strings of the form '1:22' as
+        containing hours and minutes (`True`), or minutes and seconds
+        (`False`).  Does not affect any other string format.
+    since : str | datetime-like, default '2001-01-01 00:00:00+0000'
+        The date from which to begin counting.  This is only used for timedelta
+        strings that contain year and/or month components, in order to
+        accurately account for leap days and unequal month lengths.  Only the
+        `year`, `month`, and `day` components are used.  Defaults to
+        '2001-01-01 00:00:00+0000', which represents the start of a 400-year
+        Gregorian calendar cycle.
+    errors : {'raise', 'ignore', 'coerce'}, default 'raise'
+        The error-handling rule to use if an invalid timedelta string is
+        encountered during parsing.  The behaviors are as follows:
+            * `'raise'` - immediately raise a `ValueError`
+            * `'ignore'` - return `arg` unmodified
+            * `'coerce'` - fill with `None` and continue
+
+    Returns
+    -------
+    pd.Timedelta | array-like
+        A `pandas.Timedelta` object or vector of such objects, representing
+        the parsed equivalents of the given input string(s).  If a string
+        contains digits below nanosecond precision, they are lost during
+        conversion.
+
+    Raises
+    ------
+    ValueError:
+        If the passed timedelta string does not match any of the recognized
+        formats.
+    OverflowError:
+        If the range of `arg` exceeds the representable range of
+        `pandas.Timedelta` objects ([`'-106752 days +00:12:43.145224193'` -
+        `'106751 days 23:47:16.854775807'`]).
+
+    Examples
+    --------
+    >>> string_to_pandas_timedelta(":24")  # :seconds
+    >>> string_to_pandas_timedelta("1:24")  # minutes:seconds
+    >>> string_to_pandas_timedelta("15:01:24")  # hours:minutes:seconds
+    >>> string_to_pandas_timedelta("10:15:01:24")  # days:hours:minutes:seconds
+    >>> string_to_pandas_timedelta("10 days 15:01:24")
+    >>> string_to_pandas_timedelta("1 week, 3 days, 15:01:24")
+
+    >>> string_to_pandas_timedelta("1 minute, 24 secs")
+    >>> string_to_pandas_timedelta("1m24s")
+    >>> string_to_pandas_timedelta("1.4 minutes")
+    >>> string_to_pandas_timedelta("+1.4 minutes")
+    >>> string_to_pandas_timedelta("-1.4 minutes")
+
+    >>> string_to_pandas_timedelta("1:24", as_hours=False)
+    >>> string_to_pandas_timedelta("1:24", as_hours=True)
+
+    >>> string_to_pandas_timedelta("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+    >>> string_to_pandas_timedelta("1y 2mo 3w 4d 5h")
+    >>> string_to_pandas_timedelta("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+
+    >>> string_to_pandas_timedelta("1 year", since="2001-01-01")
+    >>> string_to_pandas_timedelta("1 year", since="2000-01-01")  # leap year
+
+    >>> string_to_pandas_timedelta("1 month", since="2000-01-01")  # Jan 2000
+    >>> string_to_pandas_timedelta("1 month", since="2000-02-01")  # Feb 2000
+    >>> string_to_pandas_timedelta("1 month", since="2001-02-01")  # Feb 2001
+    """
     # convert strings to ns, then ns to pd.Timedelta
     result, has_errors = timedelta_string_to_ns(
         arg,
@@ -354,7 +595,81 @@ def string_to_pytimedelta(
     since: str | datetime_like = "2001-01-01 00:00:00+0000",
     errors: str = "raise"
 ) -> datetime.timedelta | np.ndarray | pd.Series:
-    """TODO"""
+    """Parse a timedelta string, returning it as a `datetime.timedelta` object.
+
+    Parameters
+    ----------
+    delta : str | array-like
+        A timedelta string or vector of such strings.  Can be in either
+        abbreviated ('1h22m', '1 hour, 22 minutes', ...) or clock format
+        ('01:22:00', '1:22', '00:01:22:00', ...), with precision up to
+        months/years and down to nanoseconds.  Can be either signed or
+        unsigned.
+    as_hours : bool, default False
+        Whether to parse ambiguous timedelta strings of the form '1:22' as
+        containing hours and minutes (`True`), or minutes and seconds
+        (`False`).  Does not affect any other string format.
+    since : str | datetime-like, default '2001-01-01 00:00:00+0000'
+        The date from which to begin counting.  This is only used for timedelta
+        strings that contain year and/or month components, in order to
+        accurately account for leap days and unequal month lengths.  Only the
+        `year`, `month`, and `day` components are used.  Defaults to
+        '2001-01-01 00:00:00+0000', which represents the start of a 400-year
+        Gregorian calendar cycle.
+    errors : {'raise', 'ignore', 'coerce'}, default 'raise'
+        The error-handling rule to use if an invalid timedelta string is
+        encountered during parsing.  The behaviors are as follows:
+            * `'raise'` - immediately raise a `ValueError`
+            * `'ignore'` - return `arg` unmodified
+            * `'coerce'` - fill with `None` and continue
+
+    Returns
+    -------
+    datetime.timedelta | array-like
+        A `datetime.timedelta` object or vector of such objects, representing
+        the parsed equivalents of the given input string(s).  If a string
+        contains digits below microsecond precision, they are lost during
+        conversion.
+
+    Raises
+    ------
+    ValueError:
+        If the passed timedelta string does not match any of the recognized
+        formats.
+    OverflowError:
+        If the range of `arg` exceeds the representable range of
+        `datetime.timedelta` objects ([`'-999999999 days, 0:00:00'` -
+        `'999999999 days, 23:59:59.999999'`]).
+
+    Examples
+    --------
+    >>> string_to_pytimedelta(":24")  # :seconds
+    >>> string_to_pytimedelta("1:24")  # minutes:seconds
+    >>> string_to_pytimedelta("15:01:24")  # hours:minutes:seconds
+    >>> string_to_pytimedelta("10:15:01:24")  # days:hours:minutes:seconds
+    >>> string_to_pytimedelta("10 days 15:01:24")
+    >>> string_to_pytimedelta("1 week, 3 days, 15:01:24")
+
+    >>> string_to_pytimedelta("1 minute, 24 secs")
+    >>> string_to_pytimedelta("1m24s")
+    >>> string_to_pytimedelta("1.4 minutes")
+    >>> string_to_pytimedelta("+1.4 minutes")
+    >>> string_to_pytimedelta("-1.4 minutes")
+
+    >>> string_to_pytimedelta("1:24", as_hours=False)
+    >>> string_to_pytimedelta("1:24", as_hours=True)
+
+    >>> string_to_pytimedelta("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+    >>> string_to_pytimedelta("1y 2mo 3w 4d 5h")
+    >>> string_to_pytimedelta("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+
+    >>> string_to_pytimedelta("1 year", since="2001-01-01")
+    >>> string_to_pytimedelta("1 year", since="2000-01-01")  # leap year
+
+    >>> string_to_pytimedelta("1 month", since="2000-01-01")  # Jan 2000
+    >>> string_to_pytimedelta("1 month", since="2000-02-01")  # Feb 2000
+    >>> string_to_pytimedelta("1 month", since="2001-02-01")  # Feb 2001
+    """
     # convert strings to ns, then ns to pd.Timedelta
     result, has_errors = timedelta_string_to_ns(
         arg,
@@ -386,12 +701,85 @@ def string_to_pytimedelta(
 def string_to_numpy_timedelta64(
     arg: str | np.ndarray | pd.Series,
     as_hours: bool = False,
-    since: str | datetime_like = "2001-01-01 00:00:00+0000",
     unit: str = None,
+    since: str | datetime_like = "2001-01-01 00:00:00+0000",
     rounding: str = "down",
     errors: str = "raise"
 ) -> np.timedelta64 | np.ndarray | pd.Series:
-    """TODO"""
+    """Parse a timedelta string, returning it as a `numpy.timedelta64` object.
+
+    Parameters
+    ----------
+    delta : str | array-like
+        A timedelta string or vector of such strings.  Can be in either
+        abbreviated ('1h22m', '1 hour, 22 minutes', ...) or clock format
+        ('01:22:00', '1:22', '00:01:22:00', ...), with precision up to
+        months/years and down to nanoseconds.  Can be either signed or
+        unsigned.
+    as_hours : bool, default False
+        Whether to parse ambiguous timedelta strings of the form '1:22' as
+        containing hours and minutes (`True`), or minutes and seconds
+        (`False`).  Does not affect any other string format.
+    since : str | datetime-like, default '2001-01-01 00:00:00+0000'
+        The date from which to begin counting.  This is only used for timedelta
+        strings that contain year and/or month components, in order to
+        accurately account for leap days and unequal month lengths.  Only the
+        `year`, `month`, and `day` components are used.  Defaults to
+        '2001-01-01 00:00:00+0000', which represents the start of a 400-year
+        Gregorian calendar cycle.
+    errors : {'raise', 'ignore', 'coerce'}, default 'raise'
+        The error-handling rule to use if an invalid timedelta string is
+        encountered during parsing.  The behaviors are as follows:
+            * `'raise'` - immediately raise a `ValueError`
+            * `'ignore'` - return `arg` unmodified
+            * `'coerce'` - fill with `None` and continue
+
+    Returns
+    -------
+    numpy.timedelta64 | array-like
+        A `numpy.timedelta64` object or vector of such objects, representing
+        the parsed equivalents of the given input string(s).  If a string
+        contains digits below `unit`, they are lost during conversion.
+
+    Raises
+    ------
+    ValueError:
+        If the passed timedelta string does not match any of the recognized
+        formats.
+    OverflowError:
+        If the range of `arg` exceeds the representable range of
+        `numpy.timedelta64` objects ([`'-9223372036854775807 years'` -
+        `'9223372036854775807 years'`]).
+
+    Examples
+    --------
+    >>> string_to_numpy_timedelta64(":24")  # :seconds
+    >>> string_to_numpy_timedelta64("1:24")  # minutes:seconds
+    >>> string_to_numpy_timedelta64("15:01:24")  # hours:minutes:seconds
+    >>> string_to_numpy_timedelta64("10:15:01:24")  # days:hours:minutes:seconds
+    >>> string_to_numpy_timedelta64("10 days 15:01:24")
+    >>> string_to_numpy_timedelta64("1 week, 3 days, 15:01:24")
+
+    >>> string_to_numpy_timedelta64("1 minute, 24 secs")
+    >>> string_to_numpy_timedelta64("1m24s")
+    >>> string_to_numpy_timedelta64("1.4 minutes")
+    >>> string_to_numpy_timedelta64("+1.4 minutes")
+    >>> string_to_numpy_timedelta64("-1.4 minutes")
+
+    >>> string_to_numpy_timedelta64("1:24", as_hours=False)
+    >>> string_to_numpy_timedelta64("1:24", as_hours=True)
+
+    >>> string_to_numpy_timedelta64("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+    >>> string_to_numpy_timedelta64("1y 2mo 3w 4d 5h")
+    >>> string_to_numpy_timedelta64("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+
+    >>> string_to_numpy_timedelta64("1 year", since="2001-01-01")
+    >>> string_to_numpy_timedelta64("1 year", since="2000-01-01")  # leap year
+
+    >>> string_to_numpy_timedelta64("1 month", since="2000-01-01")  # Jan 2000
+    >>> string_to_numpy_timedelta64("1 month", since="2000-02-01")  # Feb 2000
+    >>> string_to_numpy_timedelta64("1 month", since="2001-02-01")  # Feb 2001
+    """
     # convert strings to ns, then ns to pd.Timedelta
     result, has_errors = timedelta_string_to_ns(
         arg,
@@ -456,7 +844,86 @@ def string_to_timedelta(
     since: str | datetime_like = "2001-01-01 00:00:00+0000",
     errors: str = "raise"
 ) -> timedelta_like | np.ndarray | pd.Series:
-    """TODO"""
+    """Parse a timedelta string, returning it as an arbitrary timedelta object.
+
+    Parameters
+    ----------
+    delta : str | array-like
+        A timedelta string or vector of such strings.  Can be in either
+        abbreviated ('1h22m', '1 hour, 22 minutes', ...) or clock format
+        ('01:22:00', '1:22', '00:01:22:00', ...), with precision up to
+        months/years and down to nanoseconds.  Can be either signed or
+        unsigned.
+    as_hours : bool, default False
+        Whether to parse ambiguous timedelta strings of the form '1:22' as
+        containing hours and minutes (`True`), or minutes and seconds
+        (`False`).  Does not affect any other string format.
+    since : str | datetime-like, default '2001-01-01 00:00:00+0000'
+        The date from which to begin counting.  This is only used for timedelta
+        strings that contain year and/or month components, in order to
+        accurately account for leap days and unequal month lengths.  Only the
+        `year`, `month`, and `day` components are used.  Defaults to
+        '2001-01-01 00:00:00+0000', which represents the start of a 400-year
+        Gregorian calendar cycle.
+    errors : {'raise', 'ignore', 'coerce'}, default 'raise'
+        The error-handling rule to use if an invalid timedelta string is
+        encountered during parsing.  The behaviors are as follows:
+            * `'raise'` - immediately raise a `ValueError`
+            * `'ignore'` - return `arg` unmodified
+            * `'coerce'` - fill with `None` and continue
+
+    Returns
+    -------
+    timedelta-like | array-like
+        A timedelta object or vector of such objects, representing the parsed
+        equivalents of the given input string(s).  If type or unit promotion
+        occurs, digits lower than the final precision are lost during
+        conversion.
+
+    Raises
+    ------
+    ValueError:
+        If the passed timedelta string does not match any of the recognized
+        formats.
+    OverflowError:
+        If the range of `arg` exceeds the representable range of
+        `numpy.timedelta64` objects ([`'-9223372036854775807 years'` -
+        `'9223372036854775807 years'`]).
+
+    Examples
+    --------
+    >>> string_to_timedelta(":24")  # :seconds
+    >>> string_to_timedelta("1:24")  # minutes:seconds
+    >>> string_to_timedelta("15:01:24")  # hours:minutes:seconds
+    >>> string_to_timedelta("10:15:01:24")  # days:hours:minutes:seconds
+    >>> string_to_timedelta("10 days 15:01:24")
+    >>> string_to_timedelta("1 week, 3 days, 15:01:24")
+
+    >>> string_to_timedelta("1 minute, 24 secs")
+    >>> string_to_timedelta("1m24s")
+    >>> string_to_timedelta("1.4 minutes")
+    >>> string_to_timedelta("+1.4 minutes")
+    >>> string_to_timedelta("-1.4 minutes")
+
+    >>> string_to_timedelta("1:24", as_hours=False)
+    >>> string_to_timedelta("1:24", as_hours=True)
+
+    >>> string_to_timedelta("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+    >>> string_to_timedelta("1y 2mo 3w 4d 5h")
+    >>> string_to_timedelta("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+
+    >>> string_to_timedelta("1 year", since="2001-01-01")
+    >>> string_to_timedelta("1 year", since="2000-01-01")  # leap year
+
+    >>> string_to_timedelta("1 month", since="2000-01-01")  # Jan 2000
+    >>> string_to_timedelta("1 month", since="2000-02-01")  # Feb 2000
+    >>> string_to_timedelta("1 month", since="2001-02-01")  # Feb 2001
+
+    >>> string_to_timedelta(f"{2**63 - 1} nanoseconds")
+    >>> string_to_timedelta(f"{2**63} nanoseconds")
+    >>> string_to_timedelta(f"{86399999999999999999000} nanoseconds")
+    >>> string_to_timedelta(f"{86399999999999999999000 + 1} nanoseconds")
+    """
     # convert strings to ns, then ns to pd.Timedelta
     result, has_errors = timedelta_string_to_ns(
         arg,

@@ -350,8 +350,7 @@ cdef tuple iso_8601_string_to_ns_vector(
         try:
             result[i] = iso_8601_string_to_ns_scalar(arr[i])
         except ValueError as err:
-            # TODO: errors != 'coerce'?  Why the inconsistency?
-            if errors == "raise":  # break loop and raise immediately
+            if errors != "coerce":  # break loop and raise immediately
                 raise err
             # np.empty(..., dtype='O') implicitly fills with `None`
             has_errors = True  # note error and move on
@@ -1081,8 +1080,8 @@ def string_to_numpy_datetime64(
         If `errors='raise'` and `arg` contains an invalid ISO 8601 string.
     OverflowError
         If `errors='raise'` and one or more strings in `arg` exceed the
-        representable range of `numpy.datetime64` objects
-        ([`'-9223372036854773837-01-01 00:00:00'` -
+        representable range of `numpy.datetime64` objects with the given `unit`
+        (up to [`'-9223372036854773837-01-01 00:00:00'` -
         `'9223372036854775807-01-01 00:00:00'`]).
 
     Examples

@@ -1,16 +1,46 @@
-"""Implements a single function `datetime_to_ns()`, which takes arbitrary
-datetime objects and converts them into (integer) nanosecond offsets from the
-UTC epoch ("1970-01-01 00:00:00+0000").
+"""Convert datetime objects to nanosecond offsets from the UTC epoch
+('1970-01-01 00:00:00+0000').
 
-A specialized variant of this function is also exported for every included
-datetime type, as follows:
-    - `pandas_timestamp_to_ns()` - for converting `pd.Timestamp` objects.
-    - `pydatetime_to_ns()` - for converting `datetime.datetime` objects.
-    - `numpy_datetime64_to_ns()` - for converting `np.timedelta64` objects.
+Functions
+---------
+    pandas_timestamp_to_ns(
+        arg: pd.Timestamp | np.ndarray | pd.Series
+    ) -> int | np.ndarray | pd.Series:
+        Convert `pandas.Timestamp` objects into ns offsets from UTC.
 
-These specialized variants aren't part of the standard `pdtypes` interface, but
-they can be imported for a modest performance increase where the datetime type
-is known ahead of time.
+    pydatetime_to_ns(
+        arg: datetime.datetime | np.ndarray | pd.Series
+    ) -> int | np.ndarray | pd.Series:
+        Convert `datetime.datetime` objects into ns offsets from UTC.
+
+    numpy_datetime64_to_ns(
+        arg: np.datetime64 | np.ndarray | pd.Series
+    ) -> int | np.ndarray | pd.Series:
+        Convert `numpy.datetime64` objects into ns offsets from UTC.
+
+    datetime_to_ns(
+        arg: datetime_like | np.ndarray | pd.Series
+    ) -> int | np.ndarray | pd.Series:
+        Convert arbitrary datetime objects into ns offsets from UTC.
+
+Examples
+--------
+    >>> pandas_timestamp_to_ns(pd.Timestamp.now())
+    >>> pandas_timestamp_to_ns(pd.Series([1, 2, 3], dtype="M8[ns]"))
+
+    >>> pydatetime_to_ns(datetime.datetime.now())
+    >>> pydatetime_to_ns(np.array([datetime.datetime.utcfromtimestamp(i) for i in range(3)]))
+
+    >>> numpy_datetime64_to_ns(np.datetime64("2022-10-15 12:34:56"))
+    >>> numpy_datetime64_to_ns(np.arange(0, 3, dtype="M8[s]"))
+
+    >>> datetime_to_ns(pd.Timestamp.now())
+    >>> datetime_to_ns(datetime.datetime.now())
+    >>> datetime_to_ns(np.datetime64("2022-10-15 12:34:56"))
+    >>> datetime_to_ns(pd.Series([1, 2, 3], dtype="M8[ns]"))
+    >>> datetime_to_ns(np.array([datetime.datetime.utcfromtimestamp(i) for i in range(3)]))
+    >>> datetime_to_ns(np.arange(0, 3, dtype="M8[s]"))
+    >>> datetime_to_ns(np.array([pd.Timestamp.now(), datetime.datetime.now(), np.datetime64("2022-10-15")]))
 """
 import datetime
 
@@ -32,6 +62,7 @@ from ..unit cimport as_ns
 #########################
 
 
+# convertible datetime types
 cdef set valid_datetime_types = {
     pd.Timestamp,
     datetime.datetime,
@@ -39,13 +70,15 @@ cdef set valid_datetime_types = {
 }
 
 
+# UTC epoch (aware/naive) as datetime.datetime
 cdef object utc_naive_pydatetime = datetime.datetime.utcfromtimestamp(0)
 cdef object utc_aware_pydatetime
 utc_aware_pydatetime = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
 
 
-# importing this from timedelta.to_ns causes a circular import error due to
-# epoch.pyx
+# nanosecond coefficients for datetime.timedelta
+# Note: importing this from timedelta.to_ns causes a circular import error due
+# to epoch.pyx
 cdef long int[:] pytimedelta_ns_coefs = np.array(
     [
         as_ns["D"],
@@ -61,7 +94,9 @@ cdef long int[:] pytimedelta_ns_coefs = np.array(
 
 
 cdef inline long int pandas_timestamp_to_ns_scalar(object timestamp):
-    """TODO"""
+    """Convert a scalar `pd.Timestamp` object into a nanosecond offset from the
+    UTC epoch object ('1970-01-01 00:00:00+0000').
+    """
     # interpret naive as UTC
     if not timestamp.tzinfo:
         timestamp = timestamp.tz_localize("UTC")
@@ -69,15 +104,17 @@ cdef inline long int pandas_timestamp_to_ns_scalar(object timestamp):
 
 
 cdef inline object pydatetime_to_ns_scalar(object pydatetime):
-    """TODO"""
-    # convert to timedelta
+    """Convert a scalar `datetime.datetime` object into a nanosecond offset
+    from the UTC epoch object ('1970-01-01 00:00:00+0000').
+    """
+    # convert to timedelta.
     if not pydatetime.tzinfo:
         pydatetime = pydatetime - utc_naive_pydatetime
     else:
         pydatetime = pydatetime - utc_aware_pydatetime
 
-    # convert timedelta to ns
-    # importing this from timedelta.to_ns causes a circular import error
+    # convert timedelta to ns.  Note: importing this from timedelta.to_ns
+    # causes a circular import error due to epoch.pyx
     cdef np.ndarray[object] components = np.array(
         [
             pydatetime.days,
@@ -90,7 +127,9 @@ cdef inline object pydatetime_to_ns_scalar(object pydatetime):
 
 
 cdef inline object numpy_datetime64_to_ns_scalar(object datetime64):
-    """TODO"""
+    """Convert a scalar `numpy.datetime64` object into a nanosecond offset from
+    the UTC epoch object ('1970-01-01 00:00:00+0000').
+    """
     cdef str unit
     cdef int step_size
 
@@ -111,7 +150,9 @@ cdef inline object numpy_datetime64_to_ns_scalar(object datetime64):
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef np.ndarray[long int] pandas_timestamp_to_ns_vector(np.ndarray[object] arr):
-    """TODO"""
+    """Convert an array of `pandas.Timestamp` objects into nanosecond offsets
+    from the utc epoch ('1970-01-01 00:00:00+0000').
+    """
     cdef int arr_length = arr.shape[0]
     cdef int i
     cdef np.ndarray[long int] result = np.empty(arr_length, dtype="i8")
@@ -125,7 +166,9 @@ cdef np.ndarray[long int] pandas_timestamp_to_ns_vector(np.ndarray[object] arr):
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef np.ndarray[object] pydatetime_to_ns_vector(np.ndarray[object] arr):
-    """TODO"""
+    """Convert an array of `datetime.datetime` objects into nanosecond offsets
+    from the utc epoch ('1970-01-01 00:00:00+0000').
+    """
     cdef int arr_length = arr.shape[0]
     cdef int i
     cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
@@ -139,7 +182,9 @@ cdef np.ndarray[object] pydatetime_to_ns_vector(np.ndarray[object] arr):
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef np.ndarray[object] numpy_datetime64_to_ns_vector(np.ndarray[object] arr):
-    """TODO"""
+    """Convert an array of `numpy.datetime64` objects into nanosecond offsets
+    from the utc epoch ('1970-01-01 00:00:00+0000').
+    """
     cdef int arr_length = arr.shape[0]
     cdef int i
     cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
@@ -153,7 +198,9 @@ cdef np.ndarray[object] numpy_datetime64_to_ns_vector(np.ndarray[object] arr):
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef np.ndarray[object] mixed_datetime_to_ns_vector(np.ndarray[object] arr):
-    """TODO"""
+    """Convert an array of mixed datetime objects into nanosecond offsets
+    from the utc epoch ('1970-01-01 00:00:00+0000').
+    """
     cdef int arr_length = arr.shape[0]
     cdef int i
     cdef object element
@@ -179,7 +226,26 @@ cdef np.ndarray[object] mixed_datetime_to_ns_vector(np.ndarray[object] arr):
 def pandas_timestamp_to_ns(
     arg: pd.Timestamp | np.ndarray | pd.Series
 ) -> int | np.ndarray | pd.Series:
-    """TODO"""
+    """Convert `pandas.Timestamp` objects into nanosecond offsets from the UTC
+    epoch ('1970-01-01 00:00:00+0000').
+
+    Parameters
+    ----------
+    arg : pd.Timestamp | array-like
+        A `pandas.Timestamp` object or vector of such objects.
+
+    Returns
+    -------
+    int | array-like
+        The integer nanosecond offset from the UTC epoch
+        ('1970-01-01 00:00:00+0000') that corresponds to `arg`.  This is always
+        measured in UTC time.
+
+    Examples
+    --------
+        >>> pandas_timestamp_to_ns(pd.Timestamp.now())
+        >>> pandas_timestamp_to_ns(pd.Series([1, 2, 3], dtype="M8[ns]"))
+    """
     # np.ndarray
     if isinstance(arg, np.ndarray):
         return pandas_timestamp_to_ns_vector(arg)
@@ -203,7 +269,26 @@ def pandas_timestamp_to_ns(
 def pydatetime_to_ns(
     arg: datetime.datetime | np.ndarray | pd.Series
 ) -> int | np.ndarray | pd.Series:
-    """TODO"""
+    """Convert `datetime.datetime` objects into nanosecond offsets from the UTC
+    epoch ('1970-01-01 00:00:00+0000').
+
+    Parameters
+    ----------
+    arg : datetime.datetime | array-like
+        A `datetime.datetime` object or vector of such objects.
+
+    Returns
+    -------
+    int | array-like
+        The integer nanosecond offset from the UTC epoch
+        ('1970-01-01 00:00:00+0000') that corresponds to `arg`.  This is always
+        measured in UTC time.
+
+    Examples
+    --------
+        >>> pydatetime_to_ns(datetime.datetime.now())
+        >>> pydatetime_to_ns(np.array([datetime.datetime.utcfromtimestamp(i) for i in range(3)]))
+    """
     # np.ndarray
     if isinstance(arg, np.ndarray):
         return pydatetime_to_ns_vector(arg)
@@ -222,7 +307,26 @@ def pydatetime_to_ns(
 def numpy_datetime64_to_ns(
     arg: np.datetime64 | np.ndarray | pd.Series
 ) -> int | np.ndarray | pd.Series:
-    """TODO"""
+    """Convert `numpy.datetime64` objects into nanosecond offsets from the UTC
+    epoch ('1970-01-01 00:00:00+0000').
+
+    Parameters
+    ----------
+    arg : numpy.datetime64 | array-like
+        A `numpy.datetime64` object or vector of such objects.
+
+    Returns
+    -------
+    int | array-like
+        The integer nanosecond offset from the UTC epoch
+        ('1970-01-01 00:00:00+0000') that corresponds to `arg`.  This is always
+        measured in UTC time.
+
+    Examples
+    --------
+        >>> numpy_datetime64_to_ns(np.datetime64("2022-10-15 12:34:56"))
+        >>> numpy_datetime64_to_ns(np.arange(0, 3, dtype="M8[s]"))
+    """
     # np.ndarray
     if isinstance(arg, np.ndarray):
         if np.issubdtype(arg.dtype, "M8"):
@@ -255,7 +359,34 @@ def numpy_datetime64_to_ns(
 def datetime_to_ns(
     arg: datetime_like | np.ndarray | pd.Series
 ) -> int | np.ndarray | pd.Series:
-    """Convert generic datetime objects to nanoseconds offsets from UTC.
+    """Convert arbitrary datetime objects into nanosecond offsets from the UTC
+    epoch ('1970-01-01 00:00:00+0000').
+
+    Parameters
+    ----------
+    arg : datetime-like | array-like
+        A datetime object or vector of such objects.  Can contain any
+        combination of `pandas.Timestamp`, `datetime.datetime`, and/or
+        `numpy.datetime64` objects.
+
+    Returns
+    -------
+    int | array-like
+        The integer nanosecond offset from the UTC epoch
+        ('1970-01-01 00:00:00+0000') that corresponds to `arg`.  This is always
+        measured in UTC time.
+
+    Examples
+    --------
+        >>> datetime_to_ns(pd.Timestamp.now())
+        >>> datetime_to_ns(datetime.datetime.now())
+        >>> datetime_to_ns(np.datetime64("2022-10-15 12:34:56"))
+
+        >>> datetime_to_ns(pd.Series([1, 2, 3], dtype="M8[ns]"))
+        >>> datetime_to_ns(np.array([datetime.datetime.utcfromtimestamp(i) for i in range(3)]))
+        >>> datetime_to_ns(np.arange(0, 3, dtype="M8[s]"))
+
+        >>> datetime_to_ns(np.array([pd.Timestamp.now(), datetime.datetime.now(), np.datetime64("2022-10-15")]))
     """
     # get exact element type(s) and ensure datetime-like
     dtype = get_dtype(arg)

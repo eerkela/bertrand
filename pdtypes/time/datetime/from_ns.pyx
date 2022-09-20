@@ -1,11 +1,11 @@
-"""Convert integer nanosecond offsets (from utc epoch) to their corresponding
-datetime representation.
+"""Convert integer nanosecond offsets (from the utc epoch) to their
+corresponding datetime representation.
 
 Functions
 ---------
     ns_to_pandas_timestamp(
         arg: int | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo | None = None,
+        tz: str | datetime.tzinfo = None,
         *,
         min_ns: int = None,
         max_ns: int = None
@@ -14,7 +14,7 @@ Functions
 
     ns_to_pydatetime(
         arg: int | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo | None = None,
+        tz: str | datetime.tzinfo = None,
         min_ns: int = None,
         max_ns: int = None
     ) -> datetime.datetime | np.ndarray | pd.Series:
@@ -32,7 +32,7 @@ Functions
 
     ns_to_datetime(
         arg: int | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo | None = None
+        tz: str | datetime.tzinfo = None
     ) -> datetime_like | np.ndarray | pd.Series:
         Convert nanosecond offsets into dynamic datetime objects.
 
@@ -160,7 +160,7 @@ cdef np.ndarray[object] ns_to_pydatetime_vector(
 
 def ns_to_pandas_timestamp(
     arg: int | np.ndarray | pd.Series,
-    tz: str | datetime.tzinfo | None = None,
+    tz: str | datetime.tzinfo = None,
     *,
     min_ns: int = None,
     max_ns: int = None
@@ -173,26 +173,22 @@ def ns_to_pandas_timestamp(
     arg : int | array-like
         An integer or vector of integers representing nanosecond offsets from
         the utc epoch ('1970-01-01 00:00:00+0000').
-    tz : str | datetime.tzinfo | None
+    tz : str | datetime.tzinfo, default None
         An IANA timezone string ('US/Pacific', 'Europe/Berlin', etc.) or a
         `datetime.tzinfo`-compatible timezone offset (`pytz`, `zoneinfo`,
         etc.).  Can also be `None`, indicating a naive ('UTC') return type.
-        Defaults to `None`.
-    min_ns : int
+    min_ns : int, default None
         The minimum value stored in `arg`.  If given, this will be used for
-        range checks directly, avoiding a call to `.min()`.  Optional.
-        Keyword-only. Defaults to `None`.
-    max_ns : int
+        range checks directly, avoiding a call to `.min()`.  Keyword-only.
+    max_ns : int, default None
         The maximum value stored in `arg`.  If given, this will be used for
-        range checks directly, avoiding a call to `.max()`.  Optional.
-        Keyword-only. Defaults to `None`.
+        range checks directly, avoiding a call to `.max()`. Keyword-only.
 
     Returns
     -------
     pandas.Timestamp | array-like
-        A `pandas.Timestamp` or vector of `pandas.Timestamp` objects containing
-        the datetime equivalents of the given nanosecond offsets, localized to
-        `tz`.
+        A `pandas.Timestamp` or vector of such objects containing the datetime
+        equivalents of the given nanosecond offsets, localized to `tz`.
 
     Raises
     ------
@@ -252,7 +248,7 @@ def ns_to_pandas_timestamp(
 
 def ns_to_pydatetime(
     arg: int | np.ndarray | pd.Series,
-    tz: str | datetime.tzinfo | None = None,
+    tz: str | datetime.tzinfo = None,
     *,
     min_ns: int = None,
     max_ns: int = None
@@ -265,26 +261,22 @@ def ns_to_pydatetime(
     arg : int | array-like
         An integer or vector of integers representing nanosecond offsets from
         the utc epoch ('1970-01-01 00:00:00+0000').
-    tz : str | datetime.tzinfo | None
+    tz : str | datetime.tzinfo, default None
         An IANA timezone string ('US/Pacific', 'Europe/Berlin', etc.) or a
         `datetime.tzinfo`-compatible timezone offset (`pytz`, `zoneinfo`,
         etc.).  Can also be `None`, indicating a naive ('UTC') return type.
-        Defaults to `None`.
-    min_ns : int
+    min_ns : int, default None
         The minimum value stored in `arg`.  If given, this will be used for
-        range checks directly, avoiding a call to `.min()`.  Optional.
-        Keyword-only. Defaults to `None`.
-    max_ns : int
+        range checks directly, avoiding a call to `.min()`. Keyword-only.
+    max_ns : int, default None
         The maximum value stored in `arg`.  If given, this will be used for
-        range checks directly, avoiding a call to `.max()`.  Optional.
-        Keyword-only.  Defaults to `None`.
+        range checks directly, avoiding a call to `.max()`.  Keyword-only.
 
     Returns
     -------
     datetime.datetime | array-like
-        A `datetime.datetime` or vector of `datetime.datetime` objects
-        containing the datetime equivalents of the given nanosecond offsets,
-        localized to `tz`.
+        A `datetime.datetime` or vector of such objects containing the datetime
+        equivalents of the given nanosecond offsets, localized to `tz`.
 
     Raises
     ------
@@ -369,36 +361,32 @@ def ns_to_numpy_datetime64(
     arg : int | array-like
         An integer or vector of integers representing nanosecond offsets from
         the utc epoch ('1970-01-01 00:00:00+0000').
-    unit : None | {'ns', 'us', 'ms', 's', 'm', 'h', 'D', 'W', 'M', 'Y'}
+    unit : {'ns', 'us', 'ms', 's', 'm', 'h', 'D', 'W', 'M', 'Y'}, default None
         The unit to use for the returned datetimes.  If `None`, choose the
-        highest resolution unit that can fully represent `arg`.  Defaults to
-        `None`.
-    rounding : str
+        highest resolution unit that can fully represent `arg`.
+    rounding : str, default 'down'
         The rounding strategy to use when a value underflows beyond the
         resolution of `unit`.  Defaults to `'down'` (round toward zero).
-    min_ns : int
+    min_ns : int, default None
         The minimum value stored in `arg`.  If given, this will be used for
-        range checks directly, avoiding a call to `.min()`.  Optional.
-        Keyword-only. Defaults to `None`.
-    max_ns : int
+        range checks directly, avoiding a call to `.min()`.  Keyword-only.
+    max_ns : int, default None
         The maximum value stored in `arg`.  If given, this will be used for
-        range checks directly, avoiding a call to `.max()`.  Optional.
-        Keyword-only.  Defaults to `None`.
+        range checks directly, avoiding a call to `.max()`.  Keyword-only.
 
     Returns
     -------
     numpy.datetime64 | array-like
-        A `numpy.datetime64` or vector of `numpy.datetime64` objects
-        containing the datetime equivalents of the given nanosecond offsets,
-        with the specified `unit`.
+        A `numpy.datetime64` or vector of such objects containing the datetime
+        equivalents of the given nanosecond offsets, with the specified `unit`.
 
     Raises
     ------
     OverflowError
         If the range of `arg` exceeds the representable range of
-        `numpy.datetime64` objects ([`'-9223372036854773837-01-01 00:00:00'` - 
-        `'9223372036854775807-01-01 00:00:00'`]), or if `unit` is specified and
-        the range of `arg` exceeds the 64-bit range of `unit`.
+        `numpy.datetime64` objects with the given `unit` (up to
+        [`'-9223372036854773837-01-01 00:00:00'` - 
+        `'9223372036854775807-01-01 00:00:00'`]).
 
     Examples
     --------
@@ -502,7 +490,7 @@ def ns_to_numpy_datetime64(
 
 def ns_to_datetime(
     arg: int | np.ndarray | pd.Series,
-    tz: str | datetime.tzinfo | None = None,
+    tz: str | datetime.tzinfo = None,
     *,
     min_ns: int = None,
     max_ns: int = None
@@ -515,24 +503,21 @@ def ns_to_datetime(
     arg : int | array-like
         An integer or vector of integers representing nanosecond offsets from
         the utc epoch ('1970-01-01 00:00:00+0000').
-    tz : str | datetime.tzinfo | None
+    tz : str | datetime.tzinfo, default None
         An IANA timezone string ('US/Pacific', 'Europe/Berlin', etc.) or a
         `datetime.tzinfo`-compatible timezone offset (`pytz`, `zoneinfo`,
         etc.).  Can also be `None`, indicating a naive ('UTC') return type.
-        Defaults to `None`.
-    min_ns : int
+    min_ns : int, default None
         The minimum value stored in `arg`.  If given, this will be used for
-        range checks directly, avoiding a call to `.min()`.  Optional.
-        Keyword-only. Defaults to `None`.
-    max_ns : int
+        range checks directly, avoiding a call to `.min()`.  Keyword-only.
+    max_ns : int, default None
         The maximum value stored in `arg`.  If given, this will be used for
-        range checks directly, avoiding a call to `.max()`.  Optional.
-        Keyword-only.  Defaults to `None`.
+        range checks directly, avoiding a call to `.max()`.  Keyword-only.
 
     Returns
     -------
-    datetime | array-like
-        A datetime or vector of datetime objects containing the datetime
+    datetime-like | array-like
+        A datetime or vector of such objects containing the datetime
         equivalents of the given nanosecond offsets, localized to `tz`.
 
     Raises
