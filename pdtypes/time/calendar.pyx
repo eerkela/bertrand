@@ -1,35 +1,96 @@
-"""Implements 2 functions, `is_leap_year()` and `leaps_between()`, which help
-facilitate vectorized leap year calculations according to the proleptic
-Gregorian calendar.
+"""Gregorian calendar utility functions.
 
-`is_leap_year()` accepts an integer scalar, array, or Series representing
-Gregorian calendar years, returning `True` where the input corresponds to a
-leap year and `False` where it does not.
+This module allows users to do efficient math around the Gregorian calendar.
+It contains functionality to convert calendar dates both to and from day
+offsets from the UTC epoch ('1971-01-01 00:00:00+0000'), as well as track the
+passage of leap years and obtain the length of each month within a year.
 
-`leaps_between()` accepts a bounded range of integer-based Gregorian calendar
-years and returns the number of leap days that occur between them.  Both bounds
-can be independently vectorized.
-"""
+Functions
+---------
+    date_to_days(
+        year: int | np.ndarray | pd.Series,
+        month: int | np.ndarray | pd.Series,
+        day: int | np.ndarray | pd.Series
+    ) -> int | np.ndarray | pd.Series:
+        Convert proleptic Gregorian calendar dates into day offsets from the
+        utc epoch.
 
-"""Implements 3 functions, `decompose_date()`, `date_to_days()`, and
-`days_to_date()`, which allow accurate, vectorized math using the Gregorian
-calendar.
+    days_in_month(
+        month: int | np.ndarray | pd.Series,
+        year: int | np.ndarray | pd.Series = 2001
+    ) -> int | np.ndarray | pd.Series:
+        Get the length in days of a given month, taking leap years into
+        account.
 
-`decompose_date()` accepts a date-like scalar, array, or Series and returns
-the corresponding Gregorian calendar date(s) as integer year, month, and day
-components.  The output can be passed directly to `date_to_days()` as a
-**kwargs dict.
+    days_to_date(
+        days: int | np.ndarray | pd.Series
+    ) -> dict[str, int | np.ndarray | pd.Series]:
+        Convert day offsets from the utc epoch ('1970-01-01 00:00:00+0000')
+        into proleptic Gregorian calendar dates.
 
-`date_to_days()` accepts a calendar date as integer year, month, and day
-components (which can be independently vectorized) and converts them into an
-integer count of days from a customizeable epoch.  This allows for easy
-date-based math, including the conversion of months and years to unambiguous
-day equivalents, which accurately account for leap years and unequal month
-lengths.
+    decompose_date(
+        date: date_like | np.ndarray | pd.Series
+    ) -> dict[str, int | np.ndarray | pd.Series]:
+        Split datelike objects into their constituent parts (`years`, `months`,
+        `days`).
 
-`days_to_date()` accepts a day offset from a given epoch into the corresponding
-Gregorian calendar date, as integer year, month, and day components.  Performs
-the inverse of `date_to_days()`.
+    is_leap_year(
+        year: int | np.ndarray | pd.Series
+    ) -> bool | np.ndarray | pd.Series:
+        Check if the given year is a leap year according to the proleptic
+        Gregorian calendar.
+
+    leaps_between(
+        lower: int | np.ndarray | pd.Series,
+        upper: int | np.ndarray | pd.Series
+    ) -> int | np.ndarray | pd.Series:
+        Return the number of leap days between the years `lower` and `upper`.
+
+Examples
+--------
+>>> date_to_days(1970, 1, 1)
+>>> date_to_days(1970, 1, 2)
+>>> date_to_days(1970, 1, 0)
+>>> date_to_days(1970, 1, -1)
+>>> date_to_days(1970, 2, 1)
+>>> date_to_days(1970, 3, 1)
+>>> date_to_days(1970, 0, 1)
+>>> date_to_days(1970, -1, 1)
+>>> date_to_days(1971, 1, 1)
+>>> date_to_days(1972, 1, 1)
+>>> date_to_days(1969, 1, 1)
+>>> date_to_days(1968, 1, 1)
+>>> date_to_days(1970, 1, np.arange(-1, 3))
+>>> date_to_days(1970, np.arange(-1, 3), 1)
+>>> date_to_days(np.arange(1968, 1973), 1, 1)
+
+>>> days_in_month(1, 2001)
+>>> days_in_month(2, 2001)
+>>> days_in_month(2, 2000)
+>>> days_in_month(np.arange(-2, 3), 2001)
+
+>>> days_to_date(0)
+>>> days_to_date(1)
+>>> days_to_date(-1)
+>>> days_to_date(365)
+>>> days_to_date(365 + 365)
+>>> days_to_date(365 + 365 + 365)  # leap year
+>>> days_to_date(np.arange(-1, 2))
+
+>>> decompose_date(pd.Timestamp.now())
+>>> decompose_date(datetime.datetime.now())
+>>> decompose_date(datetime.date.today())
+>>> decompose_date(np.datetime64("2022-10-15"))
+>>> decompose_date(pd.Timestamp.now() + np.array([pd.Timedelta(days=i) for i in range(1, 4)]))
+
+>>> is_leap_year(1971)
+>>> is_leap_year(1972)
+>>> is_leap_year(np.arange(1968, 1973))
+
+>>> leaps_between(1968, 1970)  # 1968 was a leap year
+>>> leaps_between(1968, 1974)  # 1972 was also a leap year
+>>> leaps_between(0, 2022)
+>>> leaps_between(1970 + np.arange(-6, 6), 2000)
 """
 cimport cython
 import numpy as np
@@ -69,8 +130,9 @@ cdef np.ndarray days_per_month = np.array(
 cdef dict decompose_datelike_objects(
     np.ndarray[object] arr
 ):
-    """Internal C interface for public-facing decompose_date() function when
-    used on date-like object arrays.
+    """Convert an array of date-like objects with `year`, `month`, and `day`
+    attributes into a dictionary containing each attribute.  This dictionary
+    can be used as a **kwargs dict for `date_to_days()`.
     """
     cdef int arr_length = arr.shape[0]
     cdef int i
@@ -98,43 +160,78 @@ def date_to_days(
     month: int | np.ndarray | pd.Series,
     day: int | np.ndarray | pd.Series
 ) -> int | np.ndarray | pd.Series:
-    """Convert a (proleptic) Gregorian calendar date `(year, month, day)` into
-    a day offset from the utc epoch (1970-01-01).
+    """Convert proleptic Gregorian calendar dates into day offsets from the utc
+    epoch ('1970-01-01 00:00:00+0000').
 
-    Note: for the sake of efficiency, this function will not attempt to coerce
-    numpy integers or integer arrays into their built-in python equivalents.
-    As such, they may silently overflow (and wrap around the number line) if
-    64-bit limits are exceeded during conversion.  This shouldn't be a problem
-    in practice; even with day-level precision, the valid 64-bit range vastly
-    exceeds the observed age of the universe.  Nevertheless, this can be
-    explicitly avoided by converting the inputs into python integers (which do
-    not overflow) beforehand.
+    Each of this function's arguments can be vectorized, and any excess beyond
+    the normal range ([1-12] for `month`, [1-31] for `day`) is accurately
+    reflected in the returned day offset.  For example, to measure the length
+    (in days) of a 1 month period starting on December 31st, 2000, one can
+    simply call:
 
-    See also:
+        >>> `date_to_days(2000, 12 + 1, 31) - date_to_days(2000, 12, 31)`
+
+    This works for arbitrarily large inputs, and has a pure integer approach;
+    no float conversion is performed at any point.
+
+        Note: for the sake of efficiency, this function will not attempt to
+        coerce numpy integers or integer arrays into their built-in python
+        equivalents.  As such, they may silently overflow (and wrap around
+        infinity) if 64-bit limits are exceeded during conversion.  This
+        shouldn't be a problem in practice; even with day-level precision, the
+        valid 64-bit range vastly exceeds the observed age of the universe.
+        Nevertheless, this can be avoided by converting the inputs into python
+        integers (which do not overflow) beforehand.
+
+    Algorithm adapted from:
         http://www.algonomicon.org/calendar/gregorian/to_jdn.html
         https://stackoverflow.com/questions/11609769/efficient-algorithm-for-converting-number-of-days-to-years-including-leap-years
 
     Parameters
     ----------
-    year (int | np.ndarray | pd.Series):
-        Proleptic Gregorian calendar year.  This function assumes the existence
-        of a year 0, which does not correspond to real-world historical dates.
-        In order to convert a historical BC year (`-1 BC`, `-2 BC`, ...) to a
-        negative year (`0`, `-1`, ...), simply add one to the BC year.  AD
-        years are unaffected.
-    month (int | np.ndarray | pd.Series):
+    year : int | array-like
+        Proleptic Gregorian calendar year.
+
+            Note: This function assumes the existence of a year 0, which does
+            not correspond to real-world historical dates.  In order to convert
+            a historical BC year (`-1 BC`, `-2 BC`, ...) to a negative year
+            (`0`, `-1`, ...), simply add one to the BC year.  AD years are
+            unaffected.
+
+    month : int | array-like
         Proleptic Gregorian calendar month, indexed from 1 (January).  If a
         month value exceeds the range [1, 12], then any excess is automatically
         carried over into `year`.
-    day (int | np.ndarray | pd.Series):
+    day : int | array-like
         Proleptic Gregorian calendar day, indexed from 1.  If a day value
         exceeds the maximum for the selected month, any excess is automatically
         carried over into `month` and `year`.
 
     Returns
     -------
-    int | np.ndarray | pd.Series:
-        The integer day offset from utc.
+    int | array-like:
+        An integer day offset from the utc epoch.
+
+    Examples
+    --------
+    >>> date_to_days(1970, 1, 1)
+    >>> date_to_days(1970, 1, 2)
+    >>> date_to_days(1970, 1, 0)
+    >>> date_to_days(1970, 1, -1)
+
+    >>> date_to_days(1970, 2, 1)
+    >>> date_to_days(1970, 3, 1)
+    >>> date_to_days(1970, 0, 1)
+    >>> date_to_days(1970, -1, 1)
+
+    >>> date_to_days(1971, 1, 1)
+    >>> date_to_days(1972, 1, 1)
+    >>> date_to_days(1969, 1, 1)
+    >>> date_to_days(1968, 1, 1)
+
+    >>> date_to_days(1970, 1, np.arange(-1, 3))
+    >>> date_to_days(1970, np.arange(-1, 3), 1)
+    >>> date_to_days(np.arange(1968, 1973), 1, 1)
     """
     # normalize months to start with March 1st, indexed from 1 (January)
     month = month - 3
@@ -154,8 +251,30 @@ def days_in_month(
     month: int | np.ndarray | pd.Series,
     year: int | np.ndarray | pd.Series = 2001
 ) -> int | np.ndarray | pd.Series:
-    """Get the length (in days) of a given month, taking leap years into
+    """Get the length in days of a given month, taking leap years into
     account.
+
+    Parameters
+    ----------
+    month : int | array-like
+        The month in question, indexed from 1 (January).  Can be vectorized.
+    year : int | array-like
+        The year to consider for each month.  Relevant for determining the
+        length of February, which varies between 28 and 29 based on this
+        setting.
+
+    Returns
+    -------
+    int | array-like
+        The number of days in the given month or a vector of month lengths.
+
+    Examples
+    --------
+    >>> days_in_month(1, 2001)
+    >>> days_in_month(2, 2001)
+    >>> days_in_month(2, 2000)
+
+    >>> days_in_month(np.arange(-2, 3), 2001)
     """
     if hasattr(month, "astype"):
         month = month.astype(np.int8, copy=False)
@@ -164,42 +283,55 @@ def days_in_month(
 
 def days_to_date(
     days: int | np.ndarray | pd.Series
-) -> dict[str, int] | dict[str, np.ndarray] | dict[str, pd.Series]:
-    """Convert a day offset from the utc epoch (1970-01-01) into the
-    corresponding (proleptic) Gregorian calendar date `(year, month, day)`.
+) -> dict[str, int | np.ndarray | pd.Series]:
+    """Convert day offsets from the utc epoch ('1970-01-01 00:00:00+0000') into
+    proleptic Gregorian calendar dates.
 
-    Note: for the sake of efficiency, this function will not attempt to coerce
-    numpy integers or integer arrays into their built-in python equivalents.
-    As such, they may silently overflow (and wrap around the number line) if
-    64-bit limits are exceeded during conversion.  This shouldn't be a problem
-    in practice; even with day-level precision, the valid 64-bit range vastly
-    exceeds the observed age of the universe.  Nevertheless, this can be
-    explicitly avoided by converting the inputs into python integers (which do
-    not overflow) beforehand.
+    This is the inverse operation of `date_to_days()`.  The output of this
+    function can be used as a **kwargs dict for that function.
 
-    See also:
+        Note: for the sake of efficiency, this function will not attempt to
+        coerce numpy integers or integer arrays into their built-in python
+        equivalents.  As such, they may silently overflow (and wrap around
+        infinity) if 64-bit limits are exceeded during conversion.  This
+        shouldn't be a problem in practice; even with day-level precision, the
+        valid 64-bit range vastly exceeds the observed age of the universe.
+        Nevertheless, this can be avoided by converting the inputs into python
+        integers (which do not overflow) beforehand.
+
+    Algorithm adapted from:
         http://www.algonomicon.org/calendar/gregorian/from_jdn.html
         https://stackoverflow.com/questions/11609769/efficient-algorithm-for-converting-number-of-days-to-years-including-leap-years
 
     Parameters
     ----------
-    days (int | np.ndarray | pd.Series):
-        Integer day offset from utc.  
+    days : int | array-like
+        An integer day offset from the utc epoch or a vector of such offsets.  
 
     Returns
     -------
-    dict[str, int] | dict[str, np.ndarray] | dict[str, pd.Series]:
+    dict[str, int | array-like]
         A dictionary with the following keys/values:
-            - `'year'`:
-                Proleptic Gregorian calendar year.  This function assumes the
-                existence of a year 0, which does not correspond to real-world
-                historical dates.  In order to convert a historical BC year
-                (`-1 BC`, `-2 BC`, ...) to a negative year (`0`, `-1`, ...),
-                simply add one to the BC year.  AD years are unaffected.
-            - `'month'`:
-                Proleptic Gregorian calendar month, indexed from 1 (January).
-            - `'day'`:
-                Proleptic Gregorian calendar day, indexed from 1.
+            * `'year'`: Proleptic Gregorian calendar year.
+            * `'month'`: Proleptic Gregorian calendar month, indexed from 1.
+            * `'day'`: Proleptic Gregorian calendar day, indexed from 1.
+
+        Note: This function assumes the existence of a year 0, which does not
+        correspond to real-world historical dates.  In order to convert a
+        historical BC year (`-1 BC`, `-2 BC`, ...) to a negative year (`0`,
+        `-1`, ...), simply add one to the BC year.  AD years are unaffected.
+
+    Examples
+    --------
+    >>> days_to_date(0)
+    >>> days_to_date(1)
+    >>> days_to_date(-1)
+
+    >>> days_to_date(365)
+    >>> days_to_date(365 + 365)
+    >>> days_to_date(365 + 365 + 365)  # leap year
+
+    >>> days_to_date(np.arange(-1, 2))
     """
     # move origin from utc to March 1st, 2000 (start of 400-year cycle)
     days = days - 11017
@@ -210,9 +342,11 @@ def days_to_date(
     years -= (years + 1) // days_per_4_years  # 4-year cycles
     years //= days_per_year  # whole years
 
-    # compute residuals
+    # compute residual days in final year
     days -= days_per_year * years + years // 4 - years // 100 + years // 400
-    months = (5 * days + 2) // 153
+
+    # exploit symmetry in month lengths, starting from March 1st
+    months = (5 * days + 2) // 153  # no need for a lookup table
     days -= (153 * months + 2) // 5  # residual days in month
 
     # convert to proper calendar year
@@ -221,9 +355,9 @@ def days_to_date(
     # undo bias toward march 1st
     months += 2
     months %= 12
-    months += 1
 
     # index from 1
+    months += 1
     days += 1
 
     # return as dict
@@ -232,33 +366,45 @@ def days_to_date(
 
 def decompose_date(
     date: date_like | np.ndarray | pd.Series
-) -> dict[str, int] | dict[str, np.ndarray] | dict[str, pd.Series]:
-    """Split datelike objects into their constituent parts (years, months,
-    days).
+) -> dict[str, int | np.ndarray | pd.Series]:
+    """Split datelike objects into their constituent parts (`years`, `months`,
+    `days`).
+
+    The output of this function can be used as a **kwargs dict for
+    ``date_to_days()``.
 
     Parameters
     ----------
-    date (date-like | np.ndarray | pd.Series):
-        A date-like object or an array/Series of date-like objects.  Accepts
-        duck-types as long as they implement the `.year`, `.month`, and `.day`
-        attributes.
+    date : date-like | array-like
+        A date-like object or a vector of such objects.  Accepts duck-types as
+        long as they implement the `.year`, `.month`, and `.day` attributes.
 
     Returns
     -------
-    dict[str, int] | dict[str, np.ndarray] | dict[str, pd.Series]:
+    dict[str, int | array-like]
         A dictionary with the following keys/values:
-            - `'year'`: Proleptic Gregorian calendar year.
-            - `'month'`: Proleptic Gregorian calendar month.
-            - `'day'`: Proleptic Gregorian calendar day.
+            * `'year'`: Proleptic Gregorian calendar year.
+            * `'month'`: Proleptic Gregorian calendar month.
+            * `'day'`: Proleptic Gregorian calendar day.
 
     Raises
     ------
     TypeError:
         If `date` consists of mixed element types.
     AttributeError:
-        If `date` is duck-typed and does not implement the `.year`, `.month`,
+        If `date` is a duck-type and does not implement the `.year`, `.month`,
         and `.day` attributes.
+
+    Examples
+    --------
+    >>> decompose_date(pd.Timestamp.now())
+    >>> decompose_date(datetime.datetime.now())
+    >>> decompose_date(datetime.date.today())
+    >>> decompose_date(np.datetime64("2022-10-15"))
+
+    >>> decompose_date(pd.Timestamp.now() + np.array([pd.Timedelta(days=i) for i in range(1, 4)]))
     """
+    # resolve datetime type and ensure homogenous
     dtype = get_dtype(date)
     if isinstance(dtype, set):
         raise TypeError(f"`date` must have homogenous, date-like element "
@@ -266,14 +412,14 @@ def decompose_date(
 
     # pd.Timestamp
     if dtype == pd.Timestamp:
-        # np.array
+        # np.ndarray
         if isinstance(date, np.ndarray):
             return decompose_datelike_objects(date)
 
         # pd.Series
         if isinstance(date, pd.Series):
-            # M8 dtype
-            if pd.api.types.is_datetime64_ns_dtype(date):
+            # M8[ns] dtype
+            if pd.api.types.is_datetime64_ns_dtype(date):  # use `.dt` namespace
                 return {
                     "year": date.dt.year,
                     "month": date.dt.month,
@@ -323,8 +469,26 @@ def decompose_date(
 def is_leap_year(
     year: int | np.ndarray | pd.Series
 ) -> bool | np.ndarray | pd.Series:
-    """Returns True if the given year is a leap year according to the proleptic
+    """Check if the given year is a leap year according to the proleptic
     Gregorian calendar.
+
+    Can also be used to obtain the length of a particular year.
+
+    Parameters
+    ----------
+    year : int | array-like
+        The year in question.
+
+    Returns
+    -------
+    bool
+
+    Examples
+    --------
+    >>> is_leap_year(1971)
+    >>> is_leap_year(1972)
+
+    >>> is_leap_year(np.arange(1968, 1973))
     """
     return (year % 4 == 0) & ((year % 100 != 0) | (year % 400 == 0))
 
@@ -340,6 +504,26 @@ def leaps_between(
 
     Identical to `calendar.leapdays()` from the built-in `calendar` package,
     but avoids an import and is compiled (and thus slightly faster).
+
+    Parameters
+    ----------
+    lower : int | array-like
+        The starting year to consider or a vector of starting years.
+    upper : int | array-like
+        The ending year to consider or a vector of ending years.
+
+    Returns
+    -------
+    int
+        The number of leap days between each index of `lower` and `upper`.
+
+    Examples
+    --------
+    >>> leaps_between(1968, 1970)  # 1968 was a leap year
+    >>> leaps_between(1968, 1974)  # 1972 was also a leap year
+    >>> leaps_between(0, 2022)
+
+    >>> leaps_between(1970 + np.arange(-6, 6), 2000)
     """
     count = lambda x: x // 4 - x // 100 + x // 400
     return count(upper - 1) - count(lower - 1)

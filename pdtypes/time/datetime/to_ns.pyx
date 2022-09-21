@@ -53,7 +53,6 @@ from pdtypes.check import get_dtype
 from pdtypes.util.type_hints import datetime_like
 
 from ..calendar import date_to_days
-from ..timezone import timezone, localize
 from ..unit cimport as_ns
 
 

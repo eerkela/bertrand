@@ -1,3 +1,5 @@
+"""TODO
+"""
 # internals
 from .calendar import (
     date_to_days, days_in_month, days_to_date, decompose_date, is_leap_year,
@@ -16,6 +18,9 @@ from .datetime import (
     ns_to_datetime,
 
     # datetime to ns
+    pandas_timestamp_to_ns,
+    pydatetime_to_ns,
+    numpy_datetime64_to_ns,
     datetime_to_ns,
 
     # string to datetime
@@ -40,6 +45,9 @@ from .timedelta import (
     ns_to_timedelta,
 
     # timedelta to ns
+    pandas_timedelta_to_ns,
+    pytimedelta_to_ns,
+    numpy_timedelta64_to_ns,
     timedelta_to_ns,
 
     # string to timedelta
