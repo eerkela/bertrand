@@ -38,39 +38,129 @@ Functions
 
 Examples
 --------
-    >>> ns_to_pandas_timestamp(0)
-    >>> ns_to_pandas_timestamp(0, tz="UTC")
-    >>> ns_to_pandas_timestamp(0, tz="US/Pacific")
-    >>> ns_to_pandas_timestamp(2**63 - 1)
-    >>> ns_to_pandas_timestamp(2**63 - 1, tz="US/Pacific")
+Converting to `pandas.Timestamp`:
 
-    >>> ns_to_pydatetime(0)
-    >>> ns_to_pydatetime(0, tz="UTC")
-    >>> ns_to_pydatetime(0, tz="US/Pacific")
-    >>> ns_to_pydatetime(253402300799999999000)
-    >>> ns_to_pydatetime(253402300799999999000, tz="US/Pacific")
+>>> ns_to_pandas_timestamp(0)
+Timestamp('1970-01-01 00:00:00')
+>>> ns_to_pandas_timestamp(0, tz="UTC")
+Timestamp('1970-01-01 00:00:00+0000', tz='UTC')
+>>> ns_to_pandas_timestamp(0, tz="US/Pacific")
+Timestamp('1969-12-31 16:00:00-0800', tz='US/Pacific')
+>>> ns_to_pandas_timestamp(2**63 - 1)
+Timestamp('2262-04-11 23:47:16.854775807')
+>>> ns_to_pandas_timestamp(2**63)
+Traceback (most recent call last):
+    ...
+OverflowError: `arg` exceeds pd.Timestamp range
+>>> ns_to_pandas_timestamp(2**63 - 1, tz="US/Pacific")
+Timestamp('2262-04-11 15:47:16.854775807-0800', tz='US/Pacific')
+>>> ns_to_pandas_timestamp(2**63 - 1, tz="Europe/Berlin")
+Traceback (most recent call last):
+    ...
+OverflowError: localizing to Europe/Berlin causes `arg` to exceed pd.Timestamp range
+>>> ns_to_pandas_timestamp(np.arange(1, 4))
+array([Timestamp('1970-01-01 00:00:00.000000001'),
+    Timestamp('1970-01-01 00:00:00.000000002'),
+    Timestamp('1970-01-01 00:00:00.000000003')], dtype=object)
+>>> ns_to_pandas_timestamp(pd.Series([1, 2, 3]))
+0   1970-01-01 00:00:00.000000001
+1   1970-01-01 00:00:00.000000002
+2   1970-01-01 00:00:00.000000003
+dtype: datetime64[ns]
 
-    >>> ns_to_numpy_datetime64(0)
-    >>> ns_to_numpy_datetime64(2**63 - 1)
-    >>> ns_to_numpy_datetime64(2**63 - 1, unit="us")
-    >>> ns_to_numpy_datetime64(2**63 - 1, unit="ms")
-    >>> ns_to_numpy_datetime64(2**63 - 1, unit="s")
-    >>> ns_to_numpy_datetime64(2**63 - 1, unit="m")
-    >>> ns_to_numpy_datetime64(2**63 - 1, unit="h")
-    >>> ns_to_numpy_datetime64(2**63 - 1, unit="D")
-    >>> ns_to_numpy_datetime64(2**63 - 1, unit="W")
-    >>> ns_to_numpy_datetime64(2**63 - 1, unit="M")
-    >>> ns_to_numpy_datetime64(2**63 - 1, unit="Y")
-    >>> ns_to_numpy_datetime64(2**65)
-    >>> ns_to_numpy_datetime64(2**65, rounding="up")
-    >>> ns_to_numpy_datetime64(2**65, unit="s", rounding="up")
+Converting to `datetime.datetime`:
 
-    >>> ns_to_datetime(2**63 - 1)
-    >>> ns_to_datetime(2**63)
-    >>> ns_to_pydatetime(253402300799999999000)
-    >>> ns_to_pydatetime(253402300799999999000 + 1)
-    >>> ns_to_datetime(2**63 - 1, tz="US/Pacific")
-    >>> ns_to_datetime(2**63 - 1, tz="Europe/Berlin")
+>>> ns_to_pydatetime(0)
+datetime.datetime(1970, 1, 1, 0, 0)
+>>> ns_to_pydatetime(0, tz="UTC")
+datetime.datetime(1970, 1, 1, 0, 0, tzinfo=datetime.timezone.utc)
+>>> ns_to_pydatetime(0, tz="US/Pacific")
+datetime.datetime(1969, 12, 31, 16, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
+>>> ns_to_pydatetime(253402300799999999000)
+datetime.datetime(9999, 12, 31, 23, 59, 59, 999999)
+>>> ns_to_pydatetime(253402300799999999000 + 1)
+Traceback (most recent call last):
+    ...
+OverflowError: `arg` exceeds datetime.datetime range
+
+Look out for localization-induced overflow:
+>>> ns_to_pydatetime(253402300799999999000, tz="US/Pacific")
+datetime.datetime(9999, 12, 31, 15, 59, 59, 999999, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
+>>> ns_to_pydatetime(253402300799999999000, tz="Europe/Berlin")
+Traceback (most recent call last):
+    ...
+OverflowError: localizing to Europe/Berlin causes `arg` to exceed datetime.datetime range
+>>> ns_to_pydatetime(np.arange(1, 4))
+array([datetime.datetime(1970, 1, 1, 0, 0),
+    datetime.datetime(1970, 1, 1, 0, 0),
+    datetime.datetime(1970, 1, 1, 0, 0)], dtype=object)
+>>> ns_to_pydatetime(pd.Series([1, 2, 3]))
+0    1970-01-01 00:00:00
+1    1970-01-01 00:00:00
+2    1970-01-01 00:00:00
+dtype: object
+
+Converting to `numpy.datetime64`:
+
+>>> ns_to_numpy_datetime64(2**63 - 1, unit="ns")
+numpy.datetime64('2262-04-11T23:47:16.854775807')
+>>> ns_to_numpy_datetime64(2**63 - 1, unit="us")
+numpy.datetime64('2262-04-11T23:47:16.854775')
+>>> ns_to_numpy_datetime64(2**63 - 1, unit="ms")
+numpy.datetime64('2262-04-11T23:47:16.854')
+>>> ns_to_numpy_datetime64(2**63 - 1, unit="s")
+numpy.datetime64('2262-04-11T23:47:16')
+>>> ns_to_numpy_datetime64(2**63 - 1, unit="m")
+numpy.datetime64('2262-04-11T23:47')
+>>> ns_to_numpy_datetime64(2**63 - 1, unit="h")
+numpy.datetime64('2262-04-11T23','h')
+>>> ns_to_numpy_datetime64(2**63 - 1, unit="D")
+numpy.datetime64('2262-04-11')
+>>> ns_to_numpy_datetime64(2**63 - 1, unit="W")
+numpy.datetime64('2262-04-10')
+>>> ns_to_numpy_datetime64(2**63 - 1, unit="M")
+numpy.datetime64('2262-04')
+>>> ns_to_numpy_datetime64(2**63 - 1, unit="Y")
+numpy.datetime64('2262')
+>>> ns_to_numpy_datetime64(0)
+numpy.datetime64('1970-01-01T00:00:00.000000000')
+>>> ns_to_numpy_datetime64(2**65)
+numpy.datetime64('3139-02-09T23:09:07.419103')
+>>> ns_to_numpy_datetime64(2**65, rounding="up")
+numpy.datetime64('3139-02-09T23:09:07.419104')
+>>> ns_to_numpy_datetime64(2**65, unit="s", rounding="up")
+numpy.datetime64('3139-02-09T23:09:08')
+>>> ns_to_numpy_datetime64(np.arange(1, 4))
+array(['1970-01-01T00:00:00.000000001', '1970-01-01T00:00:00.000000002',
+    '1970-01-01T00:00:00.000000003'], dtype='datetime64[ns]')
+>>> ns_to_numpy_datetime64(pd.Series([1, 2, 3]))
+0    1970-01-01T00:00:00.000000001
+1    1970-01-01T00:00:00.000000002
+2    1970-01-01T00:00:00.000000003
+dtype: object
+
+Or to arbitrary datetime objects:
+
+>>> ns_to_datetime(2**63 - 1)
+Timestamp('2262-04-11 23:47:16.854775807')
+>>> ns_to_datetime(2**63)
+datetime.datetime(2262, 4, 11, 23, 47, 16, 854775)
+>>> ns_to_datetime(253402300799999999000)
+datetime.datetime(9999, 12, 31, 23, 59, 59, 999999)
+>>> ns_to_datetime(253402300799999999000 + 1)
+numpy.datetime64('9999-12-31T23:59:59.999999')
+>>> ns_to_datetime(2**63 - 1, tz="US/Pacific")
+Timestamp('2262-04-11 15:47:16.854775807-0800', tz='US/Pacific')
+>>> ns_to_datetime(2**63 - 1, tz="Europe/Berlin")
+datetime.datetime(2262, 4, 12, 0, 47, 16, 854775, tzinfo=<DstTzInfo 'Europe/Berlin' CET+1:00:00 STD>)
+>>> ns_to_datetime(np.arange(1, 4))
+array(['1970-01-01T00:00:00.000000001', '1970-01-01T00:00:00.000000002',
+    '1970-01-01T00:00:00.000000003'], dtype='datetime64[ns]')
+>>> ns_to_datetime(pd.Series([1, 2, 3]))
+0   1970-01-01 00:00:00.000000001
+1   1970-01-01 00:00:00.000000002
+2   1970-01-01 00:00:00.000000003
+dtype: datetime64[ns]
 """
 import datetime
 from cpython cimport datetime
@@ -200,15 +290,44 @@ def ns_to_pandas_timestamp(
 
     Examples
     --------
-        >>> ns_to_pandas_timestamp(0)
-        >>> ns_to_pandas_timestamp(0, tz="UTC")
-        >>> ns_to_pandas_timestamp(0, tz="US/Pacific")
+    Nanosecond offsets are always interpreted from the UTC epoch:
 
-        >>> ns_to_pandas_timestamp(2**63 - 1)
-        >>> ns_to_pandas_timestamp(2**63)
+    >>> ns_to_pandas_timestamp(0)
+    Timestamp('1970-01-01 00:00:00')
+    >>> ns_to_pandas_timestamp(0, tz="UTC")
+    Timestamp('1970-01-01 00:00:00+0000', tz='UTC')
+    >>> ns_to_pandas_timestamp(0, tz="US/Pacific")
+    Timestamp('1969-12-31 16:00:00-0800', tz='US/Pacific')
 
-        >>> ns_to_pandas_timestamp(2**63 - 1, tz="US/Pacific")
-        >>> ns_to_pandas_timestamp(2**63 - 1, tz="Europe/Berlin")
+    And can be up to 64 bits wide:
+
+    >>> ns_to_pandas_timestamp(2**63 - 1)
+    Timestamp('2262-04-11 23:47:16.854775807')
+    >>> ns_to_pandas_timestamp(2**63)
+    Traceback (most recent call last):
+        ...
+    OverflowError: `arg` exceeds pd.Timestamp range
+
+    Look out for localization-induced overflow:
+
+    >>> ns_to_pandas_timestamp(2**63 - 1, tz="US/Pacific")
+    Timestamp('2262-04-11 15:47:16.854775807-0800', tz='US/Pacific')
+    >>> ns_to_pandas_timestamp(2**63 - 1, tz="Europe/Berlin")
+    Traceback (most recent call last):
+        ...
+    OverflowError: localizing to Europe/Berlin causes `arg` to exceed pd.Timestamp range
+
+    Offsets can also be vectorized:
+
+    >>> ns_to_pandas_timestamp(np.arange(1, 4))
+    array([Timestamp('1970-01-01 00:00:00.000000001'),
+       Timestamp('1970-01-01 00:00:00.000000002'),
+       Timestamp('1970-01-01 00:00:00.000000003')], dtype=object)
+    >>> ns_to_pandas_timestamp(pd.Series([1, 2, 3]))
+    0   1970-01-01 00:00:00.000000001
+    1   1970-01-01 00:00:00.000000002
+    2   1970-01-01 00:00:00.000000003
+    dtype: datetime64[ns]
     """
     # ensure min/max fall within representable range
     is_array_like = isinstance(arg, (np.ndarray, pd.Series))
@@ -288,15 +407,44 @@ def ns_to_pydatetime(
 
     Examples
     --------
-        >>> ns_to_pydatetime(0)
-        >>> ns_to_pydatetime(0, tz="UTC")
-        >>> ns_to_pydatetime(0, tz="US/Pacific")
+    Nanosecond offsets are always interpreted from the UTC epoch:
 
-        >>> ns_to_pydatetime(253402300799999999000)
-        >>> ns_to_pydatetime(253402300799999999000 + 1)
+    >>> ns_to_pydatetime(0)
+    datetime.datetime(1970, 1, 1, 0, 0)
+    >>> ns_to_pydatetime(0, tz="UTC")
+    datetime.datetime(1970, 1, 1, 0, 0, tzinfo=datetime.timezone.utc)
+    >>> ns_to_pydatetime(0, tz="US/Pacific")
+    datetime.datetime(1969, 12, 31, 16, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
 
-        >>> ns_to_pydatetime(253402300799999999000, tz="US/Pacific")
-        >>> ns_to_pydatetime(253402300799999999000, tz="Europe/Berlin")
+    And can be up to the maximum range of `datetime.datetime` objects:
+
+    >>> ns_to_pydatetime(253402300799999999000)
+    datetime.datetime(9999, 12, 31, 23, 59, 59, 999999)
+    >>> ns_to_pydatetime(253402300799999999000 + 1)
+    Traceback (most recent call last):
+        ...
+    OverflowError: `arg` exceeds datetime.datetime range
+
+    Look out for localization-induced overflow:
+
+    >>> ns_to_pydatetime(253402300799999999000, tz="US/Pacific")
+    datetime.datetime(9999, 12, 31, 15, 59, 59, 999999, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
+    >>> ns_to_pydatetime(253402300799999999000, tz="Europe/Berlin")
+    Traceback (most recent call last):
+        ...
+    OverflowError: localizing to Europe/Berlin causes `arg` to exceed datetime.datetime range
+
+    Offsets can also be vectorized:
+
+    >>> ns_to_pydatetime(np.arange(1, 4))
+    array([datetime.datetime(1970, 1, 1, 0, 0),
+       datetime.datetime(1970, 1, 1, 0, 0),
+       datetime.datetime(1970, 1, 1, 0, 0)], dtype=object)
+    >>> ns_to_pydatetime(pd.Series([1, 2, 3]))
+    0    1970-01-01 00:00:00
+    1    1970-01-01 00:00:00
+    2    1970-01-01 00:00:00
+    dtype: object
     """
     # ensure min/max fall within representable range
     is_array_like = isinstance(arg, (np.ndarray, pd.Series))
@@ -390,21 +538,53 @@ def ns_to_numpy_datetime64(
 
     Examples
     --------
-        >>> ns_to_numpy_datetime64(0)
-        >>> ns_to_numpy_datetime64(2**63 - 1)
-        >>> ns_to_numpy_datetime64(2**63 - 1, unit="us")
-        >>> ns_to_numpy_datetime64(2**63 - 1, unit="ms")
-        >>> ns_to_numpy_datetime64(2**63 - 1, unit="s")
-        >>> ns_to_numpy_datetime64(2**63 - 1, unit="m")
-        >>> ns_to_numpy_datetime64(2**63 - 1, unit="h")
-        >>> ns_to_numpy_datetime64(2**63 - 1, unit="D")
-        >>> ns_to_numpy_datetime64(2**63 - 1, unit="W")
-        >>> ns_to_numpy_datetime64(2**63 - 1, unit="M")
-        >>> ns_to_numpy_datetime64(2**63 - 1, unit="Y")
+    Units can be any of those recognized by `numpy.datetime64` objects:
 
-        >>> ns_to_numpy_datetime64(2**65)
-        >>> ns_to_numpy_datetime64(2**65, rounding="up")
-        >>> ns_to_numpy_datetime64(2**65, unit="s", rounding="up")
+    >>> ns_to_numpy_datetime64(2**63 - 1, unit="ns")
+    numpy.datetime64('2262-04-11T23:47:16.854775807')
+    >>> ns_to_numpy_datetime64(2**63 - 1, unit="us")
+    numpy.datetime64('2262-04-11T23:47:16.854775')
+    >>> ns_to_numpy_datetime64(2**63 - 1, unit="ms")
+    numpy.datetime64('2262-04-11T23:47:16.854')
+    >>> ns_to_numpy_datetime64(2**63 - 1, unit="s")
+    numpy.datetime64('2262-04-11T23:47:16')
+    >>> ns_to_numpy_datetime64(2**63 - 1, unit="m")
+    numpy.datetime64('2262-04-11T23:47')
+    >>> ns_to_numpy_datetime64(2**63 - 1, unit="h")
+    numpy.datetime64('2262-04-11T23','h')
+    >>> ns_to_numpy_datetime64(2**63 - 1, unit="D")
+    numpy.datetime64('2262-04-11')
+    >>> ns_to_numpy_datetime64(2**63 - 1, unit="W")
+    numpy.datetime64('2262-04-10')
+    >>> ns_to_numpy_datetime64(2**63 - 1, unit="M")
+    numpy.datetime64('2262-04')
+    >>> ns_to_numpy_datetime64(2**63 - 1, unit="Y")
+    numpy.datetime64('2262')
+
+    Units can also be automatically inferred from the data:
+
+    >>> ns_to_numpy_datetime64(0)
+    numpy.datetime64('1970-01-01T00:00:00.000000000')
+    >>> ns_to_numpy_datetime64(2**65)
+    numpy.datetime64('3139-02-09T23:09:07.419103')
+
+    With customizeable rounding:
+
+    >>> ns_to_numpy_datetime64(2**65, rounding="up")
+    numpy.datetime64('3139-02-09T23:09:07.419104')
+    >>> ns_to_numpy_datetime64(2**65, unit="s", rounding="up")
+    numpy.datetime64('3139-02-09T23:09:08')
+
+    Offsets can also be vectorized:
+
+    >>> ns_to_numpy_datetime64(np.arange(1, 4))
+    array(['1970-01-01T00:00:00.000000001', '1970-01-01T00:00:00.000000002',
+       '1970-01-01T00:00:00.000000003'], dtype='datetime64[ns]')
+    >>> ns_to_numpy_datetime64(pd.Series([1, 2, 3]))
+    0    1970-01-01T00:00:00.000000001
+    1    1970-01-01T00:00:00.000000002
+    2    1970-01-01T00:00:00.000000003
+    dtype: object
     """
     # ensure min/max fall within representable range
     is_array_like = isinstance(arg, (np.ndarray, pd.Series))
@@ -533,14 +713,35 @@ def ns_to_datetime(
 
     Examples
     --------
-        >>> ns_to_datetime(2**63 - 1)
-        >>> ns_to_datetime(2**63)
+    Transitions between datetime regimes are handled gracefully:
 
-        >>> ns_to_pydatetime(253402300799999999000)
-        >>> ns_to_pydatetime(253402300799999999000 + 1)
+    >>> ns_to_datetime(2**63 - 1)
+    Timestamp('2262-04-11 23:47:16.854775807')
+    >>> ns_to_datetime(2**63)
+    datetime.datetime(2262, 4, 11, 23, 47, 16, 854775)
+    >>> ns_to_datetime(253402300799999999000)
+    datetime.datetime(9999, 12, 31, 23, 59, 59, 999999)
+    >>> ns_to_datetime(253402300799999999000 + 1)
+    numpy.datetime64('9999-12-31T23:59:59.999999')
 
-        >>> ns_to_datetime(2**63 - 1, tz="US/Pacific")
-        >>> ns_to_datetime(2**63 - 1, tz="Europe/Berlin")
+    And can be localized if they fall within `pandas.Timestamp` or
+    `datetime.datetime` range:
+
+    >>> ns_to_datetime(2**63 - 1, tz="US/Pacific")
+    Timestamp('2262-04-11 15:47:16.854775807-0800', tz='US/Pacific')
+    >>> ns_to_datetime(2**63 - 1, tz="Europe/Berlin")
+    datetime.datetime(2262, 4, 12, 0, 47, 16, 854775, tzinfo=<DstTzInfo 'Europe/Berlin' CET+1:00:00 STD>)
+
+    And potentially vectorized:
+
+    >>> ns_to_datetime(np.arange(1, 4))
+    array(['1970-01-01T00:00:00.000000001', '1970-01-01T00:00:00.000000002',
+       '1970-01-01T00:00:00.000000003'], dtype='datetime64[ns]')
+    >>> ns_to_datetime(pd.Series([1, 2, 3]))
+    0   1970-01-01 00:00:00.000000001
+    1   1970-01-01 00:00:00.000000002
+    2   1970-01-01 00:00:00.000000003
+    dtype: datetime64[ns]
     """
     # ensure min/max fall within representable range
     is_array_like = isinstance(arg, (np.ndarray, pd.Series))

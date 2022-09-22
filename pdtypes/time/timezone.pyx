@@ -31,7 +31,8 @@ Functions
 
 Examples
 --------
-Datetime objects can be ``pandas.Timestamp``:
+Datetime objects can be `pandas.Timestamp`:
+
 >>> localize(pd.Timestamp("2022-01-04 00:00:00"), "UTC")
 Timestamp('2022-01-04 00:00:00+0000', tz='UTC')
 >>> localize(pd.Timestamp("2022-01-04 00:00:00"), "US/Pacific")
@@ -59,18 +60,34 @@ dtype: datetime64[ns, US/Pacific]
 2   1970-01-01 00:00:03-08:00
 dtype: datetime64[ns, US/Pacific]
 
-Or ``datetime.datetime``:
+Or `datetime.datetime`:
+
 >>> localize(datetime.datetime.fromisoformat("2022-01-04 00:00:00"), "UTC")
 datetime.datetime(2022, 1, 4, 0, 0, tzinfo=<UTC>)
->>> localize(datetime.datetime.fromisoformat("2022-01-04 00:00:00"), "US/Pacific")
+>>> localize(
+...     datetime.datetime.fromisoformat("2022-01-04 00:00:00"),
+...     "US/Pacific"
+... )
 datetime.datetime(2022, 1, 3, 16, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
->>> localize(datetime.datetime.fromisoformat("2022-01-04 00:00:00"), "US/Pacific", utc=False)
+>>> localize(
+...     datetime.datetime.fromisoformat("2022-01-04 00:00:00"),
+...     "US/Pacific",
+...     utc=False
+... )
 datetime.datetime(2022, 1, 4, 0, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
->>> localize(datetime.datetime.fromtimestamp(0, datetime.timezone.utc), "UTC")
+>>> localize(
+...     datetime.datetime.fromtimestamp(0, datetime.timezone.utc),
+...     "UTC"
+... )
 datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=<UTC>)
->>> localize(datetime.datetime.fromtimestamp(0, datetime.timezone.utc), "US/Pacific")
+>>> localize(
+...     datetime.datetime.fromtimestamp(0, datetime.timezone.utc),
+...     "US/Pacific"
+... )
 datetime.datetime(1969, 12, 31, 16, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
->>> array = np.array([datetime.datetime.utcfromtimestamp(i) for i in range(1, 4)])
+>>> array = np.array(
+...     [datetime.datetime.utcfromtimestamp(i) for i in range(1, 4)]
+... )
 >>> array
 array([datetime.datetime(1970, 1, 1, 0, 0, 1),
     datetime.datetime(1970, 1, 1, 0, 0, 2),
@@ -87,6 +104,7 @@ array([datetime.datetime(1970, 1, 1, 0, 0, 1, tzinfo=<DstTzInfo 'US/Pacific' PST
     dtype=object)
 
 Or even mixed:
+
 >>> mixed = np.where([True, False, True], series.to_numpy(dtype="O"), array)
 >>> mixed
 array([Timestamp('1970-01-01 00:00:01'),
@@ -104,6 +122,7 @@ array([Timestamp('1970-01-01 00:00:01-0800', tz='US/Pacific'),
     dtype=object)
 
 Timezone specifiers can be IANA strings:
+
 >>> timezone("UTC")
 <UTC>
 >>> timezone("US/Pacific")
@@ -112,6 +131,7 @@ Timezone specifiers can be IANA strings:
 <DstTzInfo 'Europe/Berlin' LMT+0:53:00 STD>
 
 Or previously instantiated timezone objects:
+
 >>> timezone(pytz.timezone("Asia/Hong_Kong"))
 <DstTzInfo 'Asia/Hong_Kong' LMT+7:37:00 STD>
 >>> timezone(zoneinfo.ZoneInfo("Australia/Sydney"))
@@ -119,7 +139,8 @@ zoneinfo.ZoneInfo(key='Australia/Sydney')
 >>> timezone(dateutil.tz.gettz('America/Sao_Paulo'))
 tzfile('/usr/share/zoneinfo/America/Sao_Paulo')
 
-Or ``None``, indicating a naive timezone:
+Or `None`, indicating a naive timezone:
+
 >>> timezone(None)
 """
 import datetime
@@ -298,46 +319,62 @@ def localize_pandas_timestamp(
     arg : pd.Timestamp | array-like
         A `pandas.Timestamp` object or vector of such objects to be localized.
     tz : str | datetime.tzinfo | None
-        The timezone to localize results to.  This can be ``None``, indicating
-        a naive return type, an instance of ``datetime.tzinfo`` or one of its
-        derivatives (from ``pytz``, ``zoneinfo``, etc.), or an IANA timezone
+        The timezone to localize results to.  This can be `None`, indicating
+        a naive return type, an instance of `datetime.tzinfo` or one of its
+        derivatives (from `pytz`, `zoneinfo`, etc.), or an IANA timezone
         database string ('US/Eastern', 'UTC', etc.).
     utc : bool, default True
-        Controls whether to interpret naive datetimes as UTC (``True`) or to
-        localize them directly to the given timezone (``False``).  If
+        Controls whether to interpret naive datetimes as UTC (`True`) or to
+        localize them directly to the given timezone (`False`).  If
         interpreting as utc, a naive input will first be localized to UTC and
         then converted to the given timezone.  Otherwise, it will be localized
-        to ``tz`` directly.
+        to `tz` directly.
 
     Returns
     -------
     pd.Timestamp | array-like
-        A copy of `arg`, localized to the given timezone.  If ``tz=None``,
-        these will always be UTC times.
+        A copy of `arg`, localized to the given timezone.  If `tz=None`, these
+        will always be UTC times.
 
     Raises
     ------
     TypeError
-        If ``tz`` is not an IANA-recognized timezone string, a
-        ``datetime.tzinfo`` object, or ``None``.
+        If `tz` is not an IANA-recognized timezone string, a `datetime.tzinfo`
+        object, or `None`.
 
     Examples
     --------
     Inputs can be naive:
+
     >>> localize_pandas_timestamp(pd.Timestamp("2022-01-04 00:00:00"), "UTC")
     Timestamp('2022-01-04 00:00:00+0000', tz='UTC')
-    >>> localize_pandas_timestamp(pd.Timestamp("2022-01-04 00:00:00"), "US/Pacific")
+    >>> localize_pandas_timestamp(
+    ...     pd.Timestamp("2022-01-04 00:00:00"),
+    ...     "US/Pacific"
+    ... )
     Timestamp('2022-01-03 16:00:00-0800', tz='US/Pacific')
-    >>> localize_pandas_timestamp(pd.Timestamp("2022-01-04 00:00:00"), "US/Pacific", utc=False)
+    >>> localize_pandas_timestamp(
+    ...     pd.Timestamp("2022-01-04 00:00:00"),
+    ...     "US/Pacific",
+    ...     utc=False
+    ... )
     Timestamp('2022-01-04 00:00:00-0800', tz='US/Pacific')
 
     Or aware:
-    >>> localize_pandas_timestamp(pd.Timestamp("2022-01-04 00:00:00+0000"), "UTC")
+
+    >>> localize_pandas_timestamp(
+    ...     pd.Timestamp("2022-01-04 00:00:00+0000"),
+    ...     "UTC"
+    ... )
     Timestamp('2022-01-04 00:00:00+0000', tz='UTC')
-    >>> localize_pandas_timestamp(pd.Timestamp("2022-01-04 00:00:00+0000"), "US/Pacific")
+    >>> localize_pandas_timestamp(
+    ...     pd.Timestamp("2022-01-04 00:00:00+0000"),
+    ...     "US/Pacific"
+    ... )
     Timestamp('2022-01-03 16:00:00-0800', tz='US/Pacific')
 
     And potentially vectorized:
+
     >>> series = pd.to_datetime(pd.Series([1, 2, 3]), unit="s")
     >>> series
     0   1970-01-01 00:00:01
@@ -400,47 +437,68 @@ def localize_pydatetime(
     arg : datetime.datetime | array-like
         A `datetime.datetime` object or vector of such objects to be localized.
     tz : str | datetime.tzinfo | None
-        The timezone to localize results to.  This can be ``None``, indicating
-        a naive return type, an instance of ``datetime.tzinfo`` or one of its
-        derivatives (from ``pytz``, ``zoneinfo``, etc.), or an IANA timezone
+        The timezone to localize results to.  This can be `None`, indicating a
+        naive return type, an instance of `datetime.tzinfo` or one of its
+        derivatives (from `pytz`, `zoneinfo`, etc.), or an IANA timezone
         database string ('US/Eastern', 'UTC', etc.).
     utc : bool, default True
-        Controls whether to interpret naive datetimes as UTC (``True`) or to
-        localize them directly to the given timezone (``False``).  If
+        Controls whether to interpret naive datetimes as UTC (`True`) or to
+        localize them directly to the given timezone (`False`).  If
         interpreting as utc, a naive input will first be localized to UTC and
         then converted to the given timezone.  Otherwise, it will be localized
-        to ``tz`` directly.
+        to `tz` directly.
 
     Returns
     -------
     datetime.datetime | array-like
-        A copy of `arg`, localized to the given timezone.  If ``tz=None``,
+        A copy of `arg`, localized to the given timezone.  If `tz=None`,
         these will always be UTC times.
 
     Raises
     ------
     TypeError
-        If ``tz`` is not an IANA-recognized timezone string, a
-        ``datetime.tzinfo`` object, or ``None``.
+        If `tz` is not an IANA-recognized timezone string, a
+        `datetime.tzinfo` object, or `None`.
 
     Examples
     --------
     Inputs can be naive:
-    >>> localize_pydatetime(datetime.datetime.fromisoformat("2022-01-04 00:00:00"), "UTC")
+
+    >>> localize_pydatetime(
+    ...     datetime.datetime.fromisoformat("2022-01-04 00:00:00"),
+    ...     "UTC"
+    ... )
     datetime.datetime(2022, 1, 4, 0, 0, tzinfo=<UTC>)
-    >>> localize_pydatetime(datetime.datetime.fromisoformat("2022-01-04 00:00:00"), "US/Pacific")
+    >>> localize_pydatetime(
+    ...     datetime.datetime.fromisoformat("2022-01-04 00:00:00"),
+    ...     "US/Pacific"
+    ... )
     datetime.datetime(2022, 1, 3, 16, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
-    >>> localize_pydatetime(datetime.datetime.fromisoformat("2022-01-04 00:00:00"), "US/Pacific", utc=False)
+    >>> localize_pydatetime(
+    ...     datetime.datetime.fromisoformat("2022-01-04 00:00:00"),
+    ...     "US/Pacific",
+    ...     utc=False
+    ... )
     datetime.datetime(2022, 1, 4, 0, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
 
     Or aware:
-    >>> localize_pydatetime(datetime.datetime.fromtimestamp(0, datetime.timezone.utc), "UTC")
+
+    >>> localize_pydatetime(
+    ...     datetime.datetime.fromtimestamp(0, datetime.timezone.utc),
+    ...     "UTC"
+    ... )
     datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=<UTC>)
-    >>> localize_pydatetime(datetime.datetime.fromtimestamp(0, datetime.timezone.utc), "US/Pacific")
+    >>> localize_pydatetime(
+    ...     datetime.datetime.fromtimestamp(0, datetime.timezone.utc),
+    ...     "US/Pacific"
+    ... )
     datetime.datetime(1969, 12, 31, 16, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
 
     And potentially vectorized:
-    >>> array = np.array([datetime.datetime.utcfromtimestamp(i) for i in range(1, 4)])
+
+    >>> array = np.array(
+    ...     [datetime.datetime.utcfromtimestamp(i) for i in range(1, 4)]
+    ... )
     >>> array
     array([datetime.datetime(1970, 1, 1, 0, 0, 1),
        datetime.datetime(1970, 1, 1, 0, 0, 2),
@@ -484,35 +542,36 @@ def localize(
     Parameters
     ----------
     arg : datetime-like | array-like
-        A ``pandas.Timestamp`` or ``datetime.datetime`` object, or a vector of
+        A `pandas.Timestamp` or `datetime.datetime` object, or a vector of
         such objects to be localized.
     tz : str | datetime.tzinfo | None
-        The timezone to localize results to.  This can be ``None``, indicating
-        a naive return type, an instance of ``datetime.tzinfo`` or one of its
-        derivatives (from ``pytz``, ``zoneinfo``, etc.), or an IANA timezone
+        The timezone to localize results to.  This can be `None`, indicating
+        a naive return type, an instance of `datetime.tzinfo` or one of its
+        derivatives (from `pytz`, `zoneinfo`, etc.), or an IANA timezone
         database string ('US/Eastern', 'UTC', etc.).
     utc : bool, default True
-        Controls whether to interpret naive datetimes as UTC (``True`) or to
-        localize them directly to the given timezone (``False``).  If
+        Controls whether to interpret naive datetimes as UTC (`True`) or to
+        localize them directly to the given timezone (`False`).  If
         interpreting as utc, a naive input will first be localized to UTC and
         then converted to the given timezone.  Otherwise, it will be localized
-        to ``tz`` directly.
+        to `tz` directly.
 
     Returns
     -------
     datetime-like | array-like
-        A copy of `arg`, localized to the given timezone.  If ``tz=None``,
+        A copy of `arg`, localized to the given timezone.  If `tz=None`,
         these will always be UTC times.
 
     Raises
     ------
     TypeError
-        If ``tz`` is not an IANA-recognized timezone string, a
-        ``datetime.tzinfo`` object, or ``None``.
+        If `tz` is not an IANA-recognized timezone string, a `datetime.tzinfo`
+        object, or `None`.
 
     Examples
     --------
-    Inputs can be ``pandas.Timestamp`` objects:
+    Inputs can be `pandas.Timestamp` objects:
+
     >>> localize(pd.Timestamp("2022-01-04 00:00:00"), "US/Pacific")
     Timestamp('2022-01-03 16:00:00-0800', tz='US/Pacific')
     >>> localize(pd.Timestamp("2022-01-04 00:00:00"), "US/Pacific", utc=False)
@@ -520,15 +579,27 @@ def localize(
     >>> localize(pd.Timestamp("2022-01-04 00:00:00+0000"), "US/Pacific")
     Timestamp('2022-01-03 16:00:00-0800', tz='US/Pacific')
 
-    Or ``datetime.datetime`` objects:
-    >>> localize_pydatetime(datetime.datetime.fromisoformat("2022-01-04 00:00:00"), "US/Pacific")
+    Or `datetime.datetime` objects:
+
+    >>> localize_pydatetime(
+    ...     datetime.datetime.fromisoformat("2022-01-04 00:00:00"),
+    ...     "US/Pacific"
+    ... )
     datetime.datetime(2022, 1, 3, 16, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
-    >>> localize_pydatetime(datetime.datetime.fromisoformat("2022-01-04 00:00:00"), "US/Pacific", utc=False)
+    >>> localize_pydatetime(
+    ...     datetime.datetime.fromisoformat("2022-01-04 00:00:00"),
+    ...     "US/Pacific",
+    ...     utc=False
+    ... )
     datetime.datetime(2022, 1, 4, 0, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
-    >>> localize_pydatetime(datetime.datetime.fromtimestamp(0, datetime.timezone.utc), "US/Pacific")
+    >>> localize_pydatetime(
+    ...     datetime.datetime.fromtimestamp(0, datetime.timezone.utc),
+    ...     "US/Pacific"
+    ... )
     datetime.datetime(1969, 12, 31, 16, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
 
     And potentially vectorized:
+
     >>> series = pd.to_datetime(pd.Series([1, 2, 3]), unit="s")
     >>> series
     0   1970-01-01 00:00:01
@@ -545,7 +616,9 @@ def localize(
     1   1970-01-01 00:00:02-08:00
     2   1970-01-01 00:00:03-08:00
     dtype: datetime64[ns, US/Pacific]
-    >>> array = np.array([datetime.datetime.utcfromtimestamp(i) for i in range(1, 4)])
+    >>> array = np.array(
+    ...     [datetime.datetime.utcfromtimestamp(i) for i in range(1, 4)]
+    ... )
     >>> array
     array([datetime.datetime(1970, 1, 1, 0, 0, 1),
        datetime.datetime(1970, 1, 1, 0, 0, 2),
@@ -562,7 +635,12 @@ def localize(
       dtype=object)
 
     They can even contain mixed datetime representations:
-    >>> mixed = np.where([True, False, True], series.to_numpy(dtype="O"), array)
+
+    >>> mixed = np.where(
+    ...     [True, False, True],
+    ...     series.to_numpy(dtype="O"),
+    ...     array
+    ... )
     >>> mixed
     array([Timestamp('1970-01-01 00:00:01'),
        datetime.datetime(1970, 1, 1, 0, 0, 2),
@@ -618,26 +696,26 @@ def timezone(tz: str | datetime.tzinfo | None) -> datetime.tzinfo | None:
     tz : str | datetime.tzinfo | None
         A timezone specifier.  This can be an IANA-recognized timezone string
         ('UTC', 'US/Pacific', 'Europe/Berlin', etc.), a subclass of
-        ``datetime.tzinfo`` (``pytz``, ``zoneinfo``, etc.), or ``None``,
+        `datetime.tzinfo` (from `pytz`, `zoneinfo`, etc.), or `None`,
         indicating a naive timezone.
 
     Returns
     -------
     datetime.tzinfo | None
-        A ``datetime.tzinfo`` object, which can be used in conjunction with
-        ``datetime.datetime.astimezone()`` and
-        ``pandas.Timestamp.tz_convert()``.  Can also be ``None``, which is also
-        accepted by these methods.
+        A `datetime.tzinfo` object, which can be used in conjunction with
+        `datetime.datetime.astimezone()` and `pandas.Timestamp.tz_convert()`.
+        Can also be `None`.
 
     Raises
     ------
     TypeError
-        If ``tz`` is not an IANA-recognized timezone string, a
-        ``datetime.tzinfo`` object, or ``None``.
+        If `tz` is not an IANA-recognized timezone string, a `datetime.tzinfo`
+        object, or `None`.
 
     Examples
     --------
     Timezone specifiers can be IANA strings:
+
     >>> timezone("UTC")
     <UTC>
     >>> timezone("US/Pacific")
@@ -646,6 +724,7 @@ def timezone(tz: str | datetime.tzinfo | None) -> datetime.tzinfo | None:
     <DstTzInfo 'Europe/Berlin' LMT+0:53:00 STD>
 
     Or previously instantiated timezone objects:
+
     >>> timezone(pytz.timezone("Asia/Hong_Kong"))
     <DstTzInfo 'Asia/Hong_Kong' LMT+7:37:00 STD>
     >>> timezone(zoneinfo.ZoneInfo("Australia/Sydney"))
@@ -653,7 +732,8 @@ def timezone(tz: str | datetime.tzinfo | None) -> datetime.tzinfo | None:
     >>> timezone(dateutil.tz.gettz('America/Sao_Paulo'))
     tzfile('/usr/share/zoneinfo/America/Sao_Paulo')
 
-    The special value ``None`` is also accepted, indicating a naive timezone:
+    The special value `None` is also accepted, indicating a naive timezone:
+
     >>> timezone(None)
     """
     # IANA strings

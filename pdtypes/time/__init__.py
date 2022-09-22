@@ -1,6 +1,33 @@
-"""TODO
+"""Utilities for converting to, from, and between various datetime and
+timedelta representations.
+
+This library encapsulates all the required functionality to convert each of
+the default types that are recognized by `pdtypes` into datetime or timedelta
+format, or to do the reverse.
+
+Subpackages
+--------
+    datetime
+        Utilities for converting to/from various datetime representations.
+
+    timedelta
+        Utilities for converting to/from various timedelta representations.
+
+Modules
+-------
+    calendar
+        Gregorian calendar utility functions.
+
+    epoch
+        Customizable epochs for datetime/timedelta calculations.
+
+    timezone
+        Timezone interface for datetime localizations.
+
+    unit
+        Datetime and timedelta unit conversions.
 """
-# internals
+# modules
 from .calendar import (
     date_to_days, days_in_month, days_to_date, decompose_date, is_leap_year,
     leaps_between

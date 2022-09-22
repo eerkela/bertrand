@@ -1,4 +1,88 @@
-"""
+"""Datetime and timedelta unit conversions.
+
+The units covered in this module are the same as implemented in the
+`numpy.datetime64`/`numpy.timedelta64` interface.
+
+Functions
+---------
+    convert_unit_float(
+        arg: float | complex | decimal.Decimal | np.ndarray | pd.Series,
+        from_unit: str,
+        to_unit: str,
+        rounding: str | None = "down",
+        since: datetime_like = pd.Timestamp("2001-01-01 00:00:00+0000")
+    ) -> int | float | complex | decimal.Decimal | np.ndarray | pd.Series:
+        Convert fractional quantities of a given time unit into a different
+        unit.
+
+    convert_unit_integer(
+        arg: int | np.ndarray | pd.Series,
+        from_unit: str,
+        to_unit: str,
+        rounding: str | None = "down",
+        since: datetime_like = pd.Timestamp("2001-01-01 00:00:00+0000")
+    ) -> int | float | np.ndarray | pd.Series:
+        Convert integer quantities of a given time unit into a different unit.
+
+Examples
+--------
+For converting fractional values (`float`, `complex`, `decimal.Decimal`):
+
+>>> convert_unit_float(1.0, "s", "ns")
+1000000000
+>>> convert_unit_float(0.123, "s", "ns")
+123000000
+>>> convert_unit_float(10.3864, "D", "s")
+897384
+>>> convert_unit_float(1.0, "Y", "M")
+12
+>>> convert_unit_float(42.3, "M", "Y")
+3
+>>> convert_unit_float(1.0, "Y", "D")
+365
+>>> convert_unit_float(1.0, "Y", "D", since=pd.Timestamp("2000-01-01"))
+366
+>>> convert_unit_float(32.4928, "M", "s")
+85344537
+>>> convert_unit_float(365.0, "D", "Y")
+1
+>>> convert_unit_float(365.0, "D", "Y", since=pd.Timestamp("2000-01-01"))
+0
+>>> convert_unit_float(0.12345678910, "s", "ns")
+123456789
+>>> convert_unit_float(1.11111111, "Y", "ns")
+35039999964959996
+>>> convert_unit_float(0.12345678910, "s", "ns", rounding=None)
+123456789.10000001
+>>> convert_unit_float(365.0, "D", "Y", rounding=None, since=pd.Timestamp("2000-01-01"))
+0.9972677595628415
+
+And for integers:
+
+>>> convert_unit_integer(1, "s", "ns")
+1000000000
+>>> convert_unit_integer(123, "s", "ns")
+123000000000
+>>> convert_unit_integer(10, "D", "s")
+864000
+>>> convert_unit_integer(1, "Y", "M")
+12
+>>> convert_unit_integer(42, "M", "Y")
+3
+>>> convert_unit_integer(1, "Y", "D")
+365
+>>> convert_unit_integer(1, "Y", "D", since=pd.Timestamp("2000-01-01"))
+366
+>>> convert_unit_integer(32, "M", "s")
+84067200
+>>> convert_unit_integer(365, "D", "Y")
+1
+>>> convert_unit_integer(365, "D", "Y", since=pd.Timestamp("2000-01-01"))
+0
+>>> convert_unit_integer(1, "s", "m", rounding=None)
+0.016666666666666666
+>>> convert_unit_integer(365, "D", "Y", rounding=None, since=pd.Timestamp("2000-01-01"))
+0.9972677595628415
 """
 import decimal
 
@@ -15,7 +99,7 @@ from .calendar import (
 )
 
 
-# TODO: ensure unit length definitions are correct
+# TODO: ensure unit length definitions are correct for all values/offsets
 
 
 #########################
@@ -54,8 +138,8 @@ cdef object round_years_to_ns(
     object start_month,
     object start_day
 ):
-    """An optimized fastpath for ``convert_unit_float()`` that assumes
-    fractional year input and integer nanosecond output.  Only accepts scalars.
+    """An optimized fastpath for `convert_unit_float()` that assumes fractional
+    year input and integer nanosecond output.  Only accepts scalars.
 
     This task is required in the main loop of all string to timedelta
     conversions wherever they contain references to years.  By importing and
@@ -63,7 +147,7 @@ cdef object round_years_to_ns(
     each conversion can avoid a significant number of potential branch checks
     and vectorization loops.
 
-        Note: always rounds down (toward zero).
+        .. note:: always rounds down (toward zero).
     """
     cdef object rounded
     cdef dict end
@@ -107,9 +191,8 @@ cdef object round_months_to_ns(
     object start_month,
     object start_day
 ):
-    """An optimized fastpath for ``convert_unit_float()`` that assumes
-    fractional month input and integer nanosecond output.  Only accepts
-    scalars.
+    """An optimized fastpath for `convert_unit_float()` that assumes fractional
+    month input and integer nanosecond output.  Only accepts scalars.
 
     This task is required in the main loop of all string to timedelta
     conversions wherever they contain references to months.  By importing and
@@ -117,7 +200,7 @@ cdef object round_months_to_ns(
     each conversion can avoid a significant number of potential branch checks
     and vectorization loops.
 
-        Note: always rounds down (toward zero).
+        .. note:: always rounds down (toward zero).
     """
     cdef object rounded
     cdef dict end
@@ -490,7 +573,103 @@ def convert_unit_float(
     rounding: str | None = "down",
     since: datetime_like = pd.Timestamp("2001-01-01 00:00:00+0000")
 ) -> int | float | complex | decimal.Decimal | np.ndarray | pd.Series:
-    """TODO"""
+    """Convert fractional quantities of a given time unit into a different
+    unit.
+
+    This function performs the same operation as
+    :func:`convert_unit_integer()`, except that it is designed for fractional
+    unit representations, like `float`, `complex`, and `decimal.Decimal`.  This
+    allows easy conversion of such objects into nanosecond offsets for the
+    various :func:`ns_to_datetime()` and :func:`ns_to_timedelta()` conversion
+    functions, for example, while keeping the number of significant digits as
+    high as possible.
+
+    Parameters
+    ----------
+    arg : float | complex | decimal.Decimal | array-like
+        The quantity to convert.  Can be vectorized.
+    from_unit : {'ns', 'us', 'ms', 's', 'm', 'h', 'D', 'W', 'M', 'Y'}
+        The unit to convert from.
+    to_unit : {'ns', 'us', 'ms', 's', 'm', 'h', 'D', 'W', 'M', 'Y'}
+        The unit to convert to.
+    rounding : {'floor', 'ceiling', 'down', 'up', 'half_floor', 'half_ceiling',
+    'half_down', 'half_up', 'half_even', None}
+        The rounding strategy to use if performing integer conversion.  If this
+        is set to a value other than `None`, then the return type of this
+        function will be converted to int.  If this is set to `None`, it will
+        return the exact result, in the same type as `arg`.
+    since : datetime_like, default pd.Timestamp("2001-01-01 00:00:00+0000")
+        The date from which to begin counting.  This is only used when
+        converting to or from units 'M' and 'Y', in order to accurately account
+        for leap days and unequal month lengths.  Only the `year`, `month`, and
+        `day` components are used.  Defaults to '2001-01-01 00:00:00+0000',
+        which represents the start of a 400-year Gregorian calendar cycle.
+
+    Returns
+    -------
+    int | float | complex | decimal.Decimal | array-like
+        The result of the unit conversion.  If `rounding=None`, this will be
+        the same type as the input (`float`, `complex`, `decimal.Decimal`).
+        Otherwise, it will be cast to integer, with the specified rounding
+        strategy.
+
+    Raises
+    ------
+    ValueError
+        If either `from_unit` or `to_unit` is not one of the recognized units
+        ('ns', 'us', 'ms', 's', 'm', 'h', 'D', 'W', 'M', 'Y').
+
+    See Also
+    --------
+    convert_unit_integer : convert integer numbers of units.
+    ns_to_datetime : convert nanosecond UTC offsets into datetimes.
+    ns_to_timedelta : convert nanosecond UTC offsets into timedeltas.
+
+    Examples
+    --------
+    Units can be regular ('ns', 'us', 'ms', 's', 'm', 'h', 'D', 'W'):
+
+    >>> convert_unit_float(1.0, "s", "ns")
+    1000000000
+    >>> convert_unit_float(0.123, "s", "ns")
+    123000000
+    >>> convert_unit_float(10.3864, "D", "s")
+    897384
+
+    Or irregular ('M', 'Y'):
+
+    >>> convert_unit_float(1.0, "Y", "M")
+    12
+    >>> convert_unit_float(42.3, "M", "Y")
+    3
+
+    With conversion between the two:
+
+    >>> convert_unit_float(1.0, "Y", "D")
+    365
+    >>> convert_unit_float(1.0, "Y", "D", since=pd.Timestamp("2000-01-01"))
+    366
+    >>> convert_unit_float(32.4928, "M", "s")
+    85344537
+    >>> convert_unit_float(365.0, "D", "Y")
+    1
+    >>> convert_unit_float(365.0, "D", "Y", since=pd.Timestamp("2000-01-01"))
+    0
+
+    Units can have precision down to nanoseconds:
+
+    >>> convert_unit_float(0.12345678910, "s", "ns")
+    123456789
+    >>> convert_unit_float(1.11111111, "Y", "ns")
+    35039999964959996
+
+    And can be returned as exact values, without rounding:
+
+    >>> convert_unit_float(0.12345678910, "s", "ns", rounding=None)
+    123456789.10000001
+    >>> convert_unit_float(365.0, "D", "Y", rounding=None, since=pd.Timestamp("2000-01-01"))
+    0.9972677595628415
+    """
     # ensure units are valid
     if from_unit not in valid_units:
         raise ValueError(f"`from_unit` must be one of {valid_units}, not "
@@ -546,7 +725,91 @@ def convert_unit_integer(
     rounding: str | None = "down",
     since: datetime_like = pd.Timestamp("2001-01-01 00:00:00+0000")
 ) -> int | float | np.ndarray | pd.Series:
-    """TODO"""
+    """Convert integer quantities of a given time unit into a different unit.
+
+    This function performs the same operation as :func:`convert_unit_float()`,
+    except that it is designed for integer unit representations and avoids
+    conversion to imprecise floating-point formats.
+
+    Parameters
+    ----------
+    arg : int | array-like
+        The quantity to convert.  Can be vectorized.
+    from_unit : {'ns', 'us', 'ms', 's', 'm', 'h', 'D', 'W', 'M', 'Y'}
+        The unit to convert from.
+    to_unit : {'ns', 'us', 'ms', 's', 'm', 'h', 'D', 'W', 'M', 'Y'}
+        The unit to convert to.
+    rounding : {'floor', 'ceiling', 'down', 'up', 'half_floor', 'half_ceiling',
+    'half_down', 'half_up', 'half_even', None}
+        The rounding strategy to use in the case of residual units.  If this
+        is set to `None`, then the result will be coerced to float and the
+        residual appended as a decimal component.  Otherwise, it will stay in
+        a pure-integer representation, and the specified rounding rule will be
+        applied on that basis.
+    since : datetime_like, default pd.Timestamp("2001-01-01 00:00:00+0000")
+        The date from which to begin counting.  This is only used when
+        converting to or from units 'M' and 'Y', in order to accurately account
+        for leap days and unequal month lengths.  Only the `year`, `month`, and
+        `day` components are used.  Defaults to '2001-01-01 00:00:00+0000',
+        which represents the start of a 400-year Gregorian calendar cycle.
+
+    Returns
+    -------
+    int | float | array-like
+        The result of the unit conversion.  If `rounding=None`, this will
+        be coerced to float, with residuals as decimal components.  Otherwise,
+        it will stay in integer format and apply the given rounding rule.
+
+    Raises
+    ------
+    ValueError
+        If either `from_unit` or `to_unit` is not one of the recognized
+        units ('ns', 'us', 'ms', 's', 'm', 'h', 'D', 'W', 'M', 'Y').
+
+    See Also
+    --------
+    convert_unit_float : convert fractional numbers of units.
+    ns_to_datetime : convert nanosecond UTC offsets into datetimes.
+    ns_to_timedelta : convert nanosecond UTC offsets into timedeltas.
+
+    Examples
+    --------
+    Units can be regular ('ns', 'us', 'ms', 's', 'm', 'h', 'D', 'W'):
+
+    >>> convert_unit_integer(1, "s", "ns")
+    1000000000
+    >>> convert_unit_integer(123, "s", "ns")
+    123000000000
+    >>> convert_unit_integer(10, "D", "s")
+    864000
+
+    Or irregular ('M', 'Y'):
+
+    >>> convert_unit_integer(1, "Y", "M")
+    12
+    >>> convert_unit_integer(42, "M", "Y")
+    3
+
+    With conversion between the two:
+
+    >>> convert_unit_integer(1, "Y", "D")
+    365
+    >>> convert_unit_integer(1, "Y", "D", since=pd.Timestamp("2000-01-01"))
+    366
+    >>> convert_unit_integer(32, "M", "s")
+    84067200
+    >>> convert_unit_integer(365, "D", "Y")
+    1
+    >>> convert_unit_integer(365, "D", "Y", since=pd.Timestamp("2000-01-01"))
+    0
+
+    Optionally, results can be returned as floats, exposing the residuals:
+
+    >>> convert_unit_integer(1, "s", "m", rounding=None)
+    0.016666666666666666
+    >>> convert_unit_integer(365, "D", "Y", rounding=None, since=pd.Timestamp("2000-01-01"))
+    0.9972677595628415
+    """
     # ensure units are valid
     if from_unit not in valid_units:
         raise ValueError(f"`from_unit` must be one of {valid_units}, not "
