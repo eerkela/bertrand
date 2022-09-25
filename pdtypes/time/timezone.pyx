@@ -430,7 +430,6 @@ def localize_pandas_timestamp(
                     np.broadcast_to(utc, arg.shape),
                     arg.dt.tz_localize(tz)
                 )
-                return result
             return arg.dt.tz_convert(tz)
 
         # localize elementwise

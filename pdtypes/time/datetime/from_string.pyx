@@ -355,11 +355,6 @@ from ..unit cimport as_ns
 from .from_ns import ns_to_pydatetime, ns_to_numpy_datetime64
 
 
-# TODO: add utc flag to string_to_pandas_timestamp/string_to_pydatetime that
-# controls whether to *localize* or *convert* naive datetimes into the given
-# timezone.  If converting, interpret as utc first.
-
-
 # TODO: support J2000 dates through convert_unit_float?
 
 
@@ -477,7 +472,8 @@ cdef tuple iso_8601_string_to_ns_scalar(str string):
 cdef inline datetime.datetime string_to_pydatetime_scalar_with_format(
     str string,
     str format,
-    datetime.tzinfo tz
+    datetime.tzinfo tz,
+    bint utc
 ):
     """Convert a scalar datetime string to a `datetime.datetime` object
     according to the given format string, localized to the given timezone.
@@ -490,10 +486,12 @@ cdef inline datetime.datetime string_to_pydatetime_scalar_with_format(
         if result.tzinfo:  # result is already aware
             return result.astimezone(tz)
 
-        # result is naive, replace tzinfo directly
+        # result is naive
+        if utc:  # interpret as UTC
+            return result.replace(tzinfo=datetime.timezone.utc).astimezone(tz)
         if isinstance(tz, pytz.BaseTzInfo):  # use .localize()
             return tz.localize(result)
-        return result.replace(tzinfo=tz)
+        return result.replace(tzinfo=tz)  # replace tzinfo directly
 
     # return naive
     return result
@@ -502,7 +500,8 @@ cdef inline datetime.datetime string_to_pydatetime_scalar_with_format(
 cdef inline datetime.datetime string_to_pydatetime_scalar_parsed(
     str string,
     object parser_info,
-    datetime.tzinfo tz
+    datetime.tzinfo tz,
+    bint utc
 ):
     """Convert a scalar datetime string to a `datetime.datetime` object using
     modified dateutil parsing rules, localized to the given timezone.
@@ -541,10 +540,12 @@ cdef inline datetime.datetime string_to_pydatetime_scalar_parsed(
         if result.tzinfo:  # result is already aware
             return result.astimezone(tz)
 
-        # result is naive, replace tzinfo directly
+        # result is naive
+        if utc:  # interpret as UTC
+            return result.replace(tzinfo=datetime.timezone.utc).astimezone(tz)
         if isinstance(tz, pytz.BaseTzInfo):  # use .localize()
             return tz.localize(result)
-        return result.replace(tzinfo=tz)
+        return result.replace(tzinfo=tz)  # replace tzinfo directly
 
     # return naive
     return result
@@ -554,7 +555,8 @@ cdef inline datetime.datetime string_to_pydatetime_scalar_with_fallback(
     str string,
     str format,
     object parser_info,
-    datetime.tzinfo tz
+    datetime.tzinfo tz,
+    bint utc
 ):
     """Convert a scalar datetime string to a `datetime.datetime` object, using
     the given format string where applicable and modified dateutil parsing
@@ -564,13 +566,15 @@ cdef inline datetime.datetime string_to_pydatetime_scalar_with_fallback(
         return string_to_pydatetime_scalar_with_format(
             string,
             format=format,
-            tz=tz
+            tz=tz,
+            utc=utc
         )
     except ValueError as err:  # fall back to dateutil
         return string_to_pydatetime_scalar_parsed(
             string,
             parser_info=parser_info,
-            tz=tz
+            tz=tz,
+            utc=utc
         )
 
 
@@ -609,6 +613,7 @@ cdef np.ndarray[object] string_to_pydatetime_vector_with_format(
     np.ndarray[str] arr,
     str format,
     datetime.tzinfo tz,
+    bint utc,
     str errors
 ):
     """Convert an array of datetime strings into `datetime.datetime` objects
@@ -624,7 +629,8 @@ cdef np.ndarray[object] string_to_pydatetime_vector_with_format(
             result[i] = string_to_pydatetime_scalar_with_format(
                 arr[i],
                 format=format,
-                tz=tz
+                tz=tz,
+                utc=utc
             )
         except ValueError as err:
             if errors == "coerce":
@@ -640,6 +646,7 @@ cdef np.ndarray[object] string_to_pydatetime_vector_parsed(
     np.ndarray[str] arr,
     object parser_info,
     datetime.tzinfo tz,
+    bint utc,
     str errors
 ):
     """Convert an array of datetime strings into `datetime.datetime` objects
@@ -655,7 +662,8 @@ cdef np.ndarray[object] string_to_pydatetime_vector_parsed(
             result[i] = string_to_pydatetime_scalar_parsed(
                 arr[i],
                 parser_info=parser_info,
-                tz=tz
+                tz=tz,
+                utc=utc
             )
         except dateutil.parser.ParserError as err:
             if errors == "coerce":
@@ -672,6 +680,7 @@ cdef np.ndarray[object] string_to_pydatetime_vector_with_fallback(
     str format,
     object parser_info,
     datetime.tzinfo tz,
+    bint utc,
     str errors
 ):
     """Convert an array of datetime strings into `datetime.datetime` objects
@@ -689,7 +698,8 @@ cdef np.ndarray[object] string_to_pydatetime_vector_with_fallback(
                 arr[i],
                 format=format,
                 parser_info=parser_info,
-                tz=tz
+                tz=tz,
+                utc=utc
             )
         except dateutil.parser.ParserError as err:
             if errors == "coerce":
@@ -754,6 +764,7 @@ def _iso_8601_to_ns(
 def _iso_8601_to_pydatetime(
     arg: str | np.ndarray | pd.Series,
     tz: str | datetime.tzinfo,
+    utc: bool,
     errors: str
 ) -> datetime.datetime | np.ndarray | pd.Series:
     """Helper to convert ISO 8601 strings into `datetime.datetime` objects.
@@ -791,7 +802,7 @@ def _iso_8601_to_pydatetime(
             valid = pd.notna(arg)
             if not valid.all():  # at least 1 missing value
                 if valid.any():  # at least 1 non-missing value
-                    if tz is None or is_utc(tz):
+                    if utc or tz is None or is_utc(tz):
                         result[valid] = ns_to_pydatetime(result[valid], tz=tz)
                     else:
                         subset = ns_to_pydatetime(result[valid], tz=None)
@@ -808,7 +819,7 @@ def _iso_8601_to_pydatetime(
             return pd.NaT
 
     # no errors encountered
-    if tz is None or is_utc(tz):
+    if utc or tz is None or is_utc(tz):
         return ns_to_pydatetime(result, tz=tz)
     return localize_pydatetime(
         ns_to_pydatetime(result, tz=None),
@@ -821,6 +832,7 @@ def _string_to_pydatetime_with_format(
     arg: str | np.ndarray | pd.Series,
     format: str,
     tz: datetime.tzinfo,
+    utc: bool,
     errors: str
 ) -> datetime.datetime | np.ndarray | pd.Series:
     """Helper to convert datetime strings into `datetime.datetime` objects
@@ -849,6 +861,7 @@ def _string_to_pydatetime_with_format(
             arg,
             format=format,
             tz=tz,
+            utc=utc,
             errors=errors
         )
 
@@ -860,6 +873,7 @@ def _string_to_pydatetime_with_format(
             arg,
             format=format,
             tz=tz,
+            utc=utc,
             errors=errors
         )
         return pd.Series(arg, index=index, dtype="O", copy=False)
@@ -869,7 +883,8 @@ def _string_to_pydatetime_with_format(
         return string_to_pydatetime_scalar_with_format(
             arg,
             format=format,
-            tz=tz
+            tz=tz,
+            utc=utc
         )
     except ValueError as err:
         if errors == "coerce":
@@ -881,6 +896,7 @@ def _string_to_pydatetime_parsed(
     arg: str | np.ndarray | pd.Series,
     parser_info: dateutil.parser.parserinfo,
     tz: datetime.tzinfo,
+    utc: bool,
     errors: str
 ) -> datetime.datetime | np.ndarray | pd.Series:
     """Helper to convert datetime strings into `datetime.datetime` objects
@@ -911,6 +927,7 @@ def _string_to_pydatetime_parsed(
             arg,
             parser_info=parser_info,
             tz=tz,
+            utc=utc,
             errors=errors
         )
 
@@ -922,6 +939,7 @@ def _string_to_pydatetime_parsed(
             arg,
             parser_info=parser_info,
             tz=tz,
+            utc=utc,
             errors=errors
         )
         return pd.Series(arg, index=index, dtype="O", copy=False)
@@ -931,7 +949,8 @@ def _string_to_pydatetime_parsed(
         return string_to_pydatetime_scalar_parsed(
             arg,
             parser_info=parser_info,
-            tz=tz
+            tz=tz,
+            utc=utc
         )
     except dateutil.parser.ParserError as err:
         if errors == "coerce":
@@ -944,6 +963,7 @@ def _string_to_pydatetime_with_fallback(
     format: str,
     parser_info: dateutil.parser.parserinfo,
     tz: datetime.tzinfo,
+    utc: bool,
     errors: str
 ) -> datetime.datetime | np.ndarray | pd.Series:
     """Helper to convert datetime strings into `datetime.datetime` objects,
@@ -978,6 +998,7 @@ def _string_to_pydatetime_with_fallback(
             format=format,
             parser_info=parser_info,
             tz=tz,
+            utc=utc,
             errors=errors
         )
 
@@ -990,6 +1011,7 @@ def _string_to_pydatetime_with_fallback(
             format=format,
             parser_info=parser_info,
             tz=tz,
+            utc=utc,
             errors=errors
         )
         return pd.Series(arg, index=index, dtype="O", copy=False)
@@ -1000,6 +1022,7 @@ def _string_to_pydatetime_with_fallback(
             arg,
             format=format,
             parser_info=parser_info,
+            utc=utc,
             tz=tz
         )
     except dateutil.parser.ParserError as err:
@@ -1153,6 +1176,7 @@ def string_to_pandas_timestamp(
     format: str = None,
     day_first: bool = False,
     year_first: bool = False,
+    utc: bool = False,
     errors: str = "raise"
 ) -> pd.Timestamp | np.ndarray | pd.Series:
     """Convert datetime strings into `pandas.Timestamp` objects.
@@ -1167,15 +1191,8 @@ def string_to_pandas_timestamp(
         The timezone to localize results to.  This can be `None`, indicating a
         naive return type, an instance of `datetime.tzinfo` or one of its
         derivatives (from `pytz`, `zoneinfo`, etc.), or an IANA timezone
-        database string ('US/Eastern', 'UTC', etc.).
-
-            Note: timezone-naive datetime strings ('2022-01-04 12:00:00',
-            '4 jan 2022', etc.) are *localized* directly to this timezone,
-            whereas timezone-aware strings ('2022-01-04 12:00:00-0800') are
-            *converted* to it instead.  This is robust against mixed
-            aware/naive and/or mixed timezone string sequences, though at the
-            cost of nanosecond-level accuracy.
-
+        database string ('US/Eastern', 'UTC', etc.).  The special value
+        `'local'` is also accepted, referencing the system's local time zone.
     format : str, default None
         A `datetime.datetime.strftime()`-compliant format string to parse the
         given string(s) (e.g. '%d/%m/%Y').  Note that `'%f'` will parse all the
@@ -1189,6 +1206,17 @@ def string_to_pandas_timestamp(
         Whether to interpret the first value in an ambiguous 3-integer date
         (e.g. '01/05/09') as the year. If `True`, the first number is taken to
         be the year, otherwise the last number is taken to be the year.
+    utc : bool, default False
+        Controls the localization behavior of timezone-naive datetime strings.
+        If this is set to `True`, naive datetime strings will be interpreted as
+        UTC times, and will be *converted* from UTC to the specified `tz`.  If
+        this is `False` (the default), naive datetime strings will be
+        *localized* directly to `tz` instead.
+
+        .. note:: If `utc=False` and `arg` contains mixed aware/naive and/or
+            mixed timezone ISO strings, then nanosecond precision will be lost.
+            This is a technical limitation of `pandas.to_datetime()`.
+
     errors : {'raise', 'ignore', 'coerce'}, default 'raise'
         The error-handling rule to use if an invalid datetime string is
         encountered during parsing.  The behaviors are as follows:
@@ -1295,11 +1323,11 @@ def string_to_pandas_timestamp(
 
     # get kwarg dict for pd.to_datetime
     if format is not None:
-        kwargs = {"format": format, "exact": False, "utc": is_utc(tz),
+        kwargs = {"format": format, "exact": False, "utc": utc or is_utc(tz),
                   "errors": errors}
     else:
         kwargs = {"dayfirst": day_first, "yearfirst": year_first,
-                  "infer_datetime_format": True, "utc": is_utc(tz),
+                  "infer_datetime_format": True, "utc": utc or is_utc(tz),
                   "errors": errors}
 
     # convert using pd.to_datetime
@@ -1371,6 +1399,7 @@ def string_to_pydatetime(
     format: str = None,
     day_first: bool = False,
     year_first: bool = False,
+    utc: bool = False,
     errors: str = "raise"
 ) -> datetime.datetime | np.ndarray | pd.Series:
     """Convert datetime strings into `datetime.datetime` objects.
@@ -1388,14 +1417,8 @@ def string_to_pydatetime(
         The timezone to localize results to.  This can be `None`, indicating a
         naive return type, an instance of `datetime.tzinfo` or one of its
         derivatives (from `pytz`, `zoneinfo`, etc.), or an IANA timezone
-        database string ('US/Eastern', 'UTC', etc.).
-
-            Note: timezone-naive datetime strings ('2022-01-04 12:00:00',
-            '4 jan 2022', etc.) are *localized* directly to this timezone,
-            whereas timezone-aware strings ('2022-01-04 12:00:00-0800') are
-            *converted* to it instead.  This is robust against mixed
-            aware/naive and/or mixed timezone string sequences.
-
+        database string ('US/Eastern', 'UTC', etc.).  The special value
+        `'local'` is also accepted, referencing the system's local time zone.
     format : str, default None
         A `datetime.datetime.strftime()`-compliant format string to parse the
         given string(s) (e.g. '%d/%m/%Y').  If this is omitted, this function
@@ -1409,6 +1432,12 @@ def string_to_pydatetime(
         Whether to interpret the first value in an ambiguous 3-integer date
         (e.g. '01/05/09') as the year. If `True`, the first number is taken to
         be the year, otherwise the last number is taken to be the year.
+    utc : bool, default False
+        Controls the localization behavior of timezone-naive datetime strings.
+        If this is set to `True`, naive datetime strings will be interpreted as
+        UTC times, and will be *converted* from UTC to the specified `tz`.  If
+        this is `False` (the default), naive datetime strings will be
+        *localized* directly to `tz` instead.
     errors : {'raise', 'ignore', 'coerce'}, default 'raise'
         The error-handling rule to use if an invalid datetime string is
         encountered during parsing.  The behaviors are as follows:
@@ -1529,6 +1558,7 @@ def string_to_pydatetime(
                 arg,
                 format=format,
                 tz=tz,
+                utc=utc,
                 errors=errors
             )
         except ValueError as err:
@@ -1545,7 +1575,7 @@ def string_to_pydatetime(
         element = arg
     if is_iso_8601(element) and "-" in element:  # ignore naked years
         try:
-            return _iso_8601_to_pydatetime(arg, tz=tz, errors="raise")
+            return _iso_8601_to_pydatetime(arg, tz=tz, utc=utc, errors="raise")
         except ValueError as err:
             pass  # fall back to dateutil
 
@@ -1579,6 +1609,7 @@ def string_to_pydatetime(
                 format=format,
                 parser_info=parser_info,
                 tz=tz,
+                utc=utc,
                 errors=errors
             )
         except dateutil.parser.ParserError as err:
@@ -1592,6 +1623,7 @@ def string_to_pydatetime(
             arg,
             parser_info = parser_info,
             tz=tz,
+            utc=utc,
             errors=errors
         )
     except dateutil.parser.ParserError as err:
@@ -1768,6 +1800,7 @@ def string_to_datetime(
     format: str = None,
     day_first: bool = False,
     year_first: bool = False,
+    utc: bool = False,
     errors: str = "raise"
 ) -> datetime_like | np.ndarray | pd.Series:
     """Convert datetime strings into datetime objects.
@@ -1787,7 +1820,8 @@ def string_to_datetime(
         The timezone to localize results to.  This can be `None`, indicating a
         naive return type, an instance of `datetime.tzinfo` or one of its
         derivatives (from `pytz`, `zoneinfo`, etc.), or an IANA timezone
-        database string ('US/Eastern', 'UTC', etc.).
+        database string ('US/Eastern', 'UTC', etc.).  The special value
+        `'local'` is also accepted, referencing the system's local time zone.
 
             Note: timezone-naive datetime strings ('2022-01-04 12:00:00',
             '4 jan 2022', etc.) are *localized* directly to this timezone,
@@ -1811,6 +1845,17 @@ def string_to_datetime(
         Whether to interpret the first value in an ambiguous 3-integer date
         (e.g. '01/05/09') as the year. If `True`, the first number is taken to
         be the year, otherwise the last number is taken to be the year.
+    utc : bool, default False
+        Controls the localization behavior of timezone-naive datetime strings.
+        If this is set to `True`, naive datetime strings will be interpreted as
+        UTC times, and will be *converted* from UTC to the specified `tz`.  If
+        this is `False` (the default), naive datetime strings will be
+        *localized* directly to `tz` instead.
+
+        .. note:: If `utc=False` and `arg` contains mixed aware/naive and/or
+            mixed timezone ISO strings, then nanosecond precision will be lost.
+            This is a technical limitation of `pandas.to_datetime()`.
+
     errors : {'raise', 'ignore', 'coerce'}, default 'raise'
         The error-handling rule to use if an invalid datetime string is
         encountered during parsing.  The behaviors are as follows:
@@ -1967,6 +2012,7 @@ def string_to_datetime(
             format=format,
             day_first=day_first,
             year_first=year_first,
+            utc=utc,
             errors=errors
         )
     except OverflowError:
@@ -1980,6 +2026,7 @@ def string_to_datetime(
             format=format,
             day_first=day_first,
             year_first=year_first,
+            utc=utc,
             errors=errors
         )
     except OverflowError:

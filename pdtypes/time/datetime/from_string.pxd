@@ -10,18 +10,21 @@ cdef tuple iso_8601_string_to_ns_scalar(str string)
 cdef datetime.datetime string_to_pydatetime_scalar_with_format(
     str string,
     str format,
-    datetime.tzinfo tz
+    datetime.tzinfo tz,
+    bint utc
 )
 cdef datetime.datetime string_to_pydatetime_scalar_parsed(
     str string,
     object parser_info,
-    datetime.tzinfo tz
+    datetime.tzinfo tz,
+    bint utc
 )
 cdef datetime.datetime string_to_pydatetime_scalar_with_fallback(
     str string,
     str format,
     object parser_info,
-    datetime.tzinfo tz
+    datetime.tzinfo tz,
+    bint utc
 )
 
 # vectorized functions
@@ -33,12 +36,14 @@ cdef np.ndarray[object] string_to_pydatetime_vector_with_format(
     np.ndarray[str] arr,
     str format,
     datetime.tzinfo tz,
+    bint utc,
     str errors
 )
 cdef np.ndarray[object] string_to_pydatetime_vector_parsed(
     np.ndarray[str] arr,
     object parser_info,
     datetime.tzinfo tz,
+    bint utc,
     str errors
 )
 cdef np.ndarray[object] string_to_pydatetime_vector_with_fallback(
@@ -46,5 +51,6 @@ cdef np.ndarray[object] string_to_pydatetime_vector_with_fallback(
     str format,
     object parser_info,
     datetime.tzinfo tz,
+    bint utc,
     str errors
 )
