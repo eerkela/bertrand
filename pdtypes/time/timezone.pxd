@@ -21,15 +21,15 @@ cdef datetime.datetime localize_pydatetime_scalar(
 cdef np.ndarray[object] localize_pandas_timestamp_vector(
     np.ndarray[object] arr,
     datetime.tzinfo tz,
-    bint utc
+    np.ndarray[char, cast=True] utc
 )
 cdef np.ndarray[object] localize_pydatetime_vector(
     np.ndarray[object] arr,
     datetime.tzinfo tz,
-    bint utc
+    np.ndarray[char, cast=True] utc
 )
 cdef np.ndarray[object] localize_mixed_datetimelike_vector(
     np.ndarray[object] arr,
     datetime.tzinfo tz,
-    bint utc
+    np.ndarray[char, cast=True] utc
 )

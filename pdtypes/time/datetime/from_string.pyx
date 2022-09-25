@@ -13,7 +13,7 @@ Functions
     iso_8601_to_ns(
         arg: str | np.ndarray | pd.Series,
         errors: str = "raise"
-    ) -> tuple[int | np.ndarray | pd.Series, bool]:
+    ) -> int | np.ndarray | pd.Series:
         Convert ISO 8601 strings into nanosecond offsets from the utc epoch.
 
     string_to_pandas_timestamp(
@@ -56,56 +56,284 @@ Functions
 
 Examples
 --------
-    >>> string_to_pandas_timestamp("1970-01-01 00:00:00")
-    >>> string_to_pandas_timestamp("1970-01-01 00:00:00", tz="US/Pacific")
-    >>> string_to_pandas_timestamp("1970-01-01 00:00:00+0000", tz="US/Pacific")
-    >>> string_to_pandas_timestamp("4 Jan 2022", format="%Y.%m.%d")
-    >>> string_to_pandas_timestamp("01/05/09")
-    >>> string_to_pandas_timestamp("01/05/09", day_first=True)
-    >>> string_to_pandas_timestamp("01/05/09", year_first=True)
-    >>> string_to_pandas_timestamp("01/05/09", day_first=True, year_first=True)
-    >>> string_to_pandas_timestamp("December 7th, 1941 at 8 AM", tz="US/Hawaii")
+Parsing ISO 8601 strings into nanosecond offsets from the UTC epoc:
 
-    >>> string_to_pydatetime("1970-01-01 00:00:00")
-    >>> string_to_pydatetime("1970-01-01 00:00:00", tz="US/Pacific")
-    >>> string_to_pydatetime("1970-01-01 00:00:00+0000", tz="US/Pacific")
-    >>> string_to_pydatetime("4 Jan 2022", format="%Y.%m.%d")
-    >>> string_to_pydatetime("01/05/09")
-    >>> string_to_pydatetime("01/05/09", day_first=True)
-    >>> string_to_pydatetime("01/05/09", year_first=True)
-    >>> string_to_pydatetime("01/05/09", day_first=True, year_first=True)
-    >>> string_to_pydatetime("December 7th, 1941 at 8 AM", tz="US/Hawaii")
-    >>> string_to_pydatetime("Today is January 1, 2047 at 8:21:00AM")
+>>> iso_8601_to_ns("2022")
+1640995200000000000
+>>> iso_8601_to_ns("2022-10")
+1664582400000000000
+>>> iso_8601_to_ns("2022-10-15")
+1665792000000000000
+>> iso_8601_to_ns("2022-10-15 08")
+1665820800000000000
+>>> iso_8601_to_ns("2022-10-15T08:47")
+1665823620000000000
+>>> iso_8601_to_ns("2022-10-15 08:47:23")
+1665823643000000000
+>>> iso_8601_to_ns("2022-10-15T08:47:23.123")
+1665823643123000000
+>>> iso_8601_to_ns("2022-10-15 08:47:23.123456")
+1665823643123456000
+>>> iso_8601_to_ns("2022-10-15T08:47:23.123456789")
+1665823643123456789
+>>> iso_8601_to_ns("-43-03-01")  # Assassination of Julius Caesar
+-63519033600000000000
+>>> iso_8601_to_ns("18-08-19")  # Death of Caesar Augustus
+-61579267200000000000
+>>> iso_8601_to_ns("1970-01-01 00:00:00")
+0
+>>> iso_8601_to_ns("1970-01-01 00:00:00Z")
+0
+>>> iso_8601_to_ns("1970-01-01 00:00:00+0800")
+-28800000000000
+>>> iso_8601_to_ns("1970-01-01 00:00:00-0800")
+28800000000000
+>>> iso_8601_to_ns(f"{2**63 - 1}-01-01 00:00:00.123456789")
+291061508645168328945024000123456789
+>>> iso_8601_to_ns("2001-13-15 00:00:00")
+Traceback (most recent call last):
+    ...
+ValueError: invalid isoformat string '2001-13-15 00:00:00'
+>>> iso_8601_to_ns("2001-02-29 00:00:00")
+Traceback (most recent call last):
+    ...
+ValueError: invalid isoformat string '2001-02-29 00:00:00'
+>>> iso_8601_to_ns("2001-01-01 60:00:00")
+Traceback (most recent call last):
+    ...
+ValueError: invalid isoformat string '2001-01-01 60:00:00'
+>>> iso_8601_to_ns("2001-01-01 00:60:00")
+Traceback (most recent call last):
+    ...
+ValueError: invalid isoformat string '2001-01-01 00:60:00'
+>>> iso_8601_to_ns("2001-01-01 00:00:60")
+Traceback (most recent call last):
+    ...
+ValueError: invalid isoformat string '2001-01-01 00:00:60'
+>>> iso_8601_to_ns("2000-02-29 00:00:00")
+951782400000000000
+>>> iso_8601_to_ns(
+...     pd.Series([f"1970-01-01 00:00:00.00000000{i}" for i in range(1, 4)])
+... )
+0    1
+1    2
+2    3
+dtype: object
+>>> iso_8601_to_ns(
+...     np.array([f"1970-01-01 00:00:00.00000000{i}" for i in range(1, 4)])
+... )
+array([1, 2, 3], dtype=object)
 
-    >>> string_to_numpy_datetime64("1970-01-01 00:00:00")
-    >>> string_to_numpy_datetime64("1970-01-01 00:00:00-0800")
-    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="ns")
-    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="us")
-    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="ms")
-    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="s")
-    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="m")
-    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="h")
-    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="D")
-    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="W")
-    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="M")
-    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="Y")
-    >>> string_to_numpy_datetime64(f"{2**50}-10-15 12:34:56")
-    >>> string_to_numpy_datetime64(f"{2**50}-10-15 12:34:56", rounding="up")
+Converting strings into `pandas.Timestamp` objects:
 
-    >>> string_to_datetime("1970-01-01 00:00:00")
-    >>> string_to_datetime("1970-01-01 00:00:00", tz="US/Pacific")
-    >>> string_to_datetime("1970-01-01 00:00:00+0000", tz="US/Pacific")
-    >>> string_to_datetime("4 Jan 2022", format="%Y.%m.%d")
-    >>> string_to_datetime("01/05/09")
-    >>> string_to_datetime("01/05/09", day_first=True)
-    >>> string_to_datetime("01/05/09", year_first=True)
-    >>> string_to_datetime("01/05/09", day_first=True, year_first=True)
-    >>> string_to_datetime("December 7th, 1941 at 8 AM", tz="US/Hawaii")
-    >>> string_to_datetime("2000-01-01")
-    >>> string_to_datetime("3000-01-01")
-    >>> string_to_datetime("10000-01-01")
-    >>> string_to_datetime(str(pd.Timestamp.max.tz_localize("UTC")))
-    >>> string_to_datetime(str(pd.Timestamp.max.tz_localize("UTC")), tz="Europe/Berlin")
+>>> string_to_pandas_timestamp("1970-01-01 00:00:00")
+Timestamp('1970-01-01 00:00:00')
+>>> string_to_pandas_timestamp("1970-01-01 00:00:00", tz="US/Pacific")
+Timestamp('1970-01-01 00:00:00-0800', tz='US/Pacific')
+>>> string_to_pandas_timestamp("1970-01-01 00:00:00Z", tz="US/Pacific")
+Timestamp('1969-12-31 16:00:00-0800', tz='US/Pacific')
+>>> string_to_pandas_timestamp("1970-01-01 00:00:00+01:00", tz="US/Pacific")
+Timestamp('1969-12-31 15:00:00-0800', tz='US/Pacific')
+>>> string_to_pandas_timestamp("today")
+Timestamp('2022-09-22 17:06:58.837417')  #random
+>>> string_to_pandas_timestamp("4Q2023")
+Timestamp('2023-10-01 00:00:00')
+>>> string_to_pandas_timestamp("23q4")
+Timestamp('2023-10-01 00:00:00')
+>>> string_to_pandas_timestamp("04.01.2022", format="%d.%m.%Y")
+Timestamp('2022-01-04 00:00:00')
+>>> string_to_pandas_timestamp(
+...     "04.01.2022",
+...     format="%d.%m.%Y",
+...     tz="US/Eastern"
+... )
+Timestamp('2022-01-04 00:00:00-0500', tz='US/Eastern')
+>>> string_to_pandas_timestamp("4 Jan 2022")
+Timestamp('2022-01-04 00:00:00')
+>>> string_to_pandas_timestamp("December 7th, 1941 at 8 AM", tz="US/Hawaii")
+Timestamp('1941-12-07 08:00:00-1030', tz='US/Hawaii')
+>>> string_to_pandas_timestamp("01/05/09")
+Timestamp('2009-01-05 00:00:00')
+>>> string_to_pandas_timestamp("01/05/09", day_first=True)
+Timestamp('2009-05-01 00:00:00')
+>>> string_to_pandas_timestamp("01/05/09", year_first=True)
+Timestamp('2001-05-09 00:00:00')
+>>> string_to_pandas_timestamp("01/05/09", day_first=True, year_first=True)
+Timestamp('2001-09-05 00:00:00')
+>>> strings = [f"1970-01-01 00:00:00.00000000{i}" for i in range(1, 4)]
+>>> strings
+['1970-01-01 00:00:00.000000001', '1970-01-01 00:00:00.000000002', '1970-01-01 00:00:00.000000003']
+>>> string_to_pandas_timestamp(pd.Series(strings))
+0   1970-01-01 00:00:00.000000001
+1   1970-01-01 00:00:00.000000002
+2   1970-01-01 00:00:00.000000003
+dtype: datetime64[ns]
+>>> string_to_pandas_timestamp(np.array(strings))
+array([Timestamp('1970-01-01 00:00:00.000000001'),
+    Timestamp('1970-01-01 00:00:00.000000002'),
+    Timestamp('1970-01-01 00:00:00.000000003')], dtype=object)
+
+Converting strings into `datetime.datetime` objects:
+
+>>> string_to_pydatetime("1970-01-01 00:00:00")
+datetime.datetime(1970, 1, 1, 0, 0)
+>>> string_to_pydatetime("1970-01-01 00:00:00", tz="US/Pacific")
+datetime.datetime(1970, 1, 1, 0, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
+>>> string_to_pydatetime("1970-01-01 00:00:00Z", tz="US/Pacific")
+datetime.datetime(1969, 12, 31, 16, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
+>>> string_to_pydatetime("1970-01-01 00:00:00+01:00", tz="US/Pacific")
+datetime.datetime(1969, 12, 31, 15, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
+>>> string_to_pydatetime("today")
+datetime.datetime(2022, 9, 23, 0, 8, 4, 855833)  #random
+>>> string_to_pydatetime("4Q2023")
+datetime.datetime(2023, 10, 1, 0, 0)
+>>> string_to_pydatetime("23q4")
+datetime.datetime(2023, 10, 1, 0, 0)
+>>> string_to_pydatetime("04.01.2022", format="%d.%m.%Y")
+datetime.datetime(2022, 1, 4, 0, 0)
+>>> string_to_pydatetime(
+...     "04.01.2022",
+...     format="%d.%m.%Y",
+...     tz="US/Eastern"
+... )
+datetime.datetime(2022, 1, 4, 0, 0, tzinfo=<DstTzInfo 'US/Eastern' EST-1 day, 19:00:00 STD>)
+>>> string_to_pydatetime("4 Jan 2022")
+datetime.datetime(2022, 1, 4, 0, 0)
+>>> string_to_pydatetime("December 7th, 1941 at 8 AM", tz="US/Hawaii")
+datetime.datetime(1941, 12, 7, 8, 0, tzinfo=<DstTzInfo 'US/Hawaii' HST-1 day, 13:30:00 STD>)
+>>> string_to_pydatetime("Today is January 1, 2047 8:21:00AM", tz="UTC")
+datetime.datetime(2047, 1, 1, 8, 21, tzinfo=<UTC>)
+>>> string_to_pydatetime("01/05/09")
+datetime.datetime(2009, 1, 5, 0, 0)
+>>> string_to_pydatetime("01/05/09", day_first=True)
+datetime.datetime(2009, 5, 1, 0, 0)
+>>> string_to_pydatetime("01/05/09", year_first=True)
+datetime.datetime(2001, 5, 9, 0, 0)
+>>> string_to_pydatetime("01/05/09", day_first=True, year_first=True)
+datetime.datetime(2001, 9, 5, 0, 0)
+>>> strings = [f"1970-01-01 00:00:00.00000{i}" for i in range(1, 4)]
+>>> strings
+['1970-01-01 00:00:00.000001', '1970-01-01 00:00:00.000002', '1970-01-01 00:00:00.000003']
+>>> string_to_pydatetime(pd.Series(strings))
+0    1970-01-01 00:00:00.000001
+1    1970-01-01 00:00:00.000002
+2    1970-01-01 00:00:00.000003
+dtype: object
+>>> string_to_pydatetime(np.array(strings))
+array([datetime.datetime(1970, 1, 1, 0, 0, 0, 1),
+    datetime.datetime(1970, 1, 1, 0, 0, 0, 2),
+    datetime.datetime(1970, 1, 1, 0, 0, 0, 3)], dtype=object)
+
+Converting strings into `numpy.datetime64` objects:
+
+>>> string_to_numpy_datetime64("1970-01-01 00:00:00")
+numpy.datetime64('1970-01-01T00:00:00.000000000')
+>>> string_to_numpy_datetime64("1970-01-01 00:00:00Z")
+numpy.datetime64('1970-01-01T00:00:00.000000000')
+>>> string_to_numpy_datetime64("1970-01-01 00:00:00-0800")
+numpy.datetime64('1970-01-01T08:00:00.000000000')
+>>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="ns")
+numpy.datetime64('2042-10-15T12:34:56.789101112')
+>>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="us")
+numpy.datetime64('2042-10-15T12:34:56.789101')
+>>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="ms")
+numpy.datetime64('2042-10-15T12:34:56.789')
+>>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="s")
+numpy.datetime64('2042-10-15T12:34:56')
+>>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="m")
+numpy.datetime64('2042-10-15T12:34')
+>>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="h")
+numpy.datetime64('2042-10-15T12','h')
+>>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="D")
+numpy.datetime64('2042-10-15')
+>>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="W")
+numpy.datetime64('2042-10-09')
+>>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="M")
+numpy.datetime64('2042-10')
+>>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="Y")
+numpy.datetime64('2042')
+>>> string_to_numpy_datetime64(
+...     "2042-10-15 12:34:56.789101112",
+...     unit="s",
+...     rounding="up"
+... )
+numpy.datetime64('2042-10-15T12:34:57')
+>>> string_to_numpy_datetime64(f"{2**50}-10-15 12:34:56")
+numpy.datetime64('1125899906842624-10-15')
+>>> string_to_numpy_datetime64(f"{2**50}-10-15 12:34:56", rounding="up")
+numpy.datetime64('1125899906842624-10-16')
+
+Converting strings into arbitrary datetime objects:
+
+>>> string_to_datetime("1970-01-01 00:00:00")
+Timestamp('1970-01-01 00:00:00')
+>>> string_to_datetime("1970-01-01 00:00:00", tz="US/Pacific")
+Timestamp('1970-01-01 00:00:00-0800', tz='US/Pacific')
+>>> string_to_datetime("1970-01-01 00:00:00Z", tz="US/Pacific")
+Timestamp('1969-12-31 16:00:00-0800', tz='US/Pacific')
+>>> string_to_datetime("1970-01-01 00:00:00+01:00", tz="US/Pacific")
+Timestamp('1969-12-31 15:00:00-0800', tz='US/Pacific')
+>>> string_to_datetime("today")
+Timestamp('2022-09-22 17:06:58.837417')  #random
+>>> string_to_datetime("4Q2023")
+Timestamp('2023-10-01 00:00:00')
+>>> string_to_datetime("23q4")
+Timestamp('2023-10-01 00:00:00')
+>>> string_to_datetime("04.01.2022", format="%d.%m.%Y")
+Timestamp('2022-01-04 00:00:00')
+>>> string_to_datetime(
+...     "04.01.2022",
+...     format="%d.%m.%Y",
+...     tz="US/Eastern"
+... )
+Timestamp('2022-01-04 00:00:00-0500', tz='US/Eastern')
+>>> string_to_datetime("4 Jan 2022")
+Timestamp('2022-01-04 00:00:00')
+>>> string_to_datetime("December 7th, 1941 at 8 AM", tz="US/Hawaii")
+Timestamp('1941-12-07 08:00:00-1030', tz='US/Hawaii')
+>>> string_to_datetime("01/05/09")
+Timestamp('2009-01-05 00:00:00')
+>>> string_to_datetime("01/05/09", day_first=True)
+Timestamp('2009-05-01 00:00:00')
+>>> string_to_datetime("01/05/09", year_first=True)
+Timestamp('2001-05-09 00:00:00')
+>>> string_to_datetime("01/05/09", day_first=True, year_first=True)
+Timestamp('2001-09-05 00:00:00')
+>>> strings = [f"1970-01-01 00:00:00.00000000{i}" for i in range(1, 4)]
+>>> strings
+['1970-01-01 00:00:00.000000001', '1970-01-01 00:00:00.000000002', '1970-01-01 00:00:00.000000003']
+>>> string_to_datetime(pd.Series(strings))
+0   1970-01-01 00:00:00.000000001
+1   1970-01-01 00:00:00.000000002
+2   1970-01-01 00:00:00.000000003
+dtype: datetime64[ns]
+>>> string_to_datetime(np.array(strings))
+array([Timestamp('1970-01-01 00:00:00.000000001'),
+    Timestamp('1970-01-01 00:00:00.000000002'),
+    Timestamp('1970-01-01 00:00:00.000000003')], dtype=object)
+>>> string_to_datetime("2262-04-11 23:47:16.854775807")
+Timestamp('2262-04-11 23:47:16.854775807')
+>>> string_to_datetime("2262-04-11 23:47:16.854775808")
+datetime.datetime(2262, 4, 11, 23, 47, 16, 854775)
+>>> string_to_datetime("April 11th, 2262 at 23:47:16.854775")
+Timestamp('2262-04-11 23:47:16.854775')
+>>> string_to_datetime("April 11th, 2262 at 23:47:16.854776")
+datetime.datetime(2262, 4, 11, 23, 47, 16, 854776)
+>>> string_to_datetime("9999-12-31 23:59:59.999999")
+datetime.datetime(9999, 12, 31, 23, 59, 59, 999999)
+>>> string_to_datetime("10000-01-01 00:00:00")
+numpy.datetime64('10000-01-01T00:00:00.000000')
+>>> string_to_datetime("1677-09-21 00:12:43.145224193")
+Timestamp('1677-09-21 00:12:43.145224193')
+>>> string_to_datetime("1677-09-21 00:12:43.145224193", tz="Europe/Berlin")
+datetime.datetime(1677, 9, 21, 0, 12, 43, 145224, tzinfo=<DstTzInfo 'Europe/Berlin' LMT+0:53:00 STD>)
+>>> string_to_datetime("September 21st, 1677 at 00:12:43.145225")
+Timestamp('1677-09-21 00:12:43.145225')
+>>> string_to_datetime(
+...     "September 21st, 1677 at 00:12:42.145225",
+...     tz="Europe/Berlin"
+... )
+datetime.datetime(1677, 9, 21, 0, 12, 42, 145225, tzinfo=<DstTzInfo 'Europe/Berlin' LMT+0:53:00 STD>)
 """
 import datetime
 from cpython cimport datetime
@@ -116,6 +344,7 @@ import dateutil
 import numpy as np
 cimport numpy as np
 import pandas as pd
+import pytz
 
 from pdtypes.util.type_hints import datetime_like
 
@@ -124,6 +353,11 @@ from ..timezone import is_utc, localize_pydatetime, timezone
 from ..unit cimport as_ns
 
 from .from_ns import ns_to_pydatetime, ns_to_numpy_datetime64
+
+
+# TODO: add utc flag to string_to_pandas_timestamp/string_to_pydatetime that
+# controls whether to *localize* or *convert* naive datetimes into the given
+# timezone.  If converting, interpret as utc first.
 
 
 # TODO: support J2000 dates through convert_unit_float?
@@ -181,9 +415,13 @@ cdef object iso_8601_pattern = build_iso_8601_regex()
 #######################
 
 
-cdef object iso_8601_string_to_ns_scalar(str string):
+cdef tuple iso_8601_string_to_ns_scalar(str string):
     """Convert a scalar ISO 8601 string into a nanosecond offset from the
     utc epoch ('1970-01-01 00:00:00+0000').
+
+    Returns a 2-tuple with the nanosecond offset as the first index.  The
+    second index contains a boolean indicating whether the string had a
+    timezone specifier (either 'Z' or a valid UTC offset).
     """
     # extract datetime components using regex
     cdef object match = iso_8601_pattern.match(string)
@@ -206,6 +444,7 @@ cdef object iso_8601_string_to_ns_scalar(str string):
     cdef double second = float(components["second"] or 0)
 
     # extract utc offset components
+    cdef bint has_offset = components["utc_sign"] is not None or "Z" in string
     cdef char utc_sign = -1 if components["utc_sign"] == "-" else 1
     cdef long int utc_hour = int(components["utc_hour"] or 0)
     cdef long int utc_minute = int(components["utc_minute"] or 0)
@@ -232,7 +471,7 @@ cdef object iso_8601_string_to_ns_scalar(str string):
     result -= utc_sign * (utc_hour * as_ns["h"] + utc_minute * as_ns["m"])
 
     # return
-    return result
+    return result, has_offset
 
 
 cdef inline datetime.datetime string_to_pydatetime_scalar_with_format(
@@ -252,6 +491,8 @@ cdef inline datetime.datetime string_to_pydatetime_scalar_with_format(
             return result.astimezone(tz)
 
         # result is naive, replace tzinfo directly
+        if isinstance(tz, pytz.BaseTzInfo):  # use .localize()
+            return tz.localize(result)
         return result.replace(tzinfo=tz)
 
     # return naive
@@ -301,6 +542,8 @@ cdef inline datetime.datetime string_to_pydatetime_scalar_parsed(
             return result.astimezone(tz)
 
         # result is naive, replace tzinfo directly
+        if isinstance(tz, pytz.BaseTzInfo):  # use .localize()
+            return tz.localize(result)
         return result.replace(tzinfo=tz)
 
     # return naive
@@ -343,24 +586,26 @@ cdef tuple iso_8601_string_to_ns_vector(
     """
     cdef int arr_length = arr.shape[0]
     cdef int i
-    cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
-    cdef bint has_errors = False
+    cdef np.ndarray[object] result
+    cdef np.ndarray[char, cast=True] has_offset
+
+    result = np.full(arr_length, pd.NA, dtype="O")
+    has_offset = np.full(arr_length, False, dtype=bool)
 
     for i in range(arr_length):
         try:
-            result[i] = iso_8601_string_to_ns_scalar(arr[i])
+            result[i], has_offset[i] = iso_8601_string_to_ns_scalar(arr[i])
         except ValueError as err:
-            if errors != "coerce":  # break loop and raise immediately
-                raise err
-            # np.empty(..., dtype='O') implicitly fills with `None`
-            has_errors = True  # note error and move on
+            if errors == "coerce":
+                continue  # np.full(...) implicitly fills with `pd.NA`
+            raise err  # break loop and raise immediately
 
-    return result, has_errors
+    return result, has_offset
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef tuple string_to_pydatetime_vector_with_format(
+cdef np.ndarray[object] string_to_pydatetime_vector_with_format(
     np.ndarray[str] arr,
     str format,
     datetime.tzinfo tz,
@@ -372,8 +617,7 @@ cdef tuple string_to_pydatetime_vector_with_format(
     """
     cdef int arr_length = arr.shape[0]
     cdef int i
-    cdef np.ndarray[object] result = np.full(arr_length, pd.NaT)
-    cdef bint has_errors = False
+    cdef np.ndarray[object] result = np.full(arr_length, pd.NaT, dtype="O")
 
     for i in range(arr_length):
         try:
@@ -383,17 +627,16 @@ cdef tuple string_to_pydatetime_vector_with_format(
                 tz=tz
             )
         except ValueError as err:
-            if errors != "coerce":  # break loop and raise immediately
-                raise err
-            # np.full(..., pd.NaT) implicitly fills with pd.NaT
-            has_errors = True  # note error and move on
+            if errors == "coerce":
+                continue  # np.full(...) implicitly fills with `pd.NaT`
+            raise err  # break loop and raise immediately
 
-    return result, has_errors
+    return result
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef tuple string_to_pydatetime_vector_parsed(
+cdef np.ndarray[object] string_to_pydatetime_vector_parsed(
     np.ndarray[str] arr,
     object parser_info,
     datetime.tzinfo tz,
@@ -406,7 +649,6 @@ cdef tuple string_to_pydatetime_vector_parsed(
     cdef int arr_length = arr.shape[0]
     cdef int i
     cdef np.ndarray[object] result = np.full(arr_length, pd.NaT)
-    cdef bint has_errors = False
 
     for i in range(arr_length):
         try:
@@ -416,17 +658,16 @@ cdef tuple string_to_pydatetime_vector_parsed(
                 tz=tz
             )
         except dateutil.parser.ParserError as err:
-            if errors != "coerce":  # break loop and raise immediately
-                raise err
-            # np.full(..., pd.NaT) implicitly fills with pd.NaT
-            has_errors = True  # note error and move on
+            if errors == "coerce":
+                continue  # np.full(...) implicitly fills with `pd.NaT`
+            raise err  # break loop and raise immediately
 
-    return result, has_errors
+    return result
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef tuple string_to_pydatetime_vector_with_fallback(
+cdef np.ndarray[object] string_to_pydatetime_vector_with_fallback(
     np.ndarray[str] arr,
     str format,
     object parser_info,
@@ -441,7 +682,6 @@ cdef tuple string_to_pydatetime_vector_with_fallback(
     cdef int arr_length = arr.shape[0]
     cdef int i
     cdef np.ndarray[object] result = np.full(arr_length, pd.NaT)
-    cdef bint has_errors = False
 
     for i in range(arr_length):
         try:
@@ -452,12 +692,11 @@ cdef tuple string_to_pydatetime_vector_with_fallback(
                 tz=tz
             )
         except dateutil.parser.ParserError as err:
-            if errors != "coerce":  # break loop and raise immediately
-                raise err
-            # np.full(..., pd.NaT) implicitly fills with pd.NaT
-            has_errors = True  # note error and move on
+            if errors == "coerce":
+                continue  # np.full(...) implicitly fills with `pd.NaT`
+            raise err  # break loop and raise immediately
 
-    return result, has_errors
+    return result
 
 
 #######################
@@ -465,37 +704,117 @@ cdef tuple string_to_pydatetime_vector_with_fallback(
 #######################
 
 
+def _iso_8601_to_ns(
+    arg: str | np.ndarray | pd.Series,
+    errors: str = "raise"
+) -> tuple[int | np.ndarray | pd.Series, bool | np.ndarray, bool]:
+    """Helper to convert ISO 8601 strings into nanosecond offsets from the UTC
+    epoch.
+
+    Parameters
+    ----------
+    arg : str | array-like
+        A scalar or vector of ISO 8601 strings.
+    errors : {'raise', 'coerce'}, default 'raise'
+        The error-handling rule to apply.  If `errors='ignore'`-like behavior
+        is desired, catch the ValueError raised by this function in the caller.
+
+    Returns
+    -------
+    tuple[int | array-like, bool | array-like]
+        A 2-tuple, the first index of which contains the result of the
+        nanosecond conversion, with `None` as a missing value in the case of
+        `errors='coerce'`.  The second element contains an index of which
+        strings in `arg` contained UTC offset information ('Z', '+xxxx', etc.)
+    """
+    # np.ndarray
+    if isinstance(arg, np.ndarray):
+        # convert fixed-length numpy strings into python strings
+        if np.issubdtype(arg.dtype, "U"):
+            arg = arg.astype("O")
+        return iso_8601_string_to_ns_vector(arg, errors=errors)
+
+    # pd.Series
+    if isinstance(arg, pd.Series):
+        result, has_offset = iso_8601_string_to_ns_vector(
+            arg.to_numpy(),
+            errors=errors
+        )
+        return pd.Series(result, index=arg.index, copy=False), has_offset
+
+    # scalar
+    try:
+        return iso_8601_string_to_ns_scalar(arg)
+    except ValueError as err:
+        if errors == "coerce":
+            return (None, False)
+        raise err
+
+
 def _iso_8601_to_pydatetime(
     arg: str | np.ndarray | pd.Series,
     tz: str | datetime.tzinfo,
     errors: str
 ) -> datetime.datetime | np.ndarray | pd.Series:
-    """Helper to efficiently convert ISO 8601 strings into `datetime.datetime`
-    objects.  Does so in 2 passes, one which converts each ISO 8601 string into
+    """Helper to convert ISO 8601 strings into `datetime.datetime` objects.
+
+    Does so in 2 passes, one which converts each ISO 8601 string into
     a nanosecond offset from utc, and then another that converts those
-    nanosecond offsets into `datetime.datetime` objects.
+    nanosecond offsets into `datetime.datetime` objects.  Localization of naive
+    datetimes to a non-naive/UTC timezone occurs in a potential 3rd pass.
+
+    Parameters
+    ----------
+    arg : str | array-like
+        A scalar or vector of ISO 8601 strings.
+    tz : datetime.tzinfo | None
+        The timezone to localize results to.
+    errors : {'raise', 'coerce'}
+        The error-handling rule to apply.  If `errors='ignore'`-like behavior
+        is desired, catch the ValueError raised by this function in the caller.
+
+    Returns
+    -------
+    datetime.datetime | array-like
+        A scalar or vector of `datetime.datetime` objects, localized to `tz`.
     """
     # convert iso strings to ns, and then ns to np.datetime64
-    result, has_errors = iso_8601_to_ns(arg, errors=errors)
+    result, has_offset = _iso_8601_to_ns(arg, errors=errors)
+
+    # TODO: return to has_errors approach?  Saves a call to pd.notna() and a
+    # level of indentation here - no `valid.all()`, `result is None`
 
     # check for parsing errors
-    if has_errors:
-        if errors == "ignore":
-            return arg
-
-        # pd.Series
+    if errors == "coerce":
+        # np.ndarray/pd.Series
         if isinstance(arg, (np.ndarray, pd.Series)):
-            valid = (result != None)
-            if valid.any():
-                result[valid] = ns_to_pydatetime(result[valid], tz=tz)
-            result[~valid] = pd.NaT
-            return result
+            valid = pd.notna(arg)
+            if not valid.all():  # at least 1 missing value
+                if valid.any():  # at least 1 non-missing value
+                    if tz is None or is_utc(tz):
+                        result[valid] = ns_to_pydatetime(result[valid], tz=tz)
+                    else:
+                        subset = ns_to_pydatetime(result[valid], tz=None)
+                        result[valid] = localize_pydatetime(
+                            subset,
+                            tz=tz,
+                            utc=has_offset
+                        )
+                result[~valid] = pd.NaT
+                return result
 
         # scalar
-        return pd.NaT
+        if result is None:
+            return pd.NaT
 
     # no errors encountered
-    return ns_to_pydatetime(result, tz=tz)
+    if tz is None or is_utc(tz):
+        return ns_to_pydatetime(result, tz=tz)
+    return localize_pydatetime(
+        ns_to_pydatetime(result, tz=None),
+        tz=tz,
+        utc=has_offset
+    )
 
 
 def _string_to_pydatetime_with_format(
@@ -504,30 +823,46 @@ def _string_to_pydatetime_with_format(
     tz: datetime.tzinfo,
     errors: str
 ) -> datetime.datetime | np.ndarray | pd.Series:
-    """Helper to efficiently convert datetime strings into `datetime.datetime`
-    objects using the given format string.
+    """Helper to convert datetime strings into `datetime.datetime` objects
+    using the given format string.
+
+    Parameters
+    ----------
+    arg : str | array-like
+        A scalar or vector of datetime strings.
+    format : str
+        An `strftime()`-compatible format string.
+    tz : datetime.tzinfo | None
+        The timezone to localize results to.
+    errors : {'raise', 'coerce'}
+        The error-handling rule to apply.  If `errors='ignore'`-like behavior
+        is desired, catch the ValueError raised by this function in the caller.
+
+    Returns
+    -------
+    datetime.datetime | array-like
+        A scalar or vector of `datetime.datetime` objects, localized to `tz`.
     """
-    if isinstance(arg, np.ndarray):  # np.ndarray
-        result, has_errors = string_to_pydatetime_vector_with_format(
+    # np.ndarray
+    if isinstance(arg, np.ndarray):
+        return string_to_pydatetime_vector_with_format(
             arg,
             format=format,
             tz=tz,
             errors=errors
         )
-        if errors == "ignore" and has_errors:
-            return arg
-        return result
 
-    if isinstance(arg, pd.Series):  # pd.Series
-        result, has_errors = string_to_pydatetime_vector_with_format(
-            arg.to_numpy(),
+    # pd.Series
+    if isinstance(arg, pd.Series):
+        index = arg.index
+        arg = arg.to_numpy()
+        arg = string_to_pydatetime_vector_with_format(
+            arg,
             format=format,
             tz=tz,
             errors=errors
         )
-        if errors == "ignore" and has_errors:
-            return arg
-        return pd.Series(result, index=arg.index, copy=False)
+        return pd.Series(arg, index=index, dtype="O", copy=False)
 
     # scalar
     try:
@@ -537,11 +872,9 @@ def _string_to_pydatetime_with_format(
             tz=tz
         )
     except ValueError as err:
-        if errors == "raise":
-            raise err
-        if errors == "ignore":
-            return arg
-        return pd.NaT
+        if errors == "coerce":
+            return pd.NaT
+        raise err
 
 
 def _string_to_pydatetime_parsed(
@@ -550,31 +883,48 @@ def _string_to_pydatetime_parsed(
     tz: datetime.tzinfo,
     errors: str
 ) -> datetime.datetime | np.ndarray | pd.Series:
-    """Helper to efficiently convert datetime strings into `datetime.datetime`
-    objects using dateutil parsing rules.
+    """Helper to convert datetime strings into `datetime.datetime` objects
+    using dateutil parsing rules.
+
+    Parameters
+    ----------
+    arg : str | array-like
+        A scalar or vector of ISO 8601 strings.
+    parser_info : dateutil.parser.parserinfo
+        A `dateutil` parserinfo object defining the parsing rules to apply.
+        This can specify values for `dayfirst` and `yearfirst` (among others)
+        for the `dateutil` parsing pipeline.
+    tz : datetime.tzinfo | None
+        The timezone to localize results to.
+    errors : {'raise', 'coerce'}
+        The error-handling rule to apply.  If `errors='ignore'`-like behavior
+        is desired, catch the ValueError raised by this function in the caller.
+
+    Returns
+    -------
+    datetime.datetime | array-like
+        A scalar or vector of `datetime.datetime` objects, localized to `tz`.
     """
-    if isinstance(arg, np.ndarray):  # np.ndarray
-        result, has_errors = string_to_pydatetime_vector_parsed(
+    # np.ndarray
+    if isinstance(arg, np.ndarray):
+        return string_to_pydatetime_vector_parsed(
             arg,
             parser_info=parser_info,
             tz=tz,
             errors=errors
         )
-        if errors == "ignore" and has_errors:
-            return arg
-        return result
 
-
-    if isinstance(arg, pd.Series):  # pd.Series
-        result, has_errors = string_to_pydatetime_vector_parsed(
-            arg.to_numpy(),
+    # pd.Series
+    if isinstance(arg, pd.Series):
+        index = arg.index
+        arg = arg.to_numpy()
+        arg = string_to_pydatetime_vector_parsed(
+            arg,
             parser_info=parser_info,
             tz=tz,
             errors=errors
         )
-        if errors == "ignore" and has_errors:
-            return arg
-        return pd.Series(result, index=arg.index, copy=False)
+        return pd.Series(arg, index=index, dtype="O", copy=False)
 
     # scalar
     try:
@@ -583,12 +933,10 @@ def _string_to_pydatetime_parsed(
             parser_info=parser_info,
             tz=tz
         )
-    except ValueError as err:
-        if errors == "raise":
-            raise err
-        if errors == "ignore":
-            return arg
-        return pd.NaT
+    except dateutil.parser.ParserError as err:
+        if errors == "coerce":
+            return pd.NaT
+        raise err
 
 
 def _string_to_pydatetime_with_fallback(
@@ -598,33 +946,53 @@ def _string_to_pydatetime_with_fallback(
     tz: datetime.tzinfo,
     errors: str
 ) -> datetime.datetime | np.ndarray | pd.Series:
-    """Helper to efficiently convert datetime strings into `datetime.datetime`
-    objects, using the given format string where applicable and falling back
-    to dateutil where it is not.
+    """Helper to convert datetime strings into `datetime.datetime` objects,
+    using the given format string where applicable and falling back to dateutil
+    where it is not.
+
+    Parameters
+    ----------
+    arg : str | array-like
+        A scalar or vector of ISO 8601 strings.
+    format : str
+        An `strftime()`-compatible format string.
+    parser_info : dateutil.parser.parserinfo
+        A `dateutil` parserinfo object defining the parsing rules to apply.
+        This can specify values for `dayfirst` and `yearfirst` (among others)
+        for the `dateutil` parsing pipeline.
+    tz : datetime.tzinfo | None
+        The timezone to localize results to.
+    errors : {'raise', 'coerce'}
+        The error-handling rule to apply.  If `errors='ignore'`-like behavior
+        is desired, catch the ValueError raised by this function in the caller.
+
+    Returns
+    -------
+    datetime.datetime | array-like
+        A scalar or vector of `datetime.datetime` objects, localized to `tz`.
     """
-    if isinstance(arg, np.ndarray):  # np.ndarray
-        result, has_errors = string_to_pydatetime_vector_with_fallback(
+    # np.ndarray
+    if isinstance(arg, np.ndarray):
+        return string_to_pydatetime_vector_with_fallback(
             arg,
             format=format,
             parser_info=parser_info,
             tz=tz,
             errors=errors
         )
-        if errors == "ignore" and has_errors:
-            return arg
-        return result
 
-    if isinstance(arg, pd.Series):  # pd.Series
-        result, has_errors = string_to_pydatetime_vector_with_fallback(
-            arg.to_numpy(),
+    # pd.Series
+    if isinstance(arg, pd.Series):
+        index = arg.index
+        arg = arg.to_numpy()
+        arg = string_to_pydatetime_vector_with_fallback(
+            arg,
             format=format,
             parser_info=parser_info,
             tz=tz,
             errors=errors
         )
-        if errors == "ignore" and has_errors:
-            return arg
-        return pd.Series(result, index=arg.index, copy=False)
+        return pd.Series(arg, index=index, dtype="O", copy=False)
 
     # scalar
     try:
@@ -634,12 +1002,10 @@ def _string_to_pydatetime_with_fallback(
             parser_info=parser_info,
             tz=tz
         )
-    except ValueError as err:
-        if errors == "raise":
-            raise err
-        if errors == "ignore":
-            return arg
-        return pd.NaT
+    except dateutil.parser.ParserError as err:
+        if errors == "coerce":
+            return pd.NaT
+        raise err
 
 
 ######################
@@ -655,7 +1021,7 @@ def is_iso_8601(string: str) -> bool:
 def iso_8601_to_ns(
     arg: str | np.ndarray | pd.Series,
     errors: str = "raise"
-) -> tuple[int | np.ndarray | pd.Series, bool]:
+) -> int | np.ndarray | pd.Series:
     """Convert ISO 8601 datetime strings into nanosecond offsets from the utc
     epoch ('1970-01-01 00:00:00+0000').
 
@@ -672,54 +1038,113 @@ def iso_8601_to_ns(
         encountered during parsing.  The behaviors are as follows:
             * `'raise'` - immediately raise a `ValueError`
             * `'ignore'` - return `arg` unmodified
-            * `'coerce'` - fill with `None` and continue
+            * `'coerce'` - fill with `pandas.NA` and continue
 
     Returns
     -------
-    tuple[int | array-like, bool]
-        A 2-tuple where the first element contains the result of the
-        conversion, and the second indicates whether errors were encountered
-        during parsing.  If `errors='raise'`, the second element will always
-        be `False`.
+    int | array-like
+        The integer nanosecond offset(s) associated with the given datetime
+        string(s).
 
     Raises
     ------
     ValueError
         If `errors='raise'` and `arg` contains an invalid ISO 8601 string.
+
+    Examples
+    --------
+    Strings can have precision from years to nanoseconds:
+
+    >>> iso_8601_to_ns("2022")
+    1640995200000000000
+    >>> iso_8601_to_ns("2022-10")
+    1664582400000000000
+    >>> iso_8601_to_ns("2022-10-15")
+    1665792000000000000
+    >> iso_8601_to_ns("2022-10-15 08")
+    1665820800000000000
+    >>> iso_8601_to_ns("2022-10-15T08:47")
+    1665823620000000000
+    >>> iso_8601_to_ns("2022-10-15 08:47:23")
+    1665823643000000000
+    >>> iso_8601_to_ns("2022-10-15T08:47:23.123")
+    1665823643123000000
+    >>> iso_8601_to_ns("2022-10-15 08:47:23.123456")
+    1665823643123456000
+    >>> iso_8601_to_ns("2022-10-15T08:47:23.123456789")
+    1665823643123456789
+
+    They can be signed or unsigned:
+
+    >>> iso_8601_to_ns("-43-03-01")  # Assassination of Julius Caesar
+    -63519033600000000000
+    >>> iso_8601_to_ns("18-08-19")  # Death of Caesar Augustus
+    -61579267200000000000
+
+    With or without timezone information:
+
+    >>> iso_8601_to_ns("1970-01-01 00:00:00")
+    0
+    >>> iso_8601_to_ns("1970-01-01 00:00:00Z")
+    0
+    >>> iso_8601_to_ns("1970-01-01 00:00:00+0800")
+    -28800000000000
+    >>> iso_8601_to_ns("1970-01-01 00:00:00-0800")
+    28800000000000
+
+    And can be arbitrarily large:
+
+    >>> iso_8601_to_ns(f"{2**63 - 1}-01-01 00:00:00.123456789")
+    291061508645168328945024000123456789
+
+    Unrealistic ISO 8601 strings are rejected:
+
+    >>> iso_8601_to_ns("2001-13-15 00:00:00")
+    Traceback (most recent call last):
+        ...
+    ValueError: invalid isoformat string '2001-13-15 00:00:00'
+    >>> iso_8601_to_ns("2001-02-29 00:00:00")
+    Traceback (most recent call last):
+        ...
+    ValueError: invalid isoformat string '2001-02-29 00:00:00'
+    >>> iso_8601_to_ns("2001-01-01 60:00:00")
+    Traceback (most recent call last):
+        ...
+    ValueError: invalid isoformat string '2001-01-01 60:00:00'
+    >>> iso_8601_to_ns("2001-01-01 00:60:00")
+    Traceback (most recent call last):
+        ...
+    ValueError: invalid isoformat string '2001-01-01 00:60:00'
+    >>> iso_8601_to_ns("2001-01-01 00:00:60")
+    Traceback (most recent call last):
+        ...
+    ValueError: invalid isoformat string '2001-01-01 00:00:60'
+
+    And leap days are handled correctly:
+
+    >>> iso_8601_to_ns("2000-02-29 00:00:00")
+    951782400000000000
+
+    Strings can also be vectorized:
+
+    >>> iso_8601_to_ns(
+    ...     pd.Series([f"1970-01-01 00:00:00.00000000{i}" for i in range(1, 4)])
+    ... )
+    0    1
+    1    2
+    2    3
+    dtype: object
+    >>> iso_8601_to_ns(
+    ...     np.array([f"1970-01-01 00:00:00.00000000{i}" for i in range(1, 4)])
+    ... )
+    array([1, 2, 3], dtype=object)
     """
-    # np.ndarray
-    if isinstance(arg, np.ndarray):
-        # convert fixed-length numpy strings to python strings
-        if np.issubdtype(arg.dtype, "U"):
-            arg = arg.astype("O")
-
-        result, has_errors = iso_8601_string_to_ns_vector(
-            arg,
-            errors=errors
-        )
-        if errors == "ignore" and has_errors:
-            return arg, has_errors
-        return result, has_errors
-
-    # pd.Series
-    if isinstance(arg, pd.Series):
-        result, has_errors = iso_8601_string_to_ns_vector(
-            arg.to_numpy(),
-            errors=errors
-        )
-        if errors == "ignore" and has_errors:
-            return arg, has_errors
-        return pd.Series(result, index=arg.index, copy=False), has_errors
-
-    # scalar
     try:
-        return (iso_8601_string_to_ns_scalar(arg), False)
+        return _iso_8601_to_ns(arg, errors=errors)[0]
     except ValueError as err:
-        if errors == "raise":
-            raise err
         if errors == "ignore":
-            return (arg, True)
-        return (None, True)
+            return arg
+        raise err
 
 
 def string_to_pandas_timestamp(
@@ -790,18 +1215,75 @@ def string_to_pandas_timestamp(
 
     Examples
     --------
-        >>> string_to_pandas_timestamp("1970-01-01 00:00:00")
-        >>> string_to_pandas_timestamp("1970-01-01 00:00:00", tz="US/Pacific")
-        >>> string_to_pandas_timestamp("1970-01-01 00:00:00+0000", tz="US/Pacific")
+    Strings can be in ISO 8601 format:
 
-        >>> string_to_pandas_timestamp("4 Jan 2022", format="%Y.%m.%d")
+    >>> string_to_pandas_timestamp("1970-01-01 00:00:00")
+    Timestamp('1970-01-01 00:00:00')
 
-        >>> string_to_pandas_timestamp("01/05/09")
-        >>> string_to_pandas_timestamp("01/05/09", day_first=True)
-        >>> string_to_pandas_timestamp("01/05/09", year_first=True)
-        >>> string_to_pandas_timestamp("01/05/09", day_first=True, year_first=True)
+    Localized to any timezone:
 
-        >>> string_to_pandas_timestamp("December 7th, 1941 at 8 AM", tz="US/Hawaii")
+    >>> string_to_pandas_timestamp("1970-01-01 00:00:00", tz="US/Pacific")
+    Timestamp('1970-01-01 00:00:00-0800', tz='US/Pacific')
+    >>> string_to_pandas_timestamp("1970-01-01 00:00:00Z", tz="US/Pacific")
+    Timestamp('1969-12-31 16:00:00-0800', tz='US/Pacific')
+    >>> string_to_pandas_timestamp("1970-01-01 00:00:00+01:00", tz="US/Pacific")
+    Timestamp('1969-12-31 15:00:00-0800', tz='US/Pacific')
+
+    They can also be relative signifiers ('Today', 'Now'):
+
+    >>> string_to_pandas_timestamp("today")
+    Timestamp('2022-09-22 17:06:58.837417')  #random
+
+    Or quarterly dates:
+
+    >>> string_to_pandas_timestamp("4Q2023")
+    Timestamp('2023-10-01 00:00:00')
+    >>> string_to_pandas_timestamp("23q4")
+    Timestamp('2023-10-01 00:00:00')
+
+    You can use `strftime()`-like format strings:
+
+    >>> string_to_pandas_timestamp("04.01.2022", format="%d.%m.%Y")
+    Timestamp('2022-01-04 00:00:00')
+    >>> string_to_pandas_timestamp(
+    ...     "04.01.2022",
+    ...     format="%d.%m.%Y",
+    ...     tz="US/Eastern"
+    ... )
+    Timestamp('2022-01-04 00:00:00-0500', tz='US/Eastern')
+
+    Or rely on `dateutil` parsing:
+
+    >>> string_to_pandas_timestamp("4 Jan 2022")
+    Timestamp('2022-01-04 00:00:00')
+    >>> string_to_pandas_timestamp("December 7th, 1941 at 8 AM", tz="US/Hawaii")
+    Timestamp('1941-12-07 08:00:00-1030', tz='US/Hawaii')
+
+    With ambiguous dates:
+
+    >>> string_to_pandas_timestamp("01/05/09")
+    Timestamp('2009-01-05 00:00:00')
+    >>> string_to_pandas_timestamp("01/05/09", day_first=True)
+    Timestamp('2009-05-01 00:00:00')
+    >>> string_to_pandas_timestamp("01/05/09", year_first=True)
+    Timestamp('2001-05-09 00:00:00')
+    >>> string_to_pandas_timestamp("01/05/09", day_first=True, year_first=True)
+    Timestamp('2001-09-05 00:00:00')
+
+    Strings can also be vectorized:
+
+    >>> strings = [f"1970-01-01 00:00:00.00000000{i}" for i in range(1, 4)]
+    >>> strings
+    ['1970-01-01 00:00:00.000000001', '1970-01-01 00:00:00.000000002', '1970-01-01 00:00:00.000000003']
+    >>> string_to_pandas_timestamp(pd.Series(strings))
+    0   1970-01-01 00:00:00.000000001
+    1   1970-01-01 00:00:00.000000002
+    2   1970-01-01 00:00:00.000000003
+    dtype: datetime64[ns]
+    >>> string_to_pandas_timestamp(np.array(strings))
+    array([Timestamp('1970-01-01 00:00:00.000000001'),
+       Timestamp('1970-01-01 00:00:00.000000002'),
+       Timestamp('1970-01-01 00:00:00.000000003')], dtype=object)
     """
     # ensure format doesn't contradict day_first, year_first
     if format is not None and (day_first or year_first):
@@ -956,19 +1438,77 @@ def string_to_pydatetime(
 
     Examples
     --------
-        >>> string_to_pydatetime("1970-01-01 00:00:00")
-        >>> string_to_pydatetime("1970-01-01 00:00:00", tz="US/Pacific")
-        >>> string_to_pydatetime("1970-01-01 00:00:00+0000", tz="US/Pacific")
+    Strings can be in ISO 8601 format:
 
-        >>> string_to_pydatetime("4 Jan 2022", format="%Y.%m.%d")
+    >>> string_to_pydatetime("1970-01-01 00:00:00")
+    datetime.datetime(1970, 1, 1, 0, 0)
 
-        >>> string_to_pydatetime("01/05/09")
-        >>> string_to_pydatetime("01/05/09", day_first=True)
-        >>> string_to_pydatetime("01/05/09", year_first=True)
-        >>> string_to_pydatetime("01/05/09", day_first=True, year_first=True)
+    Localized to any timezone:
 
-        >>> string_to_pydatetime("December 7th, 1941 at 8 AM", tz="US/Hawaii")
-        >>> string_to_pydatetime("Today is January 1, 2047 at 8:21:00AM")
+    >>> string_to_pydatetime("1970-01-01 00:00:00", tz="US/Pacific")
+    datetime.datetime(1970, 1, 1, 0, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
+    >>> string_to_pydatetime("1970-01-01 00:00:00Z", tz="US/Pacific")
+    datetime.datetime(1969, 12, 31, 16, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
+    >>> string_to_pydatetime("1970-01-01 00:00:00+01:00", tz="US/Pacific")
+    datetime.datetime(1969, 12, 31, 15, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
+
+    They can also be relative signifiers ('Today', 'Now'):
+
+    >>> string_to_pydatetime("today")
+    datetime.datetime(2022, 9, 23, 0, 8, 4, 855833)  #random
+
+    Or quarterly dates:
+
+    >>> string_to_pydatetime("4Q2023")
+    datetime.datetime(2023, 10, 1, 0, 0)
+    >>> string_to_pydatetime("23q4")
+    datetime.datetime(2023, 10, 1, 0, 0)
+
+    You can use `strftime()`-like format strings:
+
+    >>> string_to_pydatetime("04.01.2022", format="%d.%m.%Y")
+    datetime.datetime(2022, 1, 4, 0, 0)
+    >>> string_to_pydatetime(
+    ...     "04.01.2022",
+    ...     format="%d.%m.%Y",
+    ...     tz="US/Eastern"
+    ... )
+    datetime.datetime(2022, 1, 4, 0, 0, tzinfo=<DstTzInfo 'US/Eastern' EST-1 day, 19:00:00 STD>)
+
+    Or rely on `dateutil` parsing:
+
+    >>> string_to_pydatetime("4 Jan 2022")
+    datetime.datetime(2022, 1, 4, 0, 0)
+    >>> string_to_pydatetime("December 7th, 1941 at 8 AM", tz="US/Hawaii")
+    datetime.datetime(1941, 12, 7, 8, 0, tzinfo=<DstTzInfo 'US/Hawaii' HST-1 day, 13:30:00 STD>)
+    >>> string_to_pydatetime("Today is January 1, 2047 8:21:00AM", tz="UTC")
+    datetime.datetime(2047, 1, 1, 8, 21, tzinfo=<UTC>)
+
+    With ambiguous dates:
+
+    >>> string_to_pydatetime("01/05/09")
+    datetime.datetime(2009, 1, 5, 0, 0)
+    >>> string_to_pydatetime("01/05/09", day_first=True)
+    datetime.datetime(2009, 5, 1, 0, 0)
+    >>> string_to_pydatetime("01/05/09", year_first=True)
+    datetime.datetime(2001, 5, 9, 0, 0)
+    >>> string_to_pydatetime("01/05/09", day_first=True, year_first=True)
+    datetime.datetime(2001, 9, 5, 0, 0)
+
+    Strings can also be vectorized:
+
+    >>> strings = [f"1970-01-01 00:00:00.00000{i}" for i in range(1, 4)]
+    >>> strings
+    ['1970-01-01 00:00:00.000001', '1970-01-01 00:00:00.000002', '1970-01-01 00:00:00.000003']
+    >>> string_to_pydatetime(pd.Series(strings))
+    0    1970-01-01 00:00:00.000001
+    1    1970-01-01 00:00:00.000002
+    2    1970-01-01 00:00:00.000003
+    dtype: object
+    >>> string_to_pydatetime(np.array(strings))
+    array([datetime.datetime(1970, 1, 1, 0, 0, 0, 1),
+       datetime.datetime(1970, 1, 1, 0, 0, 0, 2),
+       datetime.datetime(1970, 1, 1, 0, 0, 0, 3)], dtype=object)
     """
     # ensure format doesn't contradict day_first, year_first
     if format is not None and (day_first or year_first):
@@ -984,24 +1524,39 @@ def string_to_pydatetime(
 
     # if a format string is given, use it directly
     if format is not None:
-        return _string_to_pydatetime_with_format(
-            arg,
-            format=format,
-            tz=tz,
-            errors=errors
-        )
+        try:
+            return _string_to_pydatetime_with_format(
+                arg,
+                format=format,
+                tz=tz,
+                errors=errors
+            )
+        except ValueError as err:
+            if errors == "ignore":
+                return arg
+            raise err
 
     # if no format is given, try ISO 8601
-    element = arg[0] if isinstance(arg, (np.ndarray, pd.Series)) else arg
+    if isinstance(arg, np.ndarray):
+        element = arg[0]
+    elif isinstance(arg, pd.Series):
+        element = arg.iloc[0]
+    else:
+        element = arg
     if is_iso_8601(element) and "-" in element:  # ignore naked years
-        return _iso_8601_to_pydatetime(arg, tz=tz, errors=errors)
+        try:
+            return _iso_8601_to_pydatetime(arg, tz=tz, errors="raise")
+        except ValueError as err:
+            pass  # fall back to dateutil
 
     # if no format and not ISO 8601, try to infer format like pd.to_datetime
     infer = pd.core.tools.datetimes._guess_datetime_format_for_array
-    if not isinstance(arg, (np.ndarray, pd.Series)):
-        format = infer(np.array([arg]))
-    else:
+    if isinstance(arg, np.ndarray):
         format = infer(arg)
+    elif isinstance(arg, pd.Series):
+        format = infer(arg.to_numpy())
+    else:
+        format = infer(np.array([arg]))
 
     # set up dateutil parserinfo
     parser_info = dateutil.parser.parserinfo(dayfirst=day_first,
@@ -1018,21 +1573,31 @@ def string_to_pydatetime(
                           format[month_index + 2:day_index + 1] + "m" +
                           format[day_index + 2:])
 
-        return _string_to_pydatetime_with_fallback(
+        try:
+            return _string_to_pydatetime_with_fallback(
+                arg,
+                format=format,
+                parser_info=parser_info,
+                tz=tz,
+                errors=errors
+            )
+        except dateutil.parser.ParserError as err:
+            if errors == "ignore":
+                return arg
+            raise err
+
+    # if no format could be inferred, use dateutil parsing directly
+    try:
+        return _string_to_pydatetime_parsed(
             arg,
-            format=format,
-            parser_info=parser_info,
+            parser_info = parser_info,
             tz=tz,
             errors=errors
         )
-
-    # if no format could be inferred, use dateutil parsing directly
-    return _string_to_pydatetime_parsed(
-        arg,
-        parser_info = parser_info,
-        tz=tz,
-        errors=errors
-    )
+    except dateutil.parser.ParserError as err:
+        if errors == "ignore":
+            return arg
+        raise err
 
 
 def string_to_numpy_datetime64(
@@ -1086,65 +1651,110 @@ def string_to_numpy_datetime64(
 
     Examples
     --------
-        >>> string_to_numpy_datetime64("1970-01-01 00:00:00")
-        >>> string_to_numpy_datetime64("1970-01-01 00:00:00-0800")
+    Strings must be in ISO 8601 format, with or without timezone information:
 
-        >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="ns")
-        >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="us")
-        >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="ms")
-        >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="s")
-        >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="m")
-        >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="h")
-        >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="D")
-        >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="W")
-        >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="M")
-        >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="Y")
+    >>> string_to_numpy_datetime64("1970-01-01 00:00:00")
+    numpy.datetime64('1970-01-01T00:00:00.000000000')
+    >>> string_to_numpy_datetime64("1970-01-01 00:00:00Z")
+    numpy.datetime64('1970-01-01T00:00:00.000000000')
+    >>> string_to_numpy_datetime64("1970-01-01 00:00:00-0800")
+    numpy.datetime64('1970-01-01T08:00:00.000000000')
 
-        >>> string_to_numpy_datetime64(f"{2**50}-10-15 12:34:56")
-        >>> string_to_numpy_datetime64(f"{2**50}-10-15 12:34:56", rounding="up")
+    `numpy.datetime64` units can be specified explicitly:
+
+    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="ns")
+    numpy.datetime64('2042-10-15T12:34:56.789101112')
+    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="us")
+    numpy.datetime64('2042-10-15T12:34:56.789101')
+    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="ms")
+    numpy.datetime64('2042-10-15T12:34:56.789')
+    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="s")
+    numpy.datetime64('2042-10-15T12:34:56')
+    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="m")
+    numpy.datetime64('2042-10-15T12:34')
+    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="h")
+    numpy.datetime64('2042-10-15T12','h')
+    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="D")
+    numpy.datetime64('2042-10-15')
+    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="W")
+    numpy.datetime64('2042-10-09')
+    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="M")
+    numpy.datetime64('2042-10')
+    >>> string_to_numpy_datetime64("2042-10-15 12:34:56.789101112", unit="Y")
+    numpy.datetime64('2042')
+
+    With customizable rounding:
+
+    >>> string_to_numpy_datetime64(
+    ...     "2042-10-15 12:34:56.789101112",
+    ...     unit="s",
+    ...     rounding="up"
+    ... )
+    numpy.datetime64('2042-10-15T12:34:57')
+
+    Or they can be determined automatically, based on the input data:
+
+    >>> string_to_numpy_datetime64(f"{2**50}-10-15 12:34:56")
+    numpy.datetime64('1125899906842624-10-15')
+    >>> string_to_numpy_datetime64(f"{2**50}-10-15 12:34:56", rounding="up")
+    numpy.datetime64('1125899906842624-10-16')
     """
     # convert iso strings to ns, and then ns to np.datetime64
-    result, has_errors = iso_8601_to_ns(arg, errors=errors)
-    
-    # check for parsing errors
-    if has_errors:
+    try:
+        result, _ = _iso_8601_to_ns(arg, errors=errors)
+    except ValueError as err:
         if errors == "ignore":
             return arg
+        raise err
 
+    # TODO: return to has_errors approach?  Saves a call to pd.notna() and a
+    # level of indentation here - no `valid.all()`, `result is None`
+
+    # check for parsing errors
+    if errors == "coerce":  # result may have missing values
         # np.ndarray
         if isinstance(arg, np.ndarray):
-            valid = (result != None)
-            if valid.any():
-                arg = ns_to_numpy_datetime64(
-                    result[valid],
-                    unit=unit,
-                    rounding=rounding
-                )
-                result[valid] = arg
-                unit, _ = np.datetime_data(arg.dtype)
-                return result.astype(f"M8[{unit}]")
+            valid = pd.notna(result)
+            if not valid.all():  # at least 1 missing value
+                if valid.any():  # at least 1 non-missing value
+                    subset = ns_to_numpy_datetime64(
+                        result[valid],
+                        unit=unit,
+                        rounding=rounding
+                    )
+                    result[valid] = subset
+                    unit, _ = np.datetime_data(subset.dtype)
+                    return result.astype(f"M8[{unit}]")
 
-            # no valid inputs
-            if unit is None:
-                unit = "ns"
-            return result.astype(f"M8[{unit}]")
+                # only missing values
+                if unit is None:
+                    unit = "ns"
+                return result.astype(f"M8[{unit}]")
 
         # pd.Series
         if isinstance(arg, pd.Series):
-            valid = (result != None)
-            if valid.any():
-                result[valid] = ns_to_numpy_datetime64(
-                    result[valid],
-                    unit=unit,
-                    rounding=rounding
-                )
-            result[~valid] = np.datetime64("nat")
-            return result
+            valid = pd.notna(result)
+            if not valid.all():  # at least 1 missing value
+                if valid.any():  # at least 1 non-missing value
+                    subset = ns_to_numpy_datetime64(
+                        result[valid],
+                        unit=unit,
+                        rounding=rounding
+                    )
+                    result[valid] = subset
+                    unit, _ = np.datetime_data(subset.iloc[0])
+                elif unit is None:  # only missing values
+                    unit = "ns"
+                result[~valid] = np.datetime64("nat", unit)
+                return result
 
         # scalar
-        return np.datetime64("nat")
+        if result is None:
+            if unit is None:
+                unit = "ns"
+            return np.datetime64("nat", unit)
 
-    # no errors encountered
+    # no missing values encountered
     return ns_to_numpy_datetime64(
         result,
         unit=unit,
@@ -1235,25 +1845,107 @@ def string_to_datetime(
 
     Examples
     --------
-        >>> string_to_datetime("1970-01-01 00:00:00")
-        >>> string_to_datetime("1970-01-01 00:00:00", tz="US/Pacific")
-        >>> string_to_datetime("1970-01-01 00:00:00+0000", tz="US/Pacific")
+    Strings can be in ISO 8601 format:
 
-        >>> string_to_datetime("4 Jan 2022", format="%Y.%m.%d")
+    >>> string_to_datetime("1970-01-01 00:00:00")
+    Timestamp('1970-01-01 00:00:00')
 
-        >>> string_to_datetime("01/05/09")
-        >>> string_to_datetime("01/05/09", day_first=True)
-        >>> string_to_datetime("01/05/09", year_first=True)
-        >>> string_to_datetime("01/05/09", day_first=True, year_first=True)
+    Localized to any timezone:
 
-        >>> string_to_datetime("December 7th, 1941 at 8 AM", tz="US/Hawaii")
+    >>> string_to_datetime("1970-01-01 00:00:00", tz="US/Pacific")
+    Timestamp('1970-01-01 00:00:00-0800', tz='US/Pacific')
+    >>> string_to_datetime("1970-01-01 00:00:00Z", tz="US/Pacific")
+    Timestamp('1969-12-31 16:00:00-0800', tz='US/Pacific')
+    >>> string_to_datetime("1970-01-01 00:00:00+01:00", tz="US/Pacific")
+    Timestamp('1969-12-31 15:00:00-0800', tz='US/Pacific')
 
-        >>> string_to_datetime("2000-01-01")
-        >>> string_to_datetime("3000-01-01")
-        >>> string_to_datetime("10000-01-01")
+    They can also be relative signifiers ('Today', 'Now'):
 
-        >>> string_to_datetime(str(pd.Timestamp.max.tz_localize("UTC")))
-        >>> string_to_datetime(str(pd.Timestamp.max.tz_localize("UTC")), tz="Europe/Berlin")
+    >>> string_to_datetime("today")
+    Timestamp('2022-09-22 17:06:58.837417')  #random
+
+    Or quarterly dates:
+
+    >>> string_to_datetime("4Q2023")
+    Timestamp('2023-10-01 00:00:00')
+    >>> string_to_datetime("23q4")
+    Timestamp('2023-10-01 00:00:00')
+
+    You can use `strftime()`-like format strings:
+
+    >>> string_to_datetime("04.01.2022", format="%d.%m.%Y")
+    Timestamp('2022-01-04 00:00:00')
+    >>> string_to_datetime(
+    ...     "04.01.2022",
+    ...     format="%d.%m.%Y",
+    ...     tz="US/Eastern"
+    ... )
+    Timestamp('2022-01-04 00:00:00-0500', tz='US/Eastern')
+
+    Or rely on `dateutil` parsing:
+
+    >>> string_to_datetime("4 Jan 2022")
+    Timestamp('2022-01-04 00:00:00')
+    >>> string_to_datetime("December 7th, 1941 at 8 AM", tz="US/Hawaii")
+    Timestamp('1941-12-07 08:00:00-1030', tz='US/Hawaii')
+
+    With ambiguous dates:
+
+    >>> string_to_datetime("01/05/09")
+    Timestamp('2009-01-05 00:00:00')
+    >>> string_to_datetime("01/05/09", day_first=True)
+    Timestamp('2009-05-01 00:00:00')
+    >>> string_to_datetime("01/05/09", year_first=True)
+    Timestamp('2001-05-09 00:00:00')
+    >>> string_to_datetime("01/05/09", day_first=True, year_first=True)
+    Timestamp('2001-09-05 00:00:00')
+
+    Strings can also be vectorized:
+
+    >>> strings = [f"1970-01-01 00:00:00.00000000{i}" for i in range(1, 4)]
+    >>> strings
+    ['1970-01-01 00:00:00.000000001', '1970-01-01 00:00:00.000000002', '1970-01-01 00:00:00.000000003']
+    >>> string_to_datetime(pd.Series(strings))
+    0   1970-01-01 00:00:00.000000001
+    1   1970-01-01 00:00:00.000000002
+    2   1970-01-01 00:00:00.000000003
+    dtype: datetime64[ns]
+    >>> string_to_datetime(np.array(strings))
+    array([Timestamp('1970-01-01 00:00:00.000000001'),
+       Timestamp('1970-01-01 00:00:00.000000002'),
+       Timestamp('1970-01-01 00:00:00.000000003')], dtype=object)
+
+    And overflow between datetime types is handled gracefully:
+
+    >>> string_to_datetime("2262-04-11 23:47:16.854775807")
+    Timestamp('2262-04-11 23:47:16.854775807')
+    >>> string_to_datetime("2262-04-11 23:47:16.854775808")
+    datetime.datetime(2262, 4, 11, 23, 47, 16, 854775)
+    >>> string_to_datetime("April 11th, 2262 at 23:47:16.854775")
+    Timestamp('2262-04-11 23:47:16.854775')
+    >>> string_to_datetime("April 11th, 2262 at 23:47:16.854776")
+    datetime.datetime(2262, 4, 11, 23, 47, 16, 854776)
+
+    All the way up to `numpy.datetime64` range in the case of ISO strings:
+
+    >>> string_to_datetime("9999-12-31 23:59:59.999999")
+    datetime.datetime(9999, 12, 31, 23, 59, 59, 999999)
+    >>> string_to_datetime("10000-01-01 00:00:00")
+    numpy.datetime64('10000-01-01T00:00:00.000000')
+
+    This includes overflow caused by timezone localization:
+
+    >>> string_to_datetime("1677-09-21 00:12:43.145224193")
+    Timestamp('1677-09-21 00:12:43.145224193')
+    >>> string_to_datetime("1677-09-21 00:12:43.145224193", tz="Europe/Berlin")
+    datetime.datetime(1677, 9, 21, 0, 12, 43, 145224, tzinfo=<DstTzInfo 'Europe/Berlin' LMT+0:53:00 STD>)
+    >>> string_to_datetime("September 21st, 1677 at 00:12:43.145225")
+    Timestamp('1677-09-21 00:12:43.145225')
+    >>> string_to_datetime(
+    ...     "September 21st, 1677 at 00:12:42.145225",
+    ...     tz="Europe/Berlin"
+    ... )
+    datetime.datetime(1677, 9, 21, 0, 12, 42, 145225, tzinfo=<DstTzInfo 'Europe/Berlin' LMT+0:53:00 STD>)
     """
     # ensure format doesn't contradict day_first, year_first
     if format is not None and (day_first or year_first):

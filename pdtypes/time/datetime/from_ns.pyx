@@ -172,10 +172,20 @@ import pandas as pd
 
 from pdtypes.util.type_hints import datetime_like
 
-from ..timezone import is_utc, timezone
+from ..timezone import is_utc, localize_pandas_timestamp, timezone
 from ..timezone cimport utc_timezones
 from ..unit import convert_unit_integer
 from ..unit cimport as_ns, valid_units
+
+
+# TODO: string_to_datetime with ISO strings doesn't have proper localization
+# due to this module.
+# -> add utc flag to ns_to_pandas_timestamp and ns_to_pydatetime
+# -> utc flag fucks up parsing of aware ISO 8601 datetime strings
+
+# Modify iso 8601 to ns to also return whether a UTC offset was encountered?
+# -> then do an if check on the localization to determine if it is utc
+# -> then remove `utc` arg in ns_to_datetime
 
 
 #########################
@@ -212,15 +222,15 @@ cdef inline object ns_to_pydatetime_scalar(
     """
     cdef object offset = datetime.timedelta(microseconds=int(ns) // as_ns["us"])
 
-    # naive
+    # return naive
     if tz is None:
         return utc_naive_pydatetime + offset
 
-    # aware (utc)
+    # return aware (utc)
     if tz in utc_timezones:
         return utc_aware_pydatetime + offset
 
-    # aware (non-utc)
+    # return aware (non-utc)
     return (utc_aware_pydatetime + offset).astimezone(tz)
 
 
@@ -299,7 +309,7 @@ def ns_to_pandas_timestamp(
     >>> ns_to_pandas_timestamp(0, tz="US/Pacific")
     Timestamp('1969-12-31 16:00:00-0800', tz='US/Pacific')
 
-    And can be up to 64 bits wide:
+    And they can be up to 64 bits wide:
 
     >>> ns_to_pandas_timestamp(2**63 - 1)
     Timestamp('2262-04-11 23:47:16.854775807')
@@ -349,13 +359,13 @@ def ns_to_pandas_timestamp(
         arg = pd.to_datetime(arg, unit="ns", utc=True)
         if not is_utc(tz):
             try:  # localization can overflow if close to min/max timestamp
-                if issubclass(original_type, pd.Series):
-                    arg = arg.dt.tz_convert(tz)  # use `.dt` namespace
+                if issubclass(original_type, pd.Series):  # use `.dt` namespace
+                    arg = arg.dt.tz_convert(tz)
                 else:
                     arg = arg.tz_convert(tz)
             except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime as err:
-                err_msg = (f"localizing to {tz} causes `arg` to exceed "
-                           f"pd.Timestamp range")
+                err_msg = (f"localizing to {repr(str(tz))} causes `arg` to "
+                           f"exceed pd.Timestamp range")
                 raise OverflowError(err_msg) from err
 
     # convert array inputs back to array form (rather than DatetimeIndex)
@@ -416,7 +426,7 @@ def ns_to_pydatetime(
     >>> ns_to_pydatetime(0, tz="US/Pacific")
     datetime.datetime(1969, 12, 31, 16, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
 
-    And can be up to the maximum range of `datetime.datetime` objects:
+    And they can be up to the maximum range of `datetime.datetime` objects:
 
     >>> ns_to_pydatetime(253402300799999999000)
     datetime.datetime(9999, 12, 31, 23, 59, 59, 999999)
@@ -468,7 +478,7 @@ def ns_to_pydatetime(
             arg = arg // as_ns["us"]
             return arg.astype("M8[us]").astype("O")
         try:
-            return ns_to_pydatetime_vector(arg, tz)
+            return ns_to_pydatetime_vector(arg, tz=tz)
         except OverflowError as err:
             raise OverflowError(overflow_msg) from err
 
@@ -481,14 +491,14 @@ def ns_to_pydatetime(
             arg = arg.astype("M8[us]").astype("O")
         else:
             try:
-                arg = ns_to_pydatetime_vector(arg, tz)
+                arg = ns_to_pydatetime_vector(arg, tz=tz)
             except OverflowError as err:
                 raise OverflowError(overflow_msg) from err
         return pd.Series(arg, index=index, copy=False, dtype="O")
 
     # scalar
     try:
-        return ns_to_pydatetime_scalar(arg, tz)
+        return ns_to_pydatetime_scalar(arg, tz=tz)
     except OverflowError as err:
         raise OverflowError(overflow_msg) from err
 

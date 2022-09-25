@@ -229,9 +229,9 @@ cdef inline datetime.datetime localize_pydatetime_scalar(
     # return aware
     if not pydatetime.tzinfo:  # datetime is naive
         if not utc:  # localize directly to given timezone
-            # TODO: ZoneInfo objects do not have a .localize() method.  If
-            # converting to use zoneinfo, use dt.replace(tzinfo=...) instead.
-            return tz.localize(pydatetime)
+            if isinstance(tz, pytz.BaseTzInfo):  # use .localize()
+                return tz.localize(pydatetime)
+            return pydatetime.replace(tzinfo=tz)
         pydatetime = pydatetime.replace(tzinfo=datetime.timezone.utc)  # as utc
     return pydatetime.astimezone(tz)
 
@@ -241,7 +241,7 @@ cdef inline datetime.datetime localize_pydatetime_scalar(
 cdef np.ndarray[object] localize_pandas_timestamp_vector(
     np.ndarray[object] arr,
     datetime.tzinfo tz,
-    bint utc
+    np.ndarray[char, cast=True] utc
 ):
     """Localize an array of `pandas.Timestamp` objects to the given timezone.
     """
@@ -250,7 +250,7 @@ cdef np.ndarray[object] localize_pandas_timestamp_vector(
     cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
 
     for i in range(arr_length):
-        result[i] = localize_pandas_timestamp_scalar(arr[i], tz, utc=utc)
+        result[i] = localize_pandas_timestamp_scalar(arr[i], tz, utc=utc[i])
 
     return result
 
@@ -260,7 +260,7 @@ cdef np.ndarray[object] localize_pandas_timestamp_vector(
 cdef np.ndarray[object] localize_pydatetime_vector(
     np.ndarray[object] arr,
     datetime.tzinfo tz,
-    bint utc
+    np.ndarray[char, cast=True] utc
 ):
     """Localize an array of `datetime.datetime` objects to the given timezone.
     """
@@ -269,7 +269,7 @@ cdef np.ndarray[object] localize_pydatetime_vector(
     cdef np.ndarray[object] result = np.empty(arr_length, dtype="O")
 
     for i in range(arr_length):
-        result[i] = localize_pydatetime_scalar(arr[i], tz, utc=utc)
+        result[i] = localize_pydatetime_scalar(arr[i], tz, utc=utc[i])
 
     return result
 
@@ -279,7 +279,7 @@ cdef np.ndarray[object] localize_pydatetime_vector(
 cdef np.ndarray[object] localize_mixed_datetimelike_vector(
     np.ndarray[object] arr,
     datetime.tzinfo tz,
-    bint utc
+    np.ndarray[char, cast=True] utc
 ):
     """Localize an array of mixed datetime objects to the given timezone."""
     cdef int arr_length = arr.shape[0]
@@ -290,9 +290,13 @@ cdef np.ndarray[object] localize_mixed_datetimelike_vector(
     for i in range(arr_length):
         element = arr[i]
         if isinstance(element, pd.Timestamp):
-            result[i] = localize_pandas_timestamp_scalar(element, tz, utc=utc)
+            result[i] = localize_pandas_timestamp_scalar(
+                element,
+                tz,
+                utc=utc[i]
+            )
         else:
-            result[i] = localize_pydatetime_scalar(element, tz, utc=utc)
+            result[i] = localize_pydatetime_scalar(element, tz, utc=utc[i])
 
     return result
 
@@ -310,7 +314,7 @@ def is_utc(tz: None | str | datetime.tzinfo) -> bool:
 def localize_pandas_timestamp(
     arg: pd.Timestamp | np.ndarray | pd.Series,
     tz: str | datetime.tzinfo | None,
-    utc: bool = True
+    utc: bool | np.ndarray | pd.Series = True
 ) -> pd.Timestamp | np.ndarray | pd.Series:
     """Localize `pandas.Timestamp` objects to the given timezone.
 
@@ -323,12 +327,16 @@ def localize_pandas_timestamp(
         a naive return type, an instance of `datetime.tzinfo` or one of its
         derivatives (from `pytz`, `zoneinfo`, etc.), or an IANA timezone
         database string ('US/Eastern', 'UTC', etc.).
-    utc : bool, default True
+    utc : bool | array-like, default True
         Controls whether to interpret naive datetimes as UTC (`True`) or to
         localize them directly to the given timezone (`False`).  If
         interpreting as utc, a naive input will first be localized to UTC and
         then converted to the given timezone.  Otherwise, it will be localized
         to `tz` directly.
+
+        .. note:: If vectorized, this argument must be broadcastable to the
+            same length as `arg`, customizing the localization behavior at each
+            index.
 
     Returns
     -------
@@ -397,6 +405,7 @@ def localize_pandas_timestamp(
 
     # np.array
     if isinstance(arg, np.ndarray):
+        utc = np.broadcast_to(utc, arg.shape)
         return localize_pandas_timestamp_vector(arg, tz, utc=utc)
 
     # pd.Series
@@ -410,14 +419,24 @@ def localize_pandas_timestamp(
 
             # return aware
             if not arg.dt.tz:  # series is naive
-                if not utc:  # localize directly to given timezone
-                    return arg.dt.tz_localize(tz)
-                arg = arg.dt.tz_localize("UTC")  # interpret as utc
+                if isinstance(utc, bool):  # `utc` is scalar
+                    if not utc:  # localize directly to given timezone
+                        return arg.dt.tz_localize(tz)
+                    return arg.dt.tz_localize("UTC").dt.tz_convert(tz)
+
+                # `utc` is vectorized
+                result = arg.dt.tz_localize("UTC").dt.tz_convert(tz)
+                return result.where(
+                    np.broadcast_to(utc, arg.shape),
+                    arg.dt.tz_localize(tz)
+                )
+                return result
             return arg.dt.tz_convert(tz)
 
         # localize elementwise
         index = arg.index
         arg = arg.to_numpy(dtype="O")
+        utc = np.broadcast_to(utc, arg.shape)
         arg = localize_pandas_timestamp_vector(arg, tz, utc=utc)
         return pd.Series(arg, index=index, copy=False)
 
@@ -428,7 +447,7 @@ def localize_pandas_timestamp(
 def localize_pydatetime(
     arg: datetime.datetime | np.ndarray | pd.Series,
     tz: str | datetime.tzinfo | None,
-    utc: bool = True
+    utc: bool | np.ndarray | pd.Series = True
 ) -> datetime.datetime | np.ndarray | pd.Series:
     """Localize `datetime.datetime` objects to the given timezone.
 
@@ -441,12 +460,16 @@ def localize_pydatetime(
         naive return type, an instance of `datetime.tzinfo` or one of its
         derivatives (from `pytz`, `zoneinfo`, etc.), or an IANA timezone
         database string ('US/Eastern', 'UTC', etc.).
-    utc : bool, default True
+    utc : bool | array-like, default True
         Controls whether to interpret naive datetimes as UTC (`True`) or to
         localize them directly to the given timezone (`False`).  If
         interpreting as utc, a naive input will first be localized to UTC and
         then converted to the given timezone.  Otherwise, it will be localized
         to `tz` directly.
+
+        .. note:: If vectorized, this argument must be broadcastable to the
+            same length as `arg`, customizing the localization behavior at each
+            index.
 
     Returns
     -------
@@ -519,12 +542,14 @@ def localize_pydatetime(
 
     # np.array
     if isinstance(arg, np.ndarray):
+        utc = np.broadcast_to(utc, arg.shape)
         return localize_pydatetime_vector(arg, tz, utc=utc)
 
     # pd.Series
     if isinstance(arg, pd.Series):
         index = arg.index
         arg = arg.to_numpy(dtype="O")
+        utc = np.broadcast_to(utc, arg.shape)
         arg = localize_pydatetime_vector(arg, tz, utc=utc)
         return pd.Series(arg, index=index, copy=False, dtype="O")
 
@@ -535,7 +560,7 @@ def localize_pydatetime(
 def localize(
     arg: pd.Timestamp | datetime.datetime | np.ndarray | pd.Series,
     tz: str | datetime.tzinfo | None,
-    utc: bool = True
+    utc: bool | np.ndarray | pd.Series = True
 ) -> pd.Timestamp | datetime.datetime | np.ndarray | pd.Series:
     """Localize arbitrary datetime objects to the given timezone.
 
@@ -555,6 +580,10 @@ def localize(
         interpreting as utc, a naive input will first be localized to UTC and
         then converted to the given timezone.  Otherwise, it will be localized
         to `tz` directly.
+
+        .. note:: If vectorized, this argument must be broadcastable to the
+            same length as `arg`, customizing the localization behavior at each
+            index.
 
     Returns
     -------
@@ -674,6 +703,8 @@ def localize(
 
     # mixed pd.Timestamp/datetime.datetime
     if isinstance(dtype, set):
+        utc = np.broadcast_to(utc, arg.shape)
+
         # pd.Series
         if isinstance(arg, pd.Series):
             index = arg.index
