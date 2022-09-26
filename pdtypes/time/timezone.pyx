@@ -326,7 +326,8 @@ def localize_pandas_timestamp(
         The timezone to localize results to.  This can be `None`, indicating
         a naive return type, an instance of `datetime.tzinfo` or one of its
         derivatives (from `pytz`, `zoneinfo`, etc.), or an IANA timezone
-        database string ('US/Eastern', 'UTC', etc.).
+        database string ('US/Eastern', 'UTC', etc.).  The special value
+        `'local'` is also accepted, referencing the system's local time zone.
     utc : bool | array-like, default True
         Controls whether to interpret naive datetimes as UTC (`True`) or to
         localize them directly to the given timezone (`False`).  If
@@ -335,7 +336,7 @@ def localize_pandas_timestamp(
         to `tz` directly.
 
         .. note:: If vectorized, this argument must be broadcastable to the
-            same length as `arg`, customizing the localization behavior at each
+            same shape as `arg`, customizing the localization behavior at each
             index.
 
     Returns
@@ -458,7 +459,8 @@ def localize_pydatetime(
         The timezone to localize results to.  This can be `None`, indicating a
         naive return type, an instance of `datetime.tzinfo` or one of its
         derivatives (from `pytz`, `zoneinfo`, etc.), or an IANA timezone
-        database string ('US/Eastern', 'UTC', etc.).
+        database string ('US/Eastern', 'UTC', etc.).  The special value
+        `'local'` is also accepted, referencing the system's local time zone.
     utc : bool | array-like, default True
         Controls whether to interpret naive datetimes as UTC (`True`) or to
         localize them directly to the given timezone (`False`).  If
@@ -467,7 +469,7 @@ def localize_pydatetime(
         to `tz` directly.
 
         .. note:: If vectorized, this argument must be broadcastable to the
-            same length as `arg`, customizing the localization behavior at each
+            same shape as `arg`, customizing the localization behavior at each
             index.
 
     Returns
@@ -572,7 +574,8 @@ def localize(
         The timezone to localize results to.  This can be `None`, indicating
         a naive return type, an instance of `datetime.tzinfo` or one of its
         derivatives (from `pytz`, `zoneinfo`, etc.), or an IANA timezone
-        database string ('US/Eastern', 'UTC', etc.).
+        database string ('US/Eastern', 'UTC', etc.).  The special value
+        `'local'` is also accepted, referencing the system's local time zone.
     utc : bool, default True
         Controls whether to interpret naive datetimes as UTC (`True`) or to
         localize them directly to the given timezone (`False`).  If
@@ -581,7 +584,7 @@ def localize(
         to `tz` directly.
 
         .. note:: If vectorized, this argument must be broadcastable to the
-            same length as `arg`, customizing the localization behavior at each
+            same shape as `arg`, customizing the localization behavior at each
             index.
 
     Returns
@@ -727,7 +730,8 @@ def timezone(tz: str | datetime.tzinfo | None) -> datetime.tzinfo | None:
         A timezone specifier.  This can be an IANA-recognized timezone string
         ('UTC', 'US/Pacific', 'Europe/Berlin', etc.), a subclass of
         `datetime.tzinfo` (from `pytz`, `zoneinfo`, etc.), or `None`,
-        indicating a naive timezone.
+        indicating a naive timezone.  The special value `'local'` is also
+        accepted, referencing the system's local time zone.
 
     Returns
     -------

@@ -7,52 +7,55 @@ strings can be parsed up to the full `numpy.datetime64` range.
 
 Functions
 ---------
-    is_iso_8601(string: str) -> bool:
-        Infer whether a scalar string can be interpreted as ISO 8601-compliant.
+is_iso_8601(string: str) -> bool:
+    Infer whether a scalar string can be interpreted as ISO 8601-compliant.
 
-    iso_8601_to_ns(
-        arg: str | np.ndarray | pd.Series,
-        errors: str = "raise"
-    ) -> int | np.ndarray | pd.Series:
-        Convert ISO 8601 strings into nanosecond offsets from the utc epoch.
+iso_8601_to_ns(
+    arg: str | np.ndarray | pd.Series,
+    errors: str = "raise"
+) -> int | np.ndarray | pd.Series:
+    Convert ISO 8601 strings into nanosecond offsets from the utc epoch.
 
-    string_to_pandas_timestamp(
-        arg: str | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo = None,
-        format: str = None,
-        day_first: bool = False,
-        year_first: bool = False,
-        errors: str = "raise"
-    ) -> pd.Timestamp | np.ndarray | pd.Series:
-        Convert datetime strings to `pandas.Timestamp` objects.
+string_to_pandas_timestamp(
+    arg: str | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo = None,
+    format: str = None,
+    day_first: bool = False,
+    year_first: bool = False,
+    utc: bool = False,
+    errors: str = "raise"
+) -> pd.Timestamp | np.ndarray | pd.Series:
+    Convert datetime strings into `pandas.Timestamp` objects.
 
-    string_to_pydatetime(
-        arg: str | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo = None,
-        format: str = None,
-        day_first: bool = False,
-        year_first: bool = False,
-        errors: str = "raise"
-    ) -> datetime.datetime | np.ndarray | pd.Series:
-        Convert datetime strings to `datetime.datetime` objects.
+string_to_pydatetime(
+    arg: str | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo = None,
+    format: str = None,
+    day_first: bool = False,
+    year_first: bool = False,
+    utc: bool = False,
+    errors: str = "raise"
+) -> datetime.datetime | np.ndarray | pd.Series:
+    Convert datetime strings into `datetime.datetime` objects.
 
-    string_to_numpy_datetime64(
-        arg: str | np.ndarray | pd.Series,
-        unit: str = None,
-        rounding: str = "down",
-        errors: str = "raise"
-    ) -> np.datetime64 | np.ndarray | pd.Series:
-        Convert datetime strings to `numpy.datetime64` objects.
+string_to_numpy_datetime64(
+    arg: str | np.ndarray | pd.Series,
+    unit: str = None,
+    rounding: str = "down",
+    errors: str = "raise"
+) -> np.datetime64 | np.ndarray | pd.Series:
+    Convert datetime strings into `numpy.datetime64` objects.
 
-    string_to_datetime(
-        arg: str | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo = None,
-        format: str = None,
-        day_first: bool = False,
-        year_first: bool = False,
-        errors: str = "raise"
-    ) -> datetime_like | np.ndarray | pd.Series:
-        Convert datetime strings into dynamic datetime objects.
+string_to_datetime(
+    arg: str | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo = None,
+    format: str = None,
+    day_first: bool = False,
+    year_first: bool = False,
+    utc: bool = False,
+    errors: str = "raise"
+) -> datetime_like | np.ndarray | pd.Series:
+    Convert datetime strings into dynamic datetime objects.
 
 Examples
 --------
@@ -1803,7 +1806,7 @@ def string_to_datetime(
     utc: bool = False,
     errors: str = "raise"
 ) -> datetime_like | np.ndarray | pd.Series:
-    """Convert datetime strings into datetime objects.
+    """Convert datetime strings into arbitrary datetime objects.
 
     Parameters
     ----------
