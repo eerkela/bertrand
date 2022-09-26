@@ -3,38 +3,38 @@ corresponding datetime representation.
 
 Functions
 ---------
-    ns_to_pandas_timestamp(
-        arg: int | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo = None,
-        *,
-        min_ns: int = None,
-        max_ns: int = None
-    ) -> pd.Timestamp | np.ndarray | pd.Series:
-        Convert nanosecond offsets into `pandas.Timestamp` objects.
+ns_to_pandas_timestamp(
+    arg: int | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo = None,
+    *,
+    min_ns: int = None,
+    max_ns: int = None
+) -> pd.Timestamp | np.ndarray | pd.Series:
+    Convert nanosecond offsets into `pandas.Timestamp` objects.
 
-    ns_to_pydatetime(
-        arg: int | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo = None,
-        min_ns: int = None,
-        max_ns: int = None
-    ) -> datetime.datetime | np.ndarray | pd.Series:
-        Convert nanosecond offsets into `datetime.datetime` objects.
+ns_to_pydatetime(
+    arg: int | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo = None,
+    min_ns: int = None,
+    max_ns: int = None
+) -> datetime.datetime | np.ndarray | pd.Series:
+    Convert nanosecond offsets into `datetime.datetime` objects.
 
-    ns_to_numpy_datetime64(
-        arg: int | np.ndarray | pd.Series,
-        unit: str = None,
-        rounding: str = "down",
-        *,
-        min_ns: int = None,
-        max_ns: int = None
-    ) -> np.datetime64 | np.ndarray | pd.Series:
-        Convert nanosecond offsets into `numpy.datetime64` objects.
+ns_to_numpy_datetime64(
+    arg: int | np.ndarray | pd.Series,
+    unit: str = None,
+    rounding: str = "down",
+    *,
+    min_ns: int = None,
+    max_ns: int = None
+) -> np.datetime64 | np.ndarray | pd.Series:
+    Convert nanosecond offsets into `numpy.datetime64` objects.
 
-    ns_to_datetime(
-        arg: int | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo = None
-    ) -> datetime_like | np.ndarray | pd.Series:
-        Convert nanosecond offsets into dynamic datetime objects.
+ns_to_datetime(
+    arg: int | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo = None
+) -> datetime_like | np.ndarray | pd.Series:
+    Convert nanosecond offsets into dynamic datetime objects.
 
 Examples
 --------

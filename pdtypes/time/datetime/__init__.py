@@ -11,7 +11,7 @@ timezone information.  From narrowest to widest, the ranges are:
     #. `numpy.datetime64` - up to [`'-9223372036854773837-01-01 00:00:00'` -
         `'9223372036854775807-01-01 00:00:00'`] depending on choice of unit.
 
-    Note: `numpy.datetime64` objects do not carry timezone information, and
+..note:: `numpy.datetime64` objects do not carry timezone information, and
     have reduced resolution as their underlying unit increases in size.
     Maximum range is achieved with unit='Y'.  If unit='ns', the range is the
     same as `pandas.Timestamp`.
@@ -46,143 +46,143 @@ a promotion in either the datetime representation (`datetime.datetime` ->
 
 Modules
 -------
-    from_ns
-        Convert integer nanosecond offsets (from the utc epoch) to their
-        corresponding datetime representation.
+from_ns
+    Convert integer nanosecond offsets (from the utc epoch) to their
+    corresponding datetime representation.
 
-    from_string
-        Convert datetime strings to their corresponding datetime
-        representation.
+from_string
+    Convert datetime strings to their corresponding datetime
+    representation.
 
-    to_datetime
-        Convert datetime objects to a different datetime representation.
+to_datetime
+    Convert datetime objects to a different datetime representation.
 
-    to_ns
-        Convert datetime objects to nanosecond offsets from the UTC epoch.
+to_ns
+    Convert datetime objects to nanosecond offsets from the UTC epoch.
 
 Functions
 ---------
-    datetime_to_datetime(
-        arg: datetime_like | np.ndarray | pd.Series
-    ) -> datetime_like | np.ndarray | pd.Series:
-        Convert datetime objects to their highest resolution representation.
+datetime_to_datetime(
+    arg: datetime_like | np.ndarray | pd.Series
+) -> datetime_like | np.ndarray | pd.Series:
+    Convert datetime objects to their highest resolution representation.
 
-    datetime_to_ns(
-        arg: datetime_like | np.ndarray | pd.Series
-    ) -> int | np.ndarray | pd.Series:
-        Convert arbitrary datetime objects into ns offsets from UTC.
+datetime_to_ns(
+    arg: datetime_like | np.ndarray | pd.Series
+) -> int | np.ndarray | pd.Series:
+    Convert arbitrary datetime objects into ns offsets from UTC.
 
-    datetime_to_numpy_datetime64(
-        arg: datetime_like | np.ndarray | pd.Series,
-        unit: str = None,
-        rounding: str = "down"
-    ) -> np.datetime64 | np.ndarray | pd.Series:
-        Convert datetime objects to `numpy.datetime64`.
+datetime_to_numpy_datetime64(
+    arg: datetime_like | np.ndarray | pd.Series,
+    unit: str = None,
+    rounding: str = "down"
+) -> np.datetime64 | np.ndarray | pd.Series:
+    Convert datetime objects to `numpy.datetime64`.
 
-    datetime_to_pandas_timestamp(
-        arg: datetime_like | np.ndarray | pd.Series
-    ) -> pd.Timestamp | np.ndarray | pd.Series:
-        Convert datetime objects to `pandas.Timestamp`.
+datetime_to_pandas_timestamp(
+    arg: datetime_like | np.ndarray | pd.Series
+) -> pd.Timestamp | np.ndarray | pd.Series:
+    Convert datetime objects to `pandas.Timestamp`.
 
-    datetime_to_pydatetime(
-        arg: datetime_like | np.ndarray | pd.Series
-    ) -> datetime.datetime | np.ndarray | pd.Series:
-        Convert datetime objects to `datetime.datetime`.
+datetime_to_pydatetime(
+    arg: datetime_like | np.ndarray | pd.Series
+) -> datetime.datetime | np.ndarray | pd.Series:
+    Convert datetime objects to `datetime.datetime`.
 
-    is_iso_8601(string: str) -> bool:
-        Infer whether a scalar string can be interpreted as ISO 8601-compliant.
+is_iso_8601(string: str) -> bool:
+    Infer whether a scalar string can be interpreted as ISO 8601-compliant.
 
-    iso_8601_to_ns(
-        arg: str | np.ndarray | pd.Series,
-        errors: str = "raise"
-    ) -> tuple[int | np.ndarray | pd.Series, bool]:
-        Convert ISO 8601 strings into nanosecond offsets from the utc epoch.
+iso_8601_to_ns(
+    arg: str | np.ndarray | pd.Series,
+    errors: str = "raise"
+) -> tuple[int | np.ndarray | pd.Series, bool]:
+    Convert ISO 8601 strings into nanosecond offsets from the utc epoch.
 
-    ns_to_datetime(
-        arg: int | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo | None = None
-    ) -> datetime_like | np.ndarray | pd.Series:
-        Convert nanosecond offsets into dynamic datetime objects.
+ns_to_datetime(
+    arg: int | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo | None = None
+) -> datetime_like | np.ndarray | pd.Series:
+    Convert nanosecond offsets into dynamic datetime objects.
 
-    ns_to_numpy_datetime64(
-        arg: int | np.ndarray | pd.Series,
-        unit: str = None,
-        rounding: str = "down",
-        *,
-        min_ns: int = None,
-        max_ns: int = None
-    ) -> np.datetime64 | np.ndarray | pd.Series:
-        Convert nanosecond offsets into `numpy.datetime64` objects.
+ns_to_numpy_datetime64(
+    arg: int | np.ndarray | pd.Series,
+    unit: str = None,
+    rounding: str = "down",
+    *,
+    min_ns: int = None,
+    max_ns: int = None
+) -> np.datetime64 | np.ndarray | pd.Series:
+    Convert nanosecond offsets into `numpy.datetime64` objects.
 
-    ns_to_pandas_timestamp(
-        arg: int | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo | None = None,
-        *,
-        min_ns: int = None,
-        max_ns: int = None
-    ) -> pd.Timestamp | np.ndarray | pd.Series:
-        Convert nanosecond offsets into `pandas.Timestamp` objects.
+ns_to_pandas_timestamp(
+    arg: int | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo | None = None,
+    *,
+    min_ns: int = None,
+    max_ns: int = None
+) -> pd.Timestamp | np.ndarray | pd.Series:
+    Convert nanosecond offsets into `pandas.Timestamp` objects.
 
-    ns_to_pydatetime(
-        arg: int | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo | None = None,
-        min_ns: int = None,
-        max_ns: int = None
-    ) -> datetime.datetime | np.ndarray | pd.Series:
-        Convert nanosecond offsets into `datetime.datetime` objects.
+ns_to_pydatetime(
+    arg: int | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo | None = None,
+    min_ns: int = None,
+    max_ns: int = None
+) -> datetime.datetime | np.ndarray | pd.Series:
+    Convert nanosecond offsets into `datetime.datetime` objects.
 
-    numpy_datetime64_to_ns(
-        arg: np.datetime64 | np.ndarray | pd.Series
-    ) -> int | np.ndarray | pd.Series:
-        Convert `numpy.datetime64` objects into ns offsets from UTC.
+numpy_datetime64_to_ns(
+    arg: np.datetime64 | np.ndarray | pd.Series
+) -> int | np.ndarray | pd.Series:
+    Convert `numpy.datetime64` objects into ns offsets from UTC.
 
-    pandas_timestamp_to_ns(
-        arg: pd.Timestamp | np.ndarray | pd.Series
-    ) -> int | np.ndarray | pd.Series:
-        Convert `pandas.Timestamp` objects into ns offsets from UTC.
+pandas_timestamp_to_ns(
+    arg: pd.Timestamp | np.ndarray | pd.Series
+) -> int | np.ndarray | pd.Series:
+    Convert `pandas.Timestamp` objects into ns offsets from UTC.
 
-    pydatetime_to_ns(
-        arg: datetime.datetime | np.ndarray | pd.Series
-    ) -> int | np.ndarray | pd.Series:
-        Convert `datetime.datetime` objects into ns offsets from UTC.
+pydatetime_to_ns(
+    arg: datetime.datetime | np.ndarray | pd.Series
+) -> int | np.ndarray | pd.Series:
+    Convert `datetime.datetime` objects into ns offsets from UTC.
 
-    string_to_datetime(
-        arg: str | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo = None,
-        format: str = None,
-        day_first: bool = False,
-        year_first: bool = False,
-        errors: str = "raise"
-    ) -> datetime_like | np.ndarray | pd.Series:
-        Convert datetime strings into dynamic datetime objects.
+string_to_datetime(
+    arg: str | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo = None,
+    format: str = None,
+    day_first: bool = False,
+    year_first: bool = False,
+    errors: str = "raise"
+) -> datetime_like | np.ndarray | pd.Series:
+    Convert datetime strings into dynamic datetime objects.
 
-    string_to_numpy_datetime64(
-        arg: str | np.ndarray | pd.Series,
-        unit: str = None,
-        rounding: str = "down",
-        errors: str = "raise"
-    ) -> np.datetime64 | np.ndarray | pd.Series:
-        Convert datetime strings to `numpy.datetime64` objects.
+string_to_numpy_datetime64(
+    arg: str | np.ndarray | pd.Series,
+    unit: str = None,
+    rounding: str = "down",
+    errors: str = "raise"
+) -> np.datetime64 | np.ndarray | pd.Series:
+    Convert datetime strings to `numpy.datetime64` objects.
 
-    string_to_pandas_timestamp(
-        arg: str | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo = None,
-        format: str = None,
-        day_first: bool = False,
-        year_first: bool = False,
-        errors: str = "raise"
-    ) -> pd.Timestamp | np.ndarray | pd.Series:
-        Convert datetime strings to `pandas.Timestamp` objects.
+string_to_pandas_timestamp(
+    arg: str | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo = None,
+    format: str = None,
+    day_first: bool = False,
+    year_first: bool = False,
+    errors: str = "raise"
+) -> pd.Timestamp | np.ndarray | pd.Series:
+    Convert datetime strings to `pandas.Timestamp` objects.
 
-    string_to_pydatetime(
-        arg: str | np.ndarray | pd.Series,
-        tz: str | datetime.tzinfo = None,
-        format: str = None,
-        day_first: bool = False,
-        year_first: bool = False,
-        errors: str = "raise"
-    ) -> datetime.datetime | np.ndarray | pd.Series:
-        Convert datetime strings to `datetime.datetime` objects.
+string_to_pydatetime(
+    arg: str | np.ndarray | pd.Series,
+    tz: str | datetime.tzinfo = None,
+    format: str = None,
+    day_first: bool = False,
+    year_first: bool = False,
+    errors: str = "raise"
+) -> datetime.datetime | np.ndarray | pd.Series:
+    Convert datetime strings to `datetime.datetime` objects.
 """
 from .from_ns import (
     ns_to_pandas_timestamp, ns_to_pydatetime, ns_to_numpy_datetime64,
