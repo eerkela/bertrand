@@ -617,62 +617,6 @@ from .from_ns import (
 from .to_ns import datetime_to_ns
 
 
-#######################
-####    Private    ####
-#######################
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef np.ndarray[char, cast=True] is_aware_vector(
-    np.ndarray[object] arr
-):
-    """Return a boolean mask indicating which elements of `arr` are
-    timezone-aware.
-    """
-    cdef int arr_length = arr.shape[0]
-    cdef int i
-    cdef object dt
-    cdef np.ndarray[char, cast=True] result = np.full(arr_length, False)
-
-    for i in range(arr_length):
-        dt = arr[i]
-        result[i] = isinstance(dt, np.datetime64) or dt.tzinfo is not None
-
-    return result
-
-
-#######################
-####    Helpers    ####
-#######################
-
-
-def _is_aware(
-    arg: datetime_like | np.ndarray | pd.Series
-) -> bool | np.ndarray:
-    """Helper to identify timezone-aware inputs from arbitrary data."""
-    # np.ndarray
-    if isinstance(arg, np.ndarray):
-        # M8 dtype
-        if np.issubdtype(arg.dtype, "M8"):
-            return True
-
-        # object dtype
-        return is_aware_vector(arg)
-
-    # pd.Series
-    if isinstance(arg, pd.Series):
-        # M8[ns] dtype
-        if pd.api.types.is_datetime64_ns_dtype(arg):
-            return arg.dt.tz is not None
-
-        # object dtype
-        return is_aware_vector(arg.to_numpy())
-
-    # scalar
-    return isinstance(arg, np.datetime64) or arg.tzinfo is not None
-
-
 ######################
 ####    Public    ####
 ######################
@@ -905,14 +849,14 @@ def datetime_to_pandas_timestamp(
             arg = arg.infer_objects()
         return arg
 
-    # convert inputs into nanosecond offsets, then ns to `pandas.Timestamp`
-    if utc or tz is None or is_utc(tz):  # interpret naive inputs as UTC
-        return ns_to_pandas_timestamp(datetime_to_ns(arg), tz=tz)
+    # convert inputs into nanosecond offsets
+    if utc:  # force naive inputs into UTC format
+        arg = datetime_to_ns(arg, tz=None)
+    else:  # localize naive inputs as `tz`
+        arg = datetime_to_ns(arg, tz=tz)
 
-    # localize naive inputs directly to `tz`
-    has_offset = _is_aware(arg)
-    arg = ns_to_pandas_timestamp(datetime_to_ns(arg), tz=None)
-    return localize_pandas_timestamp(arg, tz=tz, utc=has_offset)
+    # convert nanosecond offsets into `pandas.Timestamp` objects
+    return ns_to_pandas_timestamp(arg, tz=tz)
 
 
 def datetime_to_pydatetime(
@@ -1134,14 +1078,14 @@ def datetime_to_pydatetime(
     if check_dtype(arg, datetime.datetime):
         return localize_pydatetime(arg, tz=tz, utc=utc)
 
-    # convert inputs into nanosecond offsets, then ns to `datetime.datetime`
-    if utc or tz is None or is_utc(tz):  # interpret naive inputs as UTC
-        return ns_to_pydatetime(datetime_to_ns(arg), tz=tz)
+    # convert inputs into nanosecond offsets
+    if utc:  # force naive inputs into UTC format
+        arg = datetime_to_ns(arg, tz=None)
+    else:  # localize naive inputs as `tz`
+        arg = datetime_to_ns(arg, tz=tz)
 
-    # localize naive inputs directly to `tz`
-    has_offset = _is_aware(arg)
-    arg = ns_to_pydatetime(datetime_to_ns(arg), tz=None)
-    return localize_pydatetime(arg, tz=tz, utc=has_offset)
+    # convert nanosecond offsets into `datetime.datetime` objects
+    return ns_to_pydatetime(arg, tz=tz)
 
 
 def datetime_to_numpy_datetime64(
@@ -1340,9 +1284,12 @@ def datetime_to_numpy_datetime64(
                 (unit is None and arg_unit == "ns")):
                 return arg
 
-    # convert inputs into nanosecond offsets, then ns to `numpy.datetime64`
+    # convert inputs into nanosecond offsets
+    arg = datetime_to_ns(arg)
+
+    # convert nanosecond offsets into `numpy.datetime64` objects
     return ns_to_numpy_datetime64(
-        datetime_to_ns(arg),
+        arg,
         unit=unit,
         rounding=rounding
     )
@@ -1360,6 +1307,18 @@ def datetime_to_datetime(
     ----------
     arg : datetime-like | array-like
         A datetime object or vector of datetime objects to convert.
+    tz : str | datetime.tzinfo, default None
+        The timezone to localize results to.  This can be `None`, indicating a
+        naive return type, an instance of `datetime.tzinfo` or one of its
+        derivatives (from `pytz`, `zoneinfo`, etc.), or an IANA timezone
+        database string ('US/Eastern', 'UTC', etc.).  The special value
+        `'local'` is also accepted, referencing the system's local time zone.
+    utc : bool, default False
+        Controls the localization behavior of timezone-naive datetime inputs.
+        If this is set to `True`, naive datetimes will be interpreted as UTC
+        times, and will be *converted* from UTC to the specified `tz`.  If this
+        is `False` (the default), naive datetime strings will be *localized*
+        directly to `tz` instead.
 
     Returns
     -------
@@ -1572,15 +1531,28 @@ def datetime_to_datetime(
     if isinstance(arg, np.ndarray) and (tz is None or is_utc(tz)):
         return datetime_to_numpy_datetime64(arg)
 
+    # trivial case: `arg` is already in `pandas.Timestamp` format.
+    if check_dtype(arg, pd.Timestamp):
+        arg = localize_pandas_timestamp(arg, tz=tz, utc=utc)
+        if isinstance(arg, pd.Series) and pd.api.types.is_object_dtype(arg):
+            arg = arg.infer_objects()
+        return arg
+
+    # convert inputs into nanosecond offsets
+    if utc:  # force naive inputs into UTC format
+        arg = datetime_to_ns(arg, tz=None)
+    else:  # localize naive inputs as `tz`
+        arg = datetime_to_ns(arg, tz=tz)
+
     # pd.Timestamp
     try:
-        return datetime_to_pandas_timestamp(arg, tz=tz, utc=utc)
+        return ns_to_pandas_timestamp(arg, tz=tz)
     except OverflowError:
         pass
 
     # datetime.datetime
     try:
-        return datetime_to_pydatetime(arg, tz=tz, utc=utc)
+        return ns_to_pydatetime(arg, tz=tz)
     except OverflowError:
         pass
 
@@ -1589,4 +1561,4 @@ def datetime_to_datetime(
         err_msg = ("`numpy.datetime64` objects do not carry timezone "
                    "information (must be utc)")
         raise RuntimeError(err_msg)
-    return datetime_to_numpy_datetime64(arg)
+    return ns_to_numpy_datetime64(arg)
