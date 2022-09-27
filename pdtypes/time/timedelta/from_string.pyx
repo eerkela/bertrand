@@ -8,142 +8,142 @@ These can include either clock format ('01:23:42', etc.) or abbreviated
 
 Functions
 ---------
-    timedelta_string_to_ns(
-        arg: str | np.ndarray | pd.Series,
-        as_hours: bool = False,
-        since: str | datetime_like = "2001-01-01 00:00:00+0000",
-        errors: str = "raise"
-    ) -> tuple[int | np.ndarray | pd.Series, bool]:
-        Parse a timedelta string, returning it as an integer number of
-        nanoseconds.
+timedelta_string_to_ns(
+    arg: str | np.ndarray | pd.Series,
+    as_hours: bool = False,
+    since: str | datetime_like = "2001-01-01 00:00:00+0000",
+    errors: str = "raise"
+) -> tuple[int | np.ndarray | pd.Series, bool]:
+    Parse a timedelta string, returning it as an integer number of
+    nanoseconds.
 
-    string_to_pandas_timedelta(
-        arg: str | np.ndarray | pd.Series,
-        as_hours: bool = False,
-        since: str | datetime_like = "2001-01-01 00:00:00+0000",
-        errors: str = "raise"
-    ) -> pd.Timedelta | np.ndarray | pd.Series:
-        Parse a timedelta string, returning it as a `pandas.Timedelta` object.
+string_to_pandas_timedelta(
+    arg: str | np.ndarray | pd.Series,
+    as_hours: bool = False,
+    since: str | datetime_like = "2001-01-01 00:00:00+0000",
+    errors: str = "raise"
+) -> pd.Timedelta | np.ndarray | pd.Series:
+    Parse a timedelta string, returning it as a `pandas.Timedelta` object.
 
-    string_to_pytimedelta(
-        arg: str | np.ndarray | pd.Series,
-        as_hours: bool = False,
-        since: str | datetime_like = "2001-01-01 00:00:00+0000",
-        errors: str = "raise"
-    ) -> datetime.timedelta | np.ndarray | pd.Series:
-        Parse a timedelta string, returning it as a `datetime.timedelta` object.
+string_to_pytimedelta(
+    arg: str | np.ndarray | pd.Series,
+    as_hours: bool = False,
+    since: str | datetime_like = "2001-01-01 00:00:00+0000",
+    errors: str = "raise"
+) -> datetime.timedelta | np.ndarray | pd.Series:
+    Parse a timedelta string, returning it as a `datetime.timedelta` object.
 
-    string_to_numpy_timedelta64(
-        arg: str | np.ndarray | pd.Series,
-        as_hours: bool = False,
-        unit: str = None,
-        since: str | datetime_like = "2001-01-01 00:00:00+0000",
-        rounding: str = "down",
-        errors: str = "raise"
-    ) -> np.timedelta64 | np.ndarray | pd.Series:
-        Parse a timedelta string, returning it as a `numpy.timedelta64` object.
+string_to_numpy_timedelta64(
+    arg: str | np.ndarray | pd.Series,
+    as_hours: bool = False,
+    unit: str = None,
+    since: str | datetime_like = "2001-01-01 00:00:00+0000",
+    rounding: str = "down",
+    errors: str = "raise"
+) -> np.timedelta64 | np.ndarray | pd.Series:
+    Parse a timedelta string, returning it as a `numpy.timedelta64` object.
 
-    string_to_timedelta(
-        arg: str | np.ndarray | pd.Series,
-        as_hours: bool = False,
-        since: str | datetime_like = "2001-01-01 00:00:00+0000",
-        errors: str = "raise"
-    ) -> timedelta_like | np.ndarray | pd.Series:
-        Parse a timedelta string, returning it as an arbitrary timedelta object.
+string_to_timedelta(
+    arg: str | np.ndarray | pd.Series,
+    as_hours: bool = False,
+    since: str | datetime_like = "2001-01-01 00:00:00+0000",
+    errors: str = "raise"
+) -> timedelta_like | np.ndarray | pd.Series:
+    Parse a timedelta string, returning it as an arbitrary timedelta object.
 
 Examples
 --------
-    >>> timedelta_string_to_ns(":24")  # :seconds
-    >>> timedelta_string_to_ns("1:24")  # minutes:seconds
-    >>> timedelta_string_to_ns("15:01:24")  # hours:minutes:seconds
-    >>> timedelta_string_to_ns("10:15:01:24")  # days:hours:minutes:seconds
-    >>> timedelta_string_to_ns("10 days 15:01:24")
-    >>> timedelta_string_to_ns("1 week, 3 days, 15:01:24")
-    >>> timedelta_string_to_ns("1 minute, 24 secs")
-    >>> timedelta_string_to_ns("1m24s")
-    >>> timedelta_string_to_ns("1.4 minutes")
-    >>> timedelta_string_to_ns("+1.4 minutes")
-    >>> timedelta_string_to_ns("-1.4 minutes")
-    >>> timedelta_string_to_ns("1:24", as_hours=False)
-    >>> timedelta_string_to_ns("1:24", as_hours=True)
-    >>> timedelta_string_to_ns("1 year, 2 months, 3 weeks, 4 days, 5 hours")
-    >>> timedelta_string_to_ns("1y 2mo 3w 4d 5h")
-    >>> timedelta_string_to_ns("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
-    >>> timedelta_string_to_ns("1 year", since="2001-01-01")
-    >>> timedelta_string_to_ns("1 year", since="2000-01-01")  # leap year
-    >>> timedelta_string_to_ns("1 month", since="2000-01-01")  # Jan 2000
-    >>> timedelta_string_to_ns("1 month", since="2000-02-01")  # Feb 2000
-    >>> timedelta_string_to_ns("1 month", since="2001-02-01")  # Feb 2001
+>>> timedelta_string_to_ns(":24")  # :seconds
+>>> timedelta_string_to_ns("1:24")  # minutes:seconds
+>>> timedelta_string_to_ns("15:01:24")  # hours:minutes:seconds
+>>> timedelta_string_to_ns("10:15:01:24")  # days:hours:minutes:seconds
+>>> timedelta_string_to_ns("10 days 15:01:24")
+>>> timedelta_string_to_ns("1 week, 3 days, 15:01:24")
+>>> timedelta_string_to_ns("1 minute, 24 secs")
+>>> timedelta_string_to_ns("1m24s")
+>>> timedelta_string_to_ns("1.4 minutes")
+>>> timedelta_string_to_ns("+1.4 minutes")
+>>> timedelta_string_to_ns("-1.4 minutes")
+>>> timedelta_string_to_ns("1:24", as_hours=False)
+>>> timedelta_string_to_ns("1:24", as_hours=True)
+>>> timedelta_string_to_ns("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+>>> timedelta_string_to_ns("1y 2mo 3w 4d 5h")
+>>> timedelta_string_to_ns("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+>>> timedelta_string_to_ns("1 year", since="2001-01-01")
+>>> timedelta_string_to_ns("1 year", since="2000-01-01")  # leap year
+>>> timedelta_string_to_ns("1 month", since="2000-01-01")  # Jan 2000
+>>> timedelta_string_to_ns("1 month", since="2000-02-01")  # Feb 2000
+>>> timedelta_string_to_ns("1 month", since="2001-02-01")  # Feb 2001
 
-    >>> string_to_pandas_timedelta(":24")  # :seconds
-    >>> string_to_pandas_timedelta("1:24")  # minutes:seconds
-    >>> string_to_pandas_timedelta("15:01:24")  # hours:minutes:seconds
-    >>> string_to_pandas_timedelta("10:15:01:24")  # days:hours:minutes:seconds
-    >>> string_to_pandas_timedelta("10 days 15:01:24")
-    >>> string_to_pandas_timedelta("1 week, 3 days, 15:01:24")
-    >>> string_to_pandas_timedelta("1 minute, 24 secs")
-    >>> string_to_pandas_timedelta("1m24s")
-    >>> string_to_pandas_timedelta("1.4 minutes")
-    >>> string_to_pandas_timedelta("+1.4 minutes")
-    >>> string_to_pandas_timedelta("-1.4 minutes")
-    >>> string_to_pandas_timedelta("1:24", as_hours=False)
-    >>> string_to_pandas_timedelta("1:24", as_hours=True)
-    >>> string_to_pandas_timedelta("1 year, 2 months, 3 weeks, 4 days, 5 hours")
-    >>> string_to_pandas_timedelta("1y 2mo 3w 4d 5h")
-    >>> string_to_pandas_timedelta("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
-    >>> string_to_pandas_timedelta("1 year", since="2001-01-01")
-    >>> string_to_pandas_timedelta("1 year", since="2000-01-01")  # leap year
-    >>> string_to_pandas_timedelta("1 month", since="2000-01-01")  # Jan 2000
-    >>> string_to_pandas_timedelta("1 month", since="2000-02-01")  # Feb 2000
-    >>> string_to_pandas_timedelta("1 month", since="2001-02-01")  # Feb 2001
+>>> string_to_pandas_timedelta(":24")  # :seconds
+>>> string_to_pandas_timedelta("1:24")  # minutes:seconds
+>>> string_to_pandas_timedelta("15:01:24")  # hours:minutes:seconds
+>>> string_to_pandas_timedelta("10:15:01:24")  # days:hours:minutes:seconds
+>>> string_to_pandas_timedelta("10 days 15:01:24")
+>>> string_to_pandas_timedelta("1 week, 3 days, 15:01:24")
+>>> string_to_pandas_timedelta("1 minute, 24 secs")
+>>> string_to_pandas_timedelta("1m24s")
+>>> string_to_pandas_timedelta("1.4 minutes")
+>>> string_to_pandas_timedelta("+1.4 minutes")
+>>> string_to_pandas_timedelta("-1.4 minutes")
+>>> string_to_pandas_timedelta("1:24", as_hours=False)
+>>> string_to_pandas_timedelta("1:24", as_hours=True)
+>>> string_to_pandas_timedelta("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+>>> string_to_pandas_timedelta("1y 2mo 3w 4d 5h")
+>>> string_to_pandas_timedelta("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+>>> string_to_pandas_timedelta("1 year", since="2001-01-01")
+>>> string_to_pandas_timedelta("1 year", since="2000-01-01")  # leap year
+>>> string_to_pandas_timedelta("1 month", since="2000-01-01")  # Jan 2000
+>>> string_to_pandas_timedelta("1 month", since="2000-02-01")  # Feb 2000
+>>> string_to_pandas_timedelta("1 month", since="2001-02-01")  # Feb 2001
 
-    >>> string_to_numpy_timedelta64(":24")  # :seconds
-    >>> string_to_numpy_timedelta64("1:24")  # minutes:seconds
-    >>> string_to_numpy_timedelta64("15:01:24")  # hours:minutes:seconds
-    >>> string_to_numpy_timedelta64("10:15:01:24")  # days:hours:minutes:seconds
-    >>> string_to_numpy_timedelta64("10 days 15:01:24")
-    >>> string_to_numpy_timedelta64("1 week, 3 days, 15:01:24")
-    >>> string_to_numpy_timedelta64("1 minute, 24 secs")
-    >>> string_to_numpy_timedelta64("1m24s")
-    >>> string_to_numpy_timedelta64("1.4 minutes")
-    >>> string_to_numpy_timedelta64("+1.4 minutes")
-    >>> string_to_numpy_timedelta64("-1.4 minutes")
-    >>> string_to_numpy_timedelta64("1:24", as_hours=False)
-    >>> string_to_numpy_timedelta64("1:24", as_hours=True)
-    >>> string_to_numpy_timedelta64("1 year, 2 months, 3 weeks, 4 days, 5 hours")
-    >>> string_to_numpy_timedelta64("1y 2mo 3w 4d 5h")
-    >>> string_to_numpy_timedelta64("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
-    >>> string_to_numpy_timedelta64("1 year", since="2001-01-01")
-    >>> string_to_numpy_timedelta64("1 year", since="2000-01-01")  # leap year
-    >>> string_to_numpy_timedelta64("1 month", since="2000-01-01")  # Jan 2000
-    >>> string_to_numpy_timedelta64("1 month", since="2000-02-01")  # Feb 2000
-    >>> string_to_numpy_timedelta64("1 month", since="2001-02-01")  # Feb 2001
+>>> string_to_numpy_timedelta64(":24")  # :seconds
+>>> string_to_numpy_timedelta64("1:24")  # minutes:seconds
+>>> string_to_numpy_timedelta64("15:01:24")  # hours:minutes:seconds
+>>> string_to_numpy_timedelta64("10:15:01:24")  # days:hours:minutes:seconds
+>>> string_to_numpy_timedelta64("10 days 15:01:24")
+>>> string_to_numpy_timedelta64("1 week, 3 days, 15:01:24")
+>>> string_to_numpy_timedelta64("1 minute, 24 secs")
+>>> string_to_numpy_timedelta64("1m24s")
+>>> string_to_numpy_timedelta64("1.4 minutes")
+>>> string_to_numpy_timedelta64("+1.4 minutes")
+>>> string_to_numpy_timedelta64("-1.4 minutes")
+>>> string_to_numpy_timedelta64("1:24", as_hours=False)
+>>> string_to_numpy_timedelta64("1:24", as_hours=True)
+>>> string_to_numpy_timedelta64("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+>>> string_to_numpy_timedelta64("1y 2mo 3w 4d 5h")
+>>> string_to_numpy_timedelta64("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+>>> string_to_numpy_timedelta64("1 year", since="2001-01-01")
+>>> string_to_numpy_timedelta64("1 year", since="2000-01-01")  # leap year
+>>> string_to_numpy_timedelta64("1 month", since="2000-01-01")  # Jan 2000
+>>> string_to_numpy_timedelta64("1 month", since="2000-02-01")  # Feb 2000
+>>> string_to_numpy_timedelta64("1 month", since="2001-02-01")  # Feb 2001
 
-    >>> string_to_timedelta(":24")  # :seconds
-    >>> string_to_timedelta("1:24")  # minutes:seconds
-    >>> string_to_timedelta("15:01:24")  # hours:minutes:seconds
-    >>> string_to_timedelta("10:15:01:24")  # days:hours:minutes:seconds
-    >>> string_to_timedelta("10 days 15:01:24")
-    >>> string_to_timedelta("1 week, 3 days, 15:01:24")
-    >>> string_to_timedelta("1 minute, 24 secs")
-    >>> string_to_timedelta("1m24s")
-    >>> string_to_timedelta("1.4 minutes")
-    >>> string_to_timedelta("+1.4 minutes")
-    >>> string_to_timedelta("-1.4 minutes")
-    >>> string_to_timedelta("1:24", as_hours=False)
-    >>> string_to_timedelta("1:24", as_hours=True)
-    >>> string_to_timedelta("1 year, 2 months, 3 weeks, 4 days, 5 hours")
-    >>> string_to_timedelta("1y 2mo 3w 4d 5h")
-    >>> string_to_timedelta("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
-    >>> string_to_timedelta("1 year", since="2001-01-01")
-    >>> string_to_timedelta("1 year", since="2000-01-01")  # leap year
-    >>> string_to_timedelta("1 month", since="2000-01-01")  # Jan 2000
-    >>> string_to_timedelta("1 month", since="2000-02-01")  # Feb 2000
-    >>> string_to_timedelta("1 month", since="2001-02-01")  # Feb 2001
-    >>> string_to_timedelta(f"{2**63 - 1} nanoseconds")
-    >>> string_to_timedelta(f"{2**63} nanoseconds")
-    >>> string_to_timedelta(f"{86399999999999999999000} nanoseconds")
-    >>> string_to_timedelta(f"{86399999999999999999000 + 1} nanoseconds")
+>>> string_to_timedelta(":24")  # :seconds
+>>> string_to_timedelta("1:24")  # minutes:seconds
+>>> string_to_timedelta("15:01:24")  # hours:minutes:seconds
+>>> string_to_timedelta("10:15:01:24")  # days:hours:minutes:seconds
+>>> string_to_timedelta("10 days 15:01:24")
+>>> string_to_timedelta("1 week, 3 days, 15:01:24")
+>>> string_to_timedelta("1 minute, 24 secs")
+>>> string_to_timedelta("1m24s")
+>>> string_to_timedelta("1.4 minutes")
+>>> string_to_timedelta("+1.4 minutes")
+>>> string_to_timedelta("-1.4 minutes")
+>>> string_to_timedelta("1:24", as_hours=False)
+>>> string_to_timedelta("1:24", as_hours=True)
+>>> string_to_timedelta("1 year, 2 months, 3 weeks, 4 days, 5 hours")
+>>> string_to_timedelta("1y 2mo 3w 4d 5h")
+>>> string_to_timedelta("1.1 years, 2.2 months, 3.3 weeks, 4.4 days, 5.5 hours")
+>>> string_to_timedelta("1 year", since="2001-01-01")
+>>> string_to_timedelta("1 year", since="2000-01-01")  # leap year
+>>> string_to_timedelta("1 month", since="2000-01-01")  # Jan 2000
+>>> string_to_timedelta("1 month", since="2000-02-01")  # Feb 2000
+>>> string_to_timedelta("1 month", since="2001-02-01")  # Feb 2001
+>>> string_to_timedelta(f"{2**63 - 1} nanoseconds")
+>>> string_to_timedelta(f"{2**63} nanoseconds")
+>>> string_to_timedelta(f"{86399999999999999999000} nanoseconds")
+>>> string_to_timedelta(f"{86399999999999999999000 + 1} nanoseconds")
 """
 import datetime
 import decimal
@@ -163,6 +163,10 @@ from .from_ns import (
     ns_to_pandas_timedelta, ns_to_pytimedelta, ns_to_numpy_timedelta64,
     ns_to_timedelta
 )
+
+
+# TODO: either remove `has_errors` or standardize it with string_to_datetime.
+# -> keeping it is a minor performance increase.
 
 
 #########################

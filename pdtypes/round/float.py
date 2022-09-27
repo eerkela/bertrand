@@ -74,36 +74,36 @@ def round_float(
 
     Parameters
     ----------
-    val (float | np.ndarray | pd.Series):
+    val : float | np.ndarray | pd.Series
         The value to be rounded.  Can be vectorized.
-    rule (str):
+    rule : str, default 'half_even'
         A string specifying the rounding strategy to use.  Must be one of
         ('floor', 'ceiling', 'down', 'up', 'half_floor', 'half_ceiling',
         'half_down', 'half_up', 'half_even'), where `up`/`down` round
         away/toward zero, and `ceiling`/`floor` round toward +/- infinity,
-        respectively.  Defaults to 'half_even'.
-    decimals (int):
+        respectively.
+    decimals : int, default 0
         The number of decimals to round to.  Positive numbers count to the
         right of the decimal point, and negative values count to the left.
         0 represents rounding in the ones place of `val`.  This follows the
-        convention set out in `numpy.around`.  Defaults to 0.
-    copy (bool):
+        convention set out in `numpy.around`.
+    copy : bool, default True
         Indicates whether to return a modified copy of an input array (`True`),
         or modify it in-place (`False`).  In either case, the return value of
         this function is unaltered, and scalars are always copied. `copy=False`
         should only be used when the previous state of the array can be safely
-        discarded.  Defaults to `True`.
+        discarded.
 
     Returns
     -------
-    float | np.ndarray | pd.Series:
+    float | np.ndarray | pd.Series
         The result of rounding `val` according to the given rule.  If
         `copy=False` and `val` is array-like, this will be a reference to
         `val` itself.
 
     Raises
     ------
-    ValueError:
+    ValueError
         If `rule` is not one of the accepted rounding rules ('floor',
         'ceiling', 'down', 'up', 'half_floor', 'half_ceiling', 'half_down',
         'half_up', 'half_even').

@@ -445,13 +445,13 @@ def ns_to_timedelta(
 
     Examples
     --------
-        >>> ns_to_timedelta(0)
-        >>> ns_to_timedelta(2**63 - 1)
-        >>> ns_to_timedelta(2**63)
-        >>> ns_to_timedelta(86399999999999999999000)
-        >>> ns_to_timedelta(86399999999999999999000 + 1)
-        >>> ns_to_numpy_timedelta64(291061508645168391112243200000000000)
-        >>> ns_to_numpy_timedelta64(291061508645168391112243200000000000 + 1)
+    >>> ns_to_timedelta(0)
+    >>> ns_to_timedelta(2**63 - 1)
+    >>> ns_to_timedelta(2**63)
+    >>> ns_to_timedelta(86399999999999999999000)
+    >>> ns_to_timedelta(86399999999999999999000 + 1)
+    >>> ns_to_numpy_timedelta64(291061508645168391112243200000000000)
+    >>> ns_to_numpy_timedelta64(291061508645168391112243200000000000 + 1)
     """
     # ensure min/max fall within representable range
     if isinstance(arg, (np.ndarray, pd.Series)):

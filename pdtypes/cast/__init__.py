@@ -1,1 +1,1 @@
-from .core import ConversionSeries
+# from .core import ConversionSeries

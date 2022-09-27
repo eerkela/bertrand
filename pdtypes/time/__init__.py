@@ -35,6 +35,9 @@ from .calendar import (
 from .epoch import epoch, epoch_date, epoch_ns
 from .timezone import is_utc, localize, timezone
 from .unit import convert_unit_float, convert_unit_integer
+from .unit import as_ns_public as as_ns
+from .unit import valid_units_public as valid_units
+
 
 # datetime
 from .datetime import (
@@ -51,6 +54,8 @@ from .datetime import (
     datetime_to_ns,
 
     # string to datetime
+    is_iso_8601,
+    iso_8601_to_ns,
     string_to_pandas_timestamp,
     string_to_pydatetime,
     string_to_numpy_datetime64,

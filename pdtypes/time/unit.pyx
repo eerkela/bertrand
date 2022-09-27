@@ -127,6 +127,11 @@ cdef dict as_ns = {
 cdef tuple valid_units = tuple(as_ns) + ("M", "Y")
 
 
+# exportable copies of the above constants
+as_ns_public = as_ns
+valid_units_public = valid_units
+
+
 #######################
 ####    Private    ####
 #######################

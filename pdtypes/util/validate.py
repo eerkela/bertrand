@@ -2,39 +2,15 @@
 pdtypes conversion functions (`convert_dtypes()`, `to_integer()`, etc.)
 """
 from __future__ import annotations
-import datetime
 import decimal
 
 import numpy as np
 import pandas as pd
-import pytz
-import tzlocal
 
 from pdtypes.check import is_dtype, resolve_dtype
 from pdtypes.error import error_trace, shorten_list
-from pdtypes.util.time import _to_ns
+from pdtypes.time import valid_units
 from pdtypes.util.type_hints import dtype_like
-
-
-def timezone(tz: None | str | datetime.tzinfo) -> None | datetime.tzinfo:
-    """Ensure an IANA timezone specifier `tz` is valid and return a
-    corresponding `datetime.tzinfo` object.
-    """
-    # TODO: pytz uses LMT (local mean time) for dates prior to 1902 for some
-    # reason.  This appears to be a known pytz limitation.
-    # https://stackoverflow.com/questions/24188060/in-pandas-why-does-tz-convert-change-the-timezone-used-from-est-to-lmt
-    # https://github.com/pandas-dev/pandas/issues/41834
-    # solution: use zoneinfo.ZoneInfo instead once pandas supports it
-    # https://github.com/pandas-dev/pandas/pull/46425
-    if isinstance(tz, str):
-        if tz == "local":
-            return pytz.timezone(tzlocal.get_localzone_name())
-        return pytz.timezone(tz)
-    if tz and not isinstance(tz, pytz.BaseTzInfo):
-        err_msg = (f"[{error_trace()}] `tz` must be a datetime.tzinfo object "
-                   f"or an IANA-recognized timezone string, not {type(tz)}")
-        raise TypeError(err_msg)
-    return tz
 
 
 def tolerance(
@@ -144,9 +120,8 @@ def validate_unit(unit: str | np.ndarray | pd.Series) -> None:
     """Ensure that all elements of `unit` are valid time units ('ns', 'us',
     'ms', 's', 'm', 'h', 'D', 'W', 'M', 'Y'), following the numpy convention.
     """
-    valid = list(_to_ns) + ["M", "Y"]
-    if not np.isin(unit, valid).all():
-        bad = list(np.unique(unit[~np.isin(unit, valid)]))
+    if not np.isin(unit, valid_units).all():
+        bad = list(np.unique(unit[~np.isin(unit, valid_units)]))
         err_msg = (f"[{error_trace()}] `unit` {shorten_list(bad)} not "
-                   f"recognized: must be in {valid}")
+                   f"recognized: must be in {valid_units}")
         raise ValueError(err_msg)
