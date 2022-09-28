@@ -12,7 +12,8 @@ distutils.core.setup(
             "pdtypes/time/*.pyx",
             "pdtypes/time/datetime/*.pyx",
             "pdtypes/time/timedelta/*.pyx",
-            "pdtypes/util/loops/*.pyx"
+            "pdtypes/util/loops/*.pyx",
+            "pdtypes/types/*.pyx"
         ],
         language_level="3",
         compiler_directives={"embedsignature": True}
