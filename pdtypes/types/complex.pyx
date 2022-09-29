@@ -5,27 +5,48 @@ import pandas as pd
 from .base cimport ElementType
 
 
-cdef class BaseComplexType(ElementType):
-    """Base class for float types."""
-
-
 ##########################
 ####    SUPERTYPES    ####
 ##########################
 
 
-cdef class ComplexType(BaseComplexType):
-    """Float supertype"""
+cdef class ComplexType(ElementType):
+    """Complex supertype"""
 
-    def __cinit__(self):
-        if self.is_extension:
-            raise ValueError("complex numbers have no valid extension type")
+    def __init__(
+        self,
+        bint is_categorical = False,
+        bint is_sparse = False
+    ):
+        self.is_categorical = is_categorical
+        self.is_sparse = is_sparse
+        self.is_nullable = True
         self.supertype = None
         self.subtypes = (Complex64Type, Complex128Type, CLongDoubleType)
         self.atomic_type = complex
         self.extension_type = None
         self.min = -2**53
         self.max = 2**53
+        self.slug = "complex"
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}("
+            f"is_categorical={self.is_categorical}, "
+            f"is_sparse={self.is_sparse}"
+            f")"
+        )
+
+    def __str__(self) -> str:
+        cdef str result = self.slug
+
+        # append extensions
+        if self.is_categorical:
+            result = f"categorical[{result}]"
+        if self.is_sparse:
+            result = f"sparse[{result}]"
+
+        return result
 
 
 ########################
@@ -33,43 +54,61 @@ cdef class ComplexType(BaseComplexType):
 ########################
 
 
-cdef class Complex64Type(BaseComplexType):
+cdef class Complex64Type(ComplexType):
     """64-bit complex subtype"""
 
-    def __cinit__(self):
-        if self.is_extension:
-            raise ValueError("complex numbers have no valid extension type")
+    def __init__(
+        self,
+        bint is_categorical = False,
+        bint is_sparse = False
+    ):
+        self.is_categorical = is_categorical
+        self.is_sparse = is_sparse
+        self.is_nullable = True
         self.supertype = ComplexType
         self.subtypes = ()
         self.atomic_type = np.complex64
         self.extension_type = None
         self.min = -2**24
         self.max = 2**24
+        self.slug = "complex64"
 
 
-cdef class Complex128Type(BaseComplexType):
+cdef class Complex128Type(ComplexType):
     """128-bit complex subtype"""
 
-    def __cinit__(self):
-        if self.is_extension:
-            raise ValueError("complex numbers have no valid extension type")
+    def __init__(
+        self,
+        bint is_categorical = False,
+        bint is_sparse = False
+    ):
+        self.is_categorical = is_categorical
+        self.is_sparse = is_sparse
+        self.is_nullable = True
         self.supertype = ComplexType
         self.subtypes = ()
         self.atomic_type = np.complex128
         self.extension_type = None
         self.min = -2**53
         self.max = 2**53
+        self.slug = "complex128"
 
 
-cdef class CLongDoubleType(BaseComplexType):
+cdef class CLongDoubleType(ComplexType):
     """complex long double subtype (platform-dependent)"""
 
-    def __cinit__(self):
-        if self.is_extension:
-            raise ValueError("complex numbers have no valid extension type")
+    def __init__(
+        self,
+        bint is_categorical = False,
+        bint is_sparse = False
+    ):
+        self.is_categorical = is_categorical
+        self.is_sparse = is_sparse
+        self.is_nullable = True
         self.supertype = ComplexType
         self.subtypes = ()
         self.atomic_type = np.clongdouble
         self.extension_type = None
         self.min = -2**64
         self.max = 2**64
+        self.slug = "clongdouble"

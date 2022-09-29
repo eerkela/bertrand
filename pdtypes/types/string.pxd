@@ -1,7 +1,5 @@
 from .base cimport ElementType
 
-cdef class BaseStringType(ElementType):
-    pass
 
-cdef class StringType(BaseStringType):
+cdef class StringType(ElementType):
     pass

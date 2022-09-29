@@ -13,6 +13,7 @@ distutils.core.setup(
             "pdtypes/time/datetime/*.pyx",
             "pdtypes/time/timedelta/*.pyx",
             "pdtypes/util/loops/*.pyx",
+            "pdtypes/util/*.pyx",
             "pdtypes/types/*.pyx"
         ],
         language_level="3",

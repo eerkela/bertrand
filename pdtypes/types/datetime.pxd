@@ -1,26 +1,21 @@
 from .base cimport ElementType
 
-cdef class BaseDatetimeType(ElementType):
+
+cdef class DatetimeType(ElementType):
+    cdef readonly:
+        object min
+        object max
+
+
+cdef class PandasTimestampType(DatetimeType):
     pass
 
-cdef class DatetimeType(BaseDatetimeType):
-    cdef readonly:
-        object min
-        object max
 
-cdef class PandasTimestampType(BaseDatetimeType):
-    cdef readonly:
-        long min
-        long max
+cdef class PyDatetimeType(DatetimeType):
+    pass
 
-cdef class PyDatetimeType(BaseDatetimeType):
-    cdef readonly:
-        object min
-        object max
 
-cdef class NumpyDatetime64Type(BaseDatetimeType):
+cdef class NumpyDatetime64Type(DatetimeType):
     cdef readonly:
-        object min
-        object max
         str unit
         unsigned long step_size
