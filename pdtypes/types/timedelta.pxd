@@ -18,4 +18,4 @@ cdef class PyTimedeltaType(TimedeltaType):
 cdef class NumpyTimedelta64Type(TimedeltaType):
     cdef readonly:
         str unit
-        unsigned long step_size
+        unsigned long long step_size

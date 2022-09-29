@@ -1,4 +1,5 @@
 from pdtypes.util.structs cimport LRUDict
+from .base cimport ElementType
 
 # constants
 cdef unsigned short cache_size
@@ -9,12 +10,12 @@ cdef str default_string_storage
 
 
 # factory function
-cpdef object element_type(
-    object base,
+cpdef ElementType factory(
+    type base,
     bint is_categorical = *,
     bint is_sparse = *,
     bint is_nullable = *,
     str unit = *,
-    unsigned long step_size = *,
+    unsigned long long step_size = *,
     str storage = *
 )

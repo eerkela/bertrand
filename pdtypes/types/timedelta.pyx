@@ -107,7 +107,7 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
         bint is_categorical = False,
         bint is_sparse = False,
         str unit = None,
-        unsigned long step_size = 1
+        unsigned long long step_size = 1
     ):
         self.is_categorical = is_categorical
         self.is_sparse = is_sparse

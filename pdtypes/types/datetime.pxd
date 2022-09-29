@@ -18,4 +18,4 @@ cdef class PyDatetimeType(DatetimeType):
 cdef class NumpyDatetime64Type(DatetimeType):
     cdef readonly:
         str unit
-        unsigned long step_size
+        unsigned long long step_size

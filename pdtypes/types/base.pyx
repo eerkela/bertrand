@@ -12,7 +12,7 @@ from pdtypes.util.structs cimport LRUDict
 
 cdef class ElementType:
     """Base class for type definitions.
-    
+
     Attributes
     ----------
     is_categorical : bool
@@ -34,7 +34,7 @@ cdef class ElementType:
         A pandas extension type for the given ElementType, if it has one.
         These allow non-nullable types to accept missing values in the form of
         `pd.NA`, as well as exposing custom string storage backends, etc.
-    hash : long
+    hash : int
         A unique hash value based on the unique settings of this ElementType.
         This is used for caching operations and equality checks.
     slug : str

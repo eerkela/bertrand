@@ -7,5 +7,5 @@ cdef class ElementType:
         tuple subtypes
         object atomic_type
         object extension_type
-        long hash
+        long long hash
         str slug
