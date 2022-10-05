@@ -5,7 +5,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport ElementType
+from .base cimport ElementType, compute_hash
 
 
 ##########################
@@ -21,18 +21,22 @@ cdef class TimedeltaType(ElementType):
         bint categorical = False,
         bint sparse = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = True
+        super(TimedeltaType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True
+        )
         self.supertype = None
         self.subtypes = (
             PandasTimedeltaType, PyTimedeltaType, NumpyTimedelta64Type
         )
         self.atomic_type = None
         self.extension_type = None
+        self.slug = "timedelta"
+
+        # min/max representable values in ns
         self.min = -291061508645168391112156800000000000
         self.max = 291061508645168391112243200000000000
-        self.slug = "timedelta"
 
     def __repr__(self) -> str:
         return (
@@ -67,16 +71,20 @@ cdef class PandasTimedeltaType(TimedeltaType):
         bint categorical = False,
         bint sparse = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = True
+        super(TimedeltaType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True
+        )
         self.supertype = TimedeltaType
         self.subtypes = ()
         self.atomic_type = pd.Timedelta
         self.extension_type = None
+        self.slug = "timedelta[pandas]"
+
+        # min/max representable values in ns
         self.min = -2**63 + 1
         self.max = 2**63 - 1
-        self.slug = "timedelta[pandas]"
 
 
 cdef class PyTimedeltaType(TimedeltaType):
@@ -87,16 +95,20 @@ cdef class PyTimedeltaType(TimedeltaType):
         bint categorical = False,
         bint sparse = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = True
+        super(TimedeltaType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True
+        )
         self.supertype = TimedeltaType
         self.subtypes = ()
         self.atomic_type = datetime.timedelta
         self.extension_type = None
+        self.slug = "timedelta[python]"
+
+        # min/max representable values in ns
         self.min = -86399999913600000000000
         self.max = 86399999999999999999000
-        self.slug = "timedelta[python]"
 
 
 cdef class NumpyTimedelta64Type(TimedeltaType):
@@ -116,14 +128,30 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
         self.subtypes = ()
         self.atomic_type = np.timedelta64
         self.extension_type = None
-        self.min = -291061508645168391112243200000000000
-        self.max = 291061508645168328945024000000000000
-        self.unit = unit
 
+        # add unit, step size
+        self.unit = unit
         if step_size < 1:
             raise ValueError(f"`step_size` must be >= 1, not {step_size}")
         self.step_size = step_size
 
+        # compute hash
+        self.hash = compute_hash(
+            {
+                "sparse": sparse,
+                "categorical": categorical,
+                "nullable": True,
+                "base": self.__class__,
+                "unit": unit,
+                "step_size": step_size
+            }
+        )
+
+        # min/max representable values in ns
+        self.min = -291061508645168391112243200000000000
+        self.max = 291061508645168328945024000000000000
+
+        # get appropriate slug
         if self.unit is None:
             self.slug = "m8"
         else:
@@ -131,6 +159,7 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
                 self.slug = f"m8[{unit}]"
             else:
                 self.slug = f"m8[{step_size}{unit}]"
+
 
     def __repr__(self) -> str:
         return (

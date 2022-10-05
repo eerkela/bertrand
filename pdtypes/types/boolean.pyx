@@ -15,13 +15,15 @@ cdef class BooleanType(ElementType):
 
     def __init__(
         self,
-        bint categorical = False,
         bint sparse = False,
+        bint categorical = False,
         bint nullable = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = nullable
+        super(BooleanType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable
+        )
         self.supertype = None
         self.subtypes = ()
         self.atomic_type = bool

@@ -18,9 +18,11 @@ cdef class ComplexType(ElementType):
         bint categorical = False,
         bint sparse = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = True
+        super(ComplexType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True
+        )
         self.supertype = None
         self.subtypes = (Complex64Type, Complex128Type, CLongDoubleType)
         self.atomic_type = complex
@@ -62,9 +64,11 @@ cdef class Complex64Type(ComplexType):
         bint categorical = False,
         bint sparse = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = True
+        super(ComplexType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True
+        )
         self.supertype = ComplexType
         self.subtypes = ()
         self.atomic_type = np.complex64
@@ -82,9 +86,11 @@ cdef class Complex128Type(ComplexType):
         bint categorical = False,
         bint sparse = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = True
+        super(ComplexType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True
+        )
         self.supertype = ComplexType
         self.subtypes = ()
         self.atomic_type = np.complex128
@@ -102,9 +108,11 @@ cdef class CLongDoubleType(ComplexType):
         bint categorical = False,
         bint sparse = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = True
+        super(ComplexType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True
+        )
         self.supertype = ComplexType
         self.subtypes = ()
         self.atomic_type = np.clongdouble

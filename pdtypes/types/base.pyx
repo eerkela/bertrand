@@ -1,3 +1,4 @@
+cimport cython
 cimport numpy as np
 import numpy as np
 import pandas as pd
@@ -21,7 +22,16 @@ from .string cimport *
 # https://python-patterns.guide/gang-of-four/flyweight/
 
 
-# TODO: ElementType hashes aren't currently stored.
+# TODO: consider adding a centralized subtype registry, to enable ObjectType
+
+
+# TODO: consider moving to pure tuple approach for compute_hash, rather than
+# dict packing/unpacking.
+
+
+# get_dtype() performance with this approach is about 0.45s / 10**6 rows.
+# -> try to speed up hashing perf + fewer branches in scalar conversion.
+# -> (no ElementType check, no force_nullable?)
 
 
 #########################
@@ -88,11 +98,14 @@ cpdef object get_dtype(object example):
     return parse_example_scalar(example)
 
 
-
 cpdef ElementType resolve_dtype(object typespec):
     """ElementType factory function.  Constructs ElementType objects according
     to the Flyweight pattern.
     """
+    # trivial case: typespec is already an instance of ElementType
+    if isinstance(typespec, ElementType):
+        return typespec
+
     cdef dict kwargs
 
     # get appropriate **kwargs dict depending on input type specifier
@@ -114,6 +127,14 @@ cpdef ElementType resolve_dtype(object typespec):
 #######################
 
 
+cdef long long compute_hash(dict kwargs):
+    """Compute a unique hash based on the given ElementType properties."""
+    # TODO: ideally, this would just take positional args and arrange them into
+    # a tuple before hashing.  This breaks dict unpacking though, since cdef
+    # functions don't support it.
+    return hash(tuple({**defaults, **kwargs}.values()))
+
+
 cdef ElementType element_type_from_kwargs(dict kwargs):
     """Construct an ElementType flyweight from the given kwarg dict."""
     cdef long long _hash
@@ -121,7 +142,7 @@ cdef ElementType element_type_from_kwargs(dict kwargs):
     cdef ElementType result
 
     # compute hash
-    _hash = hash(tuple({**defaults, **kwargs}.values()))
+    _hash = compute_hash(kwargs)
 
     # get appropriate registry
     if issubclass(kwargs["base"], NumpyDatetime64Type):
@@ -170,6 +191,8 @@ cdef ElementType parse_example_scalar(
     return element_type_from_kwargs(kwargs)
 
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
 cdef object parse_example_vector(
     np.ndarray[object] arr,
     bint as_index = False,
@@ -192,7 +215,7 @@ cdef object parse_example_vector(
             )
         return result
 
-    # return as sclar/set
+    # return as scalar/set
     result = set()
     for i in range(arr_length):
         result.add(parse_example_scalar(arr[i], force_nullable=force_nullable))
@@ -239,6 +262,24 @@ cdef class ElementType:
         A shortened string identifier (e.g. 'int64', 'bool', etc.) for this
         ElementType.
     """
+
+    def __init__(
+        self,
+        bint sparse,
+        bint categorical,
+        bint nullable
+    ):
+        self.sparse = sparse
+        self.categorical = categorical
+        self.nullable = nullable
+        self.hash = compute_hash(
+            {
+                "sparse": sparse,
+                "categorical": categorical,
+                "nullable": nullable,
+                "base": self.__class__
+            }
+        )
 
     def __eq__(self, other) -> bool:
         return self.hash == hash(resolve_dtype(other))

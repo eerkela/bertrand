@@ -9,10 +9,7 @@ from .timedelta import *
 from .string import *
 
 
-# TODO: move away from core.pyx factory function and put cache registries into
-# modules instead.
-# base -> shared_registry
-# datetime -> datetime64_registry
-# timedelta -> timedelta64_registry
-
-# element_type functionality absorbed by get_dtype, resolve_dtype.
+# TODO: resolve_dtype is about 4x slower than np.dtype(), but it works
+# identically.
+# -> this might have something to do with dict packing/unpacking.  Maybe opt
+# for a pure tuple approach?

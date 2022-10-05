@@ -20,12 +20,17 @@ cdef class DecimalType(ElementType):
         bint categorical = False,
         bint sparse = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = True
+        super(DecimalType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True
+        )
         self.supertype = None
         self.subtypes = ()
         self.atomic_type = decimal.Decimal
         self.extension_type = None
+        self.slug = "decimal"
+
+        # min/max representable values
         self.min = -np.inf
         self.max = np.inf

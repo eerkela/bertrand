@@ -20,11 +20,13 @@ cdef class IntegerType(ElementType):
         self,
         bint categorical = False,
         bint sparse = False,
-        bint nullable = False
+        bint nullable = True
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = nullable
+        super(IntegerType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable
+        )
         self.supertype = None
         self.subtypes = (
             Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
@@ -68,9 +70,11 @@ cdef class SignedIntegerType(IntegerType):
         bint sparse = False,
         bint nullable = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = nullable
+        super(IntegerType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable
+        )
         self.supertype = IntegerType
         self.subtypes = (Int8Type, Int16Type, Int32Type, Int64Type)
         self.atomic_type = None
@@ -89,9 +93,11 @@ cdef class UnsignedIntegerType(IntegerType):
         bint sparse = False,
         bint nullable = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = nullable
+        super(IntegerType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable
+        )
         self.supertype = IntegerType
         self.subtypes = (UInt8Type, UInt16Type, UInt32Type, UInt64Type)
         self.atomic_type = None
@@ -115,9 +121,11 @@ cdef class Int8Type(SignedIntegerType):
         bint sparse = False,
         bint nullable = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = nullable
+        super(IntegerType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable
+        )
         self.supertype = SignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.int8
@@ -136,9 +144,11 @@ cdef class Int16Type(SignedIntegerType):
         bint sparse = False,
         bint nullable = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = nullable
+        super(IntegerType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable
+        )
         self.supertype = SignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.int16
@@ -157,9 +167,11 @@ cdef class Int32Type(SignedIntegerType):
         bint sparse = False,
         bint nullable = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = nullable
+        super(IntegerType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable
+        )
         self.supertype = SignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.int32
@@ -178,9 +190,11 @@ cdef class Int64Type(SignedIntegerType):
         bint sparse = False,
         bint nullable = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = nullable
+        super(IntegerType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable
+        )
         self.supertype = SignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.int64
@@ -199,9 +213,11 @@ cdef class UInt8Type(UnsignedIntegerType):
         bint sparse = False,
         bint nullable = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = nullable
+        super(IntegerType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable
+        )
         self.supertype = UnsignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.uint8
@@ -220,9 +236,11 @@ cdef class UInt16Type(UnsignedIntegerType):
         bint sparse = False,
         bint nullable = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = nullable
+        super(IntegerType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable
+        )
         self.supertype = UnsignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.uint16
@@ -241,9 +259,11 @@ cdef class UInt32Type(UnsignedIntegerType):
         bint sparse = False,
         bint nullable = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = nullable
+        super(IntegerType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable
+        )
         self.supertype = UnsignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.uint32
@@ -262,9 +282,11 @@ cdef class UInt64Type(UnsignedIntegerType):
         bint sparse = False,
         bint nullable = False
     ):
-        self.categorical = categorical
-        self.sparse = sparse
-        self.nullable = nullable
+        super(IntegerType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable
+        )
         self.supertype = UnsignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.uint64

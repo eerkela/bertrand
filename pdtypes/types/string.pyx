@@ -4,7 +4,7 @@ import pandas as pd
 
 from pdtypes import DEFAULT_STRING_DTYPE
 
-from .base cimport ElementType
+from .base cimport ElementType, compute_hash
 
 
 ##########################
@@ -28,12 +28,24 @@ cdef class StringType(ElementType):
         self.subtypes = ()
         self.atomic_type = str
 
+        # get appropriate slug/extension type based on storage argument
         if storage is None:
             self.extension_type = DEFAULT_STRING_DTYPE
             self.slug = "string"
         else:
             self.extension_type = pd.StringDtype(storage)
             self.slug = f"string[{storage}]"
+
+        # compute hash
+        self.hash = compute_hash(
+            {
+                "sparse": sparse,
+                "categorical": categorical,
+                "nullable": True,
+                "base": self.__class__,
+                "storage": storage
+            }
+        )
 
     def __repr__(self) -> str:
         return (

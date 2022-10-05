@@ -17,6 +17,7 @@ cpdef ElementType resolve_dtype(object typespec)
 
 
 # helpers
+cdef long long compute_hash(dict kwargs)
 cdef ElementType element_type_from_kwargs(dict kwargs)
 cdef ElementType parse_example_scalar(object typespec, bint force_nullable = *)
 cdef object parse_example_vector(
