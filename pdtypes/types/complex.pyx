@@ -15,12 +15,12 @@ cdef class ComplexType(ElementType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = None
         self.subtypes = (Complex64Type, Complex128Type, CLongDoubleType)
         self.atomic_type = complex
@@ -32,8 +32,8 @@ cdef class ComplexType(ElementType):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"is_categorical={self.is_categorical}, "
-            f"is_sparse={self.is_sparse}"
+            f"categorical={self.categorical}, "
+            f"sparse={self.sparse}"
             f")"
         )
 
@@ -41,9 +41,9 @@ cdef class ComplexType(ElementType):
         cdef str result = self.slug
 
         # append extensions
-        if self.is_categorical:
+        if self.categorical:
             result = f"categorical[{result}]"
-        if self.is_sparse:
+        if self.sparse:
             result = f"sparse[{result}]"
 
         return result
@@ -59,12 +59,12 @@ cdef class Complex64Type(ComplexType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = ComplexType
         self.subtypes = ()
         self.atomic_type = np.complex64
@@ -79,12 +79,12 @@ cdef class Complex128Type(ComplexType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = ComplexType
         self.subtypes = ()
         self.atomic_type = np.complex128
@@ -99,12 +99,12 @@ cdef class CLongDoubleType(ComplexType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = ComplexType
         self.subtypes = ()
         self.atomic_type = np.clongdouble

@@ -18,13 +18,13 @@ cdef class IntegerType(ElementType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
-        bint is_nullable = False
+        bint categorical = False,
+        bint sparse = False,
+        bint nullable = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = is_nullable
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = nullable
         self.supertype = None
         self.subtypes = (
             Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
@@ -39,9 +39,9 @@ cdef class IntegerType(ElementType):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"is_categorical={self.is_categorical}, "
-            f"is_sparse={self.is_sparse}, "
-            f"is_nullable={self.is_nullable}"
+            f"categorical={self.categorical}, "
+            f"sparse={self.sparse}, "
+            f"nullable={self.nullable}"
             f")"
         )
 
@@ -49,11 +49,11 @@ cdef class IntegerType(ElementType):
         cdef str result = self.slug
 
         # append extensions
-        if self.is_nullable:
+        if self.nullable:
             result = f"nullable[{result}]"
-        if self.is_categorical:
+        if self.categorical:
             result = f"categorical[{result}]"
-        if self.is_sparse:
+        if self.sparse:
             result = f"sparse[{result}]"
 
         return result
@@ -64,13 +64,13 @@ cdef class SignedIntegerType(IntegerType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
-        bint is_nullable = False
+        bint categorical = False,
+        bint sparse = False,
+        bint nullable = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = is_nullable
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = nullable
         self.supertype = IntegerType
         self.subtypes = (Int8Type, Int16Type, Int32Type, Int64Type)
         self.atomic_type = None
@@ -85,13 +85,13 @@ cdef class UnsignedIntegerType(IntegerType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
-        bint is_nullable = False
+        bint categorical = False,
+        bint sparse = False,
+        bint nullable = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = is_nullable
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = nullable
         self.supertype = IntegerType
         self.subtypes = (UInt8Type, UInt16Type, UInt32Type, UInt64Type)
         self.atomic_type = None
@@ -111,13 +111,13 @@ cdef class Int8Type(SignedIntegerType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
-        bint is_nullable = False
+        bint categorical = False,
+        bint sparse = False,
+        bint nullable = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = is_nullable
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = nullable
         self.supertype = SignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.int8
@@ -132,13 +132,13 @@ cdef class Int16Type(SignedIntegerType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
-        bint is_nullable = False
+        bint categorical = False,
+        bint sparse = False,
+        bint nullable = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = is_nullable
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = nullable
         self.supertype = SignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.int16
@@ -153,13 +153,13 @@ cdef class Int32Type(SignedIntegerType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
-        bint is_nullable = False
+        bint categorical = False,
+        bint sparse = False,
+        bint nullable = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = is_nullable
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = nullable
         self.supertype = SignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.int32
@@ -174,13 +174,13 @@ cdef class Int64Type(SignedIntegerType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
-        bint is_nullable = False
+        bint categorical = False,
+        bint sparse = False,
+        bint nullable = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = is_nullable
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = nullable
         self.supertype = SignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.int64
@@ -195,13 +195,13 @@ cdef class UInt8Type(UnsignedIntegerType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
-        bint is_nullable = False
+        bint categorical = False,
+        bint sparse = False,
+        bint nullable = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = is_nullable
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = nullable
         self.supertype = UnsignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.uint8
@@ -216,13 +216,13 @@ cdef class UInt16Type(UnsignedIntegerType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
-        bint is_nullable = False
+        bint categorical = False,
+        bint sparse = False,
+        bint nullable = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = is_nullable
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = nullable
         self.supertype = UnsignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.uint16
@@ -237,13 +237,13 @@ cdef class UInt32Type(UnsignedIntegerType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
-        bint is_nullable = False
+        bint categorical = False,
+        bint sparse = False,
+        bint nullable = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = is_nullable
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = nullable
         self.supertype = UnsignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.uint32
@@ -258,13 +258,13 @@ cdef class UInt64Type(UnsignedIntegerType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
-        bint is_nullable = False
+        bint categorical = False,
+        bint sparse = False,
+        bint nullable = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = is_nullable
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = nullable
         self.supertype = UnsignedIntegerType
         self.subtypes = ()
         self.atomic_type = np.uint64

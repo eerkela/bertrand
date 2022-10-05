@@ -7,22 +7,22 @@ import pandas as pd
 from .base cimport ElementType
 
 
-cdef class BaseDecimalType(ElementType):
-    """Base class for boolean types."""
-    pass  # not used, just here to make issubclass() checks easier
-
-
 ##########################
 ####    SUPERTYPES    ####
 ##########################
 
 
-cdef class DecimalType(BaseDecimalType):
-    """Boolean supertype."""
+cdef class DecimalType(ElementType):
+    """Decimal supertype."""
 
-    def __cinit__(self):
-        if self.is_extension:
-            raise ValueError("decimals have no valid extension type")
+    def __init__(
+        self,
+        bint categorical = False,
+        bint sparse = False
+    ):
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = None
         self.subtypes = ()
         self.atomic_type = decimal.Decimal

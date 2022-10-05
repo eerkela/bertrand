@@ -17,13 +17,13 @@ cdef class StringType(ElementType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
+        bint categorical = False,
+        bint sparse = False,
         str storage = None
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = None
         self.subtypes = ()
         self.atomic_type = str
@@ -38,8 +38,8 @@ cdef class StringType(ElementType):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"is_categorical={self.is_categorical}, "
-            f"is_sparse={self.is_sparse}"
+            f"categorical={self.categorical}, "
+            f"sparse={self.sparse}"
             f")"
         )
 
@@ -47,9 +47,9 @@ cdef class StringType(ElementType):
         cdef str result = self.slug
 
         # append extensions
-        if self.is_categorical:
+        if self.categorical:
             result = f"categorical[{result}]"
-        if self.is_sparse:
+        if self.sparse:
             result = f"sparse[{result}]"
 
         return result

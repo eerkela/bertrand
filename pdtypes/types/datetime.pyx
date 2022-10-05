@@ -17,12 +17,12 @@ cdef class DatetimeType(ElementType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = None
         self.subtypes = (
             PandasTimestampType, PyDatetimeType, NumpyDatetime64Type
@@ -36,8 +36,8 @@ cdef class DatetimeType(ElementType):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"is_categorical={self.is_categorical}, "
-            f"is_sparse={self.is_sparse}"
+            f"categorical={self.categorical}, "
+            f"sparse={self.sparse}"
             f")"
         )
 
@@ -45,9 +45,9 @@ cdef class DatetimeType(ElementType):
         cdef str result = self.slug
 
         # append extensions
-        if self.is_categorical:
+        if self.categorical:
             result = f"categorical[{result}]"
-        if self.is_sparse:
+        if self.sparse:
             result = f"sparse[{result}]"
 
         return result
@@ -63,12 +63,12 @@ cdef class PandasTimestampType(DatetimeType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = DatetimeType
         self.subtypes = ()
         self.atomic_type = pd.Timestamp
@@ -83,12 +83,12 @@ cdef class PyDatetimeType(DatetimeType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = DatetimeType
         self.subtypes = ()
         self.atomic_type = datetime.datetime
@@ -103,14 +103,14 @@ cdef class NumpyDatetime64Type(DatetimeType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
+        bint categorical = False,
+        bint sparse = False,
         str unit = None,
         unsigned long long step_size = 1
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = DatetimeType
         self.subtypes = ()
         self.atomic_type = np.datetime64
@@ -134,8 +134,8 @@ cdef class NumpyDatetime64Type(DatetimeType):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"is_categorical={self.is_categorical}, "
-            f"is_sparse={self.is_sparse}, "
+            f"categorical={self.categorical}, "
+            f"sparse={self.sparse}, "
             f"unit={self.unit}, "
             f"step_size={self.step_size}"
             f")"

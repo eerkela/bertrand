@@ -15,12 +15,12 @@ cdef class FloatType(ElementType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = None
         self.subtypes = (
             Float16Type, Float32Type, Float64Type, LongDoubleType
@@ -34,8 +34,8 @@ cdef class FloatType(ElementType):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"is_categorical={self.is_categorical}, "
-            f"is_sparse={self.is_sparse}"
+            f"categorical={self.categorical}, "
+            f"sparse={self.sparse}"
             f")"
         )
 
@@ -43,9 +43,9 @@ cdef class FloatType(ElementType):
         cdef str result = self.slug
 
         # append extensions
-        if self.is_categorical:
+        if self.categorical:
             result = f"categorical[{result}]"
-        if self.is_sparse:
+        if self.sparse:
             result = f"sparse[{result}]"
 
         return result
@@ -61,12 +61,12 @@ cdef class Float16Type(FloatType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = FloatType
         self.subtypes = ()
         self.atomic_type = np.float16
@@ -81,12 +81,12 @@ cdef class Float32Type(FloatType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = FloatType
         self.subtypes = ()
         self.atomic_type = np.float32
@@ -101,12 +101,12 @@ cdef class Float64Type(FloatType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = FloatType
         self.subtypes = ()
         self.atomic_type = np.float64
@@ -121,12 +121,12 @@ cdef class LongDoubleType(FloatType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = FloatType
         self.subtypes = ()
         self.atomic_type = np.longdouble

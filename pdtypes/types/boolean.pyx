@@ -15,13 +15,13 @@ cdef class BooleanType(ElementType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
-        bint is_nullable = False
+        bint categorical = False,
+        bint sparse = False,
+        bint nullable = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = is_nullable
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = nullable
         self.supertype = None
         self.subtypes = ()
         self.atomic_type = bool
@@ -31,9 +31,9 @@ cdef class BooleanType(ElementType):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"is_categorical={self.is_categorical}, "
-            f"is_sparse={self.is_sparse}, "
-            f"is_nullable={self.is_nullable}"
+            f"categorical={self.categorical}, "
+            f"sparse={self.sparse}, "
+            f"nullable={self.nullable}"
             f")"
         )
 
@@ -41,11 +41,11 @@ cdef class BooleanType(ElementType):
         cdef str result = self.slug
 
         # append extensions
-        if self.is_nullable:
+        if self.nullable:
             result = f"nullable[{result}]"
-        if self.is_categorical:
+        if self.categorical:
             result = f"categorical[{result}]"
-        if self.is_sparse:
+        if self.sparse:
             result = f"sparse[{result}]"
 
         return result

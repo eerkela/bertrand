@@ -18,12 +18,12 @@ cdef class TimedeltaType(ElementType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = None
         self.subtypes = (
             PandasTimedeltaType, PyTimedeltaType, NumpyTimedelta64Type
@@ -37,8 +37,8 @@ cdef class TimedeltaType(ElementType):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"is_categorical={self.is_categorical}, "
-            f"is_sparse={self.is_sparse}"
+            f"categorical={self.categorical}, "
+            f"sparse={self.sparse}"
             f")"
         )
 
@@ -46,9 +46,9 @@ cdef class TimedeltaType(ElementType):
         cdef str result = self.slug
 
         # append extensions
-        if self.is_categorical:
+        if self.categorical:
             result = f"categorical[{result}]"
-        if self.is_sparse:
+        if self.sparse:
             result = f"sparse[{result}]"
 
         return result
@@ -64,12 +64,12 @@ cdef class PandasTimedeltaType(TimedeltaType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = TimedeltaType
         self.subtypes = ()
         self.atomic_type = pd.Timedelta
@@ -84,12 +84,12 @@ cdef class PyTimedeltaType(TimedeltaType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False
+        bint categorical = False,
+        bint sparse = False
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = TimedeltaType
         self.subtypes = ()
         self.atomic_type = datetime.timedelta
@@ -104,14 +104,14 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
 
     def __init__(
         self,
-        bint is_categorical = False,
-        bint is_sparse = False,
+        bint categorical = False,
+        bint sparse = False,
         str unit = None,
         unsigned long long step_size = 1
     ):
-        self.is_categorical = is_categorical
-        self.is_sparse = is_sparse
-        self.is_nullable = True
+        self.categorical = categorical
+        self.sparse = sparse
+        self.nullable = True
         self.supertype = TimedeltaType
         self.subtypes = ()
         self.atomic_type = np.timedelta64
@@ -135,8 +135,8 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"is_categorical={self.is_categorical}, "
-            f"is_sparse={self.is_sparse}, "
+            f"categorical={self.categorical}, "
+            f"sparse={self.sparse}, "
             f"unit={self.unit}, "
             f"step_size={self.step_size}"
             f")"
