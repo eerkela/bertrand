@@ -1,5 +1,13 @@
+from pdtypes.types.base cimport ElementType
+
 # constants
-cdef dict lookup
+cdef tuple non_nullable_types
+cdef dict type_lookup
 
 # parsing functions
-cdef dict parse_type(type typespec)
+cdef ElementType parse_typespec_type(
+    type typespec,
+    bint sparse = *,
+    bint categorical = *,
+    bint force_nullable = *
+)

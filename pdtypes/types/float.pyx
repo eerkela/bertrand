@@ -2,7 +2,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport ElementType
+from .base cimport compute_hash, ElementType, shared_registry
 
 
 ##########################
@@ -15,40 +15,31 @@ cdef class FloatType(ElementType):
 
     def __init__(
         self,
-        bint categorical = False,
-        bint sparse = False
+        bint sparse = False,
+        bint categorical = False
     ):
-        self.categorical = categorical
         self.sparse = sparse
+        self.categorical = categorical
         self.nullable = True
         self.supertype = None
-        self.subtypes = (
-            Float16Type, Float32Type, Float64Type, LongDoubleType
+        self.subtypes = frozenset(
+            t.instance(sparse=sparse, categorical=categorical)
+            for t in (Float16Type, Float32Type, Float64Type, LongDoubleType)
         )
         self.atomic_type = float
-        self.extension_type = None
-        self.min = -2**53
-        self.max = 2**53
+        self.numpy_type = None
+        self.pandas_type = None
         self.slug = "float"
-
-    def __repr__(self) -> str:
-        return (
-            f"{self.__class__.__name__}("
-            f"categorical={self.categorical}, "
-            f"sparse={self.sparse}"
-            f")"
+        self.hash = compute_hash(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            base=self.__class__
         )
 
-    def __str__(self) -> str:
-        cdef str result = self.slug
-
-        # append extensions
-        if self.categorical:
-            result = f"categorical[{result}]"
-        if self.sparse:
-            result = f"sparse[{result}]"
-
-        return result
+        # min/max representable integer (determined by size of significand)
+        self.min = -2**53
+        self.max = 2**53
 
 
 ########################
@@ -61,19 +52,28 @@ cdef class Float16Type(FloatType):
 
     def __init__(
         self,
-        bint categorical = False,
-        bint sparse = False
+        bint sparse = False,
+        bint categorical = False
     ):
-        self.categorical = categorical
         self.sparse = sparse
+        self.categorical = categorical
         self.nullable = True
         self.supertype = FloatType
-        self.subtypes = ()
+        self.subtypes = frozenset()
         self.atomic_type = np.float16
-        self.extension_type = None
+        self.numpy_type = np.dtype(np.float16)
+        self.pandas_type = None
+        self.slug = "float16"
+        self.hash = compute_hash(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            base=self.__class__
+        )
+
+        # min/max representable integer (determined by size of significand)
         self.min = -2**11
         self.max = 2**11
-        self.slug = "float16"
 
 
 cdef class Float32Type(FloatType):
@@ -81,19 +81,28 @@ cdef class Float32Type(FloatType):
 
     def __init__(
         self,
-        bint categorical = False,
-        bint sparse = False
+        bint sparse = False,
+        bint categorical = False
     ):
-        self.categorical = categorical
         self.sparse = sparse
+        self.categorical = categorical
         self.nullable = True
         self.supertype = FloatType
-        self.subtypes = ()
+        self.subtypes = frozenset()
         self.atomic_type = np.float32
-        self.extension_type = None
+        self.numpy_type = np.dtype(np.float32)
+        self.pandas_type = None
+        self.slug = "float32"
+        self.hash = compute_hash(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            base=self.__class__
+        )
+
+        # min/max representable integer (determined by size of significand)
         self.min = -2**24
         self.max = 2**24
-        self.slug = "float32"
 
 
 cdef class Float64Type(FloatType):
@@ -101,19 +110,28 @@ cdef class Float64Type(FloatType):
 
     def __init__(
         self,
-        bint categorical = False,
-        bint sparse = False
+        bint sparse = False,
+        bint categorical = False
     ):
-        self.categorical = categorical
         self.sparse = sparse
+        self.categorical = categorical
         self.nullable = True
         self.supertype = FloatType
-        self.subtypes = ()
+        self.subtypes = frozenset()
         self.atomic_type = np.float64
-        self.extension_type = None
+        self.numpy_type = np.dtype(np.float64)
+        self.pandas_type = None
+        self.slug = "float64"
+        self.hash = compute_hash(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            base=self.__class__
+        )
+
+        # min/max representable integer (determined by size of significand)
         self.min = -2**53
         self.max = 2**53
-        self.slug = "float64"
 
 
 cdef class LongDoubleType(FloatType):
@@ -121,16 +139,25 @@ cdef class LongDoubleType(FloatType):
 
     def __init__(
         self,
-        bint categorical = False,
-        bint sparse = False
+        bint sparse = False,
+        bint categorical = False
     ):
-        self.categorical = categorical
         self.sparse = sparse
+        self.categorical = categorical
         self.nullable = True
         self.supertype = FloatType
-        self.subtypes = ()
+        self.subtypes = frozenset()
         self.atomic_type = np.longdouble
-        self.extension_type = None
+        self.numpy_type = np.dtype(np.longdouble)
+        self.pandas_type = None
+        self.slug = "longdouble"
+        self.hash = compute_hash(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            base=self.__class__
+        )
+
+        # min/max representable integer (determined by size of significand)
         self.min = -2**64
         self.max = 2**64
-        self.slug = "longdouble"

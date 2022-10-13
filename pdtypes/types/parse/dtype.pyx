@@ -2,16 +2,16 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from pdtypes import PYARROW_INSTALLED
+from pdtypes.types cimport (
+    BooleanType, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type,
+    UInt16Type, UInt32Type, UInt64Type, Float16Type, Float32Type, Float64Type,
+    LongDoubleType, Complex64Type, Complex128Type, CLongDoubleType,
+    NumpyDatetime64Type, NumpyTimedelta64Type, StringType, ObjectType
+)
+from .example cimport parse_example_vector
 
-from pdtypes.types cimport *
 
-
-# TODO: dtype="O", bytes?
-
-
-# TODO: categorical types with dtype="O"
-# -> call parse_array and return a set if multiple types are found.
+# TODO: bytes?
 
 
 ######################
@@ -19,55 +19,80 @@ from pdtypes.types cimport *
 ######################
 
 
-cdef dict parse_dtype(object typespec):
-    """Parse a numpy/pandas dtype specifier into an equivalent **kwargs dict,
-    for use in ElementType construction.
+cdef object parse_typespec_dtype(
+    object typespec,
+    bint sparse = False,
+    bint categorical = False,
+    bint force_nullable = False
+):
+    """Convert a numpy/pandas dtype object into its corresponding ElementType.
     """
-    cdef dict result = {}
     cdef object categories
-    cdef object dtype
     cdef str unit
     cdef unsigned long long step_size
+    cdef set category_types
 
     # sparse
     if pd.api.types.is_sparse(typespec):
-        result["sparse"] = True
+        sparse = True
         typespec = typespec.subtype
 
     # categorical
     if pd.api.types.is_categorical_dtype(typespec):
-        result["categorical"] = True
+        categorical = True
         categories = typespec.categories
-        dtype = categories.dtype
         if pd.api.types.is_object_dtype(categories.dtype):
-            # typespec = parse_array(categories)
-            raise NotImplementedError("NYI: categorical with dtype='O'")
+            category_types = parse_example_vector(
+                categories.to_numpy(),
+                sparse=sparse,
+                categorical=True
+            )
+            if len(category_types) == 1:
+                return category_types.pop()
+            return category_types
         else:
             typespec = categories.dtype
 
-    # numpy datetime64/timedelta64
-    if isinstance(typespec, np.dtype):
-        # datetime64
-        if np.issubdtype(typespec, "M8"):
-            result["base"] = NumpyDatetime64Type
-            unit, step_size = np.datetime_data(typespec)
-            if unit != "generic":
-                result["unit"] = unit
-                result["step_size"] = step_size
-            return result
+    # pandas extension type
+    if pd.api.types.is_extension_array_dtype(typespec):
+        if pd.api.types.is_string_dtype(typespec):
+            return StringType.instance(
+                sparse=sparse,
+                categorical=categorical,
+                storage = typespec.storage
+            )
+        else:
+            return dtype_lookup[typespec.numpy_dtype].instance(
+                sparse=sparse,
+                categorical=categorical,
+                nullable=True
+            )
 
-        # timedelta64
-        if np.issubdtype(typespec, "m8"):
-            result["base"] = NumpyTimedelta64Type
-            unit, step_size = np.datetime_data(typespec)
-            if unit != "generic":
-                result["unit"] = unit
-                result["step_size"] = step_size
-            return result
+    # numpy datetime64 special case
+    if np.issubdtype(typespec, "M8"):
+        unit, step_size = np.datetime_data(typespec)
+        return NumpyDatetime64Type.instance(
+            sparse=sparse,
+            categorical=categorical,
+            unit=unit,
+            step_size=step_size
+        )
 
-    # consult lookup table
-    result.update(lookup[typespec])
-    return result
+    # numpy timedelta64 special case
+    if np.issubdtype(typespec, "m8"):
+        unit, step_size = np.datetime_data(typespec)
+        return NumpyTimedelta64Type.instance(
+            sparse=sparse,
+            categorical=categorical,
+            unit=unit,
+            step_size=step_size
+        )
+
+    # consult dtype_lookup table
+    return dtype_lookup[typespec].instance(
+        sparse=sparse,
+        categorical=categorical
+    )
 
 
 #########################
@@ -75,50 +100,38 @@ cdef dict parse_dtype(object typespec):
 #########################
 
 
-cdef dict lookup = {
+cdef dict dtype_lookup = {
     # boolean
-    np.dtype(bool): {"base": BooleanType, "nullable": False},
-    pd.BooleanDtype(): {"base": BooleanType, "nullable": True},
+    np.dtype(bool): BooleanType,
 
     # integer
-    np.dtype(np.int8): {"base": Int8Type, "nullable": False},
-    np.dtype(np.int16): {"base": Int16Type, "nullable": False},
-    np.dtype(np.int32): {"base": Int32Type, "nullable": False},
-    np.dtype(np.int64): {"base": Int64Type, "nullable": False},
-    np.dtype(np.uint8): {"base": UInt8Type, "nullable": False},
-    np.dtype(np.uint16): {"base": UInt16Type, "nullable": False},
-    np.dtype(np.uint32): {"base": UInt32Type, "nullable": False},
-    np.dtype(np.uint64): {"base": UInt64Type, "nullable": False},
-    pd.Int8Dtype(): {"base": Int8Type, "nullable": True},
-    pd.Int16Dtype(): {"base": Int16Type, "nullable": True},
-    pd.Int32Dtype(): {"base": Int32Type, "nullable": True},
-    pd.Int64Dtype(): {"base": Int64Type, "nullable": True},
-    pd.UInt8Dtype(): {"base": UInt8Type, "nullable": True},
-    pd.UInt16Dtype(): {"base": UInt16Type, "nullable": True},
-    pd.UInt32Dtype(): {"base": UInt32Type, "nullable": True},
-    pd.UInt64Dtype(): {"base": UInt64Type, "nullable": True},
+    np.dtype(np.int8): Int8Type,
+    np.dtype(np.int16): Int16Type,
+    np.dtype(np.int32): Int32Type,
+    np.dtype(np.int64): Int64Type,
+    np.dtype(np.uint8): UInt8Type,
+    np.dtype(np.uint16): UInt16Type,
+    np.dtype(np.uint32): UInt32Type,
+    np.dtype(np.uint64): UInt64Type,
 
     # float
-    np.dtype(np.float16): {"base": Float16Type},
-    np.dtype(np.float32): {"base": Float32Type},
-    np.dtype(np.float64): {"base": Float64Type},
-    np.dtype(np.longdouble): {"base": LongDoubleType},
+    np.dtype(np.float16): Float16Type,
+    np.dtype(np.float32): Float32Type,
+    np.dtype(np.float64): Float64Type,
+    np.dtype(np.longdouble): LongDoubleType,
 
     # complex
-    np.dtype(np.complex64): {"base": Complex64Type},
-    np.dtype(np.complex128): {"base": Complex128Type},
-    np.dtype(np.clongdouble): {"base": CLongDoubleType},
+    np.dtype(np.complex64): Complex64Type,
+    np.dtype(np.complex128): Complex128Type,
+    np.dtype(np.clongdouble): CLongDoubleType,
 
     # datetime (M8) dtype handled in special case
 
     # timedelta (m8) dtype handled in special case
 
     # string
-    np.dtype(str): {"base": StringType},
-    pd.StringDtype("python"): {"base": StringType, "storage": "python"},
+    np.dtype(str): StringType,
+
+    # object
+    np.dtype(object): ObjectType
 }
-if PYARROW_INSTALLED:
-    lookup[pd.StringDtype("pyarrow")] = {
-        "base": StringType,
-        "storage": "pyarrow"
-    }

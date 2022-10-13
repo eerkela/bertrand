@@ -1,19 +1,12 @@
-import decimal
-
 import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport compute_hash, ElementType, shared_registry
+from .base cimport compute_hash, ElementType
 
 
-##########################
-####    SUPERTYPES    ####
-##########################
-
-
-cdef class DecimalType(ElementType):
-    """Decimal supertype."""
+cdef class ObjectType(ElementType):
+    """Object supertype"""
 
     def __init__(
         self,
@@ -25,17 +18,13 @@ cdef class DecimalType(ElementType):
         self.nullable = True
         self.supertype = None
         self.subtypes = frozenset()
-        self.atomic_type = decimal.Decimal
-        self.numpy_type = None
+        self.atomic_type = None
+        self.numpy_dtype = np.dtype("O")
         self.pandas_type = None
-        self.slug = "decimal"
+        self.slug = "object"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
-
-        # min/max representable values
-        self.min = -np.inf
-        self.max = np.inf

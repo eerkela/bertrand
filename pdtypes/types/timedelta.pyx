@@ -5,7 +5,10 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport ElementType, compute_hash
+from .base cimport (
+    compute_hash, ElementType, resolve_dtype, shared_registry,
+    timedelta64_registry
+)
 
 
 ##########################
@@ -18,44 +21,40 @@ cdef class TimedeltaType(ElementType):
 
     def __init__(
         self,
-        bint categorical = False,
-        bint sparse = False
+        bint sparse = False,
+        bint categorical = False
     ):
-        super(TimedeltaType, self).__init__(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True
-        )
+        self.sparse = sparse
+        self.categorical = categorical
+        self.nullable = True
         self.supertype = None
-        self.subtypes = (
-            PandasTimedeltaType, PyTimedeltaType, NumpyTimedelta64Type
+        self.subtypes = frozenset(
+            t.instance(sparse=sparse, categorical=categorical)
+            for t in (PandasTimedeltaType, PyTimedeltaType)
         )
         self.atomic_type = None
-        self.extension_type = None
+        self.numpy_type = None
+        self.pandas_type = None
         self.slug = "timedelta"
+        self.hash = compute_hash(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            base=self.__class__
+        )
 
         # min/max representable values in ns
         self.min = -291061508645168391112156800000000000
         self.max = 291061508645168391112243200000000000
 
-    def __repr__(self) -> str:
-        return (
-            f"{self.__class__.__name__}("
-            f"categorical={self.categorical}, "
-            f"sparse={self.sparse}"
-            f")"
-        )
-
-    def __str__(self) -> str:
-        cdef str result = self.slug
-
-        # append extensions
-        if self.categorical:
-            result = f"categorical[{result}]"
-        if self.sparse:
-            result = f"sparse[{result}]"
-
-        return result
+    def __contains__(self, other) -> bool:
+        other = resolve_dtype(other)
+        if issubclass(other, NumpyTimedelta64Type):  # disregard unit/step_size
+            return (
+                self.sparse == other.sparse and
+                self.categorical == other.categorical
+            )
+        return self.__eq__(other) or other in self.subtypes
 
 
 ########################
@@ -68,23 +67,32 @@ cdef class PandasTimedeltaType(TimedeltaType):
 
     def __init__(
         self,
-        bint categorical = False,
-        bint sparse = False
+        bint sparse = False,
+        bint categorical = False
     ):
-        super(TimedeltaType, self).__init__(
+        self.sparse = sparse
+        self.categorical = categorical
+        self.nullable = True
+        self.supertype = TimedeltaType
+        self.subtypes = frozenset()
+        self.atomic_type = pd.Timedelta
+        self.numpy_type = None
+        self.pandas_type = None
+        self.slug = "timedelta[pandas]"
+        self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
-            nullable=True
+            nullable=True,
+            base=self.__class__
         )
-        self.supertype = TimedeltaType
-        self.subtypes = ()
-        self.atomic_type = pd.Timedelta
-        self.extension_type = None
-        self.slug = "timedelta[pandas]"
 
         # min/max representable values in ns
         self.min = -2**63 + 1
         self.max = 2**63 - 1
+
+    def __contains__(self, other) -> bool:
+        # use default ElementType __contains__()
+        return super(TimedeltaType, self).__contains__(other)
 
 
 cdef class PyTimedeltaType(TimedeltaType):
@@ -92,23 +100,32 @@ cdef class PyTimedeltaType(TimedeltaType):
 
     def __init__(
         self,
-        bint categorical = False,
-        bint sparse = False
+        bint sparse = False,
+        bint categorical = False
     ):
-        super(TimedeltaType, self).__init__(
+        self.sparse = sparse
+        self.categorical = categorical
+        self.nullable = True
+        self.supertype = TimedeltaType
+        self.subtypes = frozenset()
+        self.atomic_type = datetime.timedelta
+        self.numpy_type = None
+        self.pandas_type = None
+        self.slug = "timedelta[python]"
+        self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
-            nullable=True
+            nullable=True,
+            base=self.__class__
         )
-        self.supertype = TimedeltaType
-        self.subtypes = ()
-        self.atomic_type = datetime.timedelta
-        self.extension_type = None
-        self.slug = "timedelta[python]"
 
         # min/max representable values in ns
         self.min = -86399999913600000000000
         self.max = 86399999999999999999000
+
+    def __contains__(self, other) -> bool:
+        # use default ElementType __contains__()
+        return super(TimedeltaType, self).__contains__(other)
 
 
 cdef class NumpyTimedelta64Type(TimedeltaType):
@@ -116,8 +133,8 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
 
     def __init__(
         self,
-        bint categorical = False,
         bint sparse = False,
+        bint categorical = False,
         str unit = None,
         unsigned long long step_size = 1
     ):
@@ -125,33 +142,17 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
         self.sparse = sparse
         self.nullable = True
         self.supertype = TimedeltaType
-        self.subtypes = ()
+        self.subtypes = frozenset()
         self.atomic_type = np.timedelta64
-        self.extension_type = None
+        self.pandas_type = None
 
         # add unit, step size
-        self.unit = unit
+        self.unit = None if unit == "generic" else unit
         if step_size < 1:
             raise ValueError(f"`step_size` must be >= 1, not {step_size}")
         self.step_size = step_size
 
-        # compute hash
-        self.hash = compute_hash(
-            {
-                "sparse": sparse,
-                "categorical": categorical,
-                "nullable": True,
-                "base": self.__class__,
-                "unit": unit,
-                "step_size": step_size
-            }
-        )
-
-        # min/max representable values in ns
-        self.min = -291061508645168391112243200000000000
-        self.max = 291061508645168328945024000000000000
-
-        # get appropriate slug
+        # get appropriate slug based on unit, step size
         if self.unit is None:
             self.slug = "m8"
         else:
@@ -160,13 +161,77 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
             else:
                 self.slug = f"m8[{step_size}{unit}]"
 
+        # get associated numpy type
+        self.numpy_type = np.dtype(self.slug)
+
+        # compute hash
+        self.hash = compute_hash(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            base=self.__class__,
+            unit=unit,
+            step_size=step_size
+        )
+
+        # min/max representable values in ns
+        self.min = -291061508645168391112243200000000000
+        self.max = 291061508645168328945024000000000000
+
+    @classmethod
+    def instance(
+        cls,
+        bint sparse = False,
+        bint categorical = False,
+        str unit = None,
+        unsigned long long step_size = 1
+    ) -> NumpyTimedelta64Type:
+        """Flyweight constructor."""
+        # hash arguments
+        cdef long long _hash = compute_hash(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            base=cls,
+            unit=unit,
+            step_size=step_size
+        )
+
+        # get previous flyweight, if one exists
+        cdef NumpyTimedelta64Type result = timedelta64_registry.get(_hash, None)
+
+        if result is None:
+            # construct new flyweight
+            result = cls(
+                sparse=sparse,
+                categorical=categorical,
+                unit=unit,
+                step_size=step_size
+            )
+    
+            # add flyweight to registry
+            timedelta64_registry[_hash] = result
+
+        # return flyweight
+        return result
+
+    def __contains__(self, other) -> bool:
+        other = resolve_dtype(other)
+        if issubclass(other, self.__class__):
+            if self.unit is None:  # disregard unit/step_size
+                return (
+                    self.sparse == other.sparse and
+                    self.categorical == other.categorical
+                )
+            return self.__eq__(other) or other in self.subtypes
+        return False
 
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"categorical={self.categorical}, "
             f"sparse={self.sparse}, "
-            f"unit={self.unit}, "
+            f"categorical={self.categorical}, "
+            f"unit={repr(self.unit)}, "
             f"step_size={self.step_size}"
             f")"
         )

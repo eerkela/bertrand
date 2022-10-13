@@ -7,3 +7,4 @@ from pdtypes.types.decimal cimport *
 from pdtypes.types.datetime cimport *
 from pdtypes.types.timedelta cimport *
 from pdtypes.types.string cimport *
+from pdtypes.types.object cimport *

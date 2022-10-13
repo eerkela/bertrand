@@ -2,4 +2,10 @@ from .base cimport ElementType
 
 
 cdef class StringType(ElementType):
-    pass
+    # public
+    cdef readonly:
+        str storage
+
+    # private
+    cdef:
+        bint is_default_storage
