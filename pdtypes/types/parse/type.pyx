@@ -57,6 +57,7 @@ cdef dict type_lookup = {
 
     # integer
     int: IntegerType,
+    np.integer: IntegerType,
     np.signedinteger: SignedIntegerType,
     np.unsignedinteger: UnsignedIntegerType,
     np.int8: Int8Type,

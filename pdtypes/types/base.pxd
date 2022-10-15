@@ -24,7 +24,7 @@ cdef long long compute_hash(
 
 
 # factory functions
-cpdef object resolve_dtype(object typespec)
+cpdef ElementType resolve_dtype(object typespec)
 
 
 # classes

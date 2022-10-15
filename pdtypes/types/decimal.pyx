@@ -24,17 +24,25 @@ cdef class DecimalType(ElementType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = None
-        self.subtypes = frozenset()
         self.atomic_type = decimal.Decimal
         self.numpy_type = None
         self.pandas_type = None
-        self.slug = "decimal"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "decimal"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
 
         # min/max representable values
         self.min = -np.inf

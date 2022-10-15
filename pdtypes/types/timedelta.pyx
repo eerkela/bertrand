@@ -28,20 +28,29 @@ cdef class TimedeltaType(ElementType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = None
-        self.subtypes = frozenset(
-            t.instance(sparse=sparse, categorical=categorical)
-            for t in (PandasTimedeltaType, PyTimedeltaType)
-        )
         self.atomic_type = None
         self.numpy_type = None
         self.pandas_type = None
-        self.slug = "timedelta"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "timedelta"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        self.subtypes |= {
+            t.instance(sparse=sparse, categorical=categorical)
+            for t in (PandasTimedeltaType, PyTimedeltaType)
+        }
 
         # min/max representable values in ns
         self.min = -291061508645168391112156800000000000
@@ -54,7 +63,7 @@ cdef class TimedeltaType(ElementType):
                 self.sparse == other.sparse and
                 self.categorical == other.categorical
             )
-        return self.__eq__(other) or other in self.subtypes
+        return other in self.subtypes
 
 
 ########################
@@ -74,17 +83,25 @@ cdef class PandasTimedeltaType(TimedeltaType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = TimedeltaType
-        self.subtypes = frozenset()
         self.atomic_type = pd.Timedelta
         self.numpy_type = None
         self.pandas_type = None
-        self.slug = "timedelta[pandas]"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "timedelta[pandas]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
 
         # min/max representable values in ns
         self.min = -2**63 + 1
@@ -107,17 +124,25 @@ cdef class PyTimedeltaType(TimedeltaType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = TimedeltaType
-        self.subtypes = frozenset()
         self.atomic_type = datetime.timedelta
         self.numpy_type = None
         self.pandas_type = None
-        self.slug = "timedelta[python]"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "timedelta[python]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
 
         # min/max representable values in ns
         self.min = -86399999913600000000000
@@ -142,7 +167,6 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
         self.sparse = sparse
         self.nullable = True
         self.supertype = TimedeltaType
-        self.subtypes = frozenset()
         self.atomic_type = np.timedelta64
         self.pandas_type = None
 
@@ -152,7 +176,7 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
             raise ValueError(f"`step_size` must be >= 1, not {step_size}")
         self.step_size = step_size
 
-        # get appropriate slug based on unit, step size
+        # generate appropriate slug based on unit, step size
         if self.unit is None:
             self.slug = "m8"
         else:
@@ -163,6 +187,15 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
 
         # get associated numpy type
         self.numpy_type = np.dtype(self.slug)
+
+        # append sparse, categorical flags to slug
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
 
         # compute hash
         self.hash = compute_hash(
@@ -223,7 +256,7 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
                     self.sparse == other.sparse and
                     self.categorical == other.categorical
                 )
-            return self.__eq__(other) or other in self.subtypes
+            return self.__eq__(other)
         return False
 
     def __repr__(self) -> str:

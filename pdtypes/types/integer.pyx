@@ -2,44 +2,9 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport compute_hash, ElementType, resolve_dtype, shared_registry
-
-
-#######################
-####    HELPERS    ####
-#######################
-
-
-cdef frozenset add_subtypes(
-    tuple subtype_classes,
-    bint sparse,
-    bint categorical,
-    bint nullable
-):
-    """TODO"""
-    cdef set result = set()
-
-    for subtype in subtype_classes:
-        # add non-nullable subtype if `nullable=False`
-        if not nullable:
-            result.add(
-                subtype.instance(
-                    sparse=sparse,
-                    categorical=categorical,
-                    nullable=False
-                )
-            )
-
-        # always add nullable subtype
-        result.add(
-            subtype.instance(
-                sparse=sparse,
-                categorical=categorical,
-                nullable=True
-            )
-        )
-
-    return frozenset(result)
+from .base cimport (
+    compute_hash, ElementType, resolve_dtype, shared_registry
+)
 
 
 ##########################
@@ -60,26 +25,48 @@ cdef class IntegerType(ElementType):
         self.categorical = categorical
         self.nullable = nullable
         self.supertype = None
-        self.subtypes = add_subtypes(
-            (
-                SignedIntegerType, Int8Type, Int16Type, Int32Type, Int64Type,
-                UnsignedIntegerType, UInt8Type, UInt16Type, UInt32Type,
-                UInt64Type
-            ),
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable
-        )
         self.atomic_type = int
         self.numpy_type = None
         self.pandas_type = None
-        self.slug = "int"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=nullable,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "int"
+        if self.nullable:
+            self.slug = f"nullable[{self.slug}]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        subtype_categories = (
+            SignedIntegerType, Int8Type, Int16Type, Int32Type, Int64Type,
+            UnsignedIntegerType, UInt8Type, UInt16Type, UInt32Type, UInt64Type
+        )
+        self.subtypes = frozenset((self,))
+        self.subtypes |= {
+            t.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
+            for t in subtype_categories
+        }
+        if not self.nullable:
+            self.subtypes |= {
+                t.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    nullable=True
+                )
+                for t in subtype_categories + (self.__class__,)
+            }
 
         # min/max representable values
         self.min = -np.inf
@@ -118,16 +105,6 @@ cdef class IntegerType(ElementType):
         # return flyweight
         return result
 
-    def __contains__(self, other) -> bool:
-        other = resolve_dtype(other)
-        if type(other) == self.__class__:
-            if not self.nullable:  # disregard nullable
-                return (
-                    self.sparse == other.sparse and
-                    self.categorical == other.categorical
-                )
-        return self.__eq__(other) or other in self.subtypes
-
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
@@ -136,19 +113,6 @@ cdef class IntegerType(ElementType):
             f"nullable={self.nullable}"
             f")"
         )
-
-    def __str__(self) -> str:
-        cdef str result = self.slug
-
-        # append extensions
-        if self.nullable:
-            result = f"nullable[{result}]"
-        if self.categorical:
-            result = f"categorical[{result}]"
-        if self.sparse:
-            result = f"sparse[{result}]"
-
-        return result
 
 
 cdef class SignedIntegerType(IntegerType):
@@ -164,22 +128,45 @@ cdef class SignedIntegerType(IntegerType):
         self.categorical = categorical
         self.nullable = nullable
         self.supertype = IntegerType
-        self.subtypes = add_subtypes(
-            (Int8Type, Int16Type, Int32Type, Int64Type),
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable
-        )
         self.atomic_type = None
         self.numpy_type = None
         self.pandas_type = None
-        self.slug = "signed"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=nullable,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "signed int"
+        if self.nullable:
+            self.slug = f"nullable[{self.slug}]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        subtype_categories = (Int8Type, Int16Type, Int32Type, Int64Type)
+        self.subtypes = frozenset((self,))
+        self.subtypes |= {
+            t.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
+            for t in subtype_categories
+        }
+        if not self.nullable:
+            self.subtypes |= {
+                t.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    nullable=True
+                )
+                for t in subtype_categories + (self.__class__,)
+            }
 
         # min/max representable values
         self.min = -2**63
@@ -232,22 +219,45 @@ cdef class UnsignedIntegerType(IntegerType):
         self.categorical = categorical
         self.nullable = nullable
         self.supertype = IntegerType
-        self.subtypes = add_subtypes(
-            (UInt8Type, UInt16Type, UInt32Type, UInt64Type),
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable
-        )
         self.atomic_type = None
         self.numpy_type = None
         self.pandas_type = None
-        self.slug = "unsigned"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=nullable,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "unsigned int"
+        if self.nullable:
+            self.slug = f"nullable[{self.slug}]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        subtype_categories = (UInt8Type, UInt16Type, UInt32Type, UInt64Type)
+        self.subtypes = frozenset((self,))
+        self.subtypes |= {
+            t.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
+            for t in subtype_categories
+        }
+        if not self.nullable:
+            self.subtypes |= {
+                t.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    nullable=True
+                )
+                for t in subtype_categories + (self.__class__,)
+            }
 
         # min/max representable values
         self.min = 0
@@ -305,17 +315,35 @@ cdef class Int8Type(SignedIntegerType):
         self.categorical = categorical
         self.nullable = nullable
         self.supertype = SignedIntegerType
-        self.subtypes = frozenset()
         self.atomic_type = np.int8
         self.numpy_type = np.dtype(np.int8)
         self.pandas_type = pd.Int8Dtype()
-        self.slug = "int8"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=nullable,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "int8"
+        if self.nullable:
+            self.slug = f"nullable[{self.slug}]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        if not self.nullable:
+            self.subtypes |= {
+                self.__class__.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    nullable=True
+                )
+            }
 
         # min/max representable values
         self.min = -2**7
@@ -335,17 +363,35 @@ cdef class Int16Type(SignedIntegerType):
         self.categorical = categorical
         self.nullable = nullable
         self.supertype = SignedIntegerType
-        self.subtypes = frozenset()
         self.atomic_type = np.int16
         self.numpy_type = np.dtype(np.int16)
         self.pandas_type = pd.Int16Dtype()
-        self.slug = "int16"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=nullable,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "int16"
+        if self.nullable:
+            self.slug = f"nullable[{self.slug}]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        if not self.nullable:
+            self.subtypes |= {
+                self.__class__.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    nullable=True
+                )
+            }
 
         # min/max representable values
         self.min = -2**15
@@ -365,17 +411,35 @@ cdef class Int32Type(SignedIntegerType):
         self.categorical = categorical
         self.nullable = nullable
         self.supertype = SignedIntegerType
-        self.subtypes = frozenset()
         self.atomic_type = np.int32
         self.numpy_type = np.dtype(np.int32)
         self.pandas_type = pd.Int32Dtype()
-        self.slug = "int32"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=nullable,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "int32"
+        if self.nullable:
+            self.slug = f"nullable[{self.slug}]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        if not self.nullable:
+            self.subtypes |= {
+                self.__class__.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    nullable=True
+                )
+            }
 
         # min/max representable values
         self.min = -2**31
@@ -395,17 +459,35 @@ cdef class Int64Type(SignedIntegerType):
         self.categorical = categorical
         self.nullable = nullable
         self.supertype = SignedIntegerType
-        self.subtypes = frozenset()
         self.atomic_type = np.int64
         self.numpy_type = np.dtype(np.int64)
         self.pandas_type = pd.Int64Dtype()
-        self.slug = "int64"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=nullable,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "int64"
+        if self.nullable:
+            self.slug = f"nullable[{self.slug}]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        if not self.nullable:
+            self.subtypes |= {
+                self.__class__.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    nullable=True
+                )
+            }
 
         # min/max representable values
         self.min = -2**63
@@ -425,17 +507,35 @@ cdef class UInt8Type(UnsignedIntegerType):
         self.categorical = categorical
         self.nullable = nullable
         self.supertype = UnsignedIntegerType
-        self.subtypes = frozenset()
         self.atomic_type = np.uint8
         self.numpy_type = np.dtype(np.uint8)
         self.pandas_type = pd.UInt8Dtype()
-        self.slug = "uint8"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=nullable,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "uint8"
+        if self.nullable:
+            self.slug = f"nullable[{self.slug}]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        if not self.nullable:
+            self.subtypes |= {
+                self.__class__.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    nullable=True
+                )
+            }
 
         # min/max representable values
         self.min = 0
@@ -455,17 +555,35 @@ cdef class UInt16Type(UnsignedIntegerType):
         self.categorical = categorical
         self.nullable = nullable
         self.supertype = UnsignedIntegerType
-        self.subtypes = frozenset()
         self.atomic_type = np.uint16
         self.numpy_type = np.dtype(np.uint16)
         self.pandas_type = pd.UInt16Dtype()
-        self.slug = "uint16"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=nullable,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "uint16"
+        if self.nullable:
+            self.slug = f"nullable[{self.slug}]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        if not self.nullable:
+            self.subtypes |= {
+                self.__class__.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    nullable=True
+                )
+            }
 
         # min/max representable values
         self.min = 0
@@ -485,17 +603,35 @@ cdef class UInt32Type(UnsignedIntegerType):
         self.categorical = categorical
         self.nullable = nullable
         self.supertype = UnsignedIntegerType
-        self.subtypes = frozenset()
         self.atomic_type = np.uint32
         self.numpy_type = np.dtype(np.uint32)
         self.pandas_type = pd.UInt32Dtype()
-        self.slug = "uint32"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=nullable,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "uint32"
+        if self.nullable:
+            self.slug = f"nullable[{self.slug}]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        if not self.nullable:
+            self.subtypes |= {
+                self.__class__.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    nullable=True
+                )
+            }
 
         # min/max representable values
         self.min = 0
@@ -515,17 +651,35 @@ cdef class UInt64Type(UnsignedIntegerType):
         self.categorical = categorical
         self.nullable = nullable
         self.supertype = UnsignedIntegerType
-        self.subtypes = frozenset()
         self.atomic_type = np.uint64
         self.numpy_type = np.dtype(np.uint64)
         self.pandas_type = pd.UInt64Dtype()
-        self.slug = "uint64"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=nullable,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "uint64"
+        if self.nullable:
+            self.slug = f"nullable[{self.slug}]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        if not self.nullable:
+            self.subtypes |= {
+                self.__class__.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    nullable=True
+                )
+            }
 
         # min/max representable values
         self.min = 0

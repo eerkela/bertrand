@@ -27,20 +27,29 @@ cdef class DatetimeType(ElementType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = None
-        self.subtypes = frozenset(
-            t.instance(sparse=sparse, categorical=categorical)
-            for t in (PandasTimestampType, PyDatetimeType)
-        )
         self.atomic_type = None
         self.numpy_type = None
         self.pandas_type = None
-        self.slug = "datetime"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "datetime"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        self.subtypes |= {
+            t.instance(sparse=sparse, categorical=categorical)
+            for t in (PandasTimestampType, PyDatetimeType)
+        }
 
         # min/max representable values in ns
         self.min = -291061508645168391112243200000000000
@@ -53,7 +62,7 @@ cdef class DatetimeType(ElementType):
                 self.sparse == other.sparse and
                 self.categorical == other.categorical
             )
-        return self.__eq__(other) or other in self.subtypes
+        return other in self.subtypes
 
 
 ########################
@@ -73,17 +82,25 @@ cdef class PandasTimestampType(DatetimeType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = DatetimeType
-        self.subtypes = frozenset()
         self.atomic_type = pd.Timestamp
         self.numpy_type = None
         self.pandas_type = None
-        self.slug = "datetime[pandas]"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "datetime[pandas]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
 
         # min/max representable values in ns
         self.min = -2**63 + 1
@@ -106,17 +123,25 @@ cdef class PyDatetimeType(DatetimeType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = DatetimeType
-        self.subtypes = frozenset()
         self.atomic_type = datetime.datetime
         self.numpy_type = None
         self.pandas_type = None
-        self.slug = "datetime[python]"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "datetime[python]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
 
         # min/max representable values in ns
         self.min = -62135596800000000000
@@ -141,7 +166,6 @@ cdef class NumpyDatetime64Type(DatetimeType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = DatetimeType
-        self.subtypes = frozenset()
         self.atomic_type = np.datetime64
         self.pandas_type = None
 
@@ -151,7 +175,17 @@ cdef class NumpyDatetime64Type(DatetimeType):
             raise ValueError(f"`step_size` must be >= 1, not {step_size}")
         self.step_size = step_size
 
-        # get appropriate slug based on unit, step size
+        # compute hash
+        self.hash = compute_hash(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            base=self.__class__,
+            unit=self.unit,
+            step_size=self.step_size
+        )
+
+        # generate appropriate slug based on unit, step size
         if self.unit is None:
             self.slug = "M8"
         else:
@@ -163,15 +197,14 @@ cdef class NumpyDatetime64Type(DatetimeType):
         # get associated numpy type
         self.numpy_type = np.dtype(self.slug)
 
-        # compute hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=self.__class__,
-            unit=unit,
-            step_size=step_size
-        )
+        # append sparse, categorical flags to slug
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
 
         # min/max representable values in ns
         self.min = -291061508645168391112243200000000000
@@ -222,7 +255,7 @@ cdef class NumpyDatetime64Type(DatetimeType):
                     self.sparse == other.sparse and
                     self.categorical == other.categorical
                 )
-            return self.__eq__(other) or other in self.subtypes
+            return self.__eq__(other)
         return False
 
     def __repr__(self) -> str:

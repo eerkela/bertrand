@@ -4,7 +4,9 @@ import pandas as pd
 
 from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
 
-from .base cimport compute_hash, ElementType, resolve_dtype, shared_registry
+from .base cimport (
+    compute_hash, ElementType, resolve_dtype, shared_registry
+)
 
 
 ##########################
@@ -25,11 +27,21 @@ cdef class StringType(ElementType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = None
-        self.subtypes = frozenset()
         self.atomic_type = str
         self.numpy_type = np.dtype(str)
 
-        # get appropriate slug/extension type based on storage argument
+        # compute hash
+        self.hash = compute_hash(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            base=self.__class__,
+            unit=None,
+            step_size=1,
+            storage=storage
+        )
+
+        # generate appropriate slug/extension type based on storage argument
         self.is_default_storage = storage is None
         if self.is_default_storage:
             self.pandas_type = DEFAULT_STRING_DTYPE
@@ -40,16 +52,30 @@ cdef class StringType(ElementType):
             self.slug = f"string[{storage}]"
             self.storage = storage
 
-        # compute hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=self.__class__,
-            unit=None,
-            step_size=1,
-            storage=self.storage
-        )
+        # append sparse, categorical flags to slug
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        if self.is_default_storage:
+            self.subtypes |= {
+                self.__class__.instance(
+                    sparse=sparse,
+                    categorical=categorical,
+                    storage="python"
+                )
+            }
+            if PYARROW_INSTALLED:
+                self.subtypes |= {
+                    self.__class__.instance(
+                        sparse=sparse,
+                        categorical=categorical,
+                        storage="pyarrow"
+                    )
+                }
 
     @classmethod
     def instance(
@@ -87,18 +113,9 @@ cdef class StringType(ElementType):
         # return flyweight
         return result
 
-    def __contains__(self, other) -> bool:
-        other = resolve_dtype(other)
-        if self.is_default_storage and type(other) == self.__class__:
-            return (
-                self.sparse == other.sparse and
-                self.categorical == other.categorical
-            )
-        return self.__eq__(other) or other in self.subtypes
-
     def __repr__(self) -> str:
         cdef str storage
-        
+
         if self.is_default_storage:
             storage = None
         else:

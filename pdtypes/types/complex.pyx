@@ -22,20 +22,29 @@ cdef class ComplexType(ElementType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = None
-        self.subtypes = frozenset(
-            t.instance(sparse=sparse, categorical=categorical)
-            for t in (Complex64Type, Complex128Type, CLongDoubleType)
-        )
         self.atomic_type = complex
         self.numpy_type = None
         self.pandas_type = None
-        self.slug = "complex"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "complex"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        self.subtypes |= {
+            t.instance(sparse=sparse, categorical=categorical)
+            for t in (Complex64Type, Complex128Type, CLongDoubleType)
+        }
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**53
@@ -59,17 +68,25 @@ cdef class Complex64Type(ComplexType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = ComplexType
-        self.subtypes = frozenset()
         self.atomic_type = np.complex64
         self.numpy_type = np.dtype(np.complex64)
         self.pandas_type = None
-        self.slug = "complex64"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "complex64"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**24
@@ -88,17 +105,25 @@ cdef class Complex128Type(ComplexType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = ComplexType
-        self.subtypes = frozenset()
         self.atomic_type = np.complex128
         self.numpy_type = np.dtype(np.complex128)
         self.pandas_type = None
-        self.slug = "complex128"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "complex128"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**53
@@ -117,17 +142,25 @@ cdef class CLongDoubleType(ComplexType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = ComplexType
-        self.subtypes = frozenset()
         self.atomic_type = np.clongdouble
         self.numpy_type = np.dtype(np.clongdouble)
         self.pandas_type = None
-        self.slug = "clongdouble"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "clongdouble"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**64

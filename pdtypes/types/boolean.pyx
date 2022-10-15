@@ -27,13 +27,32 @@ cdef class BooleanType(ElementType):
         self.atomic_type = bool
         self.numpy_type = np.dtype(bool)
         self.pandas_type = pd.BooleanDtype()
-        self.slug = "bool"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=nullable,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "bool"
+        if self.nullable:
+            self.slug = f"nullable[{self.slug}]"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
+        if not self.nullable:
+            self.subtypes |= {
+                self.__class__.instance(
+                    sparse=sparse,
+                    categorical=categorical,
+                    nullable=True
+                )
+            }
 
     @classmethod
     def instance(
@@ -76,16 +95,3 @@ cdef class BooleanType(ElementType):
             f"nullable={self.nullable}"
             f")"
         )
-
-    def __str__(self) -> str:
-        cdef str result = self.slug
-
-        # append extensions
-        if self.nullable:
-            result = f"nullable[{result}]"
-        if self.categorical:
-            result = f"categorical[{result}]"
-        if self.sparse:
-            result = f"sparse[{result}]"
-
-        return result

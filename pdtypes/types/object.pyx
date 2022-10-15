@@ -17,14 +17,22 @@ cdef class ObjectType(ElementType):
         self.categorical = categorical
         self.nullable = True
         self.supertype = None
-        self.subtypes = frozenset()
         self.atomic_type = None
-        self.numpy_dtype = np.dtype("O")
+        self.numpy_type = np.dtype("O")
         self.pandas_type = None
-        self.slug = "object"
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
+
+        # generate slug
+        self.slug = "object"
+        if self.categorical:
+            self.slug = f"categorical[{self.slug}]"
+        if self.sparse:
+            self.slug = f"sparse[{self.slug}]"
+
+        # generate subtypes
+        self.subtypes = frozenset((self,))
