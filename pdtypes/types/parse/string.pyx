@@ -258,15 +258,17 @@ cdef dict keywords = {
 
     # complex128
     "complex128": {"base": Complex128Type},
-    "c16": "complex64",
-    "complex_": "complex64",
-    "cdouble": "complex64",
-    "complex double": "complex64",
-    "D": "complex64",
+    "c16": "complex128",
+    "complex_": "complex128",
+    "cdouble": "complex128",
+    "complex double": "complex128",
+    "D": "complex128",
 
     # clongdouble
     "complex256": {"base": CLongDoubleType},
     "complex192": {"base": CLongDoubleType},
+    "c32": "complex256",
+    "c24": "complex192",
     "clongdouble": np.dtype("clongdouble").name,
     "complex longdouble": np.dtype("clongdouble").name,
     "complex long double": np.dtype("clongdouble").name,
@@ -276,7 +278,7 @@ cdef dict keywords = {
     "longcomplex": np.dtype("clongdouble").name,
     "long complex": np.dtype("clongdouble").name,
     "G": np.dtype("clongdouble").name,
-    
+
     # decimal supertype
     "decimal": {"base": DecimalType},
     "arbitrary precision": "decimal",

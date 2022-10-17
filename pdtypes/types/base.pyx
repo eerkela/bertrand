@@ -245,53 +245,6 @@ cdef class CompositeType(set):
         else:
             super(CompositeType, self).__init__((resolve_dtype(arg),))
 
-    ##########################################
-    ####    EXPAND/REDUCE MEMBER TYPES    ####
-    ##########################################
-
-    def expand(self) -> CompositeType:
-        """Expand each of the ElementTypes contained within the CompositeType
-        to include each of their subtypes.
-        """
-        return self.union(
-            element_type.subtypes for element_type in self
-        )
-
-    def reduce(self) -> CompositeType:
-        """Return a copy of the CompositeType with subtypes removed if they are
-        fully encapsulated within the other members of the CompositeType.
-        """
-        raise NotImplementedError()
-
-    #######################################
-    ####    COMPARE SUBSET/SUPERSET    ####
-    #######################################
-
-    def isdisjoint(self, other) -> bool:
-        """Return `True` if the CompositeType has no ElementTypes in common
-        with `other`.
-
-        CompositeTypes are disjoint if and only if their intersection is the
-        empty set.
-        """
-        return not self.intersection(other)
-
-    def issubset(self, other) -> bool:
-        """Test whether every ElementType in the CompositeType is also in
-        `other`.
-
-        Identical to `self <= other`.
-        """
-        return self <= other
-
-    def issuperset(self, other) -> bool:
-        """Test whether every ElementType in `other` is contained within the
-        CompositeType.
-
-        Identical to `self >= other`.
-        """
-        return self >= other
-
     ###################################
     ####    ADD/REMOVE ELEMENTS    ####
     ###################################
@@ -318,49 +271,124 @@ cdef class CompositeType(set):
         """
         super(CompositeType, self).discard(resolve_dtype(typespec))
 
+    def copy(self) -> CompositeType:
+        """Return a shallow copy of the CompositeType."""
+        return CompositeType(self)
+
+    ##########################################
+    ####    EXPAND/REDUCE MEMBER TYPES    ####
+    ##########################################
+
+    def expand(
+        self,
+        bint in_place = False
+    ) -> CompositeType:
+        """Expand each of the ElementTypes contained within the CompositeType
+        to include each of their subtypes.
+        """
+        cdef ElementType element_type
+    
+        if in_place:
+            self.update(element_type.subtypes for element_type in self)
+            return self
+
+        return self.union(element_type.subtypes for element_type in self)
+
+    def reduce(
+        self,
+        bint in_place = False
+    ) -> CompositeType:
+        """Return a copy of the CompositeType with subtypes removed if they are
+        fully encapsulated within the other members of the CompositeType.
+        """
+        cdef ElementType element_type
+        cdef ElementType t1
+        cdef ElementType t2
+
+        has_parent = lambda t1: any(t1 != t2 and t1 in t2 for t2 in self)
+
+        if in_place:
+            for element_type in self:
+                if has_parent(element_type):
+                    self.remove(element_type)
+
+        return CompositeType(
+            element_type for element_type in self
+            if not has_parent(element_type)
+        )
+
+    #######################################
+    ####    COMPARE SUBSET/SUPERSET    ####
+    #######################################
+
+    def __contains__(self, other) -> bool:
+        """Test whether a given type specifier is a member of `self` or one of
+        its subtypes.
+        """
+        other = resolve_dtype(other)
+        return any(other in t for t in self)
+
+    def issubset(self, other) -> bool:
+        """Test whether every ElementType in the CompositeType is also in
+        `other`.
+
+        Identical to `self <= other`.
+        """
+        return self <= other
+
+    def __le__(self, other) -> bool:
+        """Test whether every element in `self` is contained within `other`.
+
+        Identical to ``self.issubset(other)``.
+        """
+        other = CompositeType(other)
+        return all(t in other for t in self)
+
+    def __lt__(self, other) -> bool:
+        """Test whether `self` is a proper subset of `other`
+        (``self <= other and self != other``).
+        """
+        other = CompositeType(other)
+        return not self == other and all(t in other for t in self)
+
+    def __eq__(self, other) -> bool:
+        """Test whether `self` and `other` contain identical ElementTypes."""
+        return super(CompositeType, self).__eq__(CompositeType(other))
+
+    def issuperset(self, other) -> bool:
+        """Test whether every ElementType in `other` is contained within the
+        CompositeType.
+
+        Identical to `self >= other`.
+        """
+        return self >= other
+
+    def __ge__(self, other) -> bool:
+        """Test whether every element in `other` is contained within `self`.
+
+        Identical to ``self.issuperset(other)``.
+        """
+        return all(t in self for t in CompositeType(other))
+
+    def __gt__(self, other) -> bool:
+        """Test whether `self` is a proper superset of `other`
+        (``self >= other and self != other``).
+        """
+        other = CompositeType(other)
+        return not self == other and all(t in self for t in other)
+
+    def isdisjoint(self, other) -> bool:
+        """Return `True` if the CompositeType has no ElementTypes in common
+        with `other`.
+
+        CompositeTypes are disjoint if and only if their intersection is the
+        empty set.
+        """
+        return not self & other
+
     ##########################
     ####    MERGE SETS    ####
     ##########################
-
-    def intersection(self, *others) -> CompositeType:
-        """Return a new CompositeType with ElementTypes in common to the
-        CompositeType and all others.
-        """
-        cdef CompositeType result = self.expand()
-        cdef ElementType element_type
-
-        for item in others:
-            for element_type in result:
-                if element_type not in CompositeType(item):
-                    result.remove(element_type)
-
-        return result.reduce()
-
-    def difference(self, *others) -> CompositeType:
-        """Return a new CompositeType with ElementTypes that are not in any of
-        the others.
-        """
-        cdef CompositeType result = self.expand()
-        cdef ElementType element_type
-
-        for item in others:
-            for element_type in result:
-                if element_type in CompositeType(item):
-                    result.remove(element_type)
-
-        return result.reduce()
-
-    def symmetric_difference(self, other) -> CompositeType:
-        """Return a new CompositeType with ElementTypes that are in either the
-        original CompositeType or `other`, but not both.
-        """
-        cdef CompositeType result = self.expand()
-        cdef CompositeType disregard = CompositeType(other)
-        cdef ElementType element_type
-
-        # TODO: figure out how to do this
-        # -> self.difference(self.intersection())?
-
 
     def union(self, *others) -> CompositeType:
         """Return a new CompositeType with all the ElementTypes from this
@@ -373,104 +401,199 @@ cdef class CompositeType(set):
         result.update(*others)
         return result
 
-
-    def copy(self) -> CompositeType:
-        """Return a shallow copy of the CompositeType."""
-        return CompositeType(self)
-
-    ###############################
-    ####    UPDATE IN-PLACE    ####
-    ###############################
-
-    def update(self, *others) -> None:
-        """Update the CompositeType in-place, adding ElementTypes from all
-        others.
-
-        Arguments to this method are resolved during the update process and can
-        be arbitrarily nested.
-        """
-        cdef ElementType element_type
-
-        for item in others:
-            for element_type in CompositeType(item):
-                super(CompositeType, self).add(element_type)
-
-    #############################
-    ####    MAGIC METHODS    ####
-    #############################
-
-    # TODO: non-operator versions of union(), intersection(), difference(),
-    # symmetric_difference(), issubset(), and issuperset() should all accept
-    # any value as an argument.  Their operator-based counterparts should
-    # require their arguments to be CompositeType instances instead.
-
-    def __contains__(self, other) -> bool:
-        """Test whether a given type specifier is a member of `self` or one of
-        its subtypes.
-        """
-        other = resolve_dtype(other)
-        return any(other in elem for elem in self)
-
-    def __le__(self, other) -> bool:
-        """Test whether every element in `self` is contained within `other`.
-
-        Identical to ``self.issubset(other)``.
-        """
-        other = CompositeType(other)
-        return all(self_type in other for self_type in self)
-
-    def __lt__(self, other) -> bool:
-        """Test whether `self` is a proper subset of `other`
-        (``self <= other and self != other``).
-        """
-        other = CompositeType(other)
-        return (
-            not self.__eq__(other) and
-            all(self_type in other for self_type in self)
-        )
-
-    def __eq__(self, other) -> bool:
-        """Test whether `self` and `other` contain identical ElementTypes."""
-        return super(CompositeType, self).__eq__(CompositeType(other))
-
-    def __ge__(self, other) -> bool:
-        """Test whether every element in `other` is contained within `self`.
-
-        Identical to ``self.issuperset(other)``.
-        """
-        other = CompositeType(other)
-        return all(other_type in self for other_type in other)
-
-    def __gt__(self, other) -> bool:
-        """Test whether `self` is a proper superset of `other`
-        (``self >= other and self != other``).
-        """
-        other = CompositeType(other)
-        return (
-            not self.__eq__(other) and
-            all(other_type in self for other_type in other)
-        )
-
     def __or__(self, other) -> None:
         """Return a new CompositeType containing the ElementTypes of `self`
         and all others.
         """
-        # TODO: identical to self.union(*others)
-        other = CompositeType(other)
-        super(CompositeType, self).__or__(set(other))
+        return CompositeType(
+            super(CompositeType, self).__or__(CompositeType(other))
+        )
 
     def __ror__(self, other) -> None:
         """Reverse operation of ``__or__``."""
         return self.__or__(other)
 
-    def __and__(self, other) -> None:
+    def intersection(self, *others) -> CompositeType:
+        """Return a new CompositeType with ElementTypes in common to the
+        CompositeType and all others.
+        """
+        cdef CompositeType result = self.copy()
+
+        for item in others:
+            result &= item
+
+        return result
+
+    def __and__(self, other) -> CompositeType:
         """Return a new CompositeType containing the ElementTypes common to
         `self` and all others.
         """
-        # TODO: identical to self.intersection(*others)
-        # TODO: finish this
+        other = CompositeType(other)
+        return CompositeType(
+            {t for t in self if t in other} | {t for t in other if t in self}
+        )
+
+    def __rand__(self, other) -> CompositeType:
+        """Reverse of __and__()."""
+        return self.__and__(other)
+
+    def difference(self, *others) -> CompositeType:
+        """Return a new CompositeType with ElementTypes that are not in any of
+        the others.
+        """
+        cdef CompositeType result = self.expand()
+        cdef ElementType t1
+        cdef ElementType t2
+
+        for item in others:
+            item = CompositeType(item)
+            result = CompositeType(
+                t1 for t1 in result if not any(t2 in t1 for t2 in item)
+            )
+
+        # expand/reduce called only once
+        return result.reduce()
+
+    def __sub__(self, other) -> CompositeType:
+        """Return a new CompositeType with ElementTypes that are not in the
+        others.
+        """
+        cdef ElementType t1
+        cdef ElementType t2
+
         other = CompositeType(other)
 
+        cdef CompositeType result = CompositeType(
+            t1 for t1 in self.expand() if not any(t2 in t1 for t2 in other)
+        )
+        return result.reduce()
+
+    def __rsub__(self, other) -> CompositeType:
+        """Reverse of __sub__().  Non-commutative."""
+        cdef ElementType t1
+        cdef ElementType t2
+
+        other = CompositeType(other)
+
+        result = CompositeType(
+            t1 for t1 in other.expand() if not any(t2 in t1 for t2 in self)
+        )
+        return result.reduce()
+
+    def symmetric_difference(self, other) -> CompositeType:
+        """Return a new CompositeType with ElementTypes that are in either the
+        original CompositeType or `other`, but not both.
+        """
+        return self ^ other
+
+    def __xor__(self, other) -> CompositeType:
+        """Return a new CompositeType with ElementTypes that are in either
+        `self` or `other` but not both.
+        """
+        other = CompositeType(other)
+        return (self | other) - (self & other)
+
+    def __rxor__(self, other) -> CompositeType:
+        """Reverse of __xor__()."""
+        return self.__xor__(other)
+
+    ################################
+    ####    IN-PLACE UPDATES    ####
+    ################################
+
+    def update(self, *others) -> None:
+        """Update the CompositeType in-place, adding ElementTypes from all
+        others.
+        """
+        for item in others:
+            self |= item
+
+    def __ior__(self, other) -> CompositeType:
+        """Update a CompositeType in-place, adding ElementTypes from all
+        others.
+        """
+        super(CompositeType, self).__ior__(CompositeType(other))
+        return self
+
+    def intersection_update(self, *others) -> None:
+        """Update a CompositeType in-place, keeping only the ElementTypes found
+        in it and all others.
+        """
+        for item in others:
+            self &= item
+
+    def __iand__(self, other) -> CompositeType:
+        """Update a CompositeType in-place, keeping only the ElementTypes found
+        in it and all others.
+        """
+        cdef CompositeType prev = self.copy()
+        cdef ElementType element_type
+
+        other = CompositeType(other)
+        self.clear()
+
+        for element_type in prev:
+            if element_type in other:
+                self.add(element_type)
+
+        for element_type in other:
+            if element_type in prev:
+                self.add(element_type)
+
+        return self
+
+    def difference_update(self, *others) -> None:
+        """Update a CompositeType in-place, removing ElementTypes that can be
+        found in others.
+        """
+        cdef ElementType t1
+        cdef ElementType t2
+
+        self.expand(in_place=True)
+
+        for item in others:
+            item = CompositeType(item)
+            for t1 in self.copy():
+                if any(t2 in t1 for t2 in item):
+                    self.remove(t1)
+
+        self.reduce(in_place=True)
+
+    def __isub__(self, other) -> CompositeType:
+        """Update a CompositeType in-place, removing ElementTypes that can be
+        found in others.
+        """
+        cdef ElementType t1
+        cdef ElementType t2
+
+        self.expand(in_place=True)
+        other = CompositeType(other)
+
+        for t1 in self.copy():
+            if any(t2 in t1 for t2 in other):
+                self.remove(t1)
+
+        self.reduce(in_place=True)
+        return self
+
+    def symmetric_difference_update(self, other) -> None:
+        """Update a CompositeType in-place, keeping only ElementTypes that
+        are found in either `self` or `other`, but not both.
+        """
+        self ^= other
+
+    def __ixor__(self, other) -> CompositeType:
+        """Update a CompositeType in-place, keeping only ElementTypes that
+        are found in either `self` or `other`, but not both.
+        """
+        other = CompositeType(other)
+        self |= other
+        self -= (self & other)
+        return self
+
+    ##################################
+    ####    MISC MAGIC METHODS    ####
+    ##################################
 
     def __repr__(self) -> str:
         if self:
