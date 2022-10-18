@@ -1,6 +1,6 @@
 cimport numpy as np
 
-from pdtypes.types cimport ElementType
+from pdtypes.types cimport ElementType, CompositeType
 
 # parsing functions
 cdef ElementType parse_example_scalar(
@@ -9,7 +9,7 @@ cdef ElementType parse_example_scalar(
     bint categorical = *,
     bint force_nullable = *
 )
-cdef set parse_example_vector(
+cdef CompositeType parse_example_vector(
     np.ndarray[object] arr,
     bint sparse = *,
     bint categorical = *,

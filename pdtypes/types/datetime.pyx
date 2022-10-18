@@ -23,7 +23,7 @@ cdef class DatetimeType(ElementType):
         bint sparse = False,
         bint categorical = False
     ):
-        self.sparse = sparse,
+        self.sparse = sparse
         self.categorical = categorical
         self.nullable = True
         self.supertype = None
@@ -47,7 +47,7 @@ cdef class DatetimeType(ElementType):
         # generate subtypes
         self.subtypes = frozenset((self,))
         self.subtypes |= {
-            t.instance(sparse=sparse, categorical=categorical)
+            t.instance(sparse=self.sparse, categorical=self.categorical)
             for t in (PandasTimestampType, PyDatetimeType)
         }
 
@@ -57,7 +57,7 @@ cdef class DatetimeType(ElementType):
 
     def __contains__(self, other) -> bool:
         other = resolve_dtype(other)
-        if issubclass(other, NumpyDatetime64Type):  # disregard unit/step_size
+        if isinstance(other, NumpyDatetime64Type):  # disregard unit/step_size
             return (
                 self.sparse == other.sparse and
                 self.categorical == other.categorical
@@ -249,7 +249,7 @@ cdef class NumpyDatetime64Type(DatetimeType):
 
     def __contains__(self, other) -> bool:
         other = resolve_dtype(other)
-        if issubclass(other, self.__class__):
+        if isinstance(other, self.__class__):
             if self.unit is None:  # disregard unit/step_size
                 return (
                     self.sparse == other.sparse and

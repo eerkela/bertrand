@@ -88,6 +88,10 @@ cdef object parse_typespec_dtype(
             step_size=step_size
         )
 
+    # numpy fixed-length string special case
+    if np.issubdtype(typespec, "U"):
+        return StringType.instance(sparse=sparse, categorical=categorical)
+
     # consult dtype_lookup table
     return dtype_lookup[typespec].instance(
         sparse=sparse,
@@ -129,8 +133,7 @@ cdef dict dtype_lookup = {
 
     # timedelta (m8) dtype handled in special case
 
-    # string
-    np.dtype(str): StringType,
+    # fixed-length string (U) dtype handled in special case
 
     # object
     np.dtype(object): ObjectType

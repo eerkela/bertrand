@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 from pdtypes.types cimport (
-    BooleanType, ElementType, IntegerType, NumpyDatetime64Type,
+    BooleanType, CompositeType, ElementType, IntegerType, NumpyDatetime64Type,
     NumpyTimedelta64Type, ObjectType
 )
 
@@ -51,7 +51,7 @@ cdef ElementType parse_example_scalar(
     )
 
 
-cdef set parse_example_vector(
+cdef CompositeType parse_example_vector(
     np.ndarray[object] arr,
     bint sparse = False,
     bint categorical = False,
@@ -64,7 +64,6 @@ cdef set parse_example_vector(
     cdef str unit
     cdef unsigned long long step_size
     cdef set type_set = set()
-    cdef set result = set()
 
     # add type of each element in array to shared set
     for i in range(arr_length):
@@ -74,6 +73,8 @@ cdef set parse_example_vector(
             type_set.add((type(element), unit, step_size))
         else:
             type_set.add(type(element))
+
+    cdef CompositeType result = CompositeType()
 
     # convert type set into ElementType objects, obeying flags
     for element in type_set:

@@ -6,15 +6,20 @@ import pandas as pd
 
 from pdtypes import DEFAULT_STRING_DTYPE
 
-from pdtypes.check import (
-    check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
-)
+# from pdtypes.check import (
+#     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
+# )
+from pdtypes.types import check_dtype, get_dtype, resolve_dtype
 from pdtypes.error import ConversionError, error_trace, shorten_list
 from pdtypes.round import apply_tolerance, round_generic
 from pdtypes.util.array import vectorize
 from pdtypes.util.downcast import integral_range
 from pdtypes.util.type_hints import array_like, dtype_like
-from pdtypes.util.validate import (
+# from pdtypes.util.validate import (
+#     validate_dtype, validate_errors, validate_rounding, tolerance
+# )
+
+from .validate import (
     validate_dtype, validate_errors, validate_rounding, tolerance
 )
 
@@ -88,7 +93,7 @@ class FloatSeries:
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
-        dtype = resolve_dtype(dtype)
+        dtype = validate_dtype(dtype, bool)
         tol, _ = tolerance(tol)
         validate_rounding(rounding)
         validate_errors(errors)
@@ -117,7 +122,7 @@ class FloatSeries:
             series = np.ceil(series.abs().clip(0, 1))  # coerce to [0, 1]
 
         # return
-        return series.astype(dtype, copy=False)
+        return series.astype(dtype.pandas_type)
 
     def to_integer(
         self,
@@ -128,7 +133,7 @@ class FloatSeries:
         errors: str = "raise"
     ) -> pd.Series:
         """test"""
-        dtype = resolve_dtype(dtype)
+        dtype = validate_dtype(dtype, int)
         tol, _ = tolerance(tol)
         validate_rounding(rounding)
         validate_errors(errors)
@@ -138,7 +143,7 @@ class FloatSeries:
 
         # rectify object series
         series = self.rectify(copy=True)
-        coerced = False  # NAs may be introduced by coercion
+        # coerced = False  # NAs may be introduced by coercion
 
         # reject any series that contains infinity
         if self.hasinfs:
@@ -148,7 +153,7 @@ class FloatSeries:
                            f"{shorten_list(bad_vals.index.values)}")
                 raise ConversionError(err_msg, bad_vals)
             series[self.infs] = np.nan  # coerce
-            coerced = True  # remember to convert to extension type later
+            # coerced = True  # remember to convert to extension type later
 
         # apply tolerance and rounding rules, if applicable
         nearest = ("half_floor", "half_ceiling", "half_down", "half_up",
@@ -173,45 +178,45 @@ class FloatSeries:
         max_val = np.longdouble(series.max())
 
         # built-in integer special case - can be arbitrarily large
-        if is_dtype(dtype, int, exact=True):
+        if dtype == int:
             if min_val < -2**63 or max_val > 2**63 - 1:  # >int64
                 if min_val >= 0 and max_val <= np.uint64(2**64 - 1):  # <uint64
-                    dtype = pd.UInt64Dtype() if coerced else np.uint64
-                    return series.astype(dtype, copy=False)
+                    dtype = resolve_dtype("uint64")
+                    return series.astype(dtype.pandas_type)
                 # series is >int64 and >uint64, return as built-in python ints
                 return np.frompyfunc(int, 1, 1)(series)  # as fast as cython
             # extended range isn't needed, demote to int64
-            dtype = np.int64
+            dtype = resolve_dtype(np.int64)
 
         # check whether result fits within specified dtype
-        min_poss, max_poss = integral_range(dtype)
-        if min_val < min_poss or max_val > max_poss:
+        if min_val < dtype.min or max_val > dtype.max:
             if errors != "coerce":
-                bad_vals = series[(series < min_poss) | (series > max_poss)]
-                err_msg = (f"values exceed {dtype} range at index "
+                bad_vals = series[(series < dtype.min) | (series > dtype.max)]
+                err_msg = (f"values exceed {str(dtype)} range at index "
                            f"{shorten_list(bad_vals.index.values)}")
                 raise ConversionError(err_msg, bad_vals)
-            series[(series < min_poss) | (series > max_poss)] = np.nan
+            series[(series < dtype.min) | (series > dtype.max)] = np.nan
             min_val = np.longdouble(series.min())
             max_val = np.longdouble(series.max())
-            coerced = True  # remember to convert to extension type later
+            # coerced = True  # remember to convert to extension type later
 
         # attempt to downcast if applicable
         if downcast:  # search for smaller dtypes that can represent series
-            if is_dtype(dtype, "unsigned"):
-                int_types = [np.uint8, np.uint16, np.uint32, np.uint64]
+            if dtype in resolve_dtype("unsigned"):
+                smaller = [np.uint8, np.uint16, np.uint32, np.uint64]
             else:
-                int_types = [np.int8, np.int16, np.int32, np.int64]
-            for downcast_type in int_types[:int_types.index(dtype)]:
-                min_poss, max_poss = integral_range(downcast_type)
-                if min_val >= min_poss and max_val <= max_poss:
-                    dtype = downcast_type
+                smaller = [np.int8, np.int16, np.int32, np.int64]
+            smaller = [resolve_dtype(t) for t in smaller]
+
+            for small in smaller[:smaller.index(dtype)]:
+                if min_val >= small.min and max_val <= small.max:
+                    dtype = small
                     break  # stop at smallest
 
         # convert and return
-        if coerced:  # convert to extension type early
-            dtype = extension_type(dtype)
-        return series.astype(dtype, copy=False)
+        # if coerced:  # convert to extension type early
+        #     dtype = extension_type(dtype)
+        return series.astype(dtype.pandas_type)
 
     def to_float(
         self,

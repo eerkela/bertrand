@@ -17,6 +17,8 @@ from pdtypes.types cimport (
 
 # TODO: "string[...]" + "datetime/timedelta[...]" are broken
 
+# TODO: "datetime" resolves to "sparse[datetime]"
+
 
 ######################
 ####    PUBLIC    ####

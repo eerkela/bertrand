@@ -23,12 +23,8 @@ from .string cimport *
 from .object cimport *
 
 
-
-# TODO: resolve_dtype() only works on scalars?
-# -> use CompositeType() constructor for collections of type specifiers.
-
-
-# TODO: get_dtype() should return a CompositeType on mixed input
+# TODO: resolve_dtype doesn't work on fixed-length numpy string dtypes
+# -> maybe add a separate StringType for fixed-length strings?
 
 
 # TODO: get_dtype on array inputs:
@@ -75,10 +71,9 @@ def check_dtype(example, typespec, exact: bool = False) -> bool:
     if exact:
         # return True if and only if every type in `observed` is explicitly
         # declared in `typespec`
-        observed = CompositeType(observed)
         return all(
             any(observed_type == expected_type for expected_type in expected)
-            for observed_type in observed
+            for observed_type in CompositeType(observed)
         )
 
     # return True if `observed` is a subset of `expected`
@@ -161,30 +156,6 @@ cpdef ElementType resolve_dtype(object typespec):
     except TypeError as err:
         raise TypeError(f"Could not interpret specifier of type: "
                         f"{type(typespec)}") from err
-
-
-
-# def resolve_dtype(typespec) -> ElementType | CompositeType:
-#     """ElementType factory function.  Constructs ElementType objects according
-#     to the Flyweight pattern.
-#     """
-#     cdef CompositeType result
-# 
-#     # composite case
-#     if hasattr(typespec, "__iter__") and not isinstance(typespec, str):
-#         # check for empty sequence
-#         if not typespec:
-#             raise ValueError(f"type specifier must contain at least 1 "
-#                              f"element: {typespec}")
-# 
-#         # convert to CompositeType and check if scalar
-#         result = CompositeType(typespec)
-#         if len(result) == 1:  # single element type
-#             return result.pop()
-#         return result  # multiple element types
-# 
-#     # scalar case
-#     return resolve_dtype_scalar(typespec)
 
 
 #######################

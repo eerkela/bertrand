@@ -58,7 +58,7 @@ cdef class TimedeltaType(ElementType):
 
     def __contains__(self, other) -> bool:
         other = resolve_dtype(other)
-        if issubclass(other, NumpyTimedelta64Type):  # disregard unit/step_size
+        if isinstance(other, NumpyTimedelta64Type):  # disregard unit/step_size
             return (
                 self.sparse == other.sparse and
                 self.categorical == other.categorical
@@ -250,7 +250,7 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
 
     def __contains__(self, other) -> bool:
         other = resolve_dtype(other)
-        if issubclass(other, self.__class__):
+        if isinstance(other, self.__class__):
             if self.unit is None:  # disregard unit/step_size
                 return (
                     self.sparse == other.sparse and

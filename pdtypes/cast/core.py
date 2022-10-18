@@ -56,6 +56,9 @@ def filter_kwargs(func: Callable, **kwargs) -> dict[str, Any]:
 # a mask with len > series, subset the mask according to self.is_na
 
 
+# TODO: make this a base class for the specialized series types
+
+
 class ConversionSeries:
     """test"""
 

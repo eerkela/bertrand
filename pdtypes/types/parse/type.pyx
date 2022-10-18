@@ -71,6 +71,7 @@ cdef dict type_lookup = {
 
     # float
     float: FloatType,
+    np.floating: FloatType,
     np.float16: Float16Type,
     np.float32: Float32Type,
     np.float64: Float64Type,
@@ -78,6 +79,7 @@ cdef dict type_lookup = {
 
     # complex
     complex: ComplexType,
+    np.complexfloating: ComplexType,
     np.complex64: Complex64Type,
     np.complex128: Complex128Type,
     np.clongdouble: CLongDoubleType,

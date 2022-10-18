@@ -7,22 +7,44 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from pdtypes.check import is_dtype, resolve_dtype
-# from pdtypes.types import resolve_dtype
+from pdtypes.types import resolve_dtype, check_dtype, ElementType
 from pdtypes.error import error_trace, shorten_list
 from pdtypes.time import valid_units
 from pdtypes.util.type_hints import dtype_like
 
 
+#########################
+####    CONSTANTS    ####
+#########################
+
+
+valid_errors = ("raise", "coerce", "ignore")
+
+
+valid_rounding_rules = (
+    "floor", "ceiling", "down", "up", "half_floor", "half_ceiling",
+    "half_down", "half_up", "half_even"
+)
+
+
+valid_tolerance_types = (
+    int, np.integer, float, np.floating, complex, np.complexfloating,
+    decimal.Decimal
+)
+
+
+######################
+####    PUBLIC    ####
+######################
+
+
 def tolerance(
     tol: int | float | complex | decimal.Decimal
-) -> tuple[int | float | decimal.Decimal, int | float | decimal.Decimal]:
+) -> tuple[int, int] | tuple[float, float] | tuple[decimal.Decimal, decimal.Decimal]:
     """Ensure a floating-point tolerance is valid and split it into real and
     imaginary components.  Real input returns a 2-tuple `(real, real)`.
     """
-    valid_types = (int, np.integer, float, np.floating, complex,
-                   np.complexfloating, decimal.Decimal)
-    if not isinstance(tol, valid_types):
+    if not isinstance(tol, valid_tolerance_types):
         err_msg = (f"[{error_trace()}] `tol` must be a numeric >= 0, not "
                    f"{type(tol)}")
         raise TypeError(err_msg)
@@ -66,25 +88,23 @@ def validate_datetime_format(
 def validate_dtype(
     dtype: dtype_like,
     expected: dtype_like
-) -> None:
+) -> ElementType:
     """Ensure that a dtype specifier is a subtype of `expected`."""
-    if not is_dtype(dtype, expected):
-        try:
-            expected = resolve_dtype(expected).__name__
-        except ValueError:  # may be supertype only
-            if isinstance(expected, str):
-                expected = expected.lower()
+    dtype = resolve_dtype(dtype)
+    expected = resolve_dtype(expected)
 
-        err_msg = (f"[{error_trace()}] `dtype` must be {expected}-like, not "
-                   f"{repr(dtype)}")
+    if dtype not in expected:
+        err_msg = (f"[{error_trace()}] `dtype` must be {str(expected)}-like, "
+                   f"not {str(dtype)}")
         raise TypeError(err_msg)
+
+    return dtype
 
 
 def validate_errors(errors: str) -> None:
     """Ensure `errors` is one of the accepted error-handling rules
     ('raise', 'coerce', 'ignore').
     """
-    valid_errors = ("raise", "coerce", "ignore")
     if not isinstance(errors, str):
         err_msg = (f"[{error_trace()}] `errors` must be a string "
                    f"{valid_errors}, not {type(errors)}")
@@ -95,7 +115,7 @@ def validate_errors(errors: str) -> None:
         raise ValueError(err_msg)
 
 
-def validate_rounding(rounding: None | str) -> None:
+def validate_rounding(rounding: str | None) -> None:
     """Ensure that `rounding` is one of the accepted rounding rules
     ('floor', 'ceiling', 'down', 'up', 'half_floor', 'half_ceiling',
     'half_down', 'half_up', 'half_even').
@@ -103,26 +123,23 @@ def validate_rounding(rounding: None | str) -> None:
     if rounding is None:
         return None
 
-    valid_rules = ("floor", "ceiling", "down", "up", "half_floor",
-                   "half_ceiling", "half_down", "half_up", "half_even")
     if not isinstance(rounding, str):
         err_msg = (f"[{error_trace()}] `rounding` must be a string in "
-                   f"{valid_rules}, not {type(rounding)}")
+                   f"{valid_rounding_rules}, not {type(rounding)}")
         raise TypeError(err_msg)
-    if rounding not in valid_rules:
+    if rounding not in valid_rounding_rules:
         err_msg = (f"[{error_trace()}] `rounding` must be one of "
-                   f"{valid_rules}, not {repr(rounding)}")
+                   f"{valid_rounding_rules}, not {repr(rounding)}")
         raise ValueError(err_msg)
 
     return None
 
 
-def validate_unit(unit: str | np.ndarray | pd.Series) -> None:
-    """Ensure that all elements of `unit` are valid time units ('ns', 'us',
+def validate_unit(unit: str) -> None:
+    """Ensure that the given unit is one of the valid time units ('ns', 'us',
     'ms', 's', 'm', 'h', 'D', 'W', 'M', 'Y'), following the numpy convention.
     """
-    if not np.isin(unit, valid_units).all():
-        bad = list(np.unique(unit[~np.isin(unit, valid_units)]))
-        err_msg = (f"[{error_trace()}] `unit` {shorten_list(bad)} not "
-                   f"recognized: must be in {valid_units}")
+    if unit not in valid_units:
+        err_msg = (f"[{error_trace()}] unit {repr(unit)} not recognized: must "
+                   f"be one of {valid_units}")
         raise ValueError(err_msg)
