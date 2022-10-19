@@ -23,7 +23,7 @@ cdef class FloatType(ElementType):
         self.nullable = True
         self.supertype = None
         self.atomic_type = float
-        self.numpy_type = None
+        self.numpy_type = np.dtype(np.float64)
         self.pandas_type = None
         self.hash = compute_hash(
             sparse=sparse,

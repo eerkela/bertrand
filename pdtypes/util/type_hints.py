@@ -5,6 +5,9 @@ import numpy as np
 import pandas as pd
 
 
+# TODO: dtype_like -> type_specifier
+
+
 # array-like
 array_like = Union[tuple, list, np.ndarray, pd.Series]
 

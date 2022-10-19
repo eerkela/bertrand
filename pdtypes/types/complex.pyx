@@ -23,7 +23,7 @@ cdef class ComplexType(ElementType):
         self.nullable = True
         self.supertype = None
         self.atomic_type = complex
-        self.numpy_type = None
+        self.numpy_type = np.dtype(np.complex128)
         self.pandas_type = None
         self.hash = compute_hash(
             sparse=sparse,

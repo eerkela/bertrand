@@ -26,8 +26,8 @@ cdef class IntegerType(ElementType):
         self.nullable = nullable
         self.supertype = None
         self.atomic_type = int
-        self.numpy_type = None
-        self.pandas_type = None
+        self.numpy_type = np.dtype(np.int64)
+        self.pandas_type = pd.Int64Dtype()
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
@@ -129,8 +129,8 @@ cdef class SignedIntegerType(IntegerType):
         self.nullable = nullable
         self.supertype = IntegerType
         self.atomic_type = None
-        self.numpy_type = None
-        self.pandas_type = None
+        self.numpy_type = np.dtype(np.int64)
+        self.pandas_type = pd.Int64Dtype()
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
@@ -220,8 +220,8 @@ cdef class UnsignedIntegerType(IntegerType):
         self.nullable = nullable
         self.supertype = IntegerType
         self.atomic_type = None
-        self.numpy_type = None
-        self.pandas_type = None
+        self.numpy_type = np.dtype(np.uint64)
+        self.pandas_type = pd.UInt64Dtype()
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,

@@ -7,7 +7,7 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from pdtypes.types import resolve_dtype, check_dtype, ElementType
+from pdtypes.types import resolve_dtype, check_dtype, get_dtype
 from pdtypes.error import error_trace, shorten_list
 from pdtypes.time import valid_units
 from pdtypes.util.type_hints import dtype_like
@@ -88,17 +88,14 @@ def validate_datetime_format(
 def validate_dtype(
     dtype: dtype_like,
     expected: dtype_like
-) -> ElementType:
+) -> None:
     """Ensure that a dtype specifier is a subtype of `expected`."""
-    dtype = resolve_dtype(dtype)
     expected = resolve_dtype(expected)
 
     if dtype not in expected:
         err_msg = (f"[{error_trace()}] `dtype` must be {str(expected)}-like, "
                    f"not {str(dtype)}")
         raise TypeError(err_msg)
-
-    return dtype
 
 
 def validate_errors(errors: str) -> None:
@@ -133,6 +130,16 @@ def validate_rounding(rounding: str | None) -> None:
         raise ValueError(err_msg)
 
     return None
+
+
+def validate_series(series: pd.Series, expected: dtype_like) -> None:
+    """Ensure that a pandas Series contains data of a particular type."""
+    expected = resolve_dtype(expected)
+
+    if not check_dtype(series, expected):
+        err_msg = (f"[{error_trace()}] `series` must contain {str(expected)} "
+                    f"data, not {str(get_dtype(series))}")
+        raise TypeError(err_msg)
 
 
 def validate_unit(unit: str) -> None:

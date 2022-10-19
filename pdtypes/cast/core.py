@@ -64,7 +64,7 @@ class ConversionSeries:
 
     def __init__(
         self,
-        series: scalar | array_like
+        series: pd.Series
     ) -> ConversionSeries:
         # vectorize input
         series = pd.Series(vectorize(series), copy=False)

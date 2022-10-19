@@ -23,6 +23,22 @@ from .string cimport *
 from .object cimport *
 
 
+
+# TODO: consider adding </> checks to ElementTypes, allowing sorting based
+# on itemsize.
+
+
+# TODO: If sparse=False and/or categorical=False, add respective combinations
+# to subtypes, just like nullable=False
+# -> this causes "sparse[int]" in "int" to return True
+# -> ("sparse[categorical[nullable[int64]]]" in "int") == True
+
+
+# TODO: If sparse=True/categorical=True, have ElementType.pandas_type reflect
+# that.  This would require an optional categories argument to ElementType
+# constructors.
+
+
 # TODO: resolve_dtype doesn't work on fixed-length numpy string dtypes
 # -> maybe add a separate StringType for fixed-length strings?
 
