@@ -3,6 +3,10 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport compute_hash, ElementType, shared_registry
+from .float cimport FloatType, Float32Type, Float64Type, LongDoubleType
+
+
+# TODO: cache equiv_complex in a private field
 
 
 ##########################
@@ -18,7 +22,7 @@ cdef class ComplexType(ElementType):
         bint sparse = False,
         bint categorical = False
     ):
-        self.sparse = sparse,
+        self.sparse = sparse
         self.categorical = categorical
         self.nullable = True
         self.supertype = None
@@ -50,6 +54,14 @@ cdef class ComplexType(ElementType):
         self.min = -2**53
         self.max = 2**53
 
+    @property
+    def equiv_complex(self) -> FloatType:
+        """Remove the imaginary component from this ElementType."""
+        return FloatType.instance(
+            sparse=self.sparse,
+            categorical=self.categorical
+        )
+
 
 ########################
 ####    SUBTYPES    ####
@@ -64,7 +76,7 @@ cdef class Complex64Type(ComplexType):
         bint sparse = False,
         bint categorical = False
     ):
-        self.sparse = sparse,
+        self.sparse = sparse
         self.categorical = categorical
         self.nullable = True
         self.supertype = ComplexType
@@ -92,6 +104,14 @@ cdef class Complex64Type(ComplexType):
         self.min = -2**24
         self.max = 2**24
 
+    @property
+    def equiv_complex(self) -> Float32Type:
+        """Remove the imaginary component from this ElementType."""
+        return Float32Type.instance(
+            sparse=self.sparse,
+            categorical=self.categorical
+        )
+
 
 cdef class Complex128Type(ComplexType):
     """128-bit complex subtype"""
@@ -101,7 +121,7 @@ cdef class Complex128Type(ComplexType):
         bint sparse = False,
         bint categorical = False
     ):
-        self.sparse = sparse,
+        self.sparse = sparse
         self.categorical = categorical
         self.nullable = True
         self.supertype = ComplexType
@@ -129,6 +149,14 @@ cdef class Complex128Type(ComplexType):
         self.min = -2**53
         self.max = 2**53
 
+    @property
+    def equiv_complex(self) -> Float64Type:
+        """Remove the imaginary component from this ElementType."""
+        return Float64Type.instance(
+            sparse=self.sparse,
+            categorical=self.categorical
+        )
+
 
 cdef class CLongDoubleType(ComplexType):
     """complex long double subtype (platform-dependent)"""
@@ -138,7 +166,7 @@ cdef class CLongDoubleType(ComplexType):
         bint sparse = False,
         bint categorical = False
     ):
-        self.sparse = sparse,
+        self.sparse = sparse
         self.categorical = categorical
         self.nullable = True
         self.supertype = ComplexType
@@ -165,3 +193,11 @@ cdef class CLongDoubleType(ComplexType):
         # min/max representable integer (determined by size of significand)
         self.min = -2**64
         self.max = 2**64
+
+    @property
+    def equiv_complex(self) -> LongDoubleType:
+        """Remove the imaginary component from this ElementType."""
+        return LongDoubleType.instance(
+            sparse=self.sparse,
+            categorical=self.categorical
+        )

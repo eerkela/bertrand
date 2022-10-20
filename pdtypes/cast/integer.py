@@ -10,11 +10,12 @@ from pdtypes import DEFAULT_STRING_DTYPE
 # from pdtypes.check import (
 #     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
 # )
-from pdtypes.types import check_dtype, get_dtype, resolve_dtype
+from pdtypes.types import check_dtype, get_dtype, resolve_dtype, ElementType
 from pdtypes.error import ConversionError, error_trace, shorten_list
 from pdtypes.util.downcast import integral_range
 from pdtypes.util.type_hints import datetime_like, dtype_like
 # from pdtypes.util.validate import validate_dtype, validate_errors
+
 
 
 from pdtypes.time import (
@@ -23,22 +24,159 @@ from pdtypes.time import (
     ns_to_pydatetime, ns_to_pytimedelta, ns_to_timedelta, timezone
 )
 
-from .base import SeriesWrapper
-
+from .base import NumericSeries
 from .float import FloatSeries
-from .validate import validate_dtype, validate_errors, validate_series
+
+from .util.downcast import (
+    demote_integer_supertypes, downcast_integer_dtype, downcast_float_series,
+    downcast_complex_series
+)
+from .util.validate import validate_dtype, validate_errors, validate_series
+
+
+# TODO: have to be careful with exact comparisons to integer/boolean dtypes
+# due to differing nullable settings.
 
 
 # If DEBUG=True, insert argument checks into BooleanSeries conversion methods
 DEBUG = True
 
 
-class IntegerSeries(SeriesWrapper):
-    """TODO"""
+def reject_non_boolean(
+    series: IntegerSeries,
+    errors: str
+) -> IntegerSeries:
+    """Reject any IntegerSeries that contains non-boolean values (i.e. not 0
+    or 1).
+    """
+    if series.min() < 0 or series.max() > 1:
+        if errors != "coerce":
+            bad_vals = series[(series < 0) | (series > 1)]
+            err_msg = (f"non-boolean value encountered at index "
+                       f"{shorten_list(bad_vals.index.values)}")
+            raise ConversionError(err_msg, bad_vals)
 
-    unwrapped = SeriesWrapper.unwrapped + (
-        "_min", "_max", "_idxmin", "_idxmax"
-    )
+        # coerce
+        series = IntegerSeries(
+            series.abs().clip(0, 1),
+            hasnans=series.hasnans
+        )
+
+    return series
+
+
+def reject_integer_overflow(
+    series: IntegerSeries,
+    dtype: ElementType,
+    errors: str
+) -> IntegerSeries:
+    """Reject any IntegerSeries whose range exceeds the maximum available for
+    the given ElementType.
+    """
+    if series.min() < dtype.min or series.max() > dtype.max:
+        if errors != "coerce":
+            bad_vals = series[(series < dtype.min) | (series > dtype.max)]
+            err_msg = (f"values exceed {str(dtype)} range at index "
+                        f"{shorten_list(bad_vals.index.values)}")
+            raise ConversionError(err_msg, bad_vals)
+
+        # make series nullable to prepare for NA coercion
+        series = series.series
+        extension_type = resolve_dtype(series.dtype).pandas_type
+        if extension_type is not None:
+            series = series.astype(extension_type)
+
+        # coerce by replacing with NA
+        series[(series < dtype.min) | (series > dtype.max)] = pd.NA
+        series = IntegerSeries(series, hasnans=True)
+
+    return series
+
+
+def maybe_backtrack_int_to_float(
+    series: pd.Series,
+    original: IntegerSeries,
+    dtype: ElementType,
+    errors: str
+) -> pd.Series:
+    """Reverse an integer to float conversion, checking for overflow/precision
+    loss and applying the selected error-handling rule.
+    """
+    if original.min() < dtype.min or original.max() > dtype.max:
+        # series might be imprecise -> confirm by backtracking conversion
+        reverse = FloatSeries(series)
+
+        # err state 1: infs introduced during coercion (overflow)
+        if reverse.hasinfs:
+            if errors != "coerce":
+                bad_vals = series[reverse.infs]
+                err_msg = (f"values exceed {str(dtype)} range at index "
+                        f"{shorten_list(bad_vals.index.values)}")
+                raise ConversionError(err_msg, bad_vals)
+
+            # coerce
+            series[reverse.infs] = np.nan
+
+        # err state 2: precision loss due to floating point rounding
+        elif errors != "coerce":
+            # compute reverse result + original equivalent
+            reverse = reverse.to_integer(errors="coerce")
+            original = original.to_integer()
+
+            # assert reverse == original
+            if not reverse.equals(original):
+                bad_vals = series[reverse != original]
+                err_msg = (f"precision loss detected at index "
+                        f"{shorten_list(bad_vals.index.values)} with dtype "
+                        f"{repr(str(dtype))}")
+                raise ConversionError(err_msg, bad_vals)
+
+    return series
+
+
+def maybe_backtrack_int_to_complex(
+    series: pd.Series,
+    original: IntegerSeries,
+    dtype: ElementType,
+    errors: str
+) -> pd.Series:
+    """Reverse an integer to float conversion, checking for overflow/precision
+    loss and applying the selected error-handling rule.
+    """
+    if original.min() < dtype.min or original.max() > dtype.max:
+        # series might be imprecise -> confirm by backtracking conversion
+        reverse = FloatSeries(pd.Series(np.real(series), copy=False))
+
+        # err state 1: infs introduced during coercion (overflow)
+        if reverse.hasinfs:
+            if errors != "coerce":
+                bad_vals = series[reverse.infs]
+                err_msg = (f"values exceed {str(dtype)} range at index "
+                        f"{shorten_list(bad_vals.index.values)}")
+                raise ConversionError(err_msg, bad_vals)
+
+            # coerce
+            series[reverse.infs] += complex(np.nan, np.nan)
+
+        # err state 2: precision loss due to floating point rounding
+        elif errors != "coerce":
+            # compute reverse result + original equivalent
+            reverse = reverse.to_integer(errors="coerce")
+            original = original.to_integer()
+
+            # assert reverse == original
+            if not reverse.equals(original):
+                bad_vals = series[reverse != original]
+                err_msg = (f"precision loss detected at index "
+                            f"{shorten_list(bad_vals.index.values)} with dtype "
+                            f"{repr(str(dtype))}")
+                raise ConversionError(err_msg, bad_vals)
+
+    return series
+
+
+class IntegerSeries(NumericSeries):
+    """TODO"""
 
     def __init__(
         self,
@@ -53,63 +191,15 @@ class IntegerSeries(SeriesWrapper):
         if DEBUG:
             validate_series(series, int)
 
-        super().__init__(series=series, hasnans=hasnans, is_na=is_na)
-        self._min = min_val
-        self._idxmin = min_index
-        self._max = max_val
-        self._idxmax = max_index
-
-    #############################
-    ####    CACHE MIN/MAX    ####
-    #############################
-
-    def min(self, *args, **kwargs) -> int:
-        """A cached version of pd.Series.min()."""
-        # cached
-        if self._min is not None:
-            return self._min
-
-        # uncached
-        self._min = self._series.min(*args, **kwargs)
-        return self._min
-
-    def argmin(self, *args, **kwargs) -> int:
-        """Alias for IntegerSeries.min()."""
-        return self.min(*args, **kwargs)
-
-    def max(self, *args, **kwargs) -> int:
-        """A cached version of pd.Series.max()."""
-        # cached
-        if self._max is not None:
-            return self._max
-
-        # uncached
-        self._max = self._series.max(*args, **kwargs)
-        return self._max
-
-    def argmax(self, *args, **kwargs) -> int:
-        """Alias for IntegerSeries.max()."""
-        return self.max(*args, **kwargs)
-
-    def idxmin(self, *args, **kwargs) -> int:
-        """A cached version of pd.Series.idxmin()."""
-        # cached
-        if self._idxmin is not None:
-            return self._idxmin
-
-        # uncached
-        self._idxmin = self._series.idxmin(*args, **kwargs)
-        return self._idxmin
-
-    def idxmax(self, *args, **kwargs) -> int:
-        """A cached version of pd.Series.idxmax()."""
-        # cached
-        if self._idxmax is not None:
-            return self._idxmax
-
-        # uncached
-        self._idxmax = self._series.idxmax(*args, **kwargs)
-        return self._idxmax
+        super().__init__(
+            series=series,
+            hasnans=hasnans,
+            is_na=is_na,
+            min_val=min_val,
+            min_index=min_index,
+            max_val=max_val,
+            max_index=max_index
+        )
 
     ##################################
     ####    CONVERSION METHODS    ####
@@ -133,18 +223,7 @@ class IntegerSeries(SeriesWrapper):
         series = self
 
         # check series fits within boolean range [0, 1]
-        if series.min() < 0 or series.max() > 1:
-            if errors != "coerce":
-                bad_vals = series[(series < 0) | (series > 1)]
-                err_msg = (f"non-boolean value encountered at index "
-                           f"{shorten_list(bad_vals.index.values)}")
-                raise ConversionError(err_msg, bad_vals)
-
-            # coerce
-            series = IntegerSeries(
-                series.abs().clip(0, 1),
-                hasnans=series.hasnans
-            )
+        series = reject_non_boolean(series=series, errors=errors)
 
         # do conversion
         if series.hasnans or dtype.nullable:
@@ -169,56 +248,22 @@ class IntegerSeries(SeriesWrapper):
         # series might change depending on coercion
         series = self
 
-        # integer supertype - can be arbitrarily large
-        if dtype == int:
-            if series.min() < -2**63 or series.max() > 2**63 - 1:  # > int64
-                if series.min() >= 0 and series.max() <= 2**64 - 1:  # < uint64
-                    return series.astype(np.uint64)
-
-                # > int64 and > uint64, return as built-in python ints
-                return np.frompyfunc(int, 1, 1)(series)
-
-            # extended range isn't needed, demote to int64
-            dtype = resolve_dtype(np.int64)
-
-        # signed integer supertype - suppress conversion to uint64
-        elif dtype == "signed":
-            if series.min() < -2**63 or series.max() > 2**63 - 1:  # > int64
-                return np.frompyfunc(int, 1, 1)(series)
-
-            # extended range isn't needed, demote to int64
-            dtype = resolve_dtype(np.int64)
-
-        # unsigned integer supertype - demote to uint64
-        elif dtype == "unsigned":
-            dtype = resolve_dtype(np.uint64)
+        # demote integer supertypes and handle >64-bit special case
+        dtype = demote_integer_supertypes(series=series, dtype=dtype)
+        exceeds_range = ("int", "signed", "nullable[int]", "nullable[signed]")
+        if any(dtype == t for t in exceeds_range):
+            return np.frompyfunc(int, 1, 1)(series)
 
         # ensure series min/max fit within dtype range
-        if series.min() < dtype.min or series.max() > dtype.max:
-            if errors != "coerce":
-                bad_vals = series[(series < dtype.min) | (series > dtype.max)]
-                err_msg = (f"values exceed {str(dtype)} range at index "
-                           f"{shorten_list(bad_vals.index.values)}")
-                raise ConversionError(err_msg, bad_vals)
-
-            # coerce by replacing series
-            series = IntegerSeries(series.series, hasnans=True)
-            series[(series < dtype.min) | (series > dtype.max)] = pd.NA
+        series = reject_integer_overflow(
+            series=series,
+            dtype=dtype,
+            errors=errors
+        )
 
         # attempt to downcast, if applicable
         if downcast:
-            # resolve all possible dtypes that are smaller than given
-            if dtype in resolve_dtype("unsigned"):
-                smaller = [np.uint8, np.uint16, np.uint32, np.uint64]
-            else:
-                smaller = [np.int8, np.int16, np.int32, np.int64]
-            smaller = [resolve_dtype(t) for t in smaller]
-
-            # search for smaller dtypes that can represent series
-            for small in smaller[:smaller.index(dtype)]:
-                if series.min() >= small.min and series.max() <= small.max:
-                    dtype = small
-                    break  # stop at smallest
+            dtype = downcast_integer_dtype(series=series, dtype=dtype)
 
         # convert and return
         if series.hasnans or dtype.nullable:
@@ -240,49 +285,20 @@ class IntegerSeries(SeriesWrapper):
             validate_dtype(dtype, float)
             validate_errors(errors)
 
-        # do naive conversion and check for overflow/precision loss afterwards
+        # do naive conversion
         series = self.astype(dtype.numpy_type)
 
-        # check for precision loss
-        if self.min() < dtype.min or self.max() > dtype.max:
-            # series might be imprecise -> confirm by reversing conversion
-            reverse = FloatSeries(series)  # TODO: revisit with completed FloatSeries
+        # check for overflow/precision loss
+        series = maybe_backtrack_int_to_float(
+            series=series,
+            original=self,
+            dtype=dtype,
+            errors=errors
+        )
 
-            # err state 1: infs introduced during coercion (overflow)
-            if reverse.hasinfs:
-                if errors != "coerce":
-                    bad_vals = series[reverse.infs].index.values
-                    err_msg = (f"values exceed {str(dtype)} range at "
-                               f"index {shorten_list(bad_vals.index.values)}")
-                    raise ConversionError(err_msg, bad_vals)
-
-                # coerce
-                series[reverse.infs] = np.nan
-
-            # err state 2: encountered rounding errors (precision loss)
-            elif errors != "coerce":
-                # compute reverse result
-                reverse_result = reverse.to_integer(errors="coerce")
-
-                # assert equal
-                if not self.to_integer().equals(reverse_result):
-                    bad_vals = series[self.series != reverse_result]
-                    err_msg = (f"precision loss detected at index "
-                               f"{shorten_list(bad_vals.index.values)} with "
-                               f"dtype {repr(str(dtype))}")
-                    raise ConversionError(err_msg, bad_vals)
-
-        # attempt to downcast, if applicable
-        if downcast:  # search for smaller dtypes that can represent series
-            smaller = [
-                resolve_dtype(t) for t in (
-                    np.float16, np.float32, np.float64, np.longdouble
-                )
-            ]
-            for small in smaller[:smaller.index(dtype)]:
-                attempt = series.astype(small.numpy_type)
-                if (attempt == series).all():
-                    return attempt  # stop at smallest
+        # attempt to downcast if applicable
+        if downcast:
+            return downcast_float_series(series=series, dtype=dtype)
 
         # return
         return series
@@ -306,45 +322,16 @@ class IntegerSeries(SeriesWrapper):
         series = self.series.astype(dtype.numpy_type)
 
         # check for precision loss
-        if self.min() < dtype.min or self.max() > dtype.max:
-            # series might be imprecise -> confirm by reversing conversion
-            reverse = FloatSeries(np.real(series))  # TODO: revist with completed FloatSeries
-
-            # err state 1: infs introduced during coercion (overflow)
-            if reverse.hasinfs:
-                if errors != "coerce":
-                    bad_vals = series[reverse.infs]
-                    err_msg = (f"values exceed {str(dtype)} range at "
-                               f"index {shorten_list(bad_vals.index.values)}")
-                    raise ConversionError(err_msg, bad_vals)
-
-                # coerce
-                series[reverse.infs] += complex(np.nan, np.nan)
-
-            # err state 2: encountered rounding errors (precision loss)
-            elif errors != "coerce":
-                # compute reverse result
-                reverse_result = reverse.to_integer(errors="coerce")
-
-                # assert equal
-                if not self.to_integer().equals(reverse_result):
-                    bad_vals = series[self.series != reverse_result]
-                    err_msg = (f"precision loss detected at index "
-                               f"{shorten_list(bad_vals.index.values)} with "
-                               f"dtype {repr(str(dtype))}")
-                    raise ConversionError(err_msg, bad_vals)
+        series = maybe_backtrack_int_to_complex(
+            series=series,
+            original=self,
+            dtype=dtype,
+            errors=errors
+        )
 
         # attempt to downcast, if applicable
         if downcast:  # search for smaller dtypes that can represent series
-            smaller = [
-                resolve_dtype(t) for t in (
-                    np.complex64, np.complex128, np.clongdouble
-                )
-            ]
-            for small in smaller[:smaller.index(dtype)]:
-                attempt = series.astype(small.numpy_type)
-                if (attempt == series).all():
-                    return attempt  # stop at smallest
+            return downcast_complex_series(series=series, dtype=dtype)
 
         # return
         return series
@@ -384,14 +371,11 @@ class IntegerSeries(SeriesWrapper):
             dtype.unit == "ns" and
             dtype.step_size == 1
         ):
-            dtype = resolve_dtype(pd.Timestamp)
-            # TODO: retain sparse, categorical flags
-            # -> might be superseded if sparse, categorical handled in cast()
-            # dtype = resolve_dtype(
-            #     pd.Timestamp,
-            #     sparse=dtype.sparse,
-            #     categorical=dtype.categorical
-            # )
+            dtype = resolve_dtype(
+                pd.Timestamp,
+                sparse=dtype.sparse,
+                categorical=dtype.categorical
+            )
 
         # convert to nanoseconds
         nanoseconds = convert_unit_integer(
@@ -442,14 +426,11 @@ class IntegerSeries(SeriesWrapper):
             dtype.unit == "ns" and
             dtype.step_size == 1
         ):
-            dtype = resolve_dtype(pd.Timedelta)
-            # TODO: retain sparse, categorical flags
-            # -> might be superseded if sparse, categorical handled in cast()
-            # dtype = resolve_dtype(
-            #     pd.Timedelta,
-            #     sparse=dtype.sparse,
-            #     categorical=dtype.categorical
-            # )
+            dtype = resolve_dtype(
+                pd.Timedelta,
+                sparse=dtype.sparse,
+                categorical=dtype.categorical
+            )
 
         # convert to nanoseconds
         nanoseconds = convert_unit_integer(

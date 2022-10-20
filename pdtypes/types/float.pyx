@@ -3,7 +3,9 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport compute_hash, ElementType, shared_registry
-
+from .complex cimport (
+    ComplexType, Complex64Type, Complex128Type, CLongDoubleType
+)
 
 ##########################
 ####    SUPERTYPES    ####
@@ -50,6 +52,14 @@ cdef class FloatType(ElementType):
         self.min = -2**53
         self.max = 2**53
 
+    @property
+    def equiv_complex(self) -> ComplexType:
+        """Add an imaginary component to this ElementType."""
+        return ComplexType.instance(
+            sparse=self.sparse,
+            categorical=self.categorical
+        )
+
 
 ########################
 ####    SUBTYPES    ####
@@ -92,6 +102,14 @@ cdef class Float16Type(FloatType):
         self.min = -2**11
         self.max = 2**11
 
+    @property
+    def equiv_complex(self) -> Complex64Type:
+        """Add an imaginary component to this ElementType."""
+        return Complex64Type.instance(
+            sparse=self.sparse,
+            categorical=self.categorical
+        )
+
 
 cdef class Float32Type(FloatType):
     """32-bit float subtype"""
@@ -128,6 +146,14 @@ cdef class Float32Type(FloatType):
         # min/max representable integer (determined by size of significand)
         self.min = -2**24
         self.max = 2**24
+
+    @property
+    def equiv_complex(self) -> Complex64Type:
+        """Add an imaginary component to this ElementType."""
+        return Complex64Type.instance(
+            sparse=self.sparse,
+            categorical=self.categorical
+        )
 
 
 cdef class Float64Type(FloatType):
@@ -166,6 +192,14 @@ cdef class Float64Type(FloatType):
         self.min = -2**53
         self.max = 2**53
 
+    @property
+    def equiv_complex(self) -> Complex128Type:
+        """Add an imaginary component to this ElementType."""
+        return Complex128Type.instance(
+            sparse=self.sparse,
+            categorical=self.categorical
+        )
+
 
 cdef class LongDoubleType(FloatType):
     """Long double float subtype (platform-dependent)"""
@@ -202,3 +236,11 @@ cdef class LongDoubleType(FloatType):
         # min/max representable integer (determined by size of significand)
         self.min = -2**64
         self.max = 2**64
+
+    @property
+    def equiv_complex(self) -> CLongDoubleType:
+        """Add an imaginary component to this ElementType."""
+        return CLongDoubleType.instance(
+            sparse=self.sparse,
+            categorical=self.categorical
+        )

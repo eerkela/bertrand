@@ -23,6 +23,8 @@ from .string cimport *
 from .object cimport *
 
 
+# TODO: resolve_dtype should only take one optional argument: force_nullable
+
 
 # TODO: consider adding </> checks to ElementTypes, allowing sorting based
 # on itemsize.
@@ -146,7 +148,12 @@ def get_dtype(example) -> ElementType | CompositeType:
     return parse_example_scalar(example)
 
 
-cpdef ElementType resolve_dtype(object typespec):
+cpdef ElementType resolve_dtype(
+    object typespec,
+    bint sparse = False,
+    bint categorical = False,
+    bint nullable = False
+):
     """Resolve a scalar type specifier, returning an appropriate ElementType
     object.
     """
@@ -156,15 +163,34 @@ cpdef ElementType resolve_dtype(object typespec):
 
     # atomic type
     if isinstance(typespec, type):
+        # reject ElementType/CompositeType specifiers
         if typespec == ElementType or issubclass(typespec, CompositeType):
             raise ValueError(f"{typespec} is not a valid type specifier")
+
+        # get ElementType definition for given type
         if not issubclass(typespec, ElementType):
             typespec = type_lookup.get(typespec, ObjectType)
-        return typespec.instance()
+
+        # apply nullable
+        if issubclass(typespec, (BooleanType, IntegerType)):
+            return typespec.instance(
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            )
+        return typespec.instance(
+            sparse=sparse,
+            categorical=categorical
+        )
 
     # numpy/pandas dtype object
     if isinstance(typespec, (np.dtype, pd.api.extensions.ExtensionDtype)):
-        return parse_typespec_dtype(typespec)
+        return parse_typespec_dtype(
+            typespec,
+            sparse=sparse,
+            categorical=categorical,
+            force_nullable=nullable
+        )
 
     # type string
     try:

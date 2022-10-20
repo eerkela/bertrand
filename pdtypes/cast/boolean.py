@@ -14,11 +14,15 @@ from pdtypes.time import (
 from pdtypes.util.type_hints import datetime_like, dtype_like
 
 from .base import SeriesWrapper
-from .validate import validate_dtype, validate_series
+from .util.validate import validate_dtype, validate_series
 
 
 # TODO: add step size to datetime/timedelta conversions
 # -> has to be added in ns_to_numpy_datetime64, ns_to_numpy_timedelta64
+
+
+# TODO: have to be careful with exact comparisons to integer/boolean dtypes
+# due to differing nullable settings.
 
 
 # If DEBUG=True, insert argument checks into BooleanSeries conversion methods
@@ -73,9 +77,19 @@ class BooleanSeries(SeriesWrapper):
         # if downcasting, return as 8-bit integer
         if downcast:
             if dtype in resolve_dtype("unsigned"):
-                dtype = resolve_dtype(np.uint8)
+                dtype = resolve_dtype(
+                    np.uint8,
+                    sparse=dtype.sparse,
+                    categorical=dtype.categorical,
+                    nullable=dtype.nullable
+                )
             else:
-                dtype = resolve_dtype(np.int8)
+                dtype = resolve_dtype(
+                    np.int8,
+                    sparse=dtype.sparse,
+                    categorical=dtype.categorical,
+                    nullable=dtype.nullable
+                )
 
         # do conversion
         if self.hasnans or dtype.nullable:
@@ -117,7 +131,11 @@ class BooleanSeries(SeriesWrapper):
 
         # if downcasting, return as 64-bit complex
         if downcast:
-            dtype = resolve_dtype(np.complex64)
+            dtype = resolve_dtype(
+                np.complex64,
+                sparse=dtype.sparse,
+                categorical=dtype.categorical
+            )
 
         # do conversion
         return self.astype(dtype.numpy_type)
@@ -151,14 +169,11 @@ class BooleanSeries(SeriesWrapper):
             dtype.unit == "ns" and
             dtype.step_size == 1
         ):
-            dtype = resolve_dtype(pd.Timestamp)
-            # TODO: retain sparse, categorical flags
-            # -> might be superseded if sparse, categorical handled in cast()
-            # dtype = resolve_dtype(
-            #     pd.Timestamp,
-            #     sparse=dtype.sparse,
-            #     categorical=dtype.categorical
-            # )
+            dtype = resolve_dtype(
+                pd.Timestamp,
+                sparse=dtype.sparse,
+                categorical=dtype.categorical
+            )
 
         # convert to nanoseconds
         nanoseconds = convert_unit_integer(
@@ -209,14 +224,11 @@ class BooleanSeries(SeriesWrapper):
             dtype.unit == "ns" and
             dtype.step_size == 1
         ):
-            dtype = resolve_dtype(pd.Timedelta)
-            # TODO: retain sparse, categorical flags
-            # -> might be superseded if sparse, categorical handled in cast()
-            # dtype = resolve_dtype(
-            #     pd.Timedelta,
-            #     sparse=dtype.sparse,
-            #     categorical=dtype.categorical
-            # )
+            dtype = resolve_dtype(
+                pd.Timedelta,
+                sparse=dtype.sparse,
+                categorical=dtype.categorical
+            )
 
         # convert to nanoseconds
         nanoseconds = convert_unit_integer(

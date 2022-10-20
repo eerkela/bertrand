@@ -1,13 +1,18 @@
+import numpy as np
 import pandas as pd
 
 
 class SeriesWrapper:
-    """Decorator Pattern wrapper for pandas Series objects."""
+    """Base wrapper for pd.Series objects.
+
+    Implements a dynamic wrapper according to the Gang of Four's Decorator
+    Pattern (not to be confused with python decorators).
+    """
 
     # `setattr()` calls to the fields specified in `unwrapped` will be passed
     # through, unmodified.  Everything else will be delegated to `wrapped`
-    unwrapped = ("_series", "_hasnans", "_is_na")
-    wrapped = "_series"
+    unwrapped = ("series", "_hasnans", "_is_na")
+    wrapped = "series"
 
     def __init__(
         self,
@@ -15,18 +20,9 @@ class SeriesWrapper:
         hasnans: bool = None,
         is_na: pd.Series = None
     ):
-        self._series = series
+        self.series = series
         self._hasnans = hasnans
         self._is_na = is_na
-
-    #######################
-    ####    GENERAL    ####
-    #######################
-
-    @property
-    def series(self) -> pd.Series:
-        """Return the decorated pd.Series object."""
-        return self._series
 
     ####################################
     ####    CACHE MISSING VALUES    ####
@@ -52,7 +48,7 @@ class SeriesWrapper:
             return self._is_na
 
         # uncached
-        self._is_na = self._series.isna()
+        self._is_na = self.series.isna()
         return self._is_na
 
     def isnull(self) -> pd.Series:
@@ -61,7 +57,7 @@ class SeriesWrapper:
 
     def notna(self) -> pd.Series:
         """A cached version of the ordinary Series.notna() method."""
-        return ~self.isna()
+        return self.isna().__invert__()
 
     def notnull(self) -> pd.Series:
         """An alias for SeriesWrapper.notna()"""
@@ -303,3 +299,142 @@ class SeriesWrapper:
 
     def __delete__(self, instance):
         self.__dict__[self.__class__.wrapped].__delete__(instance)
+
+
+class NumericSeries(SeriesWrapper):
+    """Base wrapper for pd.Series objects that contain numeric values.
+
+    Implements a dynamic wrapper according to the Gang of Four's Decorator
+    Pattern (not to be confused with python decorators).
+    """
+
+    unwrapped = SeriesWrapper.unwrapped + (
+        "_min", "_max", "_idxmin", "_idxmax"
+    )
+
+    def __init__(
+        self,
+        series: pd.Series,
+        hasnans: bool = None,
+        is_na: pd.Series = None,
+        min_val: int = None,
+        min_index: int = None,
+        max_val: int = None,
+        max_index: int = None
+    ):
+        super().__init__(series=series, hasnans=hasnans, is_na=is_na)
+        self._min = min_val
+        self._idxmin = min_index
+        self._max = max_val
+        self._idxmax = max_index
+
+    #############################
+    ####    CACHE MIN/MAX    ####
+    #############################
+
+    def min(self, *args, **kwargs) -> int:
+        """A cached version of pd.Series.min()."""
+        # cached
+        if self._min is not None:
+            return self._min
+
+        # uncached
+        self._min = self.series.min(*args, **kwargs)
+        return self._min
+
+    def argmin(self, *args, **kwargs) -> int:
+        """Alias for IntegerSeries.min()."""
+        return self.min(*args, **kwargs)
+
+    def max(self, *args, **kwargs) -> int:
+        """A cached version of pd.Series.max()."""
+        # cached
+        if self._max is not None:
+            return self._max
+
+        # uncached
+        self._max = self.series.max(*args, **kwargs)
+        return self._max
+
+    def argmax(self, *args, **kwargs) -> int:
+        """Alias for IntegerSeries.max()."""
+        return self.max(*args, **kwargs)
+
+    def idxmin(self, *args, **kwargs) -> int:
+        """A cached version of pd.Series.idxmin()."""
+        # cached
+        if self._idxmin is not None:
+            return self._idxmin
+
+        # uncached
+        self._idxmin = self.series.idxmin(*args, **kwargs)
+        return self._idxmin
+
+    def idxmax(self, *args, **kwargs) -> int:
+        """A cached version of pd.Series.idxmax()."""
+        # cached
+        if self._idxmax is not None:
+            return self._idxmax
+
+        # uncached
+        self._idxmax = self.series.idxmax(*args, **kwargs)
+        return self._idxmax
+
+
+class RealSeries(NumericSeries):
+    """Base wrapper for SeriesWrapper objects that contain real numerics
+    capable of storing infinity.
+
+    Implements a dynamic wrapper according to the Gang of Four's Decorator
+    Pattern (not to be confused with python decorators).
+    """
+
+    unwrapped = NumericSeries.unwrapped + ("_hasinfs", "_is_inf")
+
+    def __init__(
+        self,
+        series: pd.Series,
+        hasnans: bool = None,
+        is_na: pd.Series = None,
+        min_val: int = None,
+        min_index: int = None,
+        max_val: int = None,
+        max_index: int = None,
+        hasinfs: bool = None,
+        is_inf: np.ndarray = None
+    ):
+        super().__init__(
+            series=series,
+            hasnans=hasnans,
+            is_na=is_na,
+            min_val=min_val,
+            min_index=min_index,
+            max_val=max_val,
+            max_index=max_index
+        )
+        self._hasinfs = hasinfs
+        self._is_inf = is_inf
+
+    ##########################
+    ####    CACHE INFS    ####
+    ##########################
+
+    @property
+    def hasinfs(self) -> bool:
+        """TODO"""
+        if self._hasinfs is not None:  # hasinfs is cached
+            return self._hasinfs
+
+        # hasinfs must be computed
+        self._hasinfs = self.infs.any()
+        return self._hasinfs
+
+    @property
+    def infs(self) -> pd.Series:
+        """TODO"""
+        if self._is_inf is not None:  # infs is cached
+            return self._is_inf
+
+        # infs must be computed
+        self._is_inf = np.isinf(self.series)
+        return self._is_inf

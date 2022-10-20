@@ -133,7 +133,8 @@ def round_float(
             # does not support the `out` parameter.  In this case, we use the
             # numpy implementation instead.
             index = val.index
-            val = round_func(val.to_numpy(), out=val)
+            val = val.to_numpy(copy=False)
+            val = round_func(val, out=val)
             val = pd.Series(val, index=index, copy=False)
         else:
             val = round_func(val, out=val)
