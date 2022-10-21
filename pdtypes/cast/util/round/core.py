@@ -15,6 +15,7 @@ import decimal
 
 import numpy as np
 import pandas as pd
+from pdtypes.cast.base import NumericSeries, RealSeries
 
 from pdtypes.check import get_dtype
 
@@ -161,3 +162,30 @@ def round_generic(
 
     # everything else
     raise TypeError(f"`val` must be numeric, not {dtype}")
+
+
+def snap_round(
+    series: RealSeries,
+    tol: int | float | decimal.Decimal,
+    rule: str
+) -> RealSeries:
+    """Snap a FloatSeries to the nearest integer if it is within `tol`,
+    otherwise apply the selected rounding rule.
+    """
+    # don't snap if rounding to nearest
+    nearest = (
+        "half_floor", "half_ceiling", "half_down", "half_up", "half_even"
+    )
+
+    # NOTE: with copy=False, these will modify SeriesWrappers in-place
+
+    # snap
+    if tol and rule not in nearest:
+        series.series = apply_tolerance(series.series, tol=tol, copy=False)
+
+    # round
+    if rule:
+        series.series = round_generic(series.series, rule=rule, copy=False)
+
+    # return
+    return series

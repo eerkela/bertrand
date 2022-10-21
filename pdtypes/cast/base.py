@@ -1,3 +1,6 @@
+from __future__ import annotations
+import decimal
+
 import numpy as np
 import pandas as pd
 
@@ -396,9 +399,9 @@ class RealSeries(NumericSeries):
         series: pd.Series,
         hasnans: bool = None,
         is_na: pd.Series = None,
-        min_val: int = None,
+        min_val: int | float | decimal.Decimal = None,
         min_index: int = None,
-        max_val: int = None,
+        max_val: int | float | decimal.Decimal = None,
         max_index: int = None,
         hasinfs: bool = None,
         is_inf: np.ndarray = None

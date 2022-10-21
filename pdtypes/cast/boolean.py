@@ -6,16 +6,16 @@ import numpy as np
 import pandas as pd
 
 from pdtypes.types import resolve_dtype, ElementType
-from pdtypes.time import (
+from pdtypes.util.type_hints import datetime_like, dtype_like
+
+from .util.time import (
     convert_unit_integer, epoch, ns_to_datetime, ns_to_numpy_datetime64,
     ns_to_numpy_timedelta64, ns_to_pandas_timedelta, ns_to_pandas_timestamp,
     ns_to_pydatetime, ns_to_pytimedelta, ns_to_timedelta, timezone
 )
-from pdtypes.util.type_hints import datetime_like, dtype_like
-
-from .base import SeriesWrapper
 from .util.validate import validate_dtype, validate_series
 
+from .base import SeriesWrapper
 
 # TODO: add step size to datetime/timedelta conversions
 # -> has to be added in ns_to_numpy_datetime64, ns_to_numpy_timedelta64
@@ -26,11 +26,11 @@ from .util.validate import validate_dtype, validate_series
 
 
 # If DEBUG=True, insert argument checks into BooleanSeries conversion methods
-DEBUG = True
+DEBUG: bool = True
 
 
 class BooleanSeries(SeriesWrapper):
-    """test"""
+    """TODO"""
 
     def __init__(
         self,
@@ -48,7 +48,7 @@ class BooleanSeries(SeriesWrapper):
         self,
         dtype: dtype_like = bool
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
 
@@ -66,7 +66,7 @@ class BooleanSeries(SeriesWrapper):
         dtype: dtype_like = int,
         downcast: bool = False
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
 
@@ -101,7 +101,7 @@ class BooleanSeries(SeriesWrapper):
         dtype: dtype_like = float,
         downcast: bool = False
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
 
@@ -121,7 +121,7 @@ class BooleanSeries(SeriesWrapper):
         dtype: dtype_like = complex,
         downcast: bool = False
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
 
@@ -141,7 +141,7 @@ class BooleanSeries(SeriesWrapper):
         return self.astype(dtype.numpy_type)
 
     def to_decimal(self) -> pd.Series:
-        """test"""
+        """TODO"""
         return self + decimal.Decimal(0)
 
     def to_datetime(
@@ -259,7 +259,7 @@ class BooleanSeries(SeriesWrapper):
         return ns_to_timedelta(nanoseconds, since=since)
 
     def to_string(self, dtype: dtype_like = str) -> pd.Series:
-        """test"""
+        """TODO"""
         # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
 

@@ -1,23 +1,25 @@
 from __future__ import annotations
+import datetime
 import decimal
 
 import numpy as np
 import pandas as pd
 
-from pdtypes.types import check_dtype, get_dtype, resolve_dtype, ElementType, CompositeType
-from pdtypes.error import ConversionError, error_trace, shorten_list
-from pdtypes.round import apply_tolerance, round_generic
-from pdtypes.util.type_hints import dtype_like
-from pdtypes.time import (
-    convert_unit_float, epoch, ns_to_datetime, ns_to_numpy_datetime64,
-    ns_to_numpy_timedelta64, ns_to_pandas_timedelta, ns_to_pandas_timestamp,
-    ns_to_pydatetime, ns_to_pytimedelta, ns_to_timedelta, timezone
-)
+from pdtypes.types import get_dtype, resolve_dtype, ElementType, CompositeType
+from pdtypes.error import ConversionError, shorten_list
+from pdtypes.util.type_hints import datetime_like, dtype_like
 
 from .util.downcast import (
     demote_integer_supertypes, downcast_integer_dtype, downcast_float_series,
     downcast_complex_series
 )
+from .util.round import round_generic, snap_round
+from .util.time import (
+    convert_unit_float, epoch, ns_to_datetime, ns_to_numpy_datetime64,
+    ns_to_numpy_timedelta64, ns_to_pandas_timedelta, ns_to_pandas_timestamp,
+    ns_to_pydatetime, ns_to_pytimedelta, ns_to_timedelta, timezone
+)
+
 from .util.validate import (
     tolerance, validate_dtype, validate_errors, validate_rounding,
     validate_series
@@ -30,39 +32,8 @@ from .base import RealSeries
 # due to differing nullable settings.
 
 
-# If DEBUG=True, insert argument checks into BooleanSeries conversion methods
-DEBUG = True
-
-
-
-
-def snap_round(
-    series: FloatSeries,
-    tol: int | float | decimal.Decimal,
-    rule: str
-) -> FloatSeries:
-    """Snap a FloatSeries to the nearest integer if it is within `tol`,
-    otherwise apply the selected rounding rule.
-    """
-    # don't snap if `rule` is in `nearest`
-    nearest = (
-        "half_floor", "half_ceiling", "half_down", "half_up", "half_even"
-    )
-
-    # NOTE: with copy=False, these will modify SeriesWrappers in-place
-
-    # snap
-    if tol and rule not in nearest:
-        series.series = apply_tolerance(series.series, tol=tol, copy=False)
-
-    # round
-    if rule:
-        series.series = round_generic(series.series, rule=rule, copy=False)
-
-    # return
-    return series
-
-
+# If DEBUG=True, insert argument checks into FloatSeries conversion methods
+DEBUG: bool = True
 
 
 def reject_non_boolean(
@@ -165,6 +136,7 @@ def reject_integer_overflow(
 def reject_float_precision_loss(
     series: FloatSeries,
     dtype: ElementType,
+    tol: int | float | decimal.Decimal,
     errors: str
 ) -> pd.Series:
     """Reject any FloatSeries whose elements cannot be exactly represented
@@ -174,7 +146,9 @@ def reject_float_precision_loss(
     naive = series.astype(dtype.numpy_type, copy=False)
 
     # check for precision loss
-    if (naive - series).any():  # at least one nonzero residual
+    if ((naive - series) > tol).any():  # at least one nonzero residual
+        # TODO: separate inf (overflow) check from tolerance application
+
         if errors != "coerce":
             bad_vals = series[(naive != series)]
             err_msg = (f"precision loss detected at index "
@@ -191,6 +165,7 @@ def reject_float_precision_loss(
 def reject_complex_precision_loss(
     series: FloatSeries,
     dtype: ElementType,
+    tol: int | float | decimal.Decimal,
     errors: str
 ) -> pd.Series:
     """Reject any FloatSeries whose elements cannot be exactly represented
@@ -200,12 +175,13 @@ def reject_complex_precision_loss(
     naive = series.astype(dtype.numpy_type, copy=False)
 
     # check for precision loss
-    if (naive - series).any():  # at least one nonzero residual
+    if ((naive - series) > tol).any():  # at least one nonzero residual
         if errors != "coerce":
             bad_vals = series[(naive != series)]
             err_msg = (f"precision loss detected at index "
                        f"{shorten_list(bad_vals.index.values)}")
             raise ConversionError(err_msg, bad_vals)
+
         # coerce infs to nans and ignore precision loss
         naive[np.isinf(naive) ^ series.infs] += complex(np.nan, np.nan)
 
@@ -221,9 +197,9 @@ class FloatSeries(RealSeries):
         series: pd.Series,
         hasnans: bool = None,
         is_na: pd.Series = None,
-        min_val: int = None,
+        min_val: float = None,
         min_index: int = None,
-        max_val: int = None,
+        max_val: float = None,
         max_index: int = None,
         hasinfs: bool = None,
         is_inf: np.ndarray = None
@@ -276,16 +252,16 @@ class FloatSeries(RealSeries):
         # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
 
-        tol, _ = tolerance(tol)
-        if tol >= 0.5:
-            rounding = "half_even"
-            tol = 0
-
         # DEBUG: assert `dtype` is boolean-like
         if DEBUG:
             validate_dtype(dtype, bool)
             validate_rounding(rounding)
             validate_errors(errors)
+
+        tol, _ = tolerance(tol)
+        if tol >= 0.5:
+            rounding = "half_even"
+            tol = 0
 
         # rectify object series
         series = self.rectify()
@@ -313,16 +289,16 @@ class FloatSeries(RealSeries):
         # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
 
-        tol, _ = tolerance(tol)
-        if tol >= 0.5:
-            rounding = "half_even"
-            tol = 0
-
         # DEBUG: assert `dtype` is integer-like
         if DEBUG:
             validate_dtype(dtype, int)
             validate_rounding(rounding)
             validate_errors(errors)
+
+        tol, _ = tolerance(tol)
+        if tol >= 0.5:
+            rounding = "half_even"
+            tol = 0
 
         # rectify object series
         series = self.rectify()
@@ -361,6 +337,7 @@ class FloatSeries(RealSeries):
     def to_float(
         self,
         dtype: dtype_like = float,
+        tol: int | float | complex | decimal.Decimal = 1e-6,
         downcast: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
@@ -373,6 +350,10 @@ class FloatSeries(RealSeries):
             validate_dtype(dtype, float)
             validate_errors(errors)
 
+        tol, _ = tolerance(tol)
+        if tol == np.inf:
+            errors = "coerce"
+
         # rectify object series
         series = self.rectify()
 
@@ -383,6 +364,7 @@ class FloatSeries(RealSeries):
         else:
             series = reject_float_precision_loss(
                 series=series,
+                tol=tol,
                 dtype=dtype,
                 errors=errors
             )
@@ -397,6 +379,7 @@ class FloatSeries(RealSeries):
     def to_complex(
         self,
         dtype: dtype_like = complex,
+        tol: int | float | complex | decimal.Decimal = 1e-6,
         downcast: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
@@ -409,6 +392,10 @@ class FloatSeries(RealSeries):
             validate_dtype(dtype, complex)
             validate_errors(errors)
 
+        tol, _ = tolerance(tol)
+        if tol == np.inf:
+            errors = "coerce"
+
         # rectify object series
         series = self.rectify()
 
@@ -419,6 +406,7 @@ class FloatSeries(RealSeries):
         else:
            series = reject_complex_precision_loss(
                 series=series,
+                tol=tol,
                 dtype=dtype,
                 errors=errors
             )
@@ -430,9 +418,126 @@ class FloatSeries(RealSeries):
         # return
         return series
 
-    # TODO: to_datetime
+    def to_datetime(
+        self,
+        dtype: dtype_like = "datetime",
+        unit: str = "ns",
+        tz: str | datetime.tzinfo = None
+    ) -> pd.Series:
+        """TODO"""
+        # TODO: move this up to ConversionSeries
+        dtype = resolve_dtype(dtype)
 
-    # TODO: to_timedelta
+        # DEBUG: assert `dtype` is datetime-like
+        if DEBUG:
+            validate_dtype(dtype, "datetime")
+
+        tz = timezone(tz)
+
+        # ElementType objects for each datetime subtype
+        pandas_timestamp = resolve_dtype(pd.Timestamp)
+        pydatetime = resolve_dtype(datetime.datetime)
+        numpy_datetime64 = resolve_dtype(np.datetime64)
+
+        # alias M8[ns] to pd.Timestamp
+        if (dtype in numpy_datetime64 and
+            dtype.unit == "ns" and
+            dtype.step_size == 1
+        ):
+            dtype = resolve_dtype(
+                pd.Timestamp,
+                sparse=dtype.sparse,
+                categorical=dtype.categorical
+            )
+
+        # rectify object series
+        series = self.rectify()
+
+        # convert to nanoseconds
+        nanoseconds = convert_unit_float(
+            series.series,
+            unit,
+            "ns",
+            since=epoch("UTC"),
+            rounding="floor"
+        )
+
+        # pd.Timestamp
+        if dtype in pandas_timestamp:
+            return ns_to_pandas_timestamp(nanoseconds, tz=tz)
+
+        # datetime.datetime
+        if dtype in pydatetime:
+            return ns_to_pydatetime(nanoseconds, tz=tz)
+
+        # np.datetime64
+        if dtype in numpy_datetime64:
+            # TODO: gather step size
+            return ns_to_numpy_datetime64(nanoseconds, unit=dtype.unit)
+
+        # datetime supertype
+        return ns_to_datetime(nanoseconds, tz=tz)
+
+    def to_timedelta(
+        self,
+        dtype: dtype_like = "timedelta",
+        unit: str = "ns",
+        since: str | datetime_like = "2001-01-01 00:00:00+0000"
+    ) -> pd.Series:
+        """TODO"""
+        # TODO: move this up to ConversionSeries
+        dtype = resolve_dtype(dtype)
+
+        # DEBUG: assert `dtype` is timedelta-like
+        if DEBUG:
+            validate_dtype(dtype, "timedelta")
+
+        since=epoch(since)
+
+        # ElementType objects for each timedelta subtype
+        pandas_timedelta = resolve_dtype(pd.Timedelta)
+        pytimedelta = resolve_dtype(datetime.timedelta)
+        numpy_timedelta64 = resolve_dtype(np.timedelta64)
+
+        # alias m8[ns] to pd.Timedelta and gather unit/step size from dtype
+        if (dtype in numpy_timedelta64 and
+            dtype.unit == "ns" and
+            dtype.step_size == 1
+        ):
+            dtype = resolve_dtype(
+                pd.Timedelta,
+                sparse=dtype.sparse,
+                categorical=dtype.categorical
+            )
+
+        # convert to nanoseconds
+        nanoseconds = convert_unit_float(
+            self.series,
+            unit,
+            "ns",
+            since=since,
+            rounding="floor"
+        )
+
+        # pd.Timedelta
+        if dtype in pandas_timedelta:
+            return ns_to_pandas_timedelta(nanoseconds)
+
+        # datetime.timedelta
+        if dtype in pytimedelta:
+            return ns_to_pytimedelta(nanoseconds)
+
+        # np.timedelta64
+        if dtype in numpy_timedelta64:
+            # TODO: gather step size
+            return ns_to_numpy_timedelta64(
+                nanoseconds,
+                unit=dtype.unit,
+                since=since
+            )
+
+        # timedelta supertype
+        return ns_to_timedelta(nanoseconds, since=since)
 
     def to_decimal(self) -> pd.Series:
         """TODO"""

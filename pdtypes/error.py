@@ -9,6 +9,12 @@ import pandas as pd
 from pdtypes.util.type_hints import array_like
 
 
+# TODO: create an @debug() decorator that uses inspect to check input/output
+# types according to type hints.
+# @debug(input=("dtype", "series"))
+# def reject(dtype: ElementType, series: FloatSeries)
+
+
 def error_trace(self_name: str = "self",
                 cls_name: str = "cls",
                 stack_index: int = 1,

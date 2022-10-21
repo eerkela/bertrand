@@ -5,41 +5,31 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from pdtypes import DEFAULT_STRING_DTYPE
-
-# from pdtypes.check import (
-#     check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
-# )
-from pdtypes.types import check_dtype, get_dtype, resolve_dtype, ElementType
-from pdtypes.error import ConversionError, error_trace, shorten_list
-from pdtypes.util.downcast import integral_range
+from pdtypes.types import resolve_dtype, ElementType
+from pdtypes.error import ConversionError, shorten_list
 from pdtypes.util.type_hints import datetime_like, dtype_like
-# from pdtypes.util.validate import validate_dtype, validate_errors
-
-
-
-from pdtypes.time import (
-    convert_unit_integer, epoch, ns_to_datetime, ns_to_numpy_datetime64,
-    ns_to_numpy_timedelta64, ns_to_pandas_timedelta, ns_to_pandas_timestamp,
-    ns_to_pydatetime, ns_to_pytimedelta, ns_to_timedelta, timezone
-)
-
-from .base import NumericSeries
-from .float import FloatSeries
 
 from .util.downcast import (
     demote_integer_supertypes, downcast_integer_dtype, downcast_float_series,
     downcast_complex_series
 )
+from .util.time import (
+    convert_unit_integer, epoch, ns_to_datetime, ns_to_numpy_datetime64,
+    ns_to_numpy_timedelta64, ns_to_pandas_timedelta, ns_to_pandas_timestamp,
+    ns_to_pydatetime, ns_to_pytimedelta, ns_to_timedelta, timezone
+)
 from .util.validate import validate_dtype, validate_errors, validate_series
+
+from .base import NumericSeries
+from .float import FloatSeries
 
 
 # TODO: have to be careful with exact comparisons to integer/boolean dtypes
 # due to differing nullable settings.
 
 
-# If DEBUG=True, insert argument checks into BooleanSeries conversion methods
-DEBUG = True
+# If DEBUG=True, insert argument checks into IntegerSeries conversion methods
+DEBUG: bool = True
 
 
 def reject_non_boolean(

@@ -91,8 +91,9 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdtypes.round import round_div, round_generic
 from pdtypes.util.type_hints import datetime_like
+
+from ..round import round_div, round_generic
 
 from .calendar import (
     date_to_days, days_in_month, days_to_date, decompose_date, is_leap_year

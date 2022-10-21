@@ -7,11 +7,11 @@ distutils.core.setup(
     name="pdtypes",
     ext_modules=cythonize(
         [
+            "pdtypes/cast/util/round/*.pyx",
+            "pdtypes/cast/util/time/*.pyx",
+            "pdtypes/cast/util/time/datetime/*.pyx",
+            "pdtypes/cast/util/time/timedelta/*.pyx",
             "pdtypes/check/*.pyx",
-            "pdtypes/round/*.pyx",
-            "pdtypes/time/*.pyx",
-            "pdtypes/time/datetime/*.pyx",
-            "pdtypes/time/timedelta/*.pyx",
             "pdtypes/util/loops/*.pyx",
             "pdtypes/util/*.pyx",
             "pdtypes/types/*.pyx",

@@ -9,9 +9,9 @@ import pandas as pd
 
 from pdtypes.types import resolve_dtype, check_dtype, get_dtype
 from pdtypes.error import error_trace, shorten_list
-from pdtypes.time import valid_units
 from pdtypes.util.type_hints import dtype_like
 
+from .time import valid_units
 
 #########################
 ####    CONSTANTS    ####

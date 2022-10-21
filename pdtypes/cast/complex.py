@@ -1,19 +1,21 @@
 from __future__ import annotations
+import datetime
 import decimal
 
 import numpy as np
 import pandas as pd
 
-from pdtypes import DEFAULT_STRING_DTYPE
+from pdtypes.types import get_dtype, resolve_dtype, ElementType, CompositeType
+from pdtypes.error import ConversionError, shorten_list
+from pdtypes.util.type_hints import datetime_like, dtype_like
 
-from pdtypes.check import check_dtype, get_dtype, is_dtype, resolve_dtype
-from pdtypes.error import ConversionError, error_trace, shorten_list
-from pdtypes.util.array import vectorize
-from pdtypes.util.type_hints import array_like, dtype_like
-from pdtypes.util.validate import (
-    validate_dtype, validate_errors, validate_rounding, tolerance
+from .util.downcast import downcast_complex_series
+from .util.validate import (
+    tolerance, validate_dtype, validate_errors, validate_rounding,
+    validate_series
 )
 
+from .base import SeriesWrapper
 from .float import FloatSeries
 
 
@@ -21,52 +23,138 @@ from .float import FloatSeries
 # -> pd.isna() considers both of these to be NA
 
 
-class ComplexSeries:
-    """test"""
+# If DEBUG=True, insert argument checks into ComplexSeries conversion methods
+DEBUG = True
+
+
+def reject_nonreal(
+    imag: FloatSeries,
+    imag_tol: int | float | decimal.Decimal,
+    errors: str
+) -> None:
+    """Reject any imaginary ComplexSeries that exceeds `imag_tol` distance from
+    zero.
+    """
+    if errors != "coerce" and (np.abs(imag) > imag_tol).any():
+        bad_vals = imag[np.abs(imag) > imag_tol]
+        err_msg = (f"imaginary component exceeds tolerance ({imag_tol}) "
+                    f"at index {shorten_list(bad_vals.index.values)}")
+        raise ConversionError(err_msg, bad_vals)
+
+
+def reject_complex_precision_loss(
+    series: ComplexSeries,
+    dtype: ElementType,
+    real_tol: int | float | decimal.Decimal,
+    imag_tol: int | float | decimal.Decimal,
+    errors: str
+) -> pd.Series:
+    """Reject any ComplexSeries whose elements cannot be exactly represented
+    in the given complex ElementType.
+    """
+    # do naive conversion
+    naive = series.astype(dtype.numpy_type, copy=False)
+    real = np.real(naive)
+    imag = np.imag(naive)
+
+    # check for precision loss
+    if (
+        ((real - series.real) > real_tol).any() or
+        ((imag - series.imag) > imag_tol).any()
+    ):  # at least one nonzero residual, either real or complex
+        # TODO: separate inf (overflow) check from tolerance application
+
+        if errors != "coerce":
+            bad_vals = series[(naive != series)]
+            err_msg = (f"precision loss detected at index "
+                       f"{shorten_list(bad_vals.index.values)}")
+            raise ConversionError(err_msg, bad_vals)
+
+        # coerce infs to nans and ignore precision loss
+        naive[(np.isinf(real) ^ series.real.infs)] += complex(np.nan, 0)
+        naive[(np.isinf(imag) ^ series.imag.infs)] += complex(0, np.nan)
+
+    # return
+    return naive
+
+
+class ComplexSeries(SeriesWrapper):
+    """TODO"""
+
+    unwrapped = SeriesWrapper.unwrapped + (
+        "_real_kwargs", "_imag_kwargs", "_real", "_imag"
+    )
 
     def __init__(
         self,
-        series: complex | array_like,
-        validate: bool = True
+        series: pd.Series,
+        hasnans: bool = None,
+        is_na: pd.Series = None,
+        real_kwargs: dict[str, bool | pd.Series | np.ndarray] = None,
+        imag_kwargs: dict[str, bool | pd.Series | np.ndarray] = None
     ) -> ComplexSeries:
-        if validate and not check_dtype(series, complex):
-            err_msg = (f"[{error_trace()}] `series` must contain complex "
-                       f"data, not {get_dtype(series)}")
-            raise TypeError(err_msg)
+        if DEBUG:
+            validate_series(series=series, expected=complex)
 
-        self.series = series
+        super().__init__(series=series, hasnans=hasnans, is_na=is_na)
+        self._real_kwargs = {} if real_kwargs is None else real_kwargs
+        self._imag_kwargs = {} if imag_kwargs is None else real_kwargs
         self._real = None
         self._imag = None
 
+    #######################
+    ####    GENERAL    ####
+    #######################
+
     @property
-    def real(self) -> pd.Series:
-        """test"""
-        if self._real is None:
-            rectified = self.rectify(copy=True)
-            self._real = pd.Series(np.real(rectified), copy=False)
-            self._real.index = self.series.index  # match index
+    def real(self) -> FloatSeries:
+        """TODO"""
+        # cached
+        if self._real is not None:
+            return self._real
+
+        # uncached
+        real = pd.Series(
+            np.real(self.rectify().series),
+            index=self.index,
+            copy=False
+        )
+        self._real = FloatSeries(series=real, **self._real_kwargs)
         return self._real
 
     @property
-    def imag(self) -> pd.Series:
-        """test"""
-        if self._imag is None:
-            rectified = self.rectify(copy=True)
-            self._imag = pd.Series(np.imag(rectified), copy=False)
-            self._imag.index = self.series.index  # match index
+    def imag(self) -> FloatSeries:
+        """TODO"""
+        # cached
+        if self._imag is not None:
+            return self._imag
+
+        # uncached
+        imag = pd.Series(
+            np.imag(self.rectify().series),
+            index=self.index,
+            copy=False
+        )
+        self._imag = FloatSeries(series=imag, **self._imag_kwargs)
         return self._imag
 
-    def rectify(self, copy: bool = True) -> pd.Series:
+    def rectify(self) -> ComplexSeries:
         """Standardize element types of a complex series."""
         # rectification is only needed for improperly formatted object series
         if pd.api.types.is_object_dtype(self.series):
             # get largest element type in series
-            element_types = get_dtype(self.series)
-            common = max(np.dtype(t) for t in vectorize(element_types))
-            return self.series.astype(common, copy=copy)
+            element_types = CompositeType(get_dtype(self.series))
+            common = max(t.numpy_type for t in element_types)
+            self.series = self.series.astype(common)
+        else:  # series is already rectified, return a copy or direct reference
+            self.series = self.series.copy()
 
-        # series is already rectified, return a copy or direct reference
-        return self.series.copy() if copy else self.series
+        # return self, retaining state flags
+        return self
+
+    ###########################
+    ####    CONVERSIONS    ####
+    ###########################
 
     def to_boolean(
         self,
@@ -75,18 +163,28 @@ class ComplexSeries:
         dtype: dtype_like = bool,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
+        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-        real_tol, imag_tol = tolerance(tol)
-        validate_rounding(rounding)
-        validate_dtype(dtype, bool)
-        validate_errors(errors)
 
-        # 2 steps: complex -> float, then float -> boolean
-        series = self.to_float(tol=imag_tol, errors=errors)
-        series = FloatSeries(series, validate=False)
-        return series.to_boolean(tol=real_tol, rounding=rounding, dtype=dtype,
-                                 errors=errors)
+        # DEBUG: assert `dtype` is integer-like
+        if DEBUG:
+            validate_dtype(dtype, bool)
+            validate_rounding(rounding)
+            validate_errors(errors)
+
+        real_tol, imag_tol = tolerance(tol)
+
+        # assert series is real
+        reject_nonreal(imag=self.imag, imag_tol=imag_tol, errors=errors)
+
+        # convert real component to boolean
+        return self.real.to_boolean(
+            tol=real_tol,
+            rounding=rounding,
+            dtype=dtype,
+            errors=errors
+        )
 
     def to_integer(
         self,
@@ -96,18 +194,29 @@ class ComplexSeries:
         downcast: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
+        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-        real_tol, imag_tol = tolerance(tol)
-        validate_rounding(rounding)
-        validate_dtype(dtype, int)
-        validate_errors(errors)
 
-        # 2 steps: complex -> float, then float -> integer
-        series = self.to_float(tol=imag_tol, errors=errors)
-        series = FloatSeries(series, validate=False)
-        return series.to_integer(tol=real_tol, rounding=rounding, dtype=dtype,
-                                 downcast=downcast, errors=errors)
+        # DEBUG: assert `dtype` is integer-like
+        if DEBUG:
+            validate_dtype(dtype, int)
+            validate_rounding(rounding)
+            validate_errors(errors)
+
+        real_tol, imag_tol = tolerance(tol)
+
+        # assert series is real
+        reject_nonreal(imag=self.imag, imag_tol=imag_tol, errors=errors)
+
+        # convert real component to integer
+        return self.real.to_integer(
+            tol=real_tol,
+            rounding=rounding,
+            dtype=dtype,
+            downcast=downcast,
+            errors=errors
+        )
 
     def to_float(
         self,
@@ -116,64 +225,65 @@ class ComplexSeries:
         downcast: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
+        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-        _, imag_tol = tolerance(tol)
-        validate_dtype(dtype, float)
-        validate_errors(errors)
-        if imag_tol == np.inf:
-            errors = "coerce"
 
-        # split series into real and imaginary components
-        real = self.real
-        imag = self.imag
+        # DEBUG: assert `dtype` is float-like
+        if DEBUG:
+            validate_dtype(dtype, float)
+            validate_errors(errors)
 
-        # check imaginary component for information loss
-        if errors != "coerce" and (np.abs(imag) > imag_tol).any():
-            bad_vals = imag[np.abs(imag) > imag_tol]
-            err_msg = (f"imaginary component exceeds tolerance ({imag_tol}) "
-                       f"at index {shorten_list(bad_vals.index.values)}")
-            raise ConversionError(err_msg, bad_vals)
+        real_tol, imag_tol = tolerance(tol)
 
-        real = FloatSeries(real, validate=False)
-        return real.to_float(dtype=dtype, downcast=downcast, errors=errors)
+        # assert series is real
+        reject_nonreal(imag=self.imag, imag_tol=imag_tol, errors=errors)
+
+        # return real component
+        return self.real.to_float(
+            dtype=dtype,
+            tol=real_tol,
+            downcast=downcast,
+            errors=errors
+        )
 
     def to_complex(
         self,
         dtype: dtype_like = complex,
+        tol: int | float | complex | decimal.Decimal = 1e-6,
         downcast: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
+        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-        validate_dtype(dtype, complex)
-        validate_errors(errors)
+
+        # DEBUG: assert `dtype` is complex-like
+        if DEBUG:
+            validate_dtype(dtype, complex)
+            validate_errors(errors)
 
         # rectify object series
-        series = self.rectify(copy=True)
+        series = self.rectify()
+
+        real_tol, imag_tol = tolerance(tol)
 
         # do naive conversion and check for precision loss/overflow afterwards
-        if is_dtype(dtype, complex, exact=True):  # preserve precision
+        if dtype == complex:  # preserve precision
             dtype = resolve_dtype(series.dtype)
+            series = series.series
         else:
-            old_infs = np.isinf(series)
-            series = series.astype(dtype, copy=False)  # naive conversion
-            if (series - self.series).any():  # precision loss detected
-                if errors != "coerce":
-                    bad_vals = series[series != self.series]
-                    err_msg = (f"precision loss detected at index "
-                               f"{shorten_list(bad_vals.index.values)}")
-                    raise ConversionError(err_msg, bad_vals)
-                # coerce infs into nans and ignore precision loss
-                series[np.isinf(series) ^ old_infs] += complex(np.nan, np.nan)
+            series = reject_complex_precision_loss(
+                series=series,
+                dtype=dtype,
+                real_tol=real_tol,
+                imag_tol=imag_tol,
+                errors=errors
+            )
 
         # downcast, if applicable
-        if downcast:  # search for smaller dtypes that can represent series
-            complex_types = [np.complex64, np.complex128, np.clongdouble]
-            for downcast_type in complex_types[:complex_types.index(dtype)]:
-                attempt = series.astype(downcast_type, copy=False)
-                if (attempt == series).all():
-                    return attempt
+        if downcast:
+            return downcast_complex_series(series, dtype=dtype)
 
         # return
         return series
@@ -183,22 +293,83 @@ class ComplexSeries:
         tol: int | float | complex | decimal.Decimal = 1e-6,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         _, imag_tol = tolerance(tol)
         validate_errors(errors)
 
-        # 2 steps: complex -> float, then float -> decimal
-        series = self.to_float(tol=imag_tol, errors=errors)
-        return FloatSeries(series, validate=False).to_decimal()
+        # assert series is real
+        reject_nonreal(imag=self.imag, imag_tol=imag_tol, errors=errors)
 
-    def to_string(self, dtype: dtype_like = str) -> pd.Series:
-        """test"""
-        resolve_dtype(dtype)  # ensure scalar, resolvable
-        validate_dtype(dtype, str)
+        # return real component
+        return self.real.to_decimal()
 
-        # force string extension type
-        if not pd.api.types.is_extension_array_dtype(dtype):
-            dtype = DEFAULT_STRING_DTYPE
+    def to_datetime(
+        self,
+        dtype: dtype_like = "datetime",
+        unit: str = "ns",
+        tz: str | datetime.tzinfo = None,
+        tol: int | float | complex | decimal.Decimal = 1e-6,
+        errors: str = "raise"
+    ) -> pd.Series:
+        """TODO"""
+        # TODO: move this up to ConversionSeries
+        dtype = resolve_dtype(dtype)
+
+        # DEBUG: assert `dtype` is datetime-like
+        if DEBUG:
+            validate_dtype(dtype, "datetime")
+
+        _, imag_tol = tolerance(tol)
+
+        # assert series is real
+        reject_nonreal(imag=self.imag, imag_tol=imag_tol, errors=errors)
+
+        # convert real component
+        return self.real.to_datetime(
+            dtype=dtype,
+            unit=unit,
+            tz=tz
+        )
+
+    def to_timedelta(
+        self,
+        dtype: dtype_like = "timedelta",
+        unit: str = "ns",
+        since: str | datetime_like = "2001-01-01 00:00:00+0000",
+        tol: int | float | complex | decimal.Decimal = 1e-6,
+        errors: str = "raise"
+    ) -> pd.Series:
+        """TODO"""
+        # TODO: move this up to ConversionSeries
+        dtype = resolve_dtype(dtype)
+
+        # DEBUG: assert `dtype` is timedelta-like
+        if DEBUG:
+            validate_dtype(dtype, "timedelta")
+
+        _, imag_tol = tolerance(tol)
+
+        # assert series is real
+        reject_nonreal(imag=self.imag, imag_tol=imag_tol, errors=errors)
+
+        # convert real component
+        return self.real.to_datetime(
+            dtype=dtype,
+            unit=unit,
+            since=since
+        )
+
+    def to_string(
+        self,
+        dtype: dtype_like = str
+    ) -> pd.Series:
+        """TODO"""
+        # TODO: move this up to ConversionSeries
+        dtype = resolve_dtype(dtype)  # ensure scalar, resolvable
+
+        # DEBUG: assert `dtype` is string-like
+        if DEBUG:
+            validate_dtype(dtype, str)
 
         # do conversion
-        return self.series.astype(dtype, copy=True)
+        return self.series.astype(dtype.pandas_type)
