@@ -1,154 +1,205 @@
 from __future__ import annotations
 import datetime
 import decimal
-import re
 import warnings
 import zoneinfo
+from typing import Iterable
 
 import dateutil
 import numpy as np
 import pandas as pd
 import pytz
 
-from pdtypes import DEFAULT_STRING_DTYPE
-
-from pdtypes.check import (
-    check_dtype, extension_type, get_dtype, is_dtype, resolve_dtype
-)
-from pdtypes.util.loops.string import (
-    string_to_boolean, split_complex_strings, string_to_pydatetime,
-    string_to_pytimedelta, string_to_numpy_timedelta64, localize
-)
 from pdtypes.error import ConversionError, error_trace, shorten_list
-from pdtypes.util.downcast import integral_range
-from pdtypes.util.string import string_to_ns, parse_iso_8601_strings
-from pdtypes.util.type_hints import dtype_like
-from pdtypes.util.validate import (
-    validate_datetime_format, validate_dtype, validate_errors, timezone,
-    tolerance
+from pdtypes.types import resolve_dtype, ElementType
+from pdtypes.util.array import vectorize
+from pdtypes.util.type_hints import datetime_like, dtype_like
+
+from .util.loops.string import (
+    string_to_boolean, string_to_integer, split_complex_strings
+)
+from .util.validate import (
+    tolerance, validate_datetime_format, validate_dtype, validate_errors,
+    validate_series
 )
 
+from .base import SeriesWrapper
+from .integer import IntegerSeries
 from .decimal import DecimalSeries
+
 
 
 # TODO: swap default tz to UTC?  -> Minor performance increase
 
 
-class StringSeries:
-    """test"""
+# If DEBUG=True, insert argument checks into IntegerSeries conversion methods
+DEBUG: bool = True
+
+
+def parse_boolean_true_false(
+    true: str | Iterable,
+    false: str | Iterable
+) -> tuple[bool, tuple, tuple]:
+    """Remove wildcards from `true`/`false` and find an appropriate
+    `fill_value` for StringSeries.to_boolean()
+    """
+    fill_value = pd.NA
+    true = [true] if isinstance(true, str) else list(true)
+    false = [false] if isinstance(false, str) else list(false)
+
+    # check for '*' wildcard in `true`
+    if "*" in true:
+        # replace fill value and remove wildcards from `true`
+        fill_value = True
+        while "*" in true:
+            true.remove("*")
+
+    # check for '*' wildcard in `false`
+    if "*" in false:
+        # check if '*' wildcard is also present in `true`
+        if fill_value is True:  # boolean value of pd.NA is ambiguous
+            raise ValueError(
+                "The wildcard '*' can be in either `true` or `false`, but not "
+                "both"
+            )
+
+        # replace fill value and remove wildcard from `false`
+        fill_value = False
+        while "*" in false:
+            false.remove("*")
+
+    # convert to tuple and unescape '\*' literals
+    true = tuple(s.replace(r"\*", "*") for s in true)
+    false = tuple(s.replace(r"\*", "*") for s in false)
+
+    # return
+    return (fill_value, true, false)
+
+
+class StringSeries(SeriesWrapper):
+    """TODO"""
 
     def __init__(
         self,
         series: pd.Series,
-        validate: bool = True
+        hasnans: bool = None,
+        is_na: pd.Series = None
     ) -> StringSeries:
-        if validate and not check_dtype(series, str):
-            err_msg = (f"[{error_trace()}] `series` must contain decimal "
-                       f"data, not {get_dtype(series)}")
-            raise TypeError(err_msg)
+        if DEBUG:
+            validate_series(series, str)
 
-        self.series = series
+        super().__init__(series=series, hasnans=hasnans, is_na=is_na)
+
+    ###########################
+    ####    CONVERSIONS    ####
+    ###########################
 
     def to_boolean(
         self,
         dtype: dtype_like = bool,
+        true: str | Iterable = ("y", "yes", "t", "true", "on", "1"),
+        false: str | Iterable = ("n", "no", "f", "false", "off", "0"),
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
+        # TODO: raise to ConversionSeries
         dtype = resolve_dtype(dtype)
+
+        # DEBUG: confirm dtype is bool-like, errors is valid
         validate_dtype(dtype, bool)
         validate_errors(errors)
 
-        # for each element, attempt boolean coercion and note errors
-        # TODO: `invalid` may be replaced by (series == pd.NA).any()
-        series, invalid = string_to_boolean(self.series.to_numpy())
-        if invalid.any():
-            if errors != "coerce":
-                bad_vals = self.series[invalid]
-                err_msg = (f"non-boolean values detected at index "
-                           f"{shorten_list(bad_vals.index.values)}")
-                raise ConversionError(err_msg, bad_vals)
-            series = pd.Series(series, dtype=pd.BooleanDtype())
-        else:
-            series = pd.Series(series, dtype=bool)
+        # get an appropriate fill value and trim wildcards from `true`/`false`
+        fill_value, true, false = parse_boolean_true_false(
+            true=true,
+            false=false
+        )
+        if fill_value is not pd.NA:
+            errors = "coerce"
 
-        # replace index and return
-        series.index = self.series.index
-        return series
+        # for each nonmissing element, attempt boolean coercion
+        with self.exclude_na(pd.NA, dtype.pandas_type):
+            try:
+                series = string_to_boolean(
+                    self.to_numpy(),
+                    true=true,
+                    false=false,
+                    errors=errors,
+                    fill_value=fill_value
+                )
+            except ValueError as err:
+                raise err
+
+            if (
+                self.hasnans or
+                dtype.nullable or
+                (errors == "coerce" and pd.isna(series).any())
+            ):
+                self.series = pd.Series(
+                    series,
+                    index=self.index,
+                    dtype=dtype.pandas_type
+                )
+            else:
+                self.series = pd.Series(
+                    series,
+                    index=self.index,
+                    dtype=dtype.numpy_type
+                )
+
+        return self.series
 
     def to_integer(
         self,
-        base: int = 10,
         dtype: dtype_like = int,
+        base: int = 10,
+        tol: int | float | complex | decimal.Decimal = 1e-6,
+        rounding: str = None,
         downcast: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
+        # TODO: raise this to ConversionSeries
         dtype = resolve_dtype(dtype)
+
+        # DEBUG: confirm dtype is integer-like, errors is valid
         validate_dtype(dtype, int)
+        # TODO: validate_integer_base (>= 2 and <= 36)
         validate_errors(errors)
 
-        # for each element, attempt integer coercion and note errors
-        def transcribe(element: str) -> tuple[int, bool]:
-            element = element.replace(" ", "")
-            try:  # attempt conversion
-                return (int(element, base=base), False)
-            except ValueError:
-                return (pd.NA, True)
+        # for each nonmissing element, attempt integer coercion
+        with self.exclude_na(pd.NA, dtype.pandas_type):
+            try:
+                series = string_to_integer(
+                    self.to_numpy(),
+                    base=base,
+                    errors=errors
+                )
+            except ValueError as err:
+                if base == 10:  # try decimal conversion instead
+                    series = DecimalSeries(self.to_decimal(errors=errors))
+                    return series.to_integer(
+                        dtype=dtype,
+                        tol=tol,
+                        rounding=rounding,
+                        downcast=downcast,
+                        errors=errors
+                    )
 
-        # TODO: `invalid` can be replaced by series == pd.NA
-        series, invalid = np.frompyfunc(transcribe, 1, 2)(self.series)
-        coerced = invalid.any()
-        if coerced and errors != "coerce":
-            bad_vals = self.series[invalid]
-            err_msg = (f"invalid literal for int() with base {base} at index "
-                       f"{shorten_list(bad_vals.index.values)}")
-            raise ConversionError(err_msg, bad_vals)
+                raise err
 
-        # get min/max to evaluate range
-        min_val = series.min()
-        max_val = series.max()
+            # use IntegerSeries.to_integer() to sort out dtype, downcast
+            series = IntegerSeries(
+                series=pd.Series(series, index=self.index),
+                hasnans=None if errors == "coerce" else False
+            )
+            self.series = series.to_integer(
+                dtype=dtype,
+                downcast=downcast,
+                errors=errors
+            )
 
-        # built-in integer special case - can be arbitrarily large
-        if is_dtype(dtype, int, exact=True):
-            if min_val < -2**63 or max_val > 2**63 - 1:  # >int64
-                if min_val >= 0 and max_val <= 2**64 - 1:  # <uint64
-                    dtype = pd.UInt64Dtype() if coerced else np.uint64
-                    return series.astype(dtype, copy=False)
-                # series is >int64 and >uint64, return as built-in python ints
-                return series
-            # extended range isn't needed, demote to int64
-            dtype = np.int64
-
-        # check whether min_val, max_val fit within `dtype` range
-        min_poss, max_poss = integral_range(dtype)
-        if min_val < min_poss or max_val > max_poss:
-            if errors != "coerce":
-                bad_vals = series[(series < min_poss) | (series > max_poss)]
-                err_msg = (f"values exceed {dtype.__name__} range at index "
-                           f"{shorten_list(bad_vals.index.values)}")
-                raise ConversionError(err_msg, bad_vals)
-            series[(series < min_poss) | (series > max_poss)] = pd.NA  # coerce
-            min_val = series.min()
-            max_val = series.max()
-            coerced = True  # remember to convert to extension type later
-
-        # attempt to downcast, if applicable
-        if downcast:  # search for smaller dtypes that can represent series
-            if is_dtype(dtype, "unsigned"):
-                int_types = [np.uint8, np.uint16, np.uint32, np.uint64]
-            else:
-                int_types = [np.int8, np.int16, np.int32, np.int64]
-            for downcast_type in int_types[:int_types.index(dtype)]:
-                min_poss, max_poss = integral_range(downcast_type)
-                if min_val >= min_poss and max_val <= max_poss:
-                    dtype = downcast_type
-                    break  # stop at smallest
-
-        # convert and return
-        if coerced:  # convert to extension type early
-            dtype = extension_type(dtype)
-        return series.astype(dtype, copy=False)
+        return self.series
 
     def to_float(
         self,
@@ -157,11 +208,15 @@ class StringSeries:
         downcast: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
+        # TODO: raise this to ConversionSeries
         dtype = resolve_dtype(dtype)
-        tol, _ = tolerance(tol)
+
+        # DEBUG: confirm dtype is float-like, errors is valid
         validate_dtype(dtype, float)
         validate_errors(errors)
+
+        tol, _ = tolerance(tol)
 
         # 2 steps: string -> decimal, then decimal -> float
         series = self.to_decimal(errors=errors)
@@ -192,7 +247,7 @@ class StringSeries:
         downcast: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         dtype = resolve_dtype(dtype)
         real_tol, imag_tol = tolerance(tol)
         validate_dtype(dtype, complex)
@@ -244,7 +299,7 @@ class StringSeries:
         self,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         validate_errors(errors)
 
         # for each element, attempt decimal coercion and note errors
@@ -273,7 +328,7 @@ class StringSeries:
         fuzzy: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         validate_datetime_format(format, day_first, year_first)
         tz = timezone(tz)
         validate_errors(errors)
@@ -313,7 +368,7 @@ class StringSeries:
         fuzzy: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         validate_datetime_format(format, day_first, year_first)
         tz = timezone(tz)
         validate_errors(errors)
@@ -355,7 +410,7 @@ class StringSeries:
         return series
 
     def _to_numpy_datetime64(self, errors: str = "raise") -> pd.Series:
-        """test"""
+        """TODO"""
         validate_errors(errors)
 
         # TODO: can't replicate errors="coerce"
@@ -384,7 +439,7 @@ class StringSeries:
         fuzzy: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         validate_dtype(dtype, "datetime")
         if not (isinstance(dtype, str) and dtype.lower() == "datetime"):
             dtype = resolve_dtype(dtype)
@@ -450,7 +505,7 @@ class StringSeries:
         raise ConversionError(err_msg, pd.Series())
 
     def _to_pandas_timedelta(self, errors: str = "raise") -> pd.Series:
-        """test"""
+        """TODO"""
         validate_errors(errors)
 
         # set up pd.to_timedelta args
@@ -467,7 +522,7 @@ class StringSeries:
         as_hours: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         validate_errors(errors)
 
         # implemented as a cython loop
@@ -480,7 +535,7 @@ class StringSeries:
         as_hours: bool = False,
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         validate_errors(errors)
 
         # implemented as a cython loop
@@ -493,7 +548,7 @@ class StringSeries:
         dtype: dtype_like = "timedelta",
         errors: str = "raise"
     ) -> pd.Series:
-        """test"""
+        """TODO"""
         if dtype != "timedelta":  # can't directly resolve timedelta supertype
             dtype = resolve_dtype(dtype)
         # validate_dtype(dtype, "datetime")  # TODO: fix in check.py
@@ -543,7 +598,7 @@ class StringSeries:
         raise ConversionError(err_msg, pd.Series())
 
     def to_string(self, dtype: dtype_like = str) -> pd.Series:
-        """test"""
+        """TODO"""
         resolve_dtype(dtype)  # ensures scalar, resolveable
         validate_dtype(dtype, str)
 

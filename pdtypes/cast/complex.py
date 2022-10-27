@@ -5,14 +5,14 @@ import decimal
 import numpy as np
 import pandas as pd
 
+from pdtypes.delegate import delegates
 from pdtypes.types import get_dtype, resolve_dtype, ElementType, CompositeType
 from pdtypes.error import ConversionError, shorten_list
 from pdtypes.util.type_hints import datetime_like, dtype_like
 
 from .util.downcast import downcast_complex_series
 from .util.validate import (
-    tolerance, validate_dtype, validate_errors, validate_rounding,
-    validate_series
+    tolerance, validate_dtype, validate_errors, validate_rounding
 )
 
 from .base import SeriesWrapper
@@ -21,10 +21,7 @@ from .float import FloatSeries
 
 # TODO: in the case of (1+nanj)/(nan+1j), retain non-nan real/imag component
 # -> pd.isna() considers both of these to be NA
-
-
-# If DEBUG=True, insert argument checks into ComplexSeries conversion methods
-DEBUG = True
+# -> do same with infs
 
 
 def reject_nonreal(
@@ -78,6 +75,7 @@ def reject_complex_precision_loss(
     return naive
 
 
+@delegates()
 class ComplexSeries(SeriesWrapper):
     """TODO"""
 
@@ -88,15 +86,11 @@ class ComplexSeries(SeriesWrapper):
     def __init__(
         self,
         series: pd.Series,
-        hasnans: bool = None,
-        is_na: pd.Series = None,
         real_kwargs: dict[str, bool | pd.Series | np.ndarray] = None,
-        imag_kwargs: dict[str, bool | pd.Series | np.ndarray] = None
+        imag_kwargs: dict[str, bool | pd.Series | np.ndarray] = None,
+        **kwargs
     ) -> ComplexSeries:
-        if DEBUG:
-            validate_series(series=series, expected=complex)
-
-        super().__init__(series=series, hasnans=hasnans, is_na=is_na)
+        super().__init__(series=series, **kwargs)
         self._real_kwargs = {} if real_kwargs is None else real_kwargs
         self._imag_kwargs = {} if imag_kwargs is None else real_kwargs
         self._real = None
@@ -146,10 +140,7 @@ class ComplexSeries(SeriesWrapper):
             element_types = CompositeType(get_dtype(self.series))
             common = max(t.numpy_type for t in element_types)
             self.series = self.series.astype(common)
-        else:  # series is already rectified, return a copy or direct reference
-            self.series = self.series.copy()
 
-        # return self, retaining state flags
         return self
 
     ###########################
@@ -164,14 +155,10 @@ class ComplexSeries(SeriesWrapper):
         errors: str = "raise"
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-
-        # DEBUG: assert `dtype` is integer-like
-        if DEBUG:
-            validate_dtype(dtype, bool)
-            validate_rounding(rounding)
-            validate_errors(errors)
+        validate_dtype(dtype, bool)
+        validate_rounding(rounding)
+        validate_errors(errors)
 
         real_tol, imag_tol = tolerance(tol)
 
@@ -195,14 +182,10 @@ class ComplexSeries(SeriesWrapper):
         errors: str = "raise"
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-
-        # DEBUG: assert `dtype` is integer-like
-        if DEBUG:
-            validate_dtype(dtype, int)
-            validate_rounding(rounding)
-            validate_errors(errors)
+        validate_dtype(dtype, int)
+        validate_rounding(rounding)
+        validate_errors(errors)
 
         real_tol, imag_tol = tolerance(tol)
 
@@ -226,13 +209,9 @@ class ComplexSeries(SeriesWrapper):
         errors: str = "raise"
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-
-        # DEBUG: assert `dtype` is float-like
-        if DEBUG:
-            validate_dtype(dtype, float)
-            validate_errors(errors)
+        validate_dtype(dtype, float)
+        validate_errors(errors)
 
         real_tol, imag_tol = tolerance(tol)
 
@@ -255,13 +234,9 @@ class ComplexSeries(SeriesWrapper):
         errors: str = "raise"
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-
-        # DEBUG: assert `dtype` is complex-like
-        if DEBUG:
-            validate_dtype(dtype, complex)
-            validate_errors(errors)
+        validate_dtype(dtype, complex)
+        validate_errors(errors)
 
         # rectify object series
         series = self.rectify()
@@ -312,12 +287,8 @@ class ComplexSeries(SeriesWrapper):
         errors: str = "raise"
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-
-        # DEBUG: assert `dtype` is datetime-like
-        if DEBUG:
-            validate_dtype(dtype, "datetime")
+        validate_dtype(dtype, "datetime")
 
         _, imag_tol = tolerance(tol)
 
@@ -340,12 +311,8 @@ class ComplexSeries(SeriesWrapper):
         errors: str = "raise"
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-
-        # DEBUG: assert `dtype` is timedelta-like
-        if DEBUG:
-            validate_dtype(dtype, "timedelta")
+        validate_dtype(dtype, "timedelta")
 
         _, imag_tol = tolerance(tol)
 
@@ -364,12 +331,8 @@ class ComplexSeries(SeriesWrapper):
         dtype: dtype_like = str
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)  # ensure scalar, resolvable
-
-        # DEBUG: assert `dtype` is string-like
-        if DEBUG:
-            validate_dtype(dtype, str)
+        validate_dtype(dtype, str)
 
         # do conversion
         return self.series.astype(dtype.pandas_type)

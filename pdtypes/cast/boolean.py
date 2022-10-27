@@ -5,6 +5,7 @@ import decimal
 import numpy as np
 import pandas as pd
 
+from pdtypes.delegate import delegates
 from pdtypes.types import resolve_dtype, ElementType
 from pdtypes.util.type_hints import datetime_like, dtype_like
 
@@ -17,49 +18,34 @@ from .util.validate import validate_dtype, validate_series
 
 from .base import SeriesWrapper
 
+
 # TODO: add step size to datetime/timedelta conversions
 # -> has to be added in ns_to_numpy_datetime64, ns_to_numpy_timedelta64
-
 
 # TODO: have to be careful with exact comparisons to integer/boolean dtypes
 # due to differing nullable settings.
 
 
-# If DEBUG=True, insert argument checks into BooleanSeries conversion methods
-DEBUG: bool = True
-
-
+@delegates()
 class BooleanSeries(SeriesWrapper):
     """TODO"""
 
-    def __init__(
-        self,
-        series: pd.Series,
-        hasnans: bool = None,
-        is_na: pd.Series = None
-    ) -> BooleanSeries:
-        # DEBUG: assert `series` contains boolean data
-        if DEBUG:
-            validate_series(series, bool)
-
-        super().__init__(series=series, hasnans=hasnans, is_na=is_na)
+    def __init__(self, series: pd.Series, **kwargs) -> BooleanSeries:
+        super().__init__(series=series, **kwargs)
 
     def to_boolean(
         self,
         dtype: dtype_like = bool
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
+        # TODO: errors on scalar array input
         dtype = resolve_dtype(dtype)
-
-        # DEBUG: assert `dtype` is boolean-like
-        if DEBUG:
-            validate_dtype(dtype, bool)
+        validate_dtype(dtype, bool)
 
         # do conversion
         if self.hasnans or dtype.nullable:
-            return self.astype(dtype.pandas_type)
-        return self.astype(dtype.numpy_type)
+            return self.astype(dtype.pandas_type, copy=False)
+        return self.astype(dtype.numpy_type, copy=False)
 
     def to_integer(
         self,
@@ -67,12 +53,8 @@ class BooleanSeries(SeriesWrapper):
         downcast: bool = False
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-
-        # DEBUG: assert `dtype` is integer-like
-        if DEBUG:
-            validate_dtype(dtype, int)
+        validate_dtype(dtype, int)
 
         # if downcasting, return as 8-bit integer
         if downcast:
@@ -92,6 +74,7 @@ class BooleanSeries(SeriesWrapper):
                 )
 
         # do conversion
+        self.series = self.to_boolean()
         if self.hasnans or dtype.nullable:
             return self.astype(dtype.pandas_type)
         return self.astype(dtype.numpy_type)
@@ -102,19 +85,15 @@ class BooleanSeries(SeriesWrapper):
         downcast: bool = False
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-
-        # DEBUG: assert `dtype` is float-like
-        if DEBUG:
-            validate_dtype(dtype, float)
+        validate_dtype(dtype, float)
 
         # if downcasting, return as 16-bit float
         if downcast:
             dtype = resolve_dtype(np.float16)
 
         # do conversion
-        return self.astype(dtype.numpy_type)
+        return self.to_boolean().astype(dtype.numpy_type)
 
     def to_complex(
         self,
@@ -122,12 +101,8 @@ class BooleanSeries(SeriesWrapper):
         downcast: bool = False
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-
-        # DEBUG: assert `dtype` is complex-like
-        if DEBUG:
-            validate_dtype(dtype, complex)
+        validate_dtype(dtype, complex)
 
         # if downcasting, return as 64-bit complex
         if downcast:
@@ -137,12 +112,18 @@ class BooleanSeries(SeriesWrapper):
                 categorical=dtype.categorical
             )
 
-        # do conversion
-        return self.astype(dtype.numpy_type)
+        # do conversion - NOTE: direct astype(complex) fails on pd.NA
+        with self.exclude_na(complex("nan+nanj"), dtype.numpy_type):
+            self.series = self.series.astype(dtype.numpy_type)
+
+        return self.series
 
     def to_decimal(self) -> pd.Series:
         """TODO"""
-        return self + decimal.Decimal(0)
+        with self.exclude_na(pd.NA):
+            self.series = self + decimal.Decimal(0)
+
+        return self.series
 
     def to_datetime(
         self,
@@ -151,13 +132,9 @@ class BooleanSeries(SeriesWrapper):
         tz: str | datetime.tzinfo = None
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
+        validate_dtype(dtype, "datetime")
         tz = timezone(tz)
-
-        # DEBUG: assert `dtype` is datetime-like
-        if DEBUG:
-            validate_dtype(dtype, "datetime")
 
         # ElementType objects for each datetime subtype
         pandas_timestamp = resolve_dtype(pd.Timestamp)
@@ -175,29 +152,36 @@ class BooleanSeries(SeriesWrapper):
                 categorical=dtype.categorical
             )
 
-        # convert to nanoseconds
-        nanoseconds = convert_unit_integer(
-            self.series,
-            unit,
-            "ns",
-            since=epoch("UTC")
-        )
+        # convert nonmissing values to ns, then ns to datetime
+        with self.exclude_na(pd.NaT):
+            nanoseconds = convert_unit_integer(
+                self.series.astype(np.int32),
+                unit,
+                "ns",
+                since=epoch("UTC")
+            )
 
-        # pd.Timestamp
-        if dtype in pandas_timestamp:
-            return ns_to_pandas_timestamp(nanoseconds, tz=tz)
+            # pd.Timestamp
+            if dtype in pandas_timestamp:
+                self.series = ns_to_pandas_timestamp(nanoseconds, tz=tz)
 
-        # datetime.datetime
-        if dtype in pydatetime:
-            return ns_to_pydatetime(nanoseconds, tz=tz)
+            # datetime.datetime
+            elif dtype in pydatetime:
+                self.series = ns_to_pydatetime(nanoseconds, tz=tz)
 
-        # np.datetime64
-        if dtype in numpy_datetime64:
-            # TODO: gather step size
-            return ns_to_numpy_datetime64(nanoseconds, unit=dtype.unit)
+            # np.datetime64
+            elif dtype in numpy_datetime64:
+                # TODO: gather step size
+                self.series = ns_to_numpy_datetime64(
+                    nanoseconds,
+                    unit=dtype.unit
+                )
 
-        # datetime supertype
-        return ns_to_datetime(nanoseconds, tz=tz)
+            # datetime supertype
+            else:
+                self.series = ns_to_datetime(nanoseconds, tz=tz)
+
+        return self.series
 
     def to_timedelta(
         self,
@@ -206,13 +190,9 @@ class BooleanSeries(SeriesWrapper):
         since: str | datetime_like = "2001-01-01 00:00:00+0000"
     ) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
+        validate_dtype(dtype, "timedelta")
         since=epoch(since)
-
-        # DEBUG: assert `dtype` is timedelta-like
-        if DEBUG:
-            validate_dtype(dtype, "timedelta")
 
         # ElementType objects for each timedelta subtype
         pandas_timedelta = resolve_dtype(pd.Timedelta)
@@ -230,41 +210,41 @@ class BooleanSeries(SeriesWrapper):
                 categorical=dtype.categorical
             )
 
-        # convert to nanoseconds
-        nanoseconds = convert_unit_integer(
-            self.series,
-            unit,
-            "ns",
-            since=since
-        )
-
-        # pd.Timedelta
-        if dtype in pandas_timedelta:
-            return ns_to_pandas_timedelta(nanoseconds)
-
-        # datetime.timedelta
-        if dtype in pytimedelta:
-            return ns_to_pytimedelta(nanoseconds)
-
-        # np.timedelta64
-        if dtype in numpy_timedelta64:
-            # TODO: gather step size
-            return ns_to_numpy_timedelta64(
-                nanoseconds,
-                unit=dtype.unit,
+        # convert nonmissing values to ns, then ns to timedelta
+        with self.exclude_na(pd.NaT):
+            nanoseconds = convert_unit_integer(
+                self.series.astype(np.uint8),
+                unit,
+                "ns",
                 since=since
             )
 
-        # timedelta supertype
-        return ns_to_timedelta(nanoseconds, since=since)
+            # pd.Timedelta
+            if dtype in pandas_timedelta:
+                self.series = ns_to_pandas_timedelta(nanoseconds)
+
+            # datetime.timedelta
+            elif dtype in pytimedelta:
+                self.series = ns_to_pytimedelta(nanoseconds)
+
+            # np.timedelta64
+            elif dtype in numpy_timedelta64:
+                # TODO: gather step size
+                self.series = ns_to_numpy_timedelta64(
+                    nanoseconds,
+                    unit=dtype.unit,
+                    since=since
+                )
+
+            # timedelta supertype
+            else:
+                self.series = ns_to_timedelta(nanoseconds, since=since)
+
+        return self.series
 
     def to_string(self, dtype: dtype_like = str) -> pd.Series:
         """TODO"""
-        # TODO: move this up to ConversionSeries
         dtype = resolve_dtype(dtype)
-
-        # DEBUG: assert `dtype` is string-like
-        if DEBUG:
-            validate_dtype(dtype, str)
+        validate_dtype(dtype, str)
 
         return self.astype(dtype.pandas_type)

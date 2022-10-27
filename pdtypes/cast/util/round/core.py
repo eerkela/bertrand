@@ -165,9 +165,10 @@ def round_generic(
 
 
 def snap_round(
-    series: RealSeries,
+    series: float | decimal.Decimal | np.ndarray | pd.Series,
     tol: int | float | decimal.Decimal,
-    rule: str
+    rule: str = "half_even",
+    copy: bool = True
 ) -> RealSeries:
     """Snap a FloatSeries to the nearest integer if it is within `tol`,
     otherwise apply the selected rounding rule.
@@ -177,15 +178,13 @@ def snap_round(
         "half_floor", "half_ceiling", "half_down", "half_up", "half_even"
     )
 
-    # NOTE: with copy=False, these will modify SeriesWrappers in-place
-
     # snap
     if tol and rule not in nearest:
-        series.series = apply_tolerance(series.series, tol=tol, copy=False)
+        series = apply_tolerance(series, tol=tol, copy=copy)
 
     # round
     if rule:
-        series.series = round_generic(series.series, rule=rule, copy=False)
+        series = round_generic(series, rule=rule, copy=copy)
 
     # return
     return series

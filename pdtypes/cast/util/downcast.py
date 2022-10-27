@@ -14,15 +14,27 @@ def demote_integer_supertypes(
     fitting the observed range of `series`.
     """
     # NOTE: comparison between floats and ints can be inconsistent when the
-    # value exceeds the size of the floating point significand.  Casting to
-    # longdouble mitigates this by ensuring a full 64-bit significand.
+    # integer exceeds the bit width of the corresponding float significand.
+    # Casting to longdouble mitigates this by ensuring a full 64-bit
+    # significand.
+    min_signed = -2**63
+    max_signed = 2**63 - 1
+    min_unsigned = 0
+    max_unsigned = 2**64 - 1
 
     # general integer supertype - can be arbitrarily large
-    if dtype == int:
-        min_val = np.longdouble(series.min())
-        max_val = np.longdouble(series.max())
-        if min_val < -2**63 or max_val > 2**63 - 1:  # > int64
-            if min_val >= 0 and max_val <= 2**64 - 1:  # < uint64
+    if dtype == resolve_dtype(int, nullable=dtype.nullable):
+        min_val = series.min()
+        max_val = series.max()
+        if isinstance(min_val, (float, np.floating)):
+            min_signed = np.longdouble(min_signed)
+            min_unsigned = np.longdouble(min_unsigned)
+        if isinstance(max_val, (float, np.floating)):
+            max_signed = np.longdouble(max_signed)
+            max_unsigned = np.longdouble(max_unsigned)
+
+        if min_val < min_signed or max_val > max_signed:  # > int64
+            if min_val >= min_unsigned and max_val <= max_unsigned:  # < uint64
                 return resolve_dtype(np.uint64, nullable=dtype.nullable)
 
             # > int64 and > uint64, return as built-in python ints
@@ -32,17 +44,22 @@ def demote_integer_supertypes(
         return resolve_dtype(np.int64, nullable=dtype.nullable)
 
     # signed integer supertype - suppress conversion to uint64
-    if dtype == "signed":
-        min_val = np.longdouble(series.min())
-        max_val = np.longdouble(series.max())
-        if min_val < -2**63 or max_val > 2**63 - 1:  # > int64
+    if dtype == resolve_dtype("signed", nullable=dtype.nullable):
+        min_val = series.min()
+        max_val = series.max()
+        if isinstance(min_val, (float, np.floating)):
+            min_signed = np.longdouble(min_signed)
+        if isinstance(max_val, (float, np.floating)):
+            max_signed = np.longdouble(max_signed)
+
+        if min_val < min_signed or max_val > max_signed:  # > int64
             return dtype
 
         # extended range isn't needed, demote to int64
         return resolve_dtype(np.int64, nullable=dtype.nullable)
 
     # unsigned integer supertype - demote to uint64
-    if dtype == "unsigned":
+    if dtype == resolve_dtype("unsigned", nullable=dtype.nullable):
         return resolve_dtype(np.uint64, nullable=dtype.nullable)
 
     return dtype
@@ -68,6 +85,9 @@ def downcast_integer_dtype(
     else:
         smaller = [np.int8, np.int16, np.int32, np.int64]
     smaller = [resolve(t) for t in smaller]
+
+    # TODO: make dtype.min/max np.longdouble rather than series.min()/max()
+    # -> converts this into a float-float comparison rather than float-int
 
     # NOTE: comparison between floats and ints can be inconsistent when the
     # value exceeds the size of the floating point significand.  Casting to

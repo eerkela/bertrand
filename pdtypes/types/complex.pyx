@@ -55,7 +55,7 @@ cdef class ComplexType(ElementType):
         self.max = 2**53
 
     @property
-    def equiv_complex(self) -> FloatType:
+    def equiv_float(self) -> FloatType:
         """Remove the imaginary component from this ElementType."""
         return FloatType.instance(
             sparse=self.sparse,
@@ -105,7 +105,7 @@ cdef class Complex64Type(ComplexType):
         self.max = 2**24
 
     @property
-    def equiv_complex(self) -> Float32Type:
+    def equiv_float(self) -> Float32Type:
         """Remove the imaginary component from this ElementType."""
         return Float32Type.instance(
             sparse=self.sparse,
@@ -150,7 +150,7 @@ cdef class Complex128Type(ComplexType):
         self.max = 2**53
 
     @property
-    def equiv_complex(self) -> Float64Type:
+    def equiv_float(self) -> Float64Type:
         """Remove the imaginary component from this ElementType."""
         return Float64Type.instance(
             sparse=self.sparse,
@@ -195,7 +195,7 @@ cdef class CLongDoubleType(ComplexType):
         self.max = 2**64
 
     @property
-    def equiv_complex(self) -> LongDoubleType:
+    def equiv_float(self) -> LongDoubleType:
         """Remove the imaginary component from this ElementType."""
         return LongDoubleType.instance(
             sparse=self.sparse,

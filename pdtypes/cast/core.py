@@ -27,6 +27,8 @@ from pdtypes.cast.string import StringSeries
 # need for old_nans attribute + reconstruct() method, and increases performance
 
 
+# TODO: stuff like `wrappers`/`filter_kwargs()` should go into util/dispatch.py
+
 wrappers = {
     bool: BooleanSeries,
     int: IntegerSeries,
@@ -41,6 +43,15 @@ def filter_kwargs(func: Callable, **kwargs) -> dict[str, Any]:
     """Filter out any arguments in **kwargs that don't match the signature of
     `func`.
     """
+    # TODO: https://stackoverflow.com/questions/51717002/python-filtering-a-parameter-in-args-kwargs
+    # sig = inspect.signature(func)
+    # bound = sig.bind(*args, **kwargs):
+    # bound.apply_defaults()
+    # # apply filter to bound.arguments.  Only accept keys that are in sig.parameters
+    # # do debug checks on bound.arguments dict
+    # return func(*bound.args, **bound.kwargs)
+
+
     # TODO: there should be a better solution than direct filter, but for now,
     # this works fine.
 
