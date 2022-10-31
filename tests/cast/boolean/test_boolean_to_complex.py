@@ -1,389 +1,137 @@
+import itertools
+
 import numpy as np
 import pandas as pd
 import pytest
 
+from tests import make_parameters
+
 from pdtypes.cast.boolean import BooleanSeries
 
 
-#################################
-####    COMPLEX SUPERTYPE    ####
-#################################
+####################
+####    DATA    ####
+####################
 
 
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1+0j)),
-    (False, pd.Series(0+0j)),
-    ([True, False], pd.Series([1+0j, 0+0j])),
-    ((False, True), pd.Series([0+0j, 1+0j])),
-    ([True, False, None], pd.Series([1+0j, 0+0j, complex("nan+nanj")])),
-    ([True, False, pd.NA], pd.Series([1+0j, 0+0j, complex("nan+nanj")])),
-    ([True, False, np.nan], pd.Series([1+0j, 0+0j, complex("nan+nanj")])),
+def valid_input(expected_dtype):
+    return [
+        # scalar
+        (True, pd.Series(1+0j, dtype=expected_dtype)),
+        (False, pd.Series(0+0j, dtype=expected_dtype)),
 
-    # array
-    (np.array(True), pd.Series(1+0j)),
-    (np.array([True, False]), pd.Series([1+0j, 0+0j])),
-    (np.array([True, False], dtype="O"), pd.Series([1+0j, 0+0j])),
-    (np.array([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")])),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")])),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")])),
+        # iterable
+        ([True, False], pd.Series([1+0j, 0+0j], dtype=expected_dtype)),
+        ((False, True), pd.Series([0+0j, 1+0j], dtype=expected_dtype)),
+        ((x for x in [True, False, None]), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=expected_dtype)),
+        ([True, False, pd.NA], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=expected_dtype)),
+        ([True, False, np.nan], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=expected_dtype)),
 
-    # series
-    (pd.Series(True), pd.Series(1+0j)),
-    (pd.Series([True, False]), pd.Series([1+0j, 0+0j])),
-    (pd.Series([True, False], dtype="O"), pd.Series([1+0j, 0+0j])),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")])),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")])),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")])),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1+0j, 0+0j, complex("nan+nanj")]))
-])
-def test_boolean_to_float_with_complex_supertype(given):
-    # arrange
-    val, expected = given
+        # scalar array
+        (np.array(True), pd.Series(1+0j, dtype=expected_dtype)),
+        (np.array(True, dtype="O"), pd.Series(1+0j, dtype=expected_dtype)),
 
-    # act
-    result = BooleanSeries(val).to_complex("complex")
+        # 1D array (numpy dtype)
+        (np.array([True, False]), pd.Series([1+0j, 0+0j], dtype=expected_dtype)),
 
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_complex(dtype='complex') failed with input:\n"
-        f"{val}\n"
+        # 1D array (object dtype)
+        (np.array([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=expected_dtype)),
+        (np.array([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=expected_dtype)),
+        (np.array([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=expected_dtype)),
+        (np.array([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=expected_dtype)),
+
+        # series (numpy dtype)
+        (pd.Series([True, False]), pd.Series([1+0j, 0+0j], dtype=expected_dtype)),
+
+        # series (object dtype)
+        (pd.Series([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=expected_dtype)),
+        (pd.Series([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=expected_dtype)),
+        (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=expected_dtype)),
+        (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=expected_dtype)),
+
+        # series (pandas dtype)
+        (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=expected_dtype))
+    ]
+
+
+def downcast_input(expected_dtype):
+    return [
+        ([True, False], pd.Series([1+0j, 0+0j], dtype=expected_dtype)),
+        ([True, False, None], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=expected_dtype)),
+    ]
+
+
+#######################
+####    GENERAL    ####
+#######################
+
+
+@pytest.mark.parametrize(
+    "target_dtype, test_input, expected_result",
+    list(itertools.chain(*[
+        make_parameters("complex", valid_input(np.complex128)),
+        make_parameters("complex64", valid_input(np.complex64)),
+        make_parameters("complex128", valid_input(np.complex128)),
+        make_parameters("clongdouble", valid_input(np.clongdouble)),
+    ]))
+)
+def test_boolean_to_complex_accepts_all_valid_inputs(
+    target_dtype, test_input, expected_result
+):
+    result = BooleanSeries(test_input).to_complex(target_dtype)
+    assert result.equals(expected_result), (
+        f"BooleanSeries.to_complex(dtype={repr(target_dtype)}) failed with "
+        f"input:\n"
+        f"{test_input}\n"
         f"expected:\n"
-        f"{expected}\n"
+        f"{expected_result}\n"
         f"received:\n"
         f"{result}"
     )
 
 
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1+0j, dtype=np.complex64)),
-    (False, pd.Series(0+0j, dtype=np.complex64)),
-    ([True, False], pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    ((False, True), pd.Series([0+0j, 1+0j], dtype=np.complex64)),
-    ([True, False, None], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    ([True, False, pd.NA], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    ([True, False, np.nan], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-
-    # array
-    (np.array(True), pd.Series(1+0j, dtype=np.complex64)),
-    (np.array([True, False]), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (np.array([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-
-    # series
-    (pd.Series(True), pd.Series(1+0j, dtype=np.complex64)),
-    (pd.Series([True, False]), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64))
-])
-def test_boolean_to_float_with_complex_supertype_downcasted(given):
-    # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_complex("complex", downcast=True)
-
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_complex(dtype='complex', downcast=True) failed "
-        f"with input:\n"
-        f"{val}\n"
+@pytest.mark.parametrize(
+    "target_dtype, test_input, expected_result",
+    list(itertools.chain(*[
+        make_parameters("complex", downcast_input(np.complex64)),
+        make_parameters("complex64", downcast_input(np.complex64)),
+        make_parameters("complex128", downcast_input(np.complex64)),
+        make_parameters("clongdouble", downcast_input(np.complex64)),
+    ]))
+)
+def test_boolean_to_complex_downcasting(
+    target_dtype, test_input, expected_result
+):
+    series = BooleanSeries(test_input)
+    result = series.to_complex(dtype=target_dtype, downcast=True)
+    assert result.equals(expected_result), (
+        f"BooleanSeries.to_complex(dtype={repr(target_dtype)}, downcast=True) "
+        f"failed with input:\n"
+        f"{test_input}\n"
         f"expected:\n"
-        f"{expected}\n"
+        f"{expected_result}\n"
         f"received:\n"
         f"{result}"
     )
 
 
-#################################
-####    COMPLEX64 SUBTYPE    ####
-#################################
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1+0j, dtype=np.complex64)),
-    (False, pd.Series(0+0j, dtype=np.complex64)),
-    ([True, False], pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    ((False, True), pd.Series([0+0j, 1+0j], dtype=np.complex64)),
-    ([True, False, None], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    ([True, False, pd.NA], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    ([True, False, np.nan], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-
-    # array
-    (np.array(True), pd.Series(1+0j, dtype=np.complex64)),
-    (np.array([True, False]), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (np.array([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-
-    # series
-    (pd.Series(True), pd.Series(1+0j, dtype=np.complex64)),
-    (pd.Series([True, False]), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64))
-])
-def test_boolean_to_float_with_complex64_dtype(given):
+def test_boolean_to_complex_preserves_index():
     # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_complex("complex64")
-
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_complex(dtype='complex64') failed with input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
+    val = pd.Series(
+        [True, False, pd.NA],
+        index=[4, 5, 6],
+        dtype=pd.BooleanDtype()
     )
 
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1+0j, dtype=np.complex64)),
-    (False, pd.Series(0+0j, dtype=np.complex64)),
-    ([True, False], pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    ((False, True), pd.Series([0+0j, 1+0j], dtype=np.complex64)),
-    ([True, False, None], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    ([True, False, pd.NA], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    ([True, False, np.nan], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-
-    # array
-    (np.array(True), pd.Series(1+0j, dtype=np.complex64)),
-    (np.array([True, False]), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (np.array([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-
-    # series
-    (pd.Series(True), pd.Series(1+0j, dtype=np.complex64)),
-    (pd.Series([True, False]), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64))
-])
-def test_boolean_to_float_with_complex64_dtype_downcasted(given):
-    # arrange
-    val, expected = given
-
     # act
-    result = BooleanSeries(val).to_complex("complex64", downcast=True)
+    result = BooleanSeries(val).to_complex()
 
     # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_complex(dtype='complex64', downcast=True) failed "
-        f"with input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
+    expected = pd.Series(
+        [1+0j, 0+0j, complex("nan+nanj")],
+        index=[4, 5, 6],
+        dtype=np.complex128
     )
-
-
-##################################
-####    COMPLEX128 SUBTYPE    ####
-##################################
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1+0j, dtype=np.complex128)),
-    (False, pd.Series(0+0j, dtype=np.complex128)),
-    ([True, False], pd.Series([1+0j, 0+0j], dtype=np.complex128)),
-    ((False, True), pd.Series([0+0j, 1+0j], dtype=np.complex128)),
-    ([True, False, None], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex128)),
-    ([True, False, pd.NA], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex128)),
-    ([True, False, np.nan], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex128)),
-
-    # array
-    (np.array(True), pd.Series(1+0j, dtype=np.complex128)),
-    (np.array([True, False]), pd.Series([1+0j, 0+0j], dtype=np.complex128)),
-    (np.array([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.complex128)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex128)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex128)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex128)),
-
-    # series
-    (pd.Series(True), pd.Series(1+0j, dtype=np.complex128)),
-    (pd.Series([True, False]), pd.Series([1+0j, 0+0j], dtype=np.complex128)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.complex128)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex128)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex128)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex128)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex128))
-])
-def test_boolean_to_float_with_complex128_dtype(given):
-    # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_complex("complex128")
-
-    # assert
     assert result.equals(expected), (
-        f"BooleanSeries.to_complex(dtype='complex128') failed with input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
-    )
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1+0j, dtype=np.complex64)),
-    (False, pd.Series(0+0j, dtype=np.complex64)),
-    ([True, False], pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    ((False, True), pd.Series([0+0j, 1+0j], dtype=np.complex64)),
-    ([True, False, None], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    ([True, False, pd.NA], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    ([True, False, np.nan], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-
-    # array
-    (np.array(True), pd.Series(1+0j, dtype=np.complex64)),
-    (np.array([True, False]), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (np.array([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-
-    # series
-    (pd.Series(True), pd.Series(1+0j, dtype=np.complex64)),
-    (pd.Series([True, False]), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64))
-])
-def test_boolean_to_float_with_complex128_dtype_downcasted(given):
-    # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_complex("complex128", downcast=True)
-
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_complex(dtype='complex128', downcast=True) failed "
-        f"with input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
-    )
-
-
-###################################
-####    CLONGDOUBLE SUBTYPE    ####
-###################################
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1+0j, dtype=np.clongdouble)),
-    (False, pd.Series(0+0j, dtype=np.clongdouble)),
-    ([True, False], pd.Series([1+0j, 0+0j], dtype=np.clongdouble)),
-    ((False, True), pd.Series([0+0j, 1+0j], dtype=np.clongdouble)),
-    ([True, False, None], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.clongdouble)),
-    ([True, False, pd.NA], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.clongdouble)),
-    ([True, False, np.nan], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.clongdouble)),
-
-    # array
-    (np.array(True), pd.Series(1+0j, dtype=np.clongdouble)),
-    (np.array([True, False]), pd.Series([1+0j, 0+0j], dtype=np.clongdouble)),
-    (np.array([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.clongdouble)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.clongdouble)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.clongdouble)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.clongdouble)),
-
-    # series
-    (pd.Series(True), pd.Series(1+0j, dtype=np.clongdouble)),
-    (pd.Series([True, False]), pd.Series([1+0j, 0+0j], dtype=np.clongdouble)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.clongdouble)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.clongdouble)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.clongdouble)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.clongdouble)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.clongdouble))
-])
-def test_boolean_to_float_with_clongdouble_dtype(given):
-    # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_complex("clongdouble")
-
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_complex(dtype='clongdouble') failed with input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
-    )
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1+0j, dtype=np.complex64)),
-    (False, pd.Series(0+0j, dtype=np.complex64)),
-    ([True, False], pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    ((False, True), pd.Series([0+0j, 1+0j], dtype=np.complex64)),
-    ([True, False, None], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    ([True, False, pd.NA], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    ([True, False, np.nan], pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-
-    # array
-    (np.array(True), pd.Series(1+0j, dtype=np.complex64)),
-    (np.array([True, False]), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (np.array([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-
-    # series
-    (pd.Series(True), pd.Series(1+0j, dtype=np.complex64)),
-    (pd.Series([True, False]), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1+0j, 0+0j], dtype=np.complex64)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1+0j, 0+0j, complex("nan+nanj")], dtype=np.complex64))
-])
-def test_boolean_to_float_with_clongdouble_dtype_downcasted(given):
-    # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_complex("clongdouble", downcast=True)
-
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_complex(dtype='clongdouble', downcast=True) failed "
-        f"with input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
+        "BooleanSeries.to_complex() does not preserve index"
     )

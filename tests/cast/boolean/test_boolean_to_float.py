@@ -1,485 +1,139 @@
+import itertools
+
 import numpy as np
 import pandas as pd
 import pytest
 
+from tests import make_parameters
+
 from pdtypes.cast.boolean import BooleanSeries
 
 
-###############################
-####    FLOAT SUPERTYPE    ####
-###############################
+####################
+####    DATA    ####
+####################
 
 
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1.0)),
-    (False, pd.Series(0.0)),
-    ([True, False], pd.Series([1.0, 0.0])),
-    ((False, True), pd.Series([0.0, 1.0])),
-    ([True, False, None], pd.Series([1.0, 0.0, np.nan])),
-    ([True, False, pd.NA], pd.Series([1.0, 0.0, np.nan])),
-    ([True, False, np.nan], pd.Series([1.0, 0.0, np.nan])),
+def valid_input(expected_dtype):
+    return [
+        # scalar
+        (True, pd.Series(1.0, dtype=expected_dtype)),
+        (False, pd.Series(0.0, dtype=expected_dtype)),
 
-    # array
-    (np.array(True), pd.Series(1.0)),
-    (np.array([True, False]), pd.Series([1.0, 0.0])),
-    (np.array([True, False], dtype="O"), pd.Series([1.0, 0.0])),
-    (np.array([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan])),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan])),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan])),
+        # iterable
+        ([True, False], pd.Series([1.0, 0.0], dtype=expected_dtype)),
+        ((False, True), pd.Series([0.0, 1.0], dtype=expected_dtype)),
+        ((x for x in [True, False, None]), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
+        ([True, False, pd.NA], pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
+        ([True, False, np.nan], pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
 
-    # series
-    (pd.Series(True), pd.Series(1.0)),
-    (pd.Series([True, False]), pd.Series([1.0, 0.0])),
-    (pd.Series([True, False], dtype="O"), pd.Series([1.0, 0.0])),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan])),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan])),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan])),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1.0, 0.0, np.nan]))
-])
-def test_boolean_to_float_with_float_supertype(given):
-    # arrange
-    val, expected = given
+        # scalar array
+        (np.array(True), pd.Series(1.0, dtype=expected_dtype)),
+        (np.array(True, dtype="O"), pd.Series(1.0, dtype=expected_dtype)),
 
-    # act
-    result = BooleanSeries(val).to_float("float")
+        # 1D array (numpy dtype)
+        (np.array([True, False]), pd.Series([1.0, 0.0], dtype=expected_dtype)),
 
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_float(dtype='float') failed with input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
-    )
+        # 1D array (object dtype)
+        (np.array([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=expected_dtype)),
+        (np.array([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
+        (np.array([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
+        (np.array([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
+
+        # series (numpy dtype)
+        (pd.Series([True, False]), pd.Series([1.0, 0.0], dtype=expected_dtype)),
+
+        # series (object dtype)
+        (pd.Series([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=expected_dtype)),
+        (pd.Series([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
+        (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
+        (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
+
+        # series (pandas dtype)
+        (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype))
+    ]
 
 
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1.0, dtype=np.float16)),
-    (False, pd.Series(0.0, dtype=np.float16)),
-    ([True, False], pd.Series([1.0, 0.0], dtype=np.float16)),
-    ((False, True), pd.Series([0.0, 1.0], dtype=np.float16)),
-    ([True, False, None], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    ([True, False, pd.NA], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    ([True, False, np.nan], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
+def downcast_input(expected_dtype):
+    return [
+        ([True, False], pd.Series([1.0, 0.0], dtype=expected_dtype)),
+        ([True, False, None], pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype))
+    ]
 
-    # array
-    (np.array(True), pd.Series(1.0, dtype=np.float16)),
-    (np.array([True, False]), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (np.array([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
 
-    # series
-    (pd.Series(True), pd.Series(1.0, dtype=np.float16)),
-    (pd.Series([True, False]), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1.0, 0.0, np.nan], dtype=np.float16))
-])
-def test_boolean_to_float_with_float_supertype_downcasted(given):
-    # arrange
-    val, expected = given
+#####################
+####    TESTS    ####
+#####################
 
-    # act
-    result = BooleanSeries(val).to_float("float", downcast=True)
 
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_float(dtype='float', downcast=True) failed with "
+@pytest.mark.parametrize(
+    "target_dtype, test_input, expected_result",
+    list(itertools.chain(*[
+        make_parameters("float", valid_input(np.float64)),
+        make_parameters("float16", valid_input(np.float16)),
+        make_parameters("float32", valid_input(np.float32)),
+        make_parameters("float64", valid_input(np.float64)),
+        make_parameters("longdouble", valid_input(np.longdouble)),
+    ]))
+)
+def test_boolean_to_float_accepts_all_valid_inputs(
+    target_dtype, test_input, expected_result
+):
+    result = BooleanSeries(test_input).to_float(target_dtype)
+    assert result.equals(expected_result), (
+        f"BooleanSeries.to_float(dtype={repr(target_dtype)}) failed with "
         f"input:\n"
-        f"{val}\n"
+        f"{test_input}\n"
         f"expected:\n"
-        f"{expected}\n"
+        f"{expected_result}\n"
         f"received:\n"
         f"{result}"
     )
 
 
-###############################
-####    FLOAT16 SUBTYPE    ####
-###############################
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1.0, dtype=np.float16)),
-    (False, pd.Series(0.0, dtype=np.float16)),
-    ([True, False], pd.Series([1.0, 0.0], dtype=np.float16)),
-    ((False, True), pd.Series([0.0, 1.0], dtype=np.float16)),
-    ([True, False, None], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    ([True, False, pd.NA], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    ([True, False, np.nan], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-
-    # array
-    (np.array(True), pd.Series(1.0, dtype=np.float16)),
-    (np.array([True, False]), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (np.array([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-
-    # series
-    (pd.Series(True), pd.Series(1.0, dtype=np.float16)),
-    (pd.Series([True, False]), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1.0, 0.0, np.nan], dtype=np.float16))
-])
-def test_boolean_to_float_with_float16_dtype(given):
-    # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_float("float16")
-
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_float(dtype='float16') failed with input:\n"
-        f"{val}\n"
+@pytest.mark.parametrize(
+    "target_dtype, test_input, expected_result",
+    list(itertools.chain(*[
+        make_parameters("float", downcast_input(np.float16)),
+        make_parameters("float16", downcast_input(np.float16)),
+        make_parameters("float32", downcast_input(np.float16)),
+        make_parameters("float64", downcast_input(np.float16)),
+        make_parameters("longdouble", downcast_input(np.float16)),
+    ]))
+)
+def test_boolean_to_float_downcasting(
+    target_dtype, test_input, expected_result
+):
+    series = BooleanSeries(test_input)
+    result = series.to_float(dtype=target_dtype, downcast=True)
+    assert result.equals(expected_result), (
+        f"BooleanSeries.to_float(dtype={repr(target_dtype)}, downcast=True) "
+        f"failed with input:\n"
+        f"{test_input}\n"
         f"expected:\n"
-        f"{expected}\n"
+        f"{expected_result}\n"
         f"received:\n"
         f"{result}"
     )
 
 
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1.0, dtype=np.float16)),
-    (False, pd.Series(0.0, dtype=np.float16)),
-    ([True, False], pd.Series([1.0, 0.0], dtype=np.float16)),
-    ((False, True), pd.Series([0.0, 1.0], dtype=np.float16)),
-    ([True, False, None], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    ([True, False, pd.NA], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    ([True, False, np.nan], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-
-    # array
-    (np.array(True), pd.Series(1.0, dtype=np.float16)),
-    (np.array([True, False]), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (np.array([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-
-    # series
-    (pd.Series(True), pd.Series(1.0, dtype=np.float16)),
-    (pd.Series([True, False]), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1.0, 0.0, np.nan], dtype=np.float16))
-])
-def test_boolean_to_float_with_float16_dtype_downcasted(given):
+def test_boolean_to_float_preserves_index():
     # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_float("float16", downcast=True)
-
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_float(dtype='float16', downcast=True) failed with "
-        f"input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
+    val = pd.Series(
+        [True, False, pd.NA],
+        index=[4, 5, 6],
+        dtype=pd.BooleanDtype()
     )
 
-
-###############################
-####    FLOAT32 SUBTYPE    ####
-###############################
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1.0, dtype=np.float32)),
-    (False, pd.Series(0.0, dtype=np.float32)),
-    ([True, False], pd.Series([1.0, 0.0], dtype=np.float32)),
-    ((False, True), pd.Series([0.0, 1.0], dtype=np.float32)),
-    ([True, False, None], pd.Series([1.0, 0.0, np.nan], dtype=np.float32)),
-    ([True, False, pd.NA], pd.Series([1.0, 0.0, np.nan], dtype=np.float32)),
-    ([True, False, np.nan], pd.Series([1.0, 0.0, np.nan], dtype=np.float32)),
-
-    # array
-    (np.array(True), pd.Series(1.0, dtype=np.float32)),
-    (np.array([True, False]), pd.Series([1.0, 0.0], dtype=np.float32)),
-    (np.array([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float32)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float32)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float32)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float32)),
-
-    # series
-    (pd.Series(True), pd.Series(1.0, dtype=np.float32)),
-    (pd.Series([True, False]), pd.Series([1.0, 0.0], dtype=np.float32)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float32)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float32)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float32)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float32)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1.0, 0.0, np.nan], dtype=np.float32))
-])
-def test_boolean_to_float_with_float32_dtype(given):
-    # arrange
-    val, expected = given
-
     # act
-    result = BooleanSeries(val).to_float("float32")
+    result = BooleanSeries(val).to_float()
 
     # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_float(dtype='float32') failed with input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
+    expected = pd.Series(
+        [1.0, 0.0, np.nan],
+        index=[4, 5, 6],
+        dtype=np.float64
     )
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1.0, dtype=np.float16)),
-    (False, pd.Series(0.0, dtype=np.float16)),
-    ([True, False], pd.Series([1.0, 0.0], dtype=np.float16)),
-    ((False, True), pd.Series([0.0, 1.0], dtype=np.float16)),
-    ([True, False, None], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    ([True, False, pd.NA], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    ([True, False, np.nan], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-
-    # array
-    (np.array(True), pd.Series(1.0, dtype=np.float16)),
-    (np.array([True, False]), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (np.array([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-
-    # series
-    (pd.Series(True), pd.Series(1.0, dtype=np.float16)),
-    (pd.Series([True, False]), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1.0, 0.0, np.nan], dtype=np.float16))
-])
-def test_boolean_to_float_with_float32_dtype_downcasted(given):
-    # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_float("float32", downcast=True)
-
-    # assert
     assert result.equals(expected), (
-        f"BooleanSeries.to_float(dtype='float32', downcast=True) failed with "
-        f"input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
-    )
-
-
-###############################
-####    FLOAT64 SUBTYPE    ####
-###############################
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1.0, dtype=np.float64)),
-    (False, pd.Series(0.0, dtype=np.float64)),
-    ([True, False], pd.Series([1.0, 0.0], dtype=np.float64)),
-    ((False, True), pd.Series([0.0, 1.0], dtype=np.float64)),
-    ([True, False, None], pd.Series([1.0, 0.0, np.nan], dtype=np.float64)),
-    ([True, False, pd.NA], pd.Series([1.0, 0.0, np.nan], dtype=np.float64)),
-    ([True, False, np.nan], pd.Series([1.0, 0.0, np.nan], dtype=np.float64)),
-
-    # array
-    (np.array(True), pd.Series(1.0, dtype=np.float64)),
-    (np.array([True, False]), pd.Series([1.0, 0.0], dtype=np.float64)),
-    (np.array([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float64)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float64)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float64)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float64)),
-
-    # series
-    (pd.Series(True), pd.Series(1.0, dtype=np.float64)),
-    (pd.Series([True, False]), pd.Series([1.0, 0.0], dtype=np.float64)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float64)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float64)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float64)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float64)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1.0, 0.0, np.nan], dtype=np.float64))
-])
-def test_boolean_to_float_with_float64_dtype(given):
-    # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_float("float64")
-
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_float(dtype='float64') failed with input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
-    )
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1.0, dtype=np.float16)),
-    (False, pd.Series(0.0, dtype=np.float16)),
-    ([True, False], pd.Series([1.0, 0.0], dtype=np.float16)),
-    ((False, True), pd.Series([0.0, 1.0], dtype=np.float16)),
-    ([True, False, None], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    ([True, False, pd.NA], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    ([True, False, np.nan], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-
-    # array
-    (np.array(True), pd.Series(1.0, dtype=np.float16)),
-    (np.array([True, False]), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (np.array([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-
-    # series
-    (pd.Series(True), pd.Series(1.0, dtype=np.float16)),
-    (pd.Series([True, False]), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1.0, 0.0, np.nan], dtype=np.float16))
-])
-def test_boolean_to_float_with_float64_dtype_downcasted(given):
-    # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_float("float64", downcast=True)
-
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_float(dtype='float64', downcast=True) failed with "
-        f"input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
-    )
-
-
-##################################
-####    LONGDOUBLE SUBTYPE    ####
-##################################
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1.0, dtype=np.longdouble)),
-    (False, pd.Series(0.0, dtype=np.longdouble)),
-    ([True, False], pd.Series([1.0, 0.0], dtype=np.longdouble)),
-    ((False, True), pd.Series([0.0, 1.0], dtype=np.longdouble)),
-    ([True, False, None], pd.Series([1.0, 0.0, np.nan], dtype=np.longdouble)),
-    ([True, False, pd.NA], pd.Series([1.0, 0.0, np.nan], dtype=np.longdouble)),
-    ([True, False, np.nan], pd.Series([1.0, 0.0, np.nan], dtype=np.longdouble)),
-
-    # array
-    (np.array(True), pd.Series(1.0, dtype=np.longdouble)),
-    (np.array([True, False]), pd.Series([1.0, 0.0], dtype=np.longdouble)),
-    (np.array([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.longdouble)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.longdouble)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.longdouble)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.longdouble)),
-
-    # series
-    (pd.Series(True), pd.Series(1.0, dtype=np.longdouble)),
-    (pd.Series([True, False]), pd.Series([1.0, 0.0], dtype=np.longdouble)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.longdouble)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.longdouble)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.longdouble)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.longdouble)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1.0, 0.0, np.nan], dtype=np.longdouble))
-])
-def test_boolean_to_float_with_longdouble_dtype(given):
-    # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_float("longdouble")
-
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_float(dtype='longdouble') failed with input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
-    )
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series(1.0, dtype=np.float16)),
-    (False, pd.Series(0.0, dtype=np.float16)),
-    ([True, False], pd.Series([1.0, 0.0], dtype=np.float16)),
-    ((False, True), pd.Series([0.0, 1.0], dtype=np.float16)),
-    ([True, False, None], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    ([True, False, pd.NA], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    ([True, False, np.nan], pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-
-    # array
-    (np.array(True), pd.Series(1.0, dtype=np.float16)),
-    (np.array([True, False]), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (np.array([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (np.array([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-
-    # series
-    (pd.Series(True), pd.Series(1.0, dtype=np.float16)),
-    (pd.Series([True, False]), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (pd.Series([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=np.float16)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=np.float16)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1.0, 0.0, np.nan], dtype=np.float16))
-])
-def test_boolean_to_float_with_longdouble_dtype_downcasted(given):
-    # arrange
-    val, expected = given
-
-    # act
-    result = BooleanSeries(val).to_float("longdouble", downcast=True)
-
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_float(dtype='longdouble', downcast=True) failed "
-        f"with input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
+        "BooleanSeries.to_float() does not preserve index"
     )

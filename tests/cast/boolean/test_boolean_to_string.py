@@ -1,160 +1,112 @@
+import itertools
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
+from tests import make_parameters
 
+from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
 from pdtypes.cast.boolean import BooleanSeries
 
 
-#######################################
-####    DEFAULT STORAGE BACKEND    ####
-#######################################
+####################
+####    DATA    ####
+####################
 
 
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series("True", dtype=DEFAULT_STRING_DTYPE)),
-    (False, pd.Series("False", dtype=DEFAULT_STRING_DTYPE)),
-    ([True, False], pd.Series(["True", "False"], dtype=DEFAULT_STRING_DTYPE)),
-    ((False, True), pd.Series(["False", "True"], dtype=DEFAULT_STRING_DTYPE)),
-    ([True, False, None], pd.Series(["True", "False", pd.NA], dtype=DEFAULT_STRING_DTYPE)),
-    ([True, False, pd.NA], pd.Series(["True", "False", pd.NA], dtype=DEFAULT_STRING_DTYPE)),
-    ([True, False, np.nan], pd.Series(["True", "False", pd.NA], dtype=DEFAULT_STRING_DTYPE)),
+def valid_input(expected_dtype):
+    return [
+        # scalar
+        (True, pd.Series("True", dtype=expected_dtype)),
+        (False, pd.Series("False", dtype=expected_dtype)),
 
-    # array
-    (np.array(True), pd.Series("True", dtype=DEFAULT_STRING_DTYPE)),
-    (np.array([True, False]), pd.Series(["True", "False"], dtype=DEFAULT_STRING_DTYPE)),
-    (np.array([True, False], dtype="O"), pd.Series(["True", "False"], dtype=DEFAULT_STRING_DTYPE)),
-    (np.array([True, False, None], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=DEFAULT_STRING_DTYPE)),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=DEFAULT_STRING_DTYPE)),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=DEFAULT_STRING_DTYPE)),
+        # iterable
+        ([True, False], pd.Series(["True", "False"], dtype=expected_dtype)),
+        ((False, True), pd.Series(["False", "True"], dtype=expected_dtype)),
+        ((x for x in [True, False, None]), pd.Series(["True", "False", pd.NA], dtype=expected_dtype)),
+        ([True, False, pd.NA], pd.Series(["True", "False", pd.NA], dtype=expected_dtype)),
+        ([True, False, np.nan], pd.Series(["True", "False", pd.NA], dtype=expected_dtype)),
 
-    # series
-    (pd.Series(True), pd.Series("True", dtype=DEFAULT_STRING_DTYPE)),
-    (pd.Series([True, False]), pd.Series(["True", "False"], dtype=DEFAULT_STRING_DTYPE)),
-    (pd.Series([True, False], dtype="O"), pd.Series(["True", "False"], dtype=DEFAULT_STRING_DTYPE)),
-    (pd.Series([True, False, None], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=DEFAULT_STRING_DTYPE)),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=DEFAULT_STRING_DTYPE)),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=DEFAULT_STRING_DTYPE)),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series(["True", "False", pd.NA], dtype=DEFAULT_STRING_DTYPE))
-])
-def test_boolean_to_default_string_dtype(given):
-    # arrange
-    val, expected = given
+        # scalar array
+        (np.array(True), pd.Series("True", dtype=expected_dtype)),
+        (np.array(True, dtype="O"), pd.Series("True", dtype=expected_dtype)),
 
-    # act
-    result = BooleanSeries(val).to_string()
+        # 1D array (numpy dtype)
+        (np.array([True, False]), pd.Series(["True", "False"], dtype=expected_dtype)),
 
-    # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_string() failed with input:\n"
-        f"{val}\n"
+        # 1D array (object dtype)
+        (np.array([True, False], dtype="O"), pd.Series(["True", "False"], dtype=expected_dtype)),
+        (np.array([True, False, None], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=expected_dtype)),
+        (np.array([True, False, pd.NA], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=expected_dtype)),
+        (np.array([True, False, np.nan], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=expected_dtype)),
+
+        # series (numpy dtype)
+        (pd.Series([True, False]), pd.Series(["True", "False"], dtype=expected_dtype)),
+
+        # series (object dtype)
+        (pd.Series([True, False], dtype="O"), pd.Series(["True", "False"], dtype=expected_dtype)),
+        (pd.Series([True, False, None], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=expected_dtype)),
+        (pd.Series([True, False, pd.NA], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=expected_dtype)),
+        (pd.Series([True, False, np.nan], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=expected_dtype)),
+
+        # series (pandas dtype)
+        (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series(["True", "False", pd.NA], dtype=expected_dtype))
+    ]
+
+
+string_valid_input = [
+    make_parameters("str", valid_input(DEFAULT_STRING_DTYPE)),
+    make_parameters("str[python]", valid_input(pd.StringDtype("python")))
+]
+if PYARROW_INSTALLED:
+    string_valid_input.append(
+        make_parameters("str[pyarrow]", valid_input(pd.StringDtype("pyarrow")))
+    )
+string_valid_input = list(itertools.chain(*string_valid_input))
+
+
+#####################
+####    TESTS    ####
+#####################
+
+
+@pytest.mark.parametrize(
+    "target_dtype, test_input, expected_result",
+    string_valid_input
+)
+def test_boolean_to_string_accepts_all_valid_inputs(
+    target_dtype, test_input, expected_result
+):
+    result = BooleanSeries(test_input).to_string(dtype=target_dtype)
+    assert result.equals(expected_result), (
+        f"BooleanSeries.to_string(dtype={repr(target_dtype)}) failed with "
+        f"input:\n"
+        f"{test_input}\n"
         f"expected:\n"
-        f"{expected}\n"
+        f"{expected_result}\n"
         f"received:\n"
         f"{result}"
     )
 
 
-######################################
-####    PYTHON STORAGE BACKEND    ####
-######################################
-
-
-@pytest.mark.parametrize("given", [
-    # scalar
-    (True, pd.Series("True", dtype=pd.StringDtype("python"))),
-    (False, pd.Series("False", dtype=pd.StringDtype("python"))),
-    ([True, False], pd.Series(["True", "False"], dtype=pd.StringDtype("python"))),
-    ((False, True), pd.Series(["False", "True"], dtype=pd.StringDtype("python"))),
-    ([True, False, None], pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("python"))),
-    ([True, False, pd.NA], pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("python"))),
-    ([True, False, np.nan], pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("python"))),
-
-    # array
-    (np.array(True), pd.Series("True", dtype=pd.StringDtype("python"))),
-    (np.array([True, False]), pd.Series(["True", "False"], dtype=pd.StringDtype("python"))),
-    (np.array([True, False], dtype="O"), pd.Series(["True", "False"], dtype=pd.StringDtype("python"))),
-    (np.array([True, False, None], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("python"))),
-    (np.array([True, False, pd.NA], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("python"))),
-    (np.array([True, False, np.nan], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("python"))),
-
-    # series
-    (pd.Series(True), pd.Series("True", dtype=pd.StringDtype("python"))),
-    (pd.Series([True, False]), pd.Series(["True", "False"], dtype=pd.StringDtype("python"))),
-    (pd.Series([True, False], dtype="O"), pd.Series(["True", "False"], dtype=pd.StringDtype("python"))),
-    (pd.Series([True, False, None], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("python"))),
-    (pd.Series([True, False, pd.NA], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("python"))),
-    (pd.Series([True, False, np.nan], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("python"))),
-    (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("python")))
-])
-def test_boolean_to_python_string_dtype(given):
+def test_boolean_to_string_preserves_index():
     # arrange
-    val, expected = given
+    val = pd.Series(
+        [True, False, pd.NA],
+        index=[4, 5, 6],
+        dtype=pd.BooleanDtype()
+    )
 
     # act
     result = BooleanSeries(val).to_string("str[python]")
 
     # assert
-    assert result.equals(expected), (
-        f"BooleanSeries.to_string(dtype='str[python]') failed with input:\n"
-        f"{val}\n"
-        f"expected:\n"
-        f"{expected}\n"
-        f"received:\n"
-        f"{result}"
+    expected = pd.Series(
+        ["True", "False", pd.NA],
+        index=[4, 5, 6],
+        dtype=pd.StringDtype("python")
     )
-
-
-
-#######################################
-####    PYARROW STORAGE BACKEND    ####
-#######################################
-
-
-if PYARROW_INSTALLED:
-
-    @pytest.mark.parametrize("given", [
-        # scalar
-        (True, pd.Series("True", dtype=pd.StringDtype("pyarrow"))),
-        (False, pd.Series("False", dtype=pd.StringDtype("pyarrow"))),
-        ([True, False], pd.Series(["True", "False"], dtype=pd.StringDtype("pyarrow"))),
-        ((False, True), pd.Series(["False", "True"], dtype=pd.StringDtype("pyarrow"))),
-        ([True, False, None], pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("pyarrow"))),
-        ([True, False, pd.NA], pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("pyarrow"))),
-        ([True, False, np.nan], pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("pyarrow"))),
-
-        # array
-        (np.array(True), pd.Series("True", dtype=pd.StringDtype("pyarrow"))),
-        (np.array([True, False]), pd.Series(["True", "False"], dtype=pd.StringDtype("pyarrow"))),
-        (np.array([True, False], dtype="O"), pd.Series(["True", "False"], dtype=pd.StringDtype("pyarrow"))),
-        (np.array([True, False, None], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("pyarrow"))),
-        (np.array([True, False, pd.NA], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("pyarrow"))),
-        (np.array([True, False, np.nan], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("pyarrow"))),
-
-        # series
-        (pd.Series(True), pd.Series("True", dtype=pd.StringDtype("pyarrow"))),
-        (pd.Series([True, False]), pd.Series(["True", "False"], dtype=pd.StringDtype("pyarrow"))),
-        (pd.Series([True, False], dtype="O"), pd.Series(["True", "False"], dtype=pd.StringDtype("pyarrow"))),
-        (pd.Series([True, False, None], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("pyarrow"))),
-        (pd.Series([True, False, pd.NA], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("pyarrow"))),
-        (pd.Series([True, False, np.nan], dtype="O"), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("pyarrow"))),
-        (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series(["True", "False", pd.NA], dtype=pd.StringDtype("pyarrow")))
-    ])
-    def test_boolean_to_pyarrow_string_dtype(given):
-        # arrange
-        val, expected = given
-
-        # act
-        result = BooleanSeries(val).to_string("str[pyarrow]")
-
-        # assert
-        assert result.equals(expected), (
-            f"BooleanSeries.to_string(dtype='str[pyarrow]') failed with input:\n"
-            f"{val}\n"
-            f"expected:\n"
-            f"{expected}\n"
-            f"received:\n"
-            f"{result}"
-        )
+    assert result.equals(expected), (
+        "BooleanSeries.to_string() does not preserve index"
+    )
