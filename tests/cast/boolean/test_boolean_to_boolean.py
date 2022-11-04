@@ -4,48 +4,115 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests import make_parameters
+from tests.cast import Parameters
 
 from pdtypes.cast.boolean import BooleanSeries
 
 
+# TODO: test_boolean_to_boolean_handles_all_type_specifiers
+# -> some xfail params in there as well
+
+
+####################
+####    DATA    ####
+####################
+
+
 def valid_input(non_nullable_dtype, nullable_dtype):
+    create_record = lambda test_input, test_output: (
+        {},
+        test_input,
+        test_output
+    )
+
     return [
         # scalar
-        (True, pd.Series(True, dtype=non_nullable_dtype)),
-        (False, pd.Series(False, dtype=non_nullable_dtype)),
+        create_record(
+            True,
+            pd.Series(True, dtype=non_nullable_dtype)
+        ),
+        create_record(
+            False,
+            pd.Series(False, dtype=non_nullable_dtype)
+        ),
 
         # iterable
-        ([True, False], pd.Series([True, False], dtype=non_nullable_dtype)),
-        ((False, True), pd.Series([False, True], dtype=non_nullable_dtype)),
-        ((x for x in [True, False, None]), pd.Series([True, False, pd.NA], dtype=nullable_dtype)),
-        ([True, False, pd.NA], pd.Series([True, False, pd.NA], dtype=nullable_dtype)),
-        ([True, False, np.nan], pd.Series([True, False, pd.NA], dtype=nullable_dtype)),
+        create_record(
+            [True, False],
+            pd.Series([True, False], dtype=non_nullable_dtype)
+        ),
+        create_record(
+            (False, True),
+            pd.Series([False, True], dtype=non_nullable_dtype)
+        ),
+        create_record(
+            (x for x in [True, False, None]),
+            pd.Series([True, False, pd.NA], dtype=nullable_dtype)
+        ),
+        create_record(
+            [True, False, pd.NA],
+            pd.Series([True, False, pd.NA], dtype=nullable_dtype)
+        ),
+        create_record(
+            [True, False, np.nan],
+            pd.Series([True, False, pd.NA], dtype=nullable_dtype)
+        ),
 
-        # scalar array
-        (np.array(True), pd.Series(True, dtype=non_nullable_dtype)),
-        (np.array(True, dtype="O"), pd.Series(True, dtype=non_nullable_dtype)),
+        # numpy array
+        create_record(
+            np.array(True),
+            pd.Series(True, dtype=non_nullable_dtype)
+        ),
+        create_record(
+            np.array(True, dtype="O"),
+            pd.Series(True, dtype=non_nullable_dtype)
+        ),
+        create_record(
+            np.array([True, False]),
+            pd.Series([True, False], dtype=non_nullable_dtype)
+        ),
+        create_record(
+            np.array([True, False], dtype="O"),
+            pd.Series([True, False], dtype=non_nullable_dtype)
+        ),
+        create_record(
+            np.array([True, False, None], dtype="O"),
+            pd.Series([True, False, pd.NA], dtype=nullable_dtype)
+        ),
+        create_record(
+            np.array([True, False, pd.NA], dtype="O"),
+            pd.Series([True, False, pd.NA], dtype=nullable_dtype)
+        ),
+        create_record(
+            np.array([True, False, np.nan], dtype="O"),
+            pd.Series([True, False, pd.NA], dtype=nullable_dtype)
+        ),
 
-        # 1D array (numpy dtype)
-        (np.array([True, False]), pd.Series([True, False], dtype=non_nullable_dtype)),
-
-        # 1D array (object dtype)
-        (np.array([True, False], dtype="O"), pd.Series([True, False], dtype=non_nullable_dtype)),
-        (np.array([True, False, None], dtype="O"), pd.Series([True, False, pd.NA], dtype=nullable_dtype)),
-        (np.array([True, False, pd.NA], dtype="O"), pd.Series([True, False, pd.NA], dtype=nullable_dtype)),
-        (np.array([True, False, np.nan], dtype="O"), pd.Series([True, False, pd.NA], dtype=nullable_dtype)),
-
-        # series (numpy dtype)
-        (pd.Series([True, False]), pd.Series([True, False], dtype=non_nullable_dtype)),
-
-        # series (object dtype)
-        (pd.Series([True, False], dtype="O"), pd.Series([True, False], dtype=non_nullable_dtype)),
-        (pd.Series([True, False, None], dtype="O"), pd.Series([True, False, pd.NA], dtype=nullable_dtype)),
-        (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([True, False, pd.NA], dtype=nullable_dtype)),
-        (pd.Series([True, False, np.nan], dtype="O"), pd.Series([True, False, pd.NA], dtype=nullable_dtype)),
-
-        # series (pandas dtype)
-        (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([True, False, pd.NA], dtype=nullable_dtype))
+        # pandas Series
+        create_record(
+            pd.Series([True, False]),
+            pd.Series([True, False], dtype=non_nullable_dtype)
+        ),
+        create_record(
+            pd.Series([True, False], dtype="O"),
+            pd.Series([True, False], dtype=non_nullable_dtype)
+        ),
+        create_record(
+            pd.Series([True, False, None], dtype="O"),
+            pd.Series([True, False, pd.NA], dtype=nullable_dtype)
+        ),
+        create_record(
+            pd.Series([True, False, pd.NA], dtype="O"),
+            pd.Series([True, False, pd.NA], dtype=nullable_dtype)
+        ),
+        create_record(
+            pd.Series([True, False, np.nan], dtype="O"),
+            pd.Series([True, False, pd.NA], dtype=nullable_dtype)
+        ),
+        create_record(
+            pd.Series([True, False, None], dtype=pd.BooleanDtype()),
+            pd.Series([True, False, pd.NA], dtype=nullable_dtype)
+        )
     ]
 
 
@@ -55,22 +122,28 @@ def valid_input(non_nullable_dtype, nullable_dtype):
 
 
 @pytest.mark.parametrize(
-    "target_dtype, test_input, expected_result",
+    "kwargs, test_input, test_output",
     list(itertools.chain(*[
-        make_parameters("bool", valid_input(bool, pd.BooleanDtype())),
-        make_parameters("nullable[bool]", valid_input(pd.BooleanDtype(), pd.BooleanDtype())),
+        Parameters.nocheck(
+            valid_input(np.dtype(bool), pd.BooleanDtype()),
+            dtype="bool"
+        ),
+        Parameters.nocheck(
+            valid_input(pd.BooleanDtype(), pd.BooleanDtype()),
+            dtype="nullable[bool]"
+        )
     ]))
 )
 def test_boolean_to_boolean_accepts_all_valid_inputs(
-    target_dtype, test_input, expected_result
+    kwargs, test_input, test_output
 ):
-    result = BooleanSeries(test_input).to_boolean(target_dtype)
-    assert result.equals(expected_result), (
-        f"BooleanSeries.to_boolean(dtype={repr(target_dtype)}) failed with "
-        f"input:\n"
+    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+    result = BooleanSeries(test_input).to_boolean(**kwargs)
+    assert result.equals(test_output), (
+        f"BooleanSeries.to_boolean({fmt_kwargs}) failed with input:\n"
         f"{test_input}\n"
         f"expected:\n"
-        f"{expected_result}\n"
+        f"{test_output}\n"
         f"received:\n"
         f"{result}"
     )

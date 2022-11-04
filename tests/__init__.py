@@ -1,5 +1,53 @@
 from functools import reduce
 
+import pytest
+
+
+# TODO: unwrap `param` tuples directly?
+
+
+def skip(*values, reason=None):
+    # TODO: handle Parameters as input to skip chained iterables
+    return pytest.param(*values, marks=pytest.mark.skip(reason=reason))
+
+
+def skipif(condition, *values, reason=None):
+    if not values:
+        raise TypeError(
+            "skipif() missing 1 required positional argument: 'value'"
+        )
+
+    return pytest.param(
+        *values,
+        marks=pytest.mark.skipif(condition, reason=reason)
+    )
+
+
+def xfail(
+    *values,
+    condition=None,
+    reason=None,
+    raises=None,
+    run=True,
+    strict=False
+):
+    return pytest.param(
+        *values,
+        marks=pytest.mark.xfail(
+            condition=condition,
+            reason=reason,
+            raises=raises,
+            run=run,
+            strict=strict
+        )
+    )
+
+
+
+
+
+
+
 
 def make_parameters(*args) -> list[tuple]:
     """Fuse one or more arguments into a list of tuples, which can be used for

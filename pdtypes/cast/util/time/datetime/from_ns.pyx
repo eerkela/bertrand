@@ -348,7 +348,7 @@ def ns_to_pandas_timestamp(
     if min_ns < min_pandas_timestamp_ns or max_ns > max_pandas_timestamp_ns:
         raise OverflowError(f"`arg` exceeds pd.Timestamp range")
 
-    # resolve timezone
+    # resolve timezone, epoch
     tz = timezone(tz)
 
     # convert using pd.to_datetime, accounting for timezone
@@ -506,6 +506,7 @@ def ns_to_pydatetime(
 def ns_to_numpy_datetime64(
     arg: int | np.ndarray | pd.Series,
     unit: str = None,
+    step_size: int = 1,
     rounding: str = "down",
     *,
     min_ns: int = None,
@@ -522,6 +523,9 @@ def ns_to_numpy_datetime64(
     unit : {'ns', 'us', 'ms', 's', 'm', 'h', 'D', 'W', 'M', 'Y'}, default None
         The unit to use for the returned datetimes.  If `None`, choose the
         highest resolution unit that can fully represent `arg`.
+    step_size : int, default 1
+        The step size to use for the returned datetimes.  This defaults to 1,
+        but can be any of the values accepted by the np.datetime64 constructor.
     rounding : str, default 'down'
         The rounding strategy to use when a value underflows beyond the
         resolution of `unit`.  Defaults to `'down'` (round toward zero).
@@ -608,7 +612,7 @@ def ns_to_numpy_datetime64(
     # kwargs for convert_unit_integer
     unit_kwargs = {"since": utc_aware_pydatetime, "rounding": rounding}
 
-    # if `unit` is already defined, rescale `arg` to match
+    # if `unit` is already defined, check for overflow
     if unit is not None:
         min_ns = convert_unit_integer(min_ns, "ns", unit, **unit_kwargs)
         max_ns = convert_unit_integer(max_ns, "ns", unit, **unit_kwargs)
@@ -626,9 +630,8 @@ def ns_to_numpy_datetime64(
         if min_ns < lower_lim or max_ns > upper_lim:
             raise OverflowError(f"`arg` exceeds np.datetime64 range with "
                                 f"unit={repr(unit)}")
-        arg = convert_unit_integer(arg, "ns", unit, **unit_kwargs)
 
-    else:  # choose unit to fit range and rescale `arg` appropriately
+    else:  # dynamically choose unit to fit range
         for test_unit in valid_units:
             if test_unit == "W":  # skip weeks
                 # this unit has some really wierd (inconsistent) overflow
@@ -661,21 +664,24 @@ def ns_to_numpy_datetime64(
             # check for overflow
             if test_min >= lower_lim and test_max <= upper_lim:
                 unit = test_unit
-                arg = convert_unit_integer(arg, "ns", test_unit, **unit_kwargs)
                 break  # stop at highest resolution
+
+    # rescale `arg` to final unit, accounting for step size
+    arg = convert_unit_integer(arg, "ns", unit, **unit_kwargs)
+    arg //= step_size
 
     # np.ndarray
     if isinstance(arg, np.ndarray):
-        return arg.astype(f"M8[{unit}]")
+        return arg.astype(f"M8[{step_size}{unit}]")
 
     # pd.Series
     if isinstance(arg, pd.Series):
         index = arg.index
-        arg = arg.to_numpy().astype(f"M8[{unit}]")
+        arg = arg.to_numpy().astype(f"M8[{step_size}{unit}]")
         return pd.Series(list(arg), index=index, dtype="O")
 
     # scalar
-    return np.datetime64(int(arg), unit)
+    return np.datetime64(int(arg), f"{step_size}{unit}")
 
 
 def ns_to_datetime(

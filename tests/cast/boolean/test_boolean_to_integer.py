@@ -4,9 +4,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests import make_parameters
+from tests import skip
+
+from tests.cast import Parameters
 
 from pdtypes.cast.boolean import BooleanSeries
+
+
+# TODO: test_boolean_to_integer_handles_all_type_specifiers
+# -> some xfail params in there as well
 
 
 ####################
@@ -14,50 +20,137 @@ from pdtypes.cast.boolean import BooleanSeries
 ####################
 
 
-def valid_input(non_nullable_dtype, nullable_dtype):
+def valid_input(dtype_no_na, dtype_with_na):
+    create_record = lambda test_input, test_output: (
+        {},
+        test_input,
+        test_output
+    )
+
     return [
         # scalar
-        (True, pd.Series(1, dtype=non_nullable_dtype)),
-        (False, pd.Series(0, dtype=non_nullable_dtype)),
+        create_record(
+            True,
+            pd.Series([1], dtype=dtype_no_na)
+        ),
+        create_record(
+            False,
+            pd.Series([0], dtype=dtype_no_na)
+        ),
 
         # iterable
-        ([True, False], pd.Series([1, 0], dtype=non_nullable_dtype)),
-        ((False, True), pd.Series([0, 1], dtype=non_nullable_dtype)),
-        ((x for x in [True, False, None]), pd.Series([1, 0, None], dtype=nullable_dtype)),
-        ([True, False, pd.NA], pd.Series([1, 0, None], dtype=nullable_dtype)),
-        ([True, False, np.nan], pd.Series([1, 0, None], dtype=nullable_dtype)),
+        create_record(
+            [True, False],
+            pd.Series([1, 0], dtype=dtype_no_na)
+        ),
+        create_record(
+            (False, True),
+            pd.Series([0, 1], dtype=dtype_no_na)
+        ),
+        create_record(
+            (x for x in [True, False, None]),
+            pd.Series([1, 0, None], dtype=dtype_with_na)
+        ),
+        create_record(
+            [True, False, pd.NA],
+            pd.Series([1, 0, None], dtype=dtype_with_na)
+        ),
+        create_record(
+            [True, False, np.nan],
+            pd.Series([1, 0, None], dtype=dtype_with_na)
+        ),
 
-        # scalar array
-        (np.array(True), pd.Series(1, dtype=non_nullable_dtype)),
-        (np.array(True, dtype="O"), pd.Series(1, dtype=non_nullable_dtype)),
+        # numpy array
+        create_record(
+            np.array(True),
+            pd.Series([1], dtype=dtype_no_na)
+        ),
+        create_record(
+            np.array(True, dtype="O"),
+            pd.Series([1], dtype=dtype_no_na)
+        ),
+        create_record(
+            np.array([True, False]),
+            pd.Series([1, 0], dtype=dtype_no_na)
+        ),
+        create_record(
+            np.array([True, False], dtype="O"),
+            pd.Series([1, 0], dtype=dtype_no_na)
+        ),
+        create_record(
+            np.array([True, False, None], dtype="O"),
+            pd.Series([1, 0, pd.NA], dtype=dtype_with_na)
+        ),
+        create_record(
+            np.array([True, False, pd.NA], dtype="O"),
+            pd.Series([1, 0, pd.NA], dtype=dtype_with_na)
+        ),
+        create_record(
+            np.array([True, False, np.nan], dtype="O"),
+            pd.Series([1, 0, pd.NA], dtype=dtype_with_na)
+        ),
 
-        # 1D array (numpy dtype)
-        (np.array([True, False]), pd.Series([1, 0], dtype=non_nullable_dtype)),
-
-        # 1D array (object dtype)
-        (np.array([True, False], dtype="O"), pd.Series([1, 0], dtype=non_nullable_dtype)),
-        (np.array([True, False, None], dtype="O"), pd.Series([1, 0, pd.NA], dtype=nullable_dtype)),
-        (np.array([True, False, pd.NA], dtype="O"), pd.Series([1, 0, pd.NA], dtype=nullable_dtype)),
-        (np.array([True, False, np.nan], dtype="O"), pd.Series([1, 0, pd.NA], dtype=nullable_dtype)),
-
-        # series (numpy dtype)
-        (pd.Series([True, False]), pd.Series([1, 0], dtype=non_nullable_dtype)),
-
-        # series (object dtype)
-        (pd.Series([True, False], dtype="O"), pd.Series([1, 0], dtype=non_nullable_dtype)),
-        (pd.Series([True, False, None], dtype="O"), pd.Series([1, 0, pd.NA], dtype=nullable_dtype)),
-        (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1, 0, pd.NA], dtype=nullable_dtype)),
-        (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1, 0, pd.NA], dtype=nullable_dtype)),
-
-        # series (pandas dtype)
-        (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1, 0, pd.NA], dtype=nullable_dtype))
+        # pandas Series
+        create_record(
+            pd.Series([True, False]),
+            pd.Series([1, 0], dtype=dtype_no_na)
+        ),
+        create_record(
+            pd.Series([True, False], dtype="O"),
+            pd.Series([1, 0], dtype=dtype_no_na)
+        ),
+        create_record(
+            pd.Series([True, False, None], dtype="O"),
+            pd.Series([1, 0, pd.NA], dtype=dtype_with_na)
+        ),
+        create_record(
+            pd.Series([True, False, pd.NA], dtype="O"),
+            pd.Series([1, 0, pd.NA], dtype=dtype_with_na)
+        ),
+        create_record(
+            pd.Series([True, False, np.nan], dtype="O"),
+            pd.Series([1, 0, pd.NA], dtype=dtype_with_na)
+        ),
+        create_record(
+            pd.Series([True, False, pd.NA], dtype=pd.BooleanDtype()),
+            pd.Series([1, 0, pd.NA], dtype=dtype_with_na)
+        ),
     ]
 
 
-def downcast_input(non_nullable_dtype, nullable_dtype):
+def downcast_input():
+    create_record = lambda target_dtype, series_type: (
+        {"dtype": target_dtype, "downcast": True},
+        pd.Series([True, False]),
+        pd.Series([1, 0], dtype=series_type)
+    )
+
     return [
-        ([True, False], pd.Series([1, 0], dtype=non_nullable_dtype)),
-        ([True, False, None], pd.Series([1, 0, pd.NA], dtype=nullable_dtype))
+        # non-nullable
+        create_record("int", np.int8),
+        create_record("signed", np.int8),
+        create_record("unsigned", np.uint8),
+        create_record("int8", np.int8),
+        create_record("int16", np.int8),
+        create_record("int32", np.int8),
+        create_record("int64", np.int8),
+        create_record("uint8", np.uint8),
+        create_record("uint16", np.uint8),
+        create_record("uint32", np.uint8),
+        create_record("uint64", np.uint8),
+
+        # nullable
+        create_record("nullable[int]", pd.Int8Dtype()),
+        create_record("nullable[signed]", pd.Int8Dtype()),
+        create_record("nullable[unsigned]", pd.UInt8Dtype()),
+        create_record("nullable[int8]", pd.Int8Dtype()),
+        create_record("nullable[int16]", pd.Int8Dtype()),
+        create_record("nullable[int32]", pd.Int8Dtype()),
+        create_record("nullable[int64]", pd.Int8Dtype()),
+        create_record("nullable[uint8]", pd.UInt8Dtype()),
+        create_record("nullable[uint16]", pd.UInt8Dtype()),
+        create_record("nullable[uint32]", pd.UInt8Dtype()),
+        create_record("nullable[uint64]", pd.UInt8Dtype()),
     ]
 
 
@@ -67,91 +160,130 @@ def downcast_input(non_nullable_dtype, nullable_dtype):
 
 
 @pytest.mark.parametrize(
-    "target_dtype, test_input, expected_result",
+    "kwargs, test_input, test_output",
     list(itertools.chain(*[
         # non-nullable
-        make_parameters("int", valid_input(np.int64, pd.Int64Dtype())),
-        make_parameters("signed", valid_input(np.int64, pd.Int64Dtype())),
-        make_parameters("unsigned", valid_input(np.uint64, pd.UInt64Dtype())),
-        make_parameters("int8", valid_input(np.int8, pd.Int8Dtype())),
-        make_parameters("int16", valid_input(np.int16, pd.Int16Dtype())),
-        make_parameters("int32", valid_input(np.int32, pd.Int32Dtype())),
-        make_parameters("int64", valid_input(np.int64, pd.Int64Dtype())),
-        make_parameters("uint8", valid_input(np.uint8, pd.UInt8Dtype())),
-        make_parameters("uint16", valid_input(np.uint16, pd.UInt16Dtype())),
-        make_parameters("uint32", valid_input(np.uint32, pd.UInt32Dtype())),
-        make_parameters("uint64", valid_input(np.uint64, pd.UInt64Dtype())),
+        Parameters.nocheck(
+            valid_input(np.int64, pd.Int64Dtype()),
+            dtype="int"
+        ).apply(lambda rec: skip(*rec)),
+        Parameters.nocheck(
+            valid_input(np.int64, pd.Int64Dtype()),
+            dtype="signed"
+        ),
+        Parameters.nocheck(
+            valid_input(np.uint64, pd.UInt64Dtype()),
+            dtype="unsigned"
+        ),
+        Parameters.nocheck(
+            valid_input(np.int8, pd.Int8Dtype()),
+            dtype="int8"
+        ),
+        Parameters.nocheck(
+            valid_input(np.int16, pd.Int16Dtype()),
+            dtype="int16"
+        ),
+        Parameters.nocheck(
+            valid_input(np.int32, pd.Int32Dtype()),
+            dtype="int32"
+        ),
+        Parameters.nocheck(
+            valid_input(np.int64, pd.Int64Dtype()),
+            dtype="int64",
+        ),
+        Parameters.nocheck(
+            valid_input(np.uint8, pd.UInt8Dtype()),
+            dtype="uint8",
+        ),
+        Parameters.nocheck(
+            valid_input(np.uint16, pd.UInt16Dtype()),
+            dtype="uint16",
+        ),
+        Parameters.nocheck(
+            valid_input(np.uint32, pd.UInt32Dtype()),
+            dtype="uint32",
+        ),
+        Parameters.nocheck(
+            valid_input(np.uint64, pd.UInt64Dtype()),
+            dtype="uint64",
+        ),
 
         # nullable
-        make_parameters("nullable[int]", valid_input(pd.Int64Dtype(), pd.Int64Dtype())),
-        make_parameters("nullable[signed]", valid_input(pd.Int64Dtype(), pd.Int64Dtype())),
-        make_parameters("nullable[unsigned]", valid_input(pd.UInt64Dtype(), pd.UInt64Dtype())),
-        make_parameters("nullable[int8]", valid_input(pd.Int8Dtype(), pd.Int8Dtype())),
-        make_parameters("nullable[int16]", valid_input(pd.Int16Dtype(), pd.Int16Dtype())),
-        make_parameters("nullable[int32]", valid_input(pd.Int32Dtype(), pd.Int32Dtype())),
-        make_parameters("nullable[int64]", valid_input(pd.Int64Dtype(), pd.Int64Dtype())),
-        make_parameters("nullable[uint8]", valid_input(pd.UInt8Dtype(), pd.UInt8Dtype())),
-        make_parameters("nullable[uint16]", valid_input(pd.UInt16Dtype(), pd.UInt16Dtype())),
-        make_parameters("nullable[uint32]", valid_input(pd.UInt32Dtype(), pd.UInt32Dtype())),
-        make_parameters("nullable[uint64]", valid_input(pd.UInt64Dtype(), pd.UInt64Dtype())),
+        Parameters.nocheck(
+            valid_input(pd.Int64Dtype(), pd.Int64Dtype()),
+            dtype="nullable[int]",
+        ),
+        Parameters.nocheck(
+            valid_input(pd.Int64Dtype(), pd.Int64Dtype()),
+            dtype="nullable[signed]",
+        ),
+        Parameters.nocheck(
+            valid_input(pd.UInt64Dtype(), pd.UInt64Dtype()),
+            dtype="nullable[unsigned]",
+        ),
+        Parameters.nocheck(
+            valid_input(pd.Int8Dtype(), pd.Int8Dtype()),
+            dtype="nullable[int8]",
+        ),
+        Parameters.nocheck(
+            valid_input(pd.Int16Dtype(), pd.Int16Dtype()),
+            dtype="nullable[int16]",
+        ),
+        Parameters.nocheck(
+            valid_input(pd.Int32Dtype(), pd.Int32Dtype()),
+            dtype="nullable[int32]",
+        ),
+        Parameters.nocheck(
+            valid_input(pd.Int64Dtype(), pd.Int64Dtype()),
+            dtype="nullable[int64]",
+        ),
+        Parameters.nocheck(
+            valid_input(pd.UInt8Dtype(), pd.UInt8Dtype()),
+            dtype="nullable[uint8]",
+        ),
+        Parameters.nocheck(
+            valid_input(pd.UInt16Dtype(), pd.UInt16Dtype()),
+            dtype="nullable[uint16]",
+        ),
+        Parameters.nocheck(
+            valid_input(pd.UInt32Dtype(), pd.UInt32Dtype()),
+            dtype="nullable[uint32]",
+        ),
+        Parameters.nocheck(
+            valid_input(pd.UInt64Dtype(), pd.UInt64Dtype()),
+            dtype="nullable[uint64]",
+        ),
     ]))
 )
 def test_boolean_to_integer_accepts_all_valid_inputs(
-    target_dtype, test_input, expected_result
+    kwargs, test_input, test_output
 ):
-    result = BooleanSeries(test_input).to_integer(target_dtype)
-    assert result.equals(expected_result), (
-        f"BooleanSeries.to_integer(dtype={repr(target_dtype)}) failed with "
-        f"input:\n"
+    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+    result = BooleanSeries(test_input).to_integer(**kwargs)
+    assert result.equals(test_output), (
+        f"BooleanSeries.to_integer({fmt_kwargs}) failed with input:\n"
         f"{test_input}\n"
         f"expected:\n"
-        f"{expected_result}\n"
+        f"{test_output}\n"
         f"received:\n"
         f"{result}"
     )
 
 
 @pytest.mark.parametrize(
-    "target_dtype, test_input, expected_result",
-    list(itertools.chain(*[
-        # non-nullable
-        make_parameters("int", downcast_input(np.int8, pd.Int8Dtype())),
-        make_parameters("signed", downcast_input(np.int8, pd.Int8Dtype())),
-        make_parameters("unsigned", downcast_input(np.uint8, pd.UInt8Dtype())),
-        make_parameters("int8", downcast_input(np.int8, pd.Int8Dtype())),
-        make_parameters("int16", downcast_input(np.int8, pd.Int8Dtype())),
-        make_parameters("int32", downcast_input(np.int8, pd.Int8Dtype())),
-        make_parameters("int64", downcast_input(np.int8, pd.Int8Dtype())),
-        make_parameters("uint8", downcast_input(np.uint8, pd.UInt8Dtype())),
-        make_parameters("uint16", downcast_input(np.uint8, pd.UInt8Dtype())),
-        make_parameters("uint32", downcast_input(np.uint8, pd.UInt8Dtype())),
-        make_parameters("uint64", downcast_input(np.uint8, pd.UInt8Dtype())),
-
-        # nullable
-        make_parameters("nullable[int]", downcast_input(pd.Int8Dtype(), pd.Int8Dtype())),
-        make_parameters("nullable[signed]", downcast_input(pd.Int8Dtype(), pd.Int8Dtype())),
-        make_parameters("nullable[unsigned]", downcast_input(pd.UInt8Dtype(), pd.UInt8Dtype())),
-        make_parameters("nullable[int8]", downcast_input(pd.Int8Dtype(), pd.Int8Dtype())),
-        make_parameters("nullable[int16]", downcast_input(pd.Int8Dtype(), pd.Int8Dtype())),
-        make_parameters("nullable[int32]", downcast_input(pd.Int8Dtype(), pd.Int8Dtype())),
-        make_parameters("nullable[int64]", downcast_input(pd.Int8Dtype(), pd.Int8Dtype())),
-        make_parameters("nullable[uint8]", downcast_input(pd.UInt8Dtype(), pd.UInt8Dtype())),
-        make_parameters("nullable[uint16]", downcast_input(pd.UInt8Dtype(), pd.UInt8Dtype())),
-        make_parameters("nullable[uint32]", downcast_input(pd.UInt8Dtype(), pd.UInt8Dtype())),
-        make_parameters("nullable[uint64]", downcast_input(pd.UInt8Dtype(), pd.UInt8Dtype())),
-    ]))
+    "kwargs, test_input, test_output",
+    Parameters(downcast_input()).repeat_with_na(pd.NA, pd.NA)
 )
 def test_boolean_to_integer_downcasting(
-    target_dtype, test_input, expected_result
+    kwargs, test_input, test_output
 ):
-    series = BooleanSeries(test_input)
-    result = series.to_integer(dtype=target_dtype, downcast=True)
-    assert result.equals(expected_result), (
-        f"BooleanSeries.to_integer(dtype={repr(target_dtype)}, downcast=True) "
-        f"failed with input:\n"
+    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+    result = BooleanSeries(test_input).to_integer(**kwargs)
+    assert result.equals(test_output), (
+        f"BooleanSeries.to_integer({fmt_kwargs}) failed with input:\n"
         f"{test_input}\n"
         f"expected:\n"
-        f"{expected_result}\n"
+        f"{test_output}\n"
         f"received:\n"
         f"{result}"
     )

@@ -10,9 +10,10 @@ from pdtypes.types import resolve_dtype, ElementType
 from pdtypes.util.type_hints import datetime_like, dtype_like
 
 from .util.time import (
-    convert_unit_integer, epoch, ns_to_datetime, ns_to_numpy_datetime64,
-    ns_to_numpy_timedelta64, ns_to_pandas_timedelta, ns_to_pandas_timestamp,
-    ns_to_pydatetime, ns_to_pytimedelta, ns_to_timedelta, timezone
+    convert_unit_integer, epoch, epoch_ns, ns_to_datetime,
+    ns_to_numpy_datetime64, ns_to_numpy_timedelta64, ns_to_pandas_timedelta,
+    ns_to_pandas_timestamp, ns_to_pydatetime, ns_to_pytimedelta,
+    ns_to_timedelta, timezone
 )
 from .util.validate import validate_dtype, validate_series
 
@@ -129,12 +130,14 @@ class BooleanSeries(SeriesWrapper):
         self,
         dtype: dtype_like = "datetime",
         unit: str = "ns",
-        tz: str | datetime.tzinfo = None
+        tz: str | datetime.tzinfo = None,
+        since: str | datetime_like = "UTC"
     ) -> pd.Series:
         """TODO"""
         dtype = resolve_dtype(dtype)
         validate_dtype(dtype, "datetime")
         tz = timezone(tz)
+        since = epoch(since)
 
         # ElementType objects for each datetime subtype
         pandas_timestamp = resolve_dtype(pd.Timestamp)
@@ -142,44 +145,47 @@ class BooleanSeries(SeriesWrapper):
         numpy_datetime64 = resolve_dtype(np.datetime64)
 
         # alias M8[ns] to pd.Timestamp
-        if (dtype in numpy_datetime64 and
-            dtype.unit == "ns" and
-            dtype.step_size == 1
-        ):
-            dtype = resolve_dtype(
-                pd.Timestamp,
-                sparse=dtype.sparse,
-                categorical=dtype.categorical
-            )
+        # TODO: remove this?
+        # if (dtype in numpy_datetime64 and
+        #     dtype.unit == "ns" and
+        #     dtype.step_size == 1
+        # ):
+        #     dtype = resolve_dtype(
+        #         pd.Timestamp,
+        #         sparse=dtype.sparse,
+        #         categorical=dtype.categorical
+        #     )
 
         # convert nonmissing values to ns, then ns to datetime
         with self.exclude_na(pd.NaT):
-            nanoseconds = convert_unit_integer(
-                self.series.astype(np.int32),
+            self.series = convert_unit_integer(
+                self.astype(np.int64).astype("O"),
                 unit,
                 "ns",
-                since=epoch("UTC")
+                since=since
             )
+            self.series += epoch_ns(since)
 
             # pd.Timestamp
             if dtype in pandas_timestamp:
-                self.series = ns_to_pandas_timestamp(nanoseconds, tz=tz)
+                self.series = ns_to_pandas_timestamp(self.series, tz=tz)
 
             # datetime.datetime
             elif dtype in pydatetime:
-                self.series = ns_to_pydatetime(nanoseconds, tz=tz)
+                self.series = ns_to_pydatetime(self.series, tz=tz)
 
             # np.datetime64
             elif dtype in numpy_datetime64:
                 # TODO: gather step size
                 self.series = ns_to_numpy_datetime64(
-                    nanoseconds,
-                    unit=dtype.unit
+                    self.series,
+                    unit=dtype.unit,
+                    step_size=dtype.step_size
                 )
 
             # datetime supertype
             else:
-                self.series = ns_to_datetime(nanoseconds, tz=tz)
+                self.series = ns_to_datetime(self.series, tz=tz)
 
         return self.series
 
