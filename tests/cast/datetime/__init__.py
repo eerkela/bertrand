@@ -7,6 +7,15 @@ import pandas as pd
 import pytz
 
 
+category_types = {
+    "datetime": pd.Timestamp,
+    "datetime[pandas]": pd.Timestamp,
+    "datetime[python]": datetime.datetime,
+    "datetime[numpy]": np.datetime64,
+}
+
+
+
 def interpret_iso_8601_string(datetime_string, expected_dtype, timezone=None):
     # pd.Timestamp
     if expected_dtype is pd.Timestamp:

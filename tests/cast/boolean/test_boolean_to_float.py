@@ -1,10 +1,11 @@
-import itertools
-
 import numpy as np
 import pandas as pd
 import pytest
 
-from tests import make_parameters
+from tests.cast import Case, Parameters, parametrize
+from tests.cast.boolean import (
+    valid_input_data, valid_dtype_data, invalid_input_data, invalid_dtype_data
+)
 
 from pdtypes.cast.boolean import BooleanSeries
 
@@ -14,107 +15,105 @@ from pdtypes.cast.boolean import BooleanSeries
 ####################
 
 
-def valid_input(expected_dtype):
-    return [
-        # scalar
-        (True, pd.Series(1.0, dtype=expected_dtype)),
-        (False, pd.Series(0.0, dtype=expected_dtype)),
+def downcast_data():
+    case = lambda target_dtype, series_type: Case(
+        {"dtype": target_dtype, "downcast": True},
+        pd.Series([True, False]),
+        pd.Series([1.0, 0.0], dtype=series_type)
+    )
 
-        # iterable
-        ([True, False], pd.Series([1.0, 0.0], dtype=expected_dtype)),
-        ((False, True), pd.Series([0.0, 1.0], dtype=expected_dtype)),
-        ((x for x in [True, False, None]), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
-        ([True, False, pd.NA], pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
-        ([True, False, np.nan], pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
-
-        # scalar array
-        (np.array(True), pd.Series(1.0, dtype=expected_dtype)),
-        (np.array(True, dtype="O"), pd.Series(1.0, dtype=expected_dtype)),
-
-        # 1D array (numpy dtype)
-        (np.array([True, False]), pd.Series([1.0, 0.0], dtype=expected_dtype)),
-
-        # 1D array (object dtype)
-        (np.array([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=expected_dtype)),
-        (np.array([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
-        (np.array([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
-        (np.array([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
-
-        # series (numpy dtype)
-        (pd.Series([True, False]), pd.Series([1.0, 0.0], dtype=expected_dtype)),
-
-        # series (object dtype)
-        (pd.Series([True, False], dtype="O"), pd.Series([1.0, 0.0], dtype=expected_dtype)),
-        (pd.Series([True, False, None], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
-        (pd.Series([True, False, pd.NA], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
-        (pd.Series([True, False, np.nan], dtype="O"), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype)),
-
-        # series (pandas dtype)
-        (pd.Series([True, False, None], dtype=pd.BooleanDtype()), pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype))
-    ]
-
-
-def downcast_input(expected_dtype):
-    return [
-        ([True, False], pd.Series([1.0, 0.0], dtype=expected_dtype)),
-        ([True, False, None], pd.Series([1.0, 0.0, np.nan], dtype=expected_dtype))
-    ]
+    return Parameters(
+        case("float", np.float16),
+        case("float16", np.float16),
+        case("float32", np.float16),
+        case("float64", np.float16),
+        case("longdouble", np.float16),
+    ).with_na(pd.NA, np.nan)
 
 
 #####################
-####    TESTS    ####
+####    VALID    ####
 #####################
 
 
-@pytest.mark.parametrize(
-    "target_dtype, test_input, expected_result",
-    list(itertools.chain(*[
-        make_parameters("float", valid_input(np.float64)),
-        make_parameters("float16", valid_input(np.float16)),
-        make_parameters("float32", valid_input(np.float32)),
-        make_parameters("float64", valid_input(np.float64)),
-        make_parameters("longdouble", valid_input(np.longdouble)),
-    ]))
+@parametrize(
+    valid_input_data("float"),
+    valid_input_data("float16"),
+    valid_input_data("float32"),
+    valid_input_data("float64"),
+    valid_input_data("longdouble"),
 )
 def test_boolean_to_float_accepts_all_valid_inputs(
-    target_dtype, test_input, expected_result
+    kwargs, test_input, test_output
 ):
-    result = BooleanSeries(test_input).to_float(target_dtype)
-    assert result.equals(expected_result), (
-        f"BooleanSeries.to_float(dtype={repr(target_dtype)}) failed with "
-        f"input:\n"
+    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+    result = BooleanSeries(test_input).to_float(**kwargs)
+    assert result.equals(test_output), (
+        f"BooleanSeries.to_float({fmt_kwargs}) failed with input:\n"
         f"{test_input}\n"
         f"expected:\n"
-        f"{expected_result}\n"
+        f"{test_output}\n"
         f"received:\n"
         f"{result}"
     )
 
 
-@pytest.mark.parametrize(
-    "target_dtype, test_input, expected_result",
-    list(itertools.chain(*[
-        make_parameters("float", downcast_input(np.float16)),
-        make_parameters("float16", downcast_input(np.float16)),
-        make_parameters("float32", downcast_input(np.float16)),
-        make_parameters("float64", downcast_input(np.float16)),
-        make_parameters("longdouble", downcast_input(np.float16)),
-    ]))
-)
+# @parametrize(valid_dtype_data("float").with_na(pd.NA, np.nan))
+# def test_boolean_to_float_accepts_all_valid_type_specifiers(
+#     kwargs, test_input, test_output
+# ):
+#     fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+#     result = BooleanSeries(test_input).to_float(**kwargs)
+#     assert result.equals(test_output), (
+#         f"BooleanSeries.to_float({fmt_kwargs}) failed with input:\n"
+#         f"{test_input}\n"
+#         f"expected:\n"
+#         f"{test_output}\n"
+#         f"received:\n"
+#         f"{result}"
+#     )
+
+
+@parametrize(downcast_data())
 def test_boolean_to_float_downcasting(
-    target_dtype, test_input, expected_result
+    kwargs, test_input, test_output
 ):
-    series = BooleanSeries(test_input)
-    result = series.to_float(dtype=target_dtype, downcast=True)
-    assert result.equals(expected_result), (
-        f"BooleanSeries.to_float(dtype={repr(target_dtype)}, downcast=True) "
-        f"failed with input:\n"
+    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+    result = BooleanSeries(test_input).to_float(**kwargs)
+    assert result.equals(test_output), (
+        f"BooleanSeries.to_float({fmt_kwargs}) failed with input:\n"
         f"{test_input}\n"
         f"expected:\n"
-        f"{expected_result}\n"
+        f"{test_output}\n"
         f"received:\n"
         f"{result}"
     )
+
+
+#######################
+####    INVALID    ####
+#######################
+
+
+@parametrize(invalid_input_data())
+def test_boolean_to_float_rejects_all_invalid_inputs(
+    kwargs, test_input, test_output
+):
+    with pytest.raises(TypeError):
+        BooleanSeries(test_input).to_float(**kwargs)
+
+
+@parametrize(invalid_dtype_data("float"))
+def test_boolean_to_float_rejects_all_invalid_type_specifiers(
+    kwargs, test_input, test_output
+):
+    with pytest.raises(TypeError, match="`dtype` must be float-like"):
+        BooleanSeries(test_input).to_float(**kwargs)
+
+
+#####################
+####    OTHER    ####
+#####################
 
 
 def test_boolean_to_float_preserves_index():

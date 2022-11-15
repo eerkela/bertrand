@@ -51,6 +51,11 @@ cdef ElementType parse_example_scalar(
     )
 
 
+
+# TODO: make the CompositeType returned by this function contain a lot more
+# information.  See personal notes on how to do this.
+
+
 cdef CompositeType parse_example_vector(
     np.ndarray[object] arr,
     bint sparse = False,

@@ -236,7 +236,7 @@ cdef dict keywords = {
     "float128": {"base": LongDoubleType},
     "float96": {"base": LongDoubleType},
     "f16": "float128",
-    "f12": "float128",
+    "f12": "float96",
     "longdouble": np.dtype("longdouble").name,
     "longfloat": np.dtype("longfloat").name,
     "long double": np.dtype("longdouble").name,

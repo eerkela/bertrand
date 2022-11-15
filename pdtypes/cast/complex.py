@@ -23,6 +23,9 @@ from .float import FloatSeries
 # -> pd.isna() considers both of these to be NA
 # -> do same with infs
 
+# TODO: for complex series, treat infs/nans in real, imaginary components
+# separately.
+
 
 def reject_nonreal(
     imag: FloatSeries,

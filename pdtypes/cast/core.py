@@ -18,6 +18,23 @@ from pdtypes.cast.complex import ComplexSeries
 from pdtypes.cast.decimal import DecimalSeries
 from pdtypes.cast.string import StringSeries
 
+import datetime
+import decimal
+
+import numpy as np
+import pandas as pd
+
+from pdtypes.delegate import delegates
+from pdtypes.types import resolve_dtype, ElementType
+from pdtypes.util.type_hints import datetime_like, dtype_like
+
+from .base import SeriesWrapper
+
+
+
+# TODO: reject non-ElementType dtypes in individual conversions (implementation
+# detail, don't test)
+
 
 # TODO: https://www.fast.ai/2019/08/06/delegation/
 
@@ -70,7 +87,7 @@ def filter_kwargs(func: Callable, **kwargs) -> dict[str, Any]:
 # TODO: make this a base class for the specialized series types
 
 
-class ConversionSeries:
+class ConversionSeries(SeriesWrapper):
     """test"""
 
     def __init__(

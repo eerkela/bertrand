@@ -363,7 +363,17 @@ def ns_to_pandas_timestamp(
                     arg = arg.dt.tz_convert(tz)
                 else:
                     arg = arg.tz_convert(tz)
-            except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime as err:
+
+                # NOTE: tz_convert() doesn't reliably throw an error when
+                # overflow is encountered, so we have to check manually.  To do
+                # this, we render the minimum and maximum element of the
+                # result, which will prompt the desired error if one occurred.
+                arg.min()
+                arg.max()
+            except (
+                OverflowError,
+                pd._libs.tslibs.np_datetime.OutOfBoundsDatetime
+            ) as err:
                 err_msg = (f"localizing to {repr(str(tz))} causes `arg` to "
                            f"exceed pd.Timestamp range")
                 raise OverflowError(err_msg) from err

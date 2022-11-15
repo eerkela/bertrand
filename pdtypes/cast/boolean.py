@@ -119,8 +119,14 @@ class BooleanSeries(SeriesWrapper):
 
         return self.series
 
-    def to_decimal(self) -> pd.Series:
+    def to_decimal(
+        self,
+        dtype: dtype_like = "decimal",
+    ) -> pd.Series:
         """TODO"""
+        dtype = resolve_dtype(dtype)
+        validate_dtype(dtype, "decimal")
+
         with self.exclude_na(pd.NA):
             self.series = self + decimal.Decimal(0)
 
@@ -143,18 +149,6 @@ class BooleanSeries(SeriesWrapper):
         pandas_timestamp = resolve_dtype(pd.Timestamp)
         pydatetime = resolve_dtype(datetime.datetime)
         numpy_datetime64 = resolve_dtype(np.datetime64)
-
-        # alias M8[ns] to pd.Timestamp
-        # TODO: remove this?
-        # if (dtype in numpy_datetime64 and
-        #     dtype.unit == "ns" and
-        #     dtype.step_size == 1
-        # ):
-        #     dtype = resolve_dtype(
-        #         pd.Timestamp,
-        #         sparse=dtype.sparse,
-        #         categorical=dtype.categorical
-        #     )
 
         # convert nonmissing values to ns, then ns to datetime
         with self.exclude_na(pd.NaT):

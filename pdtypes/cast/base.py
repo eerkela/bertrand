@@ -25,19 +25,38 @@ class SeriesWrapper:
         hasnans: bool = None,
         is_na: pd.Series = None
     ):
+        # copy another SeriesWrapper's attributes
         if isinstance(series, SeriesWrapper):
             self.series = series.series
             self._hasnans = hasnans or series._hasnans
             self._is_na = is_na if is_na is not None else series._is_na
-        else:
-            # NOTE: pandas doesn't like converting scalar numpy arrays
-            if isinstance(series, np.ndarray) and not series.shape:
-                series = series[()]  # unwrap value
 
-            self.series = pd.Series(series, copy=False)
+        # create a new SeriesWrapper
+        else:
+            # wrap an existing pandas Series
+            if isinstance(series, pd.Series):
+                self.series = series
+
+            # wrap a numpy array
+            elif isinstance(series, np.ndarray):
+                # NOTE: pandas doesn't like converting scalar numpy arrays
+                if not series.shape:
+                    self.series = pd.Series(series[()], dtype=series.dtype)
+                else:
+                    self.series = pd.Series(series)
+
+            # pass to pandas Series constructor
+            else:
+                self.series = pd.Series(series, dtype="O")
+                # TODO: maybe call get_dtype on this result, and then
+                # astype() as necessary to find best representation.
+
+            # override hasnans, isna()
             self._hasnans = hasnans
             self._is_na = is_na
 
+        # optimization: if `hasnans` is explicitly False, pre-cache a
+        # full-False _is_na attribute rather than calling pd.isna().
         if self._hasnans is False and self._is_na is None:
             self._is_na = pd.Series(
                 np.full(self.series.shape[0], False),
