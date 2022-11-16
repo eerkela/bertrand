@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 import pytz
 
-from tests.cast import Case, Parameters, parametrize
+from tests.cast.scheme import CastCase, CastParameters, parametrize
 from tests.cast.boolean import (
     valid_input_data, valid_dtype_data, invalid_input_data, invalid_dtype_data
 )
@@ -23,6 +23,11 @@ from pdtypes.cast.boolean import BooleanSeries
 
 
 # TODO: M8/datetime64 target dtype with specific units/step size
+# np.dtype("M8[ns]"), np.dtype("M8[5us]"),
+# np.dtype("M8[50ms]"), np.dtype("M8[2s]"), np.dtype("M8[30m]"),
+# np.dtype("M8[h]"), np.dtype("M8[3D]"), np.dtype("M8[2W]"),
+# np.dtype("M8[3M]"), np.dtype("M8[10Y]"),
+
 
 
 # TODO: convert parameterized data functions to not use Parameters injection
@@ -40,13 +45,13 @@ def valid_unit_data(expected_dtype):
     interpret = lambda x: interpret_iso_8601_string(x, expected_dtype)
     series_type = None if expected_dtype is pd.Timestamp else "O"
 
-    case = lambda unit, test_output: Case(
+    case = lambda unit, test_output: CastCase(
         {"unit": unit},
         pd.Series([True, False]),
         test_output
     )
 
-    return Parameters(
+    return CastParameters(
         case("ns", pd.Series([
             interpret("1970-01-01 00:00:00.000000001"),
             interpret("1970-01-01 00:00:00.000000000")
@@ -91,13 +96,13 @@ def valid_unit_data(expected_dtype):
 
 
 def invalid_unit_data():
-    case = lambda unit: Case(
+    case = lambda unit: CastCase(
         {"unit": unit},
         pd.Series([True, False]),
         pd.Series([True, False])
     )
 
-    return Parameters(
+    return CastParameters(
         case("not valid"),
         case("NS"),
         case("US"),
@@ -114,13 +119,13 @@ def valid_timezone_data(expected_dtype):
     interpret = lambda x, tz: interpret_iso_8601_string(x, expected_dtype, tz)
     series_type = None if expected_dtype is pd.Timestamp else "O"
 
-    case = lambda tz, test_output: Case(
+    case = lambda tz, test_output: CastCase(
         {"unit": "us", "tz": tz},
         pd.Series([True, False]),
         test_output
     )
 
-    return Parameters(
+    return CastParameters(
         case(None, pd.Series([
             interpret("1970-01-01 00:00:00.000001000", tz=None),
             interpret("1970-01-01 00:00:00.000000000", tz=None)
@@ -173,13 +178,13 @@ def valid_epoch_data(expected_dtype):
     interpret = lambda x: interpret_iso_8601_string(x, expected_dtype)
     series_type = None if expected_dtype is pd.Timestamp else "O"
 
-    case = lambda epoch, test_output: Case(
+    case = lambda epoch, test_output: CastCase(
         {"unit": "us", "since": epoch},
         pd.Series([True, False]),
         test_output
     )
 
-    return Parameters(
+    return CastParameters(
         case(
             "UTC",
             pd.Series([
@@ -236,13 +241,13 @@ def irregular_unit_data(expected_dtype):
     interpret = lambda x: interpret_iso_8601_string(x, expected_dtype)
     series_type = None if expected_dtype is pd.Timestamp else "O"
 
-    case = lambda unit, epoch, test_output: Case(
+    case = lambda unit, epoch, test_output: CastCase(
         {"unit": unit, "since": epoch},
         pd.Series([True, False]),
         test_output
     )
 
-    return Parameters(
+    return CastParameters(
         # months (non-leap year)
         case("M", "1970-01-01 00:00:00", pd.Series([
             interpret("1970-02-01 00:00:00.000000000"),
@@ -384,13 +389,13 @@ def irregular_unit_data(expected_dtype):
 
 
 def M8_data():
-    case = lambda M8_repr, test_output: Case(
+    case = lambda M8_repr, test_output: CastCase(
         {"dtype": M8_repr, "unit": "Y"},
         pd.Series([True, False]),
         test_output
     )
 
-    return Parameters(
+    return CastParameters(
         case("M8[ns]", pd.Series([
             np.datetime64("1971-01-01 00:00:00.000000000", "ns"),
             np.datetime64("1970-01-01 00:00:00.000000000", "ns")
@@ -435,13 +440,13 @@ def M8_data():
 
 
 def unit_promotion_data():
-    case = lambda target_dtype, unit, epoch, test_output: Case(
+    case = lambda target_dtype, unit, epoch, test_output: CastCase(
         {"dtype": target_dtype, "unit": unit, "since": epoch},
         pd.Series([True, False]),
         test_output
     )
 
-    return Parameters(
+    return CastParameters(
         # pd.Timestamp -> datetime.datetime
         case("datetime", "us", "2262-04-11 23:47:16.854774", pd.Series([
             pd.Timestamp("2262-04-11 23:47:16.854775"),
@@ -545,7 +550,7 @@ def unit_promotion_data():
 
 
 def timezone_promotion_data():
-    case = lambda tz, test_output: Case(
+    case = lambda tz, test_output: CastCase(
         {
             "dtype": "datetime",
             "unit": "us",
@@ -556,7 +561,7 @@ def timezone_promotion_data():
         test_output
     )
 
-    return Parameters(
+    return CastParameters(
         case(None, pd.Series([
             pd.Timestamp("2262-04-11 23:47:16.854775"),
             pd.Timestamp("2262-04-11 23:47:16.854774")
@@ -581,12 +586,7 @@ def timezone_promotion_data():
 #####################
 
 
-@parametrize(
-    valid_input_data("datetime"),
-    valid_input_data("datetime[pandas]"),
-    valid_input_data("datetime[python]"),
-    valid_input_data("datetime[numpy]"),
-)
+@parametrize(valid_input_data("datetime"))
 def test_boolean_to_datetime_accepts_all_valid_inputs(
     kwargs, test_input, test_output
 ):
@@ -602,36 +602,36 @@ def test_boolean_to_datetime_accepts_all_valid_inputs(
     )
 
 
-# @parametrize(valid_dtype_data("datetime").with_na(pd.NA, pd.NaT))
-# def test_boolean_to_datetime_accepts_all_valid_type_specifiers(
-#     kwargs, test_input, test_output
-# ):
-#     fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-#     result = BooleanSeries(test_input).to_datetime(**kwargs)
-#     assert result.equals(test_output), (
-#         f"BooleanSeries.to_datetime({fmt_kwargs}) failed with input:\n"
-#         f"{test_input}\n"
-#         f"expected:\n"
-#         f"{test_output}\n"
-#         f"received:\n"
-#         f"{result}"
-#     )
+@parametrize(valid_dtype_data("datetime"))
+def test_boolean_to_datetime_accepts_all_valid_type_specifiers(
+    kwargs, test_input, test_output
+):
+    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+    result = BooleanSeries(test_input).to_datetime(**kwargs)
+    assert result.equals(test_output), (
+        f"BooleanSeries.to_datetime({fmt_kwargs}) failed with input:\n"
+        f"{test_input}\n"
+        f"expected:\n"
+        f"{test_output}\n"
+        f"received:\n"
+        f"{result}"
+    )
 
 
 @parametrize(
-    Parameters(
+    CastParameters(
         valid_unit_data(pd.Timestamp),
         dtype="datetime"
     ),
-    Parameters(
+    CastParameters(
         valid_unit_data(pd.Timestamp),
         dtype="datetime[pandas]"
     ),
-    Parameters(
+    CastParameters(
         valid_unit_data(datetime.datetime),
         dtype="datetime[python]"
     ),
-    Parameters(
+    CastParameters(
         valid_unit_data(np.datetime64),
         dtype="datetime[numpy]"
     ),
@@ -652,15 +652,15 @@ def test_boolean_to_datetime_handles_all_valid_units(
 
 
 @parametrize(
-    Parameters(
+    CastParameters(
         valid_timezone_data(pd.Timestamp),
         dtype="datetime"
     ),
-    Parameters(
+    CastParameters(
         valid_timezone_data(pd.Timestamp),
         dtype="datetime[pandas]"
     ),
-    Parameters(
+    CastParameters(
         valid_timezone_data(datetime.datetime),
         dtype="datetime[python]"
     ),
@@ -681,19 +681,19 @@ def test_boolean_to_datetime_handles_all_valid_timezones(
 
 
 @parametrize(
-    Parameters(
+    CastParameters(
         valid_epoch_data(pd.Timestamp),
         dtype="datetime"
     ),
-    Parameters(
+    CastParameters(
         valid_epoch_data(pd.Timestamp),
         dtype="datetime[pandas]"
     ),
-    Parameters(
+    CastParameters(
         valid_epoch_data(datetime.datetime),
         dtype="datetime[python]"
     ),
-    Parameters(
+    CastParameters(
         valid_epoch_data(np.datetime64),
         dtype="datetime[numpy]"
     ),
@@ -714,19 +714,19 @@ def test_boolean_to_datetime_handles_all_valid_epochs(
 
 
 @parametrize(
-    Parameters(
+    CastParameters(
         irregular_unit_data(pd.Timestamp),
         dtype="datetime"
     ),
-    Parameters(
+    CastParameters(
         irregular_unit_data(pd.Timestamp),
         dtype="datetime[pandas]"
     ),
-    Parameters(
+    CastParameters(
         irregular_unit_data(datetime.datetime),
         dtype="datetime[python]"
     ),
-    Parameters(
+    CastParameters(
         irregular_unit_data(np.datetime64),
         dtype="datetime[numpy]"
     ),

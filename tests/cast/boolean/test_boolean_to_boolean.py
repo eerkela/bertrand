@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from tests.cast import Parameters, parametrize
+from tests.cast.scheme import parametrize
 from tests.cast.boolean import (
     valid_input_data, valid_dtype_data, invalid_input_data, invalid_dtype_data
 )
@@ -14,10 +14,7 @@ from pdtypes.cast.boolean import BooleanSeries
 ###################
 
 
-@parametrize(
-    valid_input_data("bool"),
-    valid_input_data("nullable[bool]"),
-)
+@parametrize(valid_input_data("boolean"))
 def test_boolean_to_boolean_accepts_all_valid_inputs(
     kwargs, test_input, test_output
 ):
@@ -33,20 +30,20 @@ def test_boolean_to_boolean_accepts_all_valid_inputs(
     )
 
 
-# @parametrize(valid_dtype_data("boolean").with_na(pd.NA, pd.NA))
-# def test_boolean_to_boolean_accepts_all_valid_type_specifiers(
-#     kwargs, test_input, test_output
-# ):
-#     fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-#     result = BooleanSeries(test_input).to_boolean(**kwargs)
-#     assert result.equals(test_output), (
-#         f"BooleanSeries.to_boolean({fmt_kwargs}) failed with input:\n"
-#         f"{test_input}\n"
-#         f"expected:\n"
-#         f"{test_output}\n"
-#         f"received:\n"
-#         f"{result}"
-#     )
+@parametrize(valid_dtype_data("boolean"))
+def test_boolean_to_boolean_accepts_all_valid_type_specifiers(
+    kwargs, test_input, test_output
+):
+    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+    result = BooleanSeries(test_input).to_boolean(**kwargs)
+    assert result.equals(test_output), (
+        f"BooleanSeries.to_boolean({fmt_kwargs}) failed with input:\n"
+        f"{test_input}\n"
+        f"expected:\n"
+        f"{test_output}\n"
+        f"received:\n"
+        f"{result}"
+    )
 
 
 #######################

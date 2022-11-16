@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests.cast import Case, Parameters, parametrize
+from tests.cast.scheme import CastCase, CastParameters, parametrize
 from tests.cast.boolean import (
     valid_input_data, valid_dtype_data, invalid_input_data, invalid_dtype_data
 )
@@ -16,13 +16,13 @@ from pdtypes.cast.boolean import BooleanSeries
 
 
 def downcast_data():
-    case = lambda target_dtype, series_type: Case(
+    case = lambda target_dtype, series_type: CastCase(
         {"dtype": target_dtype, "downcast": True},
         pd.Series([True, False]),
         pd.Series([1+0j, 0+0j], dtype=series_type)
     )
 
-    return Parameters(
+    return CastParameters(
         case("complex", np.complex64),
         case("complex64", np.complex64),
         case("complex128", np.complex64),
@@ -35,12 +35,7 @@ def downcast_data():
 #####################
 
 
-@parametrize(
-    valid_input_data("complex"),
-    valid_input_data("complex64"),
-    valid_input_data("complex128"),
-    valid_input_data("clongdouble"),
-)
+@parametrize(valid_input_data("complex"))
 def test_boolean_to_complex_accepts_all_valid_inputs(
     kwargs, test_input, test_output
 ):
@@ -56,24 +51,20 @@ def test_boolean_to_complex_accepts_all_valid_inputs(
     )
 
 
-# @parametrize(
-#     valid_dtype_data("complex") \
-#         .with_na(pd.NA, complex("nan+nanj")) \
-#         
-# )
-# def test_boolean_to_complex_accepts_all_valid_type_specifiers(
-#     kwargs, test_input, test_output
-# ):
-#     fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-#     result = BooleanSeries(test_input).to_complex(**kwargs)
-#     assert result.equals(test_output), (
-#         f"BooleanSeries.to_complex({fmt_kwargs}) failed with input:\n"
-#         f"{test_input}\n"
-#         f"expected:\n"
-#         f"{test_output}\n"
-#         f"received:\n"
-#         f"{result}"
-#     )
+@parametrize(valid_dtype_data("complex"))
+def test_boolean_to_complex_accepts_all_valid_type_specifiers(
+    kwargs, test_input, test_output
+):
+    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+    result = BooleanSeries(test_input).to_complex(**kwargs)
+    assert result.equals(test_output), (
+        f"BooleanSeries.to_complex({fmt_kwargs}) failed with input:\n"
+        f"{test_input}\n"
+        f"expected:\n"
+        f"{test_output}\n"
+        f"received:\n"
+        f"{result}"
+    )
 
 
 @parametrize(downcast_data())

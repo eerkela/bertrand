@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests.cast import Case, Parameters, parametrize
+from tests.cast.scheme import CastCase, CastParameters, parametrize
 from tests.cast.boolean import (
     valid_input_data, valid_dtype_data, invalid_input_data, invalid_dtype_data
 )
@@ -16,13 +16,13 @@ from pdtypes.cast.boolean import BooleanSeries
 
 
 def downcast_data():
-    case = lambda target_dtype, series_type: Case(
+    case = lambda target_dtype, series_type: CastCase(
         {"dtype": target_dtype, "downcast": True},
         pd.Series([True, False]),
         pd.Series([1, 0], dtype=series_type)
     )
 
-    return Parameters(
+    return CastParameters(
         # non-nullable
         case("int", np.int8),
         case("signed", np.int8),
@@ -56,73 +56,7 @@ def downcast_data():
 #####################
 
 
-@parametrize(
-    # non-nullable
-    Parameters(
-        Parameters(
-            valid_input_data("int"),
-            valid_input_data("signed"),
-            valid_input_data("unsigned"),
-        ),
-        Parameters(
-            valid_input_data("int8"),
-            valid_input_data("int16"),
-            valid_input_data("int32"),
-            valid_input_data("int64"),
-            valid_input_data("uint8"),
-            valid_input_data("uint16"),
-            valid_input_data("uint32"),
-            valid_input_data("uint64"),
-        ),
-        Parameters(
-            valid_input_data("char"),
-            valid_input_data("short"),
-            valid_input_data("intc"),
-            valid_input_data("long"),
-            valid_input_data("long long"),
-            valid_input_data("ssize_t"),
-            valid_input_data("unsigned char"),
-            valid_input_data("unsigned short"),
-            valid_input_data("unsigned intc"),
-            valid_input_data("unsigned long"),
-            valid_input_data("unsigned long long"),
-            valid_input_data("size_t"),
-        ),
-    ),
-
-    # nullable
-    Parameters(
-        Parameters(
-            valid_input_data("nullable[int]"),
-            valid_input_data("nullable[signed]"),
-            valid_input_data("nullable[unsigned]"),
-        ),
-        Parameters(
-            valid_input_data("nullable[int8]"),
-            valid_input_data("nullable[int16]"),
-            valid_input_data("nullable[int32]"),
-            valid_input_data("nullable[int64]"),
-            valid_input_data("nullable[uint8]"),
-            valid_input_data("nullable[uint16]"),
-            valid_input_data("nullable[uint32]"),
-            valid_input_data("nullable[uint64]"),
-        ),
-        Parameters(
-            valid_input_data("nullable[char]"),
-            valid_input_data("nullable[short]"),
-            valid_input_data("nullable[intc]"),
-            valid_input_data("nullable[long]"),
-            valid_input_data("nullable[long long]"),
-            valid_input_data("nullable[ssize_t]"),
-            valid_input_data("nullable[unsigned char]"),
-            valid_input_data("nullable[unsigned short]"),
-            valid_input_data("nullable[unsigned intc]"),
-            valid_input_data("nullable[unsigned long]"),
-            valid_input_data("nullable[unsigned long long]"),
-            valid_input_data("nullable[size_t]"),
-        ),
-    ),
-)
+@parametrize(valid_input_data("integer"))
 def test_boolean_to_integer_accepts_all_valid_inputs(
     kwargs, test_input, test_output
 ):
@@ -138,20 +72,20 @@ def test_boolean_to_integer_accepts_all_valid_inputs(
     )
 
 
-# @parametrize(valid_dtype_data("integer").with_na(pd.NA, pd.NA))
-# def test_boolean_to_integer_accepts_all_valid_type_specifiers(
-#     kwargs, test_input, test_output
-# ):
-#     fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-#     result = BooleanSeries(test_input).to_integer(**kwargs)
-#     assert result.equals(test_output), (
-#         f"BooleanSeries.to_integer({fmt_kwargs}) failed with input:\n"
-#         f"{test_input}\n"
-#         f"expected:\n"
-#         f"{test_output}\n"
-#         f"received:\n"
-#         f"{result}"
-#     )
+@parametrize(valid_dtype_data("integer"))
+def test_boolean_to_integer_accepts_all_valid_type_specifiers(
+    kwargs, test_input, test_output
+):
+    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+    result = BooleanSeries(test_input).to_integer(**kwargs)
+    assert result.equals(test_output), (
+        f"BooleanSeries.to_integer({fmt_kwargs}) failed with input:\n"
+        f"{test_input}\n"
+        f"expected:\n"
+        f"{test_output}\n"
+        f"received:\n"
+        f"{result}"
+    )
 
 
 @parametrize(downcast_data())
@@ -170,9 +104,9 @@ def test_boolean_to_integer_downcasting(
     )
 
 
-#######################
-####    INVALID    ####
-#######################
+# #######################
+# ####    INVALID    ####
+# #######################
 
 
 @parametrize(invalid_input_data())

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests.cast import Case, Parameters, parametrize
+from tests.cast.scheme import CastCase, CastParameters, parametrize
 from tests.cast.boolean import (
     valid_input_data, valid_dtype_data, invalid_input_data, invalid_dtype_data
 )
@@ -16,13 +16,13 @@ from pdtypes.cast.boolean import BooleanSeries
 
 
 def downcast_data():
-    case = lambda target_dtype, series_type: Case(
+    case = lambda target_dtype, series_type: CastCase(
         {"dtype": target_dtype, "downcast": True},
         pd.Series([True, False]),
         pd.Series([1.0, 0.0], dtype=series_type)
     )
 
-    return Parameters(
+    return CastParameters(
         case("float", np.float16),
         case("float16", np.float16),
         case("float32", np.float16),
@@ -36,13 +36,7 @@ def downcast_data():
 #####################
 
 
-@parametrize(
-    valid_input_data("float"),
-    valid_input_data("float16"),
-    valid_input_data("float32"),
-    valid_input_data("float64"),
-    valid_input_data("longdouble"),
-)
+@parametrize(valid_input_data("float"))
 def test_boolean_to_float_accepts_all_valid_inputs(
     kwargs, test_input, test_output
 ):
@@ -58,20 +52,20 @@ def test_boolean_to_float_accepts_all_valid_inputs(
     )
 
 
-# @parametrize(valid_dtype_data("float").with_na(pd.NA, np.nan))
-# def test_boolean_to_float_accepts_all_valid_type_specifiers(
-#     kwargs, test_input, test_output
-# ):
-#     fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-#     result = BooleanSeries(test_input).to_float(**kwargs)
-#     assert result.equals(test_output), (
-#         f"BooleanSeries.to_float({fmt_kwargs}) failed with input:\n"
-#         f"{test_input}\n"
-#         f"expected:\n"
-#         f"{test_output}\n"
-#         f"received:\n"
-#         f"{result}"
-#     )
+@parametrize(valid_dtype_data("float"))
+def test_boolean_to_float_accepts_all_valid_type_specifiers(
+    kwargs, test_input, test_output
+):
+    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+    result = BooleanSeries(test_input).to_float(**kwargs)
+    assert result.equals(test_output), (
+        f"BooleanSeries.to_float({fmt_kwargs}) failed with input:\n"
+        f"{test_input}\n"
+        f"expected:\n"
+        f"{test_output}\n"
+        f"received:\n"
+        f"{result}"
+    )
 
 
 @parametrize(downcast_data())

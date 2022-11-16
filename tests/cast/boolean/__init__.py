@@ -4,8 +4,8 @@ import decimal
 import numpy as np
 import pandas as pd
 
-from tests.cast import Parameters, Case
-from tests.cast.tables import ELEMENT_TYPES, EXTENSION_TYPES
+from tests.cast.scheme import CastCase, CastParameters
+from tests.cast.tables import EXTENSION_TYPES, SERIES_TYPES
 
 
 # TODO: this should test against the final to_x conversion functions, rather
@@ -14,103 +14,38 @@ from tests.cast.tables import ELEMENT_TYPES, EXTENSION_TYPES
 # is is an interface to the more explicit to_x functions.
 
 
+# TODO: document these
+
+
 category_vals = {
-    # boolean
-    "bool": (True, False, pd.NA),
-    "nullable[bool]": (True, False, pd.NA),
-
-    # integer
-    "int": (1, 0, pd.NA),
-    "signed": (1, 0, pd.NA),
-    "unsigned": (1, 0, pd.NA),
-    "int8": (1, 0, pd.NA),
-    "int16": (1, 0, pd.NA),
-    "int32": (1, 0, pd.NA),
-    "int64": (1, 0, pd.NA),
-    "uint8": (1, 0, pd.NA),
-    "uint16": (1, 0, pd.NA),
-    "uint32": (1, 0, pd.NA),
-    "uint64": (1, 0, pd.NA),
-    "char": (1, 0, pd.NA),
-    "short": (1, 0, pd.NA),
-    "intc": (1, 0, pd.NA),
-    "long": (1, 0, pd.NA),
-    "long long": (1, 0, pd.NA),
-    "ssize_t": (1, 0, pd.NA),
-    "unsigned char": (1, 0, pd.NA),
-    "unsigned short": (1, 0, pd.NA),
-    "unsigned intc": (1, 0, pd.NA),
-    "unsigned long": (1, 0, pd.NA),
-    "unsigned long long": (1, 0, pd.NA),
-    "size_t": (1, 0, pd.NA),
-    "nullable[int]": (1, 0, pd.NA),
-    "nullable[signed]": (1, 0, pd.NA),
-    "nullable[unsigned]": (1, 0, pd.NA),
-    "nullable[int8]": (1, 0, pd.NA),
-    "nullable[int16]": (1, 0, pd.NA),
-    "nullable[int32]": (1, 0, pd.NA),
-    "nullable[int64]": (1, 0, pd.NA),
-    "nullable[uint8]": (1, 0, pd.NA),
-    "nullable[uint16]": (1, 0, pd.NA),
-    "nullable[uint32]": (1, 0, pd.NA),
-    "nullable[uint64]": (1, 0, pd.NA),
-    "nullable[char]": (1, 0, pd.NA),
-    "nullable[short]": (1, 0, pd.NA),
-    "nullable[intc]": (1, 0, pd.NA),
-    "nullable[long]": (1, 0, pd.NA),
-    "nullable[long long]": (1, 0, pd.NA),
-    "nullable[ssize_t]": (1, 0, pd.NA),
-    "nullable[unsigned char]": (1, 0, pd.NA),
-    "nullable[unsigned short]": (1, 0, pd.NA),
-    "nullable[unsigned intc]": (1, 0, pd.NA),
-    "nullable[unsigned long]": (1, 0, pd.NA),
-    "nullable[unsigned long long]": (1, 0, pd.NA),
-    "nullable[size_t]": (1, 0, pd.NA),
-
-    # float
+    "boolean": (True, False, pd.NA),
+    "integer": (1, 0, pd.NA),
     "float": (1.0, 0.0, np.nan),
-    "float16": (1.0, 0.0, np.nan),
-    "float32": (.0, 0.0, np.nan),
-    "float64": (1.0, 0.0, np.nan),
-    "longdouble": (1.0, 0.0, np.nan),
-
-    # complex
     "complex": (1+0j, 0+0j, complex("nan+nanj")),
-    "complex64": (1+0j, 0+0j, complex("nan+nanj")),
-    "complex128": (1+0j, 0+0j, complex("nan+nanj")),
-    "clongdouble": (1+0j, 0+0j, complex("nan+nanj")),
-
-    # decimal
     "decimal": (decimal.Decimal(1), decimal.Decimal(0), pd.NA),
-
-    # datetime
-    "datetime": (pd.Timestamp(1), pd.Timestamp(0), pd.NaT),
-    "datetime[pandas]": (pd.Timestamp(1), pd.Timestamp(0), pd.NaT),
-    "datetime[python]": (
-        datetime.datetime.utcfromtimestamp(0),
-        datetime.datetime.utcfromtimestamp(0),
-        pd.NaT
-    ),
-    "datetime[numpy]": (
-        np.datetime64(1, "ns"), np.datetime64(0, "ns"), pd.NaT
-    ),
-
-    # timedelta
-    "timedelta": (pd.Timedelta(1), pd.Timedelta(0), pd.NaT),
-    "timedelta[pandas]": (pd.Timedelta(1), pd.Timedelta(0), pd.NaT),
-    "timedelta[python]": (
-        datetime.timedelta(0), datetime.timedelta(0), pd.NaT
-    ),
-    "timedelta[numpy]": (
-        np.timedelta64(1, "ns"), np.timedelta64(0, "ns"), pd.NaT
-    ),
-
-    # string
-    "str": ("True", "False", pd.NA),
-    "str[python]": ("True", "False", pd.NA),
-    "str[pyarrow]": ("True", "False", pd.NA),
-
-    # object
+    "datetime": {
+        "datetime": (pd.Timestamp(1), pd.Timestamp(0), pd.NaT),
+        "datetime[pandas]": (pd.Timestamp(1), pd.Timestamp(0), pd.NaT),
+        "datetime[python]": (
+            datetime.datetime.utcfromtimestamp(0),
+            datetime.datetime.utcfromtimestamp(0),
+            pd.NaT
+        ),
+        "datetime[numpy]": (
+            np.datetime64(1, "ns"), np.datetime64(0, "ns"), pd.NaT
+        ),
+    },
+    "timedelta": {
+        "timedelta": (pd.Timedelta(1), pd.Timedelta(0), pd.NaT),
+        "timedelta[pandas]": (pd.Timedelta(1), pd.Timedelta(0), pd.NaT),
+        "timedelta[python]": (
+            datetime.timedelta(0), datetime.timedelta(0), pd.NaT
+        ),
+        "timedelta[numpy]": (
+            np.timedelta64(1, "ns"), np.timedelta64(0, "ns"), pd.NaT
+        ),
+    },
+    "string": ("True", "False", pd.NA),
     "object": (True, False, pd.NA),
 }
 
@@ -121,29 +56,23 @@ category_vals = {
 
 
 def valid_input_data(category):
-    case = lambda test_input, test_output: Case(
-        {"dtype": category},
+    case = lambda test_input, test_output: CastCase(
+        {"dtype": target_dtype},
         test_input,
         test_output,
         reject_nonseries_input=False
     )
 
-    # gather appropriate True/False/NA values from `category_vals`
-    true, false, na = category_vals[category]
-
-    # gather output series dtype from `ELEMENT_TYPES` + `EXTENSION_TYPES`
-    dtype_without_na = ELEMENT_TYPES[category]["output_type"]
-    if category in (
-        "bool", "int", "signed", "unsigned", "int8", "int16", "int32", "int64",
-        "uint8", "uint16", "uint32", "uint64", "char", "short", "intc", "long",
-        "long long", "unsigned char", "unsigned short", "unsigned intc",
-        "unsigned long", "unsigned long long",
-    ):
-        dtype_with_na = EXTENSION_TYPES[np.dtype(dtype_without_na)]
-    else:
-        dtype_with_na = dtype_without_na
-
-    return Parameters(
+    # NOTE: `pars` specifies test cases.  This pattern looks a little strange,
+    # but is necessary to accomodate "datetime" and "timedelta" categories,
+    # which have different True/False/NA values depending on subtype.  To call
+    # pars(), these values must be specified in the valid_input_data() scope,
+    # as well as `target_dtype`, `dtype_without_na`, and `dtype_with_na`.
+    # `target_dtype` and `dtype_without_na` can be found by consulting the
+    # SERIES_TYPES lookup table.  `dtype_with_na` is usually equal to
+    # `dtype_without_na`, except in the case of "boolean" or "integer"
+    # categories, which are not nullable by default.
+    pars = lambda: CastParameters(
         # scalar
         case(
             True,
@@ -233,31 +162,49 @@ def valid_input_data(category):
         ),
     )
 
+    test_cases = []
+    subtypes = SERIES_TYPES[category]
+    vals = category_vals[category]
+    for target_dtype, dtype_without_na in subtypes.items():
+        # get True/False/NA values for the given target_dtype
+        if isinstance(vals, dict):
+            true, false, na = vals[target_dtype]
+        else:
+            true, false, na = vals
+
+        # get dtype_with_na
+        dtype_with_na = EXTENSION_TYPES.get(dtype_without_na, dtype_without_na)
+
+        # append parameter list
+        test_cases.append(pars())
+
+    # concatenate test_cases
+    return CastParameters(*test_cases)
+
 
 def valid_dtype_data(category):
-    true, false, na = category_vals[category]
-
-    case = lambda dtype, output_dtype: Case(
-        {"dtype": dtype},
+    case = lambda target_dtype, output_dtype: CastCase(
+        {"dtype": target_dtype},
         pd.Series([True, False]),
         pd.Series([true, false], dtype=output_dtype)
     )
 
-    type_info = ELEMENT_TYPES[category]
-    output_type = type_info["output_type"]
-    aliases = type_info["aliases"]
+    test_cases = []
+    subtypes = SERIES_TYPES[category]
+    vals = category_vals[category]
+    for target_dtype, output_dtype in subtypes.items():
+        # get True/False/NA values for the given target_dtype
+        if isinstance(vals, dict):
+            true, false, na = vals[target_dtype]
+        else:
+            true, false, na = vals
 
-    return Parameters(
-        Parameters(*[
-            case(typespec, output_type) for typespec in aliases["atomic"]
-        ]),
-        Parameters(*[
-            case(typespec, output_type) for typespec in aliases["dtype"]
-        ]),
-        Parameters(*[
-            case(typespec, output_type) for typespec in aliases["string"]
-        ]),
-    ).with_na(pd.NA, na)
+        # append CastCase object
+        obj = case(target_dtype, output_dtype)
+        test_cases.append(obj)
+        test_cases.append(obj.with_na(pd.NA, na))
+
+    return CastParameters(*test_cases)
 
 
 ############################
@@ -266,51 +213,35 @@ def valid_dtype_data(category):
 
 
 def invalid_input_data():
-    case = lambda test_input: Case(
+    case = lambda test_input: CastCase(
         {},
         test_input,
-        pd.Series([True, False]),  # not used
+        pd.Series(dtype="O"),  # not used
         reject_nonseries_input=False
     )
 
-    return Parameters(
-        # sets
+    return CastParameters(
+        # set
         case({True, False}),
     )
 
 
-
-# TODO: accept *excluding?
-# invalid_dtype_data(
-#     "bool",
-#     "nullable[bool]"
-# )
-
-# element type lookup tables must implement a specific category type, rather
-# than grouping them together.  Then you specify the types to exclude as
-# positional arguments.
-
-
 def invalid_dtype_data(category):
-    case = lambda dtype: Case(
-        {"dtype": dtype},
+    case = lambda target_dtype: CastCase(
+        {"dtype": target_dtype},
         pd.Series([True, False]),
-        pd.Series([True, False])  # NOTE: not used
+        pd.Series(dtype="O")  # not used
     )
 
-    return Parameters(
-        Parameters(*[
-            Parameters(*[case(k) for k in specs])
-            for cat, specs in ATOMIC_ELEMENT_TYPES.items() if cat != category
-            # if cat not in excluding
-        ]),
-        Parameters(*[
-            Parameters(*[case(k) for k in specs])
-            for cat, specs in DTYPE_ELEMENT_TYPES.items() if cat != category
-        ]),
-        Parameters(*[
-            Parameters(*[case(k) for k in specs])
-            for cat, specs in STRING_ELEMENT_TYPES.items() if cat != category
-        ]),
-    )
+    assert category in SERIES_TYPES
+
+    test_cases = []
+    for cat, subtypes in SERIES_TYPES.items():
+        if cat != category:
+            pars = CastParameters(*[
+                case(target_dtype) for target_dtype in subtypes
+            ])
+            test_cases.append(pars)
+
+    return CastParameters(*test_cases)
 
