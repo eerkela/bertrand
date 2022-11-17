@@ -310,7 +310,7 @@ cdef dict keywords = {
     "timedelta": {"base": TimedeltaType},
 
     # pandas.Timedelta
-    "timedelta[pandas]": {"base": PandasTimestampType},
+    "timedelta[pandas]": {"base": PandasTimedeltaType},
     "pandas.Timedelta": "timedelta[pandas]",
     "pandas Timedelta": "timedelta[pandas]",
     "pd.Timedelta": "timedelta[pandas]",

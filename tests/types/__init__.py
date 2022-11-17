@@ -9,6 +9,13 @@ import pandas as pd
 from pdtypes import PYARROW_INSTALLED
 
 
+# NOTE: reference on platform-specific numpy types and their ctype equivalents:
+# https://numpy.org/doc/stable/reference/arrays.scalars.html#arrays-scalars-built-in
+
+# To get an equivalent ctype for a given numpy dtype:
+# https://numpy.org/doc/stable/reference/routines.ctypeslib.html#numpy.ctypeslib.as_ctypes_type
+
+
 TYPE_ALIASES = {
     # some types are platform-dependent.  For reference, these are indicated
     # with a comment showing the equivalent type as seen by the compiler.

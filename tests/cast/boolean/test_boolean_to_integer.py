@@ -116,6 +116,14 @@ def test_boolean_to_integer_rejects_all_invalid_inputs(
     with pytest.raises(TypeError):
         BooleanSeries(test_input).to_integer(**kwargs)
 
+        # custom error message
+        fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+        pytest.fail(
+            f"BooleanSeries.to_integer({fmt_kwargs}) did not reject "
+            f"input data:\n"
+            f"{test_input}"
+        )
+
 
 @parametrize(invalid_dtype_data("integer"))
 def test_boolean_to_integer_rejects_all_invalid_type_specifiers(
@@ -123,6 +131,15 @@ def test_boolean_to_integer_rejects_all_invalid_type_specifiers(
 ):
     with pytest.raises(TypeError, match="`dtype` must be int-like"):
         BooleanSeries(test_input).to_integer(**kwargs)
+
+        # custom error message
+        fmt_kwargs = ", ".join(
+            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "dtype"
+        )
+        pytest.fail(
+            f"BooleanSeries.to_integer({fmt_kwargs}) did not reject "
+            f"dtype={repr(kwargs['dtype'])}"
+        )
 
 
 #####################
@@ -132,21 +149,24 @@ def test_boolean_to_integer_rejects_all_invalid_type_specifiers(
 
 def test_boolean_to_integer_preserves_index():
     # arrange
-    val = pd.Series(
-        [True, False, pd.NA],
-        index=[4, 5, 6],
-        dtype=pd.BooleanDtype()
-    )
-    expected = pd.Series(
-        [1, 0, pd.NA],
-        index=[4, 5, 6],
-        dtype=pd.Int64Dtype()
+    case = CastCase(
+        {},
+        pd.Series(
+            [True, False, pd.NA],
+            index=[4, 5, 6],
+            dtype=pd.BooleanDtype()
+        ),
+        pd.Series(
+            [1, 0, pd.NA],
+            index=[4, 5, 6],
+            dtype=pd.Int64Dtype()
+        )
     )
 
     # act
-    result = BooleanSeries(val).to_integer()
+    result = BooleanSeries(case.test_input).to_integer(**case.kwargs)
 
     # assert
-    assert result.equals(expected), (
+    assert result.equals(case.test_output), (
         "BooleanSeries.to_integer() does not preserve index"
     )

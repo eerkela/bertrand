@@ -3,7 +3,7 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
-from tests.cast.scheme import parametrize
+from tests.cast.scheme import CastCase, parametrize
 from tests.cast.boolean import (
     valid_input_data, valid_dtype_data, invalid_input_data, invalid_dtype_data
 )
@@ -60,6 +60,14 @@ def test_boolean_to_decimal_rejects_all_invalid_inputs(
     with pytest.raises(TypeError):
         BooleanSeries(test_input).to_decimal(**kwargs)
 
+        # custom error message
+        fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+        pytest.fail(
+            f"BooleanSeries.to_decimal({fmt_kwargs}) did not reject "
+            f"input data:\n"
+            f"{test_input}"
+        )
+
 
 @parametrize(invalid_dtype_data("decimal"))
 def test_boolean_to_decimal_rejects_all_invalid_type_specifiers(
@@ -67,6 +75,15 @@ def test_boolean_to_decimal_rejects_all_invalid_type_specifiers(
 ):
     with pytest.raises(TypeError, match="`dtype` must be decimal-like"):
         BooleanSeries(test_input).to_decimal(**kwargs)
+
+        # custom error message
+        fmt_kwargs = ", ".join(
+            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "dtype"
+        )
+        pytest.fail(
+            f"BooleanSeries.to_decimal({fmt_kwargs}) did not reject "
+            f"dtype={repr(kwargs['dtype'])}"
+        )
 
 
 #####################
@@ -76,21 +93,24 @@ def test_boolean_to_decimal_rejects_all_invalid_type_specifiers(
 
 def test_boolean_to_decimal_preserves_index():
     # arrange
-    val = pd.Series(
-        [True, False, pd.NA],
-        index=[4, 5, 6],
-        dtype=pd.BooleanDtype()
+    case = CastCase(
+        {},
+        pd.Series(
+            [True, False, pd.NA],
+            index=[4, 5, 6],
+            dtype=pd.BooleanDtype()
+        ),
+        pd.Series(
+            [Decimal(1), Decimal(0), pd.NA],
+            index=[4, 5, 6],
+            dtype="O"
+        )
     )
 
     # act
-    result = BooleanSeries(val).to_decimal()
+    result = BooleanSeries(case.test_input).to_decimal(**case.kwargs)
 
     # assert
-    expected = pd.Series(
-        [Decimal(1), Decimal(0), pd.NA],
-        index=[4, 5, 6],
-        dtype="O"
-    )
-    assert result.equals(expected), (
+    assert result.equals(case.test_output), (
         "BooleanSeries.to_decimal() does not preserve index"
     )

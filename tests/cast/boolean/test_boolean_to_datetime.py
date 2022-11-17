@@ -7,11 +7,12 @@ import pandas as pd
 import pytest
 import pytz
 
-from tests.cast.scheme import CastCase, CastParameters, parametrize
+from tests.cast.scheme import (
+    CastCase, CastParameters, interpret_iso_8601_string, parametrize
+)
 from tests.cast.boolean import (
     valid_input_data, valid_dtype_data, invalid_input_data, invalid_dtype_data
 )
-from tests.cast.datetime import interpret_iso_8601_string
 
 from pdtypes.cast.boolean import BooleanSeries
 
@@ -20,20 +21,9 @@ from pdtypes.cast.boolean import BooleanSeries
 # tzinfo objects.  Official support will be added soon.
 
 
-
-
-# TODO: M8/datetime64 target dtype with specific units/step size
-# np.dtype("M8[ns]"), np.dtype("M8[5us]"),
-# np.dtype("M8[50ms]"), np.dtype("M8[2s]"), np.dtype("M8[30m]"),
-# np.dtype("M8[h]"), np.dtype("M8[3D]"), np.dtype("M8[2W]"),
-# np.dtype("M8[3M]"), np.dtype("M8[10Y]"),
-
-
-
-# TODO: convert parameterized data functions to not use Parameters injection
-# -> more like valid_input_data.  Saves lines and is more readable.
-# -> use actual dtype as category - "datetime", "datetime[pandas]", etc.
-
+# TODO: on invalid input, use pytest.raises as a context manager and do
+# assertions on the returned exc_info object, rather than matching directly
+# in pytest.raises() itself.  This should be more stable.
 
 
 ####################
@@ -41,12 +31,15 @@ from pdtypes.cast.boolean import BooleanSeries
 ####################
 
 
-def valid_unit_data(expected_dtype):
-    interpret = lambda x: interpret_iso_8601_string(x, expected_dtype)
-    series_type = None if expected_dtype is pd.Timestamp else "O"
+def valid_unit_data(target_dtype):
+    interpret = lambda x: interpret_iso_8601_string(x, target_dtype)
+    if target_dtype in ("datetime", "datetime[pandas]"):
+        series_type = None
+    else:
+        series_type = "O"
 
     case = lambda unit, test_output: CastCase(
-        {"unit": unit},
+        {"dtype": target_dtype, "unit": unit},
         pd.Series([True, False]),
         test_output
     )
@@ -99,7 +92,7 @@ def invalid_unit_data():
     case = lambda unit: CastCase(
         {"unit": unit},
         pd.Series([True, False]),
-        pd.Series([True, False])
+        pd.Series(dtype="O")  # not used
     )
 
     return CastParameters(
@@ -115,12 +108,15 @@ def invalid_unit_data():
     ).with_na(pd.NA, pd.NaT)
 
 
-def valid_timezone_data(expected_dtype):
-    interpret = lambda x, tz: interpret_iso_8601_string(x, expected_dtype, tz)
-    series_type = None if expected_dtype is pd.Timestamp else "O"
+def valid_timezone_data(target_dtype):
+    interpret = lambda x, tz: interpret_iso_8601_string(x, target_dtype, tz=tz)
+    if target_dtype in ("datetime", "datetime[pandas]"):
+        series_type = None
+    else:
+        series_type = "O"
 
     case = lambda tz, test_output: CastCase(
-        {"unit": "us", "tz": tz},
+        {"dtype": target_dtype, "unit": "us", "tz": tz},
         pd.Series([True, False]),
         test_output
     )
@@ -174,203 +170,163 @@ def valid_timezone_data(expected_dtype):
     ).with_na(pd.NA, pd.NaT)
 
 
-def valid_epoch_data(expected_dtype):
-    interpret = lambda x: interpret_iso_8601_string(x, expected_dtype)
-    series_type = None if expected_dtype is pd.Timestamp else "O"
+# TODO:
+# - non-IANA timezones (excluding "local")
+# - applying timezones to np.datetime64 objects
+
+
+def non_IANA_timezone_data():
+    case = lambda tz: CastCase(
+        {"tz": tz},
+        pd.Series([True, False]),
+        pd.Series(dtype="O")  # not used
+    )
+
+    return CastParameters(
+        # malformed
+        case("the cake is a lie"),
+
+        # non-IANA
+        case("Pacific"),
+        case("PST"),
+    )
+
+
+def M8_timezone_data():
+    case = lambda tz: CastCase(
+        {"dtype": "datetime[numpy]", "tz": tz},
+        pd.Series([True, False]),
+        pd.Series(dtype="O")  # not used
+    )
+
+    return CastParameters(
+        case("US/Pacific"),
+        case("Europe/Berlin"),
+        case(pytz.timezone("Asia/Hong_Kong")),
+        case(zoneinfo.ZoneInfo("America/Sao_Paulo")),
+        case(dateutil.tz.gettz("Asia/Istanbul")),
+    )
+
+
+# TODO: add all custom epochs to this check
+
+
+def valid_epoch_data(target_dtype):
+    interpret = lambda x: interpret_iso_8601_string(x, target_dtype)
+    if target_dtype in ("datetime", "datetime[pandas]"):
+        series_type = None
+    else:
+        series_type = "O"
 
     case = lambda epoch, test_output: CastCase(
-        {"unit": "us", "since": epoch},
+        {"dtype": target_dtype, "unit": "us", "since": epoch},
         pd.Series([True, False]),
         test_output
     )
 
     return CastParameters(
-        case(
-            "UTC",
-            pd.Series([
-                interpret("1970-01-01 00:00:00.000001000"),
-                interpret("1970-01-01 00:00:00.000000000")
-            ], dtype=series_type)
-        ),
-        case(
-            "reduced julian",
-            pd.Series([
-                interpret("1858-11-16 12:00:00.000001000"),
-                interpret("1858-11-16 12:00:00.000000000")
-            ], dtype=series_type)
-        ),
-        case(
-            "1941-12-07 08:00:00-1030",
-            pd.Series([
-                interpret("1941-12-07 18:30:00.000001000"),
-                interpret("1941-12-07 18:30:00.000000000")
-            ], dtype=series_type)
-        ),
-        case(
-            "November 22, 1963 at 12:30 PM",
-            pd.Series([
-                interpret("1963-11-22 12:30:00.000001000"),
-                interpret("1963-11-22 12:30:00.000000000")
-            ], dtype=series_type)
-        ),
-        case(
-            pd.Timestamp("1989-11-09 19:00:00", tz="Europe/Berlin"),
-            pd.Series([
-                interpret("1989-11-09 18:00:00.000001000"),
-                interpret("1989-11-09 18:00:00.000000000")
-            ], dtype=series_type)
-        ),
-        case(
-            datetime.datetime.fromisoformat("1918-11-11 11:00:00"),
-            pd.Series([
-                interpret("1918-11-11 11:00:00.000001000"),
-                interpret("1918-11-11 11:00:00.000000000")
-            ], dtype=series_type)
-        ),
-        case(
-            np.datetime64("1789-07-14 20:00:00"),
-            pd.Series([
-                interpret("1789-07-14 20:00:00.000001000"),
-                interpret("1789-07-14 20:00:00.000000000")
-            ], dtype=series_type)
-        ),
+        # named epochs
+        case("UTC", pd.Series([
+            interpret("1970-01-01 00:00:00.000001000"),
+            interpret("1970-01-01 00:00:00.000000000")
+        ], dtype=series_type)),
+        case("reduced julian", pd.Series([
+            interpret("1858-11-16 12:00:00.000001000"),
+            interpret("1858-11-16 12:00:00.000000000")
+        ], dtype=series_type)),
+
+        # ISO 8601
+        case("1941-12-07 08:00:00-1030", pd.Series([
+            interpret("1941-12-07 18:30:00.000001000"),
+            interpret("1941-12-07 18:30:00.000000000")
+        ], dtype=series_type)),
+
+        # parsed
+        case("November 22, 1963 at 12:30 PM", pd.Series([
+            interpret("1963-11-22 12:30:00.000001000"),
+            interpret("1963-11-22 12:30:00.000000000")
+        ], dtype=series_type)),
+
+        # pd.Timestamp
+        case(pd.Timestamp("1989-11-09 19:00:00", tz="Europe/Berlin"), pd.Series([
+            interpret("1989-11-09 18:00:00.000001000"),
+            interpret("1989-11-09 18:00:00.000000000")
+        ], dtype=series_type)),
+
+        # datetime.datetime
+        case(datetime.datetime.fromisoformat("1918-11-11 11:00:00"), pd.Series([
+            interpret("1918-11-11 11:00:00.000001000"),
+            interpret("1918-11-11 11:00:00.000000000")
+        ], dtype=series_type)),
+
+        # np.datetime64
+        case(np.datetime64("1789-07-14 20:00:00"), pd.Series([
+            interpret("1789-07-14 20:00:00.000001000"),
+            interpret("1789-07-14 20:00:00.000000000")
+        ], dtype=series_type)),
     ).with_na(pd.NA, pd.NaT)
 
 
-def irregular_unit_data(expected_dtype):
-    interpret = lambda x: interpret_iso_8601_string(x, expected_dtype)
-    series_type = None if expected_dtype is pd.Timestamp else "O"
+# TODO:
+# unparseable epochs (excluding "now", "today")
+
+
+# def invalid_epoch_data()
+
+
+def irregular_unit_data(target_dtype):
+    interpret = lambda x: interpret_iso_8601_string(x, target_dtype)
+    if target_dtype in ("datetime", "datetime[pandas]"):
+        series_type = None
+    else:
+        series_type = "O"
 
     case = lambda unit, epoch, test_output: CastCase(
-        {"unit": unit, "since": epoch},
+        {"dtype": target_dtype, "unit": unit, "since": epoch},
         pd.Series([True, False]),
         test_output
     )
 
+    months = [
+        "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"
+    ]
+
     return CastParameters(
         # months (non-leap year)
-        case("M", "1970-01-01 00:00:00", pd.Series([
-            interpret("1970-02-01 00:00:00.000000000"),
-            interpret("1970-01-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1970-02-01 00:00:00", pd.Series([
-            interpret("1970-03-01 00:00:00.000000000"),
-            interpret("1970-02-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1970-03-01 00:00:00", pd.Series([
-            interpret("1970-04-01 00:00:00.000000000"),
-            interpret("1970-03-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1970-04-01 00:00:00", pd.Series([
-            interpret("1970-05-01 00:00:00.000000000"),
-            interpret("1970-04-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1970-05-01 00:00:00", pd.Series([
-            interpret("1970-06-01 00:00:00.000000000"),
-            interpret("1970-05-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1970-06-01 00:00:00", pd.Series([
-            interpret("1970-07-01 00:00:00.000000000"),
-            interpret("1970-06-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1970-07-01 00:00:00", pd.Series([
-            interpret("1970-08-01 00:00:00.000000000"),
-            interpret("1970-07-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1970-08-01 00:00:00", pd.Series([
-            interpret("1970-09-01 00:00:00.000000000"),
-            interpret("1970-08-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1970-09-01 00:00:00", pd.Series([
-            interpret("1970-10-01 00:00:00.000000000"),
-            interpret("1970-09-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1970-10-01 00:00:00", pd.Series([
-            interpret("1970-11-01 00:00:00.000000000"),
-            interpret("1970-10-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1970-11-01 00:00:00", pd.Series([
-            interpret("1970-12-01 00:00:00.000000000"),
-            interpret("1970-11-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1970-12-01 00:00:00", pd.Series([
-            interpret("1971-01-01 00:00:00.000000000"),
-            interpret("1970-12-01 00:00:00.000000000")
-        ], dtype=series_type)),
+        CastParameters(*[
+            case("M", f"1970-{months[i]}-01 00:00:00", pd.Series([
+                interpret(
+                    f"{1970 + (i + 1) // len(months)}-"  # roll into next year
+                    f"{months[(i + 1) % len(months)]}-"  # one month periods
+                    f"01 00:00:00"
+                ),
+                interpret(f"1970-{months[i]}-01 00:00:00")
+            ], dtype=series_type))
+            for i in range(len(months))
+        ]),
 
         # months (leap year)
-        case("M", "1968-01-01 00:00:00", pd.Series([
-            interpret("1968-02-01 00:00:00.000000000"),
-            interpret("1968-01-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1968-02-01 00:00:00", pd.Series([
-            interpret("1968-03-01 00:00:00.000000000"),
-            interpret("1968-02-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1968-03-01 00:00:00", pd.Series([
-            interpret("1968-04-01 00:00:00.000000000"),
-            interpret("1968-03-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1968-04-01 00:00:00", pd.Series([
-            interpret("1968-05-01 00:00:00.000000000"),
-            interpret("1968-04-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1968-05-01 00:00:00", pd.Series([
-            interpret("1968-06-01 00:00:00.000000000"),
-            interpret("1968-05-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1968-06-01 00:00:00", pd.Series([
-            interpret("1968-07-01 00:00:00.000000000"),
-            interpret("1968-06-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1968-07-01 00:00:00", pd.Series([
-            interpret("1968-08-01 00:00:00.000000000"),
-            interpret("1968-07-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1968-08-01 00:00:00", pd.Series([
-            interpret("1968-09-01 00:00:00.000000000"),
-            interpret("1968-08-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1968-09-01 00:00:00", pd.Series([
-            interpret("1968-10-01 00:00:00.000000000"),
-            interpret("1968-09-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1968-10-01 00:00:00", pd.Series([
-            interpret("1968-11-01 00:00:00.000000000"),
-            interpret("1968-10-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1968-11-01 00:00:00", pd.Series([
-            interpret("1968-12-01 00:00:00.000000000"),
-            interpret("1968-11-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("M", "1968-12-01 00:00:00", pd.Series([
-            interpret("1969-01-01 00:00:00.000000000"),
-            interpret("1968-12-01 00:00:00.000000000")
-        ], dtype=series_type)),
+        CastParameters(*[
+            case("M", f"1968-{months[i]}-01 00:00:00", pd.Series([
+                interpret(
+                    f"{1968 + (i + 1) // len(months)}-"  # roll into next year
+                    f"{months[(i + 1) % len(months)]}-"  # one month periods
+                    f"01 00:00:00"),
+                interpret(f"1968-{months[i]}-01 00:00:00")
+            ], dtype=series_type))
+            for i in range(len(months))
+        ]),
 
         # years
-        case("Y", "1968-01-01 00:00:00", pd.Series([
-            interpret("1969-01-01 00:00:00.000000000"),
-            interpret("1968-01-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("Y", "1969-01-01 00:00:00", pd.Series([
-            interpret("1970-01-01 00:00:00.000000000"),
-            interpret("1969-01-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("Y", "1970-01-01 00:00:00", pd.Series([
-            interpret("1971-01-01 00:00:00.000000000"),
-            interpret("1970-01-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("Y", "1971-01-01 00:00:00", pd.Series([
-            interpret("1972-01-01 00:00:00.000000000"),
-            interpret("1971-01-01 00:00:00.000000000")
-        ], dtype=series_type)),
-        case("Y", "1972-01-01 00:00:00", pd.Series([
-            interpret("1973-01-01 00:00:00.000000000"),
-            interpret("1972-01-01 00:00:00.000000000")
-        ], dtype=series_type)),
+        CastParameters(*[
+            case("Y", f"{year}-01-01 00:00:00", pd.Series([
+                interpret(f"{year + 1}-01-01 00:00:00.000000000"),
+                interpret(f"{year}-01-01 00:00:00.000000000")
+            ], dtype=series_type))
+            for year in [1968, 1969, 1970, 1971, 1972]
+        ]),
 
-        # centuries
+        # Gregorian exceptions: centuries
         case("Y", "1900-01-01 00:00:00", pd.Series([
             interpret("1901-01-01 00:00:00.000000000"),
             interpret("1900-01-01 00:00:00.000000000")
@@ -380,7 +336,7 @@ def irregular_unit_data(expected_dtype):
             interpret("2100-01-01 00:00:00.000000000")
         ], dtype=series_type)),
 
-        # 400-year exceptions
+        # Gregorian exceptions: 400-year cycles
         case("Y", "2000-01-01 00:00:00", pd.Series([
             interpret("2001-01-01 00:00:00.000000000"),
             interpret("2000-01-01 00:00:00.000000000")
@@ -587,7 +543,7 @@ def timezone_promotion_data():
 
 
 @parametrize(valid_input_data("datetime"))
-def test_boolean_to_datetime_accepts_all_valid_inputs(
+def test_boolean_to_datetime_accepts_valid_input_formats(
     kwargs, test_input, test_output
 ):
     fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
@@ -603,7 +559,7 @@ def test_boolean_to_datetime_accepts_all_valid_inputs(
 
 
 @parametrize(valid_dtype_data("datetime"))
-def test_boolean_to_datetime_accepts_all_valid_type_specifiers(
+def test_boolean_to_datetime_accepts_valid_type_specifiers(
     kwargs, test_input, test_output
 ):
     fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
@@ -619,24 +575,12 @@ def test_boolean_to_datetime_accepts_all_valid_type_specifiers(
 
 
 @parametrize(
-    CastParameters(
-        valid_unit_data(pd.Timestamp),
-        dtype="datetime"
-    ),
-    CastParameters(
-        valid_unit_data(pd.Timestamp),
-        dtype="datetime[pandas]"
-    ),
-    CastParameters(
-        valid_unit_data(datetime.datetime),
-        dtype="datetime[python]"
-    ),
-    CastParameters(
-        valid_unit_data(np.datetime64),
-        dtype="datetime[numpy]"
-    ),
+    valid_unit_data("datetime"),
+    valid_unit_data("datetime[pandas]"),
+    valid_unit_data("datetime[python]"),
+    valid_unit_data("datetime[numpy]"),
 )
-def test_boolean_to_datetime_handles_all_valid_units(
+def test_boolean_to_datetime_handles_valid_units(
     kwargs, test_input, test_output
 ):
     fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
@@ -652,20 +596,11 @@ def test_boolean_to_datetime_handles_all_valid_units(
 
 
 @parametrize(
-    CastParameters(
-        valid_timezone_data(pd.Timestamp),
-        dtype="datetime"
-    ),
-    CastParameters(
-        valid_timezone_data(pd.Timestamp),
-        dtype="datetime[pandas]"
-    ),
-    CastParameters(
-        valid_timezone_data(datetime.datetime),
-        dtype="datetime[python]"
-    ),
+    valid_timezone_data("datetime"),
+    valid_timezone_data("datetime[pandas]"),
+    valid_timezone_data("datetime[python]"),
 )
-def test_boolean_to_datetime_handles_all_valid_timezones(
+def test_boolean_to_datetime_handles_valid_timezones(
     kwargs, test_input, test_output
 ):
     fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
@@ -681,24 +616,12 @@ def test_boolean_to_datetime_handles_all_valid_timezones(
 
 
 @parametrize(
-    CastParameters(
-        valid_epoch_data(pd.Timestamp),
-        dtype="datetime"
-    ),
-    CastParameters(
-        valid_epoch_data(pd.Timestamp),
-        dtype="datetime[pandas]"
-    ),
-    CastParameters(
-        valid_epoch_data(datetime.datetime),
-        dtype="datetime[python]"
-    ),
-    CastParameters(
-        valid_epoch_data(np.datetime64),
-        dtype="datetime[numpy]"
-    ),
+    valid_epoch_data("datetime"),
+    valid_epoch_data("datetime[pandas]"),
+    valid_epoch_data("datetime[python]"),
+    valid_epoch_data("datetime[numpy]"),
 )
-def test_boolean_to_datetime_handles_all_valid_epochs(
+def test_boolean_to_datetime_handles_valid_epochs(
     kwargs, test_input, test_output
 ):
     fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
@@ -714,24 +637,12 @@ def test_boolean_to_datetime_handles_all_valid_epochs(
 
 
 @parametrize(
-    CastParameters(
-        irregular_unit_data(pd.Timestamp),
-        dtype="datetime"
-    ),
-    CastParameters(
-        irregular_unit_data(pd.Timestamp),
-        dtype="datetime[pandas]"
-    ),
-    CastParameters(
-        irregular_unit_data(datetime.datetime),
-        dtype="datetime[python]"
-    ),
-    CastParameters(
-        irregular_unit_data(np.datetime64),
-        dtype="datetime[numpy]"
-    ),
+    irregular_unit_data("datetime"),
+    irregular_unit_data("datetime[pandas]"),
+    irregular_unit_data("datetime[python]"),
+    irregular_unit_data("datetime[numpy]"),
 )
-def test_boolean_to_datetime_handles_irregular_month_and_year_units_with_different_epochs(
+def test_boolean_to_datetime_handles_irregular_month_and_year_units(
     kwargs, test_input, test_output
 ):
     fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
@@ -800,19 +711,36 @@ def test_boolean_to_datetime_timezone_promotion(
 
 
 @parametrize(invalid_input_data())
-def test_boolean_to_datetime_rejects_all_invalid_inputs(
+def test_boolean_to_datetime_rejects_invalid_input_formats(
     kwargs, test_input, test_output
 ):
     with pytest.raises(TypeError):
         BooleanSeries(test_input).to_datetime(**kwargs)
 
+        # custom error message
+        fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+        pytest.fail(
+            f"BooleanSeries.to_datetime({fmt_kwargs}) did not reject "
+            f"input data:\n"
+            f"{test_input}"
+        )
+
 
 @parametrize(invalid_dtype_data("datetime"))
-def test_boolean_to_datetime_rejects_all_invalid_type_specifiers(
+def test_boolean_to_datetime_rejects_invalid_type_specifiers(
     kwargs, test_input, test_output
 ):
     with pytest.raises(TypeError, match="`dtype` must be datetime-like"):
         BooleanSeries(test_input).to_datetime(**kwargs)
+
+        # custom error message
+        fmt_kwargs = ", ".join(
+            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "dtype"
+        )
+        pytest.fail(
+            f"BooleanSeries.to_datetime({fmt_kwargs}) did not reject "
+            f"dtype={repr(kwargs['dtype'])}"
+        )
 
 
 @parametrize(invalid_unit_data())
@@ -822,12 +750,62 @@ def test_boolean_to_datetime_rejects_invalid_units(
     with pytest.raises(ValueError):
         BooleanSeries(test_input).to_datetime(**kwargs)
 
+        # custom error message
+        fmt_kwargs = ", ".join(
+            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "unit"
+        )
+        pytest.fail(
+            f"BooleanSeries.to_datetime({fmt_kwargs}) did not reject "
+            f"unit={repr(kwargs['unit'])}"
+        )
 
+
+@parametrize(non_IANA_timezone_data())
+def test_boolean_to_datetime_rejects_non_IANA_timezones(
+    kwargs, test_input, test_output
+):
+    with pytest.raises(pytz.exceptions.UnknownTimeZoneError):
+        BooleanSeries(test_input).to_datetime(**kwargs)
+
+        # custom error message
+        fmt_kwargs = ", ".join(
+            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "tz"
+        )
+        pytest.fail(
+            f"BooleanSeries.to_datetime({fmt_kwargs}) did not reject "
+            f"tz={repr(kwargs['tz'])}"
+        )
+
+
+@parametrize(M8_timezone_data())
+def test_boolean_to_datetime_rejects_non_UTC_timezones_with_numpy_M8_types(
+    kwargs, test_input, test_output
+):
+    # match_str = (
+    #     r"numpy.datetime64 objects do not carry timezone information (must "
+    #     r"be UTC or None)"
+    # )
+    with pytest.raises(RuntimeError):
+        BooleanSeries(test_input).to_datetime(**kwargs)
+
+        # custom error message
+        fmt_kwargs = ", ".join(
+            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "tz"
+        )
+        pytest.fail(
+            f"BooleanSeries.to_datetime({fmt_kwargs}) did not reject "
+            f"tz={repr(kwargs['tz'])}"
+        )
+
+
+
+# @parametrize(invalid_epoch_data())
+# def test_boolean_to_datetime_rejects_invalid_epochs(
+#     kwargs, test_input, test_output
+# ):
 
 
 # TODO: invalid
-# - invalid dtype (default for all conversions)
-# - invalid unit
 # - invalid timezone (malformed)
 # - invalid epoch (malformed, outside M8[Y] range)
 
@@ -844,43 +822,40 @@ def test_boolean_to_datetime_rejects_invalid_units(
     "datetime[numpy]"
 ])
 def test_boolean_to_datetime_preserves_index(target_dtype):
-    expected_dtype = {
-        "datetime": pd.Timestamp,
-        "datetime[pandas]": pd.Timestamp,
-        "datetime[python]": datetime.datetime,
-        "datetime[numpy]": np.datetime64
-    }
-    interpret = lambda x: interpret_iso_8601_string(
-        x,
-        expected_dtype[target_dtype]
-    )
+    interpret = lambda x: interpret_iso_8601_string(x, target_dtype)
+    if target_dtype in ("datetime", "datetime[pandas]"):
+        series_type = None
+    else:
+        series_type = "O"
 
     # arrange
-    val = pd.Series(
-        [True, False, pd.NA],
-        index=[4, 5, 6],
-        dtype=pd.BooleanDtype()
-    )
-    expected = pd.Series(
-        [
-            interpret("1970-01-01 00:00:01.000000000"),
-            interpret("1970-01-01 00:00:00.000000000"),
-            pd.NaT
-        ],
-        index=[4, 5, 6],
-        dtype=None if target_dtype in ("datetime", "datetime[pandas]") else "O"
+    case = CastCase(
+        {"dtype": target_dtype, "unit": "s"},
+        pd.Series(
+            [True, False, pd.NA],
+            index=[4, 5, 6],
+            dtype=pd.BooleanDtype()
+        ),
+        pd.Series(
+            [
+                interpret("1970-01-01 00:00:01.000000000"),
+                interpret("1970-01-01 00:00:00.000000000"),
+                pd.NaT
+            ],
+            index=[4, 5, 6],
+            dtype=series_type
+        )
     )
 
     # act
-    kwargs = {"dtype": target_dtype, "unit": "s"}
-    result = BooleanSeries(val).to_datetime(**kwargs)
+    result = BooleanSeries(case.test_input).to_datetime(**case.kwargs)
 
     # assert
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    assert result.equals(expected), (
+    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in case.kwargs.items())
+    assert result.equals(case.test_output), (
         f"BooleanSeries.to_datetime({fmt_kwargs}) does not preserve index.\n"
         f"expected:\n"
-        f"{expected}\n"
+        f"{case.test_output}\n"
         f"received:\n"
         f"{result}"
     )

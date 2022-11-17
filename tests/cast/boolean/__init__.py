@@ -4,8 +4,8 @@ import decimal
 import numpy as np
 import pandas as pd
 
+from tests.cast import EXTENSION_TYPES, SERIES_TYPES
 from tests.cast.scheme import CastCase, CastParameters
-from tests.cast.tables import EXTENSION_TYPES, SERIES_TYPES
 
 
 # TODO: this should test against the final to_x conversion functions, rather
@@ -17,6 +17,7 @@ from tests.cast.tables import EXTENSION_TYPES, SERIES_TYPES
 # TODO: document these
 
 
+# True/False/NA representations for each of the recognized type categories
 category_vals = {
     "boolean": (True, False, pd.NA),
     "integer": (1, 0, pd.NA),
@@ -199,7 +200,7 @@ def valid_dtype_data(category):
         else:
             true, false, na = vals
 
-        # append CastCase object
+        # append CastCase
         obj = case(target_dtype, output_dtype)
         test_cases.append(obj)
         test_cases.append(obj.with_na(pd.NA, na))

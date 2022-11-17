@@ -96,6 +96,14 @@ def test_boolean_to_float_rejects_all_invalid_inputs(
     with pytest.raises(TypeError):
         BooleanSeries(test_input).to_float(**kwargs)
 
+        # custom error message
+        fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+        pytest.fail(
+            f"BooleanSeries.to_float({fmt_kwargs}) did not reject "
+            f"input data:\n"
+            f"{test_input}"
+        )
+
 
 @parametrize(invalid_dtype_data("float"))
 def test_boolean_to_float_rejects_all_invalid_type_specifiers(
@@ -103,6 +111,15 @@ def test_boolean_to_float_rejects_all_invalid_type_specifiers(
 ):
     with pytest.raises(TypeError, match="`dtype` must be float-like"):
         BooleanSeries(test_input).to_float(**kwargs)
+
+        # custom error message
+        fmt_kwargs = ", ".join(
+            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "dtype"
+        )
+        pytest.fail(
+            f"BooleanSeries.to_float({fmt_kwargs}) did not reject "
+            f"dtype={repr(kwargs['dtype'])}"
+        )
 
 
 #####################
@@ -112,21 +129,24 @@ def test_boolean_to_float_rejects_all_invalid_type_specifiers(
 
 def test_boolean_to_float_preserves_index():
     # arrange
-    val = pd.Series(
-        [True, False, pd.NA],
-        index=[4, 5, 6],
-        dtype=pd.BooleanDtype()
+    case = CastCase(
+        {},
+        pd.Series(
+            [True, False, pd.NA],
+            index=[4, 5, 6],
+            dtype=pd.BooleanDtype()
+        ),
+        pd.Series(
+            [1.0, 0.0, np.nan],
+            index=[4, 5, 6],
+            dtype=np.float64
+        )
     )
 
     # act
-    result = BooleanSeries(val).to_float()
+    result = BooleanSeries(case.test_input).to_float(**case.kwargs)
 
     # assert
-    expected = pd.Series(
-        [1.0, 0.0, np.nan],
-        index=[4, 5, 6],
-        dtype=np.float64
-    )
-    assert result.equals(expected), (
+    assert result.equals(case.test_output), (
         "BooleanSeries.to_float() does not preserve index"
     )

@@ -4,6 +4,20 @@ from uuid import uuid4
 import pytest
 
 
+# TODO: use 'parametrized conditional raising' to combine valid, invalid
+# datasets:
+# https://docs.pytest.org/en/7.1.x/example/parametrize.html#parametrizing-conditional-raising
+# -> define a 'failure' keyword argument for Case objects.  If failure is not
+# None, test_output must be None (default) and failure must contain a
+# pytest.raises() context manager.  Otherwise, failure must be None and
+# test_output must not be None.  In this case, it defaults to
+# contextlib.nullcontext.
+# -> all signatures become (kwargs, test_input, test_output, failure_ctx).
+# Test functions check `if isinstance(failure_ctx, contextlib.nullcontext):`
+# before specifying a custom error message.
+# -> Case has is_failure + failure_ctx fields
+
+
 class Case:
     """Base class for individual test case objects.
 

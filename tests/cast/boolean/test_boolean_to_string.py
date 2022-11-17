@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from tests.cast.scheme import parametrize
+from tests.cast.scheme import CastCase, parametrize
 from tests.cast.boolean import (
     valid_input_data, valid_dtype_data, invalid_input_data, invalid_dtype_data
 )
@@ -58,6 +58,14 @@ def test_boolean_to_string_rejects_all_invalid_inputs(
     with pytest.raises(TypeError):
         BooleanSeries(test_input).to_string(**kwargs)
 
+        # custom error message
+        fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+        pytest.fail(
+            f"BooleanSeries.to_string({fmt_kwargs}) did not reject "
+            f"input data:\n"
+            f"{test_input}"
+        )
+
 
 @parametrize(invalid_dtype_data("string"))
 def test_boolean_to_string_rejects_all_invalid_type_specifiers(
@@ -65,6 +73,15 @@ def test_boolean_to_string_rejects_all_invalid_type_specifiers(
 ):
     with pytest.raises(TypeError, match="`dtype` must be string-like"):
         BooleanSeries(test_input).to_string(**kwargs)
+
+        # custom error message
+        fmt_kwargs = ", ".join(
+            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "dtype"
+        )
+        pytest.fail(
+            f"BooleanSeries.to_string({fmt_kwargs}) did not reject "
+            f"dtype={repr(kwargs['dtype'])}"
+        )
 
 
 #####################
@@ -74,21 +91,24 @@ def test_boolean_to_string_rejects_all_invalid_type_specifiers(
 
 def test_boolean_to_string_preserves_index():
     # arrange
-    val = pd.Series(
-        [True, False, pd.NA],
-        index=[4, 5, 6],
-        dtype=pd.BooleanDtype()
+    case = CastCase(
+        {"dtype": "str[python]"},
+        pd.Series(
+            [True, False, pd.NA],
+            index=[4, 5, 6],
+            dtype=pd.BooleanDtype()
+        ),
+        pd.Series(
+            ["True", "False", pd.NA],
+            index=[4, 5, 6],
+            dtype=pd.StringDtype("python")
+        )
     )
 
     # act
-    result = BooleanSeries(val).to_string("str[python]")
+    result = BooleanSeries(case.test_input).to_string(**case.kwargs)
 
     # assert
-    expected = pd.Series(
-        ["True", "False", pd.NA],
-        index=[4, 5, 6],
-        dtype=pd.StringDtype("python")
-    )
-    assert result.equals(expected), (
+    assert result.equals(case.test_output), (
         "BooleanSeries.to_string() does not preserve index"
     )

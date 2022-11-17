@@ -1,11 +1,55 @@
-from __future__ import annotations
+"""Enforces a strict testing scheme for pdtypes.cast()-related unit tests.
 
+Using these prevents spaghettification of test code.
+"""
+from __future__ import annotations
+import datetime
+
+import dateutil
+import numpy as np
 import pandas as pd
 import pytest
+import pytz
+import zoneinfo
 
+from tests.cast import EXTENSION_TYPES
 from tests.scheme import Case, Parameters
 
-from .tables import EXTENSION_TYPES
+
+# TODO: reject_nonseries_input -> input_typecheck
+
+
+def interpret_iso_8601_string(datetime_string, category, tz=None):
+    """Use this function to convert an ISO 8601 datetime string into an
+    equivalent datetime object from the given category, for testing purposes.
+    """
+    # pd.Timestamp
+    if category in ("datetime", "datetime[pandas]"):
+        return pd.Timestamp(datetime_string, tz=tz)
+
+    # datetime.datetime
+    if category == "datetime[python]":
+        result = datetime.datetime.fromisoformat(datetime_string[:26])
+        if tz is None:
+            return result
+        if isinstance(tz, pytz.BaseTzInfo):
+            return tz.localize(result)
+        if isinstance(tz, (zoneinfo.ZoneInfo, dateutil.tz.tzfile)):
+            return result.replace(tzinfo=tz)
+        return pytz.timezone(tz).localize(result)
+
+    # np.datetime64
+    if category == "datetime[numpy]":
+        result = np.datetime64(datetime_string)
+        if tz is None:
+            return result
+        raise RuntimeError(
+            f"numpy.datetime64 objects do not carry timezone information"
+        )
+
+    raise RuntimeError(
+        f"could not interpret datetime category: {repr(category)}"
+    )
 
 
 def parametrize(
@@ -125,14 +169,17 @@ class CastCase(Case):
         # copy current values
         values = list(self.values)
 
-        # make input/output series nullable if it is not already
+        # check if input/output series is nullable
         not_nullable = lambda series: (
             pd.api.types.is_bool_dtype(series) or
             pd.api.types.is_integer_dtype(series)
         ) and not pd.api.types.is_extension_array_dtype(series)
 
+        # ensure test_input is nullable
         if not_nullable(values[1]):
             values[1] = values[1].astype(EXTENSION_TYPES[values[1].dtype])
+
+        # ensure test_output is nullable
         if not_nullable(self.test_output):
             values[2] = values[2].astype(EXTENSION_TYPES[values[2].dtype])
 
@@ -146,7 +193,7 @@ class CastCase(Case):
             ignore_index=True
         )
 
-        # return a new test case
+        # return as a new case object
         return CastCase(*values, marks=self.marks[1:])  # omit uuid mark
 
 

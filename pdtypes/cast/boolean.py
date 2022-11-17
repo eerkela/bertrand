@@ -10,7 +10,7 @@ from pdtypes.types import resolve_dtype, ElementType
 from pdtypes.util.type_hints import datetime_like, dtype_like
 
 from .util.time import (
-    convert_unit_integer, epoch, epoch_ns, ns_to_datetime,
+    convert_unit_integer, epoch, epoch_ns, is_utc, ns_to_datetime,
     ns_to_numpy_datetime64, ns_to_numpy_timedelta64, ns_to_pandas_timedelta,
     ns_to_pandas_timestamp, ns_to_pydatetime, ns_to_pytimedelta,
     ns_to_timedelta, timezone
@@ -170,6 +170,14 @@ class BooleanSeries(SeriesWrapper):
 
             # np.datetime64
             elif dtype in numpy_datetime64:
+                # ensure tz is UTC or None
+                if tz and not is_utc(tz):
+                    err_msg = (
+                        "numpy.datetime64 objects do not carry timezone "
+                        "information (must be UTC or None)"
+                    )
+                    raise RuntimeError(err_msg)
+ 
                 # TODO: gather step size
                 self.series = ns_to_numpy_datetime64(
                     self.series,
