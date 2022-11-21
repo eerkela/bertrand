@@ -23,11 +23,19 @@ from .string cimport *
 from .object cimport *
 
 
-# TODO: resolve_dtype should only take one optional argument: force_nullable
+# TODO: probably a good idea not to overload __contains__.  Offer separate
+# is_subtype()/is_supertype() methods instead.  These are more explicit and
+# easy to read.
 
 
-# TODO: consider adding </> checks to ElementTypes, allowing sorting based
-# on itemsize.
+# TODO: resolve_dtype should accept optional boolean arguments:
+# `sparse`, `categorical`, `nullable`.  In cast(), sparse and categorical are
+# passed as-is.
+# -> currently these are broken
+
+
+# TODO: consider adding less than/greater than comparisons to ElementTypes,
+# allowing sorting based on itemsize, just like np.dtype
 
 
 # TODO: If sparse=False and/or categorical=False, add respective combinations

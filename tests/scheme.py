@@ -33,7 +33,10 @@ class Case:
         id: str = None,
         marks: tuple = tuple()
     ):
+        # generate unique case ID
         self._name = name or str(uuid4())
+
+        # define pytest.param() object
         self.parameter_set = pytest.param(
             *values,
             id=id,

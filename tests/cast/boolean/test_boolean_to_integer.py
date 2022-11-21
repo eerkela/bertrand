@@ -3,9 +3,7 @@ import pandas as pd
 import pytest
 
 from tests.cast.scheme import CastCase, CastParameters, parametrize
-from tests.cast.boolean import (
-    valid_input_data, valid_dtype_data, invalid_input_data, invalid_dtype_data
-)
+from tests.cast.boolean import input_format_data, target_dtype_data
 
 from pdtypes.cast.boolean import BooleanSeries
 
@@ -52,99 +50,77 @@ def downcast_data():
 
 
 #####################
-####    VALID    ####
+####    TESTS    ####
 #####################
 
 
-@parametrize(valid_input_data("integer"))
-def test_boolean_to_integer_accepts_all_valid_inputs(
-    kwargs, test_input, test_output
-):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_integer(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_integer({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
-        f"expected:\n"
-        f"{test_output}\n"
-        f"received:\n"
-        f"{result}"
-    )
+@parametrize(input_format_data("integer"))
+def test_boolean_to_integer_accepts_valid_input_data(case: CastCase):
+    # valid case
+    if case.is_valid:
+        result = BooleanSeries(case.input).to_integer(**case.kwargs)
+        assert result.equals(case.output), (
+            f"BooleanSeries.to_integer({case.signature()}) failed with "
+            f"input:\n"
+            f"{case.input}\n"
+            f"expected:\n"
+            f"{case.output}\n"
+            f"received:\n"
+            f"{result}"
+        )
+
+    # invalid case
+    else:
+        with case.output as exc_info:
+            BooleanSeries(case.input).to_integer(**case.kwargs)
+            pytest.fail(
+                f"BooleanSeries.to_integer({case.signature()}) did not reject "
+                f"input data:\n"
+                f"{case.input}"
+            )
+
+        assert exc_info.type is TypeError
 
 
-@parametrize(valid_dtype_data("integer"))
-def test_boolean_to_integer_accepts_all_valid_type_specifiers(
-    kwargs, test_input, test_output
-):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_integer(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_integer({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
-        f"expected:\n"
-        f"{test_output}\n"
-        f"received:\n"
-        f"{result}"
-    )
+@parametrize(target_dtype_data("integer"))
+def test_boolean_to_integer_accepts_integer_type_specifiers(case: CastCase):
+    # valid
+    if case.is_valid:
+        result = BooleanSeries(case.input).to_integer(**case.kwargs)
+        assert result.equals(case.output), (
+            f"BooleanSeries.to_integer({case.signature()}) failed with "
+            f"input:\n"
+            f"{case.input}\n"
+            f"expected:\n"
+            f"{case.output}\n"
+            f"received:\n"
+            f"{result}"
+        )
+
+    # invalid
+    else:
+        with case.output as exc_info:
+            BooleanSeries(case.input).to_integer(**case.kwargs)
+            pytest.fail(  # called when no exception is encountered
+                f"BooleanSeries.to_integer({case.signature('dtype')}) did not "
+                f"reject dtype={repr(case.kwargs['dtype'])}"
+            )
+
+        assert exc_info.type is TypeError
+        assert exc_info.match("`dtype` must be int-like")
 
 
 @parametrize(downcast_data())
-def test_boolean_to_integer_downcasting(
-    kwargs, test_input, test_output
-):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_integer(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_integer({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
+def test_boolean_to_integer_downcasting(case: CastCase):
+    result = BooleanSeries(case.input).to_integer(**case.kwargs)
+    assert result.equals(case.output), (
+        f"BooleanSeries.to_integer({case.signature()}) failed with input:\n"
+        f"{case.input}\n"
         f"expected:\n"
-        f"{test_output}\n"
+        f"{case.output}\n"
         f"received:\n"
         f"{result}"
     )
-
-
-# #######################
-# ####    INVALID    ####
-# #######################
-
-
-@parametrize(invalid_input_data())
-def test_boolean_to_integer_rejects_all_invalid_inputs(
-    kwargs, test_input, test_output
-):
-    with pytest.raises(TypeError):
-        BooleanSeries(test_input).to_integer(**kwargs)
-
-        # custom error message
-        fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-        pytest.fail(
-            f"BooleanSeries.to_integer({fmt_kwargs}) did not reject "
-            f"input data:\n"
-            f"{test_input}"
-        )
-
-
-@parametrize(invalid_dtype_data("integer"))
-def test_boolean_to_integer_rejects_all_invalid_type_specifiers(
-    kwargs, test_input, test_output
-):
-    with pytest.raises(TypeError, match="`dtype` must be int-like"):
-        BooleanSeries(test_input).to_integer(**kwargs)
-
-        # custom error message
-        fmt_kwargs = ", ".join(
-            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "dtype"
-        )
-        pytest.fail(
-            f"BooleanSeries.to_integer({fmt_kwargs}) did not reject "
-            f"dtype={repr(kwargs['dtype'])}"
-        )
-
-
-#####################
-####    OTHER    ####
-#####################
 
 
 def test_boolean_to_integer_preserves_index():
@@ -164,9 +140,9 @@ def test_boolean_to_integer_preserves_index():
     )
 
     # act
-    result = BooleanSeries(case.test_input).to_integer(**case.kwargs)
+    result = BooleanSeries(case.input).to_integer(**case.kwargs)
 
     # assert
-    assert result.equals(case.test_output), (
+    assert result.equals(case.output), (
         "BooleanSeries.to_integer() does not preserve index"
     )

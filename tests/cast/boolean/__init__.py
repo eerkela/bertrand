@@ -3,6 +3,7 @@ import decimal
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from tests.cast import EXTENSION_TYPES, SERIES_TYPES
 from tests.cast.scheme import CastCase, CastParameters
@@ -51,29 +52,39 @@ category_vals = {
 }
 
 
-##########################
-####    VALID DATA    ####
-##########################
+##############################
+####    DATA FACTORIES    ####
+##############################
 
 
-def valid_input_data(category):
+def input_format_data(category):
+    """Build a parametrized list of test cases describing the various input
+    data formats that are accepted by BooleanSeries.to_{category}().
+
+    Contains a unique copy of the specified parameters for each subtype within
+    the given category.
+    """
     case = lambda test_input, test_output: CastCase(
         {"dtype": target_dtype},
         test_input,
         test_output,
-        reject_nonseries_input=False
+        input_typecheck=False
     )
 
     # NOTE: `pars` specifies test cases.  This pattern looks a little strange,
     # but is necessary to accomodate "datetime" and "timedelta" categories,
-    # which have different True/False/NA values depending on subtype.  To call
-    # pars(), these values must be specified in the valid_input_data() scope,
+    # which have different True/False/NA representations depending on subtype.
+    # To call pars(), these values must be specified in the input_data() scope,
     # as well as `target_dtype`, `dtype_without_na`, and `dtype_with_na`.
     # `target_dtype` and `dtype_without_na` can be found by consulting the
     # SERIES_TYPES lookup table.  `dtype_with_na` is usually equal to
     # `dtype_without_na`, except in the case of "boolean" or "integer"
     # categories, which are not nullable by default.
     pars = lambda: CastParameters(
+        #####################
+        ####    VALID    ####
+        #####################
+
         # scalar
         case(
             True,
@@ -161,6 +172,20 @@ def valid_input_data(category):
             pd.Series([True, False, None], dtype=pd.BooleanDtype()),
             pd.Series([true, false, na], dtype=dtype_with_na)
         ),
+
+        #######################
+        ####    INVALID    ####
+        #######################
+
+        # unordered
+        case(
+            {True, False},
+            pytest.raises(Exception)
+        ),
+        case(
+            frozenset({True, False}),
+            pytest.raises(Exception)
+        ),
     )
 
     test_cases = []
@@ -183,18 +208,19 @@ def valid_input_data(category):
     return CastParameters(*test_cases)
 
 
-def valid_dtype_data(category):
+def target_dtype_data(category):
     case = lambda target_dtype, output_dtype: CastCase(
         {"dtype": target_dtype},
         pd.Series([True, False]),
         pd.Series([true, false], dtype=output_dtype)
     )
 
+    # valid cases
     test_cases = []
     subtypes = SERIES_TYPES[category]
     vals = category_vals[category]
     for target_dtype, output_dtype in subtypes.items():
-        # get True/False/NA values for the given target_dtype
+        # get True/False/NA representations for the given target_dtype
         if isinstance(vals, dict):
             true, false, na = vals[target_dtype]
         else:
@@ -205,38 +231,13 @@ def valid_dtype_data(category):
         test_cases.append(obj)
         test_cases.append(obj.with_na(pd.NA, na))
 
-    return CastParameters(*test_cases)
-
-
-############################
-####    INVALID DATA    ####
-############################
-
-
-def invalid_input_data():
-    case = lambda test_input: CastCase(
-        {},
-        test_input,
-        pd.Series(dtype="O"),  # not used
-        reject_nonseries_input=False
-    )
-
-    return CastParameters(
-        # set
-        case({True, False}),
-    )
-
-
-def invalid_dtype_data(category):
+    # invalid cases
     case = lambda target_dtype: CastCase(
         {"dtype": target_dtype},
         pd.Series([True, False]),
-        pd.Series(dtype="O")  # not used
+        pytest.raises(Exception)
     )
 
-    assert category in SERIES_TYPES
-
-    test_cases = []
     for cat, subtypes in SERIES_TYPES.items():
         if cat != category:
             pars = CastParameters(*[
@@ -245,4 +246,3 @@ def invalid_dtype_data(category):
             test_cases.append(pars)
 
     return CastParameters(*test_cases)
-

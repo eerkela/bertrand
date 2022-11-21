@@ -10,9 +10,7 @@ import pytz
 from tests.cast.scheme import (
     CastCase, CastParameters, interpret_iso_8601_string, parametrize
 )
-from tests.cast.boolean import (
-    valid_input_data, valid_dtype_data, invalid_input_data, invalid_dtype_data
-)
+from tests.cast.boolean import input_format_data, target_dtype_data
 
 from pdtypes.cast.boolean import BooleanSeries
 
@@ -31,7 +29,7 @@ from pdtypes.cast.boolean import BooleanSeries
 ####################
 
 
-def valid_unit_data(target_dtype):
+def unit_data(target_dtype):
     interpret = lambda x: interpret_iso_8601_string(x, target_dtype)
     if target_dtype in ("datetime", "datetime[pandas]"):
         series_type = None
@@ -45,6 +43,10 @@ def valid_unit_data(target_dtype):
     )
 
     return CastParameters(
+        #####################
+        ####    VALID    ####
+        #####################
+
         case("ns", pd.Series([
             interpret("1970-01-01 00:00:00.000000001"),
             interpret("1970-01-01 00:00:00.000000000")
@@ -85,26 +87,21 @@ def valid_unit_data(target_dtype):
             interpret("1971-01-01 00:00:00.000000000"),
             interpret("1970-01-01 00:00:00.000000000")
         ], dtype=series_type)),
-    ).with_na(pd.NA, pd.NaT)
 
+        #######################
+        ####    INVALID    ####
+        #######################
 
-def invalid_unit_data():
-    case = lambda unit: CastCase(
-        {"unit": unit},
-        pd.Series([True, False]),
-        pd.Series(dtype="O")  # not used
-    )
+        case("not valid", pytest.raises(Exception)),
+        case("NS", pytest.raises(Exception)),
+        case("US", pytest.raises(Exception)),
+        case("MS", pytest.raises(Exception)),
+        case("S", pytest.raises(Exception)),
+        case("H", pytest.raises(Exception)),
+        case("d", pytest.raises(Exception)),
+        case("w", pytest.raises(Exception)),
+        case("y", pytest.raises(Exception)),
 
-    return CastParameters(
-        case("not valid"),
-        case("NS"),
-        case("US"),
-        case("MS"),
-        case("S"),
-        case("H"),
-        case("d"),
-        case("w"),
-        case("y"),
     ).with_na(pd.NA, pd.NaT)
 
 
@@ -121,11 +118,29 @@ def valid_timezone_data(target_dtype):
         test_output
     )
 
+    # TODO: if target_dtype is "datetime[numpy]", all should raise
+    # TODO: "local" with an xfail?  Or call tzlocal() directly.
+    # -> interpret_iso_8601_string should accept UTC strings, converted to tz
+    # rather than localized.
+    # TODO: this should include M8_timezone_data() as well.
+
     return CastParameters(
+        #####################
+        ####    VALID    ####
+        #####################
+
+        # naive
         case(None, pd.Series([
             interpret("1970-01-01 00:00:00.000001000", tz=None),
             interpret("1970-01-01 00:00:00.000000000", tz=None)
         ], dtype=series_type)),
+
+        # local timezone
+        # case("local", pd.Series([
+        #     interpret("1970-01-01 00:00:00.000001000", tz="UTC")
+        # ], dtype=series_type))
+
+        # IANA strings
         case("US/Pacific", pd.Series([
             interpret("1969-12-31 16:00:00.000001000", tz="US/Pacific"),
             interpret("1969-12-31 16:00:00.000000000", tz="US/Pacific")
@@ -134,6 +149,8 @@ def valid_timezone_data(target_dtype):
             interpret("1970-01-01 01:00:00.000001000", tz="Europe/Berlin"),
             interpret("1970-01-01 01:00:00.000000000", tz="Europe/Berlin")
         ], dtype=series_type)),
+
+        # pytz objects
         case(pytz.timezone("Asia/Hong_Kong"), pd.Series([
             interpret(
                 "1970-01-01 08:00:00.000001000",
@@ -145,7 +162,7 @@ def valid_timezone_data(target_dtype):
             )
         ], dtype=series_type)),
 
-        # NOTE: fails to compile, see NOTE at start of file
+        # zoneinfo objects - NOTE: fails to compile, see NOTE at start of file
         # case(zoneinfo.ZoneInfo("America/Sao_Paulo"), pd.Series([
         #     interpret(
         #         "1969-12-31 21:00:00.000001000",
@@ -157,6 +174,7 @@ def valid_timezone_data(target_dtype):
         #     )
         # ], dtype=series_type)),
 
+        # dateutil.tz.tzfile objects
         case(dateutil.tz.gettz("Asia/Istanbul"), pd.Series([
             interpret(
                 "1970-01-01 02:00:00.000001000",
@@ -167,36 +185,23 @@ def valid_timezone_data(target_dtype):
                 tz=dateutil.tz.gettz("Asia/Istanbul")
             )
         ], dtype=series_type)),
+
+        #######################
+        ####    INVALID    ####
+        #######################
+
+        case("the cake is a lie", pytest.raises(Exception)),
+        case("Pacific", pytest.raises(Exception)),
+        case("PST", pytest.raises(Exception)),
+
     ).with_na(pd.NA, pd.NaT)
-
-
-# TODO:
-# - non-IANA timezones (excluding "local")
-# - applying timezones to np.datetime64 objects
-
-
-def non_IANA_timezone_data():
-    case = lambda tz: CastCase(
-        {"tz": tz},
-        pd.Series([True, False]),
-        pd.Series(dtype="O")  # not used
-    )
-
-    return CastParameters(
-        # malformed
-        case("the cake is a lie"),
-
-        # non-IANA
-        case("Pacific"),
-        case("PST"),
-    )
 
 
 def M8_timezone_data():
     case = lambda tz: CastCase(
         {"dtype": "datetime[numpy]", "tz": tz},
         pd.Series([True, False]),
-        pd.Series(dtype="O")  # not used
+        pytest.raises(Exception)
     )
 
     return CastParameters(
@@ -538,61 +543,101 @@ def timezone_promotion_data():
 
 
 #####################
-####    VALID    ####
+####    TESTS    ####
 #####################
 
 
-@parametrize(valid_input_data("datetime"))
-def test_boolean_to_datetime_accepts_valid_input_formats(
-    kwargs, test_input, test_output
-):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_datetime(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_datetime({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
-        f"expected:\n"
-        f"{test_output}\n"
-        f"received:\n"
-        f"{result}"
-    )
+@parametrize(input_format_data("datetime"))
+def test_boolean_to_datetime_accepts_valid_input_data(case: CastCase):
+    # valid
+    if case.is_valid:
+        result = BooleanSeries(case.input).to_datetime(**case.kwargs)
+        assert result.equals(case.output), (
+            f"BooleanSeries.to_datetime({case.signature()}) failed with "
+            f"input:\n"
+            f"{case.input}\n"
+            f"expected:\n"
+            f"{case.output}\n"
+            f"received:\n"
+            f"{result}"
+        )
+
+    # invalid
+    else:
+        with case.output as exc_info:
+            BooleanSeries(case.input).to_datetime(**case.kwargs)
+            pytest.fail(
+                f"BooleanSeries.to_datetime({case.signature()}) did not "
+                f"reject "
+                f"input data:\n"
+                f"{case.input}"
+            )
+
+        assert exc_info.type is TypeError
 
 
-@parametrize(valid_dtype_data("datetime"))
-def test_boolean_to_datetime_accepts_valid_type_specifiers(
-    kwargs, test_input, test_output
-):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_datetime(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_datetime({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
-        f"expected:\n"
-        f"{test_output}\n"
-        f"received:\n"
-        f"{result}"
-    )
+@parametrize(target_dtype_data("datetime"))
+def test_boolean_to_datetime_accepts_datetime_type_specifiers(case: CastCase):
+    # valid
+    if case.is_valid:
+        result = BooleanSeries(case.input).to_datetime(**case.kwargs)
+        assert result.equals(case.output), (
+            f"BooleanSeries.to_datetime({case.signature()}) failed with "
+            f"input:\n"
+            f"{case.input}\n"
+            f"expected:\n"
+            f"{case.output}\n"
+            f"received:\n"
+            f"{result}"
+        )
+
+    # invalid
+    else:
+        with case.output as exc_info:
+            BooleanSeries(case.input).to_datetime(**case.kwargs)
+            pytest.fail(  # called when no exception is encountered
+                f"BooleanSeries.to_datetime({case.signature('dtype')}) did "
+                f"not reject dtype={repr(case.kwargs['dtype'])}"
+            )
+
+        assert exc_info.type is TypeError
+        assert exc_info.match("`dtype` must be datetime-like")
 
 
 @parametrize(
-    valid_unit_data("datetime"),
-    valid_unit_data("datetime[pandas]"),
-    valid_unit_data("datetime[python]"),
-    valid_unit_data("datetime[numpy]"),
+    unit_data("datetime"),
+    unit_data("datetime[pandas]"),
+    unit_data("datetime[python]"),
+    unit_data("datetime[numpy]"),
 )
-def test_boolean_to_datetime_handles_valid_units(
-    kwargs, test_input, test_output
-):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_datetime(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_datetime({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
-        f"expected:\n"
-        f"{test_output}\n"
-        f"received:\n"
-        f"{result}"
-    )
+def test_boolean_to_datetime_handles_all_units(case: CastCase):
+    # valid
+    if case.is_valid:
+        result = BooleanSeries(case.input).to_datetime(**case.kwargs)
+        assert result.equals(case.output), (
+            f"BooleanSeries.to_datetime({case.signature()}) failed with "
+            f"input:\n"
+            f"{case.input}\n"
+            f"expected:\n"
+            f"{case.output}\n"
+            f"received:\n"
+            f"{result}"
+        )
+
+    # invalid
+    else:
+        with case.output as exc_info:
+            BooleanSeries(case.input).to_datetime(**case.kwargs)
+            pytest.fail(
+                f"BooleanSeries.to_datetime({case.signature('unit')}) did "
+                f"not reject unit={repr(case.kwargs['unit'])}"
+            )
+
+        assert exc_info.type is ValueError
+        # assert exc_info.match(
+        #     "`from_unit` must be one of ('ns', 'us', 'ms', 's', 'm', 'h', "
+        #     "'D', 'W', 'M', 'Y')"
+        # )
 
 
 @parametrize(
@@ -600,19 +645,30 @@ def test_boolean_to_datetime_handles_valid_units(
     valid_timezone_data("datetime[pandas]"),
     valid_timezone_data("datetime[python]"),
 )
-def test_boolean_to_datetime_handles_valid_timezones(
-    kwargs, test_input, test_output
-):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_datetime(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_datetime({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
-        f"expected:\n"
-        f"{test_output}\n"
-        f"received:\n"
-        f"{result}"
-    )
+def test_boolean_to_datetime_handles_all_timezones(case: CastCase):
+    # valid
+    if case.is_valid:
+        result = BooleanSeries(case.input).to_datetime(**case.kwargs)
+        assert result.equals(case.output), (
+            f"BooleanSeries.to_datetime({case.signature()}) failed with "
+            f"input:\n"
+            f"{case.input}\n"
+            f"expected:\n"
+            f"{case.output}\n"
+            f"received:\n"
+            f"{result}"
+        )
+
+    # invalid
+    else:
+        with case.output as exc_info:
+            BooleanSeries(case.input).to_datetime(**case.kwargs)
+            pytest.fail(
+                f"BooleanSeries.to_datetime({case.signature('tz')}) did "
+                f"not reject tz={repr(case.kwargs['tz'])}"
+            )
+
+        assert exc_info.type is pytz.exceptions.UnknownTimeZoneError
 
 
 @parametrize(
@@ -621,16 +677,13 @@ def test_boolean_to_datetime_handles_valid_timezones(
     valid_epoch_data("datetime[python]"),
     valid_epoch_data("datetime[numpy]"),
 )
-def test_boolean_to_datetime_handles_valid_epochs(
-    kwargs, test_input, test_output
-):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_datetime(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_datetime({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
+def test_boolean_to_datetime_handles_valid_epochs(case: CastCase):
+    result = BooleanSeries(case.input).to_datetime(**case.kwargs)
+    assert result.equals(case.output), (
+        f"BooleanSeries.to_datetime({case.signature()}) failed with input:\n"
+        f"{case.input}\n"
         f"expected:\n"
-        f"{test_output}\n"
+        f"{case.output}\n"
         f"received:\n"
         f"{result}"
     )
@@ -643,15 +696,14 @@ def test_boolean_to_datetime_handles_valid_epochs(
     irregular_unit_data("datetime[numpy]"),
 )
 def test_boolean_to_datetime_handles_irregular_month_and_year_units(
-    kwargs, test_input, test_output
+    case: CastCase
 ):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_datetime(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_datetime({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
+    result = BooleanSeries(case.input).to_datetime(**case.kwargs)
+    assert result.equals(case.output), (
+        f"BooleanSeries.to_datetime({case.signature()}) failed with input:\n"
+        f"{case.input}\n"
         f"expected:\n"
-        f"{test_output}\n"
+        f"{case.output}\n"
         f"received:\n"
         f"{result}"
     )
@@ -659,15 +711,14 @@ def test_boolean_to_datetime_handles_irregular_month_and_year_units(
 
 @parametrize(M8_data())
 def test_boolean_to_datetime_handles_numpy_M8_dtypes_with_units_and_step_size(
-    kwargs, test_input, test_output
+    case: CastCase
 ):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_datetime(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_datetime({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
+    result = BooleanSeries(case.input).to_datetime(**case.kwargs)
+    assert result.equals(case.output), (
+        f"BooleanSeries.to_datetime({case.signature()}) failed with input:\n"
+        f"{case.input}\n"
         f"expected:\n"
-        f"{test_output}\n"
+        f"{case.output}\n"
         f"received:\n"
         f"{result}"
     )
@@ -675,31 +726,27 @@ def test_boolean_to_datetime_handles_numpy_M8_dtypes_with_units_and_step_size(
 
 @parametrize(unit_promotion_data())
 def test_boolean_to_datetime_unit_promotion_with_datetime_and_M8_supertypes(
-    kwargs, test_input, test_output
+    case: CastCase
 ):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_datetime(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_datetime({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
+    result = BooleanSeries(case.input).to_datetime(**case.kwargs)
+    assert result.equals(case.output), (
+        f"BooleanSeries.to_datetime({case.signature()}) failed with input:\n"
+        f"{case.input}\n"
         f"expected:\n"
-        f"{test_output}\n"
+        f"{case.output}\n"
         f"received:\n"
         f"{result}"
     )
 
 
 @parametrize(timezone_promotion_data())
-def test_boolean_to_datetime_timezone_promotion(
-    kwargs, test_input, test_output
-):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_datetime(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_datetime({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
+def test_boolean_to_datetime_timezone_promotion(case: CastCase):
+    result = BooleanSeries(case.input).to_datetime(**case.kwargs)
+    assert result.equals(case.output), (
+        f"BooleanSeries.to_datetime({case.signature()}) failed with input:\n"
+        f"{case.input}\n"
         f"expected:\n"
-        f"{test_output}\n"
+        f"{case.output}\n"
         f"received:\n"
         f"{result}"
     )
@@ -710,92 +757,54 @@ def test_boolean_to_datetime_timezone_promotion(
 #######################
 
 
-@parametrize(invalid_input_data())
-def test_boolean_to_datetime_rejects_invalid_input_formats(
-    kwargs, test_input, test_output
-):
-    with pytest.raises(TypeError):
-        BooleanSeries(test_input).to_datetime(**kwargs)
+# @parametrize(invalid_unit_data())
+# def test_boolean_to_datetime_rejects_invalid_units(
+#     kwargs, test_input, test_output
+# ):
+#     with pytest.raises(ValueError):
+#         BooleanSeries(test_input).to_datetime(**kwargs)
 
-        # custom error message
-        fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-        pytest.fail(
-            f"BooleanSeries.to_datetime({fmt_kwargs}) did not reject "
-            f"input data:\n"
-            f"{test_input}"
-        )
-
-
-@parametrize(invalid_dtype_data("datetime"))
-def test_boolean_to_datetime_rejects_invalid_type_specifiers(
-    kwargs, test_input, test_output
-):
-    with pytest.raises(TypeError, match="`dtype` must be datetime-like"):
-        BooleanSeries(test_input).to_datetime(**kwargs)
-
-        # custom error message
-        fmt_kwargs = ", ".join(
-            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "dtype"
-        )
-        pytest.fail(
-            f"BooleanSeries.to_datetime({fmt_kwargs}) did not reject "
-            f"dtype={repr(kwargs['dtype'])}"
-        )
+#         # custom error message
+#         fmt_kwargs = ", ".join(
+#             f"{k}={repr(v)}" for k, v in kwargs.items() if k != "unit"
+#         )
+#         pytest.fail(
+#             f"BooleanSeries.to_datetime({fmt_kwargs}) did not reject "
+#             f"unit={repr(kwargs['unit'])}"
+#         )
 
 
-@parametrize(invalid_unit_data())
-def test_boolean_to_datetime_rejects_invalid_units(
-    kwargs, test_input, test_output
-):
-    with pytest.raises(ValueError):
-        BooleanSeries(test_input).to_datetime(**kwargs)
+# @parametrize(non_IANA_timezone_data())
+# def test_boolean_to_datetime_rejects_non_IANA_timezones(
+#     kwargs, test_input, test_output
+# ):
+#     with pytest.raises(pytz.exceptions.UnknownTimeZoneError):
+#         BooleanSeries(test_input).to_datetime(**kwargs)
 
-        # custom error message
-        fmt_kwargs = ", ".join(
-            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "unit"
-        )
-        pytest.fail(
-            f"BooleanSeries.to_datetime({fmt_kwargs}) did not reject "
-            f"unit={repr(kwargs['unit'])}"
-        )
-
-
-@parametrize(non_IANA_timezone_data())
-def test_boolean_to_datetime_rejects_non_IANA_timezones(
-    kwargs, test_input, test_output
-):
-    with pytest.raises(pytz.exceptions.UnknownTimeZoneError):
-        BooleanSeries(test_input).to_datetime(**kwargs)
-
-        # custom error message
-        fmt_kwargs = ", ".join(
-            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "tz"
-        )
-        pytest.fail(
-            f"BooleanSeries.to_datetime({fmt_kwargs}) did not reject "
-            f"tz={repr(kwargs['tz'])}"
-        )
+#         # custom error message
+#         fmt_kwargs = ", ".join(
+#             f"{k}={repr(v)}" for k, v in kwargs.items() if k != "tz"
+#         )
+#         pytest.fail(
+#             f"BooleanSeries.to_datetime({fmt_kwargs}) did not reject "
+#             f"tz={repr(kwargs['tz'])}"
+#         )
 
 
 @parametrize(M8_timezone_data())
-def test_boolean_to_datetime_rejects_non_UTC_timezones_with_numpy_M8_types(
-    kwargs, test_input, test_output
-):
-    # match_str = (
+def test_boolean_to_datetime_rejects_non_UTC_timezones_with_numpy_M8_types(case: CastCase):
+    with case.output as exc_info:
+        BooleanSeries(case.input).to_datetime(**case.kwargs)
+        pytest.fail(
+            f"BooleanSeries.to_datetime({case.signature('tz')}) did not "
+            f"reject tz={repr(case.kwargs['tz'])}"
+        )
+
+    assert exc_info.type is RuntimeError
+    # assert exc_info.match(
     #     r"numpy.datetime64 objects do not carry timezone information (must "
     #     r"be UTC or None)"
     # )
-    with pytest.raises(RuntimeError):
-        BooleanSeries(test_input).to_datetime(**kwargs)
-
-        # custom error message
-        fmt_kwargs = ", ".join(
-            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "tz"
-        )
-        pytest.fail(
-            f"BooleanSeries.to_datetime({fmt_kwargs}) did not reject "
-            f"tz={repr(kwargs['tz'])}"
-        )
 
 
 
@@ -848,14 +857,14 @@ def test_boolean_to_datetime_preserves_index(target_dtype):
     )
 
     # act
-    result = BooleanSeries(case.test_input).to_datetime(**case.kwargs)
+    result = BooleanSeries(case.input).to_datetime(**case.kwargs)
 
     # assert
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in case.kwargs.items())
-    assert result.equals(case.test_output), (
-        f"BooleanSeries.to_datetime({fmt_kwargs}) does not preserve index.\n"
+    assert result.equals(case.output), (
+        f"BooleanSeries.to_datetime({case.signature()}) does not preserve "
+        f"index.\n"
         f"expected:\n"
-        f"{case.test_output}\n"
+        f"{case.output}\n"
         f"received:\n"
         f"{result}"
     )

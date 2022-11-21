@@ -16,7 +16,8 @@ from tests.cast import EXTENSION_TYPES
 from tests.scheme import Case, Parameters
 
 
-# TODO: reject_nonseries_input -> input_typecheck
+# pytest.raises() type.  This is usually hidden behind a private API
+raises_context = type(pytest.raises(TypeError))
 
 
 def interpret_iso_8601_string(datetime_string, category, tz=None):
@@ -68,8 +69,8 @@ def parametrize(
         #. test_output: pd.Series - expected output for the given conversion.
     """
     return pytest.mark.parametrize(
-        "kwargs, test_input, test_output",
-        [case.parameter_set for case in CastParameters(*test_cases)],
+        "case",
+        CastParameters(*test_cases).test_cases,
         indirect=indirect,
         ids=ids,
         scope=scope
@@ -108,32 +109,39 @@ class CastCase(Case):
         self,
         kwargs: dict,
         test_input: pd.Series,
-        test_output: pd.Series,
+        test_output: pd.Series | raises_context,
         *,
         name: str = None,
         id: str = None,
         marks: tuple = tuple(),
-        reject_nonseries_input: bool = True
+        input_typecheck: bool = True,
     ):
+        # assert kwargs is a dict
         if not isinstance(kwargs, dict):
-            raise ValueError(
+            raise SyntaxError(
                 f"`kwargs` must be a dictionary holding keyword arguments to "
                 f"supply to the method under test, not {type(kwargs)}"
             )
 
-        if reject_nonseries_input and not isinstance(test_input, pd.Series):
-            raise ValueError(
+        # (optionally) assert test_input is a pd.Series object
+        if input_typecheck and not isinstance(test_input, pd.Series):
+            raise SyntaxError(
                 f"`test_input` must be a pd.Series object containing input "
-                f"data supplied to the SeriesWrapper constructor under test"
+                f"data supplied to the SeriesWrapper constructor under test, "
+                f"not {type(test_input)}"
             )
 
-        if not isinstance(test_output, pd.Series):
-            raise ValueError(
-                f"`test_output` must be a pd.Series object containing the "
-                f"expected output data for the given test case"
+        # assert that test_output is either a pd.Series object or a
+        # pytest.raises() context manager
+        if not isinstance(test_output, (pd.Series, raises_context)):
+            raise SyntaxError(
+                f"`test_output` must be EITHER a pd.Series object containing "
+                f"expected output data for the given test case OR a "
+                f"pytest.raises() context manager specifying an intended "
+                f"error state, not {type(test_output)}"
             )
 
-        self._input_check = reject_nonseries_input
+        self._input_typecheck = input_typecheck
         super().__init__(
             kwargs,
             test_input,
@@ -144,26 +152,36 @@ class CastCase(Case):
         )
 
     @property
+    def is_valid(self) -> bool:
+        return isinstance(self.output, pd.Series)
+
+    @property
     def kwargs(self) -> dict:
         return self.values[0]
 
     @property
-    def test_input(self) -> pd.Series:
+    def input(self) -> pd.Series:
         return self.values[1]
 
     @property
-    def test_output(self) -> pd.Series:
+    def output(self) -> pd.Series:
         return self.values[2]
+
+    def signature(self, *exclude) -> str:
+        return ", ".join(
+            f"{k}={repr(v)}" for k, v in self.kwargs.items()
+            if k not in exclude
+        )
 
     def with_na(self, input_val, output_val) -> CastCase:
         """Return a copy of this test case with missing values added to both
         the input and output data.  Only works for test cases that are created
-        with `reject_nonseries_input=True`.
+        with `input_typecheck=True`.
         """
-        if not self._input_check:
+        if not self._input_typecheck:
             raise SyntaxError(
                 "`with_na()` is only specified for test cases created with "
-                "`reject_nonseries_input=True`"
+                "`input_typecheck=True`"
             )
 
         # copy current values
@@ -175,23 +193,23 @@ class CastCase(Case):
             pd.api.types.is_integer_dtype(series)
         ) and not pd.api.types.is_extension_array_dtype(series)
 
-        # ensure test_input is nullable
+        # ensure test_input is nullable and add missing values
         if not_nullable(values[1]):
             values[1] = values[1].astype(EXTENSION_TYPES[values[1].dtype])
-
-        # ensure test_output is nullable
-        if not_nullable(self.test_output):
-            values[2] = values[2].astype(EXTENSION_TYPES[values[2].dtype])
-
-        # add missing values
         values[1] = pd.concat(
             [values[1], pd.Series([input_val], dtype=values[1].dtype)],
             ignore_index=True
         )
-        values[2] = pd.concat(
-            [values[2], pd.Series([output_val], dtype=values[2].dtype)],
-            ignore_index=True
-        )
+
+        # if case does not describe a failure, then ensure output is
+        # nullable and add missing values
+        if self.is_valid:
+            if not_nullable(self.output):
+                values[2] = values[2].astype(EXTENSION_TYPES[values[2].dtype])
+            values[2] = pd.concat(
+                [values[2], pd.Series([output_val], dtype=values[2].dtype)],
+                ignore_index=True
+            )
 
         # return as a new case object
         return CastCase(*values, marks=self.marks[1:])  # omit uuid mark

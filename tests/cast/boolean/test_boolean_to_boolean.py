@@ -2,97 +2,65 @@ import pandas as pd
 import pytest
 
 from tests.cast.scheme import CastCase, parametrize
-from tests.cast.boolean import (
-    valid_input_data, valid_dtype_data, invalid_input_data, invalid_dtype_data
-)
+from tests.cast.boolean import input_format_data, target_dtype_data
 
 from pdtypes.cast.boolean import BooleanSeries
 
 
-# with parametrized failures, use
-# test_boolean_to_boolean_filters_input_data_formats
-# test_boolean_to_boolean_filters_type_specifiers
-
-
-
-###################
-####   VALID   ####
-###################
-
-
-@parametrize(valid_input_data("boolean"))
-def test_boolean_to_boolean_accepts_valid_input_formats(
-    kwargs, test_input, test_output
-):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_boolean(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_boolean({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
-        f"expected:\n"
-        f"{test_output}\n"
-        f"received:\n"
-        f"{result}"
-    )
-
-
-@parametrize(valid_dtype_data("boolean"))
-def test_boolean_to_boolean_accepts_valid_type_specifiers(
-    kwargs, test_input, test_output
-):
-    fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-    result = BooleanSeries(test_input).to_boolean(**kwargs)
-    assert result.equals(test_output), (
-        f"BooleanSeries.to_boolean({fmt_kwargs}) failed with input:\n"
-        f"{test_input}\n"
-        f"expected:\n"
-        f"{test_output}\n"
-        f"received:\n"
-        f"{result}"
-    )
-
-
-#######################
-####    INVALID    ####
-#######################
-
-
-@parametrize(invalid_input_data())
-def test_boolean_to_boolean_rejects_invalid_input_formats(
-    kwargs, test_input, test_output
-):
-    with pytest.raises(TypeError):
-        BooleanSeries(test_input).to_boolean(**kwargs)
-
-        # custom error message
-        fmt_kwargs = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-        pytest.fail(
-            f"BooleanSeries.to_boolean({fmt_kwargs}) did not reject "
-            f"input data:\n"
-            f"{test_input}"
+@parametrize(input_format_data("boolean"))
+def test_boolean_to_boolean_accepts_valid_input_data(case: CastCase):
+    # valid case
+    if case.is_valid:
+        result = BooleanSeries(case.input).to_boolean(**case.kwargs)
+        assert result.equals(case.output), (
+            f"BooleanSeries.to_boolean({case.signature()}) failed with "
+            f"input:\n"
+            f"{case.input}\n"
+            f"expected:\n"
+            f"{case.output}\n"
+            f"received:\n"
+            f"{result}"
         )
 
+    # invalid case
+    else:
+        with case.output as exc_info:
+            BooleanSeries(case.input).to_boolean(**case.kwargs)
+            pytest.fail(
+                f"BooleanSeries.to_boolean({case.signature()}) did not reject "
+                f"input data:\n"
+                f"{case.input}"
+            )
 
-@parametrize(invalid_dtype_data("boolean"))
-def test_boolean_to_boolean_rejects_invalid_type_specifiers(
-    kwargs, test_input, test_output
-):
-    with pytest.raises(TypeError, match="`dtype` must be bool-like"):
-        BooleanSeries(test_input).to_boolean(**kwargs)
+        assert exc_info.type is TypeError
 
-        # custom error message
-        fmt_kwargs = ", ".join(
-            f"{k}={repr(v)}" for k, v in kwargs.items() if k != "dtype"
+
+@parametrize(target_dtype_data("boolean"))
+def test_boolean_to_boolean_accepts_boolean_type_specifiers(case: CastCase):
+    # valid
+    if case.is_valid:
+        result = BooleanSeries(case.input).to_boolean(**case.kwargs)
+        assert result.equals(case.output), (
+            f"BooleanSeries.to_boolean({case.signature()}) failed with "
+            f"input:\n"
+            f"{case.input}\n"
+            f"expected:\n"
+            f"{case.output}\n"
+            f"received:\n"
+            f"{result}"
         )
-        pytest.fail(
-            f"BooleanSeries.to_boolean({fmt_kwargs}) did not reject "
-            f"dtype={repr(kwargs['dtype'])}"
-        )
 
+    # invalid
+    else:
+        with case.output as exc_info:
+            BooleanSeries(case.input).to_boolean(**case.kwargs)
+            pytest.fail(  # called when no exception is encountered
+                f"BooleanSeries.to_boolean({case.signature('dtype')}) did not "
+                f"reject dtype={repr(case.kwargs['dtype'])}"
+            )
 
-#####################
-####    OTHER    ####
-#####################
+        assert exc_info.type is TypeError
+        assert exc_info.match("`dtype` must be bool-like")
 
 
 def test_boolean_to_boolean_preserves_index():
@@ -112,9 +80,10 @@ def test_boolean_to_boolean_preserves_index():
     )
 
     # act
-    result = BooleanSeries(case.test_input).to_boolean(**case.kwargs)
+    result = BooleanSeries(case.input).to_boolean(**case.kwargs)
 
     # assert
-    assert result.equals(case.test_output), (
-        "BooleanSeries.to_boolean() does not preserve index"
+    assert result.equals(case.output), (
+        f"BooleanSeries.to_boolean({case.signature()}) does not preserve "
+        f"index"
     )
