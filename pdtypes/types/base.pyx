@@ -254,7 +254,11 @@ cdef class CompositeType(set):
     checks to include subtypes for each of the contained ElementTypes.
     """
 
-    def __init__(self, arg = None):
+    def __init__(
+        self,
+        arg = None,
+        index: np.array[object] = None
+    ):
         if arg is None:
             super(CompositeType, self).__init__()
         elif isinstance(arg, CompositeType):
@@ -265,6 +269,8 @@ cdef class CompositeType(set):
             )
         else:
             super(CompositeType, self).__init__((resolve_dtype(arg),))
+
+        self.index = index
 
     ###################################
     ####    ADD/REMOVE ELEMENTS    ####
@@ -703,6 +709,7 @@ cdef class ElementType:
         """Test whether the given type specifier is a subtype of this
         ElementType.
         """
+        # TODO: remove this
         return resolve_dtype(other) in self.subtypes
 
     def __eq__(self, other) -> bool:

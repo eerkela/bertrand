@@ -19,6 +19,21 @@ cdef class BooleanType(ElementType):
         bint categorical = False,
         bint nullable = False
     ):
+        # super(BooleanType, self).__init__(
+        #     sparse=sparse,
+        #     categorical=categorical,
+        #     supertype=None,
+        #     subtypes=frozenset(),
+        #     atomic_type=bool,
+        #     numpy_type=np.dtype(bool),
+        #     pandas_type=pd.BooleanDtype(),
+        #     hash=compute_hash(
+        #         sparse=sparse,
+        #         categorical=categorical,
+        #         nullable=nullable,
+        #         base=self.__class__
+        #     )
+        # )
         self.sparse = sparse
         self.categorical = categorical
         self.nullable = nullable

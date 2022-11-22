@@ -34,7 +34,8 @@ cpdef ElementType resolve_dtype(
 
 # classes
 cdef class CompositeType(set):
-    pass
+    cdef readonly:
+        np.ndarray index
 
 
 cdef class ElementType:
