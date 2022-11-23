@@ -36,15 +36,18 @@ cpdef ElementType resolve_dtype(
 cdef class CompositeType(set):
     cdef readonly:
         np.ndarray index
+        bint immutable
 
 
 cdef class ElementType:
+    cdef:
+        ElementType _supertype
+        CompositeType _subtypes
+
     cdef readonly:
         bint sparse
         bint categorical
         bint nullable
-        type supertype
-        frozenset subtypes
         type atomic_type
         object numpy_type
         object pandas_type

@@ -2,7 +2,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport compute_hash, ElementType, shared_registry
+from .base cimport CompositeType, compute_hash, ElementType, shared_registry
 
 
 ##########################
@@ -19,29 +19,19 @@ cdef class BooleanType(ElementType):
         bint categorical = False,
         bint nullable = False
     ):
-        # super(BooleanType, self).__init__(
-        #     sparse=sparse,
-        #     categorical=categorical,
-        #     supertype=None,
-        #     subtypes=frozenset(),
-        #     atomic_type=bool,
-        #     numpy_type=np.dtype(bool),
-        #     pandas_type=pd.BooleanDtype(),
-        #     hash=compute_hash(
-        #         sparse=sparse,
-        #         categorical=categorical,
-        #         nullable=nullable,
-        #         base=self.__class__
-        #     )
-        # )
-        self.sparse = sparse
-        self.categorical = categorical
-        self.nullable = nullable
-        self.supertype = None
-        self.subtypes = frozenset()
-        self.atomic_type = bool
-        self.numpy_type = np.dtype(bool)
-        self.pandas_type = pd.BooleanDtype()
+        super(BooleanType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=nullable,
+            atomic_type=bool,
+            numpy_type=np.dtype(bool),
+            pandas_type=pd.BooleanDtype(),
+            slug="nullable[bool]" if nullable else "bool",
+            supertype=None,
+            subtypes=None  # lazy-loaded
+        )
+
+        # hash
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
@@ -49,25 +39,24 @@ cdef class BooleanType(ElementType):
             base=self.__class__
         )
 
-        # generate slug
-        self.slug = "bool"
-        if self.nullable:
-            self.slug = f"nullable[{self.slug}]"
-        if self.categorical:
-            self.slug = f"categorical[{self.slug}]"
-        if self.sparse:
-            self.slug = f"sparse[{self.slug}]"
+    @property
+    def subtypes(self) -> CompositeType:
+        # cached
+        if self._subtypes is not None:
+            return self._subtypes
 
-        # generate subtypes
-        self.subtypes = frozenset((self,))
+        # uncached
+        subtypes = {self}
         if not self.nullable:
-            self.subtypes |= {
+            subtypes |= {
                 self.__class__.instance(
-                    sparse=sparse,
-                    categorical=categorical,
+                    sparse=self.sparse,
+                    categorical=self.categorical,
                     nullable=True
                 )
             }
+        self._subtypes = CompositeType(subtypes, immutable=True)
+        return self._subtypes
 
     @classmethod
     def instance(

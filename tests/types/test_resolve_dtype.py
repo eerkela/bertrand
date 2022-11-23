@@ -6,6 +6,8 @@ from types import MappingProxyType
 import numpy as np
 import pandas as pd
 
+from tests.types.scheme import parametrize, TypeCase, TypeParameters
+
 from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
 from pdtypes.types import (
     resolve_dtype, BooleanType, IntegerType, SignedIntegerType,
@@ -719,6 +721,11 @@ atomic_element_types = MappingProxyType(atomic_element_types)
 string_element_types = MappingProxyType(string_element_types)
 
 
+# def flyweight_data():
+
+
+
+
 #####################
 ####    TESTS    ####
 #####################
@@ -735,7 +742,19 @@ string_element_types = MappingProxyType(string_element_types)
 #     call resolve_dtype() twice on same input and assert ids are equal
 
 
+@parametrize(*[TypeCase({}, k, v) for k, v in dtype_element_types.items()])
+def test_resolve_dtype_accepts_numpy_and_pandas_dtype_objects(case: TypeCase):
+    # TODO: NumpyDatetime64Type.instance() does not return the same flyweight
+    # as resolve_dtype()
 
-# def test_resolve_dtype_accepts_numpy_and_pandas_dtype_objects(case):
-
+    result = resolve_dtype(case.input, **case.kwargs)
+    assert result is case.output, (
+        f"resolve_dtype({', '.join([repr(case.input), case.signature()])}) "
+        f"failed with input:\n"
+        f"{repr(case.input)}\n"
+        f"expected:\n"
+        f"{repr(case.output)}\n"
+        f"received:\n"
+        f"{repr(result)}\n"
+    )
 

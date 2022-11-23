@@ -256,13 +256,15 @@ cdef class CompositeType(set):
 
     def __init__(
         self,
-        arg = None,
-        index: np.array[object] = None
+        object arg = None,
+        np.ndarray[object] index = None,
+        bint immutable = False
     ):
         if arg is None:
             super(CompositeType, self).__init__()
         elif isinstance(arg, CompositeType):
             super(CompositeType, self).__init__(arg)
+            # self.index = arg.index
         elif hasattr(arg, "__iter__") and not isinstance(arg, str):
             super(CompositeType, self).__init__(
                 resolve_dtype(t) for t in flatten_nested_typespec(arg)
@@ -271,6 +273,7 @@ cdef class CompositeType(set):
             super(CompositeType, self).__init__((resolve_dtype(arg),))
 
         self.index = index
+        self.immutable = immutable
 
     ###################################
     ####    ADD/REMOVE ELEMENTS    ####
@@ -278,6 +281,8 @@ cdef class CompositeType(set):
 
     def add(self, typespec) -> None:
         """Add a type specifier to the CompositeType."""
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
         super(CompositeType, self).add(resolve_dtype(typespec))
 
     def remove(self, typespec) -> None:
@@ -287,6 +292,8 @@ cdef class CompositeType(set):
         Identical to the built-in `set.remove()` method, but extends
         ElementType resolution to the given type specifier.
         """
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
         super(CompositeType, self).remove(resolve_dtype(typespec))
 
     def discard(self, typespec) -> None:
@@ -296,11 +303,13 @@ cdef class CompositeType(set):
         Identical to the built-in `set.discard()` method, but extends
         ElementType resolution to the given type specifier.
         """
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
         super(CompositeType, self).discard(resolve_dtype(typespec))
 
-    def copy(self) -> CompositeType:
+    def copy(self, bint immutable = False) -> CompositeType:
         """Return a shallow copy of the CompositeType."""
-        return CompositeType(self)
+        return CompositeType(self, index=self.index, immutable=immutable)
 
     ##########################################
     ####    EXPAND/REDUCE MEMBER TYPES    ####
@@ -313,6 +322,9 @@ cdef class CompositeType(set):
         """Expand each of the ElementTypes contained within the CompositeType
         to include each of their subtypes.
         """
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
+
         cdef ElementType element_type
     
         if in_place:
@@ -328,6 +340,9 @@ cdef class CompositeType(set):
         """Return a copy of the CompositeType with subtypes removed if they are
         fully encapsulated within the other members of the CompositeType.
         """
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
+
         cdef ElementType element_type
         cdef ElementType t1
         cdef ElementType t2
@@ -532,6 +547,9 @@ cdef class CompositeType(set):
         """Update the CompositeType in-place, adding ElementTypes from all
         others.
         """
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
+
         for item in others:
             self |= item
 
@@ -539,6 +557,9 @@ cdef class CompositeType(set):
         """Update a CompositeType in-place, adding ElementTypes from all
         others.
         """
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
+
         super(CompositeType, self).__ior__(CompositeType(other))
         return self
 
@@ -546,6 +567,9 @@ cdef class CompositeType(set):
         """Update a CompositeType in-place, keeping only the ElementTypes found
         in it and all others.
         """
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
+
         for item in others:
             self &= item
 
@@ -553,6 +577,9 @@ cdef class CompositeType(set):
         """Update a CompositeType in-place, keeping only the ElementTypes found
         in it and all others.
         """
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
+
         cdef CompositeType prev = self.copy()
         cdef ElementType element_type
 
@@ -573,6 +600,9 @@ cdef class CompositeType(set):
         """Update a CompositeType in-place, removing ElementTypes that can be
         found in others.
         """
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
+
         cdef ElementType t1
         cdef ElementType t2
 
@@ -590,6 +620,9 @@ cdef class CompositeType(set):
         """Update a CompositeType in-place, removing ElementTypes that can be
         found in others.
         """
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
+
         cdef ElementType t1
         cdef ElementType t2
 
@@ -607,12 +640,18 @@ cdef class CompositeType(set):
         """Update a CompositeType in-place, keeping only ElementTypes that
         are found in either `self` or `other`, but not both.
         """
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
+
         self ^= other
 
     def __ixor__(self, other) -> CompositeType:
         """Update a CompositeType in-place, keeping only ElementTypes that
         are found in either `self` or `other`, but not both.
         """
+        if self.immutable:
+            raise AttributeError("CompositeType is immutable")
+
         other = CompositeType(other)
         self |= other
         self -= (self & other)
@@ -621,6 +660,14 @@ cdef class CompositeType(set):
     ##################################
     ####    MISC MAGIC METHODS    ####
     ##################################
+
+    def __hash__(self) -> int:
+        if not self.immutable:
+            raise AttributeError(
+                "CompositeType instance cannot be hashed: instance is not "
+                "immutable"
+            )
+        return hash(element_type for element_type in self)
 
     def __repr__(self) -> str:
         if self:
@@ -673,6 +720,55 @@ cdef class ElementType:
         A shortened string identifier (e.g. 'int64', 'bool', etc.) for this
         ElementType.
     """
+
+    def __init__(
+        self,
+        bint sparse,
+        bint categorical,
+        bint nullable,
+        object atomic_type,
+        object numpy_type,
+        object pandas_type,
+        str slug,
+        ElementType supertype,
+        CompositeType subtypes
+    ):
+        self.sparse = sparse
+        self.categorical = categorical
+        self.nullable = nullable
+        self.atomic_type = atomic_type
+        self.numpy_type = numpy_type
+        self.pandas_type = pandas_type
+        if self.categorical:
+            slug = f"categorical[{slug}]"
+        if self.sparse:
+            slug = f"sparse[{slug}]"
+        self.slug = slug
+        self._subtypes = subtypes
+        self._supertype = supertype
+
+    @property
+    def subtypes(self) -> CompositeType:
+        return self._subtypes
+
+    @property
+    def supertype(self) -> ElementType:
+        return self._supertype
+
+    @classmethod
+    def compute_hash(
+        cls,
+        bint sparse = False,
+        bint categorical = False,
+        bint nullable = True,
+        str unit = None,
+        unsigned long long step_size = 1,
+        str storage = default_string_storage
+    ):
+        """Compute a unique hash based on the given ElementType properties."""
+        return hash(
+            (sparse, categorical, nullable, cls, unit, step_size, storage)
+        )
 
     @classmethod
     def instance(

@@ -8,4 +8,4 @@ cdef class StringType(ElementType):
 
     # private
     cdef:
-        bint is_default_storage
+        bint is_default

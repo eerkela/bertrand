@@ -2,7 +2,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport compute_hash, ElementType, shared_registry
+from .base cimport CompositeType, compute_hash, ElementType, shared_registry
 from .float cimport FloatType, Float32Type, Float64Type, LongDoubleType
 
 
@@ -22,33 +22,25 @@ cdef class ComplexType(ElementType):
         bint sparse = False,
         bint categorical = False
     ):
-        self.sparse = sparse
-        self.categorical = categorical
-        self.nullable = True
-        self.supertype = None
-        self.atomic_type = complex
-        self.numpy_type = np.dtype(np.complex128)
-        self.pandas_type = None
+        super(ComplexType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            atomic_type=complex,
+            numpy_type=np.dtype(np.complex128),
+            pandas_type=None,
+            slug="complex",
+            supertype=None,
+            subtypes=None  # lazy-loaded
+        )
+
+        # hash
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
-
-        # generate slug
-        self.slug = "complex"
-        if self.categorical:
-            self.slug = f"categorical[{self.slug}]"
-        if self.sparse:
-            self.slug = f"sparse[{self.slug}]"
-
-        # generate subtypes
-        self.subtypes = frozenset((self,))
-        self.subtypes |= {
-            t.instance(sparse=sparse, categorical=categorical)
-            for t in (Complex64Type, Complex128Type, CLongDoubleType)
-        }
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**53
@@ -61,6 +53,20 @@ cdef class ComplexType(ElementType):
             sparse=self.sparse,
             categorical=self.categorical
         )
+
+    @property
+    def subtypes(self) -> CompositeType:
+        # cached
+        if self._subtypes is not None:
+            return self._subtypes
+
+        # uncached
+        subtypes = {self} | {
+            t.instance(sparse=self.sparse, categorical=self.categorical)
+            for t in (Complex64Type, Complex128Type, CLongDoubleType)
+        }
+        self._subtypes = CompositeType(subtypes, immutable=True)
+        return self._subtypes
 
 
 ########################
@@ -76,29 +82,25 @@ cdef class Complex64Type(ComplexType):
         bint sparse = False,
         bint categorical = False
     ):
-        self.sparse = sparse
-        self.categorical = categorical
-        self.nullable = True
-        self.supertype = ComplexType
-        self.atomic_type = np.complex64
-        self.numpy_type = np.dtype(np.complex64)
-        self.pandas_type = None
+        super(ComplexType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            atomic_type=np.complex64,
+            numpy_type=np.dtype(np.complex64),
+            pandas_type=None,
+            slug = "complex64",
+            supertype=None,  # lazy-loaded
+            subtypes=CompositeType({self}, immutable=True)
+        )
+
+        # hash
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
-
-        # generate slug
-        self.slug = "complex64"
-        if self.categorical:
-            self.slug = f"categorical[{self.slug}]"
-        if self.sparse:
-            self.slug = f"sparse[{self.slug}]"
-
-        # generate subtypes
-        self.subtypes = frozenset((self,))
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**24
@@ -112,6 +114,19 @@ cdef class Complex64Type(ComplexType):
             categorical=self.categorical
         )
 
+    @property
+    def supertype(self) -> ComplexType:
+        # cached
+        if self._supertype is not None:
+            return self._supertype
+
+        # uncached
+        self._supertype = ComplexType.instance(
+            sparse=self.sparse,
+            categorical=self.categorical
+        )
+        return self._supertype
+
 
 cdef class Complex128Type(ComplexType):
     """128-bit complex subtype"""
@@ -121,29 +136,25 @@ cdef class Complex128Type(ComplexType):
         bint sparse = False,
         bint categorical = False
     ):
-        self.sparse = sparse
-        self.categorical = categorical
-        self.nullable = True
-        self.supertype = ComplexType
-        self.atomic_type = np.complex128
-        self.numpy_type = np.dtype(np.complex128)
-        self.pandas_type = None
+        super(ComplexType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            atomic_type=np.complex128,
+            numpy_type=np.dtype(np.complex128),
+            pandas_type=None,
+            slug = "complex128",
+            supertype=None,  # lazy-loaded
+            subtypes=CompositeType({self}, immutable=True)
+        )
+
+        # hash
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
-
-        # generate slug
-        self.slug = "complex128"
-        if self.categorical:
-            self.slug = f"categorical[{self.slug}]"
-        if self.sparse:
-            self.slug = f"sparse[{self.slug}]"
-
-        # generate subtypes
-        self.subtypes = frozenset((self,))
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**53
@@ -157,6 +168,19 @@ cdef class Complex128Type(ComplexType):
             categorical=self.categorical
         )
 
+    @property
+    def supertype(self) -> ComplexType:
+        # cached
+        if self._supertype is not None:
+            return self._supertype
+
+        # uncached
+        self._supertype = ComplexType.instance(
+            sparse=self.sparse,
+            categorical=self.categorical
+        )
+        return self._supertype
+
 
 cdef class CLongDoubleType(ComplexType):
     """complex long double subtype (platform-dependent)"""
@@ -166,29 +190,25 @@ cdef class CLongDoubleType(ComplexType):
         bint sparse = False,
         bint categorical = False
     ):
-        self.sparse = sparse
-        self.categorical = categorical
-        self.nullable = True
-        self.supertype = ComplexType
-        self.atomic_type = np.clongdouble
-        self.numpy_type = np.dtype(np.clongdouble)
-        self.pandas_type = None
+        super(ComplexType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            atomic_type=np.clongdouble,
+            numpy_type=np.dtype(np.clongdouble),
+            pandas_type=None,
+            slug = "clongdouble",
+            supertype=None,  # lazy-loaded
+            subtypes=CompositeType({self}, immutable=True)
+        )
+
+        # hash
         self.hash = compute_hash(
             sparse=sparse,
             categorical=categorical,
             nullable=True,
             base=self.__class__
         )
-
-        # generate slug
-        self.slug = "clongdouble"
-        if self.categorical:
-            self.slug = f"categorical[{self.slug}]"
-        if self.sparse:
-            self.slug = f"sparse[{self.slug}]"
-
-        # generate subtypes
-        self.subtypes = frozenset((self,))
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**64
@@ -201,3 +221,16 @@ cdef class CLongDoubleType(ComplexType):
             sparse=self.sparse,
             categorical=self.categorical
         )
+
+    @property
+    def supertype(self) -> ComplexType:
+        # cached
+        if self._supertype is not None:
+            return self._supertype
+
+        # uncached
+        self._supertype = ComplexType.instance(
+            sparse=self.sparse,
+            categorical=self.categorical
+        )
+        return self._supertype

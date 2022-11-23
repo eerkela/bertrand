@@ -5,7 +5,7 @@ import pandas as pd
 from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
 
 from .base cimport (
-    compute_hash, ElementType, resolve_dtype, shared_registry
+    CompositeType, compute_hash, ElementType, resolve_dtype, shared_registry
 )
 
 
@@ -23,12 +23,29 @@ cdef class StringType(ElementType):
         bint categorical = False,
         str storage = None
     ):
-        self.sparse = sparse
-        self.categorical = categorical
-        self.nullable = True
-        self.supertype = None
-        self.atomic_type = str
-        self.numpy_type = np.dtype(str)
+        # sort out string storage backend
+        self.is_default = storage is None
+        if self.is_default:
+            pandas_type = DEFAULT_STRING_DTYPE
+            slug = "string"
+            self.storage = DEFAULT_STRING_DTYPE.storage
+        else:
+            pandas_type = pd.StringDtype(storage)
+            slug = f"string[{storage}]"
+            self.storage = storage
+
+        # pass to ElementType constructor
+        super(StringType, self).__init__(
+            sparse=sparse,
+            categorical=categorical,
+            nullable=True,
+            atomic_type=str,
+            numpy_type=np.dtype(str),
+            pandas_type=pandas_type,
+            slug=slug,
+            supertype=None,
+            subtypes=None  # lazy-loaded
+        )
 
         # compute hash
         self.hash = compute_hash(
@@ -41,41 +58,30 @@ cdef class StringType(ElementType):
             storage=storage
         )
 
-        # generate appropriate slug/extension type based on storage argument
-        self.is_default_storage = storage is None
-        if self.is_default_storage:
-            self.pandas_type = DEFAULT_STRING_DTYPE
-            self.slug = "string"
-            self.storage = DEFAULT_STRING_DTYPE.storage
-        else:
-            self.pandas_type = pd.StringDtype(storage)
-            self.slug = f"string[{storage}]"
-            self.storage = storage
+    @property
+    def subtypes(self) -> CompositeType:
+        # cached
+        if self._subtypes is not None:
+            return self._subtypes
 
-        # append sparse, categorical flags to slug
-        if self.categorical:
-            self.slug = f"categorical[{self.slug}]"
-        if self.sparse:
-            self.slug = f"sparse[{self.slug}]"
-
-        # generate subtypes
-        self.subtypes = frozenset((self,))
-        if self.is_default_storage:
-            self.subtypes |= {
-                self.__class__.instance(
-                    sparse=sparse,
-                    categorical=categorical,
-                    storage="python"
-                )
-            }
+        # uncached
+        subtypes = {self}
+        if self.is_default:
+            backends = ["python"]
             if PYARROW_INSTALLED:
-                self.subtypes |= {
-                    self.__class__.instance(
-                        sparse=sparse,
-                        categorical=categorical,
-                        storage="pyarrow"
-                    )
-                }
+                backends.append("pyarrow")
+
+            subtypes |= {
+                self.__class__.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    storage=storage
+                )
+                for storage in backends
+            }
+
+        self._subtypes = CompositeType(subtypes, immutable=True)
+        return self._subtypes
 
     @classmethod
     def instance(
@@ -116,7 +122,7 @@ cdef class StringType(ElementType):
     def __repr__(self) -> str:
         cdef str storage
 
-        if self.is_default_storage:
+        if self.is_default:
             storage = None
         else:
             storage = repr(self.storage)
