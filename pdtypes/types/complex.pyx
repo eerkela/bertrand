@@ -2,7 +2,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport CompositeType, compute_hash, ElementType, shared_registry
+from .base cimport compute_hash, ElementType, shared_registry
 from .float cimport FloatType, Float32Type, Float64Type, LongDoubleType
 
 
@@ -55,7 +55,7 @@ cdef class ComplexType(ElementType):
         )
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -65,7 +65,7 @@ cdef class ComplexType(ElementType):
             t.instance(sparse=self.sparse, categorical=self.categorical)
             for t in (Complex64Type, Complex128Type, CLongDoubleType)
         }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
 
@@ -91,7 +91,7 @@ cdef class Complex64Type(ComplexType):
             pandas_type=None,
             slug = "complex64",
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash
@@ -145,7 +145,7 @@ cdef class Complex128Type(ComplexType):
             pandas_type=None,
             slug = "complex128",
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash
@@ -199,7 +199,7 @@ cdef class CLongDoubleType(ComplexType):
             pandas_type=None,
             slug = "clongdouble",
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash

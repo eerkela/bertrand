@@ -5,7 +5,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport (
-    CompositeType, compute_hash, ElementType, resolve_dtype, shared_registry,
+    compute_hash, ElementType, resolve_dtype, shared_registry,
     datetime64_registry
 )
 
@@ -54,7 +54,7 @@ cdef class DatetimeType(ElementType):
         self.max = 291061508645168328945024000000000000
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -64,10 +64,13 @@ cdef class DatetimeType(ElementType):
             t.instance(sparse=self.sparse, categorical=self.categorical)
             for t in (PandasTimestampType, PyDatetimeType, NumpyDatetime64Type)
         }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     def __contains__(self, other) -> bool:
+        """Test whether the given type specifier is a subtype of this
+        ElementType.
+        """
         other = resolve_dtype(other)
         if isinstance(other, NumpyDatetime64Type):  # disregard unit/step_size
             return (
@@ -99,7 +102,7 @@ cdef class PandasTimestampType(DatetimeType):
             pandas_type=None,
             slug="datetime[pandas]",
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash
@@ -128,7 +131,9 @@ cdef class PandasTimestampType(DatetimeType):
         return self._supertype
 
     def __contains__(self, other) -> bool:
-        # use default ElementType __contains__()
+        """Test whether the given type specifier is a subtype of this
+        ElementType.
+        """
         return super(DatetimeType, self).__contains__(other)
 
 
@@ -149,7 +154,7 @@ cdef class PyDatetimeType(DatetimeType):
             pandas_type=None,
             slug="datetime[python]",
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash
@@ -178,7 +183,6 @@ cdef class PyDatetimeType(DatetimeType):
         return self._supertype
 
     def __contains__(self, other) -> bool:
-        # use default ElementType __contains__()
         return super(DatetimeType, self).__contains__(other)
 
 
@@ -217,7 +221,7 @@ cdef class NumpyDatetime64Type(DatetimeType):
             pandas_type=None,
             slug=slug,
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # compute hash
@@ -285,6 +289,9 @@ cdef class NumpyDatetime64Type(DatetimeType):
         return result
 
     def __contains__(self, other) -> bool:
+        """Test whether the given type specifier is a subtype of this
+        ElementType.
+        """
         other = resolve_dtype(other)
         if isinstance(other, self.__class__):
             if self.unit is None:  # disregard unit/step_size
@@ -292,7 +299,7 @@ cdef class NumpyDatetime64Type(DatetimeType):
                     self.sparse == other.sparse and
                     self.categorical == other.categorical
                 )
-            return self.__eq__(other)
+            return self == other
         return False
 
     def __repr__(self) -> str:

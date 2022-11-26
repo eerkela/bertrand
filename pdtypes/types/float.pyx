@@ -2,7 +2,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport CompositeType, compute_hash, ElementType, shared_registry
+from .base cimport compute_hash, ElementType, shared_registry
 from .complex cimport (
     ComplexType, Complex64Type, Complex128Type, CLongDoubleType
 )
@@ -54,7 +54,7 @@ cdef class FloatType(ElementType):
         )
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -64,7 +64,7 @@ cdef class FloatType(ElementType):
             t.instance(sparse=self.sparse, categorical=self.categorical)
             for t in (Float16Type, Float32Type, Float64Type, LongDoubleType)
         }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
 
@@ -90,7 +90,7 @@ cdef class Float16Type(FloatType):
             pandas_type=None,
             slug="float16",
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash
@@ -143,7 +143,7 @@ cdef class Float32Type(FloatType):
             pandas_type=None,
             slug="float32",
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash
@@ -196,7 +196,7 @@ cdef class Float64Type(FloatType):
             pandas_type=None,
             slug="float64",
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash
@@ -249,7 +249,7 @@ cdef class LongDoubleType(FloatType):
             pandas_type=None,
             slug="longdouble",
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash

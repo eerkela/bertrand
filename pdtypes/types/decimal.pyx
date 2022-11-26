@@ -4,7 +4,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport CompositeType, compute_hash, ElementType, shared_registry
+from .base cimport compute_hash, ElementType, shared_registry
 
 
 ##########################
@@ -29,7 +29,7 @@ cdef class DecimalType(ElementType):
             pandas_type=None,
             slug="decimal",
             supertype=None,
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash

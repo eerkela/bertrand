@@ -2,9 +2,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport (
-    CompositeType, compute_hash, ElementType, resolve_dtype, shared_registry
-)
+from .base cimport compute_hash, ElementType, resolve_dtype, shared_registry
 
 
 ##########################
@@ -46,7 +44,7 @@ cdef class IntegerType(ElementType):
         self.max = np.inf
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -74,7 +72,7 @@ cdef class IntegerType(ElementType):
                 for t in subtype_categories + (self.__class__,)
             }
 
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @classmethod
@@ -154,7 +152,7 @@ cdef class SignedIntegerType(IntegerType):
         self.max = 2**63 - 1
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -179,7 +177,7 @@ cdef class SignedIntegerType(IntegerType):
                 for t in subtype_categories + (self.__class__,)
             }
 
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @property
@@ -264,7 +262,7 @@ cdef class UnsignedIntegerType(IntegerType):
         self.max = 2**64 - 1
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -289,7 +287,7 @@ cdef class UnsignedIntegerType(IntegerType):
                 for t in subtype_categories + (self.__class__,)
             }
 
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @property
@@ -379,7 +377,7 @@ cdef class Int8Type(SignedIntegerType):
         self.max = 2**7 - 1
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -387,14 +385,14 @@ cdef class Int8Type(SignedIntegerType):
         # uncached
         subtypes = {self}
         if not self.nullable:
-            self.subtypes |= {
+            subtypes |= {
                 self.__class__.instance(
                     sparse=self.sparse,
                     categorical=self.categorical,
                     nullable=True
                 )
             }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @property
@@ -446,7 +444,7 @@ cdef class Int16Type(SignedIntegerType):
         self.max = 2**15 - 1
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -454,14 +452,14 @@ cdef class Int16Type(SignedIntegerType):
         # uncached
         subtypes = {self}
         if not self.nullable:
-            self.subtypes |= {
+            subtypes |= {
                 self.__class__.instance(
                     sparse=self.sparse,
                     categorical=self.categorical,
                     nullable=True
                 )
             }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @property
@@ -513,7 +511,7 @@ cdef class Int32Type(SignedIntegerType):
         self.max = 2**31 - 1
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -521,14 +519,14 @@ cdef class Int32Type(SignedIntegerType):
         # uncached
         subtypes = {self}
         if not self.nullable:
-            self.subtypes |= {
+            subtypes |= {
                 self.__class__.instance(
                     sparse=self.sparse,
                     categorical=self.categorical,
                     nullable=True
                 )
             }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @property
@@ -580,7 +578,7 @@ cdef class Int64Type(SignedIntegerType):
         self.max = 2**63 - 1
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -588,14 +586,14 @@ cdef class Int64Type(SignedIntegerType):
         # uncached
         subtypes = {self}
         if not self.nullable:
-            self.subtypes |= {
+            subtypes |= {
                 self.__class__.instance(
                     sparse=self.sparse,
                     categorical=self.categorical,
                     nullable=True
                 )
             }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @property
@@ -647,7 +645,7 @@ cdef class UInt8Type(UnsignedIntegerType):
         self.max = 2**8 - 1
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -655,14 +653,14 @@ cdef class UInt8Type(UnsignedIntegerType):
         # uncached
         subtypes = {self}
         if not self.nullable:
-            self.subtypes |= {
+            subtypes |= {
                 self.__class__.instance(
                     sparse=self.sparse,
                     categorical=self.categorical,
                     nullable=True
                 )
             }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @property
@@ -714,7 +712,7 @@ cdef class UInt16Type(UnsignedIntegerType):
         self.max = 2**16 - 1
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -722,14 +720,14 @@ cdef class UInt16Type(UnsignedIntegerType):
         # uncached
         subtypes = {self}
         if not self.nullable:
-            self.subtypes |= {
+            subtypes |= {
                 self.__class__.instance(
                     sparse=self.sparse,
                     categorical=self.categorical,
                     nullable=True
                 )
             }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @property
@@ -781,7 +779,7 @@ cdef class UInt32Type(UnsignedIntegerType):
         self.max = 2**32 - 1
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -789,14 +787,14 @@ cdef class UInt32Type(UnsignedIntegerType):
         # uncached
         subtypes = {self}
         if not self.nullable:
-            self.subtypes |= {
+            subtypes |= {
                 self.__class__.instance(
                     sparse=self.sparse,
                     categorical=self.categorical,
                     nullable=True
                 )
             }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @property
@@ -848,7 +846,7 @@ cdef class UInt64Type(UnsignedIntegerType):
         self.max = 2**64 - 1
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -856,14 +854,14 @@ cdef class UInt64Type(UnsignedIntegerType):
         # uncached
         subtypes = {self}
         if not self.nullable:
-            self.subtypes |= {
+            subtypes |= {
                 self.__class__.instance(
                     sparse=self.sparse,
                     categorical=self.categorical,
                     nullable=True
                 )
             }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @property

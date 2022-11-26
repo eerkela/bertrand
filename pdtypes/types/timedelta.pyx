@@ -6,7 +6,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport (
-    CompositeType, compute_hash, ElementType, resolve_dtype, shared_registry,
+    compute_hash, ElementType, resolve_dtype, shared_registry,
     timedelta64_registry
 )
 
@@ -55,7 +55,7 @@ cdef class TimedeltaType(ElementType):
         self.max = 291061508645168391112243200000000000
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -67,10 +67,13 @@ cdef class TimedeltaType(ElementType):
                 PandasTimedeltaType, PyTimedeltaType, NumpyTimedelta64Type
             )
         }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     def __contains__(self, other) -> bool:
+        """Test whether the given type specifier is a subtype of this
+        ElementType.
+        """
         other = resolve_dtype(other)
         if isinstance(other, NumpyTimedelta64Type):  # disregard unit/step_size
             return (
@@ -102,7 +105,7 @@ cdef class PandasTimedeltaType(TimedeltaType):
             pandas_type=None,
             slug="timedelta[pandas]",
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash
@@ -131,7 +134,9 @@ cdef class PandasTimedeltaType(TimedeltaType):
         return self._supertype
 
     def __contains__(self, other) -> bool:
-        # use default ElementType __contains__()
+        """Test whether the given type specifier is a subtype of this
+        ElementType.
+        """
         return super(TimedeltaType, self).__contains__(other)
 
 
@@ -152,7 +157,7 @@ cdef class PyTimedeltaType(TimedeltaType):
             pandas_type=None,
             slug="timedelta[python]",
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash
@@ -181,7 +186,9 @@ cdef class PyTimedeltaType(TimedeltaType):
         return self._supertype
 
     def __contains__(self, other) -> bool:
-        # use default ElementType __contains__()
+        """Test whether the given type specifier is a subtype of this
+        ElementType.
+        """
         return super(TimedeltaType, self).__contains__(other)
 
 
@@ -220,7 +227,7 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
             pandas_type=None,
             slug=slug,
             supertype=None,  # lazy-loaded
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash
@@ -288,6 +295,9 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
         return result
 
     def __contains__(self, other) -> bool:
+        """Test whether the given type specifier is a subtype of this
+        ElementType.
+        """
         other = resolve_dtype(other)
         if isinstance(other, self.__class__):
             if self.unit is None:  # disregard unit/step_size
@@ -295,7 +305,7 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
                     self.sparse == other.sparse and
                     self.categorical == other.categorical
                 )
-            return self.__eq__(other)
+            return self == other
         return False
 
     def __repr__(self) -> str:

@@ -4,9 +4,7 @@ import pandas as pd
 
 from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
 
-from .base cimport (
-    CompositeType, compute_hash, ElementType, resolve_dtype, shared_registry
-)
+from .base cimport compute_hash, ElementType, resolve_dtype, shared_registry
 
 
 ##########################
@@ -59,7 +57,7 @@ cdef class StringType(ElementType):
         )
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -80,7 +78,7 @@ cdef class StringType(ElementType):
                 for storage in backends
             }
 
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @classmethod

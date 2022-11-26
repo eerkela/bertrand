@@ -2,7 +2,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport CompositeType, compute_hash, ElementType
+from .base cimport compute_hash, ElementType
 
 
 # TODO: confirm support for custom atomic types
@@ -28,7 +28,7 @@ cdef class ObjectType(ElementType):
             pandas_type=None,
             slug="object",
             supertype=None,
-            subtypes=CompositeType({self}, immutable=True)
+            subtypes=frozenset({self})
         )
 
         # hash

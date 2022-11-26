@@ -35,6 +35,7 @@ cpdef ElementType resolve_dtype(
 # classes
 cdef class CompositeType(set):
     cdef readonly:
+        set types
         np.ndarray index
         bint immutable
 
@@ -42,7 +43,7 @@ cdef class CompositeType(set):
 cdef class ElementType:
     cdef:
         ElementType _supertype
-        CompositeType _subtypes
+        frozenset _subtypes
 
     cdef readonly:
         bint sparse

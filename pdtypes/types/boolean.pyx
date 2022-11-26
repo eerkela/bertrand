@@ -2,7 +2,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport CompositeType, compute_hash, ElementType, shared_registry
+from .base cimport compute_hash, ElementType, shared_registry
 
 
 ##########################
@@ -40,7 +40,7 @@ cdef class BooleanType(ElementType):
         )
 
     @property
-    def subtypes(self) -> CompositeType:
+    def subtypes(self) -> frozenset:
         # cached
         if self._subtypes is not None:
             return self._subtypes
@@ -55,7 +55,7 @@ cdef class BooleanType(ElementType):
                     nullable=True
                 )
             }
-        self._subtypes = CompositeType(subtypes, immutable=True)
+        self._subtypes = frozenset(subtypes)
         return self._subtypes
 
     @classmethod

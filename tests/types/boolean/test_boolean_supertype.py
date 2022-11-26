@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pdtypes.types import BooleanType
+from pdtypes.types import CompositeType, BooleanType
 
 
 ####################
@@ -53,30 +53,6 @@ def test_boolean_supertype_handles_sparse_categorical_nullable_flags(
 
 
 @input_permutations()
-def test_boolean_supertype_has_no_supertype(
-    sparse, categorical, nullable
-):
-    result = BooleanType.instance(
-        sparse=sparse, categorical=categorical, nullable=nullable
-    )
-
-    assert result.supertype is None
-
-
-# TODO: subtypes should be a CompositeType, and have different contents based
-# on configuration flags
-# @input_permutations()
-# def test_boolean_supertype_has_no_subtypes(
-#     sparse, categorical, nullable
-# ):
-#     result = BooleanType.instance(
-#         sparse=sparse, categorical=categorical, nullable=nullable
-#     )
-
-#     assert result.subtypes == frozenset({result})
-
-
-@input_permutations()
 def test_boolean_supertype_has_correct_atomic_numpy_pandas_types(
     sparse, categorical, nullable
 ):
@@ -106,3 +82,38 @@ def test_boolean_supertype_has_correct_slug(
         expected = f"sparse[{expected}]"
 
     assert result.slug == expected
+
+
+@input_permutations()
+def test_boolean_supertype_has_no_supertype(
+    sparse, categorical, nullable
+):
+    result = BooleanType.instance(
+        sparse=sparse, categorical=categorical, nullable=nullable
+    )
+
+    assert result.supertype is None
+
+
+@input_permutations()
+def test_boolean_supertype_has_correct_subtypes(
+    sparse, categorical, nullable
+):
+    result = BooleanType.instance(
+        sparse=sparse, categorical=categorical, nullable=nullable
+    )
+
+    expected = {result}
+    if not nullable:
+        expected |= {
+            BooleanType.instance(
+                sparse=sparse,
+                categorical=categorical,
+                nullable=True
+            )
+        }
+    expected = CompositeType(expected, immutable=True)
+
+    assert isinstance(result.subtypes, CompositeType)
+    assert result.subtypes.immutable
+    assert result.subtypes == expected
