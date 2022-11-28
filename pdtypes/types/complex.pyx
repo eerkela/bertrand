@@ -6,9 +6,6 @@ from .base cimport ElementType, generate_slug, shared_registry
 from .float cimport FloatType, Float32Type, Float64Type, LongDoubleType
 
 
-# TODO: cache equiv_complex in a private field
-
-
 ##########################
 ####    SUPERTYPES    ####
 ##########################
@@ -33,9 +30,7 @@ cdef class ComplexType(ElementType):
                 base_type=type(self),
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable integer (determined by size of significand)
@@ -45,10 +40,14 @@ cdef class ComplexType(ElementType):
     @property
     def equiv_float(self) -> FloatType:
         """Remove the imaginary component from this ElementType."""
-        return FloatType.instance(
+        if self._equiv_float is not None:
+            return self._equiv_float
+
+        self._equiv_float = FloatType.instance(
             sparse=self.sparse,
             categorical=self.categorical
         )
+        return self._equiv_float
 
     @property
     def subtypes(self) -> frozenset:
@@ -89,10 +88,9 @@ cdef class Complex64Type(ComplexType):
                 base_type=type(self),
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=frozenset({self})
+            )
         )
+        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**24
@@ -101,10 +99,14 @@ cdef class Complex64Type(ComplexType):
     @property
     def equiv_float(self) -> Float32Type:
         """Remove the imaginary component from this ElementType."""
-        return Float32Type.instance(
+        if self._equiv_float is not None:
+            return self._equiv_float
+
+        self._equiv_float = Float32Type.instance(
             sparse=self.sparse,
             categorical=self.categorical
         )
+        return self._equiv_float
 
     @property
     def supertype(self) -> ComplexType:
@@ -139,10 +141,9 @@ cdef class Complex128Type(ComplexType):
                 base_type=type(self),
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=frozenset({self})
+            )
         )
+        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**53
@@ -151,10 +152,14 @@ cdef class Complex128Type(ComplexType):
     @property
     def equiv_float(self) -> Float64Type:
         """Remove the imaginary component from this ElementType."""
-        return Float64Type.instance(
+        if self._equiv_float is not None:
+            return self._equiv_float
+
+        self._equiv_float = Float64Type.instance(
             sparse=self.sparse,
             categorical=self.categorical
         )
+        return self._equiv_float
 
     @property
     def supertype(self) -> ComplexType:
@@ -189,10 +194,9 @@ cdef class CLongDoubleType(ComplexType):
                 base_type=type(self),
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=frozenset({self})
+            )
         )
+        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**64
@@ -201,10 +205,14 @@ cdef class CLongDoubleType(ComplexType):
     @property
     def equiv_float(self) -> LongDoubleType:
         """Remove the imaginary component from this ElementType."""
-        return LongDoubleType.instance(
+        if self._equiv_float is not None:
+            return self._equiv_float
+
+        self._equiv_float = LongDoubleType.instance(
             sparse=self.sparse,
             categorical=self.categorical
         )
+        return self._equiv_float
 
     @property
     def supertype(self) -> ComplexType:

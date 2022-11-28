@@ -52,9 +52,7 @@ cdef class BooleanType(ElementType):
                 sparse=sparse,
                 categorical=categorical,
                 nullable=nullable
-            ),
-            supertype=None,
-            subtypes=None  # lazy-loaded
+            )
         )
 
     @property

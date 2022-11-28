@@ -2,6 +2,9 @@ from .base cimport ElementType
 
 
 cdef class ComplexType(ElementType):
+    cdef:
+        ElementType _equiv_float
+
     cdef readonly:
         object min
         object max

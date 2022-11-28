@@ -21,15 +21,16 @@ from pdtypes.types import (
 from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
 
 
+# TODO: test all private fields for each ElementType
+# -> equiv_float, equiv_complex, min/max, unit, step_size, storage
+
+
 ####################
 ####    DATA    ####
 ####################
 
 
 element_types = {
-    # TODO: if these are stored as lambda factory functions, then flyweight
-    # test does not need to reconstruct the calling signature
-
     # boolean
     "bool": lambda: BooleanType.instance(),
     "nullable[bool]": lambda: BooleanType.instance(nullable=True),

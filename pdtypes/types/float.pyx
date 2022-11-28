@@ -32,9 +32,7 @@ cdef class FloatType(ElementType):
                 base_type=type(self),
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable integer (determined by size of significand)
@@ -44,10 +42,14 @@ cdef class FloatType(ElementType):
     @property
     def equiv_complex(self) -> ComplexType:
         """Add an imaginary component to this ElementType."""
-        return ComplexType.instance(
+        if self._equiv_complex is not None:
+            return self._equiv_complex
+
+        self._equiv_complex = ComplexType.instance(
             sparse=self.sparse,
             categorical=self.categorical
         )
+        return self._equiv_complex
 
     @property
     def subtypes(self) -> frozenset:
@@ -89,9 +91,8 @@ cdef class Float16Type(FloatType):
                 sparse=sparse,
                 categorical=categorical
             ),
-            supertype=None,  # lazy-loaded
-            subtypes=frozenset({self})
         )
+        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**11
@@ -100,10 +101,14 @@ cdef class Float16Type(FloatType):
     @property
     def equiv_complex(self) -> Complex64Type:
         """Add an imaginary component to this ElementType."""
-        return Complex64Type.instance(
+        if self._equiv_complex is not None:
+            return self._equiv_complex
+
+        self._equiv_complex = Complex64Type.instance(
             sparse=self.sparse,
             categorical=self.categorical
         )
+        return self._equiv_complex
 
     @property
     def supertype(self) -> FloatType:
@@ -137,10 +142,9 @@ cdef class Float32Type(FloatType):
                 base_type=type(self),
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=frozenset({self})
+            )
         )
+        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**24
@@ -149,10 +153,14 @@ cdef class Float32Type(FloatType):
     @property
     def equiv_complex(self) -> Complex64Type:
         """Add an imaginary component to this ElementType."""
-        return Complex64Type.instance(
+        if self._equiv_complex is not None:
+            return self._equiv_complex
+
+        self._equiv_complex = Complex64Type.instance(
             sparse=self.sparse,
             categorical=self.categorical
         )
+        return self._equiv_complex
 
     @property
     def supertype(self) -> FloatType:
@@ -186,10 +194,9 @@ cdef class Float64Type(FloatType):
                 base_type=type(self),
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=frozenset({self})
+            )
         )
+        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**53
@@ -198,10 +205,14 @@ cdef class Float64Type(FloatType):
     @property
     def equiv_complex(self) -> Complex128Type:
         """Add an imaginary component to this ElementType."""
-        return Complex128Type.instance(
+        if self._equiv_complex is not None:
+            return self._equiv_complex
+
+        self._equiv_complex = Complex128Type.instance(
             sparse=self.sparse,
             categorical=self.categorical
         )
+        return self._equiv_complex
 
     @property
     def supertype(self) -> FloatType:
@@ -235,10 +246,9 @@ cdef class LongDoubleType(FloatType):
                 base_type=type(self),
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=frozenset({self})
+            )
         )
+        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**64
@@ -247,10 +257,14 @@ cdef class LongDoubleType(FloatType):
     @property
     def equiv_complex(self) -> CLongDoubleType:
         """Add an imaginary component to this ElementType."""
-        return CLongDoubleType.instance(
+        if self._equiv_complex is not None:
+            return self._equiv_complex
+
+        self._equiv_complex = CLongDoubleType.instance(
             sparse=self.sparse,
             categorical=self.categorical
         )
+        return self._equiv_complex
 
     @property
     def supertype(self) -> FloatType:

@@ -48,10 +48,9 @@ cdef class ObjectType(ElementType):
                 atomic_type=atomic_type,
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,
-            subtypes=frozenset({self})
+            )
         )
+        self._subtypes = frozenset({self})
 
     @classmethod
     def instance(

@@ -59,9 +59,7 @@ cdef class DatetimeType(ElementType):
                 base_type=type(self),
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable values in ns
@@ -119,10 +117,9 @@ cdef class PandasTimestampType(DatetimeType):
                 base_type=type(self),
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=frozenset({self})
+            )
         )
+        self._subtypes = frozenset({self})
 
         # min/max representable values in ns
         self.min = -2**63 + 1
@@ -167,10 +164,9 @@ cdef class PyDatetimeType(DatetimeType):
                 base_type=type(self),
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=frozenset({self})
+            )
         )
+        self._subtypes = frozenset({self})
 
         # min/max representable values in ns
         self.min = -62135596800000000000
@@ -232,10 +228,9 @@ cdef class NumpyDatetime64Type(DatetimeType):
                 step_size=self.step_size,
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=frozenset({self})
+            )
         )
+        self._subtypes = frozenset({self})
 
         # min/max representable values in ns
         self.min = -291061508645168391112243200000000000

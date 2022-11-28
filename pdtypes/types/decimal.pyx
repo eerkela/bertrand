@@ -31,10 +31,9 @@ cdef class DecimalType(ElementType):
                 base_type=type(self),
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,
-            subtypes=frozenset({self})
+            )
         )
+        self._subtypes = frozenset({self})
 
         # min/max representable values
         self.min = -np.inf

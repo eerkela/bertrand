@@ -61,9 +61,7 @@ cdef class StringType(ElementType):
                 storage=storage,
                 sparse=sparse,
                 categorical=categorical
-            ),
-            supertype=None,
-            subtypes=None  # lazy-loaded
+            )
         )
 
     @property

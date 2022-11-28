@@ -52,9 +52,7 @@ cdef class IntegerType(ElementType):
                 sparse=sparse,
                 categorical=categorical,
                 nullable=nullable
-            ),
-            supertype=None,
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable values
@@ -160,9 +158,7 @@ cdef class SignedIntegerType(IntegerType):
                 sparse=sparse,
                 categorical=categorical,
                 nullable=nullable
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable values
@@ -234,9 +230,7 @@ cdef class UnsignedIntegerType(IntegerType):
                 sparse=sparse,
                 categorical=categorical,
                 nullable=nullable
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable values
@@ -313,9 +307,7 @@ cdef class Int8Type(SignedIntegerType):
                 sparse=sparse,
                 categorical=categorical,
                 nullable=nullable
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable values
@@ -377,9 +369,7 @@ cdef class Int16Type(SignedIntegerType):
                 sparse=sparse,
                 categorical=categorical,
                 nullable=nullable
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable values
@@ -441,9 +431,7 @@ cdef class Int32Type(SignedIntegerType):
                 sparse=sparse,
                 categorical=categorical,
                 nullable=nullable
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable values
@@ -505,9 +493,7 @@ cdef class Int64Type(SignedIntegerType):
                 sparse=sparse,
                 categorical=categorical,
                 nullable=nullable
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable values
@@ -569,9 +555,7 @@ cdef class UInt8Type(UnsignedIntegerType):
                 sparse=sparse,
                 categorical=categorical,
                 nullable=nullable
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable values
@@ -633,9 +617,7 @@ cdef class UInt16Type(UnsignedIntegerType):
                 sparse=sparse,
                 categorical=categorical,
                 nullable=nullable
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable values
@@ -697,9 +679,7 @@ cdef class UInt32Type(UnsignedIntegerType):
                 sparse=sparse,
                 categorical=categorical,
                 nullable=nullable
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable values
@@ -761,9 +741,7 @@ cdef class UInt64Type(UnsignedIntegerType):
                 sparse=sparse,
                 categorical=categorical,
                 nullable=nullable
-            ),
-            supertype=None,  # lazy-loaded
-            subtypes=None  # lazy-loaded
+            )
         )
 
         # min/max representable values

@@ -39,10 +39,6 @@ from .object cimport *
 # -> currently these are broken
 
 
-# TODO: consider adding less than/greater than comparisons to ElementTypes,
-# allowing sorting based on itemsize, just like np.dtype
-
-
 # TODO: If sparse=False and/or categorical=False, add respective combinations
 # to subtypes, just like nullable=False
 # -> this causes "sparse[int]" in "int" to return True
@@ -81,8 +77,9 @@ cdef unsigned short cache_size = 64
 # Flyweight registries
 cdef dict shared_registry = {}
 cdef LRUDict datetime64_registry = LRUDict(maxsize=cache_size)
-cdef LRUDict timedelta64_registry = LRUDict(maxsize=cache_size)
+cdef LRUDict decimal_registry = LRUDict(maxsize=cache_size)
 cdef LRUDict object_registry = LRUDict(maxsize=cache_size)
+cdef LRUDict timedelta64_registry = LRUDict(maxsize=cache_size)
 
 
 # slug registries
@@ -645,9 +642,7 @@ cdef class ElementType:
         type atomic_type,
         object numpy_type,
         object pandas_type,
-        str slug,
-        ElementType supertype,
-        frozenset subtypes
+        str slug
     ):
         self.sparse = sparse
         self.categorical = categorical
@@ -657,8 +652,6 @@ cdef class ElementType:
         self.pandas_type = pandas_type
         self.slug = slug
         self.hash = hash(slug)
-        self._subtypes = subtypes
-        self._supertype = supertype
 
     @property
     def subtypes(self) -> frozenset:

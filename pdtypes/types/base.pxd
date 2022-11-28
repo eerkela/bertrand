@@ -7,8 +7,9 @@ from pdtypes.util.structs cimport LRUDict
 cdef unsigned short cache_size
 cdef dict shared_registry
 cdef LRUDict datetime64_registry
-cdef LRUDict timedelta64_registry
+cdef LRUDict decimal_registry
 cdef LRUDict object_registry
+cdef LRUDict timedelta64_registry
 cdef dict base_slugs
 
 
@@ -40,6 +41,7 @@ cdef class ElementType:
     cdef:
         ElementType _supertype
         frozenset _subtypes
+        long long hash
 
     cdef readonly:
         bint sparse
@@ -48,5 +50,4 @@ cdef class ElementType:
         type atomic_type
         object numpy_type
         object pandas_type
-        long long hash
         str slug
