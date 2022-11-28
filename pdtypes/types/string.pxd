@@ -5,7 +5,4 @@ cdef class StringType(ElementType):
     # public
     cdef readonly:
         str storage
-
-    # private
-    cdef:
         bint is_default

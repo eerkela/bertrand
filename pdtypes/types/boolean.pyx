@@ -2,7 +2,28 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport compute_hash, ElementType, shared_registry
+from .base cimport base_slugs, ElementType, shared_registry
+
+
+cdef str generate_slug(
+    type base_type,
+    bint sparse,
+    bint categorical,
+    bint nullable
+):
+    """Return a unique slug string associated with the given `base_type`,
+    accounting for `sparse`, `categorical`, and `nullable` flags.
+    """
+    cdef str slug = base_slugs[base_type]
+
+    if nullable:
+        slug = f"nullable[{slug}]"
+    if categorical:
+        slug = f"categorical[{slug}]"
+    if sparse:
+        slug = f"sparse[{slug}]"
+
+    return slug
 
 
 ##########################
@@ -26,17 +47,14 @@ cdef class BooleanType(ElementType):
             atomic_type=bool,
             numpy_type=np.dtype(bool),
             pandas_type=pd.BooleanDtype(),
-            slug="nullable[bool]" if nullable else "bool",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            ),
             supertype=None,
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=self.__class__
         )
 
     @property
@@ -66,13 +84,16 @@ cdef class BooleanType(ElementType):
         bint nullable = False
     ) -> BooleanType:
         """Flyweight constructor."""
-        # hash arguments
-        cdef long long _hash = compute_hash(
+        # generate slug
+        cdef str slug = generate_slug(
+            base_type=cls,
             sparse=sparse,
             categorical=categorical,
-            nullable=nullable,
-            base=cls
+            nullable=nullable
         )
+
+        # compute hash
+        cdef long long _hash = hash(slug)
 
         # get previous flyweight, if one exists
         cdef BooleanType result = shared_registry.get(_hash, None)

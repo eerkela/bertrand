@@ -2,7 +2,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport compute_hash, ElementType, shared_registry
+from .base cimport ElementType, generate_slug, shared_registry
 from .float cimport FloatType, Float32Type, Float64Type, LongDoubleType
 
 
@@ -29,17 +29,13 @@ cdef class ComplexType(ElementType):
             atomic_type=complex,
             numpy_type=np.dtype(np.complex128),
             pandas_type=None,
-            slug="complex",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical
+            ),
             supertype=None,
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=self.__class__
         )
 
         # min/max representable integer (determined by size of significand)
@@ -89,17 +85,13 @@ cdef class Complex64Type(ComplexType):
             atomic_type=np.complex64,
             numpy_type=np.dtype(np.complex64),
             pandas_type=None,
-            slug = "complex64",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical
+            ),
             supertype=None,  # lazy-loaded
             subtypes=frozenset({self})
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=self.__class__
         )
 
         # min/max representable integer (determined by size of significand)
@@ -143,17 +135,13 @@ cdef class Complex128Type(ComplexType):
             atomic_type=np.complex128,
             numpy_type=np.dtype(np.complex128),
             pandas_type=None,
-            slug = "complex128",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical
+            ),
             supertype=None,  # lazy-loaded
             subtypes=frozenset({self})
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=self.__class__
         )
 
         # min/max representable integer (determined by size of significand)
@@ -197,17 +185,13 @@ cdef class CLongDoubleType(ComplexType):
             atomic_type=np.clongdouble,
             numpy_type=np.dtype(np.clongdouble),
             pandas_type=None,
-            slug = "clongdouble",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical
+            ),
             supertype=None,  # lazy-loaded
             subtypes=frozenset({self})
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=self.__class__
         )
 
         # min/max representable integer (determined by size of significand)

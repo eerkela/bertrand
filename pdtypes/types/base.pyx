@@ -28,18 +28,6 @@ from .object cimport *
 # operations on CompositeType objects.
 
 
-# TODO: compute_hash should take the same arguments as __init__ and instance().
-# defaults to sparse, categorical and just passes the input to the compute_hash
-# generic function found here with the appropriate defaults.
-# -> __init__() calls it as self.hash = self.compute_hash(sparse=self.sparse, categorical=self.categorical)
-# -> instance() calls it as _hash = cls.compute_hash(sparse=sparse, categorical=categorical)
-
-
-# TODO: move CompositeType over to Decorator Pattern rather than direct
-# inheritance.  Just implement a dynamic wrapper with appropriate modifications
-# for subtypes + ElementType isinstance() checks, etc.
-
-
 # TODO: probably a good idea not to overload __contains__.  Offer separate
 # is_subtype()/is_supertype() methods instead.  These are more explicit and
 # easy to read.
@@ -94,10 +82,61 @@ cdef unsigned short cache_size = 64
 cdef dict shared_registry = {}
 cdef LRUDict datetime64_registry = LRUDict(maxsize=cache_size)
 cdef LRUDict timedelta64_registry = LRUDict(maxsize=cache_size)
+cdef LRUDict object_registry = LRUDict(maxsize=cache_size)
 
 
-# default string storage backend
-cdef str default_string_storage = DEFAULT_STRING_DTYPE.storage
+# slug registries
+cdef dict base_slugs = {
+    # boolean
+    BooleanType: "bool",
+
+    # integer
+    IntegerType: "int",
+    SignedIntegerType: "signed int",
+    Int8Type: "int8",
+    Int16Type: "int16",
+    Int32Type: "int32",
+    Int64Type: "int64",
+    UnsignedIntegerType: "unsigned int",
+    UInt8Type: "uint8",
+    UInt16Type: "uint16",
+    UInt32Type: "uint32",
+    UInt64Type: "uint64",
+
+    # float
+    FloatType: "float",
+    Float16Type: "float16",
+    Float32Type: "float32",
+    Float64Type: "float64",
+    LongDoubleType: "longdouble",
+
+    # complex
+    ComplexType: "complex",
+    Complex64Type: "complex64",
+    Complex128Type: "complex128",
+    CLongDoubleType: "clongdouble",
+
+    # decimal
+    DecimalType: "decimal",
+
+    # datetime
+    DatetimeType: "datetime",
+    PandasTimestampType: "datetime[pandas]",
+    PyDatetimeType: "datetime[python]",
+    NumpyDatetime64Type: "M8",
+
+    # timedelta
+    TimedeltaType: "timedelta",
+    PandasTimedeltaType: "timedelta[pandas]",
+    PyTimedeltaType: "timedelta[python]",
+    NumpyTimedelta64Type: "m8",
+
+    # string
+    StringType: "string",
+
+    # object:
+    ObjectType: "object"  # TODO: special case?
+}
 
 
 ######################
@@ -230,21 +269,6 @@ cpdef ElementType resolve_dtype(
 #######################
 
 
-cdef long long compute_hash(
-    bint sparse = False,
-    bint categorical = False,
-    bint nullable = True,
-    type base = None,
-    str unit = None,
-    unsigned long long step_size = 1,
-    str storage = default_string_storage
-):
-    """Compute a unique hash based on the given ElementType properties."""
-    return hash(
-        (sparse, categorical, nullable, base, unit, step_size, storage)
-    )
-
-
 cdef set flatten_nested_typespec(object nested):
     """Flatten nested type specifiers for resolve_dtype."""
     cdef set result = set()
@@ -256,6 +280,24 @@ cdef set flatten_nested_typespec(object nested):
             result.add(item)
 
     return result
+
+
+cdef str generate_slug(
+    type base_type,
+    bint sparse,
+    bint categorical
+):
+    """Return a unique slug string associated with the given `base_type`,
+    accounting for `sparse`, `categorical` flags.
+    """
+    cdef str slug = base_slugs[base_type]
+
+    if categorical:
+        slug = f"categorical[{slug}]"
+    if sparse:
+        slug = f"sparse[{slug}]"
+
+    return slug
 
 
 #######################
@@ -320,6 +362,10 @@ cdef class CompositeType:
     def add(self, typespec) -> None:
         """Add a type specifier to the CompositeType."""
         self.types.add(resolve_dtype(typespec))
+
+    def clear(self) -> None:
+        """Remove all ElementTypes from the CompositeType."""
+        self.types.clear()
 
     def copy(self) -> CompositeType:
         """Return a shallow copy of the CompositeType."""
@@ -401,6 +447,12 @@ cdef class CompositeType:
         """
         return self >= other
 
+    def pop(self) -> ElementType:
+        """Remove and return an arbitrary ElementType from the CompositeType.
+        Raises a KeyError if the CompositeType is empty.
+        """
+        return self.types.pop()
+
     def remove(self, typespec) -> None:
         """Remove the given type specifier from the CompositeType.  Raises a
         KeyError if `typespec` is not contained in the set.
@@ -452,6 +504,10 @@ cdef class CompositeType:
         """Iterate through the ElementTypes contained within a CompositeType.
         """
         return iter(self.types)
+
+    def __len__(self):
+        """Return the number of ElementTypes in the CompositeType."""
+        return len(self.types)
 
     def __contains__(self, other) -> bool:
         """Test whether a given type specifier is a member of `self` or one of
@@ -586,7 +642,7 @@ cdef class ElementType:
         bint sparse,
         bint categorical,
         bint nullable,
-        object atomic_type,
+        type atomic_type,
         object numpy_type,
         object pandas_type,
         str slug,
@@ -599,11 +655,8 @@ cdef class ElementType:
         self.atomic_type = atomic_type
         self.numpy_type = numpy_type
         self.pandas_type = pandas_type
-        if self.categorical:
-            slug = f"categorical[{slug}]"
-        if self.sparse:
-            slug = f"sparse[{slug}]"
         self.slug = slug
+        self.hash = hash(slug)
         self._subtypes = subtypes
         self._supertype = supertype
 
@@ -622,13 +675,15 @@ cdef class ElementType:
         bint categorical = False
     ) -> ElementType:
         """Flyweight Constructor."""
-        # hash arguments
-        cdef long long _hash = compute_hash(
+        # construct slug
+        cdef str slug = generate_slug(
+            base_type=cls,
             sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=cls
+            categorical=categorical
         )
+
+        # hash slug
+        cdef long long _hash = hash(slug)
 
         # get previous flyweight if one exists
         cdef ElementType result = shared_registry.get(_hash, None)

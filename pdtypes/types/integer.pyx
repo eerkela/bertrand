@@ -2,7 +2,28 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport compute_hash, ElementType, resolve_dtype, shared_registry
+from .base cimport base_slugs, ElementType, resolve_dtype, shared_registry
+
+
+cdef str generate_slug(
+    type base_type,
+    bint sparse,
+    bint categorical,
+    bint nullable
+):
+    """Return a unique slug string associated with the given `base_type`,
+    accounting for `sparse`, `categorical`, and `nullable` flags.
+    """
+    cdef str slug = base_slugs[base_type]
+
+    if nullable:
+        slug = f"nullable[{slug}]"
+    if categorical:
+        slug = f"categorical[{slug}]"
+    if sparse:
+        slug = f"sparse[{slug}]"
+
+    return slug
 
 
 ##########################
@@ -26,17 +47,14 @@ cdef class IntegerType(ElementType):
             atomic_type=int,
             numpy_type=np.dtype(np.int64),
             pandas_type=pd.Int64Dtype(),
-            slug="nullable[int]" if nullable else "int",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            ),
             supertype=None,
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=self.__class__
         )
 
         # min/max representable values
@@ -83,13 +101,16 @@ cdef class IntegerType(ElementType):
         bint nullable = False
     ) -> IntegerType:
         """Flyweight constructor."""
-        # hash arguments
-        cdef long long _hash = compute_hash(
+        # generate slug
+        cdef str slug = generate_slug(
+            base_type=cls,
             sparse=sparse,
             categorical=categorical,
-            nullable=nullable,
-            base=cls
+            nullable=nullable
         )
+
+        # compute hash
+        cdef long long _hash = hash(slug)
 
         # get previous flyweight, if one exists
         cdef IntegerType result = shared_registry.get(_hash, None)
@@ -134,17 +155,14 @@ cdef class SignedIntegerType(IntegerType):
             atomic_type=None,
             numpy_type=np.dtype(np.int64),
             pandas_type=pd.Int64Dtype(),
-            slug="nullable[signed int]" if nullable else "signed int",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            ),
             supertype=None,  # lazy-loaded
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=self.__class__
         )
 
         # min/max representable values
@@ -194,39 +212,6 @@ cdef class SignedIntegerType(IntegerType):
         )
         return self._supertype
 
-    @classmethod
-    def instance(
-        cls,
-        bint sparse = False,
-        bint categorical = False,
-        bint nullable = False
-    ) -> SignedIntegerType:
-        """Flyweight constructor."""
-        # hash arguments
-        cdef long long _hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=cls
-        )
-
-        # get previous flyweight, if one exists
-        cdef SignedIntegerType result = shared_registry.get(_hash, None)
-
-        if result is None:
-            # construct new flyweight
-            result = cls(
-                sparse=sparse,
-                categorical=categorical,
-                nullable=nullable
-            )
-    
-            # add flyweight to registry
-            shared_registry[_hash] = result
-
-        # return flyweight
-        return result
-
 
 cdef class UnsignedIntegerType(IntegerType):
     """Unsigned integer supertype"""
@@ -244,17 +229,14 @@ cdef class UnsignedIntegerType(IntegerType):
             atomic_type=None,
             numpy_type=np.dtype(np.uint64),
             pandas_type=pd.UInt64Dtype(),
-            slug="nullable[unsigned int]" if nullable else "unsigned int",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            ),
             supertype=None,  # lazy-loaded
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=self.__class__
         )
 
         # min/max representable values
@@ -304,39 +286,6 @@ cdef class UnsignedIntegerType(IntegerType):
         )
         return self._supertype
 
-    @classmethod
-    def instance(
-        cls,
-        bint sparse = False,
-        bint categorical = False,
-        bint nullable = False
-    ) -> UnsignedIntegerType:
-        """Flyweight constructor."""
-        # hash arguments
-        cdef long long _hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=cls
-        )
-
-        # get previous flyweight, if one exists
-        cdef UnsignedIntegerType result = shared_registry.get(_hash, None)
-
-        if result is None:
-            # construct new flyweight
-            result = cls(
-                sparse=sparse,
-                categorical=categorical,
-                nullable=nullable
-            )
-    
-            # add flyweight to registry
-            shared_registry[_hash] = result
-
-        # return flyweight
-        return result
-
 
 ########################
 ####    SUBTYPES    ####
@@ -359,17 +308,14 @@ cdef class Int8Type(SignedIntegerType):
             atomic_type=np.int8,
             numpy_type=np.dtype(np.int8),
             pandas_type=pd.Int8Dtype(),
-            slug="nullable[int8]" if nullable else "int8",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            ),
             supertype=None,  # lazy-loaded
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=self.__class__
         )
 
         # min/max representable values
@@ -426,17 +372,14 @@ cdef class Int16Type(SignedIntegerType):
             atomic_type=np.int16,
             numpy_type=np.dtype(np.int16),
             pandas_type=pd.Int16Dtype(),
-            slug="nullable[int16]" if nullable else "int16",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            ),
             supertype=None,  # lazy-loaded
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=self.__class__
         )
 
         # min/max representable values
@@ -493,17 +436,14 @@ cdef class Int32Type(SignedIntegerType):
             atomic_type=np.int32,
             numpy_type=np.dtype(np.int32),
             pandas_type=pd.Int32Dtype(),
-            slug="nullable[int32]" if nullable else "int32",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            ),
             supertype=None,  # lazy-loaded
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=self.__class__
         )
 
         # min/max representable values
@@ -560,17 +500,14 @@ cdef class Int64Type(SignedIntegerType):
             atomic_type=np.int64,
             numpy_type=np.dtype(np.int64),
             pandas_type=pd.Int64Dtype(),
-            slug="nullable[int64]" if nullable else "int64",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            ),
             supertype=None,  # lazy-loaded
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=self.__class__
         )
 
         # min/max representable values
@@ -627,17 +564,14 @@ cdef class UInt8Type(UnsignedIntegerType):
             atomic_type=np.uint8,
             numpy_type=np.dtype(np.uint8),
             pandas_type=pd.UInt8Dtype(),
-            slug="nullable[uint8]" if nullable else "uint8",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            ),
             supertype=None,  # lazy-loaded
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=self.__class__
         )
 
         # min/max representable values
@@ -694,17 +628,14 @@ cdef class UInt16Type(UnsignedIntegerType):
             atomic_type=np.uint16,
             numpy_type=np.dtype(np.uint16),
             pandas_type=pd.UInt16Dtype(),
-            slug="nullable[uint16]" if nullable else "uint16",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            ),
             supertype=None,  # lazy-loaded
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=self.__class__
         )
 
         # min/max representable values
@@ -761,17 +692,14 @@ cdef class UInt32Type(UnsignedIntegerType):
             atomic_type=np.uint32,
             numpy_type=np.dtype(np.uint32),
             pandas_type=pd.UInt32Dtype(),
-            slug="nullable[uint32]" if nullable else "uint32",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            ),
             supertype=None,  # lazy-loaded
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=self.__class__
         )
 
         # min/max representable values
@@ -828,17 +756,14 @@ cdef class UInt64Type(UnsignedIntegerType):
             atomic_type=np.uint64,
             numpy_type=np.dtype(np.uint64),
             pandas_type=pd.UInt64Dtype(),
-            slug="nullable[uint64]" if nullable else "uint64",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical,
+                nullable=nullable
+            ),
             supertype=None,  # lazy-loaded
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=nullable,
-            base=self.__class__
         )
 
         # min/max representable values

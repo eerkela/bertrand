@@ -4,7 +4,25 @@ import pandas as pd
 
 from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
 
-from .base cimport compute_hash, ElementType, resolve_dtype, shared_registry
+from .base cimport base_slugs, ElementType, resolve_dtype, shared_registry
+
+
+cdef str generate_slug(
+    type base_type,
+    str storage,
+    bint sparse,
+    bint categorical
+):
+    cdef str slug = base_slugs[base_type]
+
+    if storage:
+        slug = f"{slug}[{storage}]"
+    if categorical:
+        slug = f"categorical[{slug}]"
+    if sparse:
+        slug = f"sparse[{slug}]"
+
+    return slug
 
 
 ##########################
@@ -17,19 +35,17 @@ cdef class StringType(ElementType):
 
     def __init__(
         self,
+        str storage = None,
         bint sparse = False,
-        bint categorical = False,
-        str storage = None
+        bint categorical = False
     ):
         # sort out string storage backend
         self.is_default = storage is None
         if self.is_default:
             pandas_type = DEFAULT_STRING_DTYPE
-            slug = "string"
             self.storage = DEFAULT_STRING_DTYPE.storage
         else:
             pandas_type = pd.StringDtype(storage)
-            slug = f"string[{storage}]"
             self.storage = storage
 
         # pass to ElementType constructor
@@ -40,20 +56,14 @@ cdef class StringType(ElementType):
             atomic_type=str,
             numpy_type=np.dtype(str),
             pandas_type=pandas_type,
-            slug=slug,
+            slug=generate_slug(
+                base_type=type(self),
+                storage=storage,
+                sparse=sparse,
+                categorical=categorical
+            ),
             supertype=None,
             subtypes=None  # lazy-loaded
-        )
-
-        # compute hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=self.__class__,
-            unit=None,
-            step_size=1,
-            storage=storage
         )
 
     @property
@@ -84,21 +94,21 @@ cdef class StringType(ElementType):
     @classmethod
     def instance(
         cls,
+        str storage = None,
         bint sparse = False,
-        bint categorical = False,
-        str storage = None
+        bint categorical = False
     ) -> StringType:
         """Flyweight constructor."""
-        # hash arguments
-        cdef long long _hash = compute_hash(
+        # generate slug
+        cdef str slug = generate_slug(
+            base_type=cls,
+            storage=storage,
             sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=cls,
-            unit=None,
-            step_size=1,
-            storage=storage
+            categorical=categorical
         )
+
+        # compute hash
+        cdef long long _hash = hash(slug)
 
         # get previous flyweight, if one exists
         cdef StringType result = shared_registry.get(_hash, None)
@@ -118,17 +128,12 @@ cdef class StringType(ElementType):
         return result
 
     def __repr__(self) -> str:
-        cdef str storage
-
-        if self.is_default:
-            storage = None
-        else:
-            storage = repr(self.storage)
+        cdef str storage = None if self.is_default else repr(self.storage)
 
         return (
             f"{self.__class__.__name__}("
+            f"storage={storage}, "
             f"sparse={self.sparse}, "
-            f"categorical={self.categorical}, "
-            f"storage={storage}"
+            f"categorical={self.categorical}"
             f")"
         )

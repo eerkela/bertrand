@@ -8,18 +8,15 @@ cdef unsigned short cache_size
 cdef dict shared_registry
 cdef LRUDict datetime64_registry
 cdef LRUDict timedelta64_registry
-cdef str default_string_storage
+cdef LRUDict object_registry
+cdef dict base_slugs
 
 
 # helpers
-cdef long long compute_hash(
-    bint sparse = *,
-    bint categorical = *,
-    bint nullable = *,
-    type base = *,
-    str unit = *,
-    unsigned long long step_size = *,
-    str storage = *
+cdef str generate_slug(
+    type base_type,
+    bint sparse,
+    bint categorical
 )
 
 
@@ -37,7 +34,6 @@ cdef class CompositeType(set):
     cdef readonly:
         set types
         np.ndarray index
-        bint immutable
 
 
 cdef class ElementType:

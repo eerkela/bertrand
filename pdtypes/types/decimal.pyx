@@ -4,7 +4,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport compute_hash, ElementType, shared_registry
+from .base cimport ElementType, generate_slug, shared_registry
 
 
 ##########################
@@ -27,17 +27,13 @@ cdef class DecimalType(ElementType):
             atomic_type=decimal.Decimal,
             numpy_type=None,
             pandas_type=None,
-            slug="decimal",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical
+            ),
             supertype=None,
             subtypes=frozenset({self})
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=self.__class__
         )
 
         # min/max representable values

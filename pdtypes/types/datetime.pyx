@@ -5,15 +5,34 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport (
-    compute_hash, ElementType, resolve_dtype, shared_registry,
-    datetime64_registry
+    base_slugs, datetime64_registry, ElementType, generate_slug, resolve_dtype,
+    shared_registry
 )
 
 
-# TODO: may not need overwritten __contains__() methods with CompositeType
-# subtypes implementation.
-# -> or maybe you only need it on NumpyDatetime64Type w/ generic units, then
-# the default x in subtypes should return True for any choice of unit/step size.
+cdef str generate_M8_slug(
+    type base_type,
+    str unit,
+    unsigned int step_size,
+    bint sparse,
+    bint categorical
+):
+    """Return a unique slug string associated with the given `base_type`,
+    accounting for `unit`, `step_size`, `sparse`, and `categorical` flags.
+    """
+    cdef str slug = base_slugs[base_type]
+
+    if unit:
+        if step_size == 1:
+            slug = f"{slug}[{unit}]"
+        else:
+            slug = f"{slug}[{step_size}{unit}]"
+    if categorical:
+        slug = f"categorical[{slug}]"
+    if sparse:
+        slug = f"sparse[{slug}]"
+
+    return slug
 
 
 ##########################
@@ -36,17 +55,13 @@ cdef class DatetimeType(ElementType):
             atomic_type=None,
             numpy_type=None,
             pandas_type=None,
-            slug="datetime",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical
+            ),
             supertype=None,
             subtypes=None  # lazy-loaded
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=self.__class__
         )
 
         # min/max representable values in ns
@@ -100,17 +115,13 @@ cdef class PandasTimestampType(DatetimeType):
             atomic_type=pd.Timestamp,
             numpy_type=None,
             pandas_type=None,
-            slug="datetime[pandas]",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical
+            ),
             supertype=None,  # lazy-loaded
             subtypes=frozenset({self})
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=self.__class__
         )
 
         # min/max representable values in ns
@@ -152,17 +163,13 @@ cdef class PyDatetimeType(DatetimeType):
             atomic_type=datetime.datetime,
             numpy_type=None,
             pandas_type=None,
-            slug="datetime[python]",
+            slug=generate_slug(
+                base_type=type(self),
+                sparse=sparse,
+                categorical=categorical
+            ),
             supertype=None,  # lazy-loaded
             subtypes=frozenset({self})
-        )
-
-        # hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=self.__class__
         )
 
         # min/max representable values in ns
@@ -191,10 +198,10 @@ cdef class NumpyDatetime64Type(DatetimeType):
 
     def __init__(
         self,
-        bint sparse = False,
-        bint categorical = False,
         str unit = None,
-        unsigned long long step_size = 1
+        unsigned long long step_size = 1,
+        bint sparse = False,
+        bint categorical = False
     ):
         # ensure unit, step size are valid
         self.unit = None if unit == "generic" else unit
@@ -202,14 +209,14 @@ cdef class NumpyDatetime64Type(DatetimeType):
             raise ValueError(f"`step_size` must be >= 1, not {step_size}")
         self.step_size = step_size
 
-        # generate appropriate slug
+        # find appropriate numpy dtype
         if self.unit is None:
-            slug = "M8"
+            numpy_type = np.dtype("M8")
         else:
             if self.step_size == 1:
-                slug = f"M8[{self.unit}]"
+                numpy_type = np.dtype(f"M8[{self.unit}]")
             else:
-                slug = f"M8[{self.step_size}{self.unit}]"
+                numpy_type = np.dtype(f"M8[{self.step_size}{self.unit}]")
 
         # feed to ElementType constructor
         super(DatetimeType, self).__init__(
@@ -217,21 +224,17 @@ cdef class NumpyDatetime64Type(DatetimeType):
             categorical=categorical,
             nullable=True,
             atomic_type=np.datetime64,
-            numpy_type=np.dtype(slug),
+            numpy_type=numpy_type,
             pandas_type=None,
-            slug=slug,
+            slug=generate_M8_slug(
+                base_type=type(self),
+                unit=self.unit,
+                step_size=self.step_size,
+                sparse=sparse,
+                categorical=categorical
+            ),
             supertype=None,  # lazy-loaded
             subtypes=frozenset({self})
-        )
-
-        # compute hash
-        self.hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=self.__class__,
-            unit=self.unit,
-            step_size=self.step_size
         )
 
         # min/max representable values in ns
@@ -254,21 +257,27 @@ cdef class NumpyDatetime64Type(DatetimeType):
     @classmethod
     def instance(
         cls,
-        bint sparse = False,
-        bint categorical = False,
         str unit = None,
-        unsigned long long step_size = 1
+        unsigned long long step_size = 1,
+        bint sparse = False,
+        bint categorical = False
     ) -> NumpyDatetime64Type:
         """Flyweight constructor."""
-        # hash arguments
-        cdef long long _hash = compute_hash(
-            sparse=sparse,
-            categorical=categorical,
-            nullable=True,
-            base=cls,
+        # consolidate numpy 'generic' and None units to prevent cache misses
+        if unit == "generic":
+            unit = None
+
+        # generate slug
+        cdef str slug = generate_M8_slug(
+            base_type=cls,
             unit=unit,
-            step_size=step_size
+            step_size=step_size,
+            sparse=sparse,
+            categorical=categorical
         )
+
+        # compute hash
+        cdef long long _hash = hash(slug)
 
         # get previous flyweight, if one exists
         cdef NumpyDatetime64Type result = datetime64_registry.get(_hash, None)
@@ -276,10 +285,10 @@ cdef class NumpyDatetime64Type(DatetimeType):
         if result is None:
             # construct new flyweight
             result = cls(
-                sparse=sparse,
-                categorical=categorical,
                 unit=unit,
-                step_size=step_size
+                step_size=step_size,
+                sparse=sparse,
+                categorical=categorical
             )
     
             # add flyweight to registry
@@ -305,9 +314,9 @@ cdef class NumpyDatetime64Type(DatetimeType):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"sparse={self.sparse}, "
-            f"categorical={self.categorical}, "
             f"unit={repr(self.unit)}, "
-            f"step_size={self.step_size}"
+            f"step_size={self.step_size}, "
+            f"sparse={self.sparse}, "
+            f"categorical={self.categorical}"
             f")"
         )
