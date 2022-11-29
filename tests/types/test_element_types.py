@@ -205,7 +205,9 @@ data_model = {
             UInt32Type.instance(nullable=True),
             UInt64Type.instance(),
             UInt64Type.instance(nullable=True),
-        })
+        }),
+        "min": -np.inf,
+        "max": np.inf,
     },
     "nullable[int]": {
         "sparse": False,
@@ -228,7 +230,9 @@ data_model = {
             UInt16Type.instance(nullable=True),
             UInt32Type.instance(nullable=True),
             UInt64Type.instance(nullable=True),
-        })
+        }),
+        "min": -np.inf,
+        "max": np.inf,
     },
 
     # signed integer supertype
@@ -252,7 +256,9 @@ data_model = {
             Int32Type.instance(nullable=True),
             Int64Type.instance(),
             Int64Type.instance(nullable=True),
-        })
+        }),
+        "min": -2**63,
+        "max": 2**63 - 1,
     },
     "nullable[signed]": {
         "sparse": False,
@@ -269,7 +275,9 @@ data_model = {
             Int16Type.instance(nullable=True),
             Int32Type.instance(nullable=True),
             Int64Type.instance(nullable=True),
-        })
+        }),
+        "min": -2**63,
+        "max": 2**63 - 1,
     },
 
     # int8
@@ -285,7 +293,9 @@ data_model = {
         "subtypes": frozenset({
             Int8Type.instance(),
             Int8Type.instance(nullable=True),
-        })
+        }),
+        "min": -2**7,
+        "max": 2**7 - 1,
     },
     "nullable[int8]": {
         "sparse": False,
@@ -298,7 +308,9 @@ data_model = {
         "supertype": SignedIntegerType.instance(nullable=True),
         "subtypes": frozenset({
             Int8Type.instance(nullable=True),
-        })
+        }),
+        "min": -2**7,
+        "max": 2**7 - 1,
     },
 
     # int16
@@ -314,7 +326,9 @@ data_model = {
         "subtypes": frozenset({
             Int16Type.instance(),
             Int16Type.instance(nullable=True),
-        })
+        }),
+        "min": -2**15,
+        "max": 2**15 - 1,
     },
     "nullable[int16]": {
         "sparse": False,
@@ -327,7 +341,9 @@ data_model = {
         "supertype": SignedIntegerType.instance(nullable=True),
         "subtypes": frozenset({
             Int16Type.instance(nullable=True),
-        })
+        }),
+        "min": -2**15,
+        "max": 2**15 - 1,
     },
 
     # int32
@@ -343,7 +359,9 @@ data_model = {
         "subtypes": frozenset({
             Int32Type.instance(),
             Int32Type.instance(nullable=True),
-        })
+        }),
+        "min": -2**31,
+        "max": 2**31 - 1,
     },
     "nullable[int32]": {
         "sparse": False,
@@ -356,7 +374,9 @@ data_model = {
         "supertype": SignedIntegerType.instance(nullable=True),
         "subtypes": frozenset({
             Int32Type.instance(nullable=True),
-        })
+        }),
+        "min": -2**31,
+        "max": 2**31 - 1,
     },
 
     # int64
@@ -372,7 +392,9 @@ data_model = {
         "subtypes": frozenset({
             Int64Type.instance(),
             Int64Type.instance(nullable=True),
-        })
+        }),
+        "min": -2**63,
+        "max": 2**63 - 1,
     },
     "nullable[int64]": {
         "sparse": False,
@@ -385,7 +407,9 @@ data_model = {
         "supertype": SignedIntegerType.instance(nullable=True),
         "subtypes": frozenset({
             Int64Type.instance(nullable=True),
-        })
+        }),
+        "min": -2**63,
+        "max": 2**63 - 1,
     },
 
     # unsigned integer supertype
@@ -409,7 +433,9 @@ data_model = {
             UInt32Type.instance(nullable=True),
             UInt64Type.instance(),
             UInt64Type.instance(nullable=True),
-        })
+        }),
+        "min": 0,
+        "max": 2**64 - 1,
     },
     "nullable[unsigned]": {
         "sparse": False,
@@ -426,7 +452,9 @@ data_model = {
             UInt16Type.instance(nullable=True),
             UInt32Type.instance(nullable=True),
             UInt64Type.instance(nullable=True),
-        })
+        }),
+        "min": 0,
+        "max": 2**64 - 1,
     },
 
     # uint8
@@ -442,7 +470,9 @@ data_model = {
         "subtypes": frozenset({
             UInt8Type.instance(),
             UInt8Type.instance(nullable=True),
-        })
+        }),
+        "min": 0,
+        "max": 2**8 - 1,
     },
     "nullable[uint8]": {
         "sparse": False,
@@ -455,7 +485,9 @@ data_model = {
         "supertype": UnsignedIntegerType.instance(nullable=True),
         "subtypes": frozenset({
             UInt8Type.instance(nullable=True),
-        })
+        }),
+        "min": 0,
+        "max": 2**8 - 1,
     },
 
     # uint16
@@ -471,7 +503,9 @@ data_model = {
         "subtypes": frozenset({
             UInt16Type.instance(),
             UInt16Type.instance(nullable=True),
-        })
+        }),
+        "min": 0,
+        "max": 2**16 - 1,
     },
     "nullable[uint16]": {
         "sparse": False,
@@ -484,7 +518,9 @@ data_model = {
         "supertype": UnsignedIntegerType.instance(nullable=True),
         "subtypes": frozenset({
             UInt16Type.instance(nullable=True),
-        })
+        }),
+        "min": 0,
+        "max": 2**16 - 1,
     },
 
     # uint32
@@ -500,7 +536,9 @@ data_model = {
         "subtypes": frozenset({
             UInt32Type.instance(),
             UInt32Type.instance(nullable=True),
-        })
+        }),
+        "min": 0,
+        "max": 2**32 - 1,
     },
     "nullable[uint32]": {
         "sparse": False,
@@ -513,7 +551,9 @@ data_model = {
         "supertype": UnsignedIntegerType.instance(nullable=True),
         "subtypes": frozenset({
             UInt32Type.instance(nullable=True),
-        })
+        }),
+        "min": 0,
+        "max": 2**32 - 1,
     },
 
     # uint64
@@ -529,7 +569,9 @@ data_model = {
         "subtypes": frozenset({
             UInt64Type.instance(),
             UInt64Type.instance(nullable=True),
-        })
+        }),
+        "min": 0,
+        "max": 2**64 - 1,
     },
     "nullable[uint64]": {
         "sparse": False,
@@ -542,8 +584,12 @@ data_model = {
         "supertype": UnsignedIntegerType.instance(nullable=True),
         "subtypes": frozenset({
             UInt64Type.instance(nullable=True),
-        })
+        }),
+        "min": 0,
+        "max": 2**64 - 1,
     },
+
+    # TODO: min/max
 
     # float supertype
     "float": {
@@ -561,7 +607,10 @@ data_model = {
             Float32Type.instance(),
             Float64Type.instance(),
             LongDoubleType.instance(),
-        })
+        }),
+        "equiv_complex": ComplexType.instance(),
+        "min": -2**53,
+        "max": 2**53,
     },
 
     # float16
@@ -576,7 +625,10 @@ data_model = {
         "supertype": FloatType.instance(),
         "subtypes": frozenset({
             Float16Type.instance(),
-        })
+        }),
+        "equiv_complex": Complex64Type.instance(),
+        "min": -2**11,
+        "max": 2**11,
     },
 
     # float32
@@ -591,7 +643,10 @@ data_model = {
         "supertype": FloatType.instance(),
         "subtypes": frozenset({
             Float32Type.instance(),
-        })
+        }),
+        "equiv_complex": Complex64Type.instance(),
+        "min": -2**24,
+        "max": 2**24,
     },
 
     # float64
@@ -606,7 +661,10 @@ data_model = {
         "supertype": FloatType.instance(),
         "subtypes": frozenset({
             Float64Type.instance(),
-        })
+        }),
+        "equiv_complex": Complex128Type.instance(),
+        "min": -2**53,
+        "max": 2**53,
     },
 
     # longdouble
@@ -621,7 +679,10 @@ data_model = {
         "supertype": FloatType.instance(),
         "subtypes": frozenset({
             LongDoubleType.instance(),
-        })
+        }),
+        "equiv_complex": CLongDoubleType.instance(),
+        "min": -2**64,
+        "max": 2**64,
     },
 
     # complex supertype
@@ -639,7 +700,10 @@ data_model = {
             Complex64Type.instance(),
             Complex128Type.instance(),
             CLongDoubleType.instance(),
-        })
+        }),
+        "equiv_float": FloatType.instance(),
+        "min": -2**53,
+        "max": 2**53,
     },
 
     # complex64
@@ -654,7 +718,10 @@ data_model = {
         "supertype": ComplexType.instance(),
         "subtypes": frozenset({
             Complex64Type.instance(),
-        })
+        }),
+        "equiv_float": Float32Type.instance(),
+        "min": -2**24,
+        "max": 2**24,
     },
 
     # complex128
@@ -669,7 +736,10 @@ data_model = {
         "supertype": ComplexType.instance(),
         "subtypes": frozenset({
             Complex128Type.instance(),
-        })
+        }),
+        "equiv_float": Float64Type.instance(),
+        "min": -2**53,
+        "max": 2**53,
     },
 
     # clongdouble
@@ -684,7 +754,10 @@ data_model = {
         "supertype": ComplexType.instance(),
         "subtypes": frozenset({
             CLongDoubleType.instance(),
-        })
+        }),
+        "equiv_float": LongDoubleType.instance(),
+        "min": -2**64,
+        "max": 2**64,
     },
 
     # decimal
@@ -699,7 +772,9 @@ data_model = {
         "supertype": None,
         "subtypes": frozenset({
             DecimalType.instance(),
-        })
+        }),
+        "min": -np.inf,
+        "max": np.inf,
     },
 
     # datetime supertype
@@ -717,7 +792,9 @@ data_model = {
             PandasTimestampType.instance(),
             PyDatetimeType.instance(),
             NumpyDatetime64Type.instance(),
-        })
+        }),
+        "min": -291061508645168391112243200000000000,
+        "max": 291061508645168328945024000000000000,
     },
 
     # datetime[pandas]
@@ -732,7 +809,9 @@ data_model = {
         "supertype": DatetimeType.instance(),
         "subtypes": frozenset({
             PandasTimestampType.instance(),
-        })
+        }),
+        "min": -2**63 + 1,
+        "max": 2**63 - 1,
     },
 
     # datetime[python]
@@ -747,7 +826,9 @@ data_model = {
         "supertype": DatetimeType.instance(),
         "subtypes": frozenset({
             PyDatetimeType.instance(),
-        })
+        }),
+        "min": -62135596800000000000,
+        "max": 253402300799999999000,
     },
 
     # datetime[numpy]
@@ -762,7 +843,11 @@ data_model = {
         "supertype": DatetimeType.instance(),
         "subtypes": frozenset({
             NumpyDatetime64Type.instance(),
-        })
+        }),
+        "unit": None,
+        "step_size": 1,
+        "min": -291061508645168391112243200000000000,
+        "max": 291061508645168328945024000000000000,
     },
 
     # timedelta supertype
@@ -780,7 +865,9 @@ data_model = {
             PandasTimedeltaType.instance(),
             PyTimedeltaType.instance(),
             NumpyTimedelta64Type.instance(),
-        })
+        }),
+        "min": -291061508645168391112156800000000000,
+        "max": 291061508645168391112243200000000000,
     },
 
     # timedelta[pandas]
@@ -795,7 +882,9 @@ data_model = {
         "supertype": TimedeltaType.instance(),
         "subtypes": frozenset({
             PandasTimedeltaType.instance(),
-        })
+        }),
+        "min": -2**63 + 1,
+        "max": 2**63 - 1,
     },
 
     # timedelta[python]
@@ -810,7 +899,9 @@ data_model = {
         "supertype": TimedeltaType.instance(),
         "subtypes": frozenset({
             PyTimedeltaType.instance(),
-        })
+        }),
+        "min": -86399999913600000000000,
+        "max": 86399999999999999999000,
     },
 
     # timedelta[numpy]
@@ -825,7 +916,11 @@ data_model = {
         "supertype": TimedeltaType.instance(),
         "subtypes": frozenset({
             NumpyTimedelta64Type.instance(),
-        })
+        }),
+        "unit": None,
+        "step_size": 1,
+        "min": -291061508645168391112243200000000000,
+        "max": 291061508645168328945024000000000000,
     },
 
     # string
@@ -841,7 +936,9 @@ data_model = {
         "subtypes": frozenset({
             StringType.instance(),
             StringType.instance(storage="python"),
-        })
+        }),
+        "is_default": True,
+        "storage": DEFAULT_STRING_DTYPE.storage,
     },
     "string[python]": {
         "sparse": False,
@@ -855,6 +952,8 @@ data_model = {
         "subtypes": frozenset({
             StringType.instance(storage="python")
         }),
+        "is_default": False,
+        "storage": "python",
     },
     # NOTE: pyarrow string type requires pyarrow dependency (handled below)
 
@@ -883,6 +982,8 @@ if PYARROW_INSTALLED:
         "subtypes": frozenset({
             StringType.instance(storage="pyarrow")
         }),
+        "is_default": False,
+        "storage": "pyarrow"
     }
 
     # add pyarrow subtype to string metadata
@@ -905,15 +1006,8 @@ def test_element_type_instance_constructor_returns_flyweights(factory):
 
 
 @pytest.mark.parametrize("name, properties", data_model.items())
-def test_element_types_have_expected_values(name, properties):
+def test_element_types_have_expected_attributes(name, properties):
     instance = element_types[name]()
 
-    assert instance.sparse == properties["sparse"]
-    assert instance.categorical == properties["categorical"]
-    assert instance.nullable == properties["nullable"]
-    assert instance.atomic_type == properties["atomic_type"]
-    assert instance.numpy_type == properties["numpy_type"]
-    assert instance.pandas_type == properties["pandas_type"]
-    assert instance.slug == properties["slug"]
-    assert instance.supertype == properties["supertype"]
-    assert instance.subtypes == properties["subtypes"]
+    for k, v in properties.items():
+        assert getattr(instance, k) == v
