@@ -315,10 +315,10 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"sparse={self.sparse}, "
-            f"categorical={self.categorical}, "
             f"unit={repr(self.unit)}, "
-            f"step_size={self.step_size}"
+            f"step_size={self.step_size}, "
+            f"sparse={self.sparse}, "
+            f"categorical={self.categorical}"
             f")"
         )
 
