@@ -2,7 +2,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport ElementType, object_registry, resolve_dtype
+from .base cimport CompositeType, ElementType, object_registry, resolve_dtype
 
 
 cdef str generate_slug(
@@ -50,7 +50,6 @@ cdef class ObjectType(ElementType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
     @classmethod
     def instance(
@@ -91,15 +90,15 @@ cdef class ObjectType(ElementType):
         """Test whether the given type specifier is a subtype of this
         ElementType.
         """
-        other = resolve_dtype(other)
-        return (
-            isinstance(other, self.__class__) and
-            issubclass(other.atomic_type, self.atomic_type)
+        valid = lambda t: (
+            isinstance(t, type(self)) and
+            issubclass(t.atomic_type, self.atomic_type)
         )
+        return all(valid(t) for t in CompositeType(other))
 
     def __repr__(self) -> str:
         return (
-            f"{self.__class__.__name__}("
+            f"{type(self).__name__}("
             f"atomic_type={self.atomic_type}, "
             f"sparse={self.sparse}, "
             f"categorical={self.categorical}"

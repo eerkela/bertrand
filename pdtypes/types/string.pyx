@@ -64,31 +64,6 @@ cdef class StringType(ElementType):
             )
         )
 
-    @property
-    def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self}
-        if self.is_default:
-            backends = ["python"]
-            if PYARROW_INSTALLED:
-                backends.append("pyarrow")
-
-            subtypes |= {
-                self.__class__.instance(
-                    sparse=self.sparse,
-                    categorical=self.categorical,
-                    storage=storage
-                )
-                for storage in backends
-            }
-
-        self._subtypes = frozenset(subtypes)
-        return self._subtypes
-
     @classmethod
     def instance(
         cls,
@@ -125,11 +100,29 @@ cdef class StringType(ElementType):
         # return flyweight
         return result
 
+    @property
+    def subtypes(self) -> frozenset:
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            if self.is_default:
+                backends = ["python"]
+                if PYARROW_INSTALLED:
+                    backends.append("pyarrow")
+                self._subtypes |= {
+                    type(self).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        storage=storage
+                    )
+                    for storage in backends
+                }
+        return self._subtypes
+
     def __repr__(self) -> str:
         cdef str storage = None if self.is_default else repr(self.storage)
 
         return (
-            f"{self.__class__.__name__}("
+            f"{type(self).__name__}("
             f"storage={storage}, "
             f"sparse={self.sparse}, "
             f"categorical={self.categorical}"

@@ -51,16 +51,12 @@ cdef class ComplexType(ElementType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self} | {
-            t.instance(sparse=self.sparse, categorical=self.categorical)
-            for t in (Complex64Type, Complex128Type, CLongDoubleType)
-        }
-        self._subtypes = frozenset(subtypes)
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            self._subtypes |= {
+                t.instance(sparse=self.sparse, categorical=self.categorical)
+                for t in (Complex64Type, Complex128Type, CLongDoubleType)
+            }
         return self._subtypes
 
 
@@ -90,7 +86,6 @@ cdef class Complex64Type(ComplexType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**24
@@ -109,16 +104,16 @@ cdef class Complex64Type(ComplexType):
         return self._equiv_float
 
     @property
-    def supertype(self) -> ComplexType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
+    def subtypes(self) -> frozenset:
+        return super(ComplexType, self).subtypes
 
-        # uncached
-        self._supertype = ComplexType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
+    @property
+    def supertype(self) -> ComplexType:
+        if self._supertype is None:
+            self._supertype = ComplexType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
         return self._supertype
 
 
@@ -143,7 +138,6 @@ cdef class Complex128Type(ComplexType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**53
@@ -162,16 +156,16 @@ cdef class Complex128Type(ComplexType):
         return self._equiv_float
 
     @property
-    def supertype(self) -> ComplexType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
+    def subtypes(self) -> frozenset:
+        return super(ComplexType, self).subtypes
 
-        # uncached
-        self._supertype = ComplexType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
+    @property
+    def supertype(self) -> ComplexType:
+        if self._supertype is None:
+            self._supertype = ComplexType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
         return self._supertype
 
 
@@ -196,7 +190,6 @@ cdef class CLongDoubleType(ComplexType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**64
@@ -215,14 +208,14 @@ cdef class CLongDoubleType(ComplexType):
         return self._equiv_float
 
     @property
-    def supertype(self) -> ComplexType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
+    def subtypes(self) -> frozenset:
+        return super(ComplexType, self).subtypes
 
-        # uncached
-        self._supertype = ComplexType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
+    @property
+    def supertype(self) -> ComplexType:
+        if self._supertype is None:
+            self._supertype = ComplexType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
         return self._supertype

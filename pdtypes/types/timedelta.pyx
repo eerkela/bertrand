@@ -6,8 +6,8 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport (
-    base_slugs, ElementType, generate_slug, resolve_dtype, shared_registry,
-    timedelta64_registry
+    base_slugs, CompositeType, ElementType, generate_slug, resolve_dtype,
+    shared_registry, timedelta64_registry
 )
 
 
@@ -69,31 +69,28 @@ cdef class TimedeltaType(ElementType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self} | {
-            t.instance(sparse=self.sparse, categorical=self.categorical)
-            for t in (
-                PandasTimedeltaType, PyTimedeltaType, NumpyTimedelta64Type
-            )
-        }
-        self._subtypes = frozenset(subtypes)
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            self._subtypes |= {
+                t.instance(sparse=self.sparse, categorical=self.categorical)
+                for t in (
+                    PandasTimedeltaType, PyTimedeltaType, NumpyTimedelta64Type
+                )
+            }
         return self._subtypes
 
     def __contains__(self, other) -> bool:
         """Test whether the given type specifier is a subtype of this
         ElementType.
         """
-        other = resolve_dtype(other)
-        if isinstance(other, NumpyTimedelta64Type):  # disregard unit/step_size
-            return (
-                self.sparse == other.sparse and
-                self.categorical == other.categorical
-            )
-        return other in self.subtypes
+        valid_m8 = lambda t: (
+            isinstance(t, NumpyTimedelta64Type) and
+            (self.sparse == t.sparse and self.categorical == t.categorical)
+        )
+        return all(
+            valid_m8(t) or t in self.subtypes
+            for t in CompositeType(other)
+        )
 
 
 ########################
@@ -122,23 +119,22 @@ cdef class PandasTimedeltaType(TimedeltaType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable values in ns
         self.min = -2**63 + 1
         self.max = 2**63 - 1
 
     @property
-    def supertype(self) -> TimedeltaType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
+    def subtypes(self) -> frozenset:
+        return super(TimedeltaType, self).subtypes
 
-        # uncached
-        self._supertype = TimedeltaType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
+    @property
+    def supertype(self) -> TimedeltaType:
+        if self._supertype is None:
+            self._supertype = TimedeltaType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
         return self._supertype
 
     def __contains__(self, other) -> bool:
@@ -169,23 +165,22 @@ cdef class PyTimedeltaType(TimedeltaType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable values in ns
         self.min = -86399999913600000000000
         self.max = 86399999999999999999000
 
     @property
-    def supertype(self) -> TimedeltaType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
+    def subtypes(self) -> frozenset:
+        return super(TimedeltaType, self).subtypes
 
-        # uncached
-        self._supertype = TimedeltaType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
+    @property
+    def supertype(self) -> TimedeltaType:
+        if self._supertype is None:
+            self._supertype = TimedeltaType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
         return self._supertype
 
     def __contains__(self, other) -> bool:
@@ -236,24 +231,10 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable values in ns
         self.min = -291061508645168391112243200000000000
         self.max = 291061508645168328945024000000000000
-
-    @property
-    def supertype(self) -> TimedeltaType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
-
-        # uncached
-        self._supertype = TimedeltaType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
-        return self._supertype
 
     @classmethod
     def instance(
@@ -298,23 +279,36 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
         # return flyweight
         return result
 
+    @property
+    def subtypes(self) -> frozenset:
+        return super(TimedeltaType, self).subtypes
+
+    @property
+    def supertype(self) -> TimedeltaType:
+        if self._supertype is None:
+            self._supertype = TimedeltaType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
+        return self._supertype
+
     def __contains__(self, other) -> bool:
         """Test whether the given type specifier is a subtype of this
         ElementType.
         """
-        other = resolve_dtype(other)
-        if isinstance(other, self.__class__):
-            if self.unit is None:  # disregard unit/step_size
-                return (
-                    self.sparse == other.sparse and
-                    self.categorical == other.categorical
-                )
-            return self == other
-        return False
+        valid_m8 = lambda t: (
+            self.unit is None and
+            isinstance(t, type(self)) and
+            (self.sparse == t.sparse and self.categorical == t.categorical)
+        )
+        return all(
+            valid_m8(t) or t in self.subtypes
+            for t in CompositeType(other)
+        )
 
     def __repr__(self) -> str:
         return (
-            f"{self.__class__.__name__}("
+            f"{type(self).__name__}("
             f"unit={repr(self.unit)}, "
             f"step_size={self.step_size}, "
             f"sparse={self.sparse}, "

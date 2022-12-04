@@ -489,8 +489,8 @@ cdef class CompositeType:
 
     def __repr__(self) -> str:
         if self.types:
-            return f"{self.__class__.__name__}({self.types})"
-        return f"{self.__class__.__name__}()"
+            return f"{type(self).__name__}({self.types})"
+        return f"{type(self).__name__}()"
 
     def __str__(self) -> str:
         if self.types:
@@ -652,9 +652,13 @@ cdef class ElementType:
         self.pandas_type = pandas_type
         self.slug = slug
         self.hash = hash(slug)
+        self._subtypes = None
+        self._supertype = None
 
     @property
     def subtypes(self) -> frozenset:
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
         return self._subtypes
 
     @property
@@ -694,11 +698,21 @@ cdef class ElementType:
         # return flyweight
         return result
 
+    def is_subtype(self, other) -> bool:
+        return self in CompositeType(other)
+
     def __contains__(self, other) -> bool:
         """Test whether the given type specifier is a subtype of this
         ElementType.
+
+        Examples
+        --------
+        >>> series.get_dtype() == int
+        >>> series.get_dtype() in CompositeType({int, bool})
+        >>> series.get_dtype().is_subtype({int, bool})
+        >>> "int" in series.get_dtype()
         """
-        return resolve_dtype(other) in self.subtypes
+        return all(t in self.subtypes for t in CompositeType(other))
 
     def __eq__(self, other) -> bool:
         return self.hash == hash(resolve_dtype(other))
@@ -708,7 +722,7 @@ cdef class ElementType:
 
     def __repr__(self) -> str:
         return (
-            f"{self.__class__.__name__}("
+            f"{type(self).__name__}("
             f"sparse={self.sparse}, "
             f"categorical={self.categorical}"
             f")"

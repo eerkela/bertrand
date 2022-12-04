@@ -33,7 +33,6 @@ cdef class DecimalType(ElementType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable values
         self.min = -np.inf

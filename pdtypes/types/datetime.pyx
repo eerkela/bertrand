@@ -5,8 +5,8 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport (
-    base_slugs, datetime64_registry, ElementType, generate_slug, resolve_dtype,
-    shared_registry
+    base_slugs, CompositeType, datetime64_registry, ElementType, generate_slug,
+    resolve_dtype, shared_registry
 )
 
 
@@ -68,29 +68,28 @@ cdef class DatetimeType(ElementType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self} | {
-            t.instance(sparse=self.sparse, categorical=self.categorical)
-            for t in (PandasTimestampType, PyDatetimeType, NumpyDatetime64Type)
-        }
-        self._subtypes = frozenset(subtypes)
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            self._subtypes |= {
+                t.instance(sparse=self.sparse, categorical=self.categorical)
+                for t in (
+                    PandasTimestampType, PyDatetimeType, NumpyDatetime64Type
+                )
+            }
         return self._subtypes
 
     def __contains__(self, other) -> bool:
         """Test whether the given type specifier is a subtype of this
         ElementType.
         """
-        other = resolve_dtype(other)
-        if isinstance(other, NumpyDatetime64Type):  # disregard unit/step_size
-            return (
-                self.sparse == other.sparse and
-                self.categorical == other.categorical
-            )
-        return other in self.subtypes
+        valid_M8 = lambda t: (
+            isinstance(t, NumpyDatetime64Type) and
+            (self.sparse == t.sparse and self.categorical == t.categorical)
+        )
+        return all(
+            valid_M8(t) or t in self.subtypes
+            for t in CompositeType(other)
+        )
 
 
 ########################
@@ -119,23 +118,22 @@ cdef class PandasTimestampType(DatetimeType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable values in ns
         self.min = -2**63 + 1
         self.max = 2**63 - 1
 
     @property
-    def supertype(self) -> DatetimeType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
+    def subtypes(self) -> frozenset:
+        return super(DatetimeType, self).subtypes
 
-        # uncached
-        self._supertype = DatetimeType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
+    @property
+    def supertype(self) -> DatetimeType:
+        if self._supertype is None:
+            self._supertype = DatetimeType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
         return self._supertype
 
     def __contains__(self, other) -> bool:
@@ -166,23 +164,22 @@ cdef class PyDatetimeType(DatetimeType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable values in ns
         self.min = -62135596800000000000
         self.max = 253402300799999999000
 
     @property
-    def supertype(self) -> DatetimeType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
+    def subtypes(self) -> frozenset:
+        return super(DatetimeType, self).subtypes
 
-        # uncached
-        self._supertype = DatetimeType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
+    @property
+    def supertype(self) -> DatetimeType:
+        if self._supertype is None:
+            self._supertype = DatetimeType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
         return self._supertype
 
     def __contains__(self, other) -> bool:
@@ -230,24 +227,10 @@ cdef class NumpyDatetime64Type(DatetimeType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable values in ns
         self.min = -291061508645168391112243200000000000
         self.max = 291061508645168328945024000000000000
-
-    @property
-    def supertype(self) -> DatetimeType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
-
-        # uncached
-        self._supertype = DatetimeType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
-        return self._supertype
 
     @classmethod
     def instance(
@@ -292,23 +275,36 @@ cdef class NumpyDatetime64Type(DatetimeType):
         # return flyweight
         return result
 
+    @property
+    def subtypes(self) -> frozenset:
+        return super(DatetimeType, self).subtypes
+
+    @property
+    def supertype(self) -> DatetimeType:
+        if self._supertype is None:
+            self._supertype = DatetimeType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
+        return self._supertype
+
     def __contains__(self, other) -> bool:
         """Test whether the given type specifier is a subtype of this
         ElementType.
         """
-        other = resolve_dtype(other)
-        if isinstance(other, self.__class__):
-            if self.unit is None:  # disregard unit/step_size
-                return (
-                    self.sparse == other.sparse and
-                    self.categorical == other.categorical
-                )
-            return self == other
-        return False
+        valid_M8 = lambda t: (
+            self.unit is None and
+            isinstance(t, type(self)) and
+            (self.sparse == t.sparse and self.categorical == t.categorical)
+        )
+        return all(
+            valid_M8(t) or t in self.subtypes
+            for t in CompositeType(other)
+        )
 
     def __repr__(self) -> str:
         return (
-            f"{self.__class__.__name__}("
+            f"{type(self).__name__}("
             f"unit={repr(self.unit)}, "
             f"step_size={self.step_size}, "
             f"sparse={self.sparse}, "

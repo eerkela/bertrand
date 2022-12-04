@@ -55,25 +55,6 @@ cdef class BooleanType(ElementType):
             )
         )
 
-    @property
-    def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self}
-        if not self.nullable:
-            subtypes |= {
-                self.__class__.instance(
-                    sparse=self.sparse,
-                    categorical=self.categorical,
-                    nullable=True
-                )
-            }
-        self._subtypes = frozenset(subtypes)
-        return self._subtypes
-
     @classmethod
     def instance(
         cls,
@@ -110,9 +91,24 @@ cdef class BooleanType(ElementType):
         # return flyweight
         return result
 
+    @property
+    def subtypes(self) -> frozenset:
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            if not self.nullable:
+                self._subtypes |= {
+                    type(x).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        nullable=True
+                    )
+                    for x in self._subtypes
+                }
+        return self._subtypes
+
     def __repr__(self) -> str:
         return (
-            f"{self.__class__.__name__}("
+            f"{type(self).__name__}("
             f"sparse={self.sparse}, "
             f"categorical={self.categorical}, "
             f"nullable={self.nullable}"

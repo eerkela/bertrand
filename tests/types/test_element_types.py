@@ -1,6 +1,7 @@
 from __future__ import annotations
 import datetime
 import decimal
+from itertools import product
 from types import MappingProxyType
 
 import numpy as np
@@ -17,13 +18,16 @@ from pdtypes.types import (
     PyTimedeltaType, NumpyTimedelta64Type, StringType, ObjectType
 )
 
-
 from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
 
 
 ####################
 ####    DATA    ####
 ####################
+
+
+class DummyClass:
+    pass
 
 
 def generate_slug(base: str, sparse: bool, categorical: bool) -> str:
@@ -870,7 +874,6 @@ data_model = {
     },
 
     # datetime[numpy]
-    # TODO: test with non-default units, step_size
     "datetime[numpy]": lambda sparse, categorical: {
         "factory": lambda: NumpyDatetime64Type.instance(sparse=sparse, categorical=categorical),
         "properties": {
@@ -891,6 +894,27 @@ data_model = {
             "max": 291061508645168328945024000000000000,
         },
         "repr": f"NumpyDatetime64Type(unit=None, step_size=1, sparse={sparse}, categorical={categorical})",
+    },
+    "M8[5m]": lambda sparse, categorical: {
+        "factory": lambda: NumpyDatetime64Type.instance(unit="m", step_size=5, sparse=sparse, categorical=categorical),
+        "properties": {
+            "sparse": sparse,
+            "categorical": categorical,
+            "nullable": True,
+            "atomic_type": np.datetime64,
+            "numpy_type": np.dtype("M8[5m]"),
+            "pandas_type": None,
+            "slug": generate_slug("M8[5m]", sparse=sparse, categorical=categorical),
+            "supertype": DatetimeType.instance(sparse=sparse, categorical=categorical),
+            "subtypes": frozenset({
+                NumpyDatetime64Type.instance(unit="m", step_size=5, sparse=sparse, categorical=categorical),
+            }),
+            "unit": "m",
+            "step_size": 5,
+            "min": -291061508645168391112243200000000000,
+            "max": 291061508645168328945024000000000000,
+        },
+        "repr": f"NumpyDatetime64Type(unit='m', step_size=5, sparse={sparse}, categorical={categorical})",
     },
 
     # timedelta supertype
@@ -960,7 +984,6 @@ data_model = {
     },
 
     # timedelta[numpy]
-    # TODO: test with non-default units, step_size
     "timedelta[numpy]": lambda sparse, categorical: {
         "factory": lambda: NumpyTimedelta64Type.instance(sparse=sparse, categorical=categorical),
         "properties": {
@@ -981,6 +1004,27 @@ data_model = {
             "max": 291061508645168328945024000000000000,
         },
         "repr": f"NumpyTimedelta64Type(unit=None, step_size=1, sparse={sparse}, categorical={categorical})",
+    },
+    "m8[25us]": lambda sparse, categorical: {
+        "factory": lambda: NumpyTimedelta64Type.instance(unit="us", step_size=25, sparse=sparse, categorical=categorical),
+        "properties": {
+            "sparse": sparse,
+            "categorical": categorical,
+            "nullable": True,
+            "atomic_type": np.timedelta64,
+            "numpy_type": np.dtype("m8[25us]"),
+            "pandas_type": None,
+            "slug": generate_slug("m8[25us]", sparse=sparse, categorical=categorical),
+            "supertype": TimedeltaType.instance(sparse=sparse, categorical=categorical),
+            "subtypes": frozenset({
+                NumpyTimedelta64Type.instance(unit="us", step_size=25, sparse=sparse, categorical=categorical),
+            }),
+            "unit": "us",
+            "step_size": 25,
+            "min": -291061508645168391112243200000000000,
+            "max": 291061508645168328945024000000000000,
+        },
+        "repr": f"NumpyTimedelta64Type(unit='us', step_size=25, sparse={sparse}, categorical={categorical})",
     },
 
     # string
@@ -1029,12 +1073,44 @@ data_model = {
     # NOTE: pyarrow string type requires pyarrow dependency (handled below)
 
     # object
-    # TODO: account for extendable atomic types
-
+    "object": lambda sparse, categorical: {
+        "factory": lambda: ObjectType.instance(sparse=sparse, categorical=categorical),
+        "properties": {
+            "sparse": sparse,
+            "categorical": categorical,
+            "nullable": True,
+            "atomic_type": object,
+            "numpy_type": np.dtype("O"),
+            "pandas_type": None,
+            "slug": generate_slug("object", sparse=sparse, categorical=categorical),
+            "supertype": None,
+            "subtypes": frozenset({
+                ObjectType.instance(sparse=sparse, categorical=categorical)
+            }),
+        },
+        "repr": f"ObjectType(atomic_type={object}, sparse={sparse}, categorical={categorical})",
+    },
+    "DummyClass": lambda sparse, categorical: {
+        "factory": lambda: ObjectType.instance(atomic_type=DummyClass, sparse=sparse, categorical=categorical),
+        "properties": {
+            "sparse": sparse,
+            "categorical": categorical,
+            "nullable": True,
+            "atomic_type": DummyClass,
+            "numpy_type": np.dtype("O"),
+            "pandas_type": None,
+            "slug": generate_slug("DummyClass", sparse=sparse, categorical=categorical),
+            "supertype": None,
+            "subtypes": frozenset({
+                ObjectType.instance(atomic_type=DummyClass, sparse=sparse, categorical=categorical)
+            }),
+        },
+        "repr": f"ObjectType(atomic_type={DummyClass}, sparse={sparse}, categorical={categorical})",
+    },
 }
 
 
-# if pyarrow is installed, add expected metadata for corresponding string type
+# if pyarrow is installed, define metadata for corresponding string type
 if PYARROW_INSTALLED:
     data_model["string[pyarrow]"] = lambda sparse, categorical: {
         "factory": lambda: StringType.instance(storage="pyarrow", sparse=sparse, categorical=categorical),
@@ -1057,8 +1133,17 @@ if PYARROW_INSTALLED:
     }
 
 
-# NOTE: MappingProxyType is immutable - prevents test-related side effects
-data_model = MappingProxyType(data_model)
+# gather a flat list of ElementType instances that are contained in data_model.
+# NOTE: list includes every permutation of sparse, categorical
+flat_types = tuple(
+    model(sparse, categorical)["factory"]()
+    for model in data_model.values()
+    for sparse, categorical in product([True, False], repeat=2)
+)
+
+
+# make data sources immutable - prevents test-related side effects
+data_model = MappingProxyType(data_model)  # MappingProxyType = immutable dict
 
 
 #####################
@@ -1123,6 +1208,166 @@ def test_element_type_attributes_are_immutable(
             setattr(instance, k, False)
 
 
-# TODO: test_element_types_contain_only_valid_subtypes
-# TODO: test_element_types_compare_equal
+@pytest.mark.parametrize("sparse", [True, False])
+@pytest.mark.parametrize("categorical", [True, False])
+@pytest.mark.parametrize("model", data_model.values())
+def test_element_type_contains_subtypes(
+    sparse, categorical, model
+):
+    # refine model by sparse/categorical and call factory
+    model = model(sparse=sparse, categorical=categorical)
+    instance = model["factory"]()
 
+    # scalar test - iterate through flat_types and apply subtype logic
+    for element_type in flat_types:
+        result = element_type in instance
+        expected = element_type in instance.subtypes
+
+        # datetime special case - if element_type is an M8 type and instance
+        # has no units (either datetime supertype or NumpyDatetime64Type with
+        # generic units), disregard unit/step_size during comparison
+        if (
+            isinstance(instance, DatetimeType) and
+            isinstance(element_type, NumpyDatetime64Type)
+        ):
+            is_generic_M8 = (
+                isinstance(instance, NumpyDatetime64Type) and
+                instance.unit is None
+            )
+            is_datetime_supertype = (
+                not isinstance(instance, tuple(DatetimeType.__subclasses__()))
+            )
+            if is_generic_M8 or is_datetime_supertype:
+                expected = (
+                    element_type.sparse == instance.sparse and
+                    element_type.categorical == instance.categorical
+                )
+
+        # timedelta special case - if element_type is an m8 type and instance
+        # has no units (either timedelta supertype or NumpyTimedelta64Type with
+        # generic units), disregard unit/step_size during comparison
+        if (
+            isinstance(instance, TimedeltaType) and
+            isinstance(element_type, NumpyTimedelta64Type)
+        ):
+            is_generic_m8 = (
+                isinstance(instance, NumpyTimedelta64Type) and
+                instance.unit is None
+            )
+            is_timedelta_supertype = (
+                not isinstance(instance, tuple(TimedeltaType.__subclasses__()))
+            )
+            if is_generic_m8 or is_timedelta_supertype:
+                expected = (
+                    element_type.sparse == instance.sparse and
+                    element_type.categorical == instance.categorical
+                )
+
+        # object special case - account for atomic_type inheritance
+        if (
+            isinstance(instance, ObjectType) and
+            isinstance(element_type, ObjectType)
+        ):
+            expected = issubclass(
+                element_type.atomic_type,
+                instance.atomic_type
+            )
+
+        assert result == expected
+
+    # collective test - use iterables directly
+    assert instance.subtypes in instance  # set
+    assert not flat_types in instance  # list
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+@pytest.mark.parametrize("categorical", [True, False])
+@pytest.mark.parametrize("model", data_model.values())
+def test_element_type_is_subtype(
+    sparse, categorical, model
+):
+    # refine model by sparse/categorical and call factory
+    model = model(sparse=sparse, categorical=categorical)
+    instance = model["factory"]()
+
+    # scalar test - iterate through flat_types and apply subtype logic
+    for element_type in flat_types:
+        result = instance.is_subtype(element_type)
+        expected = instance in element_type.subtypes
+
+        # datetime special case - if element_type is an M8 type and instance
+        # has no units (either datetime supertype or NumpyDatetime64Type with
+        # generic units), disregard unit/step_size during comparison
+        if (
+            isinstance(element_type, DatetimeType) and
+            isinstance(instance, NumpyDatetime64Type)
+        ):
+            is_generic_M8 = (
+                isinstance(element_type, NumpyDatetime64Type) and
+                element_type.unit is None
+            )
+            is_datetime_supertype = not isinstance(
+                element_type,
+                tuple(DatetimeType.__subclasses__())
+            )
+            if is_generic_M8 or is_datetime_supertype:
+                expected = (
+                    element_type.sparse == instance.sparse and
+                    element_type.categorical == instance.categorical
+                )
+
+        # timedelta special case - if element_type is an m8 type and instance
+        # has no units (either timedelta supertype or NumpyTimedelta64Type with
+        # generic units), disregard unit/step_size during comparison
+        if (
+            isinstance(element_type, TimedeltaType) and
+            isinstance(instance, NumpyTimedelta64Type)
+        ):
+            is_generic_m8 = (
+                isinstance(element_type, NumpyTimedelta64Type) and
+                element_type.unit is None
+            )
+            is_timedelta_supertype = not isinstance(
+                element_type,
+                tuple(TimedeltaType.__subclasses__())
+            )
+            if is_generic_m8 or is_timedelta_supertype:
+                expected = (
+                    element_type.sparse == instance.sparse and
+                    element_type.categorical == instance.categorical
+                )
+
+        # object special case - account for atomic_type inheritance
+        if (
+            isinstance(element_type, ObjectType) and
+            isinstance(instance, ObjectType)
+        ):
+            expected = issubclass(
+                instance.atomic_type,
+                element_type.atomic_type
+            )
+
+        assert result == expected
+
+    # collective test - use iterables directly
+    assert not instance.is_subtype(instance.subtypes - {instance})  # set
+    assert instance.is_subtype(flat_types)  # list
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+@pytest.mark.parametrize("categorical", [True, False])
+@pytest.mark.parametrize("model", data_model.values())
+def test_element_types_compare_equal(
+    sparse, categorical, model
+):
+    # refine model by sparse/categorical and call factory
+    model = model(sparse=sparse, categorical=categorical)
+    instance = model["factory"]()
+
+    # iterate through flat_types and apply equality logic
+    for element_type in flat_types:
+        result = (instance == element_type)
+        assert result == (hash(instance) == hash(element_type))
+        assert result == (instance.slug == element_type.slug)
+        assert result == (str(instance) == str(element_type))
+        assert result == (repr(instance) == repr(element_type))

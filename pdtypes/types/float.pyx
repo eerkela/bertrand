@@ -53,16 +53,14 @@ cdef class FloatType(ElementType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self} | {
-            t.instance(sparse=self.sparse, categorical=self.categorical)
-            for t in (Float16Type, Float32Type, Float64Type, LongDoubleType)
-        }
-        self._subtypes = frozenset(subtypes)
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            self._subtypes |= {
+                t.instance(sparse=self.sparse, categorical=self.categorical)
+                for t in (
+                    Float16Type, Float32Type, Float64Type, LongDoubleType
+                )
+            }
         return self._subtypes
 
 
@@ -92,7 +90,6 @@ cdef class Float16Type(FloatType):
                 categorical=categorical
             ),
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**11
@@ -111,15 +108,16 @@ cdef class Float16Type(FloatType):
         return self._equiv_complex
 
     @property
-    def supertype(self) -> FloatType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
+    def subtypes(self) -> frozenset:
+        return super(FloatType, self).subtypes
 
-        self._supertype = FloatType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
+    @property
+    def supertype(self) -> FloatType:
+        if self._supertype is None:
+            self._supertype = FloatType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
         return self._supertype
 
 
@@ -144,7 +142,6 @@ cdef class Float32Type(FloatType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**24
@@ -163,15 +160,16 @@ cdef class Float32Type(FloatType):
         return self._equiv_complex
 
     @property
-    def supertype(self) -> FloatType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
+    def subtypes(self) -> frozenset:
+        return super(FloatType, self).subtypes
 
-        self._supertype = FloatType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
+    @property
+    def supertype(self) -> FloatType:
+        if self._supertype is None:
+            self._supertype = FloatType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
         return self._supertype
 
 
@@ -196,7 +194,6 @@ cdef class Float64Type(FloatType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**53
@@ -215,15 +212,16 @@ cdef class Float64Type(FloatType):
         return self._equiv_complex
 
     @property
-    def supertype(self) -> FloatType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
+    def subtypes(self) -> frozenset:
+        return super(FloatType, self).subtypes
 
-        self._supertype = FloatType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
+    @property
+    def supertype(self) -> FloatType:
+        if self._supertype is None:
+            self._supertype = FloatType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
         return self._supertype
 
 
@@ -248,7 +246,6 @@ cdef class LongDoubleType(FloatType):
                 categorical=categorical
             )
         )
-        self._subtypes = frozenset({self})
 
         # min/max representable integer (determined by size of significand)
         self.min = -2**64
@@ -267,13 +264,14 @@ cdef class LongDoubleType(FloatType):
         return self._equiv_complex
 
     @property
-    def supertype(self) -> FloatType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
+    def subtypes(self) -> frozenset:
+        return super(FloatType, self).subtypes
 
-        self._supertype = FloatType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical
-        )
+    @property
+    def supertype(self) -> FloatType:
+        if self._supertype is None:
+            self._supertype = FloatType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical
+            )
         return self._supertype

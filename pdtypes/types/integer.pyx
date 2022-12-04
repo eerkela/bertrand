@@ -59,38 +59,6 @@ cdef class IntegerType(ElementType):
         self.min = -np.inf
         self.max = np.inf
 
-    @property
-    def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtype_categories = (
-            SignedIntegerType, Int8Type, Int16Type, Int32Type, Int64Type,
-            UnsignedIntegerType, UInt8Type, UInt16Type, UInt32Type, UInt64Type
-        )
-        subtypes = {self} | {
-            t.instance(
-                sparse=self.sparse,
-                categorical=self.categorical,
-                nullable=self.nullable
-            )
-            for t in subtype_categories
-        }
-        if not self.nullable:
-            subtypes |= {
-                t.instance(
-                    sparse=self.sparse,
-                    categorical=self.categorical,
-                    nullable=True
-                )
-                for t in subtype_categories + (self.__class__,)
-            }
-
-        self._subtypes = frozenset(subtypes)
-        return self._subtypes
-
     @classmethod
     def instance(
         cls,
@@ -127,9 +95,35 @@ cdef class IntegerType(ElementType):
         # return flyweight
         return result
 
+    @property
+    def subtypes(self) -> frozenset:
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            self._subtypes |= {
+                t.instance(
+                    sparse=self.sparse,
+                    categorical=self.categorical,
+                    nullable=self.nullable
+                )
+                for t in (
+                    SignedIntegerType, Int8Type, Int16Type, Int32Type,
+                    Int64Type, UnsignedIntegerType, UInt8Type, UInt16Type,
+                    UInt32Type, UInt64Type
+                )
+            }
+            if not self.nullable:
+                self._subtypes |= {
+                    type(x).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        nullable=True
+                    ) for x in self._subtypes
+                }
+        return self._subtypes
+
     def __repr__(self) -> str:
         return (
-            f"{self.__class__.__name__}("
+            f"{type(self).__name__}("
             f"sparse={self.sparse}, "
             f"categorical={self.categorical}, "
             f"nullable={self.nullable}"
@@ -167,45 +161,34 @@ cdef class SignedIntegerType(IntegerType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtype_categories = (Int8Type, Int16Type, Int32Type, Int64Type)
-        subtypes = {self} | {
-            t.instance(
-                sparse=self.sparse,
-                categorical=self.categorical,
-                nullable=self.nullable
-            )
-            for t in subtype_categories
-        }
-        if not self.nullable:
-            subtypes |= {
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            self._subtypes |= {
                 t.instance(
                     sparse=self.sparse,
                     categorical=self.categorical,
-                    nullable=True
+                    nullable=self.nullable
                 )
-                for t in subtype_categories + (self.__class__,)
+                for t in (Int8Type, Int16Type, Int32Type, Int64Type)
             }
-
-        self._subtypes = frozenset(subtypes)
+            if not self.nullable:
+                self._subtypes |= {
+                    type(x).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        nullable=True
+                    ) for x in self._subtypes
+                }
         return self._subtypes
 
     @property
     def supertype(self) -> IntegerType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
-
-        # uncached
-        self._supertype = IntegerType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical,
-            nullable=self.nullable
-        )
+        if self._supertype is None:
+            self._supertype = IntegerType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
         return self._supertype
 
 
@@ -239,45 +222,34 @@ cdef class UnsignedIntegerType(IntegerType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtype_categories = (UInt8Type, UInt16Type, UInt32Type, UInt64Type)
-        subtypes = {self} | {
-            t.instance(
-                sparse=self.sparse,
-                categorical=self.categorical,
-                nullable=self.nullable
-            )
-            for t in subtype_categories
-        }
-        if not self.nullable:
-            subtypes |= {
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            self._subtypes |= {
                 t.instance(
                     sparse=self.sparse,
                     categorical=self.categorical,
-                    nullable=True
+                    nullable=self.nullable
                 )
-                for t in subtype_categories + (self.__class__,)
+                for t in (UInt8Type, UInt16Type, UInt32Type, UInt64Type)
             }
-
-        self._subtypes = frozenset(subtypes)
+            if not self.nullable:
+                self._subtypes |= {
+                    type(x).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        nullable=True
+                    ) for x in self._subtypes
+                }
         return self._subtypes
 
     @property
     def supertype(self) -> IntegerType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
-
-        # uncached
-        self._supertype = IntegerType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical,
-            nullable=self.nullable
-        )
+        if self._supertype is None:
+            self._supertype = IntegerType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
         return self._supertype
 
 
@@ -316,35 +288,26 @@ cdef class Int8Type(SignedIntegerType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self}
-        if not self.nullable:
-            subtypes |= {
-                self.__class__.instance(
-                    sparse=self.sparse,
-                    categorical=self.categorical,
-                    nullable=True
-                )
-            }
-        self._subtypes = frozenset(subtypes)
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            if not self.nullable:
+                self._subtypes |= {
+                    type(x).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        nullable=True
+                    ) for x in self._subtypes
+                }
         return self._subtypes
 
     @property
-    def supertype(self) -> SignedIntegerType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
-
-        # uncached
-        self._supertype = SignedIntegerType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical,
-            nullable=self.nullable
-        )
+    def supertype(self) -> IntegerType:
+        if self._supertype is None:
+            self._supertype = SignedIntegerType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
         return self._supertype
 
 
@@ -378,35 +341,26 @@ cdef class Int16Type(SignedIntegerType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self}
-        if not self.nullable:
-            subtypes |= {
-                self.__class__.instance(
-                    sparse=self.sparse,
-                    categorical=self.categorical,
-                    nullable=True
-                )
-            }
-        self._subtypes = frozenset(subtypes)
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            if not self.nullable:
+                self._subtypes |= {
+                    type(x).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        nullable=True
+                    ) for x in self._subtypes
+                }
         return self._subtypes
 
     @property
-    def supertype(self) -> SignedIntegerType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
-
-        # uncached
-        self._supertype = SignedIntegerType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical,
-            nullable=self.nullable
-        )
+    def supertype(self) -> IntegerType:
+        if self._supertype is None:
+            self._supertype = SignedIntegerType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
         return self._supertype
 
 
@@ -440,35 +394,26 @@ cdef class Int32Type(SignedIntegerType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self}
-        if not self.nullable:
-            subtypes |= {
-                self.__class__.instance(
-                    sparse=self.sparse,
-                    categorical=self.categorical,
-                    nullable=True
-                )
-            }
-        self._subtypes = frozenset(subtypes)
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            if not self.nullable:
+                self._subtypes |= {
+                    type(x).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        nullable=True
+                    ) for x in self._subtypes
+                }
         return self._subtypes
 
     @property
-    def supertype(self) -> SignedIntegerType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
-
-        # uncached
-        self._supertype = SignedIntegerType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical,
-            nullable=self.nullable
-        )
+    def supertype(self) -> IntegerType:
+        if self._supertype is None:
+            self._supertype = SignedIntegerType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
         return self._supertype
 
 
@@ -502,35 +447,26 @@ cdef class Int64Type(SignedIntegerType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self}
-        if not self.nullable:
-            subtypes |= {
-                self.__class__.instance(
-                    sparse=self.sparse,
-                    categorical=self.categorical,
-                    nullable=True
-                )
-            }
-        self._subtypes = frozenset(subtypes)
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            if not self.nullable:
+                self._subtypes |= {
+                    type(x).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        nullable=True
+                    ) for x in self._subtypes
+                }
         return self._subtypes
 
     @property
-    def supertype(self) -> SignedIntegerType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
-
-        # uncached
-        self._supertype = SignedIntegerType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical,
-            nullable=self.nullable
-        )
+    def supertype(self) -> IntegerType:
+        if self._supertype is None:
+            self._supertype = SignedIntegerType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
         return self._supertype
 
 
@@ -564,35 +500,26 @@ cdef class UInt8Type(UnsignedIntegerType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self}
-        if not self.nullable:
-            subtypes |= {
-                self.__class__.instance(
-                    sparse=self.sparse,
-                    categorical=self.categorical,
-                    nullable=True
-                )
-            }
-        self._subtypes = frozenset(subtypes)
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            if not self.nullable:
+                self._subtypes |= {
+                    type(x).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        nullable=True
+                    ) for x in self._subtypes
+                }
         return self._subtypes
 
     @property
-    def supertype(self) -> UnsignedIntegerType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
-
-        # uncached
-        self._supertype = UnsignedIntegerType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical,
-            nullable=self.nullable
-        )
+    def supertype(self) -> IntegerType:
+        if self._supertype is None:
+            self._supertype = UnsignedIntegerType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
         return self._supertype
 
 
@@ -626,35 +553,26 @@ cdef class UInt16Type(UnsignedIntegerType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self}
-        if not self.nullable:
-            subtypes |= {
-                self.__class__.instance(
-                    sparse=self.sparse,
-                    categorical=self.categorical,
-                    nullable=True
-                )
-            }
-        self._subtypes = frozenset(subtypes)
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            if not self.nullable:
+                self._subtypes |= {
+                    type(x).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        nullable=True
+                    ) for x in self._subtypes
+                }
         return self._subtypes
 
     @property
-    def supertype(self) -> UnsignedIntegerType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
-
-        # uncached
-        self._supertype = UnsignedIntegerType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical,
-            nullable=self.nullable
-        )
+    def supertype(self) -> IntegerType:
+        if self._supertype is None:
+            self._supertype = UnsignedIntegerType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
         return self._supertype
 
 
@@ -688,35 +606,26 @@ cdef class UInt32Type(UnsignedIntegerType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self}
-        if not self.nullable:
-            subtypes |= {
-                self.__class__.instance(
-                    sparse=self.sparse,
-                    categorical=self.categorical,
-                    nullable=True
-                )
-            }
-        self._subtypes = frozenset(subtypes)
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            if not self.nullable:
+                self._subtypes |= {
+                    type(x).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        nullable=True
+                    ) for x in self._subtypes
+                }
         return self._subtypes
 
     @property
-    def supertype(self) -> UnsignedIntegerType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
-
-        # uncached
-        self._supertype = UnsignedIntegerType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical,
-            nullable=self.nullable
-        )
+    def supertype(self) -> IntegerType:
+        if self._supertype is None:
+            self._supertype = UnsignedIntegerType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
         return self._supertype
 
 
@@ -750,33 +659,24 @@ cdef class UInt64Type(UnsignedIntegerType):
 
     @property
     def subtypes(self) -> frozenset:
-        # cached
-        if self._subtypes is not None:
-            return self._subtypes
-
-        # uncached
-        subtypes = {self}
-        if not self.nullable:
-            subtypes |= {
-                self.__class__.instance(
-                    sparse=self.sparse,
-                    categorical=self.categorical,
-                    nullable=True
-                )
-            }
-        self._subtypes = frozenset(subtypes)
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+            if not self.nullable:
+                self._subtypes |= {
+                    type(x).instance(
+                        sparse=self.sparse,
+                        categorical=self.categorical,
+                        nullable=True
+                    ) for x in self._subtypes
+                }
         return self._subtypes
 
     @property
-    def supertype(self) -> UnsignedIntegerType:
-        # cached
-        if self._supertype is not None:
-            return self._supertype
-
-        # uncached
-        self._supertype = UnsignedIntegerType.instance(
-            sparse=self.sparse,
-            categorical=self.categorical,
-            nullable=self.nullable
-        )
+    def supertype(self) -> IntegerType:
+        if self._supertype is None:
+            self._supertype = UnsignedIntegerType.instance(
+                sparse=self.sparse,
+                categorical=self.categorical,
+                nullable=self.nullable
+            )
         return self._supertype
