@@ -56,6 +56,8 @@ cdef class TimedeltaType(ElementType):
             atomic_type=None,
             numpy_type=None,
             pandas_type=None,
+            na_value=pd.NaT,
+            itemsize=None,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -113,6 +115,8 @@ cdef class PandasTimedeltaType(TimedeltaType):
             atomic_type=pd.Timedelta,
             numpy_type=None,
             pandas_type=None,
+            na_value=pd.NaT,
+            itemsize=None,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -159,6 +163,8 @@ cdef class PyTimedeltaType(TimedeltaType):
             atomic_type=datetime.timedelta,
             numpy_type=None,
             pandas_type=None,
+            na_value=pd.NaT,
+            itemsize=None,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -223,6 +229,8 @@ cdef class NumpyTimedelta64Type(TimedeltaType):
             atomic_type=np.timedelta64,
             numpy_type=numpy_type,
             pandas_type=None,
+            na_value=pd.NaT,
+            itemsize=8,
             slug=generate_m8_slug(
                 base_type=type(self),
                 unit=self.unit,

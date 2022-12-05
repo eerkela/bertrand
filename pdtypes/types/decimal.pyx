@@ -27,6 +27,8 @@ cdef class DecimalType(ElementType):
             atomic_type=decimal.Decimal,
             numpy_type=None,
             pandas_type=None,
+            na_value=pd.NA,
+            itemsize=None,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,

@@ -26,6 +26,8 @@ cdef class ComplexType(ElementType):
             atomic_type=complex,
             numpy_type=np.dtype(np.complex128),
             pandas_type=None,
+            na_value=complex("nan+nanj"),
+            itemsize=16,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -80,6 +82,8 @@ cdef class Complex64Type(ComplexType):
             atomic_type=np.complex64,
             numpy_type=np.dtype(np.complex64),
             pandas_type=None,
+            na_value=complex("nan+nanj"),
+            itemsize=8,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -132,6 +136,8 @@ cdef class Complex128Type(ComplexType):
             atomic_type=np.complex128,
             numpy_type=np.dtype(np.complex128),
             pandas_type=None,
+            na_value=complex("nan+nanj"),
+            itemsize=16,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -184,6 +190,8 @@ cdef class CLongDoubleType(ComplexType):
             atomic_type=np.clongdouble,
             numpy_type=np.dtype(np.clongdouble),
             pandas_type=None,
+            na_value=complex("nan+nanj"),
+            itemsize=np.dtype(np.clongdouble).itemsize,  # platform-specific
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,

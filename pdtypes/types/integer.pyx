@@ -5,6 +5,9 @@ import pandas as pd
 from .base cimport base_slugs, ElementType, resolve_dtype, shared_registry
 
 
+# TODO: add is_signed, is_unsigned attributes
+
+
 cdef str generate_slug(
     type base_type,
     bint sparse,
@@ -47,6 +50,8 @@ cdef class IntegerType(ElementType):
             atomic_type=int,
             numpy_type=np.dtype(np.int64),
             pandas_type=pd.Int64Dtype(),
+            na_value=pd.NA,
+            itemsize=None,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -147,6 +152,8 @@ cdef class SignedIntegerType(IntegerType):
             atomic_type=None,
             numpy_type=np.dtype(np.int64),
             pandas_type=pd.Int64Dtype(),
+            na_value=pd.NA,
+            itemsize=None,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -208,6 +215,8 @@ cdef class UnsignedIntegerType(IntegerType):
             atomic_type=None,
             numpy_type=np.dtype(np.uint64),
             pandas_type=pd.UInt64Dtype(),
+            na_value=pd.NA,
+            itemsize=None,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -274,6 +283,8 @@ cdef class Int8Type(SignedIntegerType):
             atomic_type=np.int8,
             numpy_type=np.dtype(np.int8),
             pandas_type=pd.Int8Dtype(),
+            na_value=pd.NA,
+            itemsize=1,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -327,6 +338,8 @@ cdef class Int16Type(SignedIntegerType):
             atomic_type=np.int16,
             numpy_type=np.dtype(np.int16),
             pandas_type=pd.Int16Dtype(),
+            na_value=pd.NA,
+            itemsize=2,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -380,6 +393,8 @@ cdef class Int32Type(SignedIntegerType):
             atomic_type=np.int32,
             numpy_type=np.dtype(np.int32),
             pandas_type=pd.Int32Dtype(),
+            na_value=pd.NA,
+            itemsize=4,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -433,6 +448,8 @@ cdef class Int64Type(SignedIntegerType):
             atomic_type=np.int64,
             numpy_type=np.dtype(np.int64),
             pandas_type=pd.Int64Dtype(),
+            na_value=pd.NA,
+            itemsize=8,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -486,6 +503,8 @@ cdef class UInt8Type(UnsignedIntegerType):
             atomic_type=np.uint8,
             numpy_type=np.dtype(np.uint8),
             pandas_type=pd.UInt8Dtype(),
+            na_value=pd.NA,
+            itemsize=1,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -539,6 +558,8 @@ cdef class UInt16Type(UnsignedIntegerType):
             atomic_type=np.uint16,
             numpy_type=np.dtype(np.uint16),
             pandas_type=pd.UInt16Dtype(),
+            na_value=pd.NA,
+            itemsize=2,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -592,6 +613,8 @@ cdef class UInt32Type(UnsignedIntegerType):
             atomic_type=np.uint32,
             numpy_type=np.dtype(np.uint32),
             pandas_type=pd.UInt32Dtype(),
+            na_value=pd.NA,
+            itemsize=4,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -645,6 +668,8 @@ cdef class UInt64Type(UnsignedIntegerType):
             atomic_type=np.uint64,
             numpy_type=np.dtype(np.uint64),
             pandas_type=pd.UInt64Dtype(),
+            na_value=pd.NA,
+            itemsize=8,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,

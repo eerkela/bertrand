@@ -28,6 +28,8 @@ cdef class FloatType(ElementType):
             atomic_type=float,
             numpy_type=np.dtype(np.float64),
             pandas_type=None,
+            na_value=np.nan,
+            itemsize=8,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -84,6 +86,8 @@ cdef class Float16Type(FloatType):
             atomic_type=np.float16,
             numpy_type=np.dtype(np.float16),
             pandas_type=None,
+            na_value=np.nan,
+            itemsize=2,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -136,6 +140,8 @@ cdef class Float32Type(FloatType):
             atomic_type=np.float32,
             numpy_type=np.dtype(np.float32),
             pandas_type=None,
+            na_value=np.nan,
+            itemsize=4,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -188,6 +194,8 @@ cdef class Float64Type(FloatType):
             atomic_type=np.float64,
             numpy_type=np.dtype(np.float64),
             pandas_type=None,
+            na_value=np.nan,
+            itemsize=8,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -240,6 +248,8 @@ cdef class LongDoubleType(FloatType):
             atomic_type=np.longdouble,
             numpy_type=np.dtype(np.longdouble),
             pandas_type=None,
+            na_value=np.nan,
+            itemsize=np.dtype(np.longdouble).itemsize,  # platform-specific
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,

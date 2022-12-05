@@ -49,6 +49,8 @@ data_model = {
             "atomic_type": bool,
             "numpy_type": np.dtype(bool),
             "pandas_type": pd.BooleanDtype(),
+            "na_value": pd.NA,
+            "itemsize": 1,
             "slug": generate_slug("bool", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -67,6 +69,8 @@ data_model = {
             "atomic_type": bool,
             "numpy_type": np.dtype(bool),
             "pandas_type": pd.BooleanDtype(),
+            "na_value": pd.NA,
+            "itemsize": 1,
             "slug": generate_slug("nullable[bool]", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -86,6 +90,8 @@ data_model = {
             "atomic_type": int,
             "numpy_type": np.dtype(np.int64),
             "pandas_type": pd.Int64Dtype(),
+            "na_value": pd.NA,
+            "itemsize": None,
             "slug": generate_slug("int", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -126,6 +132,8 @@ data_model = {
             "atomic_type": int,
             "numpy_type": np.dtype(np.int64),
             "pandas_type": pd.Int64Dtype(),
+            "na_value": pd.NA,
+            "itemsize": None,
             "slug": generate_slug("nullable[int]", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -157,6 +165,8 @@ data_model = {
             "atomic_type": None,
             "numpy_type": np.dtype(np.int64),
             "pandas_type": pd.Int64Dtype(),
+            "na_value": pd.NA,
+            "itemsize": None,
             "slug": generate_slug("signed int", sparse=sparse, categorical=categorical),
             "supertype": IntegerType.instance(sparse=sparse, categorical=categorical, nullable=False),
             "subtypes": frozenset({
@@ -185,6 +195,8 @@ data_model = {
             "atomic_type": None,
             "numpy_type": np.dtype(np.int64),
             "pandas_type": pd.Int64Dtype(),
+            "na_value": pd.NA,
+            "itemsize": None,
             "slug": generate_slug("nullable[signed int]", sparse=sparse, categorical=categorical),
             "supertype": IntegerType.instance(sparse=sparse, categorical=categorical, nullable=True),
             "subtypes": frozenset({
@@ -210,6 +222,8 @@ data_model = {
             "atomic_type": np.int8,
             "numpy_type": np.dtype(np.int8),
             "pandas_type": pd.Int8Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 1,
             "slug": generate_slug("int8", sparse=sparse, categorical=categorical),
             "supertype": SignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=False),
             "subtypes": frozenset({
@@ -230,6 +244,8 @@ data_model = {
             "atomic_type": np.int8,
             "numpy_type": np.dtype(np.int8),
             "pandas_type": pd.Int8Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 1,
             "slug": generate_slug("nullable[int8]", sparse=sparse, categorical=categorical),
             "supertype": SignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=True),
             "subtypes": frozenset({
@@ -251,6 +267,8 @@ data_model = {
             "atomic_type": np.int16,
             "numpy_type": np.dtype(np.int16),
             "pandas_type": pd.Int16Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 2,
             "slug": generate_slug("int16", sparse=sparse, categorical=categorical),
             "supertype": SignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=False),
             "subtypes": frozenset({
@@ -271,6 +289,8 @@ data_model = {
             "atomic_type": np.int16,
             "numpy_type": np.dtype(np.int16),
             "pandas_type": pd.Int16Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 2,
             "slug": generate_slug("nullable[int16]", sparse=sparse, categorical=categorical),
             "supertype": SignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=True),
             "subtypes": frozenset({
@@ -292,6 +312,8 @@ data_model = {
             "atomic_type": np.int32,
             "numpy_type": np.dtype(np.int32),
             "pandas_type": pd.Int32Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 4,
             "slug": generate_slug("int32", sparse=sparse, categorical=categorical),
             "supertype": SignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=False),
             "subtypes": frozenset({
@@ -312,6 +334,8 @@ data_model = {
             "atomic_type": np.int32,
             "numpy_type": np.dtype(np.int32),
             "pandas_type": pd.Int32Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 4,
             "slug": generate_slug("nullable[int32]", sparse=sparse, categorical=categorical),
             "supertype": SignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=True),
             "subtypes": frozenset({
@@ -333,6 +357,8 @@ data_model = {
             "atomic_type": np.int64,
             "numpy_type": np.dtype(np.int64),
             "pandas_type": pd.Int64Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 8,
             "slug": generate_slug("int64", sparse=sparse, categorical=categorical),
             "supertype": SignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=False),
             "subtypes": frozenset({
@@ -353,6 +379,8 @@ data_model = {
             "atomic_type": np.int64,
             "numpy_type": np.dtype(np.int64),
             "pandas_type": pd.Int64Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 8,
             "slug": generate_slug("nullable[int64]", sparse=sparse, categorical=categorical),
             "supertype": SignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=True),
             "subtypes": frozenset({
@@ -374,6 +402,8 @@ data_model = {
             "atomic_type": None,
             "numpy_type": np.dtype(np.uint64),
             "pandas_type": pd.UInt64Dtype(),
+            "na_value": pd.NA,
+            "itemsize": None,
             "slug": generate_slug("unsigned int", sparse=sparse, categorical=categorical),
             "supertype": IntegerType.instance(sparse=sparse, categorical=categorical, nullable=False),
             "subtypes": frozenset({
@@ -402,6 +432,8 @@ data_model = {
             "atomic_type": None,
             "numpy_type": np.dtype(np.uint64),
             "pandas_type": pd.UInt64Dtype(),
+            "na_value": pd.NA,
+            "itemsize": None,
             "slug": generate_slug("nullable[unsigned int]", sparse=sparse, categorical=categorical),
             "supertype": IntegerType.instance(sparse=sparse, categorical=categorical, nullable=True),
             "subtypes": frozenset({
@@ -427,6 +459,8 @@ data_model = {
             "atomic_type": np.uint8,
             "numpy_type": np.dtype(np.uint8),
             "pandas_type": pd.UInt8Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 1,
             "slug": generate_slug("uint8", sparse=sparse, categorical=categorical),
             "supertype": UnsignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=False),
             "subtypes": frozenset({
@@ -447,6 +481,8 @@ data_model = {
             "atomic_type": np.uint8,
             "numpy_type": np.dtype(np.uint8),
             "pandas_type": pd.UInt8Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 1,
             "slug": generate_slug("nullable[uint8]", sparse=sparse, categorical=categorical),
             "supertype": UnsignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=True),
             "subtypes": frozenset({
@@ -468,6 +504,8 @@ data_model = {
             "atomic_type": np.uint16,
             "numpy_type": np.dtype(np.uint16),
             "pandas_type": pd.UInt16Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 2,
             "slug": generate_slug("uint16", sparse=sparse, categorical=categorical),
             "supertype": UnsignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=False),
             "subtypes": frozenset({
@@ -488,6 +526,8 @@ data_model = {
             "atomic_type": np.uint16,
             "numpy_type": np.dtype(np.uint16),
             "pandas_type": pd.UInt16Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 2,
             "slug": generate_slug("nullable[uint16]", sparse=sparse, categorical=categorical),
             "supertype": UnsignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=True),
             "subtypes": frozenset({
@@ -509,6 +549,8 @@ data_model = {
             "atomic_type": np.uint32,
             "numpy_type": np.dtype(np.uint32),
             "pandas_type": pd.UInt32Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 4,
             "slug": generate_slug("uint32", sparse=sparse, categorical=categorical),
             "supertype": UnsignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=False),
             "subtypes": frozenset({
@@ -529,6 +571,8 @@ data_model = {
             "atomic_type": np.uint32,
             "numpy_type": np.dtype(np.uint32),
             "pandas_type": pd.UInt32Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 4,
             "slug": generate_slug("nullable[uint32]", sparse=sparse, categorical=categorical),
             "supertype": UnsignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=True),
             "subtypes": frozenset({
@@ -550,6 +594,8 @@ data_model = {
             "atomic_type": np.uint64,
             "numpy_type": np.dtype(np.uint64),
             "pandas_type": pd.UInt64Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 8,
             "slug": generate_slug("uint64", sparse=sparse, categorical=categorical),
             "supertype": UnsignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=False),
             "subtypes": frozenset({
@@ -570,6 +616,8 @@ data_model = {
             "atomic_type": np.uint64,
             "numpy_type": np.dtype(np.uint64),
             "pandas_type": pd.UInt64Dtype(),
+            "na_value": pd.NA,
+            "itemsize": 8,
             "slug": generate_slug("nullable[uint64]", sparse=sparse, categorical=categorical),
             "supertype": UnsignedIntegerType.instance(sparse=sparse, categorical=categorical, nullable=True),
             "subtypes": frozenset({
@@ -591,6 +639,8 @@ data_model = {
             "atomic_type": float,
             "numpy_type": np.dtype(np.float64),
             "pandas_type": None,
+            "na_value": np.nan,
+            "itemsize": 8,
             "slug": generate_slug("float", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -617,6 +667,8 @@ data_model = {
             "atomic_type": np.float16,
             "numpy_type": np.dtype(np.float16),
             "pandas_type": None,
+            "na_value": np.nan,
+            "itemsize": 2,
             "slug": generate_slug("float16", sparse=sparse, categorical=categorical),
             "supertype": FloatType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -639,6 +691,8 @@ data_model = {
             "atomic_type": np.float32,
             "numpy_type": np.dtype(np.float32),
             "pandas_type": None,
+            "na_value": np.nan,
+            "itemsize": 4,
             "slug": generate_slug("float32", sparse=sparse, categorical=categorical),
             "supertype": FloatType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -661,6 +715,8 @@ data_model = {
             "atomic_type": np.float64,
             "numpy_type": np.dtype(np.float64),
             "pandas_type": None,
+            "na_value": np.nan,
+            "itemsize": 8,
             "slug": generate_slug("float64", sparse=sparse, categorical=categorical),
             "supertype": FloatType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -683,6 +739,8 @@ data_model = {
             "atomic_type": np.longdouble,
             "numpy_type": np.dtype(np.longdouble),
             "pandas_type": None,
+            "na_value": np.nan,
+            "itemsize": np.dtype(np.longdouble).itemsize,  # platform-specific
             "slug": generate_slug("longdouble", sparse=sparse, categorical=categorical),
             "supertype": FloatType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -705,6 +763,8 @@ data_model = {
             "atomic_type": complex,
             "numpy_type": np.dtype(np.complex128),
             "pandas_type": None,
+            "na_value": complex("nan+nanj"),
+            "itemsize": 16,
             "slug": generate_slug("complex", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -730,6 +790,8 @@ data_model = {
             "atomic_type": np.complex64,
             "numpy_type": np.dtype(np.complex64),
             "pandas_type": None,
+            "na_value": complex("nan+nanj"),
+            "itemsize": 8,
             "slug": generate_slug("complex64", sparse=sparse, categorical=categorical),
             "supertype": ComplexType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -752,6 +814,8 @@ data_model = {
             "atomic_type": np.complex128,
             "numpy_type": np.dtype(np.complex128),
             "pandas_type": None,
+            "na_value": complex("nan+nanj"),
+            "itemsize": 16,
             "slug": generate_slug("complex128", sparse=sparse, categorical=categorical),
             "supertype": ComplexType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -774,6 +838,8 @@ data_model = {
             "atomic_type": np.clongdouble,
             "numpy_type": np.dtype(np.clongdouble),
             "pandas_type": None,
+            "na_value": complex("nan+nanj"),
+            "itemsize": np.dtype(np.clongdouble).itemsize,  # platform-specific
             "slug": generate_slug("clongdouble", sparse=sparse, categorical=categorical),
             "supertype": ComplexType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -796,6 +862,8 @@ data_model = {
             "atomic_type": decimal.Decimal,
             "numpy_type": None,
             "pandas_type": None,
+            "na_value": pd.NA,
+            "itemsize": None,
             "slug": generate_slug("decimal", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -817,6 +885,8 @@ data_model = {
             "atomic_type": None,
             "numpy_type": None,
             "pandas_type": None,
+            "na_value": pd.NaT,
+            "itemsize": None,
             "slug": generate_slug("datetime", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -841,6 +911,8 @@ data_model = {
             "atomic_type": pd.Timestamp,
             "numpy_type": None,
             "pandas_type": None,
+            "na_value": pd.NaT,
+            "itemsize": None,
             "slug": generate_slug("datetime[pandas]", sparse=sparse, categorical=categorical),
             "supertype": DatetimeType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -862,6 +934,8 @@ data_model = {
             "atomic_type": datetime.datetime,
             "numpy_type": None,
             "pandas_type": None,
+            "na_value": pd.NaT,
+            "itemsize": None,
             "slug": generate_slug("datetime[python]", sparse=sparse, categorical=categorical),
             "supertype": DatetimeType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -874,6 +948,7 @@ data_model = {
     },
 
     # datetime[numpy]
+    # TODO: change na_value to np.datetime64("nat")?
     "datetime[numpy]": lambda sparse, categorical: {
         "factory": lambda: NumpyDatetime64Type.instance(sparse=sparse, categorical=categorical),
         "properties": {
@@ -883,6 +958,8 @@ data_model = {
             "atomic_type": np.datetime64,
             "numpy_type": np.dtype("M8"),
             "pandas_type": None,
+            "na_value": pd.NaT,
+            "itemsize": 8,
             "slug": generate_slug("M8", sparse=sparse, categorical=categorical),
             "supertype": DatetimeType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -904,6 +981,8 @@ data_model = {
             "atomic_type": np.datetime64,
             "numpy_type": np.dtype("M8[5m]"),
             "pandas_type": None,
+            "na_value": pd.NaT,
+            "itemsize": 8,
             "slug": generate_slug("M8[5m]", sparse=sparse, categorical=categorical),
             "supertype": DatetimeType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -927,6 +1006,8 @@ data_model = {
             "atomic_type": None,
             "numpy_type": None,
             "pandas_type": None,
+            "na_value": pd.NaT,
+            "itemsize": None,
             "slug": generate_slug("timedelta", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -951,6 +1032,8 @@ data_model = {
             "atomic_type": pd.Timedelta,
             "numpy_type": None,
             "pandas_type": None,
+            "na_value": pd.NaT,
+            "itemsize": None,
             "slug": generate_slug("timedelta[pandas]", sparse=sparse, categorical=categorical),
             "supertype": TimedeltaType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -972,6 +1055,8 @@ data_model = {
             "atomic_type": datetime.timedelta,
             "numpy_type": None,
             "pandas_type": None,
+            "na_value": pd.NaT,
+            "itemsize": None,
             "slug": generate_slug("timedelta[python]", sparse=sparse, categorical=categorical),
             "supertype": TimedeltaType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -984,6 +1069,7 @@ data_model = {
     },
 
     # timedelta[numpy]
+    # TODO: change na_value to np.timedelta64("nat")?
     "timedelta[numpy]": lambda sparse, categorical: {
         "factory": lambda: NumpyTimedelta64Type.instance(sparse=sparse, categorical=categorical),
         "properties": {
@@ -993,6 +1079,8 @@ data_model = {
             "atomic_type": np.timedelta64,
             "numpy_type": np.dtype("m8"),
             "pandas_type": None,
+            "na_value": pd.NaT,
+            "itemsize": 8,
             "slug": generate_slug("m8", sparse=sparse, categorical=categorical),
             "supertype": TimedeltaType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -1014,6 +1102,8 @@ data_model = {
             "atomic_type": np.timedelta64,
             "numpy_type": np.dtype("m8[25us]"),
             "pandas_type": None,
+            "na_value": pd.NaT,
+            "itemsize": 8,
             "slug": generate_slug("m8[25us]", sparse=sparse, categorical=categorical),
             "supertype": TimedeltaType.instance(sparse=sparse, categorical=categorical),
             "subtypes": frozenset({
@@ -1037,6 +1127,8 @@ data_model = {
             "atomic_type": str,
             "numpy_type": np.dtype(str),
             "pandas_type": DEFAULT_STRING_DTYPE,
+            "na_value": pd.NA,
+            "itemsize": None,
             "slug": generate_slug("string", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -1060,6 +1152,8 @@ data_model = {
             "atomic_type": str,
             "numpy_type": np.dtype(str),
             "pandas_type": pd.StringDtype(storage="python"),
+            "na_value": pd.NA,
+            "itemsize": None,
             "slug": generate_slug("string[python]", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -1082,6 +1176,8 @@ data_model = {
             "atomic_type": object,
             "numpy_type": np.dtype("O"),
             "pandas_type": None,
+            "na_value": pd.NA,
+            "itemsize": None,
             "slug": generate_slug("object", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -1099,6 +1195,8 @@ data_model = {
             "atomic_type": DummyClass,
             "numpy_type": np.dtype("O"),
             "pandas_type": None,
+            "na_value": pd.NA,
+            "itemsize": None,
             "slug": generate_slug("DummyClass", sparse=sparse, categorical=categorical),
             "supertype": None,
             "subtypes": frozenset({
@@ -1184,12 +1282,35 @@ def test_element_type_attributes_fit_data_model(
 
     # check .attribute accessors
     for k, v in model["properties"].items():
-        assert getattr(instance, k) == v
+        result = getattr(instance, k)
 
-    # check str, repr, hash
+        # na_value special case - `==` is ambiguous for most NA objects
+        if k == "na_value":
+            # assert type match
+            assert pd.isna(result) and pd.isna(v)
+            assert type(result) == type(v)
+
+            # complex special case - check real, imag separately
+            if isinstance(v, (complex, np.complexfloating)):
+                assert (
+                    (pd.isna(result.real) and pd.isna(v.real)) or
+                    result.real == v.real
+                )
+                assert (
+                    (pd.isna(result.imag) and pd.isna(v.imag)) or
+                    result.imag == v.imag
+                )
+
+        # generic case
+        else:
+            assert result == v
+
+    # check str, repr, hash, len, iter
     assert str(instance) == model["properties"]["slug"]
     assert repr(instance) == model["repr"]
     assert hash(instance) == hash(model["properties"]["slug"])
+    assert len(instance) == len(model["properties"]["subtypes"])
+    assert frozenset(x for x in instance) == model["properties"]["subtypes"]
 
 
 @pytest.mark.parametrize("sparse", [True, False])

@@ -50,4 +50,6 @@ cdef class ElementType:
         type atomic_type
         object numpy_type
         object pandas_type
+        object na_value
+        object itemsize
         str slug

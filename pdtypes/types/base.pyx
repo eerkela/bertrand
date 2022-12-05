@@ -2,6 +2,7 @@ cimport cython
 cimport numpy as np
 import numpy as np
 import pandas as pd
+from typing import Iterator
 
 from pdtypes import DEFAULT_STRING_DTYPE
 from pdtypes.util.structs cimport LRUDict
@@ -21,6 +22,9 @@ from .datetime cimport *
 from .timedelta cimport *
 from .string cimport *
 from .object cimport *
+
+
+# TODO: Consider appending aliases to type object
 
 
 # TODO: CompositeType should not take `index` argument in constructor.  This
@@ -642,6 +646,8 @@ cdef class ElementType:
         type atomic_type,
         object numpy_type,
         object pandas_type,
+        object na_value,
+        object itemsize,
         str slug
     ):
         self.sparse = sparse
@@ -650,20 +656,12 @@ cdef class ElementType:
         self.atomic_type = atomic_type
         self.numpy_type = numpy_type
         self.pandas_type = pandas_type
+        self.na_value = na_value
+        self.itemsize = itemsize
         self.slug = slug
         self.hash = hash(slug)
         self._subtypes = None
         self._supertype = None
-
-    @property
-    def subtypes(self) -> frozenset:
-        if self._subtypes is None:
-            self._subtypes = frozenset({self})
-        return self._subtypes
-
-    @property
-    def supertype(self) -> ElementType:
-        return self._supertype
 
     @classmethod
     def instance(
@@ -698,6 +696,16 @@ cdef class ElementType:
         # return flyweight
         return result
 
+    @property
+    def subtypes(self) -> frozenset:
+        if self._subtypes is None:
+            self._subtypes = frozenset({self})
+        return self._subtypes
+
+    @property
+    def supertype(self) -> ElementType:
+        return self._supertype
+
     def is_subtype(self, other) -> bool:
         return self in CompositeType(other)
 
@@ -719,6 +727,12 @@ cdef class ElementType:
 
     def __hash__(self) -> int:
         return self.hash
+
+    def __iter__(self) -> Iterator[ElementType]:
+        return iter(self.subtypes)
+
+    def __len__(self) -> int:
+        return len(self.subtypes)
 
     def __repr__(self) -> str:
         return (

@@ -56,6 +56,8 @@ cdef class StringType(ElementType):
             atomic_type=str,
             numpy_type=np.dtype(str),
             pandas_type=pandas_type,
+            na_value=pd.NA,
+            itemsize=None,
             slug=generate_slug(
                 base_type=type(self),
                 storage=storage,

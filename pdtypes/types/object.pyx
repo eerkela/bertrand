@@ -44,6 +44,8 @@ cdef class ObjectType(ElementType):
             atomic_type=atomic_type,
             numpy_type=np.dtype("O"),
             pandas_type=None,
+            na_value=pd.NA,
+            itemsize=None,
             slug=generate_slug(
                 atomic_type=atomic_type,
                 sparse=sparse,

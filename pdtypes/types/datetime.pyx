@@ -55,6 +55,8 @@ cdef class DatetimeType(ElementType):
             atomic_type=None,
             numpy_type=None,
             pandas_type=None,
+            na_value=pd.NaT,
+            itemsize=None,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -112,6 +114,8 @@ cdef class PandasTimestampType(DatetimeType):
             atomic_type=pd.Timestamp,
             numpy_type=None,
             pandas_type=None,
+            na_value=pd.NaT,
+            itemsize=None,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -158,6 +162,8 @@ cdef class PyDatetimeType(DatetimeType):
             atomic_type=datetime.datetime,
             numpy_type=None,
             pandas_type=None,
+            na_value=pd.NaT,
+            itemsize=None,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
@@ -219,6 +225,8 @@ cdef class NumpyDatetime64Type(DatetimeType):
             atomic_type=np.datetime64,
             numpy_type=numpy_type,
             pandas_type=None,
+            na_value=pd.NaT,
+            itemsize=8,
             slug=generate_M8_slug(
                 base_type=type(self),
                 unit=self.unit,

@@ -47,6 +47,8 @@ cdef class BooleanType(ElementType):
             atomic_type=bool,
             numpy_type=np.dtype(bool),
             pandas_type=pd.BooleanDtype(),
+            na_value=pd.NA,
+            itemsize=1,
             slug=generate_slug(
                 base_type=type(self),
                 sparse=sparse,
