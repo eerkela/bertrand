@@ -97,119 +97,148 @@ cdef void ensure_single(
 
 
 cdef dict keywords = {
-    # boolean supertype
+    # bool
+    "bool": {"base": BooleanType},
     "boolean": "bool",
     "bool_": "bool",
     "bool8": "bool",
     "b1": "bool",
-    "bool": {"base": BooleanType},
     "?": "bool",
     "Boolean": {"base": BooleanType, "nullable": True},
 
-    # integer supertype
+    # int
     "int": {"base": IntegerType},
     "integer": "int",
 
-    # signed integer supertype
-    "signed integer": {"base": SignedIntegerType},
-    "signed int": "signed integer",
-    "signed": "signed integer",
-    "i": "signed integer",
+    # signed int
+    "signed": {"base": SignedIntegerType},
+    "signed integer": "signed",
+    "signed int": "signed",
+    "i": "signed",
 
     # unsigned integer supertype
-    "uint": {"base": UnsignedIntegerType},
-    "unsigned integer": "uint",
-    "unsigned int": "uint",
-    "unsigned": "uint",
-    "u": "uint",
+    "unsigned": {"base": UnsignedIntegerType},
+    "unsigned integer": "unsigned",
+    "unsigned int": "unsigned",
+    "uint": "unsigned",
+    "u": "unsigned",
 
-    # int8 (signed)
+    # int8
     "int8": {"base": Int8Type},
     "i1": "int8",
-    "byte": "int8",
-    "signed char": np.dtype("byte").name,  # platform-specific
-    "char": np.dtype("byte").name,  # platform-specific
     "Int8": {"base": Int8Type, "nullable": True},  # pandas extension
-    "b": "int8",
 
-    # int16 (signed)
+    # int16
     "int16": {"base": Int16Type},
     "i2": "int16",
-    "signed short int": np.dtype("short").name,  # platform-specific
-    "signed short": np.dtype("short").name,  # platform-specific
-    "short int": np.dtype("short").name,  # platform-specific
-    "short": np.dtype("short").name,  # platform-specific
     "Int16": {"base": Int16Type, "nullable": True},  # pandas extension
-    "h": "int16",
 
-    # int32 (signed)
+    # int32
     "int32": {"base": Int32Type},
     "i4": "int32",
-    "cint": np.dtype("intc").name,  # platform-specific
-    "signed cint": np.dtype("intc").name,  # platform-specific
-    "signed intc": np.dtype("intc").name,  # platform-specific
-    "intc": np.dtype("intc").name,  # platform-specific
     "Int32": {"base": Int32Type, "nullable": True},  # pandas extension
 
-    # int64 (signed)
+    # int64
     "int64": {"base": Int64Type},
     "i8": "int64",
-    "intp": "int64",
-    "int0": "int64",
-    "signed long long int": np.dtype("longlong").name,  # platform-specific
-    "signed long long": np.dtype("longlong").name,  # platform-specific
-    "signed long int": np.dtype("int_").name,  # platform-specific
-    "signed long": np.dtype("int_").name,  # platform-specific
-    "long long int": np.dtype("longlong").name,  # platform-specific
-    "long long": np.dtype("longlong").name,  # platform-specific
-    "long int": np.dtype("int_").name,  # platform-specific
-    "long": np.dtype("int_").name,  # platform-specific
-    "l": np.dtype("int_").name,
     "Int64": {"base": Int64Type, "nullable": True},  # pandas extension
-    "p": "int64",
 
-    # uint8 (unsigned)
+    # uint8
     "uint8": {"base": UInt8Type},
     "u1": "uint8",
-    "ubyte": "uint8",
-    "unsigned char": np.dtype("ubyte").name,  # platform-specific
     "UInt8": {"base": UInt8Type, "nullable": True},  # pandas extension
-    "B": "uint8",
 
-    # uint16 (unsigned)
+    # uint16
     "uint16": {"base": UInt16Type},
     "u2": "uint16",
-    "ushort": np.dtype("ushort").name,  # platform-specific
-    "unsigned short int": np.dtype("ushort").name,  # platform-specific
-    "unsigned short": np.dtype("ushort").name,  # platform-specific
     "UInt16": {"base": UInt16Type, "nullable": True},  # pandas extension
-    "H": "uint16",
 
-    # uint32 (unsigned)
+    # uint32
     "uint32": {"base": UInt32Type},
     "u4": "uint32",
-    "ucint": np.dtype("uintc").name,  # platform-specific
-    "unsigned cint": np.dtype("uintc").name,  # platform-specific
-    "uintc": np.dtype("uintc").name,  # platform-specific
-    "unsigned intc": np.dtype("uintc").name,  # platform-specific
     "UInt32": {"base": UInt32Type, "nullable": True},  # pandas extension
-    "I": "uint32",
 
-    # uint64 (unsigned)
+    # uint64
     "uint64": {"base": UInt64Type},
     "u8": "uint64",
-    "uintp": "uint64",
-    "uint0": "uint64",
-    "unsigned long long int":
-        np.dtype("ulonglong").name,  # platform-specific
-    "unsigned long long": np.dtype("ulonglong").name,  # platform-specific
-    "unsigned long int": np.dtype("uint").name,  # platform-specific
-    "unsigned long": np.dtype("uint").name,  # platform-specific
-    "L": np.dtype("uint").name,  # platform-specific
     "UInt64": {"base": UInt64Type, "nullable": True},  # pandas extension
-    "P": "uint64",
 
-    # float supertype
+    # char = C char (platform specific)
+    "char": np.dtype("byte").name,
+    "signed char": "char",
+    "byte": "char",
+    "b": "char",
+
+    # short = C short (platform specific)
+    "short": np.dtype("short").name,
+    "signed short int": "short",
+    "signed short": "short",
+    "short int": "short",
+    "h": "short",
+
+    # intc = C int (platform specific)
+    "intc": np.dtype("intc").name,
+    "signed intc": "intc",
+
+    # long = C long (platform specific)
+    "long": np.dtype("int_").name,
+    "long int": "long",
+    "signed long": "long",
+    "signed long int": "long",
+    "l": "long",
+
+    # long long = C long long (platform specific)
+    "long long": np.dtype("longlong").name,
+    "longlong": "long long",
+    "long long int": "long long",
+    "signed long long": "long long",
+    "signed longlong": "long long",
+    "signed long long int": "long long",
+    "q": "long long",
+
+    # ssize_t = C ssize_t (platform specific)
+    "ssize_t": np.dtype("intp").name,
+    "intp": "ssize_t",
+    "int0": "ssize_t",
+    "p": "ssize_t",
+
+    # unsigned char = C unsigned char (platform specific)
+    "unsigned char": np.dtype("ubyte").name,
+    "unsigned byte": "unsigned char",
+    "ubyte": "unsigned char",
+    "B": "unsigned char",
+
+    # unsigned short = C unsigned short (platform specific)
+    "unsigned short": np.dtype("ushort").name,
+    "unsigned short int": "unsigned short",
+    "ushort": "unsigned short",
+    "H": "unsigned short",
+
+    # unsigned intc = C unsigned int (platform specific)
+    "unsigned intc": np.dtype("uintc").name,
+    "uintc": "unsigned intc",
+    "I": "unsigned intc",
+
+    # unsigned long = C unsigned long (platform specific)
+    "unsigned long": np.dtype("uint").name,
+    "unsigned long int": "unsigned long",
+    "ulong": "unsigned long",
+    "L": "unsigned long",
+
+    # unsigned long long = C unsigned long long (platform specific)
+    "unsigned long long": np.dtype("ulonglong").name,
+    "unsigned longlong": "unsigned long long",
+    "unsigned long long int": "unsigned long long",
+    "ulonglong": "unsigned long long",
+    "Q": "unsigned long long",
+
+    # size_t = C size_t (platform specific)
+    "size_t": np.dtype("uintp").name,
+    "uintp": "size_t",
+    "uint0": "size_t",
+    "P": "size_t",
+
+    # float
     "float": {"base": FloatType},
     "floating": "float",
     "f": "float",
@@ -243,7 +272,7 @@ cdef dict keywords = {
     "long float": np.dtype("longfloat").name,
     "g": np.dtype("longdouble").name,
 
-    # complex supertype
+    # complex
     "cfloat": "complex",
     "complex float": "complex",
     "complex floating": "complex",
@@ -281,11 +310,11 @@ cdef dict keywords = {
     "long complex": np.dtype("clongdouble").name,
     "G": np.dtype("clongdouble").name,
 
-    # decimal supertype
+    # decimal
     "decimal": {"base": DecimalType},
     "arbitrary precision": "decimal",
 
-    # datetime supertype
+    # datetime
     "datetime": {"base": DatetimeType},
 
     # pandas.Timestamp
@@ -306,7 +335,7 @@ cdef dict keywords = {
     "np.datetime64": "datetime[numpy]",
     # "datetime64"/"M8" (with or without units) handled in special case
 
-    # timedelta supertype
+    # timedelta
     "timedelta": {"base": TimedeltaType},
 
     # pandas.Timedelta
@@ -327,7 +356,7 @@ cdef dict keywords = {
     "np.timedelta64": "timedelta[numpy]",
     # "timedelta64"/"m8" (with or without units) handled in special case
 
-    # string supertype
+    # string
     "string": {"base": StringType},
     "str": "string",
     "unicode": "string",
@@ -336,19 +365,22 @@ cdef dict keywords = {
     "str_": "string",
     "unicode_": "string",
 
-    # python-backed string extension type
+    # string[python]
     "string[python]": {"base": StringType, "storage": "python"},
     "str[python]": "string[python]",
     "unicode[python]": "string[python]",
+    "pystr": "string[python]",
     "pystring": "string[python]",
     "python string": "string[python]",
 
-    # pyarrow-backed string extension type
+    # string[pyarrow]
     "string[pyarrow]": {"base": StringType, "storage": "pyarrow"},
     "str[pyarrow]": "string[pyarrow]",
     "unicode[pyarrow]": "string[pyarrow]",
+    "pyarrow str": "string[pyarrow]",
     "pyarrow string": "string[pyarrow]",
 
+    # object
     "object": {"base": ObjectType},
     "obj": "object",
     "O": "object",

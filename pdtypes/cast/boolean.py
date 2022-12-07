@@ -114,7 +114,7 @@ class BooleanSeries(SeriesWrapper):
             )
 
         # do conversion - NOTE: direct astype(complex) fails on pd.NA
-        with self.exclude_na(complex("nan+nanj"), dtype.numpy_type):
+        with self.exclude_na(dtype.na_value, dtype.numpy_type):
             self.series = self.series.astype(dtype.numpy_type)
 
         return self.series
@@ -127,7 +127,7 @@ class BooleanSeries(SeriesWrapper):
         dtype = resolve_dtype(dtype)
         validate_dtype(dtype, "decimal")
 
-        with self.exclude_na(pd.NA):
+        with self.exclude_na(dtype.na_value):
             self.series = self + decimal.Decimal(0)
 
         return self.series
@@ -151,7 +151,7 @@ class BooleanSeries(SeriesWrapper):
         numpy_datetime64 = resolve_dtype(np.datetime64)
 
         # convert nonmissing values to ns, then ns to datetime
-        with self.exclude_na(pd.NaT):
+        with self.exclude_na(dtype.na_value):
             self.series = convert_unit_integer(
                 self.astype(np.int64).astype("O"),
                 unit,
@@ -219,7 +219,7 @@ class BooleanSeries(SeriesWrapper):
             )
 
         # convert nonmissing values to ns, then ns to timedelta
-        with self.exclude_na(pd.NaT):
+        with self.exclude_na(dtype.na_value):
             nanoseconds = convert_unit_integer(
                 self.series.astype(np.uint8),
                 unit,

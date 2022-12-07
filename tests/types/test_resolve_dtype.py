@@ -5,8 +5,7 @@ from types import MappingProxyType
 
 import numpy as np
 import pandas as pd
-
-from tests.types.scheme import parametrize, TypeCase, TypeParameters
+import pytest
 
 from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
 from pdtypes.types import (
@@ -27,13 +26,14 @@ from pdtypes.types import (
 # https://numpy.org/doc/stable/reference/routines.ctypeslib.html#numpy.ctypeslib.as_ctypes_type
 
 
+
+# TODO: rename pdtypes.types.parse -> pdtypes.types.resolve and put
+# resolve_dtype() in __init__.py
+
+
 ####################
 ####    DATA    ####
 ####################
-
-
-# TODO: these should go in their own factory functions just like tests/cast
-# -> eliminates need for MappingProxyType
 
 
 dtype_element_types = {
@@ -276,6 +276,8 @@ atomic_element_types = {
 }
 
 
+# TODO: these need to account for sparse[]/categorical[]
+
 string_element_types = {
     # some types are platform-dependent.  For reference, these are indicated
     # with a comment showing the equivalent type as seen by compilers.
@@ -431,15 +433,11 @@ string_element_types = {
 
     # intc = C int
     "intc": dtype_element_types[np.dtype(np.intc)],
-    "cint": dtype_element_types[np.dtype(np.intc)],
     "signed intc": dtype_element_types[np.dtype(np.intc)],
-    "signed cint": dtype_element_types[np.dtype(np.intc)],
 
     # nullable[intc] = nullable extensions to C int
     "nullable[intc]": type(dtype_element_types[np.dtype(np.intc)]).instance(nullable=True),
-    "nullable[cint]": type(dtype_element_types[np.dtype(np.intc)]).instance(nullable=True),
     "nullable[signed intc]": type(dtype_element_types[np.dtype(np.intc)]).instance(nullable=True),
-    "nullable[signed cint]": type(dtype_element_types[np.dtype(np.intc)]).instance(nullable=True),
 
     # long = C long
     "long": dtype_element_types[np.dtype(np.int_)],
@@ -511,38 +509,38 @@ string_element_types = {
 
     # unsigned intc = C unsigned int
     "unsigned intc": dtype_element_types[np.dtype(np.uintc)],
-    "unsigned cint": dtype_element_types[np.dtype(np.uintc)],
     "uintc": dtype_element_types[np.dtype(np.uintc)],
-    "ucint": dtype_element_types[np.dtype(np.uintc)],
     "I": dtype_element_types[np.dtype(np.uintc)],
 
     # nullable[unsigned intc] = nullable extensions to C unsigned int
     "nullable[unsigned intc]": type(dtype_element_types[np.dtype(np.uintc)]).instance(nullable=True),
-    "nullable[unsigned cint]": type(dtype_element_types[np.dtype(np.uintc)]).instance(nullable=True),
     "nullable[uintc]": type(dtype_element_types[np.dtype(np.uintc)]).instance(nullable=True),
-    "nullable[ucint]": type(dtype_element_types[np.dtype(np.uintc)]).instance(nullable=True),
     "nullable[I]": type(dtype_element_types[np.dtype(np.uintc)]).instance(nullable=True),
 
     # unsigned long = C unsigned long
     "unsigned long": dtype_element_types[np.dtype(np.uint)],
     "unsigned long int": dtype_element_types[np.dtype(np.uint)],
+    "ulong": dtype_element_types[np.dtype(np.uint)],
     "L": dtype_element_types[np.dtype(np.uint)],
 
     # nullable[unsigned long] = nullable extensions to C unsigned long
     "nullable[unsigned long]": type(dtype_element_types[np.dtype(np.uint)]).instance(nullable=True),
     "nullable[unsigned long int]": type(dtype_element_types[np.dtype(np.uint)]).instance(nullable=True),
+    "nullable[ulong]": type(dtype_element_types[np.dtype(np.uint)]).instance(nullable=True),
     "nullable[L]": type(dtype_element_types[np.dtype(np.uint)]).instance(nullable=True),
 
     # unsigned long long = C unsigned long long
     "unsigned long long": dtype_element_types[np.dtype(np.ulonglong)],
     "unsigned longlong": dtype_element_types[np.dtype(np.ulonglong)],
     "unsigned long long int": dtype_element_types[np.dtype(np.ulonglong)],
+    "ulonglong": dtype_element_types[np.dtype(np.ulonglong)],
     "Q": dtype_element_types[np.dtype(np.ulonglong)],
 
     # nullable[unsigned long long] = nullable extensions to C unsigned long long
     "nullable[unsigned long long]": type(dtype_element_types[np.dtype(np.ulonglong)]).instance(nullable=True),
     "nullable[unsigned longlong]": type(dtype_element_types[np.dtype(np.ulonglong)]).instance(nullable=True),
     "nullable[unsigned long long int]": type(dtype_element_types[np.dtype(np.ulonglong)]).instance(nullable=True),
+    "nullable[ulonglong]": type(dtype_element_types[np.dtype(np.ulonglong)]).instance(nullable=True),
     "nullable[Q]": type(dtype_element_types[np.dtype(np.ulonglong)]).instance(nullable=True),
 
     # size_t = C size_t
@@ -721,11 +719,6 @@ atomic_element_types = MappingProxyType(atomic_element_types)
 string_element_types = MappingProxyType(string_element_types)
 
 
-# def flyweight_data():
-
-
-
-
 #####################
 ####    TESTS    ####
 #####################
@@ -736,25 +729,47 @@ string_element_types = MappingProxyType(string_element_types)
 # TODO: accepts atomic types
 # TODO: accepts string type specifiers
 # TODO: accepts other ElementType objects
+# TODO: handles_errors (raise a ValueError)
 
 
-# def test_resolve_dtype_returns_flyweights(case):
-#     call resolve_dtype() twice on same input and assert ids are equal
+# @pytest.mark.parametrize(
+#     "test_input",
+#     {**dtype_element_types, **atomic_element_types, **string_element_types}
+# )
+# def test_resolve_dtype_returns_flyweights(
+#     test_input
+# ):
+#     instance_1 = resolve_dtype(test_input)
+#     instance_2 = resolve_dtype(test_input)
+#     assert instance_1 is instance_2
 
 
-@parametrize(*[TypeCase({}, k, v) for k, v in dtype_element_types.items()])
-def test_resolve_dtype_accepts_numpy_and_pandas_dtype_objects(case: TypeCase):
-    # TODO: NumpyDatetime64Type.instance() does not return the same flyweight
-    # as resolve_dtype()
+@pytest.mark.parametrize(
+    "test_input, test_output",
+    dtype_element_types.items()
+)
+def test_resolve_dtype_accepts_numpy_pandas_dtype_specifiers(
+    test_input, test_output
+):
+    assert resolve_dtype(test_input) is test_output
 
-    result = resolve_dtype(case.input, **case.kwargs)
-    assert result is case.output, (
-        f"resolve_dtype({', '.join([repr(case.input), case.signature()])}) "
-        f"failed with input:\n"
-        f"{repr(case.input)}\n"
-        f"expected:\n"
-        f"{repr(case.output)}\n"
-        f"received:\n"
-        f"{repr(result)}\n"
-    )
+
+@pytest.mark.parametrize(
+    "test_input, test_output",
+    atomic_element_types.items()
+)
+def test_resolve_dtype_accepts_atomic_type_specifiers(
+    test_input, test_output
+):
+    assert resolve_dtype(test_input) is test_output
+
+
+@pytest.mark.parametrize(
+    "test_input, test_output",
+    string_element_types.items()
+)
+def test_resolve_dtype_accepts_string_type_specifiers(
+    test_input, test_output
+):
+    assert resolve_dtype(test_input) is test_output
 

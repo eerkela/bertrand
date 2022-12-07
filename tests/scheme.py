@@ -1,24 +1,16 @@
 from __future__ import annotations
+from typing import Any
 from uuid import uuid4
 
+import pandas as pd
 import pytest
 
 
-# TODO: use 'parametrized conditional raising' to combine valid, invalid
-# datasets:
-# https://docs.pytest.org/en/7.1.x/example/parametrize.html#parametrizing-conditional-raising
-# -> define a 'failure' keyword argument for Case objects.  If failure is not
-# None, test_output must be None (default) and failure must contain a
-# pytest.raises() context manager.  Otherwise, failure must be None and
-# test_output must not be None.  In this case, it defaults to
-# contextlib.nullcontext.
-# -> all signatures become (kwargs, test_input, test_output, failure_ctx).
-# Test functions check `if isinstance(failure_ctx, contextlib.nullcontext):`
-# before specifying a custom error message.
-# -> Case has is_failure + failure_ctx fields
+# pytest.raises() type.  This is usually hidden behind a private API
+raises_context = type(pytest.raises(Exception))
 
 
-class Case:
+class _TestCase:
     """Base class for individual test case objects.
 
     This is a static wrapper for `pytest.param()` objects, as used in test
@@ -28,20 +20,52 @@ class Case:
 
     def __init__(
         self,
-        *values,
+        kwargs: dict,
+        test_input: Any,
+        test_output: raises_context | Any,
+        input_type: type | tuple[type, ...],
+        output_type: type | tuple[type, ...],
         name: str = None,
         id: str = None,
         marks: tuple = tuple()
     ):
+        # assert `kwargs` is a dict
+        if not isinstance(kwargs, dict):
+            raise SyntaxError(
+                f"`kwargs` must be a dictionary holding keyword arguments to "
+                f"supply to the function under test, not {type(kwargs)}"
+            )
+
+        # assert `test_input` is an instance of `input_type` if it is defined
+        if input_type is not None and not isinstance(test_input, input_type):
+            raise SyntaxError(
+                f"`test_input` must be an instance of {input_type} specifying "
+                f"data to supply to the function under test, not "
+                f"{type(test_input)}"
+            )
+
+        # assert `test_output` is a pytest.raises() context manager or an
+        # instance of `output_type`, if it is defined
+        if output_type is not None and not isinstance(test_output, output_type):
+            raise SyntaxError(
+                f"`test_output` must be either a pytest.raises() context "
+                f"manager or an instance of {output_type} specifying the "
+                f"expected output for the function under test, not "
+                f"{type(test_output)}"
+            )
+
         # generate unique case ID
         self._name = name or str(uuid4())
 
         # define pytest.param() object
         self.parameter_set = pytest.param(
-            *values,
+            kwargs,
+            test_input,
+            test_output,
             id=id,
             marks=(pytest.mark.depends(name=self._name),) + marks
         )
+
 
     ##############################
     ####   TEST COMPONENTS    ####
@@ -52,12 +76,28 @@ class Case:
         return self.parameter_set.id
 
     @property
+    def input(self) -> pd.Series:
+        return self.values[1]
+
+    @property
+    def is_valid(self) -> bool:
+        return not isinstance(self.output, raises_context)
+
+    @property
+    def kwargs(self) -> dict:
+        return self.values[0]
+
+    @property
     def marks(self) -> tuple:
         return self.parameter_set.marks
 
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def output(self) -> pd.Series:
+        return self.values[2]
 
     @property
     def values(self) -> tuple:
@@ -67,10 +107,16 @@ class Case:
     ####    UTILITIES    ####
     #########################
 
+    def signature(self, *exclude) -> str:
+        return ", ".join(
+            f"{k}={repr(v)}" for k, v in self.kwargs.items()
+            if k not in exclude
+        )
+
     def skip(
         self,
         reason: str = None
-    ) -> Case:
+    ) -> _TestCase:
         """A hook to easily apply `pytest.mark.skip` marks to a test case."""
         self.parameter_set = pytest.param(
             *self.parameter_set.values,
@@ -85,7 +131,7 @@ class Case:
         self,
         condition: bool | str,
         reason: str = None
-    ) -> Case:
+    ) -> _TestCase:
         """A hook to easily apply `pytest.mark.skipif` marks to a test case."""
         self.parameter_set = pytest.param(
             *self.parameter_set.values,
@@ -104,7 +150,7 @@ class Case:
         raises: Exception = None,
         run: bool = True,
         strict: bool = True
-    ) -> Case:
+    ) -> _TestCase:
         """A hook to easily apply `pytest.mark.xfail` marks to a test case."""
         self.parameter_set = pytest.param(
             *self.parameter_set.values,
@@ -121,18 +167,18 @@ class Case:
 
     def depends(
         self,
-        on: str | Case | Parameters
-    ) -> Case:
+        on: str | _TestCase | Parameters
+    ) -> _TestCase:
         """A hook to easily apply `pytest.mark.depends` marks to a test case.
         """
-        # attach mark, referencing the name of another Case/Parameters
-        if not isinstance(on, (str, Case, Parameters)):
+        # attach mark, referencing the name of another _TestCase/Parameters obj
+        if not isinstance(on, (str, _TestCase, Parameters)):
             raise SyntaxError(
-                f"Case.depends(on={repr(on)}) is invalid: `on` must be a "
-                f"string, `Case`, or `Parameters` object, not {type(on)}"
+                f"_TestCase.depends(on={repr(on)}) is invalid: `on` must be a "
+                f"string, `_TestCase`, or `Parameters` object, not {type(on)}"
             )
 
-        if isinstance(on, Case):
+        if isinstance(on, _TestCase):
             on = on.name
         elif isinstance(on, Parameters):
             on = [test_case.name for test_case in on.test_cases]
@@ -159,7 +205,7 @@ class Case:
 
 
 class Parameters:
-    """Base class for `Case` containers, for use in parametrized tests."""
+    """Base class for `_TestCase` containers, for use in parametrized tests."""
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -168,7 +214,7 @@ class Parameters:
     def __init__(self, *cases):
         self.test_cases = []
         for test_case in cases:
-            if isinstance(test_case, Case):
+            if isinstance(test_case, _TestCase):
                 self.test_cases.append(test_case)
 
             elif isinstance(test_case, Parameters):
@@ -178,7 +224,7 @@ class Parameters:
             else:
                 raise TypeError(
                     f"`Parameters` objects can only contain explicit "
-                    f"`Case` definitions or other `Parameters` objects, "
+                    f"`_TestCase` definitions or other `Parameters` objects, "
                     f"not {type(test_case)}"
                 )
 
@@ -238,14 +284,14 @@ class Parameters:
 
     def depends(
         self,
-        on: str | Case | Parameters
+        on: str | _TestCase | Parameters
     ) -> Parameters:
         """A hook to easily apply `pytest.mark.depends` marks to a test case.
         """
-        if not isinstance(on, (str, Case, Parameters)):
+        if not isinstance(on, (str, _TestCase, Parameters)):
             raise SyntaxError(
                 f"Parameters.depends(on={repr(on)}) is invalid: `on` must be "
-                f"a string, `Case`, or `Parameters` object, not "
+                f"a string, `_TestCase`, or `Parameters` object, not "
                 f"{type(on)}"
             )
 
@@ -273,7 +319,7 @@ class Parameters:
         return len(self.test_cases)
 
     def __contains__(self, value):
-        if isinstance(value, str):  # interpret as Case name
+        if isinstance(value, str):  # interpret as _TestCase name
             return value in [case.name for case in self.test_cases]
         return value in self.test_cases
 
@@ -287,10 +333,10 @@ class Parameters:
         # index
         return result
 
-    def __setitem__(self, key, value: Case | Parameters):
-        if not isinstance(value, (Case, Parameters)):
+    def __setitem__(self, key, value: _TestCase | Parameters):
+        if not isinstance(value, (_TestCase, Parameters)):
             raise TypeError(
-                f"`Parameters` objects can only contain explicit `Case` "
+                f"`Parameters` objects can only contain explicit `_TestCase` "
                 f"definitions or other Parameters objects, not {type(value)}"
             )
 
