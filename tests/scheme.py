@@ -10,12 +10,42 @@ import pytest
 raises_context = type(pytest.raises(Exception))
 
 
-class _TestCase:
-    """Base class for individual test case objects.
+def all_subclasses(cls):
+    """Recursively find every subclass of a given type."""
+    return set(cls.__subclasses__()).union(
+        s for c in cls.__subclasses__() for s in all_subclasses(c)
+    )
 
-    This is a static wrapper for `pytest.param()` objects, as used in test
-    parametrization.  Subclasses should define the structure of an acceptable
-    test case in their __init__() method.
+
+def parametrize(
+    *test_cases: _TestCase | Parameters,
+    indirect: list | bool = False,
+    ids: list[str] | callable = None,
+    scope: str = None
+):
+    """A simplified interface for `pytest.mark.parametrize()` calls that
+    forces the use of `Parameters` containers.
+
+    When used to decorate a test function, that function must accept only one
+    argument: an individual _TestCase object with the required information, or
+    an instance of one of its subtypes, as defined in individual test modules.
+    """
+    return pytest.mark.parametrize(
+        "case",
+        Parameters(*test_cases).test_cases,
+        indirect=indirect,
+        ids=ids,
+        scope=scope
+    )
+
+
+class _TestCase:
+    """Base class for test case objects.
+
+    This is essentially a static wrapper for `pytest.param()` objects, as used
+    in fully-configurable pytest parametrization.  Subclasses should define the
+    structure of an acceptable test case in their __init__() method, and may
+    or may not add additional convenience methods as needed.
     """
 
     def __init__(
@@ -29,8 +59,11 @@ class _TestCase:
         id: str = None,
         marks: tuple = tuple()
     ):
-        # assert `kwargs` is a dict
-        if not isinstance(kwargs, dict):
+        # assert `kwargs` is a dict with only strings as keys
+        if (
+            not isinstance(kwargs, dict) or
+            not all(isinstance(k, str) for k in kwargs)
+        ):
             raise SyntaxError(
                 f"`kwargs` must be a dictionary holding keyword arguments to "
                 f"supply to the function under test, not {type(kwargs)}"
@@ -54,7 +87,7 @@ class _TestCase:
                 f"{type(test_output)}"
             )
 
-        # generate unique case ID
+        # generate unique case name (as seen by `pytest.mark.depends` calls)
         self._name = name or str(uuid4())
 
         # define pytest.param() object
@@ -66,41 +99,57 @@ class _TestCase:
             marks=(pytest.mark.depends(name=self._name),) + marks
         )
 
-
     ##############################
     ####   TEST COMPONENTS    ####
     ##############################
 
     @property
     def id(self) -> str:
+        """Get the pytest id of this test case."""
         return self.parameter_set.id
 
     @property
-    def input(self) -> pd.Series:
+    def input(self) -> Any:
+        """Get the `test_input` portion of this test case."""
         return self.values[1]
 
     @property
     def is_valid(self) -> bool:
+        """`True` if this test case should raise an exception.  `False`
+        otherwise.
+        """
         return not isinstance(self.output, raises_context)
 
     @property
-    def kwargs(self) -> dict:
+    def kwargs(self) -> dict[str, Any]:
+        """Get the `kwargs` portion of this test case."""
         return self.values[0]
 
     @property
     def marks(self) -> tuple:
+        """Get the pytest marks that are currently associated with this test
+        case.  The first element is always a `pytest.mark.depends` object
+        defining the case name.
+        """
         return self.parameter_set.marks
 
     @property
     def name(self) -> str:
+        """Get the case name (as seen by `pytest.mark.depends`) of this test
+        case.
+        """
         return self._name
 
     @property
-    def output(self) -> pd.Series:
+    def output(self) -> raises_context | Any:
+        """Get the `test_output` portion of this test case."""
         return self.values[2]
 
     @property
     def values(self) -> tuple:
+        """Get a 3-tuple (`test_input`, `kwargs`, `test_output`) representing
+        the values of the underlying `pytest.param()` object.
+        """
         return self.parameter_set.values
 
     #########################
@@ -108,6 +157,13 @@ class _TestCase:
     #########################
 
     def signature(self, *exclude) -> str:
+        """Return a comma-separated string representing this case's kwargs as
+        the signature of a hypothetical function call.
+
+        i.e. if the function under test is `f(x, y)` and `kwargs` is
+        `{'x': 1, 'y': 2}`, then the equivalent signature would be
+        `f(x=1, y=2)`.
+        """
         return ", ".join(
             f"{k}={repr(v)}" for k, v in self.kwargs.items()
             if k not in exclude
@@ -117,7 +173,9 @@ class _TestCase:
         self,
         reason: str = None
     ) -> _TestCase:
-        """A hook to easily apply `pytest.mark.skip` marks to a test case."""
+        """A hook to easily apply `pytest.mark.skip` marks to an individual
+        test case.
+        """
         self.parameter_set = pytest.param(
             *self.parameter_set.values,
             id=self.parameter_set.id,
@@ -132,7 +190,9 @@ class _TestCase:
         condition: bool | str,
         reason: str = None
     ) -> _TestCase:
-        """A hook to easily apply `pytest.mark.skipif` marks to a test case."""
+        """A hook to easily apply `pytest.mark.skipif` marks to an individual
+        test case.
+        """
         self.parameter_set = pytest.param(
             *self.parameter_set.values,
             id=self.parameter_set.id,
@@ -151,7 +211,9 @@ class _TestCase:
         run: bool = True,
         strict: bool = True
     ) -> _TestCase:
-        """A hook to easily apply `pytest.mark.xfail` marks to a test case."""
+        """A hook to easily apply `pytest.mark.xfail` marks to an individual
+        test case.
+        """
         self.parameter_set = pytest.param(
             *self.parameter_set.values,
             id=self.parameter_set.id,
@@ -169,7 +231,8 @@ class _TestCase:
         self,
         on: str | _TestCase | Parameters
     ) -> _TestCase:
-        """A hook to easily apply `pytest.mark.depends` marks to a test case.
+        """A hook to easily apply `pytest.mark.depends` marks to an individual
+        test case.
         """
         # attach mark, referencing the name of another _TestCase/Parameters obj
         if not isinstance(on, (str, _TestCase, Parameters)):

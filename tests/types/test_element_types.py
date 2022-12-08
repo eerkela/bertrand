@@ -1,14 +1,15 @@
+"""Unit tests for all variants of `pdtypes.types.ElementType`, as returned by
+`get_dtype()`/`resolve_dtype()`.
+"""
 from __future__ import annotations
 import datetime
 import decimal
-from itertools import product
-from types import MappingProxyType
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from tests.scheme import _TestCase, Parameters
+from tests.scheme import _TestCase, all_subclasses, Parameters, parametrize
 
 from pdtypes.types import (
     ElementType, BooleanType, IntegerType, SignedIntegerType, Int8Type,
@@ -23,7 +24,30 @@ from pdtypes.types import (
 from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
 
 
+##############################
+####    CASE STRUCTURE    ####
+##############################
+
+
 class TypeCase(_TestCase):
+    """A subclass of `_TestCase` that defines the expected structure of test
+    cases related to `pdtypes.types.ElementType` functionality.
+
+    These cases enforce the following structure:
+        -   `kwargs: dict`
+            -   keyword arguments to `ElementType.instance()`.  Must include
+                values for `sparse` and `categorical` at minimum.
+        -   `test_input: type`
+            -   A subclass of `ElementType`, whose properties will be tested.
+                Subclasses are discovered at runtime and automatically include
+                every variation of ElementType that is present within the
+                production codebase.
+        -   `test_output: dict`
+            -   expected values for every property of the given `ElementType`
+                subclass. As with `test_input`, property names are discovered
+                at runtime and include any non-callable attribute of
+                `test_input` that is not prepended by an underscore.
+    """
 
     def __init__(
         self,
@@ -44,35 +68,26 @@ class TypeCase(_TestCase):
             id=id,
             marks=marks
         )
-
         # kwargs must contain values for sparse, categorical at minimum
+        # NOTE: since test_input is a cython object, we cannot inspect its
+        # signature directly.
         if not all(key in self.kwargs for key in ("sparse", "categorical")):
             raise SyntaxError(
                 f"`kwargs` must contain 'sparse' and 'categorical' keys"
             )
 
-        # test_input must be a valid ElementType subclass
-        if self.input not in {
-            BooleanType, IntegerType, SignedIntegerType, Int8Type, Int16Type,
-            Int32Type, Int64Type, UnsignedIntegerType, UInt8Type, UInt16Type,
-            UInt32Type, UInt64Type, FloatType, Float16Type, Float32Type,
-            Float64Type, LongDoubleType, ComplexType, Complex64Type,
-            Complex128Type, CLongDoubleType, DecimalType, DatetimeType,
-            PandasTimestampType, PyDatetimeType, NumpyDatetime64Type,
-            TimedeltaType, PandasTimedeltaType, PyTimedeltaType,
-            NumpyTimedelta64Type, StringType, ObjectType
-        }:
+        # test_input must be a valid subclass of ElementType (but not
+        # ElementType itself)
+        if self.input not in all_subclasses(ElementType):
             raise SyntaxError(
-                f"`test_input` must be a recognized ElementType subclass, not "
-                f"{type(self.input)}"
+                f"`test_input` must be a recognized subclass of ElementType, "
+                f"not {type(self.input)}"
             )
 
         # test_output must define values for every property of test_input
-        required_properties = [
-            x for x in dir(self.input) if (
-                not callable(getattr(self.input, x)) and not x.startswith("_")
-            )
-        ]
+        required_properties = [x for x in dir(self.input) if (
+            not callable(getattr(self.input, x)) and not x.startswith("_")
+        )]
         if not all(prop in self.output for prop in required_properties):
             missing_properties = [
                 prop for prop in required_properties if prop not in self.output
@@ -84,6 +99,9 @@ class TypeCase(_TestCase):
             )
 
     def instance(self) -> ElementType:
+        """Generate an instance of `test_input` using the `kwargs` that are
+        attached to this test case.
+        """
         return self.input.instance(**self.kwargs)
 
 
@@ -104,19 +122,10 @@ def generate_slug(base: str, sparse: bool, categorical: bool) -> str:
     return base
 
 
-# TODO: these should return TypeCase objects.  After defining data_model,
-# replace it with a flat Parameters object that concatenates all sparse,
-# categorical settings.
-# [
-#     {"sparse": sparse, "categorical": categorical}
-#     for sparse in (True, False)
-#     for categorical in (True, False)]
-# ]
-# iterate over this and pass as **kwargs to data_model lambda (forces internal)
-# correctness
-# -> to get repr() value, do f"{case.input.__name__}({case.signature()})"
-
+# define model factory, ignoring permutations of sparse, categorical flags
 data_model = {
+    # NOTE: keys aren't used, they're included for documentation purposes.
+
     # boolean
     "bool": lambda sparse, categorical: TypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
@@ -1286,7 +1295,7 @@ data_model = {
 }
 
 
-# if pyarrow is installed, define metadata for corresponding string type
+# add models for optional dependencies
 if PYARROW_INSTALLED:
     data_model["string[pyarrow]"] = lambda sparse, categorical: TypeCase(
         {"storage": "pyarrow", "sparse": sparse, "categorical": categorical},
@@ -1311,13 +1320,25 @@ if PYARROW_INSTALLED:
     )
 
 
-# gather a flat list of ElementType instances that are contained in data_model.
-# NOTE: list includes every permutation of sparse, categorical
-data_model = tuple(
+# flatten data_model, including every permutation of sparse, categorical
+data_model = Parameters(*[
     model(sparse, categorical)
     for model in data_model.values()
-    for sparse, categorical in product([True, False], repeat=2)
+    for sparse in (True, False)  # cartesian product of sparse, categorical
+    for categorical in (True, False)
+])
+
+
+# ensure model contains entries for every subclass of ElementType
+missing_subclasses = frozenset(
+    s for s in all_subclasses(ElementType)
+    if s not in {case.input for case in data_model}
 )
+if missing_subclasses:
+    raise SyntaxError(
+        f"`tests.types.test_element_types.data_model` is missing test cases "
+        f"for ElementTypes: {set(s.__name__ for s in missing_subclasses)}"
+    )
 
 
 #####################
@@ -1325,21 +1346,13 @@ data_model = tuple(
 #####################
 
 
-# NOTE: stacking pytest.mark.parametrize() calls like this produces a
-# Cartesian product of the input arguments.
-
-
-@pytest.mark.parametrize("case", data_model)
-def test_element_type_instance_constructor_returns_flyweights(
-    case: TypeCase
-):
+@parametrize(data_model)
+def test_element_type_instance_constructor_returns_flyweights(case: TypeCase):
     assert case.instance() is case.instance()
 
 
-@pytest.mark.parametrize("case", data_model)
-def test_element_type_attributes_fit_data_model(
-    case: TypeCase
-):
+@parametrize(data_model)
+def test_element_type_attributes_fit_data_model(case: TypeCase):
     instance = case.instance()
 
     # check .attribute accessors
@@ -1375,20 +1388,16 @@ def test_element_type_attributes_fit_data_model(
     assert frozenset(x for x in instance) == case.output["subtypes"]
 
 
-@pytest.mark.parametrize("case", data_model)
-def test_element_type_attributes_are_immutable(
-    case: TypeCase
-):
+@parametrize(data_model)
+def test_element_type_attributes_are_immutable(case: TypeCase):
     instance = case.instance()
     for k in case.output:
         with pytest.raises(AttributeError):
             setattr(instance, k, False)
 
 
-@pytest.mark.parametrize("case", data_model)
-def test_element_type_contains_subtypes(
-    case: TypeCase
-):
+@parametrize(data_model)
+def test_element_type_contains_subtypes(case: TypeCase):
     instance = case.instance()
     test_matrix = [x.instance() for x in data_model]
 
@@ -1409,7 +1418,7 @@ def test_element_type_contains_subtypes(
                 instance.unit is None
             )
             is_datetime_supertype = (
-                not isinstance(instance, tuple(DatetimeType.__subclasses__()))
+                not isinstance(instance, tuple(all_subclasses(DatetimeType)))
             )
             if is_generic_M8 or is_datetime_supertype:
                 expected = (
@@ -1429,7 +1438,7 @@ def test_element_type_contains_subtypes(
                 instance.unit is None
             )
             is_timedelta_supertype = (
-                not isinstance(instance, tuple(TimedeltaType.__subclasses__()))
+                not isinstance(instance, tuple(all_subclasses(TimedeltaType)))
             )
             if is_generic_m8 or is_timedelta_supertype:
                 expected = (
@@ -1454,10 +1463,8 @@ def test_element_type_contains_subtypes(
     assert not test_matrix in instance  # list
 
 
-@pytest.mark.parametrize("case", data_model)
-def test_element_type_is_subtype(
-    case: TypeCase
-):
+@parametrize(data_model)
+def test_element_type_is_subtype(case: TypeCase):
     instance = case.instance()
     test_matrix = [x.instance() for x in data_model]
 
@@ -1479,7 +1486,7 @@ def test_element_type_is_subtype(
             )
             is_datetime_supertype = not isinstance(
                 other,
-                tuple(DatetimeType.__subclasses__())
+                tuple(all_subclasses(DatetimeType))
             )
             if is_generic_M8 or is_datetime_supertype:
                 expected = (
@@ -1500,7 +1507,7 @@ def test_element_type_is_subtype(
             )
             is_timedelta_supertype = not isinstance(
                 other,
-                tuple(TimedeltaType.__subclasses__())
+                tuple(all_subclasses(TimedeltaType))
             )
             if is_generic_m8 or is_timedelta_supertype:
                 expected = (
@@ -1525,10 +1532,8 @@ def test_element_type_is_subtype(
     assert instance.is_subtype(test_matrix)  # list
 
 
-@pytest.mark.parametrize("case", data_model)
-def test_element_types_compare_equal(
-    case: TypeCase
-):
+@parametrize(data_model)
+def test_element_types_compare_equal(case: TypeCase):
     instance = case.instance()
     for other in [x.instance() for x in data_model]:
         result = (instance == other)
