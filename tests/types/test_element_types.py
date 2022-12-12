@@ -29,13 +29,13 @@ from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
 ##############################
 
 
-class TypeCase(_TestCase):
+class ElementTypeCase(_TestCase):
     """A subclass of `_TestCase` that defines the expected structure of test
     cases related to `pdtypes.types.ElementType` functionality.
 
     These cases enforce the following structure:
         -   `kwargs: dict`
-            -   keyword arguments to `ElementType.instance()`.  Must include
+            -   Keyword arguments to `ElementType.instance()`.  Must include
                 values for `sparse` and `categorical` at minimum.
         -   `test_input: type`
             -   A subclass of `ElementType`, whose properties will be tested.
@@ -43,7 +43,7 @@ class TypeCase(_TestCase):
                 every variation of ElementType that is present within the
                 production codebase.
         -   `test_output: dict`
-            -   expected values for every property of the given `ElementType`
+            -   Expected values for every property of the given `ElementType`
                 subclass. As with `test_input`, property names are discovered
                 at runtime and include any non-callable attribute of
                 `test_input` that is not prepended by an underscore.
@@ -127,7 +127,7 @@ data_model = {
     # NOTE: keys aren't used, they're included for documentation purposes.
 
     # boolean
-    "bool": lambda sparse, categorical: TypeCase(
+    "bool": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
         BooleanType,
         {
@@ -147,7 +147,7 @@ data_model = {
             })
         }
     ),
-    "nullable[bool]": lambda sparse, categorical: TypeCase(
+    "nullable[bool]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": True},
         BooleanType,
         {
@@ -168,7 +168,7 @@ data_model = {
     ),
 
     # integer supertype
-    "int": lambda sparse, categorical: TypeCase(
+    "int": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
         IntegerType,
         {
@@ -210,7 +210,7 @@ data_model = {
             "max": np.inf,
         }
     ),
-    "nullable[int]": lambda sparse, categorical: TypeCase(
+    "nullable[int]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": True},
         IntegerType,
         {
@@ -243,7 +243,7 @@ data_model = {
     ),
 
     # signed integer supertype
-    "signed": lambda sparse, categorical: TypeCase(
+    "signed": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
         SignedIntegerType,
         {
@@ -273,7 +273,7 @@ data_model = {
             "max": 2**63 - 1,
         }
     ),
-    "nullable[signed]": lambda sparse, categorical: TypeCase(
+    "nullable[signed]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": True},
         SignedIntegerType,
         {
@@ -300,7 +300,7 @@ data_model = {
     ),
 
     # int8
-    "int8": lambda sparse, categorical: TypeCase(
+    "int8": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
         Int8Type,
         {
@@ -322,7 +322,7 @@ data_model = {
             "max": 2**7 - 1,
         }
     ),
-    "nullable[int8]": lambda sparse, categorical: TypeCase(
+    "nullable[int8]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": True},
         Int8Type,
         {
@@ -345,7 +345,7 @@ data_model = {
     ),
 
     # int16
-    "int16": lambda sparse, categorical: TypeCase(
+    "int16": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
         Int16Type,
         {
@@ -367,7 +367,7 @@ data_model = {
             "max": 2**15 - 1,
         }
     ),
-    "nullable[int16]": lambda sparse, categorical: TypeCase(
+    "nullable[int16]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": True},
         Int16Type,
         {
@@ -390,7 +390,7 @@ data_model = {
     ),
 
     # int32
-    "int32": lambda sparse, categorical: TypeCase(
+    "int32": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
         Int32Type,
         {
@@ -412,7 +412,7 @@ data_model = {
             "max": 2**31 - 1,
         }
     ),
-    "nullable[int32]": lambda sparse, categorical: TypeCase(
+    "nullable[int32]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": True},
         Int32Type,
         {
@@ -435,7 +435,7 @@ data_model = {
     ),
 
     # int64
-    "int64": lambda sparse, categorical: TypeCase(
+    "int64": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
         Int64Type,
         {
@@ -457,7 +457,7 @@ data_model = {
             "max": 2**63 - 1,
         }
     ),
-    "nullable[int64]": lambda sparse, categorical: TypeCase(
+    "nullable[int64]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": True},
         Int64Type,
         {
@@ -480,7 +480,7 @@ data_model = {
     ),
 
     # unsigned integer supertype
-    "unsigned": lambda sparse, categorical: TypeCase(
+    "unsigned": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
         UnsignedIntegerType,
         {
@@ -510,7 +510,7 @@ data_model = {
             "max": 2**64 - 1,
         }
     ),
-    "nullable[unsigned]": lambda sparse, categorical: TypeCase(
+    "nullable[unsigned]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": True},
         UnsignedIntegerType,
         {
@@ -537,7 +537,7 @@ data_model = {
     ),
 
     # uint8
-    "uint8": lambda sparse, categorical: TypeCase(
+    "uint8": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
         UInt8Type,
         {
@@ -559,7 +559,7 @@ data_model = {
             "max": 2**8 - 1,
         }
     ),
-    "nullable[uint8]": lambda sparse, categorical: TypeCase(
+    "nullable[uint8]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": True},
         UInt8Type,
         {
@@ -582,7 +582,7 @@ data_model = {
     ),
 
     # uint16
-    "uint16": lambda sparse, categorical: TypeCase(
+    "uint16": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
         UInt16Type,
         {
@@ -604,7 +604,7 @@ data_model = {
             "max": 2**16 - 1,
         }
     ),
-    "nullable[uint16]": lambda sparse, categorical: TypeCase(
+    "nullable[uint16]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": True},
         UInt16Type,
         {
@@ -627,7 +627,7 @@ data_model = {
     ),
 
     # uint32
-    "uint32": lambda sparse, categorical: TypeCase(
+    "uint32": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
         UInt32Type,
         {
@@ -649,7 +649,7 @@ data_model = {
             "max": 2**32 - 1,
         }
     ),
-    "nullable[uint32]": lambda sparse, categorical: TypeCase(
+    "nullable[uint32]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": True},
         UInt32Type,
         {
@@ -672,7 +672,7 @@ data_model = {
     ),
 
     # uint64
-    "uint64": lambda sparse, categorical: TypeCase(
+    "uint64": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": False},
         UInt64Type,
         {
@@ -694,7 +694,7 @@ data_model = {
             "max": 2**64 - 1,
         }
     ),
-    "nullable[uint64]": lambda sparse, categorical: TypeCase(
+    "nullable[uint64]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical, "nullable": True},
         UInt64Type,
         {
@@ -717,7 +717,7 @@ data_model = {
     ),
 
     # float supertype
-    "float": lambda sparse, categorical: TypeCase(
+    "float": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         FloatType,
         {
@@ -745,7 +745,7 @@ data_model = {
     ),
 
     # float16
-    "float16": lambda sparse, categorical: TypeCase(
+    "float16": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         Float16Type,
         {
@@ -769,7 +769,7 @@ data_model = {
     ),
 
     # float32
-    "float32": lambda sparse, categorical: TypeCase(
+    "float32": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         Float32Type,
         {
@@ -793,7 +793,7 @@ data_model = {
     ),
 
     # float64
-    "float64": lambda sparse, categorical: TypeCase(
+    "float64": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         Float64Type,
         {
@@ -817,7 +817,7 @@ data_model = {
     ),
 
     # longdouble
-    "longdouble": lambda sparse, categorical: TypeCase(
+    "longdouble": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         LongDoubleType,
         {
@@ -841,7 +841,7 @@ data_model = {
     ),
 
     # complex supertype
-    "complex": lambda sparse, categorical: TypeCase(
+    "complex": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         ComplexType,
         {
@@ -868,7 +868,7 @@ data_model = {
     ),
 
     # complex64
-    "complex64": lambda sparse, categorical: TypeCase(
+    "complex64": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         Complex64Type,
         {
@@ -892,7 +892,7 @@ data_model = {
     ),
 
     # complex128
-    "complex128": lambda sparse, categorical: TypeCase(
+    "complex128": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         Complex128Type,
         {
@@ -916,7 +916,7 @@ data_model = {
     ),
 
     # clongdouble
-    "clongdouble": lambda sparse, categorical: TypeCase(
+    "clongdouble": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         CLongDoubleType,
         {
@@ -940,7 +940,7 @@ data_model = {
     ),
 
     # decimal
-    "decimal": lambda sparse, categorical: TypeCase(
+    "decimal": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         DecimalType,
         {
@@ -963,7 +963,7 @@ data_model = {
     ),
 
     # datetime supertype
-    "datetime": lambda sparse, categorical: TypeCase(
+    "datetime": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         DatetimeType,
         {
@@ -989,7 +989,7 @@ data_model = {
     ),
 
     # datetime[pandas]
-    "datetime[pandas]": lambda sparse, categorical: TypeCase(
+    "datetime[pandas]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         PandasTimestampType,
         {
@@ -1012,7 +1012,7 @@ data_model = {
     ),
 
     # datetime[python]
-    "datetime[python]": lambda sparse, categorical: TypeCase(
+    "datetime[python]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         PyDatetimeType,
         {
@@ -1036,7 +1036,7 @@ data_model = {
 
     # datetime[numpy]
     # TODO: change na_value to np.datetime64("nat")?
-    "datetime[numpy]": lambda sparse, categorical: TypeCase(
+    "datetime[numpy]": lambda sparse, categorical: ElementTypeCase(
         {"unit": None, "step_size": 1, "sparse": sparse, "categorical": categorical},
         NumpyDatetime64Type,
         {
@@ -1059,7 +1059,7 @@ data_model = {
             "max": 291061508645168328945024000000000000,
         }
     ),
-    "M8[5m]": lambda sparse, categorical: TypeCase(
+    "M8[5m]": lambda sparse, categorical: ElementTypeCase(
         {"unit": "m", "step_size": 5, "sparse": sparse, "categorical": categorical},
         NumpyDatetime64Type,
         {
@@ -1084,7 +1084,7 @@ data_model = {
     ),
 
     # timedelta supertype
-    "timedelta": lambda sparse, categorical: TypeCase(
+    "timedelta": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         TimedeltaType,
         {
@@ -1110,7 +1110,7 @@ data_model = {
     ),
 
     # timedelta[pandas]
-    "timedelta[pandas]": lambda sparse, categorical: TypeCase(
+    "timedelta[pandas]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         PandasTimedeltaType,
         {
@@ -1133,7 +1133,7 @@ data_model = {
     ),
 
     # timedelta[python]
-    "timedelta[python]": lambda sparse, categorical: TypeCase(
+    "timedelta[python]": lambda sparse, categorical: ElementTypeCase(
         {"sparse": sparse, "categorical": categorical},
         PyTimedeltaType,
         {
@@ -1157,7 +1157,7 @@ data_model = {
 
     # timedelta[numpy]
     # TODO: change na_value to np.timedelta64("nat")?
-    "timedelta[numpy]": lambda sparse, categorical: TypeCase(
+    "timedelta[numpy]": lambda sparse, categorical: ElementTypeCase(
         {"unit": None, "step_size": 1, "sparse": sparse, "categorical": categorical},
         NumpyTimedelta64Type,
         {
@@ -1180,7 +1180,7 @@ data_model = {
             "max": 291061508645168328945024000000000000,
         }
     ),
-    "m8[25us]": lambda sparse, categorical: TypeCase(
+    "m8[25us]": lambda sparse, categorical: ElementTypeCase(
         {"unit": "us", "step_size": 25, "sparse": sparse, "categorical": categorical},
         NumpyTimedelta64Type,
         {
@@ -1205,7 +1205,7 @@ data_model = {
     ),
 
     # string
-    "string": lambda sparse, categorical: TypeCase(
+    "string": lambda sparse, categorical: ElementTypeCase(
         {"storage": None, "sparse": sparse, "categorical": categorical},
         StringType,
         {
@@ -1230,7 +1230,7 @@ data_model = {
             "storage": DEFAULT_STRING_DTYPE.storage,
         }
     ),
-    "string[python]": lambda sparse, categorical: TypeCase(
+    "string[python]": lambda sparse, categorical: ElementTypeCase(
         {"storage": "python", "sparse": sparse, "categorical": categorical},
         StringType,
         {
@@ -1254,7 +1254,7 @@ data_model = {
     # NOTE: pyarrow string type requires pyarrow dependency (handled below)
 
     # object
-    "object": lambda sparse, categorical: TypeCase(
+    "object": lambda sparse, categorical: ElementTypeCase(
         {"atomic_type": object, "sparse": sparse, "categorical": categorical},
         ObjectType,
         {
@@ -1273,7 +1273,7 @@ data_model = {
             }),
         }
     ),
-    "DummyClass": lambda sparse, categorical: TypeCase(
+    "DummyClass": lambda sparse, categorical: ElementTypeCase(
         {"atomic_type": DummyClass, "sparse": sparse, "categorical": categorical},
         ObjectType,
         {
@@ -1296,8 +1296,8 @@ data_model = {
 
 
 # add models for optional dependencies
-if PYARROW_INSTALLED:
-    data_model["string[pyarrow]"] = lambda sparse, categorical: TypeCase(
+if PYARROW_INSTALLED:  # pyarrow-backed StringType
+    data_model["string[pyarrow]"] = lambda sparse, categorical: ElementTypeCase(
         {"storage": "pyarrow", "sparse": sparse, "categorical": categorical},
         StringType,
         {
@@ -1347,12 +1347,12 @@ if missing_subclasses:
 
 
 @parametrize(data_model)
-def test_element_type_instance_constructor_returns_flyweights(case: TypeCase):
+def test_element_type_instance_constructor_returns_flyweights(case: ElementTypeCase):
     assert case.instance() is case.instance()
 
 
 @parametrize(data_model)
-def test_element_type_attributes_fit_data_model(case: TypeCase):
+def test_element_type_attributes_fit_data_model(case: ElementTypeCase):
     instance = case.instance()
 
     # check .attribute accessors
@@ -1389,7 +1389,7 @@ def test_element_type_attributes_fit_data_model(case: TypeCase):
 
 
 @parametrize(data_model)
-def test_element_type_attributes_are_immutable(case: TypeCase):
+def test_element_type_attributes_are_immutable(case: ElementTypeCase):
     instance = case.instance()
     for k in case.output:
         with pytest.raises(AttributeError):
@@ -1397,7 +1397,7 @@ def test_element_type_attributes_are_immutable(case: TypeCase):
 
 
 @parametrize(data_model)
-def test_element_type_contains_subtypes(case: TypeCase):
+def test_element_type_contains_subtypes(case: ElementTypeCase):
     instance = case.instance()
     test_matrix = [x.instance() for x in data_model]
 
@@ -1464,7 +1464,7 @@ def test_element_type_contains_subtypes(case: TypeCase):
 
 
 @parametrize(data_model)
-def test_element_type_is_subtype(case: TypeCase):
+def test_element_type_is_subtype(case: ElementTypeCase):
     instance = case.instance()
     test_matrix = [x.instance() for x in data_model]
 
@@ -1533,7 +1533,7 @@ def test_element_type_is_subtype(case: TypeCase):
 
 
 @parametrize(data_model)
-def test_element_types_compare_equal(case: TypeCase):
+def test_element_types_compare_equal(case: ElementTypeCase):
     instance = case.instance()
     for other in [x.instance() for x in data_model]:
         result = (instance == other)

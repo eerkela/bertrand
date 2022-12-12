@@ -1,13 +1,10 @@
 from __future__ import annotations
-from typing import Any
+from contextlib import nullcontext
+from typing import Any, Iterator
 from uuid import uuid4
 
 import pandas as pd
 import pytest
-
-
-# pytest.raises() type.  This is usually hidden behind a private API
-raises_context = type(pytest.raises(Exception))
 
 
 def all_subclasses(cls):
@@ -39,6 +36,50 @@ def parametrize(
     )
 
 
+class Raises:
+    """Base class for exception handler objects.
+    
+    This is a static wrapper for `pytest.raises()` objects, with some slight
+    modifications to make test code more compact and readable.
+    """
+
+    def __init__(
+        self,
+        error_type: type,
+        msg: str = None,
+        nomatch: str = None
+    ):
+        self.ctx = pytest.raises(Exception)
+        self.error_type = error_type
+        self.msg = msg
+        self.nomatch = nomatch
+
+    def __enter__(self) -> pytest.ExceptionInfo[Exception]:
+        return self.ctx.__enter__()
+
+    def __exit__(self, *tp):
+        # preempt nomatch failure and use corresponding message instead
+        # NOTE: this behavior has been deprecated in official pytest since 4.1
+        if tp[0] is None:
+            pytest.fail(self.nomatch)
+
+        # invoke normal pytest.RaisesContext.__exit__() method
+        result = self.ctx.__exit__(*tp)
+
+        # cleanup assertions
+        assert self.ctx.excinfo.type is self.error_type
+        assert self.ctx.excinfo.match(self.msg)
+
+        # return result of pytest.RaisesContext.__exit__()
+        return result
+
+    def __repr__(self) -> str:
+        return f"{self.error_type.__name__}: ... {self.msg} ..."
+
+    def __str__(self) -> str:
+        return repr(self)
+
+
 class _TestCase:
     """Base class for test case objects.
 
@@ -52,7 +93,7 @@ class _TestCase:
         self,
         kwargs: dict,
         test_input: Any,
-        test_output: raises_context | Any,
+        test_output: Raises | Any,
         input_type: type | tuple[type, ...],
         output_type: type | tuple[type, ...],
         name: str = None,
@@ -79,7 +120,9 @@ class _TestCase:
 
         # assert `test_output` is a pytest.raises() context manager or an
         # instance of `output_type`, if it is defined
-        if output_type is not None and not isinstance(test_output, output_type):
+        if (
+            output_type is not None and
+            not isinstance(test_output, (Raises, output_type))):
             raise SyntaxError(
                 f"`test_output` must be either a pytest.raises() context "
                 f"manager or an instance of {output_type} specifying the "
@@ -104,6 +147,17 @@ class _TestCase:
     ##############################
 
     @property
+    def error_context(self) -> Iterator[None]:
+        """If this test case describes an expected error state (i.e. its output
+        field is an instance of `tests.scheme.Raises`), then return a context
+        manager that enforces the expected error within its context block.
+        Otherwise, proceed as normal.
+        """
+        if isinstance(self.output, Raises):
+            return self.output
+        return nullcontext()
+
+    @property
     def id(self) -> str:
         """Get the pytest id of this test case."""
         return self.parameter_set.id
@@ -112,13 +166,6 @@ class _TestCase:
     def input(self) -> Any:
         """Get the `test_input` portion of this test case."""
         return self.values[1]
-
-    @property
-    def is_valid(self) -> bool:
-        """`True` if this test case should raise an exception.  `False`
-        otherwise.
-        """
-        return not isinstance(self.output, raises_context)
 
     @property
     def kwargs(self) -> dict[str, Any]:
@@ -141,7 +188,7 @@ class _TestCase:
         return self._name
 
     @property
-    def output(self) -> raises_context | Any:
+    def output(self) -> Raises | Any:
         """Get the `test_output` portion of this test case."""
         return self.values[2]
 
