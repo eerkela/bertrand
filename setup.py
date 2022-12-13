@@ -15,6 +15,7 @@ distutils.core.setup(
             "pdtypes/check/*.pyx",
             "pdtypes/util/*.pyx",
             "pdtypes/types/*.pyx",
+            "pdtypes/types/atomic/*.pyx",
             "pdtypes/types/parse/*.pyx"
         ],
         language_level="3",

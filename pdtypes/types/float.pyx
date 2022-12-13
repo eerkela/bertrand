@@ -8,6 +8,10 @@ from .complex cimport (
 )
 
 
+# LongDoubleType -> Float80Type, aliases are platform-specific, and Float80Type
+# may not be available.
+
+
 ##########################
 ####    SUPERTYPES    ####
 ##########################
@@ -15,6 +19,18 @@ from .complex cimport (
 
 cdef class FloatType(ElementType):
     """Float supertype"""
+
+    _base_slug = "float"
+    aliases = {
+        # type
+        float: {},
+        np.floating: {"backend": "numpy"},
+
+        # string
+        "float": {},
+        "floating": {},
+        "f": {}
+    }
 
     def __init__(
         self,
@@ -74,6 +90,21 @@ cdef class FloatType(ElementType):
 cdef class Float16Type(FloatType):
     """16-bit float subtype"""
 
+    _base_slug = "float16"
+    aliases = {
+        # type
+        np.float16: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.float16): {"backend": "numpy"},
+
+        # string
+        "float16": {},
+        "f2": {},
+        "half": {},
+        "e": {},
+    }
+
     def __init__(
         self,
         bint sparse = False,
@@ -127,6 +158,20 @@ cdef class Float16Type(FloatType):
 
 cdef class Float32Type(FloatType):
     """32-bit float subtype"""
+
+    _base_slug = "float32"
+    aliases = {
+        # type
+        np.float32: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.float32): {"backend": "numpy"},
+
+        # string
+        "float32": {},
+        "f4": {},
+        "single": {}
+    }
 
     def __init__(
         self,
@@ -182,6 +227,22 @@ cdef class Float32Type(FloatType):
 cdef class Float64Type(FloatType):
     """64-bit float subtype"""
 
+    _base_slug = "float64"
+    aliases = {
+        # type
+        np.float64: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.float64): {"backend": "numpy"},
+
+        # string
+        "float64": {},
+        "f8": {},
+        "float_": {},
+        "double": {},
+        "d": {},
+    }
+
     def __init__(
         self,
         bint sparse = False,
@@ -235,6 +296,24 @@ cdef class Float64Type(FloatType):
 
 cdef class LongDoubleType(FloatType):
     """Long double float subtype (platform-dependent)"""
+
+    _base_slug = "float80"
+    aliases = {} if np.dtype(np.longdouble) == np.dtype(np.float64) else {
+        # type
+        np.longdouble: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.longdouble): {"backend": "numpy"},
+
+        # string
+        "float80": {},
+        "long double": {},
+        "long float": {},
+        "longdouble": {},
+        "longfloat": {},
+        "f10": {},
+        "g": {}
+    }
 
     def __init__(
         self,

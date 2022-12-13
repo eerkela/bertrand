@@ -14,6 +14,20 @@ from .float cimport FloatType, Float32Type, Float64Type, LongDoubleType
 cdef class ComplexType(ElementType):
     """Complex supertype"""
 
+    _base_slug = "complex"
+    aliases = {
+        # type
+        complex: {},
+        np.complexfloating: {"backend": "numpy"},
+
+        # string
+        "complex": {},
+        "complex float": {},
+        "complex floating": {},
+        "cfloat": {},
+        "c": {},
+    }
+
     def __init__(
         self,
         bint sparse = False,
@@ -70,6 +84,23 @@ cdef class ComplexType(ElementType):
 cdef class Complex64Type(ComplexType):
     """64-bit complex subtype"""
 
+    _base_slug = "complex64"
+    aliases = {
+        # type
+        np.complex64: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.complex64): {"backend": "numpy"},
+
+        # string
+        "complex64": {},
+        "complex single": {},
+        "singlecomplex": {},
+        "csingle": {},
+        "c8": {},
+        "F": {},
+    }
+
     def __init__(
         self,
         bint sparse = False,
@@ -124,6 +155,23 @@ cdef class Complex64Type(ComplexType):
 cdef class Complex128Type(ComplexType):
     """128-bit complex subtype"""
 
+    _base_slug = "complex128"
+    aliases = {
+        # type
+        np.complex128: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.complex128): {"backend": "numpy"},
+
+        # string
+        "complex128": {},
+        "complex double": {},
+        "complex_": {},
+        "cdouble": {},
+        "c16": {},
+        "D": {},
+    }
+
     def __init__(
         self,
         bint sparse = False,
@@ -175,8 +223,30 @@ cdef class Complex128Type(ComplexType):
         return self._supertype
 
 
-cdef class CLongDoubleType(ComplexType):
+cdef class ComplexLongDoubleType(ComplexType):
     """complex long double subtype (platform-dependent)"""
+
+    _base_slug = "complex160"
+    aliases = {} if np.dtype(np.clongdouble) == np.dtype(np.complex128) else {
+        # type
+        np.clongdouble: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.clongdouble): {"backend": "numpy"},
+
+        # string
+        "complex160": {},
+        "complex long double": {},
+        "complex long float": {},
+        "complex longdouble": {},
+        "complex longfloat": {},
+        "clongdouble": {},
+        "clongfloat": {},
+        "long complex": {},
+        "longcomplex": {},
+        "c20": {},
+        "G": {}
+    }
 
     def __init__(
         self,

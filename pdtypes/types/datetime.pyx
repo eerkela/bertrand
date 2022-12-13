@@ -10,6 +10,11 @@ from .base cimport (
 )
 
 
+# Adopting the callable pattern in resolve_dtype mini-language would force
+# only one datetime type with the same universal `backend` arg.
+
+
+
 cdef str generate_M8_slug(
     type base_type,
     str unit,
@@ -42,6 +47,12 @@ cdef str generate_M8_slug(
 
 cdef class DatetimeType(ElementType):
     """Datetime supertype"""
+
+    _base_slug = "datetime"
+    aliases = {
+        # string
+        "datetime": {},
+    }
 
     def __init__(
         self,
@@ -102,6 +113,10 @@ cdef class DatetimeType(ElementType):
 cdef class PandasTimestampType(DatetimeType):
     """`pandas.Timestamp` datetime subtype"""
 
+    # TODO: fill these out when alias pattern gets more stable
+    _base_slug = None
+    aliases = {}
+
     def __init__(
         self,
         bint sparse = False,
@@ -150,6 +165,10 @@ cdef class PandasTimestampType(DatetimeType):
 cdef class PyDatetimeType(DatetimeType):
     """`datetime.datetime` datetime subtype"""
 
+    # TODO: fill these out when alias pattern gets more stable
+    _base_slug = None
+    aliases = {}
+
     def __init__(
         self,
         bint sparse = False,
@@ -194,6 +213,10 @@ cdef class PyDatetimeType(DatetimeType):
 
 cdef class NumpyDatetime64Type(DatetimeType):
     """`numpy.datetime64` datetime subtype"""
+
+    # TODO: fill these out when alias pattern gets more stable
+    _base_slug = None
+    aliases = {}
 
     def __init__(
         self,

@@ -15,9 +15,62 @@ from pdtypes.types cimport (
 )
 
 
+
 # TODO: "string[...]" + "datetime/timedelta[...]" are broken
 
 # TODO: "datetime" resolves to "sparse[datetime]"
+
+from collections import namedtuple
+import re
+
+
+reserved = (
+    "sparse",
+    "categorical"
+)
+regex_1 = re.compile(rf"(?P<flag>({'|'.join(reserved)}))\[(?P<content>.+)\]")
+regex_2 = re.compile(r"(?P<base>\w+)(\[(?P<args>[^\[]+)\])?")
+TypeSpecifier = namedtuple("TypeSpecifier", "base, args, defaults, directives")
+
+
+def match(input_string):
+    original_input_string = input_string
+
+    # unwrap VectorType directives
+    directives = {}
+    match = re.match(regex_1, input_string)
+    while match:
+        groups = match.groupdict()
+        directives[groups["flag"]] = True
+        input_string = groups["content"]
+        match = re.match(regex_1, input_string)
+
+    # check for ScalarType
+    match = re.match(regex_2, input_string)
+    if not match:
+        raise TypeError(
+            f"type specifier not recognized: {repr(original_input_string)}"
+        )
+
+    # TODO: after getting ScalarType arguments, resolve the .base field of
+    # TypeSpecifier and get the kwargs associated with that alias, if there
+    # are any.  Attach these in a .defaults field.
+
+    # parse ScalarType arguments
+    groups = match.groupdict()
+    return TypeSpecifier(
+        base=groups["base"],  # TODO: resolve to ScalarType class
+        args=groups["args"].split(", ") if groups["args"] else [],
+        defaults={},  # TODO: defaults for the given alias, overriden by args
+        directives=directives
+    )
+
+
+# TODO: after this, it's just a matter of looking up the base, calling its
+# .instance method with *args, and then wrapping it in a VectorType with
+# **directives.
+# -> if no arguments are found during parsing (i.e.) `not args`, then call
+# base.instance(**defaults) instead.  Most aliases point to an empty dict
 
 
 ######################

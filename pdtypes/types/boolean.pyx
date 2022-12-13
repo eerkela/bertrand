@@ -34,6 +34,26 @@ cdef str generate_slug(
 cdef class BooleanType(ElementType):
     """Boolean supertype."""
 
+    _base_slug = "bool"
+    aliases = {
+        # type
+        bool: {},
+        np.bool_: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.bool_): {"backend": "numpy"},
+        pd.BooleanDtype(): {"backend": "pandas"},
+
+        # string
+        "bool": {},
+        "boolean": {},
+        "bool_": {},
+        "bool8": {},
+        "b1": {},
+        "?": {},
+        "Boolean": {"backend": "pandas"},
+    }
+
     def __init__(
         self,
         bint sparse = False,

@@ -15,6 +15,15 @@ from .base cimport ElementType, generate_slug, shared_registry
 cdef class DecimalType(ElementType):
     """Decimal supertype."""
 
+    _base_slug = "decimal"
+    aliases = {
+        # type
+        decimal.Decimal: {"backend": "python"},
+
+        # string
+        "decimal": {},
+    }
+
     def __init__(
         self,
         bint sparse = False,

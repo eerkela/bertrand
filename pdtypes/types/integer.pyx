@@ -8,6 +8,90 @@ from .base cimport base_slugs, ElementType, resolve_dtype, shared_registry
 # TODO: add is_signed, is_unsigned attributes
 
 
+# TODO: these are added to alias map along with everything else.  Resolve from
+# the alias map until the value is no longer in it.
+platform_specific = {
+    # C char
+    "char": np.dtype(np.byte),
+    "signed char": "char",
+    "byte": "char",
+    "b": "char",
+
+    # C short
+    "short": np.dtype(np.short),
+    "signed short int": "short",
+    "signed short": "short",
+    "short int": "short",
+    "h": "short",
+
+    # C int
+    "intc": np.dtype(np.intc),
+    "signed intc": "intc",
+
+    # C long
+    "long": np.dtype(np.int_),
+    "long int": "long",
+    "signed long": "long",
+    "signed long int": "long",
+    "l": "long",
+
+    # C long long
+    "long long": np.dtype(np.longlong),
+    "longlong": "long long",
+    "long long int": "long long",
+    "signed long long": "long long",
+    "signed longlong": "long long",
+    "signed long long int": "long long",
+    "q": "long long",
+
+    # C ssize_t
+    "ssize_t": np.dtype(np.intp),
+    "intp": "ssize_t",
+    "int0": "ssize_t",
+    "p": "ssize_t",
+
+    # C unsigned char
+    "unsigned char": np.dtype(np.ubyte),
+    "unsigned byte": "unsigned char",
+    "ubyte": "unsigned char",
+    "B": "unsigned char",
+
+    # C unsigned short
+    "unsigned short": np.dtype(np.ushort),
+    "unsigned short int": "unsigned short",
+    "ushort": "unsigned short",
+    "H": "unsigned short",
+
+    # C unsigned int
+    "unsigned intc": np.dtype(np.uintc),
+    "uintc": "unsigned intc",
+    "I": "unsigned intc",
+
+    # C unsigned long
+    "unsigned long": np.dtype(np.uint),
+    "unsigned long int": "unsigned long",
+    "ulong": "unsigned long",
+    "L": "unsigned long",
+
+    # C unsigned long long
+    "unsigned long long": np.dtype(np.ulonglong),
+    "unsigned longlong": "unsigned long long",
+    "unsigned long long int": "unsigned long long",
+    "ulonglong": "unsigned long long",
+    "Q": "unsigned long long",
+
+    # C size_t
+    "size_t": np.dtype(np.uintp),
+    "uintp": "size_t",
+    "uint0": "size_t",
+    "P": "size_t",
+}
+# while key in aliases:
+#     key = aliases[key]
+
+
+
+
 cdef str generate_slug(
     type base_type,
     bint sparse,
@@ -36,6 +120,17 @@ cdef str generate_slug(
 
 cdef class IntegerType(ElementType):
     """Integer supertype"""
+
+    _base_slug = "int"
+    aliases = {
+        # type
+        int: {},
+        np.integer: {"backend": "numpy"},
+
+        # string
+        "int": {},
+        "integer": {},
+    }
 
     def __init__(
         self,
@@ -139,6 +234,18 @@ cdef class IntegerType(ElementType):
 cdef class SignedIntegerType(IntegerType):
     """Signed integer supertype"""
 
+    _base_slug = "signed"
+    aliases = {
+        # type
+        np.signedinteger: {"backend": "numpy"},
+
+        # string
+        "signed": {},
+        "signed int": {},
+        "signed integer": {},
+        "i": {},
+    }
+
     def __init__(
         self,
         bint sparse = False,
@@ -201,6 +308,19 @@ cdef class SignedIntegerType(IntegerType):
 
 cdef class UnsignedIntegerType(IntegerType):
     """Unsigned integer supertype"""
+
+    _base_slug = "unsigned"
+    aliases = {
+        # type
+        np.unsignedinteger: {"backend": "numpy"},
+
+        # string
+        "unsigned": {},
+        "unsigned int": {},
+        "unsigned integer": {},
+        "uint": {},
+        "u": {},
+    }
 
     def __init__(
         self,
@@ -270,6 +390,21 @@ cdef class UnsignedIntegerType(IntegerType):
 cdef class Int8Type(SignedIntegerType):
     """8-bit integer subtype"""
 
+    _base_slug = "int8"
+    aliases = {
+        # type
+        np.int8: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.int8): {"backend": "numpy"},
+        pd.Int8Dtype(): {"backend": "pandas"},
+
+        # string
+        "int8": {},
+        "i1": {},
+        "Int8": {"backend": "pandas"},
+    }
+
     def __init__(
         self,
         bint sparse = False,
@@ -324,6 +459,21 @@ cdef class Int8Type(SignedIntegerType):
 
 cdef class Int16Type(SignedIntegerType):
     """16-bit integer subtype"""
+
+    _base_slug = "int16"
+    aliases = {
+        # type
+        np.int16: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.int16): {"backend": "numpy"},
+        pd.Int16Dtype(): {"backend": "pandas"},
+
+        # string
+        "int16": {},
+        "i2": {},
+        "Int16": {"backend": "pandas"},
+    }
 
     def __init__(
         self,
@@ -380,6 +530,21 @@ cdef class Int16Type(SignedIntegerType):
 cdef class Int32Type(SignedIntegerType):
     """32-bit integer subtype"""
 
+    _base_slug = "int32"
+    aliases = {
+        # type
+        np.int32: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.int32): {"backend": "numpy"},
+        pd.Int8Dtype(): {"backend": "pandas"},
+
+        # string
+        "int32": {},
+        "i4": {},
+        "Int32": {"backend": "pandas"},
+    }
+
     def __init__(
         self,
         bint sparse = False,
@@ -434,6 +599,21 @@ cdef class Int32Type(SignedIntegerType):
 
 cdef class Int64Type(SignedIntegerType):
     """64-bit integer subtype"""
+
+    _base_slug = "int64"
+    aliases = {
+        # type
+        np.int64: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.int64): {"backend": "numpy"},
+        pd.Int64Dtype(): {"backend": "pandas"},
+
+        # string
+        "int64": {},
+        "i8": {},
+        "Int64": {"backend": "pandas"},
+    }
 
     def __init__(
         self,
@@ -490,6 +670,21 @@ cdef class Int64Type(SignedIntegerType):
 cdef class UInt8Type(UnsignedIntegerType):
     """8-bit unsigned integer subtype"""
 
+    _base_slug = "uint8"
+    aliases = {
+        # type
+        np.uint8: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.uint8): {"backend": "numpy"},
+        pd.UInt8Dtype(): {"backend": "pandas"},
+
+        # string
+        "uint8": {},
+        "u1": {},
+        "UInt8": {"backend": "pandas"},
+    }
+
     def __init__(
         self,
         bint sparse = False,
@@ -544,6 +739,21 @@ cdef class UInt8Type(UnsignedIntegerType):
 
 cdef class UInt16Type(UnsignedIntegerType):
     """16-bit unsigned integer subtype"""
+
+    _base_slug = "uint16"
+    aliases = {
+        # type
+        np.uint16: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.uint16): {"backend": "numpy"},
+        pd.UInt16Dtype(): {"backend": "pandas"},
+
+        # string
+        "uint16": {},
+        "u2": {},
+        "UInt16": {"backend": "pandas"},
+    }
 
     def __init__(
         self,
@@ -600,6 +810,21 @@ cdef class UInt16Type(UnsignedIntegerType):
 cdef class UInt32Type(UnsignedIntegerType):
     """32-bit unsigned integer subtype"""
 
+    _base_slug = "uint32"
+    aliases = {
+        # type
+        np.uint32: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.uint32): {"backend": "numpy"},
+        pd.UInt32Dtype(): {"backend": "pandas"},
+
+        # string
+        "uint32": {},
+        "u4": {},
+        "UInt32": {"backend": "pandas"},
+    }
+
     def __init__(
         self,
         bint sparse = False,
@@ -654,6 +879,21 @@ cdef class UInt32Type(UnsignedIntegerType):
 
 cdef class UInt64Type(UnsignedIntegerType):
     """32-bit unsigned integer subtype"""
+
+    _base_slug = "uint64"
+    aliases = {
+        # type
+        np.uint64: {"backend": "numpy"},
+
+        # dtype
+        np.dtype(np.uint64): {"backend": "numpy"},
+        pd.UInt64Dtype(): {"backend": "pandas"},
+
+        # string
+        "uint64": {},
+        "u8": {},
+        "UInt64": {"backend": "pandas"},
+    }
 
     def __init__(
         self,
