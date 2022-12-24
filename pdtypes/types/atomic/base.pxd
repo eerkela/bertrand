@@ -4,20 +4,14 @@ from pdtypes.util.structs cimport LRUDict
 
 
 # constants
-cdef unsigned short cache_size
-cdef dict shared_registry
-cdef LRUDict datetime64_registry
-cdef LRUDict decimal_registry
-cdef LRUDict object_registry
-cdef LRUDict timedelta64_registry
+cdef type AliasInfo  # namedtuple
+cdef type remember  # namedtuple
 
 
 cdef class AtomicType:
     cdef:
-        frozenset _subtypes_cache
-        long long _subtypes_hash
-        type _supertype_cache
-        long long _supertype_hash
+        object _subtypes_cache
+        object _supertype_cache
         long long hash
 
     cdef readonly:
@@ -27,3 +21,20 @@ cdef class AtomicType:
         object itemsize
         str slug
         object dtype
+
+
+cdef class ElementType:
+    cdef:
+        long long hash
+
+    cdef readonly:
+        AtomicType atomic_type
+        bint sparse
+        bint categorical
+        object index
+        str slug
+
+
+cdef class CompositeType:
+    cdef readonly:
+        set element_types

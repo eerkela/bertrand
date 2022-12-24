@@ -2,7 +2,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AtomicType, shared_registry
+from .base cimport AtomicType
 
 
 ##########################
@@ -13,8 +13,7 @@ from .base cimport AtomicType, shared_registry
 class BooleanType(AtomicType):
     """Boolean supertype."""
 
-    _name = "bool"
-    _backends = ("python", "numpy", "pandas")
+    name = "bool"
     aliases = {
         # type
         bool: {},
@@ -33,10 +32,9 @@ class BooleanType(AtomicType):
         "?": {},
         "Boolean": {"backend": "pandas"},
     }
+    _backends = (None, "python", "numpy", "pandas")
 
-    def __init__(self, backend: str):
-        slug = f"{self._name}"
-
+    def __init__(self, backend: str = None):
         # "bool"
         if backend is None:
             object_type = None
@@ -44,25 +42,24 @@ class BooleanType(AtomicType):
 
         # "bool[python]"
         elif backend == "python":
-            slug += f"[{backend}]"
             object_type = bool
             dtype = np.dtype("O")
 
         # "bool[numpy]"
         elif backend == "numpy":
-            slug += f"[{backend}]"
             object_type = np.bool_
             dtype = np.dtype(bool)
 
         # "bool[pandas]"
         elif backend == "pandas":
-            slug += f"[{backend}]"
             object_type = np.bool_
             dtype = pd.BooleanDtype()
 
         # unrecognized
         else:
-            raise TypeError(f"{slug} backend not recognized: {repr(backend)}")
+            raise TypeError(
+                f"{self.name} backend not recognized: {repr(backend)}"
+            )
 
         super(BooleanType, self).__init__(
             backend=backend,
@@ -70,5 +67,12 @@ class BooleanType(AtomicType):
             dtype=dtype,
             na_value=pd.NA,
             itemsize=1,
-            slug=slug
+            slug=self.generate_slug(backend=backend)
         )
+
+    @classmethod
+    def generate_slug(cls, backend: str = None) -> str:
+        slug = f"{cls.name}"
+        if backend is not None:
+            slug = f"{slug}[{backend}]"
+        return slug

@@ -16,7 +16,8 @@ distutils.core.setup(
             "pdtypes/util/*.pyx",
             "pdtypes/types/*.pyx",
             "pdtypes/types/atomic/*.pyx",
-            "pdtypes/types/parse/*.pyx"
+            "pdtypes/types/parse/*.pyx",
+            "pdtypes/types/resolve/*.pyx"
         ],
         language_level="3",
         compiler_directives={"embedsignature": True}
