@@ -12,7 +12,7 @@ cdef class AtomicType:
     cdef:
         object _subtypes_cache
         object _supertype_cache
-        long long hash
+        
 
     cdef readonly:
         str backend
@@ -21,6 +21,7 @@ cdef class AtomicType:
         object itemsize
         str slug
         object dtype
+        long long hash
 
 
 cdef class ElementType:

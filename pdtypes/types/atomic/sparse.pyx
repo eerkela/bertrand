@@ -5,7 +5,7 @@ import pandas as pd
 
 from .base import AtomicType, CompositeType
 
-from ..resolve.string import resolve_atomic_type
+from ..resolve.string import resolve_type
 
 
 # TODO: these should be regular .py files
@@ -66,7 +66,7 @@ class SparseType(AtomicType, cache_size=64):
     def from_typespec(cls, *args: str):
         atomic_types = set()
         for a in args:
-            a = resolve_atomic_type(a)
+            a = resolve_type(a)
             if isinstance(a, CompositeType):
                 atomic_types.update(a.types)
             else:
@@ -112,6 +112,9 @@ class SparseType(AtomicType, cache_size=64):
     def __eq__(self, other: AtomicType) -> bool:
         # TODO: account for default fill_value, which is a wildcard
         return isinstance(other, type(self))
+
+    def __hash__(self) -> int:
+        return self.hash
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.atomic_type, name)

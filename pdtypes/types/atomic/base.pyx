@@ -1,7 +1,7 @@
 from collections import namedtuple
 import inspect
 from itertools import combinations
-import re
+import regex as re
 from typing import Any, Iterator
 
 cimport cython
@@ -98,7 +98,8 @@ cdef class AtomicTypeRegistry:
         long long int hash
         object _aliases
         object _regex
-
+        object _resolvable
+        
     def __init__(self):
         self.atomic_types = []
         self.update_hash()
@@ -274,7 +275,7 @@ cdef class AtomicTypeRegistry:
         if self.needs_updating(self._regex):
             # fastfail: empty case
             if not self.atomic_types:
-                result = re.compile("a^")  # matches nothing
+                result = re.compile(".^")  # matches nothing
 
             # update using string aliases from every registered subtype
             else:
@@ -289,7 +290,7 @@ cdef class AtomicTypeRegistry:
                 # join with regex OR and compile regex
                 result = re.compile(
                     rf"(?P<type>{'|'.join(string_aliases)})"
-                    rf"(\[(?P<args>[^\]]+)\])?"
+                    rf"(\[(?P<args>([^\[\]]|(?R))*)\])?"
                 )
 
             # remember result
@@ -297,6 +298,25 @@ cdef class AtomicTypeRegistry:
 
         # return cached value
         return self._regex.value
+
+    @property
+    def resolvable(self) -> re.Pattern:
+        # check if cache is out of date
+        if self.needs_updating(self._resolvable):
+            # wrap self.regex in ^$ to match the entire string and allow for
+            # comma-separated repetition of AtomicType patterns.
+            pattern = rf"(?P<atomic>{self.regex.pattern})(,\s*(?&atomic))*"
+            lead = r"((CompositeType\(\{)|\{)?"
+            follow = r"((\}\))|\})?"
+
+            # compile regex
+            result = re.compile(rf"{lead}(?P<body>{pattern}){follow}")
+
+            # remember result
+            self._resolvable = remember(result, self.hash)
+
+        # return cached value
+        return self._resolvable.value
 
     #############################
     ####    MAGIC METHODS    ####
