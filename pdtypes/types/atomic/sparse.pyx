@@ -3,12 +3,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .base import AtomicType, CompositeType
+from .base cimport AtomicType, CompositeType
 
-from ..resolve.string import resolve_type
-
-
-# TODO: these should be regular .py files
+from ..resolve.string import resolve_string_typespec
 
 
 class SparseType(AtomicType, cache_size=64):
@@ -38,7 +35,7 @@ class SparseType(AtomicType, cache_size=64):
         # call AtomicType.__init__()
         super(SparseType, self).__init__(
             backend=self.atomic_type.backend,
-            object_type=self.atomic_type.object_type,
+            typedef=self.atomic_type.typedef,
             dtype=dtype,
             na_value=self.atomic_type.na_value,
             itemsize=self.atomic_type.itemsize,
@@ -63,20 +60,16 @@ class SparseType(AtomicType, cache_size=64):
         return f"{cls.name}[{', '.join(args)}]"
 
     @classmethod
-    def from_typespec(cls, *args: str):
-        atomic_types = set()
-        for a in args:
-            a = resolve_type(a)
-            if isinstance(a, CompositeType):
-                atomic_types.update(a.types)
-            else:
-                atomic_types.add(a)
+    def from_string(cls, atomic_type: str = None, fill_value: str = None):
+        cdef AtomicType instance = None
+        cdef object parsed = None
 
-        if not atomic_types:  # no types
-            return cls.instance()
-        if len(atomic_types) > 1:  # multiple types
-            return CompositeType(cls.instance(a) for a in atomic_types)
-        return cls.instance(atomic_types.pop())  # single type
+        if atomic_type is not None:
+            instance = resolve_string_typespec(atomic_type)
+        if fill_value is not None:
+            parsed = instance.parse(fill_value)
+
+        return cls.instance(atomic_type=instance, fill_value=parsed)
 
     @classmethod
     def register_supertype(cls, supertype: type) -> None:
@@ -108,6 +101,19 @@ class SparseType(AtomicType, cache_size=64):
         if result is None:
             return None
         return self.instance(result, fill_value=self.fill_value)
+
+    def replace(
+        self,
+        atomic_type=None,
+        fill_value=None,
+        **kwargs
+    ) -> AtomicType:
+        if atomic_type is None:
+            atomic_type = self.atomic_type.replace(**kwargs)
+        if fill_value is None:
+            fill_value = self.fill_value
+        return self.instance(atomic_type=atomic_type, fill_value=fill_value)
+
 
     def __eq__(self, other: AtomicType) -> bool:
         # TODO: account for default fill_value, which is a wildcard

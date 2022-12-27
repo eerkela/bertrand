@@ -1,8 +1,23 @@
 from typing import Iterator
 
+import numpy as np
+import pandas as pd
 import regex as re  # using alternate python regex
 
-from ..atomic.base cimport AtomicType, ElementType, CompositeType
+from ..atomic.base cimport AtomicType, CompositeType
+
+
+# TODO: tokenize() needs to account for types that have spaces in their
+# aliases.  Just put an AtomicType.registry.regex check before any
+# call signatures
+
+
+# TODO: AtomicType regex should allow for nested brackets.  I think the only
+# reason why it doesn't is that (?R) is trying to match the name part of a
+# type specifer as well, rather than just its args.  Maybe nested() needs
+# to be in base?
+# -> if that's the case, just put all resolve_* functions in there as well.
+# That way, SparseType can just import everything from base.
 
 
 cdef str nested(str opener, str closer):
@@ -15,14 +30,15 @@ cdef str parens = nested("(", ")")
 cdef str brackets = nested("[", "]")
 cdef str curlies = nested("{", "}")
 cdef str call = rf"(?P<name>\w*)({parens}|{brackets})"
-cdef object tokenize_regex = re.compile(rf"{call}|{curlies}|(\w+)")
+cdef str whitelist = r"[<>\w]+"
+cdef object tokenize_regex = re.compile(rf"{call}|{curlies}|{whitelist}")
 
 
 cdef list tokenize(str input_str):
     return [x.group() for x in tokenize_regex.finditer(input_str)]
 
 
-def resolve_type(str input_str) -> AtomicType | CompositeType:
+def resolve_string_typespec(str input_str) -> AtomicType | CompositeType:
     # strip leading, trailing whitespace from input
     input_str = input_str.strip()
 
@@ -50,7 +66,7 @@ def resolve_type(str input_str) -> AtomicType | CompositeType:
 
         # tokenize args and pass to info.type.from_string()
         else:
-            instance = info.type.from_typespec(*tokenize(m["args"]))
+            instance = info.type.from_string(*tokenize(m["args"]))
 
         # add to result set
         result.add(instance)

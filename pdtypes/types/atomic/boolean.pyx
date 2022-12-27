@@ -2,7 +2,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AtomicType
+from .base cimport AtomicType, null
 
 
 ##########################
@@ -37,22 +37,22 @@ class BooleanType(AtomicType):
     def __init__(self, backend: str = None):
         # "bool"
         if backend is None:
-            object_type = None
+            typedef = None
             dtype = None
 
         # "bool[python]"
         elif backend == "python":
-            object_type = bool
+            typedef = bool
             dtype = np.dtype("O")
 
         # "bool[numpy]"
         elif backend == "numpy":
-            object_type = np.bool_
+            typedef = np.bool_
             dtype = np.dtype(bool)
 
         # "bool[pandas]"
         elif backend == "pandas":
-            object_type = np.bool_
+            typedef = np.bool_
             dtype = pd.BooleanDtype()
 
         # unrecognized
@@ -63,7 +63,7 @@ class BooleanType(AtomicType):
 
         super(BooleanType, self).__init__(
             backend=backend,
-            object_type=object_type,
+            typedef=typedef,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=1,
@@ -76,3 +76,14 @@ class BooleanType(AtomicType):
         if backend is not None:
             slug = f"{slug}[{backend}]"
         return slug
+
+    def parse(self, input_str: str):
+        lower = input_str.lower()
+        if lower not in ("true", "false"):
+            raise TypeError("could not interpret boolean string: {input_str}")
+        return self.typedef(lower == "true")
+
+    def replace(self, backend=null) -> AtomicType:
+        if backend is null:
+            backend = self.backend
+        return self.instance(backend=backend)

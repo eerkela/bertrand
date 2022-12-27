@@ -2,7 +2,7 @@ from collections import namedtuple
 import inspect
 from itertools import combinations
 import regex as re
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 cimport cython
 cimport numpy as np
@@ -14,7 +14,9 @@ from pdtypes.util.structs cimport LRUDict
 
 
 # TODO: remove all references to backend in AtomicType methods.
-
+# -> the only attributes strictly necessary for program flow are
+# typedef, dtype, na_value, slug
+# -> itemsize is necessary to overwrite existing itemsize setting
 
 
 # TODO: register_subtype shouldn't exist.  Always use register_supertype.
@@ -23,38 +25,27 @@ from pdtypes.util.structs cimport LRUDict
 # an existing supertype with a new one.
 
 
-# TODO: add negative versions for each operation
-# subtype/supertype -> orphan()
-# alias -> remove_alias()
-
-
-# TODO: move ElementType into pdtypes.types.element_type.py
-# -> ElementType gets broken up into AdapterType, which serves as a base class
-# for SparseType, CategoricalType
-
-# SparseType(Int64Type("numpy"), fill_value=pd.NA)
-# CategoricalType(Int64Type("numpy"), levels=(3, 4, 5))
-# SparseType(CategoricalType(Int64Type("numpy"), levels=(3, 4, 5)), fill_value=pd.NA)
-# == sparse[categorical[int64[numpy]]]
-# == sparse[categorical[int64[numpy], (3, 4, 5)], <NA>]
-# the second one requires either a .parse method or you just run str() on
-# levels, fill_value and compare for equality.  It also disallows
-# shorthand forms, like sparse[int, float, bool]
-
-
 #########################
 ####    CONSTANTS    ####
 #########################
 
 
-# size (in items) to use for LRU cache registries
-# cdef unsigned short cache_size = 64
+# a null value other than None
+cdef NullValue null = NullValue()
 
 
 # namedtuple specifying everything needed to construct an AtomicType object
 # from a given alias.
 cdef type AliasInfo = namedtuple("AliasInfo", "type, default_kwargs")
 cdef type remember = namedtuple("remember", "value, hash")
+
+
+# strings associated with every possible missing value (for scalar parsing)
+cdef dict na_strings = {
+    str(pd.NA).lower(): pd.NA,
+    str(pd.NaT).lower(): pd.NaT,
+    str(np.nan).lower(): np.nan,
+}
 
 
 # TODO: these go in individual AtomicType definitions, under cls.flyweights
@@ -67,6 +58,33 @@ cdef type remember = namedtuple("remember", "value, hash")
 #######################
 ####    HELPERS    ####
 #######################
+
+
+def from_caller(name: str, stack_index: int = 1):
+    """Get an arbitrary object from a parent calling context."""
+    # split name into '.'-separated object path
+    full_path = name.split(".")
+    frame = inspect.stack()[stack_index].frame
+
+    # get first component of full path from calling context
+    first = full_path[0]
+    if first in frame.f_locals:
+        result = frame.f_locals[first]
+    elif first in frame.f_globals:
+        result = frame.f_globals[first]
+    elif first in frame.f_builtins:
+        result = frame.f_builtins[first]
+    else:
+        raise ValueError(
+            f"could not find {name} in calling frame at position {stack_index}"
+        )
+
+    # walk through any remaining path components
+    for component in full_path[1:]:
+        result = getattr(result, component)
+
+    # return fully resolved object
+    return result
 
 
 cdef void _traverse_subtypes(type atomic_type, set result):
@@ -86,6 +104,49 @@ cdef set traverse_subtypes(type atomic_type):
     return result
 
 
+cdef int validate(
+    type subclass,
+    str name,
+    object expected_type = None,
+    object signature = None,
+) except -1:
+    """Ensure that a subclass defines a particular named attribute."""
+    # ensure attribute exists
+    if not hasattr(subclass, name):
+        raise TypeError(
+            f"{subclass.__name__} must define a `{name}` attribute"
+        )
+
+    # get attribute value
+    attr = getattr(subclass, name)
+
+    # if an expected type is given, check it
+    if expected_type is not None:
+        if expected_type in ("method", "classmethod"):
+            bound = getattr(attr, "__self__", None)
+            if expected_type == "method" and bound:
+                raise TypeError(
+                    f"{subclass.__name__}.{name}() must be an instance method"
+                )
+            elif expected_type == "classmethod" and bound != subclass:
+                raise TypeError(
+                    f"{subclass.__name__}.{name}() must be a classmethod"
+                )
+        elif not isinstance(attr, expected_type):
+            raise TypeError(
+                f"{subclass.__name__}.{name} must be of type {expected_type}, "
+                f"not {type(attr)}"
+            )
+
+    # if attribute has a signature match, check it
+    if signature is not None:
+        attr_sig = inspect.signature(attr)
+        if attr_sig.parameters != signature.parameters:
+            raise TypeError(
+                f"{subclass.__name__}.{name}() must have the following "
+                f"signature: {str(signature)}, not {attr_sig}"
+            )
+
 #######################
 ####    CLASSES    ####
 #######################
@@ -104,30 +165,20 @@ cdef class AtomicTypeRegistry:
         self.atomic_types = []
         self.update_hash()
 
-    ###################################
-    ####    VALIDATE PROPERTIES    ####
-    ###################################
+    #################################
+    ####    VALIDATE SUBCLASS    ####
+    #################################
 
-    cdef void validate_aliases(self, type subclass):
+    cdef int validate_aliases(self, type subclass) except -1:
         """Ensure that a subclass of AtomicType has an `aliases` dictionary
         and that none of its aliases overlap with another registered
         AtomicType.
         """
-        # ensure subclass.aliases exists
-        if not hasattr(subclass, "aliases"):
-            raise TypeError(
-                f"{subclass.__name__} must define an `aliases` class "
-                f"attribute mapping aliases accepted by `resolve_type()` to "
-                f"their corresponding `.instance()` **kwargs."
-            )
-
-        # ensure subclass.aliases is a dictionary
-        if not isinstance(subclass.aliases, dict):
-            raise TypeError(
-                f"{subclass.__name__}.aliases must be a dict-like object "
-                f"mapping aliases accepted by `resolve_type()` to their "
-                f"corresponding `.instance()` **kwargs."
-            )
+        validate(
+            subclass=subclass,
+            name="aliases",
+            expected_type=dict
+        )
 
         # ensure that no aliases are already registered to another AtomicType
         for k in subclass.aliases:
@@ -137,47 +188,26 @@ cdef class AtomicTypeRegistry:
                     f"registered to {self.aliases[k].type.__name__}"
                 )
 
-    cdef void validate_generate_slug(self, type subclass):
+    cdef int validate_generate_slug(self, type subclass) except -1:
         """Ensure that a subclass of AtomicType has a `generate_slug()`
         classmethod and that its signature matches __init__.
         """
-        # ensure that subclass.generate_slug() exists
-        if not hasattr(subclass, "generate_slug"):
-            raise TypeError(
-                f"AtomicType subclass {subclass.__name__} must define a "
-                f"`generate_slug()` classmethod with the same parameters as "
-                f"`__init__()`."
-            )
+        validate(
+            subclass=subclass,
+            name="generate_slug",
+            expected_type="classmethod",
+            signature=inspect.signature(subclass)
+        )
 
-        # TODO: ensure that subclass.generate_slug() is a classmethod
-
-        # ensure that signatures match
-        sig1 = inspect.signature(subclass.generate_slug).parameters
-        sig2 = inspect.signature(subclass).parameters
-        if sig1 != sig2:
-            raise TypeError(
-                f"{subclass.__name__}.generate_slug() must have the same "
-                f"parameters as `{subclass.__name__}.__init__()`"
-            )
-
-    cdef void validate_name(self, type subclass):
+    cdef int validate_name(self, type subclass) except -1:
         """Ensure that a subclass of AtomicType has a unique `name` attribute
         associated with it.
         """
-        # ensure subclass.name exists
-        if not hasattr(subclass, "name"):
-            raise TypeError(
-                f"AtomicType subclass {subclass.__name__} must define a "
-                f"unique `name` class attribute to use as the basis for "
-                f"associated string representations."
-            )
-
-        # ensure subclass.name is a string
-        if not isinstance(subclass.name, str):
-            raise TypeError(
-                f"{subclass.__name__}.name must be a string, not "
-                f"{type(subclass.name)}."
-            )
+        validate(
+            subclass=subclass,
+            name="name",
+            expected_type=str,
+        )
 
         # ensure subclass.name is unique
         observed_names = {x.name for x in self.atomic_types}
@@ -186,6 +216,15 @@ cdef class AtomicTypeRegistry:
                 f"{subclass.__name__}.name ({repr(subclass.name)}) must be "
                 f"unique (not one of {observed_names})"
             )
+
+    cdef int validate_replace(self, type subclass) except -1:
+        """Ensure that a subclass of AtomicType defines a `replace()` method.
+        """
+        validate(
+            subclass=subclass,
+            name="replace",
+            expected_type="method"
+        )
 
     ############################
     ####    RECORD STATE    ####
@@ -214,6 +253,7 @@ cdef class AtomicTypeRegistry:
         # validate AtomicType properties
         self.validate_name(new_type)
         self.validate_generate_slug(new_type)
+        self.validate_replace(new_type)
         self.validate_aliases(new_type)
 
         # add type to registry and update hash
@@ -269,7 +309,7 @@ cdef class AtomicTypeRegistry:
     def regex(self) -> re.Pattern:
         """Compile a regular expression to match any registered AtomicType
         name or alias, as well as any arguments that may be passed to its
-        `from_typespec()` constructor.
+        `from_string()` constructor.
         """
         # check if cache is out of date
         if self.needs_updating(self._regex):
@@ -349,14 +389,14 @@ cdef class AtomicType:
     def __init__(
         self,
         backend: str,
-        object_type: type,
+        typedef: type,
         dtype: object,
         na_value: Any,
         itemsize: int,
         slug: str
     ):
         self.backend = backend
-        self.object_type = object_type
+        self.typedef = typedef
         self.dtype = dtype
         self.na_value = na_value
         self.itemsize = itemsize
@@ -379,10 +419,10 @@ cdef class AtomicType:
         return result
 
     @classmethod
-    def from_typespec(cls, *args) -> AtomicType:
+    def from_string(cls, *args: str) -> AtomicType:
         """An alias for `AtomicType.instance()` that gets called during
-        typespec resolution.  Override this if your type accepts more arguments
-        than the standard `backend`.
+        resolution of string-based type specifiers.  Override this if your type
+        implements custom logic at this step.
 
         .. Note: The inputs to each argument will always be strings.
         """
@@ -407,7 +447,7 @@ cdef class AtomicType:
         cls._supertype = None
         cls._subtypes -= cls._subtypes
 
-        # flush registry to synchronize instances
+        # rebuild regex patterns
         cls.registry.flush()
 
     @classmethod
@@ -449,16 +489,17 @@ cdef class AtomicType:
     @classmethod
     def register_alias(cls, alias: Any, defaults: dict) -> None:
         cls.aliases[alias] = defaults
-
-        # flush registry to synchronize instances
-        cls.registry.flush()
+        cls.registry.flush()  # rebuild regex patterns
 
     @classmethod
     def remove_alias(cls, alias: Any) -> None:
         del cls.aliases[alias]
+        cls.registry.flush()  # rebuild regex patterns
 
-        # flush registry to synchronize instances
-        cls.registry.flush()
+    @classmethod
+    def clear_aliases(cls) -> None:
+        cls.aliases.clear()
+        cls.registry.flush()  # rebuild regex patterns
 
     @property
     def root(self) -> AtomicType:
@@ -513,6 +554,14 @@ cdef class AtomicType:
         # TODO: update to support collective tests via CompositeType
         return self in other
 
+    def parse(self, input_str: str) -> Any:
+        lower = input_str.lower()
+        if lower in na_strings:
+            return na_strings[lower]
+        # TODO: check if self.typedef is None and raise a ValueError
+        # This should never occur.
+        return self.typedef(input_str)
+
     def __contains__(self, other: AtomicType) -> bool:
         # TODO: update to support collective tests via CompositeType
         return other in self.subtypes
@@ -540,70 +589,18 @@ cdef class AtomicType:
         # cooperative inheritance
         super(AtomicType, cls).__init_subclass__(**kwargs)
 
-        # if this type is to be registered, ensure it has required metadata
+        # validate subclass properties and add to registry, if directed
         if add_to_registry:
             cls.registry.add(cls)
 
-        # initialize required fields as if cls were a root type
+        # initialize required fields as if cls were an orphan type
         cls._subtypes = frozenset()
         cls._supertype = None
 
-        # add flyweight cache
+        # create an LRU flyweight cache (or use default shared dict)
         if cache_size is not None:
             cls.flyweights = LRUDict(maxsize=cache_size)
 
-
-class AdapterType(AtomicType, add_to_registry=False, cache_size=64):
-
-    def __init__(self, atomic_type: AtomicType):
-        self.atomic_type = atomic_type
-        super(AdapterType, self).__init__(
-            backend=self.atomic_type.backend,
-            object_type=self.atomic_type.object_type,
-            dtype=self.atomic_type.dtype,
-            na_value=self.atomic_type.na_value,
-            itemsize=self.atomic_type.itemsize,
-            slug=f"{self.name}[{str(self.atomic_type)}]"
-        )
-
-    @classmethod
-    def register_supertype(cls, supertype: type) -> None:
-        raise TypeError(f"AdapterTypes cannot have supertypes")
-
-    @classmethod
-    def register_subtype(cls, subtype: type) -> None:
-        raise TypeError(f"AdapterTypes cannot have subtypes")
-
-    @property
-    def root(self) -> AtomicType:
-        # TODO: these are broken due to the lack of generate_slug()
-        if self.atomic_type.supertype is None:
-            return self
-        return self.instance(self.atomic_type.root)
-
-    @property
-    def subtypes(self) -> frozenset:
-        # TODO: these are broken due to the lack of generate_slug()
-        return frozenset(self.instance(t) for t in self.atomic_type.subtypes)
-
-    @property
-    def supertype(self) -> AtomicType:
-        # TODO: these are broken due to the lack of generate_slug()
-        result = self.atomic_type.supertype
-        if result is None:
-            return None
-        return self.instance(result)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.atomic_type, name)
-
-    def __repr__(self) -> str:
-        return f"{type(self).__name__}({repr(self.atomic_type)})"
-
-
-
-
-# sparse[int64] == SparseType(Int64Type.instance(), pd.NA)
 
 
 
