@@ -7,38 +7,28 @@ import regex as re  # using alternate python regex
 from ..atomic.base cimport AtomicType, CompositeType
 
 
-# TODO: tokenize() needs to account for types that have spaces in their
-# aliases.  Just put an AtomicType.registry.regex check before any
-# call signatures
-
-
-# TODO: AtomicType regex should allow for nested brackets.  I think the only
-# reason why it doesn't is that (?R) is trying to match the name part of a
-# type specifer as well, rather than just its args.  Maybe nested() needs
-# to be in base?
-# -> if that's the case, just put all resolve_* functions in there as well.
-# That way, SparseType can just import everything from base.
-
-
-cdef str nested(str opener, str closer):
+cdef str nested(str opener, str closer, str name):
     opener = re.escape(opener)
     closer = re.escape(closer)
-    return rf"{opener}(?P<content>([^{opener}{closer}]|(?R))*){closer}"
+    return (
+        rf"(?P<{name}>{opener}"
+        rf"(?P<content>([^{opener}{closer}]|(?&{name}))*)"
+        rf"{closer})"
+    )
 
 
-cdef str parens = nested("(", ")")
-cdef str brackets = nested("[", "]")
-cdef str curlies = nested("{", "}")
-cdef str call = rf"(?P<name>\w*)({parens}|{brackets})"
-cdef str whitelist = r"[<>\w]+"
-cdef object tokenize_regex = re.compile(rf"{call}|{curlies}|{whitelist}")
+cdef str parens = nested("(", ")", "parens")
+cdef str brackets = nested("[", "]", "brackets")
+cdef str curlies = nested("{", "}", "curlies")  # broken
+cdef str call = rf"(?P<name>[^,]*)({parens}|{brackets}|{curlies})"
+cdef object tokenize_regex = re.compile(rf"{call}|[^,]+")
 
 
 cdef list tokenize(str input_str):
-    return [x.group() for x in tokenize_regex.finditer(input_str)]
+    return [x.group().strip() for x in tokenize_regex.finditer(input_str)]
 
 
-def resolve_string_typespec(str input_str) -> AtomicType | CompositeType:
+def resolve_typespec_string(str input_str) -> AtomicType | CompositeType:
     # strip leading, trailing whitespace from input
     input_str = input_str.strip()
 

@@ -37,7 +37,7 @@ cdef NullValue null = NullValue()
 # namedtuple specifying everything needed to construct an AtomicType object
 # from a given alias.
 cdef type AliasInfo = namedtuple("AliasInfo", "type, default_kwargs")
-cdef type remember = namedtuple("remember", "value, hash")
+cdef type CacheValue = namedtuple("CacheValue", "value, hash")
 
 
 # strings associated with every possible missing value (for scalar parsing)
@@ -230,6 +230,9 @@ cdef class AtomicTypeRegistry:
     ####    RECORD STATE    ####
     ############################
 
+    def remember(self, val) -> CacheValue:
+        return CacheValue(value=val, hash=self.hash)
+
     def needs_updating(self, prop) -> bool:
         """Check if a `remember()`-ed registry property is out of date."""
         return prop is None or prop.hash != self.hash
@@ -300,7 +303,7 @@ cdef class AtomicTypeRegistry:
                 for c in self.atomic_types
                 for k, v in c.aliases.items()
             }
-            self._aliases = remember(result, self.hash)
+            self._aliases = self.remember(result)
 
         # return cached value
         return self._aliases.value
@@ -330,11 +333,11 @@ cdef class AtomicTypeRegistry:
                 # join with regex OR and compile regex
                 result = re.compile(
                     rf"(?P<type>{'|'.join(string_aliases)})"
-                    rf"(\[(?P<args>([^\[\]]|(?R))*)\])?"
+                    rf"(?P<nested>\[(?P<args>([^\[\]]|(?&nested))*)\])?"
                 )
 
             # remember result
-            self._regex = remember(result, self.hash)
+            self._regex = self.remember(result)
 
         # return cached value
         return self._regex.value
@@ -353,7 +356,7 @@ cdef class AtomicTypeRegistry:
             result = re.compile(rf"{lead}(?P<body>{pattern}){follow}")
 
             # remember result
-            self._resolvable = remember(result, self.hash)
+            self._resolvable = self.remember(result)
 
         # return cached value
         return self._resolvable.value
@@ -531,7 +534,7 @@ cdef class AtomicType:
                 })
 
             # remember 
-            self._subtypes_cache = remember(result, hash(self.registry))
+            self._subtypes_cache = self.registry.remember(result)
 
         # return cached value
         return self._subtypes_cache.value
@@ -545,7 +548,7 @@ cdef class AtomicType:
                 result = self._supertype.instance(backend=self.backend)
             else:
                 result = None
-            self._supertype_cache = remember(result, hash(self.registry))
+            self._supertype_cache = self.registry.remember(result)
 
         # return cached value
         return self._supertype_cache.value

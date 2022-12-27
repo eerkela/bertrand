@@ -10,18 +10,7 @@ from .base cimport AtomicType, null
 ######################
 
 
-class MinMaxMixin:
-
-    @property
-    def max(self) -> int:
-        return self._max
-
-    @property
-    def min(self) -> int:
-        return self._min
-
-
-class GenerateSlugMixin:
+class IntegerMixin:
 
     @classmethod
     def generate_slug(cls, backend: str = None) -> str:
@@ -30,8 +19,13 @@ class GenerateSlugMixin:
             slug = f"{slug}[{backend}]"
         return slug
 
+    @property
+    def max(self) -> int:
+        return self._max
 
-class ReplaceMixin:
+    @property
+    def min(self) -> int:
+        return self._min
 
     def replace(self, backend=null) -> AtomicType:
         if backend is null:
@@ -44,7 +38,7 @@ class ReplaceMixin:
 #####################
 
 
-class IntegerType(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
+class IntegerType(AtomicType, IntegerMixin):
     """Integer supertype"""
 
     name = "int"
@@ -128,7 +122,7 @@ class SignedIntegerType(IntegerType):
         super(SignedIntegerType, self).__init__(backend=backend)
 
 
-class Int8Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
+class Int8Type(AtomicType, IntegerMixin):
     """8-bit integer subtype"""
 
     name = "int8"
@@ -183,7 +177,7 @@ class Int8Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
         self._max = 2**7 - 1
 
 
-class Int16Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
+class Int16Type(AtomicType, IntegerMixin):
     """16-bit integer subtype"""
 
     name = "int16"
@@ -238,7 +232,7 @@ class Int16Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
         self._max = 2**15 - 1
 
 
-class Int32Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
+class Int32Type(AtomicType, IntegerMixin):
     """32-bit integer subtype"""
 
     name = "int32"
@@ -293,7 +287,7 @@ class Int32Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
         self._max = 2**31 - 1
 
 
-class Int64Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
+class Int64Type(AtomicType, IntegerMixin):
     """64-bit integer subtype"""
 
     name = "int64"
@@ -348,7 +342,7 @@ class Int64Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
         self._max = 2**63 - 1
 
 
-class UnsignedIntegerType(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
+class UnsignedIntegerType(AtomicType, IntegerMixin):
     """Unsigned integer supertype"""
 
     name = "unsigned"
@@ -404,7 +398,7 @@ class UnsignedIntegerType(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMix
         self._max = 2**64 - 1
 
 
-class UInt8Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
+class UInt8Type(AtomicType, IntegerMixin):
     """8-bit unsigned integer subtype"""
 
     name = "uint8"
@@ -459,7 +453,7 @@ class UInt8Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
         self._max = 2**8 - 1
 
 
-class UInt16Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
+class UInt16Type(AtomicType, IntegerMixin):
     """16-bit unsigned integer subtype"""
 
     name = "uint16"
@@ -538,7 +532,7 @@ class UInt16Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
         return self._supertype
 
 
-class UInt32Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
+class UInt32Type(AtomicType, IntegerMixin):
     """32-bit unsigned integer subtype"""
 
     name = "uint32"
@@ -593,7 +587,7 @@ class UInt32Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
         self._max = 2**32 - 1
 
 
-class UInt64Type(AtomicType, MinMaxMixin, GenerateSlugMixin, ReplaceMixin):
+class UInt64Type(AtomicType, IntegerMixin):
     """32-bit unsigned integer subtype"""
 
     name = "uint64"

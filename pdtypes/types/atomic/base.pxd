@@ -42,4 +42,4 @@ cdef class CompositeType:
 # constants
 cdef NullValue null
 cdef type AliasInfo  # namedtuple
-cdef type remember  # namedtuple
+cdef type CacheValue  # namedtuple
