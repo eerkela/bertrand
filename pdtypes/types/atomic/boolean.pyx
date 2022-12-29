@@ -67,11 +67,11 @@ class BooleanType(AtomicType):
             dtype=dtype,
             na_value=pd.NA,
             itemsize=1,
-            slug=self.generate_slug(backend=backend)
+            slug=self.slugify(backend=backend)
         )
 
     @classmethod
-    def generate_slug(cls, backend: str = None) -> str:
+    def slugify(cls, backend: str = None) -> str:
         slug = f"{cls.name}"
         if backend is not None:
             slug = f"{slug}[{backend}]"

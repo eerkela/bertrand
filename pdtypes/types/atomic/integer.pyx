@@ -13,7 +13,7 @@ from .base cimport AtomicType, null
 class IntegerMixin:
 
     @classmethod
-    def generate_slug(cls, backend: str = None) -> str:
+    def slugify(cls, backend: str = None) -> str:
         slug = f"{cls.name}"
         if backend is not None:
             slug = f"{slug}[{backend}]"
@@ -98,7 +98,7 @@ class IntegerType(AtomicType, IntegerMixin):
             dtype=dtype,
             na_value=pd.NA,
             itemsize=itemsize,
-            slug=self.generate_slug(backend=backend)
+            slug=self.slugify(backend=backend)
         )
 
 
@@ -169,7 +169,7 @@ class Int8Type(AtomicType, IntegerMixin):
             dtype=dtype,
             na_value=pd.NA,
             itemsize=1,
-            slug=self.generate_slug(backend=backend)
+            slug=self.slugify(backend=backend)
         )
 
         # min/max representable values
@@ -224,7 +224,7 @@ class Int16Type(AtomicType, IntegerMixin):
             dtype=dtype,
             na_value=pd.NA,
             itemsize=2,
-            slug=self.generate_slug(backend=backend)
+            slug=self.slugify(backend=backend)
         )
 
         # min/max representable values
@@ -279,7 +279,7 @@ class Int32Type(AtomicType, IntegerMixin):
             dtype=dtype,
             na_value=pd.NA,
             itemsize=4,
-            slug=self.generate_slug(backend=backend)
+            slug=self.slugify(backend=backend)
         )
 
         # min/max representable values
@@ -334,7 +334,7 @@ class Int64Type(AtomicType, IntegerMixin):
             dtype=dtype,
             na_value=pd.NA,
             itemsize=8,
-            slug=self.generate_slug(backend=backend)
+            slug=self.slugify(backend=backend)
         )
 
         # min/max representable values
@@ -390,7 +390,7 @@ class UnsignedIntegerType(AtomicType, IntegerMixin):
             dtype=dtype,
             na_value=pd.NA,
             itemsize=itemsize,
-            slug=self.generate_slug(backend=backend)
+            slug=self.slugify(backend=backend)
         )
 
         # min/max representable values
@@ -445,7 +445,7 @@ class UInt8Type(AtomicType, IntegerMixin):
             dtype=dtype,
             na_value=pd.NA,
             itemsize=1,
-            slug=self.generate_slug(backend=backend)
+            slug=self.slugify(backend=backend)
         )
 
         # min/max representable values
@@ -500,7 +500,7 @@ class UInt16Type(AtomicType, IntegerMixin):
             dtype=dtype,
             na_value=pd.NA,
             itemsize=2,
-            slug=self.generate_slug(backend=backend)
+            slug=self.slugify(backend=backend)
         )
 
         # min/max representable values
@@ -579,7 +579,7 @@ class UInt32Type(AtomicType, IntegerMixin):
             dtype=dtype,
             na_value=pd.NA,
             itemsize=4,
-            slug=self.generate_slug(backend=backend)
+            slug=self.slugify(backend=backend)
         )
 
         # min/max representable values
@@ -634,7 +634,7 @@ class UInt64Type(AtomicType, IntegerMixin):
             dtype=dtype,
             na_value=pd.NA,
             itemsize=8,
-            slug=self.generate_slug(backend=backend)
+            slug=self.slugify(backend=backend)
         )
 
         # min/max representable values
@@ -683,9 +683,11 @@ cdef dict platform_specific_aliases = {
 
     # C short
     "short": np.dtype(np.short),
-    "signed short int": "short",
-    "signed short": "short",
     "short int": "short",
+    "short integer": "short",
+    "signed short": "short",
+    "signed short int": "short",
+    "signed short integer": "short",
     "h": "short",
 
     # C int
@@ -695,17 +697,21 @@ cdef dict platform_specific_aliases = {
     # C long
     "long": np.dtype(np.int_),
     "long int": "long",
+    "long integer": "long",
     "signed long": "long",
     "signed long int": "long",
+    "signed long integer": "long",
     "l": "long",
 
     # C long long
     "long long": np.dtype(np.longlong),
-    "longlong": "long long",
     "long long int": "long long",
+    "long long integer": "long long",
     "signed long long": "long long",
-    "signed longlong": "long long",
     "signed long long int": "long long",
+    "signed long long integer": "long long",
+    "longlong": "long long",
+    "signed longlong": "long long",
     "q": "long long",
 
     # C ssize_t
@@ -723,6 +729,7 @@ cdef dict platform_specific_aliases = {
     # C unsigned short
     "unsigned short": np.dtype(np.ushort),
     "unsigned short int": "unsigned short",
+    "unsigned short integer": "unsigned short",
     "ushort": "unsigned short",
     "H": "unsigned short",
 
@@ -734,14 +741,16 @@ cdef dict platform_specific_aliases = {
     # C unsigned long
     "unsigned long": np.dtype(np.uint),
     "unsigned long int": "unsigned long",
+    "unsigned long integer": "unsigned long",
     "ulong": "unsigned long",
     "L": "unsigned long",
 
     # C unsigned long long
     "unsigned long long": np.dtype(np.ulonglong),
-    "unsigned longlong": "unsigned long long",
     "unsigned long long int": "unsigned long long",
+    "unsigned long long integer": "unsigned long long",
     "ulonglong": "unsigned long long",
+    "unsigned longlong": "unsigned long long",
     "Q": "unsigned long long",
 
     # C size_t

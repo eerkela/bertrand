@@ -5,7 +5,11 @@ import pandas as pd
 
 from .base cimport AtomicType, CompositeType
 
-from ..resolve.string import resolve_string_typespec
+import pdtypes.types.resolve as resolve
+
+
+# TODO: ensure atomic_type is not a SparseType
+# -> in Categorical, ensure atomic_type is not a SparseType/CategoricalType
 
 
 class SparseType(AtomicType, cache_size=64):
@@ -39,7 +43,7 @@ class SparseType(AtomicType, cache_size=64):
             dtype=dtype,
             na_value=self.atomic_type.na_value,
             itemsize=self.atomic_type.itemsize,
-            slug=self.generate_slug(
+            slug=self.slugify(
                 atomic_type=self.atomic_type,
                 fill_value=fill_value
             )
@@ -49,7 +53,7 @@ class SparseType(AtomicType, cache_size=64):
         self.is_sparse = True
 
     @classmethod
-    def generate_slug(
+    def slugify(
         cls,
         atomic_type: AtomicType,
         fill_value: Any = None
@@ -65,7 +69,7 @@ class SparseType(AtomicType, cache_size=64):
         cdef object parsed = None
 
         if atomic_type is not None:
-            instance = resolve_string_typespec(atomic_type)
+            instance = resolve.resolve_typespec_string(atomic_type)
         if fill_value is not None:
             parsed = instance.parse(fill_value)
 
@@ -81,14 +85,14 @@ class SparseType(AtomicType, cache_size=64):
 
     @property
     def root(self) -> AtomicType:
-        # TODO: these are broken due to the lack of generate_slug()
+        # TODO: these are broken due to the lack of slugify()
         if self.atomic_type.supertype is None:
             return self
         return self.instance(self.atomic_type.root, fill_value=self.fill_value)
 
     @property
     def subtypes(self) -> frozenset:
-        # TODO: these are broken due to the lack of generate_slug()
+        # TODO: these are broken due to the lack of slugify()
         return frozenset(
             self.instance(t, fill_value=self.fill_value)
             for t in self.atomic_type.subtypes
@@ -96,7 +100,7 @@ class SparseType(AtomicType, cache_size=64):
 
     @property
     def supertype(self) -> AtomicType:
-        # TODO: these are broken due to the lack of generate_slug()
+        # TODO: these are broken due to the lack of slugify()
         result = self.atomic_type.supertype
         if result is None:
             return None

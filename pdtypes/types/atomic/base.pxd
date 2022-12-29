@@ -1,13 +1,30 @@
 cimport numpy as np
 
-from pdtypes.util.structs cimport LRUDict
-
 # classes
 cdef class NullValue:
     pass
 
 
-cdef class AtomicType:
+cdef class BaseType:
+    pass
+
+
+cdef class AtomicTypeRegistry:
+    cdef:
+        list atomic_types
+        long long int hash
+        object _aliases
+        object _regex
+        object _resolvable
+
+    cdef int validate_aliases(self, type subclass) except -1
+    cdef int validate_name(self, type subclass) except -1
+    cdef int validate_replace(self, type subclass) except -1
+    cdef int validate_slugify(self, type subclass) except -1
+    cdef void update_hash(self)
+
+
+cdef class AtomicType(BaseType):
     cdef:
         object _subtypes_cache
         object _supertype_cache
@@ -34,7 +51,7 @@ cdef class ElementType:
         str slug
 
 
-cdef class CompositeType:
+cdef class CompositeType(BaseType):
     cdef readonly:
         set element_types
 

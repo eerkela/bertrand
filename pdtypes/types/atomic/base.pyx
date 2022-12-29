@@ -13,16 +13,24 @@ from pdtypes import DEFAULT_STRING_DTYPE
 from pdtypes.util.structs cimport LRUDict
 
 
+# TODO: move from_caller to object.pyx.
+
+
 # TODO: remove all references to backend in AtomicType methods.
 # -> the only attributes strictly necessary for program flow are
 # typedef, dtype, na_value, slug
 # -> itemsize is necessary to overwrite existing itemsize setting
 
 
-# TODO: register_subtype shouldn't exist.  Always use register_supertype.
-# This forces some nodes to be root nodes and outlaws circular references.
-# Add an optional overwrite keyword that controls whether or not to replace
-# an existing supertype with a new one.
+# TODO: register_subtype/register_supertype should have an optional `replace`
+# keyword that controls whether or not to replace an existing supertype with a
+# new one.
+
+
+# TODO: have AtomicType.__init_subclass__() accept an additional
+# is_adapter_type: bool = False field that controls whether or not to add
+# **kwargs to the required signature of `.replace()`.  Otherwise, it is
+# expected to be the same as __init__.
 
 
 #########################
@@ -152,15 +160,29 @@ cdef int validate(
 #######################
 
 
-cdef class AtomicTypeRegistry:
+cdef class BaseType:
+    """Base type for AtomicType and CompositeType objects.  This has no
+    interface of its own and merely serves to anchor the inheritance of the
+    aforementioned objects.  Since Cython does not support true Union types,
+    this is the simplest way of coupling them reliably in the Cython layer.
+    """
+    pass
 
-    cdef:
-        list atomic_types
-        long long int hash
-        object _aliases
-        object _regex
-        object _resolvable
-        
+
+cdef class AtomicTypeRegistry:
+    """A registry containing all of the AtomicType subclasses that are
+    currently recognized by `resolve_type()` and related infrastructure.
+
+    This is a global object attached to the base AtomicType class definition.
+    It can be accessed through any of its instances, and it is updated
+    automatically whenever a class inherits from AtomicType.  The registry
+    itself contains methods to validate and synchronize subclass behavior,
+    including the maintenance of a set of regular expressions that account for
+    every known AtomicType alias, along with their default arguments.  These
+    lists are updated dynamically each time a new alias and/or type is added
+    to the pool.
+    """
+
     def __init__(self):
         self.atomic_types = []
         self.update_hash()
@@ -188,13 +210,13 @@ cdef class AtomicTypeRegistry:
                     f"registered to {self.aliases[k].type.__name__}"
                 )
 
-    cdef int validate_generate_slug(self, type subclass) except -1:
-        """Ensure that a subclass of AtomicType has a `generate_slug()`
+    cdef int validate_slugify(self, type subclass) except -1:
+        """Ensure that a subclass of AtomicType has a `slugify()`
         classmethod and that its signature matches __init__.
         """
         validate(
             subclass=subclass,
-            name="generate_slug",
+            name="slugify",
             expected_type="classmethod",
             signature=inspect.signature(subclass)
         )
@@ -255,7 +277,7 @@ cdef class AtomicTypeRegistry:
 
         # validate AtomicType properties
         self.validate_name(new_type)
-        self.validate_generate_slug(new_type)
+        self.validate_slugify(new_type)
         self.validate_replace(new_type)
         self.validate_aliases(new_type)
 
@@ -384,7 +406,37 @@ cdef class AtomicTypeRegistry:
         return repr(self.atomic_types)
 
 
-cdef class AtomicType:
+cdef class AtomicType(BaseType):
+    """Base type for all user-defined atomic types.
+
+    This is a metaclass.  Any time another class inherits from it, that class
+    must conform to the standard AtomicType interface unless `add_to_registry`
+    is explicitly set to `False`, like so:
+
+        ```
+        UnregisteredType(AtomicType, add_to_registry=False)
+        ```
+
+    If `add_to_registry=True` (the default behavior), then the inheriting class
+    must define certain required fields, as follows:
+        * `name`: a class property specifying a unique name to use when
+            generating string representations of the given type.
+        * `aliases`: a dictionary whose keys represent aliases that can be
+            resolved by the `resolve_type()` factory function.  Each key must
+            be unique, and must map to another dictionary containing keyword
+            arguments to that type's `__init__()` method.
+        * `slugify(cls, ...)`: a classmethod with the same argument signature
+            as `__init__()`.  This must return a unique string representation
+            for the given type, incorporating both its `name` and any arguments
+            passed to it.  The uniqueness of this string must be emphasized,
+            since it is directly hashed to locate flyweights of the given type.
+        * `replace(self, ...)`: an instance method that returns a copy of the
+            given type with the modifications specified in `...`.  For most
+            types, this will have the same arguments as `__init__()`, but if
+            a type modifies another type (e.g. `SparseType`/`CategoricalType`),
+            then it may pass additional arguments to the modified type's
+            `.replace()` method through the use of **kwargs.
+    """
 
     registry: TypeRegistry = AtomicTypeRegistry()
     flyweights: dict[int: AtomicType] = {}
@@ -410,7 +462,7 @@ cdef class AtomicType:
     def instance(cls, *args, **kwargs) -> AtomicType:
         """Base flyweight constructor."""
         # generate slug and compute hash
-        cdef long long _hash = hash(cls.generate_slug(*args, **kwargs))
+        cdef long long _hash = hash(cls.slugify(*args, **kwargs))
 
         # get previous flyweight, if one exists
         cdef AtomicType result = cls.flyweights.get(_hash, None)
@@ -589,23 +641,19 @@ cdef class AtomicType:
         cache_size: int = None,
         **kwargs
     ):
-        # cooperative inheritance
+        # allow cooperative inheritance
         super(AtomicType, cls).__init_subclass__(**kwargs)
+
+        # initialize required fields
+        cls._subtypes = frozenset()
+        cls._supertype = None
+        if cache_size is not None:
+            cls.flyweights = LRUDict(maxsize=cache_size)
 
         # validate subclass properties and add to registry, if directed
         if add_to_registry:
             cls.registry.add(cls)
-
-        # initialize required fields as if cls were an orphan type
-        cls._subtypes = frozenset()
-        cls._supertype = None
-
-        # create an LRU flyweight cache (or use default shared dict)
-        if cache_size is not None:
-            cls.flyweights = LRUDict(maxsize=cache_size)
-
-
-
+            cls.aliases[cls] = {}  # cls aliases itself
 
 
 cdef class ElementType:
@@ -708,7 +756,7 @@ cdef class ElementType:
 
 
 
-cdef class CompositeType:
+cdef class CompositeType(BaseType):
     # TODO: lift this out of atomic to pdtypes.types.composite_type.CompositeType
 
     # TODO: in reality, .index should only be defined for these types, not
