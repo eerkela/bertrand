@@ -1,13 +1,12 @@
+from types import MappingProxyType
+
 import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AtomicType, null
+from .base cimport AtomicType
 
-
-##########################
-####    SUPERTYPES    ####
-##########################
+import pdtypes.types.resolve as resolve
 
 
 class BooleanType(AtomicType):
@@ -32,27 +31,27 @@ class BooleanType(AtomicType):
         "?": {},
         "Boolean": {"backend": "pandas"},
     }
-    _backends = (None, "python", "numpy", "pandas")
+    _backends = ("python", "numpy", "pandas")
 
     def __init__(self, backend: str = None):
         # "bool"
         if backend is None:
-            typedef = None
+            type_def = None
             dtype = None
 
         # "bool[python]"
         elif backend == "python":
-            typedef = bool
+            type_def = bool
             dtype = np.dtype("O")
 
         # "bool[numpy]"
         elif backend == "numpy":
-            typedef = np.bool_
+            type_def = np.bool_
             dtype = np.dtype(bool)
 
         # "bool[pandas]"
         elif backend == "pandas":
-            typedef = np.bool_
+            type_def = np.bool_
             dtype = pd.BooleanDtype()
 
         # unrecognized
@@ -61,9 +60,11 @@ class BooleanType(AtomicType):
                 f"{self.name} backend not recognized: {repr(backend)}"
             )
 
+        self.backend = backend
+
+        # call AtomicType constructor
         super(BooleanType, self).__init__(
-            backend=backend,
-            typedef=typedef,
+            type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=1,
@@ -77,13 +78,36 @@ class BooleanType(AtomicType):
             slug = f"{slug}[{backend}]"
         return slug
 
+    @property
+    def kwargs(self) -> MappingProxyType:
+        return MappingProxyType({
+            "backend": self.backend
+        })
+
+    def _generate_subtypes(self, types: set) -> frozenset:
+        # treat backend=None as wildcard
+        kwargs = [self.kwargs]
+        if self.backend is None:
+            kwargs.extend([
+                {**kw, **{"backend": b}}
+                for kw in kwargs
+                for b in self._backends
+            ])
+
+        # build result, skipping invalid kwargs
+        result = set()
+        for t in types:
+            for kw in kwargs:
+                try:
+                    result.add(t.instance(**kw))
+                except TypeError:
+                    continue
+
+        # return as frozenset
+        return frozenset(result)
+
     def parse(self, input_str: str):
         lower = input_str.lower()
         if lower not in ("true", "false"):
             raise TypeError("could not interpret boolean string: {input_str}")
-        return self.typedef(lower == "true")
-
-    def replace(self, backend=null) -> AtomicType:
-        if backend is null:
-            backend = self.backend
-        return self.instance(backend=backend)
+        return self.type_def(lower == "true")

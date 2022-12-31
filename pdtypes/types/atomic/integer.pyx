@@ -1,8 +1,10 @@
+from types import MappingProxyType
+
 import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AtomicType, null
+from .base cimport AtomicType
 
 
 ######################
@@ -20,17 +22,32 @@ class IntegerMixin:
         return slug
 
     @property
-    def max(self) -> int:
-        return self._max
+    def kwargs(self) -> MappingProxyType:
+        return MappingProxyType({
+            "backend": self.backend
+        })
 
-    @property
-    def min(self) -> int:
-        return self._min
+    def _generate_subtypes(self, types: set) -> frozenset:
+        # treat backend=None as wildcard
+        kwargs = [self.kwargs]
+        if self.backend is None:
+            kwargs.extend([
+                {**kw, **{"backend": b}}
+                for kw in kwargs
+                for b in self._backends
+            ])
 
-    def replace(self, backend=null) -> AtomicType:
-        if backend is null:
-            backend = self.backend
-        return self.instance(backend=backend)
+        # build result, skipping invalid kwargs
+        result = set()
+        for t in types:
+            for kw in kwargs:
+                try:
+                    result.add(t.instance(**kw))
+                except TypeError:
+                    continue
+
+        # return as frozenset
+        return frozenset(result)
 
 
 #####################
@@ -38,7 +55,7 @@ class IntegerMixin:
 #####################
 
 
-class IntegerType(AtomicType, IntegerMixin):
+class IntegerType(IntegerMixin, AtomicType):
     """Integer supertype"""
 
     name = "int"
@@ -51,40 +68,40 @@ class IntegerType(AtomicType, IntegerMixin):
         "int": {},
         "integer": {},
     }
-    _backends = (None, "python", "numpy", "pandas")
+    _backends = ("python", "numpy", "pandas")
 
     def __init__(self, backend: str = None):
         # int
         if backend is None:
-            typedef = None
+            type_def = None
             dtype = None
             itemsize = None
-            self._min = -np.inf
-            self._max = np.inf
+            self.min = -np.inf
+            self.max = np.inf
 
         # int[python]
         elif backend == "python":
-            typedef = int
+            type_def = int
             dtype = np.dtype(np.object_)
             itemsize = None
-            self._min = -np.inf
-            self._max = np.inf
+            self.min = -np.inf
+            self.max = np.inf
 
         # int[numpy]
         elif backend == "numpy":
-            typedef = np.int64
+            type_def = np.int64
             dtype = np.dtype(np.int64)
             itemsize = 8
-            self._min = -2**63
-            self._max = 2**63 - 1
+            self.min = -2**63
+            self.max = 2**63 - 1
 
         # int[pandas]
         elif backend == "pandas":
-            typedef = np.int64
+            type_def = np.int64
             dtype = pd.Int64Dtype()
             itemsize = 8
-            self._min = -2**63
-            self._max = 2**63 - 1
+            self.min = -2**63
+            self.max = 2**63 - 1
 
         # unrecognized
         else:
@@ -92,9 +109,10 @@ class IntegerType(AtomicType, IntegerMixin):
                 f"{self.name} backend not recognized: {repr(backend)}"
             )
 
+        self.backend = backend
+
         super(IntegerType, self).__init__(
-            backend=backend,
-            typedef=typedef,
+            type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=itemsize,
@@ -122,7 +140,7 @@ class SignedIntegerType(IntegerType):
         super(SignedIntegerType, self).__init__(backend=backend)
 
 
-class Int8Type(AtomicType, IntegerMixin):
+class Int8Type(IntegerMixin, AtomicType):
     """8-bit integer subtype"""
 
     name = "int8"
@@ -139,22 +157,26 @@ class Int8Type(AtomicType, IntegerMixin):
         "i1": {},
         "Int8": {"backend": "pandas"},
     }
-    _backends = (None, "numpy", "pandas")
+    _backends = ("numpy", "pandas")
 
     def __init__(self, backend: str = None):
+        # min/max representable values
+        self.min = -2**7
+        self.max = 2**7 - 1
+
         # unsigned
         if backend is None:
-            typedef = None
+            type_def = None
             dtype = None
 
         # unsigned[numpy]
         elif backend == "numpy":
-            typedef = np.int8
+            type_def = np.int8
             dtype = np.dtype(np.int8)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            typedef = np.int8
+            type_def = np.int8
             dtype = pd.Int8Dtype()
 
         # unrecognized
@@ -163,21 +185,18 @@ class Int8Type(AtomicType, IntegerMixin):
                 f"{self.name} backend not recognized: {repr(backend)}"
             )
 
+        self.backend = backend
+
         super(Int8Type, self).__init__(
-            backend=backend,
-            typedef=typedef,
+            type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=1,
             slug=self.slugify(backend=backend)
         )
 
-        # min/max representable values
-        self._min = -2**7
-        self._max = 2**7 - 1
 
-
-class Int16Type(AtomicType, IntegerMixin):
+class Int16Type(IntegerMixin, AtomicType):
     """16-bit integer subtype"""
 
     name = "int16"
@@ -194,22 +213,26 @@ class Int16Type(AtomicType, IntegerMixin):
         "i2": {},
         "Int16": {"backend": "pandas"},
     }
-    _backends = (None, "numpy", "pandas")
+    _backends = ("numpy", "pandas")
 
     def __init__(self, backend: str = None):
+        # min/max representable values
+        self.min = -2**15
+        self.max = 2**15 - 1
+
         # unsigned
         if backend is None:
-            typedef = None
+            type_def = None
             dtype = None
 
         # unsigned[numpy]
         elif backend == "numpy":
-            typedef = np.int16
+            type_def = np.int16
             dtype = np.dtype(np.int16)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            typedef = np.int16
+            type_def = np.int16
             dtype = pd.Int16Dtype()
 
         # unrecognized
@@ -218,21 +241,18 @@ class Int16Type(AtomicType, IntegerMixin):
                 f"{self.name} backend not recognized: {repr(backend)}"
             )
 
+        self.backend = backend
+
         super(Int16Type, self).__init__(
-            backend=backend,
-            typedef=typedef,
+            type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=2,
             slug=self.slugify(backend=backend)
         )
 
-        # min/max representable values
-        self._min = -2**15
-        self._max = 2**15 - 1
 
-
-class Int32Type(AtomicType, IntegerMixin):
+class Int32Type(IntegerMixin, AtomicType):
     """32-bit integer subtype"""
 
     name = "int32"
@@ -249,22 +269,26 @@ class Int32Type(AtomicType, IntegerMixin):
         "i4": {},
         "Int32": {"backend": "pandas"},
     }
-    _backends = (None, "numpy", "pandas")
+    _backends = ("numpy", "pandas")
 
     def __init__(self, backend: str = None):
+        # min/max representable values
+        self.min = -2**31
+        self.max = 2**31 - 1
+
         # unsigned
         if backend is None:
-            typedef = None
+            type_def = None
             dtype = None
 
         # unsigned[numpy]
         elif backend == "numpy":
-            typedef = np.int32
+            type_def = np.int32
             dtype = np.dtype(np.int32)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            typedef = np.int32
+            type_def = np.int32
             dtype = pd.Int32Dtype()
 
         # unrecognized
@@ -273,21 +297,18 @@ class Int32Type(AtomicType, IntegerMixin):
                 f"{self.name} backend not recognized: {repr(backend)}"
             )
 
+        self.backend = backend
+
         super(Int32Type, self).__init__(
-            backend=backend,
-            typedef=typedef,
+            type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=4,
             slug=self.slugify(backend=backend)
         )
 
-        # min/max representable values
-        self._min = -2**31
-        self._max = 2**31 - 1
 
-
-class Int64Type(AtomicType, IntegerMixin):
+class Int64Type(IntegerMixin, AtomicType):
     """64-bit integer subtype"""
 
     name = "int64"
@@ -304,22 +325,26 @@ class Int64Type(AtomicType, IntegerMixin):
         "i8": {},
         "Int64": {"backend": "pandas"},
     }
-    _backends = (None, "numpy", "pandas")
+    _backends = ("numpy", "pandas")
 
     def __init__(self, backend: str = None):
+        # min/max representable values
+        self.min = -2**63
+        self.max = 2**63 - 1
+
         # unsigned
         if backend is None:
-            typedef = None
+            type_def = None
             dtype = None
 
         # unsigned[numpy]
         elif backend == "numpy":
-            typedef = np.int64
+            type_def = np.int64
             dtype = np.dtype(np.int64)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            typedef = np.int64
+            type_def = np.int64
             dtype = pd.Int64Dtype()
 
         # unrecognized
@@ -328,21 +353,18 @@ class Int64Type(AtomicType, IntegerMixin):
                 f"{self.name} backend not recognized: {repr(backend)}"
             )
 
+        self.backend = backend
+
         super(Int64Type, self).__init__(
-            backend=backend,
-            typedef=typedef,
+            type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=8,
             slug=self.slugify(backend=backend)
         )
 
-        # min/max representable values
-        self._min = -2**63
-        self._max = 2**63 - 1
 
-
-class UnsignedIntegerType(AtomicType, IntegerMixin):
+class UnsignedIntegerType(IntegerMixin, AtomicType):
     """Unsigned integer supertype"""
 
     name = "unsigned"
@@ -357,24 +379,28 @@ class UnsignedIntegerType(AtomicType, IntegerMixin):
         "uint": {},
         "u": {},
     }
-    _backends = (None, "numpy", "pandas")
+    _backends = ("numpy", "pandas")
 
     def __init__(self, backend: str = None):
+        # min/max representable values
+        self.min = 0
+        self.max = 2**64 - 1
+
         # unsigned
         if backend is None:
-            typedef = None
+            type_def = None
             dtype = None
             itemsize = None
 
         # unsigned[numpy]
         elif backend == "numpy":
-            typedef = np.uint64
+            type_def = np.uint64
             dtype = np.dtype(np.uint64)
             itemsize = 8
 
         # unsigned[pandas]
         elif backend == "pandas":
-            typedef = np.uint64
+            type_def = np.uint64
             dtype = pd.UInt64Dtype()
             itemsize = 8
 
@@ -384,21 +410,18 @@ class UnsignedIntegerType(AtomicType, IntegerMixin):
                 f"{self.name} backend not recognized: {repr(backend)}"
             )
 
+        self.backend = backend
+
         super(UnsignedIntegerType, self).__init__(
-            backend=backend,
-            typedef=typedef,
+            type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=itemsize,
             slug=self.slugify(backend=backend)
         )
 
-        # min/max representable values
-        self._min = 0
-        self._max = 2**64 - 1
 
-
-class UInt8Type(AtomicType, IntegerMixin):
+class UInt8Type(IntegerMixin, AtomicType):
     """8-bit unsigned integer subtype"""
 
     name = "uint8"
@@ -415,22 +438,26 @@ class UInt8Type(AtomicType, IntegerMixin):
         "u1": {},
         "UInt8": {"backend": "pandas"},
     }
-    _backends = (None, "numpy", "pandas")
+    _backends = ("numpy", "pandas")
 
     def __init__(self, backend: str = None):
+        # min/max representable values
+        self.min = 0
+        self.max = 2**8 - 1
+
         # unsigned
         if backend is None:
-            typedef = None
+            type_def = None
             dtype = None
 
         # unsigned[numpy]
         elif backend == "numpy":
-            typedef = np.uint8
+            type_def = np.uint8
             dtype = np.dtype(np.uint8)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            typedef = np.uint8
+            type_def = np.uint8
             dtype = pd.UInt8Dtype()
 
         # unrecognized
@@ -439,21 +466,18 @@ class UInt8Type(AtomicType, IntegerMixin):
                 f"{self.name} backend not recognized: {repr(backend)}"
             )
 
+        self.backend = backend
+
         super(UInt8Type, self).__init__(
-            backend=backend,
-            typedef=typedef,
+            type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=1,
             slug=self.slugify(backend=backend)
         )
 
-        # min/max representable values
-        self._min = 0
-        self._max = 2**8 - 1
 
-
-class UInt16Type(AtomicType, IntegerMixin):
+class UInt16Type(IntegerMixin, AtomicType):
     """16-bit unsigned integer subtype"""
 
     name = "uint16"
@@ -470,22 +494,26 @@ class UInt16Type(AtomicType, IntegerMixin):
         "u2": {},
         "UInt16": {"backend": "pandas"},
     }
-    _backends = (None, "numpy", "pandas")
+    _backends = ("numpy", "pandas")
 
     def __init__(self, backend: str = None):
+        # min/max representable values
+        self.min = 0
+        self.max = 2**16 - 1
+
         # unsigned
         if backend is None:
-            typedef = None
+            type_def = None
             dtype = None
 
         # unsigned[numpy]
         elif backend == "numpy":
-            typedef = np.uint16
+            type_def = np.uint16
             dtype = np.dtype(np.uint16)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            typedef = np.uint16
+            type_def = np.uint16
             dtype = pd.UInt16Dtype()
 
         # unrecognized
@@ -494,45 +522,18 @@ class UInt16Type(AtomicType, IntegerMixin):
                 f"{self.name} backend not recognized: {repr(backend)}"
             )
 
+        self.backend = backend
+
         super(UInt16Type, self).__init__(
-            backend=backend,
-            typedef=typedef,
+            type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=2,
             slug=self.slugify(backend=backend)
         )
 
-        # min/max representable values
-        self._min = 0
-        self._max = 2**16 - 1
 
-    @property
-    def subtypes(self) -> frozenset:
-        if self._subtypes is None:
-            self._subtypes = frozenset({self})
-            if not self.nullable:
-                self._subtypes |= {
-                    type(x).instance(
-                        sparse=self.sparse,
-                        categorical=self.categorical,
-                        nullable=True
-                    ) for x in self._subtypes
-                }
-        return self._subtypes
-
-    @property
-    def supertype(self) -> IntegerType:
-        if self._supertype is None:
-            self._supertype = UnsignedIntegerType.instance(
-                sparse=self.sparse,
-                categorical=self.categorical,
-                nullable=self.nullable
-            )
-        return self._supertype
-
-
-class UInt32Type(AtomicType, IntegerMixin):
+class UInt32Type(IntegerMixin, AtomicType):
     """32-bit unsigned integer subtype"""
 
     name = "uint32"
@@ -549,22 +550,26 @@ class UInt32Type(AtomicType, IntegerMixin):
         "u4": {},
         "UInt32": {"backend": "pandas"},
     }
-    _backends = (None, "numpy", "pandas")
+    _backends = ("numpy", "pandas")
 
     def __init__(self, backend: str = None):
+        # min/max representable values
+        self.min = 0
+        self.max = 2**32 - 1
+
         # unsigned
         if backend is None:
-            typedef = None
+            type_def = None
             dtype = None
 
         # unsigned[numpy]
         elif backend == "numpy":
-            typedef = np.uint32
+            type_def = np.uint32
             dtype = np.dtype(np.uint32)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            typedef = np.uint32
+            type_def = np.uint32
             dtype = pd.UInt32Dtype()
 
         # unrecognized
@@ -573,21 +578,18 @@ class UInt32Type(AtomicType, IntegerMixin):
                 f"{self.name} backend not recognized: {repr(backend)}"
             )
 
+        self.backend = backend
+
         super(UInt32Type, self).__init__(
-            backend=backend,
-            typedef=typedef,
+            type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=4,
             slug=self.slugify(backend=backend)
         )
 
-        # min/max representable values
-        self._min = 0
-        self._max = 2**32 - 1
 
-
-class UInt64Type(AtomicType, IntegerMixin):
+class UInt64Type(IntegerMixin, AtomicType):
     """32-bit unsigned integer subtype"""
 
     name = "uint64"
@@ -604,22 +606,26 @@ class UInt64Type(AtomicType, IntegerMixin):
         "u8": {},
         "UInt64": {"backend": "pandas"},
     }
-    _backends = (None, "numpy", "pandas")
+    _backends = ("numpy", "pandas")
 
     def __init__(self, backend: str = None):
+        # min/max representable values
+        self.min = 0
+        self.max = 2**64 - 1
+
         # unsigned
         if backend is None:
-            typedef = None
+            type_def = None
             dtype = None
 
         # unsigned[numpy]
         elif backend == "numpy":
-            typedef = np.uint64
+            type_def = np.uint64
             dtype = np.dtype(np.uint64)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            typedef = np.uint64
+            type_def = np.uint64
             dtype = pd.UInt64Dtype()
 
         # unrecognized
@@ -628,18 +634,15 @@ class UInt64Type(AtomicType, IntegerMixin):
                 f"{self.name} backend not recognized: {repr(backend)}"
             )
 
+        self.backend = backend
+
         super(UInt64Type, self).__init__(
-            backend=backend,
-            typedef=typedef,
+            type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=8,
             slug=self.slugify(backend=backend)
         )
-
-        # min/max representable values
-        self._min = 0
-        self._max = 2**64 - 1
 
 
 ##########################

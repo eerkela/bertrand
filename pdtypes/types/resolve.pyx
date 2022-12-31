@@ -149,9 +149,9 @@ cdef atomic.BaseType resolve_typespec_string(str input_str):
         if not m["args"]:  # empty string or None
             instance = info.type.instance(**info.default_kwargs)
 
-        # tokenize args and pass to info.type.from_string()
+        # tokenize args and pass to info.type.resolve()
         else:
-            instance = info.type.from_string(*tokenize(m["args"]))
+            instance = info.type.resolve(*tokenize(m["args"]))
 
         # add to result set
         result.add(instance)

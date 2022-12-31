@@ -1,3 +1,4 @@
+from types import MappingProxyType
 from typing import Any
 
 import numpy as np
@@ -5,7 +6,7 @@ import pandas as pd
 
 from .base cimport AtomicType, CompositeType
 
-import pdtypes.types.resolve as resolve
+cimport pdtypes.types.resolve as resolve
 
 
 # TODO: ensure atomic_type is not a SparseType
@@ -24,7 +25,7 @@ class SparseType(AtomicType, cache_size=64):
         atomic_type: AtomicType,
         fill_value: Any = None
     ):
-        # add sparse-specific fields
+        self.is_sparse = True
         self.atomic_type = atomic_type
         if fill_value is None:
             self.fill_value = self.atomic_type.na_value
@@ -32,25 +33,21 @@ class SparseType(AtomicType, cache_size=64):
             self.fill_value = fill_value
 
         # wrap dtype
-        dtype = self.atomic_type.dtype
+        dtype = atomic_type.dtype
         if dtype is not None:
-            dtype = pd.SparseDtype(self.atomic_type.dtype, fill_value)
+            dtype = pd.SparseDtype(atomic_type.dtype, self.fill_value)
 
         # call AtomicType.__init__()
         super(SparseType, self).__init__(
-            backend=self.atomic_type.backend,
-            typedef=self.atomic_type.typedef,
+            type_def=atomic_type.type_def,
             dtype=dtype,
-            na_value=self.atomic_type.na_value,
-            itemsize=self.atomic_type.itemsize,
+            na_value=atomic_type.na_value,
+            itemsize=atomic_type.itemsize,
             slug=self.slugify(
-                atomic_type=self.atomic_type,
+                atomic_type=atomic_type,
                 fill_value=fill_value
             )
         )
-
-        # override AtomicType.is_sparse field
-        self.is_sparse = True
 
     @classmethod
     def slugify(
@@ -58,13 +55,12 @@ class SparseType(AtomicType, cache_size=64):
         atomic_type: AtomicType,
         fill_value: Any = None
     ) -> str:
-        args = [str(atomic_type)]
-        if fill_value is not None:
-            args.append(str(fill_value))
-        return f"{cls.name}[{', '.join(args)}]"
+        if fill_value is None:
+            fill_value = atomic_type.na_value
+        return f"{cls.name}[{str(atomic_type)}, {str(fill_value)}]"
 
     @classmethod
-    def from_string(cls, atomic_type: str = None, fill_value: str = None):
+    def resolve(cls, atomic_type: str = None, fill_value: str = None):
         cdef AtomicType instance = None
         cdef object parsed = None
 
@@ -84,55 +80,49 @@ class SparseType(AtomicType, cache_size=64):
         raise TypeError(f"SparseType cannot have subtypes")
 
     @property
+    def kwargs(self) -> MappingProxyType:
+        return MappingProxyType({
+            "atomic_type": self.atomic_type,
+            "fill_value": self.fill_value
+        })
+
+    @property
     def root(self) -> AtomicType:
-        # TODO: these are broken due to the lack of slugify()
         if self.atomic_type.supertype is None:
             return self
         return self.instance(self.atomic_type.root, fill_value=self.fill_value)
 
-    @property
-    def subtypes(self) -> frozenset:
-        # TODO: these are broken due to the lack of slugify()
+    def _generate_subtypes(self, types: set) -> frozenset:
+        # SparseType is an adapter type -> `types` is always an empty set
         return frozenset(
             self.instance(t, fill_value=self.fill_value)
             for t in self.atomic_type.subtypes
         )
 
-    @property
-    def supertype(self) -> AtomicType:
-        # TODO: these are broken due to the lack of slugify()
+    def _generate_supertype(self, type_def: type) -> AtomicType:
+        # SparseType is an adapter type -> `type_def` is always None
         result = self.atomic_type.supertype
         if result is None:
             return None
         return self.instance(result, fill_value=self.fill_value)
 
-    def replace(
-        self,
-        atomic_type=None,
-        fill_value=None,
-        **kwargs
-    ) -> AtomicType:
-        if atomic_type is None:
-            atomic_type = self.atomic_type.replace(**kwargs)
-        if fill_value is None:
-            fill_value = self.fill_value
-        return self.instance(atomic_type=atomic_type, fill_value=fill_value)
+    def replace(self, **kwargs) -> AtomicType:
+        # extract kwargs pertaining to SparseType
+        sparse_kwargs = {k: v for k, v in kwargs.items() if k in self.kwargs}
+        kwargs = {k: v for k, v in kwargs.items() if k not in self.kwargs}
 
+        # get atomic_type from sparse_kwargs or use default
+        if "atomic_type" in sparse_kwargs:
+            atomic_type = sparse_kwargs["atomic_type"]
+            del sparse_kwargs["atomic_type"]
+        else:
+            atomic_type = self.atomic_type
 
-    def __eq__(self, other: AtomicType) -> bool:
-        # TODO: account for default fill_value, which is a wildcard
-        return isinstance(other, type(self))
+        # pass non-sparse kwargs to atomic_type.replace()
+        atomic_type = atomic_type.replace(**kwargs)
 
-    def __hash__(self) -> int:
-        return self.hash
+        # construct new SparseType
+        return self.instance(atomic_type=atomic_type, **sparse_kwargs)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.atomic_type, name)
-
-    def __repr__(self) -> str:
-        return (
-            f"{type(self).__name__}("
-            f"{repr(self.atomic_type)}, "
-            f"fill_value={self.fill_value}"
-            f")"
-        )

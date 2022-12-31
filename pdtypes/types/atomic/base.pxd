@@ -1,9 +1,5 @@
 cimport numpy as np
 
-# classes
-cdef class NullValue:
-    pass
-
 
 cdef class BaseType:
     pass
@@ -19,36 +15,23 @@ cdef class AtomicTypeRegistry:
 
     cdef int validate_aliases(self, type subclass) except -1
     cdef int validate_name(self, type subclass) except -1
-    cdef int validate_replace(self, type subclass) except -1
     cdef int validate_slugify(self, type subclass) except -1
     cdef void update_hash(self)
 
 
 cdef class AtomicType(BaseType):
     cdef:
-        object _subtypes_cache
-        object _supertype_cache
+        object _subtypes
+        object _supertype
+        bint _is_frozen
 
     cdef readonly:
-        str backend
-        type object_type
+        type type_def
         object dtype
         object na_value
         object itemsize
         str slug
         long long hash
-
-
-cdef class ElementType:
-    cdef:
-        long long hash
-
-    cdef readonly:
-        AtomicType atomic_type
-        bint sparse
-        bint categorical
-        object index
-        str slug
 
 
 cdef class CompositeType(BaseType):
@@ -57,6 +40,9 @@ cdef class CompositeType(BaseType):
 
 
 # constants
-cdef NullValue null
 cdef type AliasInfo  # namedtuple
 cdef type CacheValue  # namedtuple
+
+
+# functions
+cdef set traverse_subtypes(type atomic_type)
