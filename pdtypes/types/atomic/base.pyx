@@ -1,8 +1,7 @@
-from collections import namedtuple
 import inspect
 from itertools import combinations
 import functools
-import regex as re
+import regex as re  # using alternate regex
 from typing import Any, Callable, Iterator
 
 cimport cython
@@ -13,12 +12,6 @@ import pandas as pd
 from pdtypes.util.structs cimport LRUDict
 
 import pdtypes.types.resolve as resolve
-
-
-# TODO: make kwargs a required @property attribute
-
-
-# TODO: switch from namedtuples to cython cdef classes
 
 
 # TODO: now that resolve_type has been written, add it to comparison methods
@@ -38,14 +31,9 @@ import pdtypes.types.resolve as resolve
 #########################
 
 
-# namedtuple specifying everything needed to construct an AtomicType object
-# from a given alias.
-cdef type AliasInfo = namedtuple("AliasInfo", "type, default_kwargs")
-cdef type CacheValue = namedtuple("CacheValue", "value, hash")
-
-
 # strings associated with every possible missing value (for scalar parsing)
 cdef dict na_strings = {
+    str(None).lower(): None,
     str(pd.NA).lower(): pd.NA,
     str(pd.NaT).lower(): pd.NaT,
     str(np.nan).lower(): np.nan,
@@ -62,20 +50,6 @@ cdef dict na_strings = {
 #######################
 ####    HELPERS    ####
 #######################
-
-
-def remember(attr_name: str):
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(self, *args, **kwargs):
-            attr = getattr(self, attr_name, None)
-            registry = getattr(self, "registry", self)
-            if attr is None or registry.needs_updating(attr):
-                attr = CacheValue(func(self, *args, **kwargs), hash(registry))
-                setattr(self, attr_name, attr)
-            return attr.value
-        return wrapper
-    return decorator
 
 
 def from_caller(name: str, stack_index: int = 1):
@@ -170,6 +144,20 @@ cdef int validate(
 #######################
 
 
+cdef class AliasInfo:
+
+    def __init__(self, type base, dict defaults):
+        self.base = base
+        self.defaults = defaults
+
+
+cdef class CacheValue:
+
+    def __init__(self, object value, long long hash):
+        self.value = value
+        self.hash = hash
+
+
 cdef class BaseType:
     """Base type for AtomicType and CompositeType objects.  This has no
     interface of its own and merely serves to anchor the inheritance of the
@@ -219,6 +207,16 @@ cdef class AtomicTypeRegistry:
                     f"{subclass.__name__} alias {repr(k)} is already "
                     f"registered to {self.aliases[k].type.__name__}"
                 )
+
+    cdef int validate_kwargs(self, type subclass) except -1:
+        """Ensure that a subclass of AtomicType defines a `kwargs` @property
+        descriptor.
+        """
+        validate(
+            subclass=subclass,
+            name="kwargs",
+            expected_type=property
+        )
 
     cdef int validate_slugify(self, type subclass) except -1:
         """Ensure that a subclass of AtomicType has a `slugify()`
@@ -280,6 +278,7 @@ cdef class AtomicTypeRegistry:
         self.validate_name(new_type)
         self.validate_slugify(new_type)
         self.validate_aliases(new_type)
+        self.validate_kwargs(new_type)
 
         # add type to registry and update hash
         self.atomic_types.append(new_type)
@@ -309,18 +308,19 @@ cdef class AtomicTypeRegistry:
     def aliases(self) -> dict[str, AliasInfo]:
         """Return an up-to-date dictionary of all of the AtomicType aliases
         that are currently recognized by `resolve_type()`.
-        
-        The returned dictionary maps aliases of any kind to namedtuple
-        (`AliasInfo`) objects, which contain the corresponding AtomicType
-        subclass and default arguments to that class's `.instance()`
-        method, if any are specified.
+
+        The returned dictionary maps aliases of any kind to simple struct
+        (`AliasInfo`) objects with two readonly fields: `AliasInfo.base` and
+        `AliasInfo.defaults`.  These contain the corresponding AtomicType
+        subclass and a default **kwargs dict to that class's `.instance()`
+        method when the alias is encountered.
         """
         # check if cache is out of date
         if self.needs_updating(self._aliases):
             result = {
                 k: AliasInfo(
-                    type=c,
-                    default_kwargs=v
+                    base=c,
+                    defaults=v
                 )
                 for c in self.atomic_types
                 for k, v in c.aliases.items()
@@ -670,7 +670,8 @@ cdef class AtomicType(BaseType):
         # initialize required fields
         cls._subtype_defs = frozenset()
         cls._supertype_def = None
-        cls.is_sparse = False
+        # TODO: could assign is_sparse, is_categorical here if I had an
+        # AdapterType parent class
         if cache_size is not None:
             cls.flyweights = LRUDict(maxsize=cache_size)
 
@@ -678,6 +679,62 @@ cdef class AtomicType(BaseType):
         if add_to_registry:
             cls.registry.add(cls)
             cls.aliases[cls] = {}  # cls always aliases itself
+
+
+cdef class AdapterType(AtomicType):
+    """Special case for AtomicTypes that modify other AtomicTypes."""
+
+    def __init__(
+        self,
+        atomic_type: AtomicType,
+        *args,
+        **kwargs
+    ):
+        self.atomic_type = atomic_type
+        super(AdapterType, self).__init__(*args, **kwargs)
+
+    @classmethod
+    def register_supertype(cls, supertype: type) -> None:
+        raise TypeError(f"AdapterTypes cannot have supertypes")
+
+    @classmethod
+    def register_subtype(cls, subtype: type) -> None:
+        raise TypeError(f"AdapterTypes cannot have subtypes")
+
+    @property
+    def root(self) -> AtomicType:
+        return self.replace(atomic_type=self.atomic_type.root)
+
+    def _generate_subtypes(self, types: set) -> frozenset:
+        return frozenset(
+            self.replace(atomic_type=t)
+            for t in self.atomic_type.subtypes
+        )
+
+    def _generate_supertype(self, type_def: type) -> AtomicType:
+        result = self.atomic_type.supertype
+        if result is None:
+            return None
+        return self.replace(atomic_type=result)
+
+    def replace(self, **kwargs) -> AtomicType:
+        # extract kwargs pertaining to AdapterType
+        adapter_kwargs = {k: v for k, v in kwargs.items() if k in self.kwargs}
+        kwargs = {k: v for k, v in kwargs.items() if k not in self.kwargs}
+
+        # merge adapter_kwargs with self.kwargs and get atomic_type
+        adapter_kwargs = {**self.kwargs, **adapter_kwargs}
+        atomic_type = adapter_kwargs["atomic_type"]
+        del adapter_kwargs["atomic_type"]
+
+        # pass non-sparse kwargs to atomic_type.replace()
+        atomic_type = atomic_type.replace(**kwargs)
+
+        # construct new AdapterType
+        return self.instance(atomic_type=atomic_type, **adapter_kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.atomic_type, name)
 
 
 cdef class CompositeType(BaseType):

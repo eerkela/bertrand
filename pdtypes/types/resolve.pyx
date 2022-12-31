@@ -22,6 +22,10 @@ import pdtypes.types.atomic as atomic
 cimport pdtypes.types.atomic as atomic
 
 
+# TODO: resolve_type currently can't interpret strings of the form:
+# "sparse[sparse[bool[numpy]]]"
+
+
 #####################
 ####   PUBLIC    ####
 #####################
@@ -147,11 +151,11 @@ cdef atomic.BaseType resolve_typespec_string(str input_str):
 
         # if no args are provided, use the default kwargs
         if not m["args"]:  # empty string or None
-            instance = info.type.instance(**info.default_kwargs)
+            instance = info.base.instance(**info.defaults)
 
-        # tokenize args and pass to info.type.resolve()
+        # tokenize args and pass to info.base.resolve()
         else:
-            instance = info.type.resolve(*tokenize(m["args"]))
+            instance = info.base.resolve(*tokenize(m["args"]))
 
         # add to result set
         result.add(instance)
@@ -189,7 +193,7 @@ cdef atomic.AtomicType resolve_typespec_dtype(object input_dtype):
     info = registry.aliases[input_dtype]
 
     # build result
-    cdef atomic.AtomicType result = info.type.instance(**info.default_kwargs)
+    cdef atomic.AtomicType result = info.base.instance(**info.defaults)
     if categorical:
         result = atomic.CategoricalType(result, **categorical)
     if sparse:
@@ -203,4 +207,4 @@ cdef atomic.AtomicType resolve_typespec_type(type input_type):
     """Resolve a runtime type definition, returning a corresponding AtomicType.
     """
     info = atomic.AtomicType.registry.aliases[input_type]
-    return info.type.instance(**info.default_kwargs)
+    return info.base.instance(**info.defaults)

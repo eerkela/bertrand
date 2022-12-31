@@ -1,6 +1,18 @@
 cimport numpy as np
 
 
+cdef class AliasInfo:
+    cdef readonly:
+        type base
+        dict defaults
+
+
+cdef class CacheValue:
+    cdef readonly:
+        object value
+        long long hash
+
+
 cdef class BaseType:
     pass
 
@@ -9,11 +21,12 @@ cdef class AtomicTypeRegistry:
     cdef:
         list atomic_types
         long long int hash
-        object _aliases
-        object _regex
-        object _resolvable
+        CacheValue _aliases
+        CacheValue _regex
+        CacheValue _resolvable
 
     cdef int validate_aliases(self, type subclass) except -1
+    cdef int validate_kwargs(self, type subclass) except -1
     cdef int validate_name(self, type subclass) except -1
     cdef int validate_slugify(self, type subclass) except -1
     cdef void update_hash(self)
@@ -21,8 +34,8 @@ cdef class AtomicTypeRegistry:
 
 cdef class AtomicType(BaseType):
     cdef:
-        object _subtypes
-        object _supertype
+        CacheValue _subtypes
+        CacheValue _supertype
         bint _is_frozen
 
     cdef readonly:
@@ -34,14 +47,18 @@ cdef class AtomicType(BaseType):
         long long hash
 
 
+cdef class AdapterType(AtomicType):
+    cdef readonly:
+        AtomicType atomic_type
+
+
 cdef class CompositeType(BaseType):
     cdef readonly:
         set element_types
 
 
 # constants
-cdef type AliasInfo  # namedtuple
-cdef type CacheValue  # namedtuple
+cdef dict na_strings
 
 
 # functions

@@ -4,7 +4,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AtomicType
+from .base cimport AtomicType, na_strings
 
 import pdtypes.types.resolve as resolve
 
@@ -31,6 +31,8 @@ class BooleanType(AtomicType):
         "?": {},
         "Boolean": {"backend": "pandas"},
     }
+    is_sparse = False
+    is_categorical = False
     _backends = ("python", "numpy", "pandas")
 
     def __init__(self, backend: str = None):
@@ -71,6 +73,10 @@ class BooleanType(AtomicType):
             slug=self.slugify(backend=backend)
         )
 
+    ########################
+    ####    REQUIRED    ####
+    ########################
+
     @classmethod
     def slugify(cls, backend: str = None) -> str:
         slug = f"{cls.name}"
@@ -83,6 +89,10 @@ class BooleanType(AtomicType):
         return MappingProxyType({
             "backend": self.backend
         })
+
+    ##############################
+    ####    CUSTOMIZATIONS    ####
+    ##############################
 
     def _generate_subtypes(self, types: set) -> frozenset:
         # treat backend=None as wildcard
@@ -108,6 +118,10 @@ class BooleanType(AtomicType):
 
     def parse(self, input_str: str):
         lower = input_str.lower()
+        if lower in na_strings:
+            return na_strings[lower]
         if lower not in ("true", "false"):
-            raise TypeError("could not interpret boolean string: {input_str}")
+            raise TypeError(
+                f"could not interpret boolean string: {input_str}"
+            )
         return self.type_def(lower == "true")

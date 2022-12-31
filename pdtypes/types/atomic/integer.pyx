@@ -14,6 +14,13 @@ from .base cimport AtomicType
 
 class IntegerMixin:
 
+    is_sparse = False
+    is_categorical = False
+
+    ########################
+    ####    REQUIRED    ####
+    ########################
+
     @classmethod
     def slugify(cls, backend: str = None) -> str:
         slug = f"{cls.name}"
@@ -26,6 +33,10 @@ class IntegerMixin:
         return MappingProxyType({
             "backend": self.backend
         })
+
+    ##############################
+    ####    CUSTOMIZATIONS    ####
+    ##############################
 
     def _generate_subtypes(self, types: set) -> frozenset:
         # treat backend=None as wildcard
@@ -764,4 +775,4 @@ cdef dict platform_specific_aliases = {
 }
 for alias, lookup in platform_specific_aliases.items():
     info = AtomicType.registry.aliases[lookup]
-    info.type.register_alias(alias, defaults={})
+    info.base.register_alias(alias, defaults={})
