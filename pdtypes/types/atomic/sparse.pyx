@@ -17,7 +17,7 @@ cdef class Null:
 null = Null()
 
 
-class SparseType(AdapterType, cache_size=64):
+class SparseType(AdapterType, cache_size=256):
 
     name = "sparse"
     aliases = {

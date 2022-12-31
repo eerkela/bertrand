@@ -14,9 +14,6 @@ from .base cimport AtomicType
 
 class IntegerMixin:
 
-    is_sparse = False
-    is_categorical = False
-
     ########################
     ####    REQUIRED    ####
     ########################

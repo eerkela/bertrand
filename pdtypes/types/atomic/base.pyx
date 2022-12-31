@@ -1,8 +1,7 @@
 import inspect
 from itertools import combinations
-import functools
 import regex as re  # using alternate regex
-from typing import Any, Callable, Iterator
+from typing import Any, Iterator
 
 cimport cython
 cimport numpy as np
@@ -14,16 +13,14 @@ from pdtypes.util.structs cimport LRUDict
 import pdtypes.types.resolve as resolve
 
 
-# TODO: now that resolve_type has been written, add it to comparison methods
-# to enable automatic resolution.
+# TODO: update CompositeType
+# - index
+# - automatic resolution
+# - expand()/collapse()
+# etc.
 
 
 # TODO: move from_caller to object.pyx.
-
-
-# TODO: register_subtype/register_supertype should have an optional `replace`
-# keyword that controls whether or not to replace an existing supertype with a
-# new one.
 
 
 #########################
@@ -505,7 +502,11 @@ cdef class AtomicType(BaseType):
         cls.registry.flush()
 
     @classmethod
-    def register_supertype(cls, supertype: type) -> None:
+    def register_supertype(
+        cls,
+        supertype: type,
+        overwrite: bool = False
+    ) -> None:
         # check supertype is a subclass of AtomicType
         if not issubclass(supertype, AtomicType):
             raise TypeError(f"`supertype` must be a subclass of AtomicType")
@@ -514,25 +515,33 @@ cdef class AtomicType(BaseType):
         if supertype is cls:
             raise TypeError("Type cannot be registered to itself")
 
-        # check type is unregistered
+        # check type is already registered
         if cls._supertype_def:
-            raise TypeError(
-                f"Types can only be registered to one supertype at a time "
-                f"(`{cls.__name__}` is currently registered to "
-                f"`{cls._supertype_def.__name__}`)"
-            )
+            if overwrite:
+                cls._supertype_def._subtype_defs -= {cls}
+                cls._supertype_def = supertype
+                supertype._subtype_defs |= {cls}
+            else:
+                raise TypeError(
+                    f"Types can only be registered to one supertype at a "
+                    f"time (`{cls.__name__}` is currently registered to "
+                    f"`{cls._supertype_def.__name__}`)"
+                )
 
         # register supertype
-        cls._supertype_def = supertype
-
-        # append type to supertype.subtypes
-        supertype._subtype_defs |= {cls}
+        else:
+            cls._supertype_def = supertype
+            supertype._subtype_defs |= {cls}
 
         # flush registry to synchronize instances
         cls.registry.flush()
 
     @classmethod
-    def register_subtype(cls, subtype: type) -> None:
+    def register_subtype(
+        cls,
+        subtype: type,
+        overwrite: bool = False
+    ) -> None:
         # check subtype is a subclass of AtomicType
         if not issubclass(subtype, AtomicType):
             raise TypeError(f"`subtype` must be a subclass of AtomicType")
@@ -541,7 +550,22 @@ cdef class AtomicType(BaseType):
         subtype.register_supertype(cls)
 
     @classmethod
-    def register_alias(cls, alias: Any, defaults: dict) -> None:
+    def register_alias(
+        cls,
+        alias: Any,
+        defaults: dict,
+        overwrite: bool = False
+    ) -> None:
+        if alias in cls.registry.aliases:
+            other = cls.registry.aliases[alias].base
+            if other is cls:
+                return None
+            if overwrite:
+                del other.aliases[alias]
+            else:
+                raise ValueError(
+                    f"alias {repr(alias)} is already registered to {other}"
+                )
         cls.aliases[alias] = defaults
         cls.registry.flush()  # rebuild regex patterns
 
@@ -618,9 +642,8 @@ cdef class AtomicType(BaseType):
             return all(o in self.subtypes for o in other)
         return other in self.subtypes
 
-    def is_subtype(self, other: AtomicType) -> bool:
-        # TODO: update to support collective tests via CompositeType
-        return self in other
+    def is_subtype(self, other) -> bool:
+        return self in resolve.resolve_type(other)
 
     def parse(self, input_str: str) -> Any:
         lower = input_str.lower()
@@ -637,9 +660,9 @@ cdef class AtomicType(BaseType):
     def __contains__(self, other) -> bool:
         return self.contains(other)
 
-    def __eq__(self, other: AtomicType) -> bool:
-        # TODO: update to support dynamic resolution via resolve_dtype()
-        return self.hash == hash(other)
+    def __eq__(self, other) -> bool:
+        other = resolve.resolve_type(other)
+        return isinstance(other, AtomicType) and self.hash == other.hash
 
     def __setattr__(self, name: str, value: Any) -> None:
         if self._is_frozen:
@@ -670,8 +693,9 @@ cdef class AtomicType(BaseType):
         # initialize required fields
         cls._subtype_defs = frozenset()
         cls._supertype_def = None
-        # TODO: could assign is_sparse, is_categorical here if I had an
-        # AdapterType parent class
+        if not issubclass(cls, AdapterType):
+            cls.is_sparse = False
+            cls.is_categorical = False
         if cache_size is not None:
             cls.flyweights = LRUDict(maxsize=cache_size)
 
@@ -694,11 +718,19 @@ cdef class AdapterType(AtomicType):
         super(AdapterType, self).__init__(*args, **kwargs)
 
     @classmethod
-    def register_supertype(cls, supertype: type) -> None:
+    def register_supertype(
+        cls,
+        supertype: type,
+        overwrite: bool = False
+    ) -> None:
         raise TypeError(f"AdapterTypes cannot have supertypes")
 
     @classmethod
-    def register_subtype(cls, subtype: type) -> None:
+    def register_subtype(
+        cls,
+        subtype: type,
+        overwrite: bool = False
+    ) -> None:
         raise TypeError(f"AdapterTypes cannot have subtypes")
 
     @property
@@ -732,6 +764,12 @@ cdef class AdapterType(AtomicType):
 
         # construct new AdapterType
         return self.instance(atomic_type=atomic_type, **adapter_kwargs)
+
+    def __dir__(self) -> list:
+        result = dir(type(self))
+        result += list(self.__dict__.keys())
+        result += [x for x in dir(self.atomic_type) if x not in result]
+        return result
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.atomic_type, name)

@@ -31,8 +31,6 @@ class BooleanType(AtomicType):
         "?": {},
         "Boolean": {"backend": "pandas"},
     }
-    is_sparse = False
-    is_categorical = False
     _backends = ("python", "numpy", "pandas")
 
     def __init__(self, backend: str = None):
