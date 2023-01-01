@@ -649,14 +649,23 @@ cdef class AtomicType(BaseType):
     ####################
 
     def parse(self, input_str: str) -> Any:
-        lower = input_str.lower()
-        if lower in resolve.na_strings:
-            return resolve.na_strings[lower]
+        """Convert an input string into an object of the corresponding type.
+        """
+        if input_str in resolve.na_strings:
+            return resolve.na_strings[input_str]
         if self.type_def is None:
             raise ValueError(
                 f"{repr(str(self))} types have no associated type_def"
             )
         return self.type_def(input_str)
+
+    def unwrap(self) -> AtomicType:
+        """Remove any AdapterTypes that have been attached to this AtomicType.
+        """
+        result = self
+        while hasattr(result, "atomic_type"):
+            result = result.atomic_type
+        return result
 
     #############################
     ####    MAGIC METHODS    ####

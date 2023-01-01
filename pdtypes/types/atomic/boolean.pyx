@@ -116,11 +116,10 @@ class BooleanType(AtomicType):
         return frozenset(result)
 
     def parse(self, input_str: str):
-        lower = input_str.lower()
-        if lower in resolve.na_strings:
-            return resolve.na_strings[lower]
-        if lower not in ("true", "false"):
+        if input_str in resolve.na_strings:
+            return resolve.na_strings[input_str]
+        if input_str not in ("True", "False"):
             raise TypeError(
                 f"could not interpret boolean string: {input_str}"
             )
-        return self.type_def(lower == "true")
+        return self.type_def(input_str == "True")

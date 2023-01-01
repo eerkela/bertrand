@@ -1,4 +1,4 @@
-from typing import Any, Union
+from typing import Any
 
 cimport numpy as np
 import numpy as np

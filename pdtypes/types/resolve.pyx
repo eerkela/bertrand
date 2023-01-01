@@ -98,10 +98,10 @@ def resolve_type(
 
 # strings associated with every possible missing value (for scalar parsing)
 cdef dict na_strings = {
-    str(None).lower(): None,
-    str(pd.NA).lower(): pd.NA,
-    str(pd.NaT).lower(): pd.NaT,
-    str(np.nan).lower(): np.nan,
+    str(None): None,
+    str(pd.NA): pd.NA,
+    str(pd.NaT): pd.NaT,
+    str(np.nan): np.nan,
 }
 
 
