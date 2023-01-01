@@ -440,6 +440,10 @@ cdef class AtomicType(BaseType):
         self.hash = hash(slug)
         self._is_frozen = True  # no new attributes after this point
 
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
+
     @classmethod
     def instance(cls, *args, **kwargs) -> AtomicType:
         """Base flyweight constructor."""
@@ -455,6 +459,10 @@ cdef class AtomicType(BaseType):
         # return flyweight
         return result
 
+    def replace(self, **kwargs) -> AtomicType:
+        cdef dict merged = {**self.kwargs, **kwargs}
+        return self.instance(**merged)
+
     @classmethod
     def resolve(cls, *args: str) -> AtomicType:
         """An alias for `AtomicType.instance()` that gets called during
@@ -464,6 +472,39 @@ cdef class AtomicType(BaseType):
         .. Note: The inputs to each argument will always be strings.
         """
         return cls.instance(*args)
+
+    #################################
+    ####    SUBTYPE/SUPERTYPE    ####
+    #################################
+
+    def _generate_subtypes(self, types: set) -> frozenset:
+        # build result, skipping invalid kwargs
+        result = set()
+        for t in types:
+            try:
+                result.add(t.instance(**self.kwargs))
+            except TypeError:
+                continue
+
+        # return as frozenset
+        return frozenset(result)
+
+    def _generate_supertype(self, type_def: type) -> AtomicType:
+        # check for root type
+        if type_def is None:
+            return None
+
+        # pass self.kwargs to supertype constructor
+        return type_def.instance(**self.kwargs)
+
+    def contains(self, other):
+        other = resolve.resolve_type(other)
+        if isinstance(other, CompositeType):
+            return all(o in self.subtypes for o in other)
+        return other in self.subtypes
+
+    def is_subtype(self, other) -> bool:
+        return self in resolve.resolve_type(other)
 
     @classmethod
     def orphan(cls) -> None:
@@ -486,6 +527,19 @@ cdef class AtomicType(BaseType):
 
         # rebuild regex patterns
         cls.registry.flush()
+
+    @classmethod
+    def register_subtype(
+        cls,
+        subtype: type,
+        overwrite: bool = False
+    ) -> None:
+        # check subtype is a subclass of AtomicType
+        if not issubclass(subtype, AtomicType):
+            raise TypeError(f"`subtype` must be a subclass of AtomicType")
+
+        # delegate to subtype.register_supertype()
+        subtype.register_supertype(cls)
 
     @classmethod
     def register_supertype(
@@ -522,18 +576,43 @@ cdef class AtomicType(BaseType):
         # flush registry to synchronize instances
         cls.registry.flush()
 
-    @classmethod
-    def register_subtype(
-        cls,
-        subtype: type,
-        overwrite: bool = False
-    ) -> None:
-        # check subtype is a subclass of AtomicType
-        if not issubclass(subtype, AtomicType):
-            raise TypeError(f"`subtype` must be a subclass of AtomicType")
+    @property
+    def root(self) -> AtomicType:
+        if self.supertype is None:
+            return self
+        return self.supertype.root
 
-        # delegate to subtype.register_supertype()
-        subtype.register_supertype(cls)
+    @property
+    def subtypes(self) -> CompositeType:
+        """Override this if you want to change how a subtype is called."""
+        # update cache if instance out of date
+        if self.registry.needs_updating(self._subtypes):
+            subtype_defs = traverse_subtypes(type(self))
+            result = self._generate_subtypes(subtype_defs)
+            self._subtypes = self.registry.remember(result)
+
+        # return cached value
+        return CompositeType(self._subtypes.value)
+
+    @property
+    def supertype(self) -> AtomicType:
+        """Override this if you want to change how a supertype is called."""
+        # update cache if instance out of date
+        if self.registry.needs_updating(self._supertype):
+            result = self._generate_supertype(self._supertype_def)
+            self._supertype = self.registry.remember(result)
+
+        # return cached value
+        return self._supertype.value
+
+    #####################
+    ####    ALIAS    ####
+    #####################
+
+    @classmethod
+    def clear_aliases(cls) -> None:
+        cls.aliases.clear()
+        cls.registry.flush()  # rebuild regex patterns
 
     @classmethod
     def register_alias(
@@ -560,88 +639,23 @@ cdef class AtomicType(BaseType):
         del cls.aliases[alias]
         cls.registry.flush()  # rebuild regex patterns
 
-    @classmethod
-    def clear_aliases(cls) -> None:
-        cls.aliases.clear()
-        cls.registry.flush()  # rebuild regex patterns
-
-    @property
-    def is_sparse(self) -> bool:
-        return False
-
-    @property
-    def is_categorical(self) -> bool:
-        return False
-
-    @property
-    def root(self) -> AtomicType:
-        if self.supertype is None:
-            return self
-        return self.supertype.root
-
-    @property
-    def subtypes(self) -> frozenset:
-        """Override this if you want to change how a subtype is called."""
-        # update cache if instance out of date
-        if self.registry.needs_updating(self._subtypes):
-            subtype_defs = traverse_subtypes(type(self))
-            result = self._generate_subtypes(subtype_defs)
-            self._subtypes = self.registry.remember(result)
-
-        # return cached value
-        return self._subtypes.value
-
-    @property
-    def supertype(self) -> AtomicType:
-        """Override this if you want to change how a supertype is called."""
-        # update cache if instance out of date
-        if self.registry.needs_updating(self._supertype):
-            result = self._generate_supertype(self._supertype_def)
-            self._supertype = self.registry.remember(result)
-
-        # return cached value
-        return self._supertype.value
-
-    def _generate_subtypes(self, types: set) -> frozenset:
-        # build result, skipping invalid kwargs
-        result = set()
-        for t in types:
-            try:
-                result.add(t.instance(**self.kwargs))
-            except TypeError:
-                continue
-
-        # return as frozenset
-        return frozenset(result)
-
-    def _generate_supertype(self, type_def: type) -> AtomicType:
-        # check for root type
-        if type_def is None:
-            return None
-
-        # pass self.kwargs to supertype constructor
-        return type_def.instance(**self.kwargs)
-
-    def contains(self, other):
-        other = resolve.resolve_type(other)
-        if isinstance(other, CompositeType):
-            return all(o in self.subtypes for o in other)
-        return other in self.subtypes
-
-    def is_subtype(self, other) -> bool:
-        return self in resolve.resolve_type(other)
+    ####################
+    ####    MISC    ####
+    ####################
 
     def parse(self, input_str: str) -> Any:
         lower = input_str.lower()
         if lower in resolve.na_strings:
             return resolve.na_strings[lower]
-        # TODO: check if self.type_def is None and raise a ValueError
-        # This should never occur.
+        if self.type_def is None:
+            raise ValueError(
+                f"{repr(str(self))} types have no associated type_def"
+            )
         return self.type_def(input_str)
 
-    def replace(self, **kwargs) -> AtomicType:
-        cdef dict merged = {**self.kwargs, **kwargs}
-        return self.instance(**merged)
+    #############################
+    ####    MAGIC METHODS    ####
+    #############################
 
     def __contains__(self, other) -> bool:
         return self.contains(other)
@@ -649,22 +663,6 @@ cdef class AtomicType(BaseType):
     def __eq__(self, other) -> bool:
         other = resolve.resolve_type(other)
         return isinstance(other, AtomicType) and self.hash == other.hash
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if self._is_frozen:
-            raise AttributeError("AtomicType objects are read-only")
-        else:
-            self.__dict__[name] = value
-
-    def __hash__(self) -> int:
-        return self.hash
-
-    def __repr__(self) -> str:
-        sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())
-        return f"{type(self).__name__}({sig})"
-
-    def __str__(self) -> str:
-        return self.slug
 
     @classmethod
     def __init_subclass__(
@@ -689,6 +687,22 @@ cdef class AtomicType(BaseType):
         if add_to_registry:
             cls.registry.add(cls)
             cls.aliases[cls] = {}  # cls always aliases itself
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if self._is_frozen:
+            raise AttributeError("AtomicType objects are read-only")
+        else:
+            self.__dict__[name] = value
+
+    def __hash__(self) -> int:
+        return self.hash
+
+    def __repr__(self) -> str:
+        sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())
+        return f"{type(self).__name__}({sig})"
+
+    def __str__(self) -> str:
+        return self.slug
 
 
 cdef class AdapterType(AtomicType):
