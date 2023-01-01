@@ -9,6 +9,11 @@ from .base cimport AtomicType, AdapterType
 cimport pdtypes.types.resolve as resolve
 
 
+# TODO: if SparseType is called on a SparseType, just replace that type's
+# na_value and return as-is.
+# That way you can explicitly pass a type to SparseType to ensure it is sparse
+
+
 cdef class Null:
     pass
 
@@ -68,7 +73,7 @@ class SparseType(AdapterType, cache_size=256):
     ) -> str:
         if fill_value is null:
             fill_value = atomic_type.na_value
-        return f"{cls.name}[{str(atomic_type)}, {str(fill_value)}]"
+        return f"{cls.name}[{atomic_type}, {fill_value}]"
 
     @property
     def kwargs(self) -> MappingProxyType:

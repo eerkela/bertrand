@@ -27,16 +27,16 @@ cimport pdtypes.types.atomic as atomic
 # "sparse[sparse[bool[numpy]]]"
 
 
-#####################
-####   PUBLIC    ####
-#####################
-
-
 # type hint for all the various specifiers that are accepted by resolve_type()
 resolvable = Union[
     str, type, np.dtype, pd.api.extensions.ExtensionDtype, atomic.AtomicType,
     atomic.CompositeType
 ]
+
+
+#####################
+####   PUBLIC    ####
+#####################
 
 
 def resolve_type(

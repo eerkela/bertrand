@@ -20,9 +20,9 @@ class IntegerMixin:
 
     @classmethod
     def slugify(cls, backend: str = None) -> str:
-        slug = f"{cls.name}"
+        slug = cls.name
         if backend is not None:
-            slug = f"{slug}[{backend}]"
+            slug += f"[{backend}]"
         return slug
 
     @property

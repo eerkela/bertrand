@@ -246,7 +246,7 @@ cdef class AtomicTypeRegistry:
         self.hash = hash(tuple(self.atomic_types))
     
     ################################
-    ####    ADD/REMOVE TYPES    ####update_hash
+    ####    ADD/REMOVE TYPES    ####
     ################################
 
     def add(self, new_type: type) -> None:
@@ -443,6 +443,11 @@ cdef class AtomicType(BaseType):
     ############################
     ####    CONSTRUCTORS    ####
     ############################
+
+    @classmethod
+    def detect(cls, example, **kwargs) -> AtomicType:
+        # most types disregard 
+        return cls.instance(**kwargs)
 
     @classmethod
     def instance(cls, *args, **kwargs) -> AtomicType:
@@ -791,7 +796,7 @@ cdef class CompositeType(BaseType):
     def __init__(
         self,
         atomic_types = None,
-        index: np.ndarray[object] = None
+        AtomicType[:] index = None
     ):
         # parse argument
         if atomic_types is None:  # empty
@@ -801,7 +806,7 @@ cdef class CompositeType(BaseType):
         elif isinstance(atomic_types, CompositeType):  # copy
             self.atomic_types = atomic_types.atomic_types.copy()
             if index is None:
-                index = atomic_types.index  # TODO: .copy()?
+                index = atomic_types._index
         elif (
             hasattr(atomic_types, "__iter__") and
             not isinstance(atomic_types, str)
@@ -824,7 +829,7 @@ cdef class CompositeType(BaseType):
             )
 
         # assign index
-        self.index = index
+        self._index = index
     
     ###############################
     ####    UTILITY METHODS    ####
@@ -854,7 +859,13 @@ cdef class CompositeType(BaseType):
         return self.union(atomic_type.subtypes for atomic_type in self)
 
     cdef void forget_index(self):
-        self.index = None
+        self._index = None
+
+    @property
+    def index(self) -> np.ndarray:
+        if self._index is None:
+            return None
+        return self._index.base.base
 
     ####################################
     ####    STATIC WRAPPER (SET)    ####
