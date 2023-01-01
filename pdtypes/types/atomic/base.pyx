@@ -10,31 +10,11 @@ import pandas as pd
 
 from pdtypes.util.structs cimport LRUDict
 
+cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 
-# TODO: update CompositeType
-# - index
-# - automatic resolution
-# - expand()/collapse()
-# etc.
-
-
 # TODO: move from_caller to object.pyx.
-
-
-#########################
-####    CONSTANTS    ####
-#########################
-
-
-# strings associated with every possible missing value (for scalar parsing)
-cdef dict na_strings = {
-    str(None).lower(): None,
-    str(pd.NA).lower(): pd.NA,
-    str(pd.NaT).lower(): pd.NaT,
-    str(np.nan).lower(): np.nan,
-}
 
 
 # TODO: these go in individual AtomicType definitions, under cls.flyweights
@@ -45,7 +25,7 @@ cdef dict na_strings = {
 
 
 #######################
-####    HELPERS    ####
+####    PRIVATE    ####
 #######################
 
 
@@ -136,9 +116,10 @@ cdef int validate(
                 f"signature: {str(signature)}, not {attr_sig}"
             )
 
-#######################
-####    CLASSES    ####
-#######################
+
+##########################
+####    PRIMITIVES    ####
+##########################
 
 
 cdef class AliasInfo:
@@ -162,6 +143,11 @@ cdef class BaseType:
     this is the simplest way of coupling them reliably in the Cython layer.
     """
     pass
+
+
+###########################
+####    ATOMIC TYPE    ####
+###########################
 
 
 cdef class AtomicTypeRegistry:
@@ -285,7 +271,7 @@ cdef class AtomicTypeRegistry:
         """Reset the registry's internal state, forcing every property to be
         recomputed.
         """
-        self.hash += 1
+        self.hash += 1  # this is overflow-safe
 
     def remove(self, old_type: type) -> None:
         """Remove an AtomicType subclass from the registry."""
@@ -647,8 +633,8 @@ cdef class AtomicType(BaseType):
 
     def parse(self, input_str: str) -> Any:
         lower = input_str.lower()
-        if lower in na_strings:
-            return na_strings[lower]
+        if lower in resolve.na_strings:
+            return resolve.na_strings[lower]
         # TODO: check if self.type_def is None and raise a ValueError
         # This should never occur.
         return self.type_def(input_str)
@@ -775,63 +761,364 @@ cdef class AdapterType(AtomicType):
         return getattr(self.atomic_type, name)
 
 
+##############################
+####    COMPOSITE TYPE    ####
+##############################
+
+
 cdef class CompositeType(BaseType):
+    """Set-like container for AtomicType objects.
 
-    # TODO: rename element_types -> atomic_types
-    # add index: np.ndarray = None argument
+    Implements the same interface as the built-in set type, but is restricted
+    to contain only AtomicType objects.  Also extends subset/superset/membership
+    checks to include subtypes for each of the contained AtomicTypes.
+    """
 
-    def __init__(self, element_types = None):
-        if element_types is None:
-            self.element_types = set()
+    def __init__(
+        self,
+        atomic_types = None,
+        index: np.ndarray[object] = None
+    ):
+        # parse argument
+        if atomic_types is None:  # empty
+            self.atomic_types = set()
+        elif isinstance(atomic_types, AtomicType):  # wrap
+            self.atomic_types = {atomic_types}
+        elif isinstance(atomic_types, CompositeType):  # copy
+            self.atomic_types = atomic_types.atomic_types.copy()
+            if index is None:
+                index = atomic_types.index  # TODO: .copy()?
+        elif (
+            hasattr(atomic_types, "__iter__") and
+            not isinstance(atomic_types, str)
+        ):  # build
+            self.atomic_types = set()
+            for val in atomic_types:
+                if isinstance(val, AtomicType):
+                    self.atomic_types.add(val)
+                elif isinstance(val, CompositeType):
+                    self.atomic_types.update(x for x in val)
+                else:
+                    raise TypeError(
+                        f"CompositeType objects can only contain AtomicTypes, "
+                        f"not {type(val)}"
+                    )
         else:
-            self.element_types = set(element_types)
-
-    @property
-    def has_index(self) -> bool:
-        """`True` if every ElementType in this CompositeType has an index and
-        none of their indices intersect.
-        """
-        return (
-            len(self) and
-            all(x.index is not None for x in self.element_types) and
-            not any(
-                len(x.index.intersection(y))
-                for x, y in combinations(self.element_types, r=2)
+            raise TypeError(
+                f"CompositeType objects can only contain AtomicTypes, "
+                f"not {type(atomic_types)}"
             )
+
+        # assign index
+        self.index = index
+    
+    ###############################
+    ####    UTILITY METHODS    ####
+    ###############################
+
+    def collapse(self) -> CompositeType:
+        """Return a copy with redundant subtypes removed.  A subtype is
+        redundant if it is fully encapsulated within the other members of the
+        CompositeType.
+        """
+        cdef AtomicType atomic_type
+        cdef AtomicType t
+
+        # for every AtomicType a, check if there is another AtomicType t such
+        # that a != t and a in t.  If this is true, then the type is redundant.
+        return CompositeType(
+            a for a in self
+            if not any(a != t and a in t for t in self.atomic_types)
         )
 
-    @property
-    def index(self) -> pd.Series:
-        if not self.has_index:
-            return None
+    def expand(self) -> CompositeType:
+        """Expand the contained AtomicTypes to include each of their subtypes.
+        """
+        cdef AtomicType atomic_type
 
-        indices = [x.bind_index() for x in self.element_types]
-        result = indices[0]
-        for series in indices[1:]:
-            result.update(series)
+        # simple union of subtypes
+        return self.union(atomic_type.subtypes for atomic_type in self)
+
+    cdef void forget_index(self):
+        self.index = None
+
+    ####################################
+    ####    STATIC WRAPPER (SET)    ####
+    ####################################
+
+    def add(self, typespec) -> None:
+        """Add a type specifier to the CompositeType."""
+        # resolve input
+        resolved = resolve.resolve_type(typespec)
+
+        # update self.atomic_types
+        if isinstance(resolved, AtomicType):
+            self.atomic_types.add(resolved)
+        else:
+            self.atomic_types.update(t for t in resolved)
+
+        # throw out index
+        self.forget_index()
+
+    def clear(self) -> None:
+        """Remove all AtomicTypes from the CompositeType."""
+        self.atomic_types.clear()
+        self.forget_index()
+
+    def copy(self) -> CompositeType:
+        """Return a shallow copy of the CompositeType."""
+        return CompositeType(self)
+
+    def difference(self, *others) -> CompositeType:
+        """Return a new CompositeType with AtomicTypes that are not in any of
+        the others.
+        """
+        cdef AtomicType x
+        cdef AtomicType y
+        cdef CompositeType other
+        cdef CompositeType result = self.expand()
+
+        # search expanded set and reject types that contain an item in other
+        for item in others:
+            other = CompositeType(resolve.resolve_type(item)).expand()
+            result = CompositeType(
+                x for x in result if not any(y in x for y in other)
+            )
+
+        # expand/reduce called only once
+        return result.collapse()
+
+    def difference_update(self, *others) -> None:
+        """Update a CompositeType in-place, removing AtomicTypes that can be
+        found in others.
+        """
+        self.atomic_types = self.difference(*others).atomic_types
+        self.forget_index()
+
+    def discard(self, typespec) -> None:
+        """Remove the given type specifier from the CompositeType if it is
+        present.
+        """
+        # resolve input
+        resolved = resolve.resolve_type(typespec)
+
+        # update self.atomic_types
+        if isinstance(resolved, AtomicType):
+            self.atomic_types.discard(resolved)
+        else:
+            for t in resolved:
+                self.atomic_types.discard(t)
+
+        # throw out index
+        self.forget_index()
+
+    def intersection(self, *others) -> CompositeType:
+        """Return a new CompositeType with AtomicTypes in common to this
+        CompositeType and all others.
+        """
+        cdef CompositeType other
+        cdef CompositeType result = self.copy()
+
+        # include any AtomicType in self iff it is contained in other.  Do the
+        # same in reverse.
+        for item in others:
+            other = CompositeType(resolve.resolve_type(other))
+            result = CompositeType(
+                {a for a in result if a in other} |
+                {t for t in other if t in result}
+            )
+
+        # return compiled result
         return result
 
-    @property
-    def root_index(self) -> pd.Series:
-        if not self.has_index:
-            return None
+    def intersection_update(self, *others) -> None:
+        """Update a CompositeType in-place, keeping only the AtomicTypes found
+        in it and all others.
+        """
+        self.atomic_types = self.intersection(*others).atomic_types
+        self.forget_index()
 
-        indices = [x.bind_index(root=True) for x in self.element_types]
-        result = indices[0]
-        for series in indices[1:]:
-            result.update(series)
-        return result
+    def isdisjoint(self, other) -> bool:
+        """Return `True` if the CompositeType has no AtomicTypes in common
+        with `other`.
 
-    def __iter__(self) -> Iterator[AtomicType]:
-        return iter(self.element_types)
+        CompositeTypes are disjoint if and only if their intersection is the
+        empty set.
+        """
+        return not self.intersection(other)
 
-    def __len__(self) -> int:
-        return len(self.element_types)
+    def issubset(self, other) -> bool:
+        """Test whether every AtomicType in the CompositeType is also in
+        `other`.
+        """
+        return self in resolve.resolve_type(other)
+
+    def issuperset(self, other) -> bool:
+        """Test whether every AtomicType in `other` is contained within the
+        CompositeType.
+        """
+        return resolve.resolve_type(other) in self
+
+    def pop(self) -> AtomicType:
+        """Remove and return an arbitrary AtomicType from the CompositeType.
+        Raises a KeyError if the CompositeType is empty.
+        """
+        self.forget_index()
+        return self.atomic_types.pop()
+
+    def remove(self, typespec) -> None:
+        """Remove the given type specifier from the CompositeType.  Raises a
+        KeyError if `typespec` is not contained in the set.
+        """
+        # resolve input
+        resolved = resolve.resolve_type(typespec)
+
+        # update self.atomic_types
+        if isinstance(resolved, AtomicType):
+            self.atomic_types.remove(resolved)
+        else:
+            for t in resolved:
+                self.atomic_types.remove(t)
+
+        # throw out index
+        self.forget_index()
+
+    def symmetric_difference(self, other) -> CompositeType:
+        """Return a new CompositeType with AtomicTypes that are in either the
+        original CompositeType or `other`, but not both.
+        """
+        resolved = CompositeType(resolve.resolve_type(other))
+        return (self.difference(resolved)) | (resolved.difference(self))
+
+    def symmetric_difference_update(self, other) -> None:
+        """Update a CompositeType in-place, keeping only AtomicTypes that
+        are found in either `self` or `other`, but not both.
+        """
+        self.atomic_types = self.symmetric_difference(other).atomic_types
+        self.forget_index()
+
+    def union(self, *others) -> CompositeType:
+        """Return a new CompositeType with all the AtomicTypes from this
+        CompositeType and all others.
+        """
+        return CompositeType(
+            self.atomic_types.union(*[
+                CompositeType(resolve.resolve_type(o)).atomic_types
+                for o in others
+            ])
+        )
+
+    def update(self, *others) -> None:
+        """Update the CompositeType in-place, adding AtomicTypes from all
+        others.
+        """
+        self.atomic_types = self.union(*others).atomic_types
+        self.forget_index()
+
+    #############################
+    ####    MAGIC METHODS    ####
+    #############################
+
+    def __and__(self, other) -> CompositeType:
+        """Return a new CompositeType containing the AtomicTypes common to
+        `self` and all others.
+        """
+        return self.intersection(other)
+
+    def __contains__(self, other) -> bool:
+        """Test whether a given type specifier is a member of `self` or any of
+        its subtypes.
+        """
+        resolved = resolve.resolve_type(other)
+        if isinstance(resolved, AtomicType):
+            return any(other in t for t in self)
+        return all(any(o in t for t in self) for o in resolved)
+
+    def __eq__(self, other) -> bool:
+        """Test whether `self` and `other` contain identical AtomicTypes."""
+        resolved = CompositeType(resolve.resolve_type(other))
+        return self.atomic_types == resolved.atomic_types
+
+    def __ge__(self, other) -> bool:
+        """Test whether every element in `other` is contained within `self`.
+        """
+        return self.issuperset(other)
+
+    def __gt__(self, other) -> bool:
+        """Test whether `self` is a proper superset of `other`
+        (``self >= other and self != other``).
+        """
+        return self != other and self >= other
+
+    def __iand__(self, other) -> CompositeType:
+        """Update a CompositeType in-place, keeping only the AtomicTypes found
+        in it and all others.
+        """
+        self.intersection_update(other)
+        return self
+
+    def __ior__(self, other) -> CompositeType:
+        """Update a CompositeType in-place, adding AtomicTypes from all
+        others.
+        """
+        self.update(other)
+        return self
+
+    def __isub__(self, other) -> CompositeType:
+        """Update a CompositeType in-place, removing AtomicTypes that can be
+        found in others.
+        """
+        self.difference_update(other)
+        return self
+
+    def __iter__(self):
+        """Iterate through the AtomicTypes contained within a CompositeType.
+        """
+        return iter(self.atomic_types)
+
+    def __ixor__(self, other) -> CompositeType:
+        """Update a CompositeType in-place, keeping only AtomicTypes that
+        are found in either `self` or `other`, but not both.
+        """
+        self.symmetric_difference_update(other)
+        return self
+
+    def __le__(self, other) -> bool:
+        """Test whether every element in `self` is contained within `other`."""
+        return self.issubset(other)
+
+    def __lt__(self, other) -> bool:
+        """Test whether `self` is a proper subset of `other`
+        (``self <= other and self != other``).
+        """
+        return self != other and self <= other
+
+    def __len__(self):
+        """Return the number of AtomicTypes in the CompositeType."""
+        return len(self.atomic_types)
+
+    def __or__(self, other) -> CompositeType:
+        """Return a new CompositeType containing the AtomicTypes of `self`
+        and all others.
+        """
+        return self.union(other)
 
     def __repr__(self) -> str:
-        slugs = ", ".join(str(x) for x in self.element_types)
+        slugs = ", ".join(str(x) for x in self.atomic_types)
         return f"{type(self).__name__}({{{slugs}}})"
 
     def __str__(self) -> str:
-        slugs = ", ".join(str(x) for x in self.element_types)
+        slugs = ", ".join(str(x) for x in self.atomic_types)
         return f"{{{slugs}}}"
+
+    def __sub__(self, other) -> CompositeType:
+        """Return a new CompositeType with AtomicTypes that are not in the
+        others.
+        """
+        return self.difference(other)
+
+    def __xor__(self, other) -> CompositeType:
+        """Return a new CompositeType with AtomicTypes that are in either
+        `self` or `other` but not both.
+        """
+        return self.symmetric_difference(other)

@@ -4,8 +4,9 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AtomicType, na_strings
+from .base cimport AtomicType
 
+cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 
@@ -116,8 +117,8 @@ class BooleanType(AtomicType):
 
     def parse(self, input_str: str):
         lower = input_str.lower()
-        if lower in na_strings:
-            return na_strings[lower]
+        if lower in resolve.na_strings:
+            return resolve.na_strings[lower]
         if lower not in ("true", "false"):
             raise TypeError(
                 f"could not interpret boolean string: {input_str}"

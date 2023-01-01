@@ -3,6 +3,7 @@ cimport pdtypes.types.atomic as atomic
 
 
 # constants
+cdef dict na_strings
 cdef str parens
 cdef str brackets
 cdef str curlies

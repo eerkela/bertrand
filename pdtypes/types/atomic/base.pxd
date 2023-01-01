@@ -1,6 +1,11 @@
 cimport numpy as np
 
 
+##########################
+####    PRIMITIVES    ####
+##########################
+
+
 cdef class AliasInfo:
     cdef readonly:
         type base
@@ -15,6 +20,11 @@ cdef class CacheValue:
 
 cdef class BaseType:
     pass
+
+
+###########################
+####    ATOMIC TYPE    ####
+###########################
 
 
 cdef class AtomicTypeRegistry:
@@ -52,14 +62,14 @@ cdef class AdapterType(AtomicType):
         AtomicType atomic_type
 
 
+##############################
+####    COMPOSITE TYPE    ####
+##############################
+
+
 cdef class CompositeType(BaseType):
     cdef readonly:
-        set element_types
+        set atomic_types
+        np.ndarray index
 
-
-# constants
-cdef dict na_strings
-
-
-# functions
-cdef set traverse_subtypes(type atomic_type)
+    cdef void forget_index(self)

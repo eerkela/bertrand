@@ -16,6 +16,7 @@ import regex as re  # alternate python regex engine
 from typing import Iterable, Iterator, Union
 
 cimport numpy as np
+import numpy as np
 import pandas as pd
 
 import pdtypes.types.atomic as atomic
@@ -93,6 +94,15 @@ def resolve_type(
 #######################
 ####    PRIVATE    ####
 #######################
+
+
+# strings associated with every possible missing value (for scalar parsing)
+cdef dict na_strings = {
+    str(None).lower(): None,
+    str(pd.NA).lower(): pd.NA,
+    str(pd.NaT).lower(): pd.NaT,
+    str(np.nan).lower(): np.nan,
+}
 
 
 cdef str nested(str opener, str closer, str name):
