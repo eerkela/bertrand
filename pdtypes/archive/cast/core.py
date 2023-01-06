@@ -84,11 +84,18 @@ def filter_kwargs(func: Callable, **kwargs) -> dict[str, Any]:
 # a mask with len > series, subset the mask according to self.is_na
 
 
-# TODO: make this a base class for the specialized series types
-
 
 class ConversionSeries(SeriesWrapper):
     """test"""
+
+    # TODO:
+    # - assume series input
+    # - series_type = resolve_type(series.dtype)
+    # - if series_type.unwrap() == object:
+    #   - strip missing values
+    #   - series_type = detect_type(series)
+    #   - if composite: generate groupby
+    #   - else use generated AtomicType as series type
 
     def __init__(
         self,

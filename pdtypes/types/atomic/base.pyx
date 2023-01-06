@@ -10,6 +10,8 @@ import pandas as pd
 
 from pdtypes.util.structs cimport LRUDict
 
+cimport pdtypes.types.cast as cast
+import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
@@ -505,8 +507,8 @@ cdef class AtomicType(BaseType):
     def contains(self, other):
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(o in self.subtypes for o in other)
-        return other in self.subtypes
+            return all(o in self.subtypes.atomic_types for o in other)
+        return other in self.subtypes.atomic_types
 
     def is_subtype(self, other) -> bool:
         return self in resolve.resolve_type(other)
@@ -666,6 +668,19 @@ cdef class AtomicType(BaseType):
         while hasattr(result, "atomic_type"):
             result = result.atomic_type
         return result
+
+    ###########################
+    ####    CONVERSIONS    ####
+    ###########################
+
+    def to_string(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        **kwargs
+    ) -> pd.Series:
+        """Convert arbitrary data to a string data type."""
+        return series.astype(dtype.dtype)
 
     #############################
     ####    MAGIC METHODS    ####

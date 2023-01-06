@@ -1,4 +1,6 @@
+import decimal
 from types import MappingProxyType
+from typing import Union
 
 import numpy as np
 cimport numpy as np
@@ -6,8 +8,20 @@ import pandas as pd
 
 from .base cimport AtomicType
 
+cimport pdtypes.types.cast as cast
+import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
+
+
+# TODO: change defaults for backend=None
+
+
+# TODO: consider backend="python" in to_boolean
+
+
+# TODO: add datetime_like `since` hint to to_datetime, to_timedelta
+
 
 
 class BooleanType(AtomicType):
@@ -37,8 +51,8 @@ class BooleanType(AtomicType):
     def __init__(self, backend: str = None):
         # "bool"
         if backend is None:
-            type_def = None
-            dtype = None
+            type_def = bool
+            dtype = np.dtype(bool)
 
         # "bool[python]"
         elif backend == "python":
@@ -123,3 +137,111 @@ class BooleanType(AtomicType):
                 f"could not interpret boolean string: {input_str}"
             )
         return self.type_def(input_str == "True")
+
+    ###########################
+    ####    CONVERSIONS    ####
+    ###########################
+
+    def to_boolean(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        **unused
+    ) -> pd.Series:
+        """Convert boolean data to another boolean data type."""
+        # python bool special case
+        if dtype.backend == "python":
+            with series.exclude_na(dtype.na_value):
+                series.series = series.astype("O")
+            return series.series
+
+        # if missing values are detected, ensure dtype is nullable
+        elif dtype.backend in (None, "numpy") and series.hasnans:
+            dtype = dtype.replace(backend="pandas")
+
+        # convert
+        return series.astype(dtype.dtype)
+
+    def to_integer(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        downcast: bool = False,
+        **unused
+    ) -> pd.Series:
+        """Convert boolean data to an integer data type."""
+        # downcast integer dtype if directed
+        if downcast:
+            dtype = dtype.downcast(min=0, max=1)
+
+        # python integer special case
+        if dtype.backend == "python":
+            with series.exclude_na(dtype.na_value):
+                series.series = np.frompyfunc(int, 1, 1)(series)
+            return series.series
+
+        # if missing values are detected, ensure dtype is nullable
+        if dtype.backend in (None, "numpy") and series.hasnans:
+            dtype = dtype.replace(backend="pandas")
+
+        # convert
+        if dtype.backend == "pandas" and pd.api.types.is_object_dtype(series):
+            series.series = self.to_boolean(series, self)
+        return series.astype(dtype.dtype)
+
+    def to_float(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        downcast: bool = False,
+        **unused
+    ) -> pd.Series:
+        """Convert boolean data to a floating point data type."""
+        # downcast float dtype if directed
+        if downcast:
+            dtype = dtype.downcast(min=0, max=1)
+
+        # astype(float) fails when given pd.NA in an object series
+        if pd.api.types.is_object_dtype(series):
+            series.series = self.to_boolean(series, self)
+
+        return series.astype(dtype.dtype)
+
+    def to_complex(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        downcast: bool = False,
+        **unused
+    ) -> pd.Series:
+        """Convert boolean data to a complex data type."""
+        if downcast:
+            dtype = dtype.downcast(min=0, max=1)
+
+        # astype(complex) complains on missing values
+        with series.exclude_na(dtype.na_value):
+            series.series = series.astype(dtype.dtype)
+
+        return series.series
+
+    def to_decimal(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        **unused
+    ) -> pd.Series:
+        """Convert boolean data to a decimal data type."""
+        with series.exclude_na(dtype.na_value):
+            series.series += decimal.Decimal(0)
+        return series.series
+
+    def to_datetime(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str = "ns",
+        since: str = "UTC"
+    ):
+        """Convert boolean data to a datetime data type."""
+        pass
+

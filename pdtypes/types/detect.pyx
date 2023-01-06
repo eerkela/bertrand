@@ -22,7 +22,7 @@ def detect_type(
     """Detect AtomicTypes from live data."""
     # ignore AtomicType/CompositeType objects
     if isinstance(example, (atomic.AtomicType, atomic.CompositeType)):
-        return resolve.resolve_type(example)
+        return example
 
     # check if example is iterable
     if hasattr(example, "__iter__") and not isinstance(example, type):
@@ -108,6 +108,7 @@ cdef atomic.CompositeType detect_vector_type(
 
         # call AtomicType.detect() to parse result, defaulting to ObjectType
         if info is None:
+            print(element_type)
             result = atomic.ObjectType.instance(element_type)
         else:
             result = info.base.detect(element, **info.defaults)

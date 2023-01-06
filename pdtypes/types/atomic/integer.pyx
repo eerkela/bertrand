@@ -6,6 +6,10 @@ import pandas as pd
 
 from .base cimport AtomicType
 
+from pdtypes.error import shorten_list
+cimport pdtypes.types.cast as cast
+import pdtypes.types.cast as cast
+
 
 ######################
 ####    MIXINS    ####
@@ -57,6 +61,45 @@ class IntegerMixin:
         # return as frozenset
         return frozenset(result)
 
+    ###########################
+    ####    CONVERSIONS    ####
+    ###########################
+
+    def to_boolean(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str = "raise",
+        **kwargs
+    ) -> pd.Series:
+        """Convert integer data to a boolean data type."""
+        # check for overflow
+        if series.min() < 0 or series.max() > 1:
+            if errors != "coerce":
+                index = series[(series < 0) | (series > 1)].index.values
+                raise OverflowError(
+                    f"non-boolean value encountered at index "
+                    f"{shorten_list(index)}"
+                )
+            series.series = cast.SeriesWrapper(
+                series.abs().clip(0, 1),
+                is_na=series.isna(),
+                hasnans=series.hasnans
+            )
+
+        # if missing values are detected, ensure dtype is nullable
+        if dtype.backend in (None, "numpy") and series.hasnans:
+            dtype = dtype.replace(backend="pandas")
+
+        # python bool special case
+        if dtype.backend == "python":
+            with series.exclude_na(dtype.na_value):
+                series.series = np.frompyfunc(bool, 1, 1)(series)
+            return series.series
+
+        # convert
+        return series.astype(dtype.dtype)
+
 
 #####################
 ####    TYPES    ####
@@ -81,8 +124,8 @@ class IntegerType(IntegerMixin, AtomicType):
     def __init__(self, backend: str = None):
         # int
         if backend is None:
-            type_def = None
-            dtype = None
+            type_def = int
+            dtype = np.dtype(np.int64)
             itemsize = None
             self.min = -np.inf
             self.max = np.inf
@@ -174,17 +217,14 @@ class Int8Type(IntegerMixin, AtomicType):
 
         # unsigned
         if backend is None:
-            type_def = None
-            dtype = None
+            dtype = np.dtype(np.int8)
 
         # unsigned[numpy]
         elif backend == "numpy":
-            type_def = np.int8
             dtype = np.dtype(np.int8)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            type_def = np.int8
             dtype = pd.Int8Dtype()
 
         # unrecognized
@@ -196,7 +236,7 @@ class Int8Type(IntegerMixin, AtomicType):
         self.backend = backend
 
         super(Int8Type, self).__init__(
-            type_def=type_def,
+            type_def=np.int8,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=1,
@@ -230,17 +270,14 @@ class Int16Type(IntegerMixin, AtomicType):
 
         # unsigned
         if backend is None:
-            type_def = None
-            dtype = None
+            dtype = np.dtype(np.int16)
 
         # unsigned[numpy]
         elif backend == "numpy":
-            type_def = np.int16
             dtype = np.dtype(np.int16)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            type_def = np.int16
             dtype = pd.Int16Dtype()
 
         # unrecognized
@@ -252,7 +289,7 @@ class Int16Type(IntegerMixin, AtomicType):
         self.backend = backend
 
         super(Int16Type, self).__init__(
-            type_def=type_def,
+            type_def=np.int16,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=2,
@@ -286,17 +323,14 @@ class Int32Type(IntegerMixin, AtomicType):
 
         # unsigned
         if backend is None:
-            type_def = None
-            dtype = None
+            dtype = np.dtype(np.int32)
 
         # unsigned[numpy]
         elif backend == "numpy":
-            type_def = np.int32
             dtype = np.dtype(np.int32)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            type_def = np.int32
             dtype = pd.Int32Dtype()
 
         # unrecognized
@@ -308,7 +342,7 @@ class Int32Type(IntegerMixin, AtomicType):
         self.backend = backend
 
         super(Int32Type, self).__init__(
-            type_def=type_def,
+            type_def=np.int32,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=4,
@@ -342,17 +376,14 @@ class Int64Type(IntegerMixin, AtomicType):
 
         # unsigned
         if backend is None:
-            type_def = None
-            dtype = None
+            dtype = np.dtype(np.int64)
 
         # unsigned[numpy]
         elif backend == "numpy":
-            type_def = np.int64
             dtype = np.dtype(np.int64)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            type_def = np.int64
             dtype = pd.Int64Dtype()
 
         # unrecognized
@@ -364,7 +395,7 @@ class Int64Type(IntegerMixin, AtomicType):
         self.backend = backend
 
         super(Int64Type, self).__init__(
-            type_def=type_def,
+            type_def=np.int64,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=8,
@@ -396,21 +427,15 @@ class UnsignedIntegerType(IntegerMixin, AtomicType):
 
         # unsigned
         if backend is None:
-            type_def = None
-            dtype = None
-            itemsize = None
+            dtype = np.dtype(np.uint64)
 
         # unsigned[numpy]
         elif backend == "numpy":
-            type_def = np.uint64
             dtype = np.dtype(np.uint64)
-            itemsize = 8
 
         # unsigned[pandas]
         elif backend == "pandas":
-            type_def = np.uint64
             dtype = pd.UInt64Dtype()
-            itemsize = 8
 
         # unrecognized
         else:
@@ -421,10 +446,10 @@ class UnsignedIntegerType(IntegerMixin, AtomicType):
         self.backend = backend
 
         super(UnsignedIntegerType, self).__init__(
-            type_def=type_def,
+            type_def=np.uint64,
             dtype=dtype,
             na_value=pd.NA,
-            itemsize=itemsize,
+            itemsize=8,
             slug=self.slugify(backend=backend)
         )
 
@@ -455,17 +480,14 @@ class UInt8Type(IntegerMixin, AtomicType):
 
         # unsigned
         if backend is None:
-            type_def = None
-            dtype = None
+            dtype = np.dtype(np.uint8)
 
         # unsigned[numpy]
         elif backend == "numpy":
-            type_def = np.uint8
             dtype = np.dtype(np.uint8)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            type_def = np.uint8
             dtype = pd.UInt8Dtype()
 
         # unrecognized
@@ -477,7 +499,7 @@ class UInt8Type(IntegerMixin, AtomicType):
         self.backend = backend
 
         super(UInt8Type, self).__init__(
-            type_def=type_def,
+            type_def=np.uint8,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=1,
@@ -511,17 +533,14 @@ class UInt16Type(IntegerMixin, AtomicType):
 
         # unsigned
         if backend is None:
-            type_def = None
-            dtype = None
+            dtype = np.dtype(np.uint16)
 
         # unsigned[numpy]
         elif backend == "numpy":
-            type_def = np.uint16
             dtype = np.dtype(np.uint16)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            type_def = np.uint16
             dtype = pd.UInt16Dtype()
 
         # unrecognized
@@ -533,7 +552,7 @@ class UInt16Type(IntegerMixin, AtomicType):
         self.backend = backend
 
         super(UInt16Type, self).__init__(
-            type_def=type_def,
+            type_def=np.uint16,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=2,
@@ -567,17 +586,14 @@ class UInt32Type(IntegerMixin, AtomicType):
 
         # unsigned
         if backend is None:
-            type_def = None
-            dtype = None
+            dtype = np.dtype(np.uint32)
 
         # unsigned[numpy]
         elif backend == "numpy":
-            type_def = np.uint32
             dtype = np.dtype(np.uint32)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            type_def = np.uint32
             dtype = pd.UInt32Dtype()
 
         # unrecognized
@@ -589,7 +605,7 @@ class UInt32Type(IntegerMixin, AtomicType):
         self.backend = backend
 
         super(UInt32Type, self).__init__(
-            type_def=type_def,
+            type_def=np.uint32,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=4,
@@ -623,17 +639,14 @@ class UInt64Type(IntegerMixin, AtomicType):
 
         # unsigned
         if backend is None:
-            type_def = None
-            dtype = None
+            dtype = np.dtype(np.uint64)
 
         # unsigned[numpy]
         elif backend == "numpy":
-            type_def = np.uint64
             dtype = np.dtype(np.uint64)
 
         # unsigned[pandas]
         elif backend == "pandas":
-            type_def = np.uint64
             dtype = pd.UInt64Dtype()
 
         # unrecognized
@@ -645,7 +658,7 @@ class UInt64Type(IntegerMixin, AtomicType):
         self.backend = backend
 
         super(UInt64Type, self).__init__(
-            type_def=type_def,
+            type_def=np.uint64,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=8,
