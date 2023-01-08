@@ -4,7 +4,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AtomicType
+from .base cimport AdapterType, AtomicType
 
 from pdtypes.error import shorten_list
 cimport pdtypes.types.cast as cast
@@ -61,6 +61,19 @@ class IntegerMixin:
         # return as frozenset
         return frozenset(result)
 
+    def downcast(self, min: int, max: int) -> AtomicType:
+        """Reduce the itemsize of an integer type to fit the observed range."""
+        for s in self._smaller:
+            try:
+                instance = forward_declare[s].instance(backend=self.backend)
+            except:
+                continue
+            if instance.min <= min and max <= instance.max:
+                if isinstance(self, AdapterType):
+                    return self.replace(atomic_type=instance)
+                return instance
+        return self
+
     ###########################
     ####    CONVERSIONS    ####
     ###########################
@@ -69,36 +82,48 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        errors: str = "raise",
-        **kwargs
+        errors: str,
+        **unused
     ) -> pd.Series:
         """Convert integer data to a boolean data type."""
         # check for overflow
         if series.min() < 0 or series.max() > 1:
-            if errors != "coerce":
+            if errors == "coerce":
+                series = cast.SeriesWrapper(
+                    series.abs().clip(0, 1),
+                    is_na=series.isna(),
+                    hasnans=series.hasnans
+                )
+            else:
                 index = series[(series < 0) | (series > 1)].index.values
                 raise OverflowError(
-                    f"non-boolean value encountered at index "
+                    f"values exceed {dtype} range at index "
                     f"{shorten_list(index)}"
                 )
-            series.series = cast.SeriesWrapper(
-                series.abs().clip(0, 1),
-                is_na=series.isna(),
-                hasnans=series.hasnans
-            )
 
-        # if missing values are detected, ensure dtype is nullable
-        if dtype.backend in (None, "numpy") and series.hasnans:
-            dtype = dtype.replace(backend="pandas")
+        # delegate to AtomicType.to_boolean()
+        return super().to_boolean(
+            series=series,
+            dtype=dtype,
+            errors=errors,
+            **unused
+        )
 
-        # python bool special case
-        if dtype.backend == "python":
-            with series.exclude_na(dtype.na_value):
-                series.series = np.frompyfunc(bool, 1, 1)(series)
-            return series.series
+    def to_integer(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str,
+        **unused
+    ) -> pd.Series:
+        """Convert integer data to another integer data type."""
+        # check for overflow
+        if series.min() < dtype.min or series.max() > dtype.max:
+            if errors == "coerce":
+                pass
+        
+        raise NotImplementedError()
 
-        # convert
-        return series.astype(dtype.dtype)
 
 
 #####################
@@ -120,6 +145,9 @@ class IntegerType(IntegerMixin, AtomicType):
         "integer": {},
     }
     _backends = ("python", "numpy", "pandas")
+    _smaller = (
+        "Int8Type", "Int16Type", "Int32Type", "Int64Type", "UInt64Type"
+    )
 
     def __init__(self, backend: str = None):
         # int
@@ -185,6 +213,7 @@ class SignedIntegerType(IntegerType):
         "signed integer": {},
         "i": {},
     }
+    _smaller = ("Int8Type", "Int16Type", "Int32Type", "Int64Type")
 
     def __init__(self, backend: str = None):
         # Internally, this is an exact copy of IntegerType
@@ -209,6 +238,7 @@ class Int8Type(IntegerMixin, AtomicType):
         "Int8": {"backend": "pandas"},
     }
     _backends = ("numpy", "pandas")
+    _smaller = ()
 
     def __init__(self, backend: str = None):
         # min/max representable values
@@ -262,6 +292,7 @@ class Int16Type(IntegerMixin, AtomicType):
         "Int16": {"backend": "pandas"},
     }
     _backends = ("numpy", "pandas")
+    _smaller = ("Int8Type",)
 
     def __init__(self, backend: str = None):
         # min/max representable values
@@ -315,6 +346,7 @@ class Int32Type(IntegerMixin, AtomicType):
         "Int32": {"backend": "pandas"},
     }
     _backends = ("numpy", "pandas")
+    _smaller = ("Int8Type", "Int16Type")
 
     def __init__(self, backend: str = None):
         # min/max representable values
@@ -368,6 +400,7 @@ class Int64Type(IntegerMixin, AtomicType):
         "Int64": {"backend": "pandas"},
     }
     _backends = ("numpy", "pandas")
+    _smaller = ("Int8Type", "Int16Type", "Int32Type")
 
     def __init__(self, backend: str = None):
         # min/max representable values
@@ -419,6 +452,7 @@ class UnsignedIntegerType(IntegerMixin, AtomicType):
         "u": {},
     }
     _backends = ("numpy", "pandas")
+    _smaller = ("UInt8Type", "UInt16Type", "UInt32Type", "UInt64Type")
 
     def __init__(self, backend: str = None):
         # min/max representable values
@@ -472,6 +506,7 @@ class UInt8Type(IntegerMixin, AtomicType):
         "UInt8": {"backend": "pandas"},
     }
     _backends = ("numpy", "pandas")
+    _smaller = ()
 
     def __init__(self, backend: str = None):
         # min/max representable values
@@ -525,6 +560,7 @@ class UInt16Type(IntegerMixin, AtomicType):
         "UInt16": {"backend": "pandas"},
     }
     _backends = ("numpy", "pandas")
+    _smaller = ("UInt8Type",)
 
     def __init__(self, backend: str = None):
         # min/max representable values
@@ -578,6 +614,7 @@ class UInt32Type(IntegerMixin, AtomicType):
         "UInt32": {"backend": "pandas"},
     }
     _backends = ("numpy", "pandas")
+    _smaller = ("UInt8Type", "UInt16Type")
 
     def __init__(self, backend: str = None):
         # min/max representable values
@@ -631,6 +668,7 @@ class UInt64Type(IntegerMixin, AtomicType):
         "UInt64": {"backend": "pandas"},
     }
     _backends = ("numpy", "pandas")
+    _smaller = ("UInt8Type", "UInt16Type", "UInt32Type")
 
     def __init__(self, backend: str = None):
         # min/max representable values
@@ -786,3 +824,24 @@ cdef dict platform_specific_aliases = {
 for alias, lookup in platform_specific_aliases.items():
     info = AtomicType.registry.aliases[lookup]
     info.base.register_alias(alias, defaults={})
+
+
+#######################
+####    PRIVATE    ####
+#######################
+
+
+cdef dict forward_declare = {
+    "IntegerType": IntegerType,
+    "SignedIntegerType": SignedIntegerType,
+    "Int8Type": Int8Type,
+    "Int16Type": Int16Type,
+    "Int32Type": Int32Type,
+    "Int64Type": Int64Type,
+    "UnsignedIntegerType": UnsignedIntegerType,
+    "UInt8Type": UInt8Type,
+    "UInt16Type": UInt16Type,
+    "UInt32Type": UInt32Type,
+    "UInt64Type": UInt64Type
+}
+

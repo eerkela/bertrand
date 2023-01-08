@@ -673,11 +673,52 @@ cdef class AtomicType(BaseType):
     ####    CONVERSIONS    ####
     ###########################
 
+    def to_boolean(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        **unused
+    ) -> pd.Series:
+        """Convert arbitrary data to a boolean data type."""
+        # python bool special case
+        if dtype.backend == "python":
+            return np.frompyfunc(dtype.type_def, 1, 1)(series)
+
+        # ensure dtype is nullable if missing values are detected
+        if series.hasnans and isinstance(dtype.dtype, np.dtype):
+            dtype = dtype.replace(backend="pandas")
+
+        return series.astype(dtype.dtype, copy=False)
+
+    def to_integer(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        downcast: bool = False,
+        **unused
+    ) -> pd.Series:
+        """Convert arbitrary data to an integer data type."""
+        if downcast:
+            dtype = dtype.downcast(min=series.min(), max=series.max())
+
+        # python int special case
+        if dtype.backend == "python":
+            return np.frompyfunc(dtype.type_def, 1, 1)(series)
+
+        if series.hasnans and isinstance(dtype.dtype, np.dtype):
+            dtype = dtype.replace(backend="pandas")
+
+        # converting object series to pandas extension type is inconsistent
+        if dtype.backend == "pandas":
+            series.series = series.rectify()
+
+        return series.astype(dtype.dtype, copy=False)
+
     def to_string(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        **kwargs
+        **unused
     ) -> pd.Series:
         """Convert arbitrary data to a string data type."""
         return series.astype(dtype.dtype)

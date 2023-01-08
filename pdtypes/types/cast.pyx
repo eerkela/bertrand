@@ -16,6 +16,11 @@ import pdtypes.types.resolve as resolve
 
 # TODO: sparse types currently broken
 
+# TODO: have SeriesWrapper accept other SeriesWrapper objects
+
+# TODO: have SeriesWrapper automatically subset NAs, rather than using
+# exclude_na.  .exclude_na just gets replaced with .replace_na()
+
 
 ######################
 ####    PUBLIC    ####
@@ -28,12 +33,7 @@ def cast(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to the given data type."""
-    # wrap data/target type
     dtype = resolve.resolve_type(dtype)
-
-    # TODO: validate input
-
-    # reject composite target type
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
 
@@ -71,31 +71,24 @@ def to_boolean(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to boolean representation."""
-    # wrap data/target type
     series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
-    # TODO: validate input
-
-    # reject composite target type
+    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
+    if not dtype.unwrap().is_subtype(atomic.BooleanType):
+        raise ValueError(f"`dtype` must be a boolean type, not {dtype}")
 
-    # defer to series.do_conversion()
-    kwargs = {
-        **{
-            "rounding": rounding,
-            "ftol": ftol,
-            "errors": errors
-        },
+    # delegate to SeriesWrapper.do_conversion()
+    return series.do_conversion(
+        "to_boolean",
+        dtype=dtype,
+        rounding=rounding,
+        ftol=ftol,
+        errors=errors,
         **kwargs
-    }
-    try:
-        return series.do_conversion("to_boolean", dtype=dtype, **kwargs)
-    except Exception as err:
-        if errors == "ignore":
-            return series.series
-        raise err
+    )
 
 
 def to_integer(
@@ -107,31 +100,24 @@ def to_integer(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to integer representation."""
-    # wrap data/target type
     series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
-    # TODO: validate input
-
-    # reject composite target type
+    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
+    if not dtype.unwrap().is_subtype(atomic.IntegerType):
+        raise ValueError(f"`dtype` must be an integer type, not {dtype}")
 
-    # defer to series.do_conversion()
-    kwargs = {
-        **{
-            "rounding": rounding,
-            "ftol": ftol,
-            "errors": errors
-        },
+    # delegate to SeriesWrapper.do_conversion()
+    return series.do_conversion(
+        "to_integer",
+        dtype=dtype,
+        rounding=rounding,
+        ftol=ftol,
+        errors=errors,
         **kwargs
-    }
-    try:
-        return series.do_conversion("to_integer", dtype=dtype, **kwargs)
-    except Exception as err:
-        if errors == "ignore":
-            return series.series
-        raise err
+    )
 
 
 def to_float(
@@ -143,31 +129,24 @@ def to_float(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to float representation."""
-    # wrap data/target type
     series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
-    # TODO: validate input
-
-    # reject composite target type
+    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
+    if not dtype.is_subtype(atomic.FloatType):
+        raise ValueError(f"`dtype` must be a float type, not {dtype}")
 
-    # defer to series.do_conversion()
-    kwargs = {
-        **{
-            "rounding": rounding,
-            "ftol": ftol,
-            "errors": errors
-        },
+    # delegate to SeriesWrapper.do_conversion()
+    return series.do_conversion(
+        "to_float",
+        dtype=dtype,
+        rounding=rounding,
+        ftol=ftol,
+        errors=errors,
         **kwargs
-    }
-    try:
-        return series.do_conversion("to_float", dtype=dtype, **kwargs)
-    except Exception as err:
-        if errors == "ignore":
-            return series.series
-        raise err
+    )
 
 
 def to_complex(
@@ -179,31 +158,24 @@ def to_complex(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to complex representation."""
-    # wrap data/target type
     series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
-    # TODO: validate input
-
-    # reject composite target type
+    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
+    if not dtype.is_subtype(atomic.ComplexType):
+        raise ValueError(f"`dtype` must be a complex type, not {dtype}")
 
-    # defer to series.do_conversion()
-    kwargs = {
-        **{
-            "rounding": rounding,
-            "ftol": ftol,
-            "errors": errors
-        },
+    # delegate to SeriesWrapper.do_conversion()
+    return series.do_conversion(
+        "to_complex",
+        dtype=dtype,
+        rounding=rounding,
+        ftol=ftol,
+        errors=errors,
         **kwargs
-    }
-    try:
-        return series.do_conversion("to_complex", dtype=dtype, **kwargs)
-    except Exception as err:
-        if errors == "ignore":
-            return series.series
-        raise err
+    )
 
 
 def to_decimal(
@@ -215,31 +187,24 @@ def to_decimal(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to decimal representation."""
-    # wrap data/target type
     series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
-    # TODO: validate input
-
-    # reject composite target type
+    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
+    if not dtype.is_subtype(atomic.DecimalType):
+        raise ValueError(f"`dtype` must be a decimal type, not {dtype}")
 
-    # defer to series.do_conversion()
-    kwargs = {
-        **{
-            "rounding": rounding,
-            "ftol": ftol,
-            "errors": errors
-        },
+    # delegate to SeriesWrapper.do_conversion()
+    return series.do_conversion(
+        "to_decimal",
+        dtype=dtype,
+        rounding=rounding,
+        ftol=ftol,
+        errors=errors,
         **kwargs
-    }
-    try:
-        return series.do_conversion("to_decimal", dtype=dtype, **kwargs)
-    except Exception as err:
-        if errors == "ignore":
-            return series.series
-        raise err
+    )
 
 
 def to_datetime(
@@ -251,31 +216,24 @@ def to_datetime(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to datetime representation."""
-    # wrap data/target type
     series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
-    # TODO: validate input
-
-    # reject composite target type
+    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
+    if not dtype.is_subtype(atomic.DatetimeType):
+        raise ValueError(f"`dtype` must be a datetime type, not {dtype}")
 
-    # defer to series.do_conversion()
-    kwargs = {
-        **{
-            "rounding": rounding,
-            "ftol": ftol,
-            "errors": errors
-        },
+    # delegate to SeriesWrapper.do_conversion()
+    return series.do_conversion(
+        "to_datetime",
+        dtype=dtype,
+        rounding=rounding,
+        ftol=ftol,
+        errors=errors,
         **kwargs
-    }
-    try:
-        return series.do_conversion("to_datetime", dtype=dtype, **kwargs)
-    except Exception as err:
-        if errors == "ignore":
-            return series.series
-        raise err
+    )
 
 
 def to_timedelta(
@@ -291,27 +249,21 @@ def to_timedelta(
     series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
-    # TODO: validate input
-
-    # reject composite target type
+    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
+    if not dtype.is_subtype(atomic.TimedeltaType):
+        raise ValueError(f"`dtype` must be a timedelta type, not {dtype}")
 
-    # defer to series.do_conversion()
-    kwargs = {
-        **{
-            "rounding": rounding,
-            "ftol": ftol,
-            "errors": errors
-        },
+    # delegate to SeriesWrapper.do_conversion()
+    return series.do_conversion(
+        "to_timedelta",
+        dtype=dtype,
+        rounding=rounding,
+        ftol=ftol,
+        errors=errors,
         **kwargs
-    }
-    try:
-        return series.do_conversion("to_timedelta", dtype=dtype, **kwargs)
-    except Exception as err:
-        if errors == "ignore":
-            return series.series
-        raise err
+    )
 
 
 def to_string(
@@ -327,27 +279,21 @@ def to_string(
     series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
-    # TODO: validate input
-
-    # reject composite target type
+    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
+    if not dtype.is_subtype(atomic.StringType):
+        raise ValueError(f"`dtype` must be a string type, not {dtype}")
 
-    # defer to series.do_conversion()
-    kwargs = {
-        **{
-            "rounding": rounding,
-            "ftol": ftol,
-            "errors": errors
-        },
+    # delegate to SeriesWrapper.do_conversion()
+    return series.do_conversion(
+        "to_string",
+        dtype=dtype,
+        rounding=rounding,
+        ftol=ftol,
+        errors=errors,
         **kwargs
-    }
-    try:
-        return series.do_conversion("to_string", dtype=dtype, **kwargs)
-    except Exception as err:
-        if errors == "ignore":
-            return series.series
-        raise err
+    )
 
 
 def to_object(
@@ -363,27 +309,21 @@ def to_object(
     series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
-    # TODO: validate input
-
-    # reject composite target type
+    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
+    if not dtype.is_subtype(atomic.ObjectType):
+        raise ValueError(f"`dtype` must be an object type, not {dtype}")
 
-    # defer to series.do_conversion()
-    kwargs = {
-        **{
-            "rounding": rounding,
-            "ftol": ftol,
-            "errors": errors
-        },
+    # delegate to SeriesWrapper.do_conversion()
+    return series.do_conversion(
+        "to_object",
+        dtype=dtype,
+        rounding=rounding,
+        ftol=ftol,
+        errors=errors,
         **kwargs
-    }
-    try:
-        return series.do_conversion("to_object", dtype=dtype, **kwargs)
-    except Exception as err:
-        if errors == "ignore":
-            return series.series
-        raise err
+    )
 
 
 ######################
@@ -410,19 +350,15 @@ cdef class SeriesWrapper:
         max: Any = None,
         idxmax: int = None,
     ):
-        # wrap an existing pandas Series
+        # generate series
         if isinstance(series, pd.Series):
             self.series = series
-
-        # wrap a numpy array
         elif isinstance(series, np.ndarray):
-            # NOTE: pandas doesn't like converting scalar numpy arrays
+            # pandas doesn't like converting scalar numpy arrays
             if not series.shape:
                 self.series = pd.Series(series[()], dtype=series.dtype)
             else:
                 self.series = pd.Series(series)
-
-        # pass to pandas Series constructor
         else:
             self.series = pd.Series(series, dtype="O")
 
@@ -436,8 +372,7 @@ cdef class SeriesWrapper:
                 np.broadcast_to(is_na, self.series.shape),
                 index=self.series.index
             )
-        elif self._hasnans == False:
-            # pre-cache a False isna() Series
+        elif self._hasnans == False:  # pre-cache a False isna() Series
             self._is_na = pd.Series(
                 np.broadcast_to(False, self.series.shape),
                 index=self.series.index
@@ -453,12 +388,11 @@ cdef class SeriesWrapper:
                 np.broadcast_to(is_inf, self.series.shape),
                 index=self.series.index
             )
-        elif self._hasinfs == False:
-            # pre-cache a False isinf() Series
+        elif self._hasinfs == False:  # pre-cache a False isinf() Series
             self._is_inf = pd.Series(
                 np.broadcast_to(False, self.series.shape),
                 index=self.series.index
-            )    
+            )
 
         # override min
         if min is not None:
@@ -589,32 +523,42 @@ cdef class SeriesWrapper:
         self,
         conversion: str,
         dtype: atomic.AtomicType,
+        errors: str,
         **kwargs
     ) -> pd.Series:
         """Perform a conversion on a SeriesWrapper object, automatically
         splitting into groups if it is non-homogenous
         """
-        # if series is non-homogenous, split into types and transform
-        if isinstance(self.element_type, atomic.CompositeType):
+        try:
             with self.exclude_na(dtype.na_value):
-                groups = self.groupby(self.element_type.index, sort=False)
-                self.series = groups.transform(
-                    lambda grp: getattr(grp.name, conversion)(
-                        SeriesWrapper(grp, hasnans=self.hasnans, is_na=False),
+                if isinstance(self.element_type, atomic.CompositeType):
+                    groups = self.groupby(self.element_type.index, sort=False)
+                    self.series = groups.transform(
+                        lambda grp: getattr(grp.name, conversion)(
+                            SeriesWrapper(
+                                grp,
+                                hasnans=self.hasnans,
+                                is_na=False
+                            ),
+                            dtype=dtype,
+                            errors=errors,
+                            **kwargs
+                        )
+                    )
+                else:
+                    self.series = getattr(self.element_type, conversion)(
+                        self,
                         dtype=dtype,
+                        errors=errors,
                         **kwargs
                     )
-                )
 
-            # replace NAs and return
             return self.series
 
-        # series is homogenous
-        return getattr(self.element_type, conversion)(
-            self,
-            dtype=dtype,
-            **kwargs
-        )
+        except Exception as err:
+            if errors == "ignore":
+                return self.series
+            raise err
 
     @contextmanager
     def exclude_na(
@@ -637,7 +581,7 @@ cdef class SeriesWrapper:
                 array_type = np.dtype("O")
 
             # strip nans
-            self.series = self.series[self.notna()]
+            self.series = self.dropna()
 
             # yield context
             try:
@@ -657,59 +601,17 @@ cdef class SeriesWrapper:
                     dtype=self.dtype
                 )
 
+    def rectify(self) -> pd.Series:
+        """Convert an improperly-formatted object series to a standardized
+        numpy/pandas data type.
+        """
+        if pd.api.types.is_object_dtype(self):
+            return self.astype(self.element_type.dtype, copy=False)
+        return self.series
+
     ###############################
     ####    DYNAMIC WRAPPER    ####
     ###############################
-
-    def __delattr__(self, name):
-        delattr(self.series, name)
-
-    def __dir__(self) -> list[str]:
-        result = dir(type(self))
-        result += list(self.__dict__.keys())
-        result += [x for x in dir(self.series) if x not in result]
-        return result
-
-    def __getattr__(self, name) -> Any:
-        return getattr(self.series, name)
-
-    def __iter__(self) -> Iterator:
-        return self.series.__iter__()
-
-    def __next__(self):
-        return self.series.__next__()
-
-    def __repr__(self) -> str:
-        return repr(self.series)
-
-    def __str__(self) -> str:
-        return str(self.series)
-
-    ###########################
-    ####    COMPARISONS    ####
-    ###########################
-
-    def __eq__(self, other) -> pd.Series:
-        return self.series == other
-
-    def __ge__(self, other) -> pd.Series:
-        return self.series >= other
-
-    def __gt__(self, other) -> pd.Series:
-        return self.series > other
-
-    def __le__(self, other) -> pd.Series:
-        return self.series <= other
-
-    def __lt__(self, other) -> pd.Series:
-        return self.series < other
-
-    def __ne__(self, other) -> pd.Series:
-        return self.series != other
-
-    ##########################
-    ####    ARITHMETIC    ####
-    ##########################
 
     def __abs__(self) -> pd.Series:
         return abs(self.series)
@@ -720,14 +622,56 @@ cdef class SeriesWrapper:
     def __and__(self, other) -> pd.Series:
         return self.series & other
 
+    def __contains__(self, val) -> bool:
+        return self.series.__contains__(val)
+
+    def __delattr__(self, name):
+        delattr(self.series, name)
+
+    def __delete__(self, instance):
+        self.series.__delete__(instance)
+
+    def __delitem__(self, key) -> None:
+        del self.series[key]
+
+    def __dir__(self) -> list[str]:
+        result = dir(type(self))
+        result += list(self.__dict__.keys())
+        result += [x for x in dir(self.series) if x not in result]
+        return result
+
     def __div__(self, other) -> pd.Series:
         return self.series / other
 
     def __divmod__(self, other) -> pd.Series:
         return divmod(self.series, other)
 
+    def __eq__(self, other) -> pd.Series:
+        return self.series == other
+
+    def __float__(self) -> float:
+        return float(self.series)
+
     def __floordiv__(self, other) -> pd.Series:
         return self.series // other
+
+    def __ge__(self, other) -> pd.Series:
+        return self.series >= other
+
+    def __get__(self, instance, class_):
+        return self.series.__get__(instance, class_)
+
+    def __getattr__(self, name) -> Any:
+        return getattr(self.series, name)
+
+    def __getitem__(self, key) -> Any:
+        return self.series[key]
+
+    def __gt__(self, other) -> pd.Series:
+        return self.series > other
+
+    def __hex__(self) -> hex:
+        return hex(self.series)
 
     def __iadd__(self, other) -> None:
         self.series += other
@@ -750,6 +694,9 @@ cdef class SeriesWrapper:
     def __imul__(self, other) -> None:
         self.series *= other
 
+    def __int__(self) -> int:
+        return int(self.series)
+
     def __invert__(self) -> pd.Series:
         return ~ self.series
 
@@ -765,11 +712,23 @@ cdef class SeriesWrapper:
     def __isub__(self, other) -> None:
         self.series -= other
 
+    def __iter__(self) -> Iterator:
+        return self.series.__iter__()
+
     def __ixor__(self, other) -> None:
         self.series ^= other
 
+    def __le__(self, other) -> pd.Series:
+        return self.series <= other
+
+    def __len__(self) -> int:
+        return len(self.series)
+
     def __lshift__(self, other) -> pd.Series:
         return self.series << other
+
+    def __lt__(self, other) -> pd.Series:
+        return self.series < other
 
     def __mod__(self, other) -> pd.Series:
         return self.series % other
@@ -777,8 +736,17 @@ cdef class SeriesWrapper:
     def __mul__(self, other) -> pd.Series:
         return self.series * other
 
+    def __ne__(self, other) -> pd.Series:
+        return self.series != other
+
     def __neg__(self) -> pd.Series:
         return - self.series
+
+    def __next__(self):
+        return self.series.__next__()
+
+    def __oct__(self) -> oct:
+        return oct(self.series)
 
     def __or__(self, other) -> pd.Series:
         return self.series | other
@@ -800,6 +768,9 @@ cdef class SeriesWrapper:
 
     def __rdivmod__(self, other) -> pd.Series:
         return divmod(other, self.series)
+
+    def __repr__(self) -> str:
+        return repr(self.series)
 
     def __rfloordiv__(self, other) -> pd.Series:
         return other // self.series
@@ -831,56 +802,17 @@ cdef class SeriesWrapper:
     def __rxor__(self, other) -> pd.Series:
         return other ^ self.series
 
+    def __set__(self, instance, value):
+        self.series.__set__(instance, value)
+
+    def __setitem__(self, key, val) -> None:
+        self.series[key] = val
+
+    def __str__(self) -> str:
+        return str(self.series)
+
     def __sub__(self, other) -> pd.Series:
         return self.series - other
 
     def __xor__(self, other) -> pd.Series:
         return self.series ^ other
-
-    ###################################
-    ####    NUMERIC CONVERSIONS    ####
-    ###################################
-
-    def __float__(self) -> float:
-        return float(self.series)
-
-    def __hex__(self) -> hex:
-        return hex(self.series)
-
-    def __int__(self) -> int:
-        return int(self.series)
-
-    def __oct__(self) -> oct:
-        return oct(self.series)
-
-    ####################################
-    ####    SEQUENCES & MAPPINGS    ####
-    ####################################
-
-    def __contains__(self, val) -> bool:
-        return self.series.__contains__(val)
-
-    def __delitem__(self, key) -> None:
-        del self.series[key]
-
-    def __getitem__(self, key) -> Any:
-        return self.series[key]
-
-    def __len__(self) -> int:
-        return len(self.series)
-
-    def __setitem__(self, key, val) -> None:
-        self.series[key] = val
-
-    ###########################
-    ####    DESCRIPTORS    ####
-    ###########################
-
-    def __get__(self, instance, class_):
-        return self.series.__get__(instance, class_)
-
-    def __set__(self, instance, value):
-        self.series.__set__(instance, value)
-
-    def __delete__(self, instance):
-        self.series.__delete__(instance)

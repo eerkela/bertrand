@@ -142,53 +142,6 @@ class BooleanType(AtomicType):
     ####    CONVERSIONS    ####
     ###########################
 
-    def to_boolean(
-        self,
-        series: cast.SeriesWrapper,
-        dtype: AtomicType,
-        **unused
-    ) -> pd.Series:
-        """Convert boolean data to another boolean data type."""
-        # python bool special case
-        if dtype.backend == "python":
-            with series.exclude_na(dtype.na_value):
-                series.series = series.astype("O")
-            return series.series
-
-        # if missing values are detected, ensure dtype is nullable
-        elif dtype.backend in (None, "numpy") and series.hasnans:
-            dtype = dtype.replace(backend="pandas")
-
-        # convert
-        return series.astype(dtype.dtype)
-
-    def to_integer(
-        self,
-        series: cast.SeriesWrapper,
-        dtype: AtomicType,
-        downcast: bool = False,
-        **unused
-    ) -> pd.Series:
-        """Convert boolean data to an integer data type."""
-        # downcast integer dtype if directed
-        if downcast:
-            dtype = dtype.downcast(min=0, max=1)
-
-        # python integer special case
-        if dtype.backend == "python":
-            with series.exclude_na(dtype.na_value):
-                series.series = np.frompyfunc(int, 1, 1)(series)
-            return series.series
-
-        # if missing values are detected, ensure dtype is nullable
-        if dtype.backend in (None, "numpy") and series.hasnans:
-            dtype = dtype.replace(backend="pandas")
-
-        # convert
-        if dtype.backend == "pandas" and pd.api.types.is_object_dtype(series):
-            series.series = self.to_boolean(series, self)
-        return series.astype(dtype.dtype)
-
     def to_float(
         self,
         series: cast.SeriesWrapper,
@@ -218,11 +171,7 @@ class BooleanType(AtomicType):
         if downcast:
             dtype = dtype.downcast(min=0, max=1)
 
-        # astype(complex) complains on missing values
-        with series.exclude_na(dtype.na_value):
-            series.series = series.astype(dtype.dtype)
-
-        return series.series
+        return series.astype(dtype.dtype)
 
     def to_decimal(
         self,
