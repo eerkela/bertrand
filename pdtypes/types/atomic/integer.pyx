@@ -31,9 +31,7 @@ class IntegerMixin:
 
     @property
     def kwargs(self) -> MappingProxyType:
-        return MappingProxyType({
-            "backend": self.backend
-        })
+        return MappingProxyType({"backend": self.backend})
 
     ##############################
     ####    CUSTOMIZATIONS    ####
@@ -60,23 +58,6 @@ class IntegerMixin:
 
         # return as frozenset
         return frozenset(result)
-
-    def downcast(self, min: int, max: int) -> AtomicType:
-        """Reduce the itemsize of an integer type to fit the observed range."""
-        for s in self._smaller:
-            try:
-                instance = forward_declare[s].instance(backend=self.backend)
-            except:
-                continue
-            if instance.min <= min and max <= instance.max:
-                if isinstance(self, AdapterType):
-                    return self.replace(atomic_type=instance)
-                return instance
-        return self
-
-    ###########################
-    ####    CONVERSIONS    ####
-    ###########################
 
     def to_boolean(
         self,
@@ -124,6 +105,24 @@ class IntegerMixin:
         
         raise NotImplementedError()
 
+    ######################
+    ####    EXTRAS    ####
+    ######################
+
+    def downcast(self, series: pd.Series) -> AtomicType:
+        """Reduce the itemsize of an integer type to fit the observed range."""
+        min_val = series.min()
+        max_val = series.max()
+        for s in self._smaller:
+            try:
+                instance = forward_declare[s].instance(backend=self.backend)
+            except:
+                continue
+            if min_val >= instance.min and max_val <= instance.max:
+                if isinstance(self, AdapterType):
+                    return self.replace(atomic_type=instance)
+                return instance
+        return self
 
 
 #####################

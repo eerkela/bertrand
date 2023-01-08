@@ -190,7 +190,7 @@ cdef class AtomicTypeRegistry:
             if k in self.aliases:
                 raise TypeError(
                     f"{subclass.__name__} alias {repr(k)} is already "
-                    f"registered to {self.aliases[k].type.__name__}"
+                    f"registered to {self.aliases[k].base.__name__}"
                 )
 
     cdef int validate_kwargs(self, type subclass) except -1:
@@ -803,7 +803,7 @@ cdef class AtomicType(BaseType):
         `cast()` functions on objects of the given type.
         """
         if downcast:
-            dtype = dtype.downcast(min=series.min(), max=series.max())
+            dtype = dtype.downcast(series)
 
         # python int special case
         if dtype.backend == "python":
