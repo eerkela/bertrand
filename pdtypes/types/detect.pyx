@@ -15,10 +15,7 @@ import pdtypes.types.resolve as resolve
 ######################
 
 
-def detect_type(
-    example: Any,
-    root: bool = False
-) -> atomic.AtomicType | atomic.CompositeType:
+def detect_type(example: Any) -> atomic.AtomicType | atomic.CompositeType:
     """Detect AtomicTypes from live data."""
     # ignore AtomicType/CompositeType objects
     if isinstance(example, (atomic.AtomicType, atomic.CompositeType)):
@@ -28,18 +25,17 @@ def detect_type(
     if hasattr(example, "__iter__") and not isinstance(example, type):
         # if example type has been registered, interpret as scalar
         if type(example) in atomic.AtomicType.registry.aliases:
-            return detect_scalar_type(example, root=root)
+            return detect_scalar_type(example)
 
         # fastpath: use .dtype field if it is present
         dtype = getattr(example, "dtype", None)
         if dtype is not None and dtype != np.dtype("O"):
-            result = resolve.resolve_typespec_dtype(dtype)
-            return result.root if root else result
+            return resolve.resolve_typespec_dtype(dtype)
 
         # no dtype or dtype=object, loop through and interpret
         if isinstance(example, (set, frozenset)):
             example = [x for x in example]
-        result = detect_vector_type(np.array(example, dtype="O"), root=root)
+        result = detect_vector_type(np.array(example, dtype="O"))
         if not result:  # empty set
             return None
         if len(result) == 1:  # homogenous
@@ -47,7 +43,7 @@ def detect_type(
         return result  # non-homogenous
 
     # example is not iterable
-    return detect_scalar_type(example, root=root)
+    return detect_scalar_type(example)
 
 
 #######################
@@ -55,10 +51,7 @@ def detect_type(
 #######################
 
 
-cdef atomic.AtomicType detect_scalar_type(
-    object example,
-    bint root = False
-):
+cdef atomic.AtomicType detect_scalar_type(object example):
     """Given a scalar example of a particular data type, return a corresponding
     AtomicType object.
     """
@@ -74,16 +67,10 @@ cdef atomic.AtomicType detect_scalar_type(
     else:
         result = info.base.detect(example, **info.defaults)
 
-    # return root type if directed
-    if root:
-        return result.root
     return result
 
 
-cdef atomic.CompositeType detect_vector_type(
-    np.ndarray[object] arr,
-    bint root = False
-):
+cdef atomic.CompositeType detect_vector_type(np.ndarray[object] arr):
     """Loop through an object array and return a CompositeType that corresponds
     to its elements.
     """
@@ -112,10 +99,6 @@ cdef atomic.CompositeType detect_vector_type(
             result = atomic.ObjectType.instance(element_type)
         else:
             result = info.base.detect(element, **info.defaults)
-
-        # get root type if directed
-        if root:
-            result = result.root
 
         # add result to both atomic_types set and index buffer
         atomic_types.add(result)

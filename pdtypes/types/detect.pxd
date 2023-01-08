@@ -3,11 +3,5 @@ cimport pdtypes.types.atomic as atomic
 
 
 # functions
-cdef atomic.AtomicType detect_scalar_type(
-    object example,
-    bint root = *
-)
-cdef atomic.CompositeType detect_vector_type(
-    np.ndarray[object] arr,
-    bint root = *
-)
+cdef atomic.AtomicType detect_scalar_type(object example)
+cdef atomic.CompositeType detect_vector_type(np.ndarray[object] arr)
