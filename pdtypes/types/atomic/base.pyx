@@ -465,7 +465,7 @@ cdef class AtomicType(BaseType):
     ############################
 
     @classmethod
-    def detect(cls, example, **kwargs) -> AtomicType:
+    def detect(cls, example, **defaults) -> AtomicType:
         """Given a scalar example of the given AtomicType, construct a new
         instance with the corresponding representation.
 
@@ -473,8 +473,8 @@ cdef class AtomicType(BaseType):
         value of a corresponding scalar (e.g. datetime64 units, timezones,
         etc.)
         """
-        # most types disregard example data
-        return cls.instance(**kwargs)
+        # NOTE: most types disregard example data
+        return cls.instance(**defaults)
 
     @classmethod
     def instance(cls, *args, **kwargs) -> AtomicType:

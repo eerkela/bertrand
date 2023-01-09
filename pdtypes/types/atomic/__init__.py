@@ -8,4 +8,8 @@ from .float import (
     FloatType, Float16Type, Float32Type, Float64Type, Float80Type
 )
 from .complex import ComplexType, Complex64Type, Complex128Type, Complex160Type
+from .decimal import DecimalType
+from .datetime import (
+    DatetimeType, PandasTimestampType, PyDatetimeType, NumpyDatetime64Type
+)
 from .sparse import SparseType

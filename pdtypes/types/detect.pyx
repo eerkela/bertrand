@@ -1,5 +1,6 @@
 from typing import Any
 
+cimport cython
 cimport numpy as np
 import numpy as np
 import pandas as pd
@@ -70,6 +71,8 @@ cdef atomic.AtomicType detect_scalar_type(object example):
     return result
 
 
+@cython.boundscheck(False)
+@cython.wraparound(False)
 cdef atomic.CompositeType detect_vector_type(np.ndarray[object] arr):
     """Loop through an object array and return a CompositeType that corresponds
     to its elements.
