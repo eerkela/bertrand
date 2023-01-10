@@ -12,4 +12,7 @@ from .decimal import DecimalType
 from .datetime import (
     DatetimeType, PandasTimestampType, PyDatetimeType, NumpyDatetime64Type
 )
+from .timedelta import (
+    TimedeltaType, PandasTimedeltaType, PyTimedeltaType, NumpyTimedelta64Type
+)
 from .sparse import SparseType

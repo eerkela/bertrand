@@ -29,10 +29,14 @@ import pdtypes.types.resolve as resolve
 
 def cast(
     series: Iterable,
-    dtype: resolve.resolvable,
+    dtype: resolve.resolvable = None,
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to the given data type."""
+    # TODO: SeriesWrapper must accept other SeriesWrappers
+    # if dtype is None:
+    #     dtype = SeriesWrapper(series).element_type
+    # else:
     dtype = resolve.resolve_type(dtype)
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")

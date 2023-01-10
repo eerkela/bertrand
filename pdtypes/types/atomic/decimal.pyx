@@ -42,7 +42,7 @@ class DecimalType(AtomicType):
         self.backend = backend
 
         # call AtomicType constructor
-        super(DecimalType, self).__init__(
+        super().__init__(
             type_def=type_def,
             dtype=np.dtype(np.object_),
             na_value=pd.NA,

@@ -156,6 +156,7 @@ class IntegerType(IntegerMixin, AtomicType):
             itemsize = None
             self.min = -np.inf
             self.max = np.inf
+            self.__dict__["is_nullable"] = False
 
         # int[python]
         elif backend == "python":
@@ -172,6 +173,7 @@ class IntegerType(IntegerMixin, AtomicType):
             itemsize = 8
             self.min = -2**63
             self.max = 2**63 - 1
+            self.__dict__["is_nullable"] = False
 
         # int[pandas]
         elif backend == "pandas":
@@ -189,7 +191,7 @@ class IntegerType(IntegerMixin, AtomicType):
 
         self.backend = backend
 
-        super(IntegerType, self).__init__(
+        super().__init__(
             type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,
@@ -198,7 +200,7 @@ class IntegerType(IntegerMixin, AtomicType):
         )
 
 
-class SignedIntegerType(IntegerType):
+class SignedIntegerType(IntegerType, supertype=IntegerType):
     """Signed integer type."""
 
     name = "signed"
@@ -216,10 +218,10 @@ class SignedIntegerType(IntegerType):
 
     def __init__(self, backend: str = None):
         # Internally, this is an exact copy of IntegerType
-        super(SignedIntegerType, self).__init__(backend=backend)
+        super().__init__(backend=backend)
 
 
-class Int8Type(IntegerMixin, AtomicType):
+class Int8Type(IntegerMixin, AtomicType, supertype=SignedIntegerType):
     """8-bit integer subtype"""
 
     name = "int8"
@@ -247,10 +249,12 @@ class Int8Type(IntegerMixin, AtomicType):
         # unsigned
         if backend is None:
             dtype = np.dtype(np.int8)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[numpy]
         elif backend == "numpy":
             dtype = np.dtype(np.int8)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[pandas]
         elif backend == "pandas":
@@ -264,7 +268,7 @@ class Int8Type(IntegerMixin, AtomicType):
 
         self.backend = backend
 
-        super(Int8Type, self).__init__(
+        super().__init__(
             type_def=np.int8,
             dtype=dtype,
             na_value=pd.NA,
@@ -273,7 +277,7 @@ class Int8Type(IntegerMixin, AtomicType):
         )
 
 
-class Int16Type(IntegerMixin, AtomicType):
+class Int16Type(IntegerMixin, AtomicType, supertype=SignedIntegerType):
     """16-bit integer subtype"""
 
     name = "int16"
@@ -301,10 +305,12 @@ class Int16Type(IntegerMixin, AtomicType):
         # unsigned
         if backend is None:
             dtype = np.dtype(np.int16)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[numpy]
         elif backend == "numpy":
             dtype = np.dtype(np.int16)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[pandas]
         elif backend == "pandas":
@@ -318,7 +324,7 @@ class Int16Type(IntegerMixin, AtomicType):
 
         self.backend = backend
 
-        super(Int16Type, self).__init__(
+        super().__init__(
             type_def=np.int16,
             dtype=dtype,
             na_value=pd.NA,
@@ -327,7 +333,7 @@ class Int16Type(IntegerMixin, AtomicType):
         )
 
 
-class Int32Type(IntegerMixin, AtomicType):
+class Int32Type(IntegerMixin, AtomicType, supertype=SignedIntegerType):
     """32-bit integer subtype"""
 
     name = "int32"
@@ -355,10 +361,12 @@ class Int32Type(IntegerMixin, AtomicType):
         # unsigned
         if backend is None:
             dtype = np.dtype(np.int32)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[numpy]
         elif backend == "numpy":
             dtype = np.dtype(np.int32)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[pandas]
         elif backend == "pandas":
@@ -372,7 +380,7 @@ class Int32Type(IntegerMixin, AtomicType):
 
         self.backend = backend
 
-        super(Int32Type, self).__init__(
+        super().__init__(
             type_def=np.int32,
             dtype=dtype,
             na_value=pd.NA,
@@ -381,7 +389,7 @@ class Int32Type(IntegerMixin, AtomicType):
         )
 
 
-class Int64Type(IntegerMixin, AtomicType):
+class Int64Type(IntegerMixin, AtomicType, supertype=SignedIntegerType):
     """64-bit integer subtype"""
 
     name = "int64"
@@ -409,10 +417,12 @@ class Int64Type(IntegerMixin, AtomicType):
         # unsigned
         if backend is None:
             dtype = np.dtype(np.int64)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[numpy]
         elif backend == "numpy":
             dtype = np.dtype(np.int64)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[pandas]
         elif backend == "pandas":
@@ -426,7 +436,7 @@ class Int64Type(IntegerMixin, AtomicType):
 
         self.backend = backend
 
-        super(Int64Type, self).__init__(
+        super().__init__(
             type_def=np.int64,
             dtype=dtype,
             na_value=pd.NA,
@@ -435,7 +445,7 @@ class Int64Type(IntegerMixin, AtomicType):
         )
 
 
-class UnsignedIntegerType(IntegerMixin, AtomicType):
+class UnsignedIntegerType(IntegerMixin, AtomicType, supertype=IntegerType):
     """Unsigned integer supertype"""
 
     name = "unsigned"
@@ -461,10 +471,12 @@ class UnsignedIntegerType(IntegerMixin, AtomicType):
         # unsigned
         if backend is None:
             dtype = np.dtype(np.uint64)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[numpy]
         elif backend == "numpy":
             dtype = np.dtype(np.uint64)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[pandas]
         elif backend == "pandas":
@@ -478,7 +490,7 @@ class UnsignedIntegerType(IntegerMixin, AtomicType):
 
         self.backend = backend
 
-        super(UnsignedIntegerType, self).__init__(
+        super().__init__(
             type_def=np.uint64,
             dtype=dtype,
             na_value=pd.NA,
@@ -487,7 +499,7 @@ class UnsignedIntegerType(IntegerMixin, AtomicType):
         )
 
 
-class UInt8Type(IntegerMixin, AtomicType):
+class UInt8Type(IntegerMixin, AtomicType, supertype=UnsignedIntegerType):
     """8-bit unsigned integer subtype"""
 
     name = "uint8"
@@ -515,10 +527,12 @@ class UInt8Type(IntegerMixin, AtomicType):
         # unsigned
         if backend is None:
             dtype = np.dtype(np.uint8)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[numpy]
         elif backend == "numpy":
             dtype = np.dtype(np.uint8)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[pandas]
         elif backend == "pandas":
@@ -532,7 +546,7 @@ class UInt8Type(IntegerMixin, AtomicType):
 
         self.backend = backend
 
-        super(UInt8Type, self).__init__(
+        super().__init__(
             type_def=np.uint8,
             dtype=dtype,
             na_value=pd.NA,
@@ -541,7 +555,7 @@ class UInt8Type(IntegerMixin, AtomicType):
         )
 
 
-class UInt16Type(IntegerMixin, AtomicType):
+class UInt16Type(IntegerMixin, AtomicType, supertype=UnsignedIntegerType):
     """16-bit unsigned integer subtype"""
 
     name = "uint16"
@@ -569,10 +583,12 @@ class UInt16Type(IntegerMixin, AtomicType):
         # unsigned
         if backend is None:
             dtype = np.dtype(np.uint16)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[numpy]
         elif backend == "numpy":
             dtype = np.dtype(np.uint16)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[pandas]
         elif backend == "pandas":
@@ -586,7 +602,7 @@ class UInt16Type(IntegerMixin, AtomicType):
 
         self.backend = backend
 
-        super(UInt16Type, self).__init__(
+        super().__init__(
             type_def=np.uint16,
             dtype=dtype,
             na_value=pd.NA,
@@ -595,7 +611,7 @@ class UInt16Type(IntegerMixin, AtomicType):
         )
 
 
-class UInt32Type(IntegerMixin, AtomicType):
+class UInt32Type(IntegerMixin, AtomicType, supertype=UnsignedIntegerType):
     """32-bit unsigned integer subtype"""
 
     name = "uint32"
@@ -623,10 +639,12 @@ class UInt32Type(IntegerMixin, AtomicType):
         # unsigned
         if backend is None:
             dtype = np.dtype(np.uint32)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[numpy]
         elif backend == "numpy":
             dtype = np.dtype(np.uint32)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[pandas]
         elif backend == "pandas":
@@ -640,7 +658,7 @@ class UInt32Type(IntegerMixin, AtomicType):
 
         self.backend = backend
 
-        super(UInt32Type, self).__init__(
+        super().__init__(
             type_def=np.uint32,
             dtype=dtype,
             na_value=pd.NA,
@@ -649,7 +667,7 @@ class UInt32Type(IntegerMixin, AtomicType):
         )
 
 
-class UInt64Type(IntegerMixin, AtomicType):
+class UInt64Type(IntegerMixin, AtomicType, supertype=UnsignedIntegerType):
     """32-bit unsigned integer subtype"""
 
     name = "uint64"
@@ -677,10 +695,12 @@ class UInt64Type(IntegerMixin, AtomicType):
         # unsigned
         if backend is None:
             dtype = np.dtype(np.uint64)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[numpy]
         elif backend == "numpy":
             dtype = np.dtype(np.uint64)
+            self.__dict__["is_nullable"] = False
 
         # unsigned[pandas]
         elif backend == "pandas":
@@ -694,37 +714,13 @@ class UInt64Type(IntegerMixin, AtomicType):
 
         self.backend = backend
 
-        super(UInt64Type, self).__init__(
+        super().__init__(
             type_def=np.uint64,
             dtype=dtype,
             na_value=pd.NA,
             itemsize=8,
             slug=self.slugify(backend=backend)
         )
-
-
-##########################
-#####    HIERARCHY    ####
-##########################
-
-
-# integer subtypes
-SignedIntegerType.register_supertype(IntegerType)
-UnsignedIntegerType.register_supertype(IntegerType)
-
-
-# signed subtypes
-Int8Type.register_supertype(SignedIntegerType)
-Int16Type.register_supertype(SignedIntegerType)
-Int32Type.register_supertype(SignedIntegerType)
-Int64Type.register_supertype(SignedIntegerType)
-
-
-# unsigned subtypes
-UInt8Type.register_supertype(UnsignedIntegerType)
-UInt16Type.register_supertype(UnsignedIntegerType)
-UInt32Type.register_supertype(UnsignedIntegerType)
-UInt64Type.register_supertype(UnsignedIntegerType)
 
 
 #########################################

@@ -149,7 +149,7 @@ class FloatType(FloatMixin, AtomicType):
         self.min = type_def(-2**53)
         self.max = type_def(2**53)
 
-        super(FloatType, self).__init__(
+        super().__init__(
             type_def=type_def,
             dtype=dtype,
             na_value=np.nan,
@@ -158,7 +158,7 @@ class FloatType(FloatMixin, AtomicType):
         )
 
 
-class Float16Type(FloatMixin, AtomicType):
+class Float16Type(FloatMixin, AtomicType, supertype=FloatType):
 
     name = "float16"
     aliases = {
@@ -184,7 +184,7 @@ class Float16Type(FloatMixin, AtomicType):
         self.min = np.float16(-2**11)
         self.max = np.float16(2**11)
 
-        super(Float16Type, self).__init__(
+        super().__init__(
             type_def=np.float16,
             dtype=np.dtype(np.float16),
             na_value=np.nan,
@@ -193,7 +193,7 @@ class Float16Type(FloatMixin, AtomicType):
         )
 
 
-class Float32Type(FloatMixin, AtomicType):
+class Float32Type(FloatMixin, AtomicType, supertype=FloatType):
 
     name = "float32"
     aliases = {
@@ -218,7 +218,7 @@ class Float32Type(FloatMixin, AtomicType):
         self.min = np.float32(-2**24)
         self.max = np.float32(2**24)
 
-        super(Float32Type, self).__init__(
+        super().__init__(
             type_def=np.float32,
             dtype=np.dtype(np.float32),
             na_value=np.nan,
@@ -227,7 +227,7 @@ class Float32Type(FloatMixin, AtomicType):
         )
 
 
-class Float64Type(FloatMixin, AtomicType):
+class Float64Type(FloatMixin, AtomicType, supertype=FloatType):
 
     name = "float64"
     aliases = {
@@ -269,7 +269,7 @@ class Float64Type(FloatMixin, AtomicType):
         self.min = type_def(-2**53)
         self.max = type_def(2**53)
 
-        super(Float64Type, self).__init__(
+        super().__init__(
             type_def=type_def,
             dtype=dtype,
             na_value=np.nan,
@@ -278,7 +278,12 @@ class Float64Type(FloatMixin, AtomicType):
         )
 
 
-class Float80Type(FloatMixin, AtomicType, add_to_registry=has_longdouble):
+class Float80Type(
+    FloatMixin,
+    AtomicType,
+    add_to_registry=has_longdouble,
+    supertype=FloatType if has_longdouble else None
+):
 
     name = "float80"
     aliases = {
@@ -307,25 +312,13 @@ class Float80Type(FloatMixin, AtomicType, add_to_registry=has_longdouble):
         self.min = np.longdouble(-2**64)
         self.max = np.longdouble(2**64)
 
-        super(Float80Type, self).__init__(
+        super().__init__(
             type_def=np.longdouble,
             dtype=np.dtype(np.longdouble),
             na_value=np.nan,
             itemsize=np.dtype(np.longdouble).itemsize,
             slug=self.slugify(backend=backend)
         )
-
-
-##########################
-#####    HIERARCHY    ####
-##########################
-
-
-Float16Type.register_supertype(FloatType)
-Float32Type.register_supertype(FloatType)
-Float64Type.register_supertype(FloatType)
-if has_longdouble:
-    Float80Type.register_supertype(FloatType)
 
 
 #######################

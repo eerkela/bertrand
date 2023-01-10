@@ -443,6 +443,7 @@ cdef class AtomicType(BaseType):
 
     registry: TypeRegistry = AtomicTypeRegistry()
     flyweights: dict[int, AtomicType] = {}
+    is_nullable = True
 
     def __init__(
         self,
@@ -557,11 +558,8 @@ cdef class AtomicType(BaseType):
         Override this if your AtomicType implements custom logic to generate
         supertype instances (due to an interface mismatch or similar obstacle).
         """
-        # check for root type
         if type_def is None:
             return None
-
-        # pass self.kwargs to supertype constructor
         return type_def.instance(**self.kwargs)
 
     def contains(self, other):
@@ -847,6 +845,7 @@ cdef class AtomicType(BaseType):
         cls,
         add_to_registry: bool = True,
         cache_size: int = None,
+        supertype: type = None,
         **kwargs
     ):
         # allow cooperative inheritance
@@ -858,8 +857,14 @@ cdef class AtomicType(BaseType):
         if not issubclass(cls, AdapterType):
             cls.is_sparse = False
             cls.is_categorical = False
+
+        # add separate LRU cache, if directed
         if cache_size is not None:
             cls.flyweights = LRUDict(maxsize=cache_size)
+
+        # register supertype, if one is given
+        if supertype is not None:
+            cls.register_supertype(supertype)
 
         # validate subclass properties and add to registry, if directed
         if add_to_registry:

@@ -49,7 +49,7 @@ class SparseType(AdapterType, cache_size=256):
             dtype = pd.SparseDtype(dtype, self.fill_value)
 
         # call AtomicType.__init__()
-        super(SparseType, self).__init__(
+        super().__init__(
             atomic_type=atomic_type,
             type_def=atomic_type.type_def,
             dtype=dtype,

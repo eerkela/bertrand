@@ -180,12 +180,11 @@ cdef atomic.AtomicType resolve_typespec_dtype(object input_dtype):
     """Resolve a numpy/pandas dtype object, returning a corresponding
     AtomicType.
     """
-    # retrieve alias registry
-    registry = atomic.AtomicType.registry
-
-    # remember adapter type settings
+    cdef atomic.AtomicTypeRegistry registry = atomic.AtomicType.registry
     cdef dict sparse = None
     cdef dict categorical = None
+    cdef str unit
+    cdef int step_size
 
     # unwrap sparse types
     if isinstance(input_dtype, pd.SparseDtype):
@@ -197,19 +196,34 @@ cdef atomic.AtomicType resolve_typespec_dtype(object input_dtype):
         categorical = {"levels": frozenset(input_dtype.categories)}
         input_dtype = input_dtype.categories.dtype
 
-    # TODO: special case for datetime64/timedelta64 with custom units
+    # pd.DatetimeTZDtype() special case
+    if isinstance(input_dtype, pd.DatetimeTZDtype):
+        return atomic.PandasTimestampType.instance(tz=input_dtype.tz)
 
-    # get associated AliasInfo
-    info = registry.aliases[input_dtype]
+    # M8 special case
+    if isinstance(input_dtype, np.dtype) and np.issubdtype(input_dtype, "M8"):
+        unit, step_size = np.datetime_data(input_dtype)
+        return atomic.NumpyDatetime64Type.instance(
+            unit=None if unit == "generic" else unit,
+            step_size=step_size
+        )
 
-    # build result
+    # m8 special case
+    if isinstance(input_dtype, np.dtype) and np.issubdtype(input_dtype, "m8"):
+        unit, step_size = np.datetime_data(input_dtype)
+        return atomic.NumpyTimedelta64Type.instance(
+            unit=None if unit == "generic" else unit,
+            step_size=step_size
+        )
+
+    cdef atomic.AliasInfo info = registry.aliases[input_dtype]
     cdef atomic.AtomicType result = info.base.instance(**info.defaults)
+
     if categorical:
         result = atomic.CategoricalType(result, **categorical)
     if sparse:
         result = atomic.SparseType(result, **sparse)
 
-    # return
     return result
 
 

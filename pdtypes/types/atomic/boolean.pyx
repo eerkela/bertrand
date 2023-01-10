@@ -47,6 +47,7 @@ class BooleanType(AtomicType):
         if backend is None:
             type_def = bool
             dtype = np.dtype(bool)
+            self.__dict__["is_nullable"] = False
 
         # "bool[python]"
         elif backend == "python":
@@ -57,6 +58,7 @@ class BooleanType(AtomicType):
         elif backend == "numpy":
             type_def = np.bool_
             dtype = np.dtype(bool)
+            self.__dict__["is_nullable"] = False
 
         # "bool[pandas]"
         elif backend == "pandas":
@@ -72,7 +74,7 @@ class BooleanType(AtomicType):
         self.backend = backend
 
         # call AtomicType constructor
-        super(BooleanType, self).__init__(
+        super().__init__(
             type_def=type_def,
             dtype=dtype,
             na_value=pd.NA,

@@ -140,7 +140,7 @@ class ComplexType(ComplexMixin, AtomicType):
         self.max = type_def(2**53)
         self.backend = backend
 
-        super(ComplexType, self).__init__(
+        super().__init__(
             type_def=type_def,
             dtype=dtype,
             na_value=type_def("nan+nanj"),
@@ -149,7 +149,7 @@ class ComplexType(ComplexMixin, AtomicType):
         )
 
 
-class Complex64Type(ComplexMixin, AtomicType):
+class Complex64Type(ComplexMixin, AtomicType, supertype=ComplexType):
 
     name = "complex64"
     aliases = {
@@ -177,7 +177,7 @@ class Complex64Type(ComplexMixin, AtomicType):
         self.min = np.complex64(-2**24)
         self.max = np.complex64(2**24)
 
-        super(Complex64Type, self).__init__(
+        super().__init__(
             type_def=np.complex64,
             dtype=np.dtype(np.complex64),
             na_value=np.complex64("nan+nanj"),
@@ -186,7 +186,7 @@ class Complex64Type(ComplexMixin, AtomicType):
         )
 
 
-class Complex128Type(ComplexMixin, AtomicType):
+class Complex128Type(ComplexMixin, AtomicType, supertype=ComplexType):
 
     name = "complex128"
     aliases = {
@@ -229,7 +229,7 @@ class Complex128Type(ComplexMixin, AtomicType):
         self.min = type_def(-2**53)
         self.max = type_def(2**53)
 
-        super(Complex128Type, self).__init__(
+        super().__init__(
             type_def=type_def,
             dtype=dtype,
             na_value=type_def("nan+nanj"),
@@ -238,7 +238,12 @@ class Complex128Type(ComplexMixin, AtomicType):
         )
 
 
-class Complex160Type(ComplexMixin, AtomicType, add_to_registry=has_clongdouble):
+class Complex160Type(
+    ComplexMixin,
+    AtomicType,
+    add_to_registry=has_clongdouble,
+    supertype=ComplexType if has_clongdouble else None
+):
 
     name = "complex160"
     aliases = {
@@ -271,24 +276,13 @@ class Complex160Type(ComplexMixin, AtomicType, add_to_registry=has_clongdouble):
         self.min = np.clongdouble(-2**64)
         self.max = np.clongdouble(2**64)
 
-        super(Complex160Type, self).__init__(
+        super().__init__(
             type_def=np.clongdouble,
             dtype=np.dtype(np.clongdouble),
             na_value=np.clongdouble("nan+nanj"),
             itemsize=np.dtype(np.clongdouble).itemsize,
             slug=self.slugify(backend=backend)
         )
-
-
-##########################
-#####    HIERARCHY    ####
-##########################
-
-
-Complex64Type.register_supertype(ComplexType)
-Complex128Type.register_supertype(ComplexType)
-if has_clongdouble:
-    Complex160Type.register_supertype(ComplexType)
 
 
 #######################
