@@ -26,6 +26,8 @@ cimport pdtypes.types.atomic as atomic
 # TODO: resolve_type currently can't interpret strings of the form:
 # "sparse[sparse[bool[numpy]]]"
 
+# TODO: check for fixed-length string type specifier?  "U32", "U64", etc.
+
 
 # type hint for all the various specifiers that are accepted by resolve_type()
 resolvable = Union[
@@ -156,16 +158,15 @@ cdef atomic.BaseType resolve_typespec_string(str input_str):
     input_str = valid.group("body")
     matches = [x.groupdict() for x in registry.regex.finditer(input_str)]
     for m in matches:
-        # get type definition and default kwargs for the given alias
-        info = registry.aliases[m["type"]]
+        base = registry.aliases[m["type"]]
 
         # if no args are provided, use the default kwargs
         if not m["args"]:  # empty string or None
-            instance = info.base.instance(**info.defaults)
+            instance = base.instance()
 
-        # tokenize args and pass to info.base.resolve()
+        # tokenize args and pass to base.resolve()
         else:
-            instance = info.base.resolve(*tokenize(m["args"]))
+            instance = base.resolve(*tokenize(m["args"]))
 
         # add to result set
         result.add(instance)
@@ -186,49 +187,45 @@ cdef atomic.AtomicType resolve_typespec_dtype(object input_dtype):
     cdef str unit
     cdef int step_size
 
-    # unwrap sparse types
-    if isinstance(input_dtype, pd.SparseDtype):
-        sparse = {"fill_value": input_dtype.fill_value}
-        input_dtype = input_dtype.subtype
+    # pandas special cases (sparse/categorical/DatetimeTZ)
+    if isinstance(input_dtype, pd.api.extensions.ExtensionDtype):
+        if isinstance(input_dtype, pd.SparseDtype):
+            sparse = {"fill_value": input_dtype.fill_value}
+            input_dtype = input_dtype.subtype
+        if isinstance(input_dtype, pd.CategoricalDtype):
+            categorical = {"levels": frozenset(input_dtype.categories)}
+            input_dtype = input_dtype.categories.dtype
+        if isinstance(input_dtype, pd.DatetimeTZDtype):
+            return atomic.PandasTimestampType.instance(tz=input_dtype.tz)
 
-    # unwrap categorical types
-    if isinstance(input_dtype, pd.CategoricalDtype):
-        categorical = {"levels": frozenset(input_dtype.categories)}
-        input_dtype = input_dtype.categories.dtype
+    # numpy special cases (M8/m8/U)
+    if isinstance(input_dtype, np.dtype):
+        if np.issubdtype(input_dtype, "M8"):
+            unit, step_size = np.datetime_data(input_dtype)
+            return atomic.NumpyDatetime64Type.instance(
+                unit=None if unit == "generic" else unit,
+                step_size=step_size
+            )
+        if np.issubdtype(input_dtype, "m8"):
+            unit, step_size = np.datetime_data(input_dtype)
+            return atomic.NumpyTimedelta64Type.instance(
+                unit=None if unit == "generic" else unit,
+                step_size=step_size
+            )
+        if np.issubdtype(input_dtype, "U"):
+            return atomic.StringType.instance()
 
-    # pd.DatetimeTZDtype() special case
-    if isinstance(input_dtype, pd.DatetimeTZDtype):
-        return atomic.PandasTimestampType.instance(tz=input_dtype.tz)
-
-    # M8 special case
-    if isinstance(input_dtype, np.dtype) and np.issubdtype(input_dtype, "M8"):
-        unit, step_size = np.datetime_data(input_dtype)
-        return atomic.NumpyDatetime64Type.instance(
-            unit=None if unit == "generic" else unit,
-            step_size=step_size
-        )
-
-    # m8 special case
-    if isinstance(input_dtype, np.dtype) and np.issubdtype(input_dtype, "m8"):
-        unit, step_size = np.datetime_data(input_dtype)
-        return atomic.NumpyTimedelta64Type.instance(
-            unit=None if unit == "generic" else unit,
-            step_size=step_size
-        )
-
-    cdef atomic.AliasInfo info = registry.aliases[input_dtype]
-    cdef atomic.AtomicType result = info.base.instance(**info.defaults)
+    # look up alias and re-wrap with sparse/categorical
+    cdef atomic.AtomicType result = registry.aliases[input_dtype].instance()
 
     if categorical:
         result = atomic.CategoricalType(result, **categorical)
     if sparse:
         result = atomic.SparseType(result, **sparse)
-
     return result
 
 
 cdef atomic.AtomicType resolve_typespec_type(type input_type):
     """Resolve a runtime type definition, returning a corresponding AtomicType.
     """
-    info = atomic.AtomicType.registry.aliases[input_type]
-    return info.base.instance(**info.defaults)
+    return atomic.AtomicType.registry.aliases[input_type].instance()

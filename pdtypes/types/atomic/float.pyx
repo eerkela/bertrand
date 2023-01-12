@@ -5,6 +5,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AdapterType, AtomicType
+from .base import generic
 cimport pdtypes.types.atomic.complex as complex_types
 
 from pdtypes.error import shorten_list
@@ -41,51 +42,6 @@ cdef bint has_longdouble = np.dtype(np.longdouble).itemsize > 8
 
 class FloatMixin:
 
-    ########################
-    ####    REQUIRED    ####
-    ########################
-
-    @classmethod
-    def slugify(cls, backend: str = None) -> str:
-        slug = cls.name
-        if backend is not None:
-            slug += f"[{backend}]"
-        return slug
-
-    @property
-    def kwargs(self) -> MappingProxyType:
-        return MappingProxyType({"backend": self.backend})
-
-    ##############################
-    ####    CUSTOMIZATIONS    ####
-    ##############################
-
-    def _generate_subtypes(self, types: set) -> frozenset:
-        # treat backend=None as wildcard
-        kwargs = [self.kwargs]
-        if self.backend is None:
-            kwargs.extend([
-                {**kw, **{"backend": b}}
-                for kw in kwargs
-                for b in self._backends
-            ])
-
-        # build result, skipping invalid kwargs
-        result = set()
-        for t in types:
-            for kw in kwargs:
-                try:
-                    result.add(t.instance(**kw))
-                except TypeError:
-                    continue
-
-        # return as frozenset
-        return frozenset(result)
-
-    ######################
-    ####    EXTRAS    ####
-    ######################
-
     def downcast(self, series: pd.Series) -> AtomicType:
         """Reduce the itemsize of a float type to fit the observed range."""
         for s in self._smaller:
@@ -104,220 +60,304 @@ class FloatMixin:
         return _class.instance(backend=self.backend)
 
 
-############################
-####    ATOMIC TYPES    ####
-############################
+#############################
+####    GENERIC TYPES    ####
+#############################
 
 
-class FloatType(FloatMixin, AtomicType):
+@generic
+class FloatType(
+    FloatMixin,
+    AtomicType
+):
 
     name = "float"
-    aliases = {
-        float: {},
-        np.floating: {"backend": "numpy"},
-        "float": {},
-        "floating": {},
-        "f": {},
-    }
-    _backends = ("python", "numpy")
+    aliases = {float, "float", "floating", "f"}
     _equiv_complex = "ComplexType"
     _smaller = ("Float16Type", "Float32Type", "Float64Type", "Float80Type")
 
-    def __init__(self, backend: str = None):
-        # float
-        if backend is None:
-            type_def = float
-            dtype = np.dtype(np.float64)
-
-        # float[python]
-        elif backend == "python":
-            type_def = float
-            dtype = np.dtype(np.object_)
-
-        # float[numpy]
-        elif backend == "numpy":
-            type_def = np.float64
-            dtype = np.dtype(np.float64)
-
-        # unrecognized
-        else:
-            raise TypeError(
-                f"{self.name} backend not recognized: {repr(backend)}"
-            )
-
-        self.backend = backend
+    def __init__(self):
+        type_def = float
         self.min = type_def(-2**53)
         self.max = type_def(2**53)
-
         super().__init__(
             type_def=type_def,
-            dtype=dtype,
+            dtype=np.dtype(np.float64),
             na_value=np.nan,
-            itemsize=8,
-            slug=self.slugify(backend=backend)
+            itemsize=8
         )
 
 
-class Float16Type(FloatMixin, AtomicType, supertype=FloatType):
+@generic
+class Float16Type(
+    FloatMixin,
+    AtomicType,
+    supertype=FloatType
+):
 
     name = "float16"
-    aliases = {
-        np.float16: {"backend": "numpy"},
-        np.dtype(np.float16): {"backend": "numpy"},
-        "float16": {},
-        "half": {},
-        "f2": {},
-        "e": {},
-    }
-    _backends = ("numpy",)
+    aliases = {"float16", "half", "f2", "e"}
     _equiv_complex = "Complex64Type"
     _smaller = ()
 
-    def __init__(self, backend: str = None):
-        # unrecognized
-        if backend not in (None, "numpy"):
-            raise TypeError(
-                f"{self.name} backend not recognized: {repr(backend)}"
-            )
-
-        self.backend = backend
-        self.min = np.float16(-2**11)
-        self.max = np.float16(2**11)
-
+    def __init__(self):
+        type_def = np.float16
+        self.min = type_def(-2**11)
+        self.max = type_def(2**11)
         super().__init__(
-            type_def=np.float16,
+            type_def=type_def,
             dtype=np.dtype(np.float16),
             na_value=np.nan,
-            itemsize=2,
-            slug=self.slugify(backend=backend)
+            itemsize=2
         )
 
 
-class Float32Type(FloatMixin, AtomicType, supertype=FloatType):
+@generic
+class Float32Type(
+    FloatMixin,
+    AtomicType,
+    supertype=FloatType
+):
 
     name = "float32"
-    aliases = {
-        np.float32: {"backend": "numpy"},
-        np.dtype(np.float32): {"backend": "numpy"},
-        "float32": {},
-        "single": {},
-        "f4": {},
-    }
-    _backends = ("numpy")
+    aliases = {"float32", "single", "f4"}
     _equiv_complex = "Complex64Type"
     _smaller = ("Float16Type",)
 
-    def __init__(self, backend: str = None):
-        # unrecognized
-        if backend not in (None, "numpy"):
-            raise TypeError(
-                f"{self.name} backend not recognized: {repr(backend)}"
-            )
-
-        self.backend = backend
-        self.min = np.float32(-2**24)
-        self.max = np.float32(2**24)
-
+    def __init__(self):
+        type_def = np.float32
+        self.min = type_def(-2**24)
+        self.max = type_def(2**24)
         super().__init__(
-            type_def=np.float32,
+            type_def=type_def,
             dtype=np.dtype(np.float32),
             na_value=np.nan,
-            itemsize=4,
-            slug=self.slugify(backend=backend)
+            itemsize=4
         )
 
 
-class Float64Type(FloatMixin, AtomicType, supertype=FloatType):
+@generic
+class Float64Type(
+    FloatMixin,
+    AtomicType,
+    supertype=FloatType
+):
 
     name = "float64"
-    aliases = {
-        np.float64: {"backend": "numpy"},
-        np.dtype(np.float64): {"backend": "numpy"},
-        "float64": {},
-        "double": {},
-        "float_": {},
-        "f8": {},
-        "d": {},
-    }
-    _backends = ("python", "numpy")
+    aliases = {"float64", "double", "float_", "f8", "d"}
     _equiv_complex = "Complex128Type"
     _smaller = ("Float16Type", "Float32Type")
 
-    def __init__(self, backend: str = None):
-        # float64
-        if backend is None:
-            type_def = float
-            dtype = np.dtype(np.float64)
-
-        # float64[python]
-        elif backend == "python":
-            type_def = float
-            dtype = np.dtype(np.object_)
-
-        # float64[numpy]
-        elif backend == "numpy":
-            type_def = np.float64
-            dtype = np.dtype(np.float64)
-
-        # unrecognized
-        else:
-            raise TypeError(
-                f"{self.name} backend not recognized: {repr(backend)}"
-            )
-
-        self.backend = backend
+    def __init__(self):
+        type_def = float
         self.min = type_def(-2**53)
         self.max = type_def(2**53)
-
         super().__init__(
             type_def=type_def,
-            dtype=dtype,
+            dtype=np.dtype(np.float64),
             na_value=np.nan,
-            itemsize=8,
-            slug=self.slugify(backend=backend)
+            itemsize=8
         )
 
 
+@generic
 class Float80Type(
     FloatMixin,
     AtomicType,
     add_to_registry=has_longdouble,
-    supertype=FloatType if has_longdouble else None
+    supertype=FloatType
 ):
 
     name = "float80"
     aliases = {
-        np.longdouble: {"backend": "numpy"},
-        np.dtype(np.longdouble): {"backend": "numpy"},
-        "float80": {},
-        "longdouble": {},
-        "longfloat": {},
-        "long double": {},
-        "long float": {},
-        "f10": {},
-        "g": {},
+        "float80", "longdouble", "longfloat", "long double", "long float",
+        "f10", "g"
     }
-    _backends = ("numpy")
     _equiv_complex = "Complex160Type"
     _smaller = ("Float16Type", "Float32Type", "Float64Type")
 
-    def __init__(self, backend: str = None):
-        # unrecognized
-        if backend not in (None, "numpy"):
-            raise TypeError(
-                f"{self.name} backend not recognized: {repr(backend)}"
-            )
-
-        self.backend = backend
-        self.min = np.longdouble(-2**64)
-        self.max = np.longdouble(2**64)
-
+    def __init__(self):
+        type_def = np.longdouble
+        self.min = type_def(-2**64)
+        self.max = type_def(2**64)
         super().__init__(
-            type_def=np.longdouble,
+            type_def=type_def,
             dtype=np.dtype(np.longdouble),
             na_value=np.nan,
-            itemsize=np.dtype(np.longdouble).itemsize,
-            slug=self.slugify(backend=backend)
+            itemsize=np.dtype(np.longdouble).itemsize
+        )
+
+
+###########################
+####    NUMPY TYPES    ####
+###########################
+
+
+@FloatType.register_backend("numpy")
+class NumpyFloatType(
+    FloatMixin,
+    AtomicType
+):
+
+    aliases = {np.floating}
+    _equiv_complex = "NumpyComplexType"
+    _smaller = (
+        "NumpyFloat16Type", "NumpyFloat32Type", "NumpyFloat64Type",
+        "NumpyFloat80Type"
+    )
+
+    def __init__(self):
+        type_def = np.float64
+        self.min = type_def(-2**53)
+        self.max = type_def(2**53)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype(np.float64),
+            na_value=np.nan,
+            itemsize=8
+        )
+
+
+@Float16Type.register_backend("numpy")
+class NumpyFloat16Type(
+    FloatMixin,
+    AtomicType,
+    supertype=NumpyFloatType
+):
+
+    aliases = {np.float16, np.dtype(np.float16)}
+    _equiv_complex = "NumpyComplex64Type"
+    _smaller = ()
+
+    def __init__(self):
+        type_def = np.float16
+        self.min = type_def(-2**11)
+        self.max = type_def(2**11)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype(np.float16),
+            na_value=np.nan,
+            itemsize=2
+        )
+
+
+@Float32Type.register_backend("numpy")
+class NumpyFloat32Type(
+    FloatMixin,
+    AtomicType,
+    supertype=NumpyFloatType
+):
+
+    aliases = {np.float32, np.dtype(np.float32)}
+    _equiv_complex = "NumpyComplex64Type"
+    _smaller = ("NumpyFloat16Type",)
+
+    def __init__(self):
+        type_def = np.float32
+        self.min = type_def(-2**24)
+        self.max = type_def(2**24)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype(np.float32),
+            na_value=np.nan,
+            itemsize=4
+        )
+
+
+@Float64Type.register_backend("numpy")
+class NumpyFloat64Type(
+    FloatMixin,
+    AtomicType,
+    supertype=NumpyFloatType
+):
+
+    aliases = {np.float64, np.dtype(np.float64)}
+    _equiv_complex = "NumpyComplex128Type"
+    _smaller = ("NumpyFloat16Type", "NumpyFloat32Type")
+
+    def __init__(self):
+        type_def = np.float64
+        self.min = type_def(-2**53)
+        self.max = type_def(2**53)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype(np.float64),
+            na_value=np.nan,
+            itemsize=8
+        )
+
+
+@Float80Type.register_backend("numpy")
+class NumpyFloat80Type(
+    FloatMixin,
+    AtomicType,
+    add_to_registry=has_longdouble,
+    supertype=NumpyFloatType
+):
+
+    aliases = {np.longdouble, np.dtype(np.longdouble)}
+    _equiv_complex = "NumpyComplex160Type"
+    _smaller = ("NumpyFloat16Type", "NumpyFloat32Type", "NumpyFloat64Type")
+
+    def __init__(self):
+        type_def = np.longdouble
+        self.min = type_def(-2**64)
+        self.max = type_def(2**64)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype(np.longdouble),
+            na_value=np.nan,
+            itemsize=np.dtype(np.longdouble).itemsize
+        )
+
+
+############################
+####    PYTHON TYPES    ####
+############################
+
+
+@FloatType.register_backend("python")
+class PythonFloatType(
+    FloatMixin,
+    AtomicType
+):
+
+    aliases = set()
+    _equiv_complex = "PythonComplexType"
+    _smaller = ("PythonFloat64Type")
+
+    def __init__(self):
+        type_def = float
+        self.min = type_def(-2**53)
+        self.max = type_def(2**53)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype("O"),
+            na_value=np.nan,
+            itemsize=8
+        )
+
+
+@Float64Type.register_backend("python")
+class PythonFloat64Type(
+    FloatMixin,
+    AtomicType,
+    supertype=PythonFloatType
+):
+
+    aliases = set()
+    _equiv_complex = "PythonComplex128Type"
+    _smaller = ()
+
+    def __init__(self):
+        type_def = float
+        self.min = type_def(-2**53)
+        self.max = type_def(2**53)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype("O"),
+            na_value=np.nan,
+            itemsize=8
         )
 
 
@@ -326,10 +366,4 @@ class Float80Type(
 #######################
 
 
-cdef dict forward_declare = {
-    "FloatType": FloatType,
-    "Float16Type": Float16Type,
-    "Float32Type": Float32Type,
-    "Float64Type": Float64Type,
-    "Float80Type": Float80Type,
-}
+cdef dict forward_declare = locals()

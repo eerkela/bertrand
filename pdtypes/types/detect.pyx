@@ -59,16 +59,12 @@ cdef atomic.AtomicType detect_scalar_type(object example):
     # look up example type
     cdef type example_type = type(example)
     cdef dict lookup = atomic.AtomicType.registry.aliases
-    cdef atomic.AliasInfo info = lookup.get(example_type, None)
+    cdef type class_def = lookup.get(example_type, None)
 
-    # call AtomicType.detect() to parse result, defaulting to ObjectType
-    cdef atomic.AtomicType result
-    if info is None:
-        result = atomic.ObjectType.instance(example_type)
-    else:
-        result = info.base.detect(example, **info.defaults)
-
-    return result
+    # delegate to class_def.detect(), defaulting to ObjectType
+    if class_def is None:
+        return atomic.ObjectType.instance(example_type)
+    return class_def.detect(example)
 
 
 @cython.boundscheck(False)
@@ -83,7 +79,7 @@ cdef atomic.CompositeType detect_vector_type(np.ndarray[object] arr):
     cdef unsigned int i
     cdef object element
     cdef type element_type
-    cdef atomic.AliasInfo info
+    cdef type class_def
     cdef atomic.AtomicType result
     cdef atomic.AtomicType[:] index = np.empty(arr_length, dtype="O")
 
@@ -93,15 +89,14 @@ cdef atomic.CompositeType detect_vector_type(np.ndarray[object] arr):
         element = arr[i]
         element_type = type(element)
 
-        # look up element_type to get AliasInfo
-        info = lookup.get(element_type, None)
+        # look up element_type to get AtomicType definition
+        class_def = lookup.get(element_type, None)
 
-        # call AtomicType.detect() to parse result, defaulting to ObjectType
-        if info is None:
-            print(element_type)
+        # delegate to class_def.detect(), defaulting to ObjectType
+        if class_def is None:
             result = atomic.ObjectType.instance(element_type)
         else:
-            result = info.base.detect(element, **info.defaults)
+            result = class_def.detect(element)
 
         # add result to both atomic_types set and index buffer
         atomic_types.add(result)

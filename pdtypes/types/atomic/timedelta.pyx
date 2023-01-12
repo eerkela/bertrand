@@ -89,7 +89,6 @@ class PandasTimedeltaType(AtomicType, supertype=TimedeltaType):
         pd.Timedelta: {},
         "Timedelta": {},
         "pandas.Timedelta": {},
-        "pandas Timedelta": {},
         "pd.Timedelta": {},
     }
 
@@ -151,6 +150,7 @@ class NumpyTimedelta64Type(AtomicType, cache_size=64, supertype=TimedeltaType):
     name = "m8"
     aliases = {
         np.timedelta64: {},
+        # np.dtype("m8") handled in resolve_typespec_dtype special case
         "m8": {},
         "timedelta64": {},
         "numpy.timedelta64": {},

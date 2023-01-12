@@ -90,9 +90,9 @@ class PandasTimestampType(AtomicType, cache_size=64, supertype=DatetimeType):
     name = "Timestamp"
     aliases = {
         pd.Timestamp: {},
+        # pd.DatetimeTZDtype() handled in resolve_typespec_dtype special case
         "Timestamp": {},
         "pandas.Timestamp": {},
-        "pandas Timestamp": {},
         "pd.Timestamp": {},
     }
 
@@ -222,6 +222,7 @@ class NumpyDatetime64Type(AtomicType, cache_size=64, supertype=DatetimeType):
     name = "M8"
     aliases = {
         np.datetime64: {},
+        # np.dtype("M8") handled in resolve_typespec_dtype special case
         "M8": {},
         "datetime64": {},
         "numpy.datetime64": {},

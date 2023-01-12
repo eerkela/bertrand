@@ -6,12 +6,6 @@ cimport numpy as np
 ##########################
 
 
-cdef class AliasInfo:
-    cdef readonly:
-        type base
-        dict defaults
-
-
 cdef class CacheValue:
     cdef readonly:
         object value
@@ -29,14 +23,13 @@ cdef class BaseType:
 
 cdef class AtomicTypeRegistry:
     cdef:
-        list atomic_types
-        long long int hash
         CacheValue _aliases
         CacheValue _regex
         CacheValue _resolvable
+        list atomic_types
+        long long hash
 
     cdef int validate_aliases(self, type subclass) except -1
-    cdef int validate_kwargs(self, type subclass) except -1
     cdef int validate_name(self, type subclass) except -1
     cdef int validate_slugify(self, type subclass) except -1
     cdef void update_hash(self)
@@ -53,6 +46,7 @@ cdef class AtomicType(BaseType):
         object dtype
         object na_value
         object itemsize
+        object kwargs
         str slug
         long long hash
 

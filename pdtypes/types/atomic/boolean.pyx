@@ -1,5 +1,4 @@
 import decimal
-from types import MappingProxyType
 from typing import Union, Sequence
 
 cimport cython
@@ -8,6 +7,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AtomicType
+from .base import generic
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -18,112 +18,12 @@ import pdtypes.types.resolve as resolve
 # TODO: add datetime_like `since` hint to to_datetime, to_timedelta
 
 
-class BooleanType(AtomicType):
-    """Boolean supertype."""
+######################
+####    MIXINS    ####
+######################
 
-    name = "bool"
-    aliases = {
-        # type
-        bool: {},
-        np.bool_: {"backend": "numpy"},
 
-        # dtype
-        np.dtype(np.bool_): {"backend": "numpy"},
-        pd.BooleanDtype(): {"backend": "pandas"},
-
-        # string
-        "bool": {},
-        "boolean": {},
-        "bool_": {},
-        "bool8": {},
-        "b1": {},
-        "?": {},
-        "Boolean": {"backend": "pandas"},
-    }
-    _backends = ("python", "numpy", "pandas")
-
-    def __init__(self, backend: str = None):
-        # "bool"
-        if backend is None:
-            type_def = bool
-            dtype = np.dtype(bool)
-            self.__dict__["is_nullable"] = False
-
-        # "bool[python]"
-        elif backend == "python":
-            type_def = bool
-            dtype = np.dtype("O")
-
-        # "bool[numpy]"
-        elif backend == "numpy":
-            type_def = np.bool_
-            dtype = np.dtype(bool)
-            self.__dict__["is_nullable"] = False
-
-        # "bool[pandas]"
-        elif backend == "pandas":
-            type_def = np.bool_
-            dtype = pd.BooleanDtype()
-
-        # unrecognized
-        else:
-            raise TypeError(
-                f"{self.name} backend not recognized: {repr(backend)}"
-            )
-
-        self.backend = backend
-
-        # call AtomicType constructor
-        super().__init__(
-            type_def=type_def,
-            dtype=dtype,
-            na_value=pd.NA,
-            itemsize=1,
-            slug=self.slugify(backend=backend)
-        )
-
-    ########################
-    ####    REQUIRED    ####
-    ########################
-
-    @classmethod
-    def slugify(cls, backend: str = None) -> str:
-        slug = cls.name
-        if backend is not None:
-            slug += f"[{backend}]"
-        return slug
-
-    @property
-    def kwargs(self) -> MappingProxyType:
-        return MappingProxyType({
-            "backend": self.backend
-        })
-
-    ##############################
-    ####    CUSTOMIZATIONS    ####
-    ##############################
-
-    def _generate_subtypes(self, types: set) -> frozenset:
-        # treat backend=None as wildcard
-        kwargs = [self.kwargs]
-        if self.backend is None:
-            kwargs.extend([
-                {**kw, **{"backend": b}}
-                for kw in kwargs
-                for b in self._backends
-            ])
-
-        # build result, skipping invalid kwargs
-        result = set()
-        for t in types:
-            for kw in kwargs:
-                try:
-                    result.add(t.instance(**kw))
-                except TypeError:
-                    continue
-
-        # return as frozenset
-        return frozenset(result)
+class BooleanMixin:
 
     def parse(self, input_str: str):
         if input_str in resolve.na_strings:
@@ -133,7 +33,7 @@ class BooleanType(AtomicType):
                 f"could not interpret boolean string: {input_str}"
             )
         return self.type_def(input_str == "True")
-
+    
     def to_float(
         self,
         series: cast.SeriesWrapper,
@@ -185,6 +85,86 @@ class BooleanType(AtomicType):
     ):
         """Convert boolean data to a datetime data type."""
         pass
+
+
+#############################
+####    GENERIC TYPES    ####
+#############################
+
+
+@generic
+class BooleanType(BooleanMixin, AtomicType):
+    """Boolean supertype."""
+
+    name = "bool"
+    aliases = {bool, "bool", "boolean", "bool_", "bool8", "b1", "?"}
+    is_nullable = False
+
+    def __init__(self):
+        super().__init__(
+            type_def=bool,
+            dtype=np.dtype(np.bool_),
+            na_value=pd.NA,
+            itemsize=1
+        )
+
+
+###########################
+####    NUMPY TYPES    ####
+###########################
+
+
+@BooleanType.register_backend("numpy")
+class NumpyBooleanType(BooleanMixin, AtomicType):
+
+    aliases = {np.bool_, np.dtype(np.bool_)}
+    is_nullable = False
+
+    def __init__(self):
+        super().__init__(
+            type_def=np.bool_,
+            dtype=np.dtype(np.bool_),
+            na_value=pd.NA,
+            itemsize=1
+        )
+
+
+############################
+####    PANDAS TYPES    ####
+############################
+
+
+@BooleanType.register_backend("pandas")
+class PandasBooleanType(BooleanMixin, AtomicType):
+
+    aliases = {pd.BooleanDtype(), "Boolean"}
+
+    def __init__(self):
+        super().__init__(
+            type_def=np.bool_,
+            dtype=pd.BooleanDtype(),
+            na_value=pd.NA,
+            itemsize=1
+        )
+
+
+############################
+####    PYTHON TYPES    ####
+############################
+
+
+@BooleanType.register_backend("python")
+class PythonBooleanType(BooleanMixin, AtomicType):
+
+    aliases = set()
+
+    def __init__(self):
+        super().__init__(
+            type_def=bool,
+            dtype=np.dtype("O"),
+            na_value=pd.NA,
+            itemsize=1
+        )
 
 
 #######################
