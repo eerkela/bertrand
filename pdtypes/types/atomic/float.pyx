@@ -5,12 +5,16 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AdapterType, AtomicType
-from .base import generic
+from .base import generic, subtype
 cimport pdtypes.types.atomic.complex as complex_types
 
 from pdtypes.error import shorten_list
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
+
+
+# TODO: some types are aliases of each other.  Can reduce repetition by
+# exploiting inheritance.
 
 
 # TODO: float methods are not aware of when they are wrapped in an AdapterType.
@@ -27,12 +31,20 @@ import pdtypes.types.cast as cast
 # -> implement a Tolerance object as a cdef class, similar to Timezone, Epoch
 
 
+# TODO: might need a special case for root FloatType that considers
+# Float80Type in downcast
+
+
+# TODO: come up with a way to link equiv_complex/equiv_float that doesn't
+# rely on forward declaration
+
+
 #########################
 ####    CONSTANTS    ####
 #########################
 
 
-cdef bint has_longdouble = np.dtype(np.longdouble).itemsize > 8
+cdef bint no_longdouble = not (np.dtype(np.longdouble).itemsize > 8)
 
 
 ######################
@@ -44,20 +56,27 @@ class FloatMixin:
 
     def downcast(self, series: pd.Series) -> AtomicType:
         """Reduce the itemsize of a float type to fit the observed range."""
-        for s in self._smaller:
-            try:
-                instance = forward_declare[s].instance(backend=self.backend)
-            except:
-                continue
-            attempt = series.astype(instance.dtype)
+        for s in self.smaller:
+            attempt = series.astype(s.dtype)
             if (attempt == series).all():
-                return instance
+                return s
         return self
 
     @property
     def equiv_complex(self) -> AtomicType:
         _class = complex_types.forward_declare[self._equiv_complex]
         return _class.instance(backend=self.backend)
+
+    @property
+    def smaller(self) -> list:
+        subtypes = [
+            x for x in self.root.subtypes if (
+                x.backend == self.backend and
+                (x.itemsize or np.inf) < (self.itemsize or np.inf)
+            )
+        ]
+        subtypes.sort(key=lambda x: x.itemsize)
+        return subtypes
 
 
 #############################
@@ -66,15 +85,11 @@ class FloatMixin:
 
 
 @generic
-class FloatType(
-    FloatMixin,
-    AtomicType
-):
+class FloatType(FloatMixin, AtomicType):
 
     name = "float"
     aliases = {float, "float", "floating", "f"}
     _equiv_complex = "ComplexType"
-    _smaller = ("Float16Type", "Float32Type", "Float64Type", "Float80Type")
 
     def __init__(self):
         type_def = float
@@ -89,16 +104,12 @@ class FloatType(
 
 
 @generic
-class Float16Type(
-    FloatMixin,
-    AtomicType,
-    supertype=FloatType
-):
+@subtype(FloatType)
+class Float16Type(FloatMixin, AtomicType):
 
     name = "float16"
     aliases = {"float16", "half", "f2", "e"}
     _equiv_complex = "Complex64Type"
-    _smaller = ()
 
     def __init__(self):
         type_def = np.float16
@@ -113,16 +124,12 @@ class Float16Type(
 
 
 @generic
-class Float32Type(
-    FloatMixin,
-    AtomicType,
-    supertype=FloatType
-):
+@subtype(FloatType)
+class Float32Type(FloatMixin, AtomicType):
 
     name = "float32"
     aliases = {"float32", "single", "f4"}
     _equiv_complex = "Complex64Type"
-    _smaller = ("Float16Type",)
 
     def __init__(self):
         type_def = np.float32
@@ -137,16 +144,12 @@ class Float32Type(
 
 
 @generic
-class Float64Type(
-    FloatMixin,
-    AtomicType,
-    supertype=FloatType
-):
+@subtype(FloatType)
+class Float64Type(FloatMixin, AtomicType):
 
     name = "float64"
     aliases = {"float64", "double", "float_", "f8", "d"}
     _equiv_complex = "Complex128Type"
-    _smaller = ("Float16Type", "Float32Type")
 
     def __init__(self):
         type_def = float
@@ -161,12 +164,8 @@ class Float64Type(
 
 
 @generic
-class Float80Type(
-    FloatMixin,
-    AtomicType,
-    add_to_registry=has_longdouble,
-    supertype=FloatType
-):
+@subtype(FloatType)
+class Float80Type(FloatMixin, AtomicType, ignore=no_longdouble):
 
     name = "float80"
     aliases = {
@@ -174,7 +173,6 @@ class Float80Type(
         "f10", "g"
     }
     _equiv_complex = "Complex160Type"
-    _smaller = ("Float16Type", "Float32Type", "Float64Type")
 
     def __init__(self):
         type_def = np.longdouble
@@ -194,17 +192,10 @@ class Float80Type(
 
 
 @FloatType.register_backend("numpy")
-class NumpyFloatType(
-    FloatMixin,
-    AtomicType
-):
+class NumpyFloatType(FloatMixin, AtomicType):
 
     aliases = {np.floating}
     _equiv_complex = "NumpyComplexType"
-    _smaller = (
-        "NumpyFloat16Type", "NumpyFloat32Type", "NumpyFloat64Type",
-        "NumpyFloat80Type"
-    )
 
     def __init__(self):
         type_def = np.float64
@@ -219,15 +210,11 @@ class NumpyFloatType(
 
 
 @Float16Type.register_backend("numpy")
-class NumpyFloat16Type(
-    FloatMixin,
-    AtomicType,
-    supertype=NumpyFloatType
-):
+@subtype(NumpyFloatType)
+class NumpyFloat16Type(FloatMixin, AtomicType):
 
     aliases = {np.float16, np.dtype(np.float16)}
     _equiv_complex = "NumpyComplex64Type"
-    _smaller = ()
 
     def __init__(self):
         type_def = np.float16
@@ -242,15 +229,11 @@ class NumpyFloat16Type(
 
 
 @Float32Type.register_backend("numpy")
-class NumpyFloat32Type(
-    FloatMixin,
-    AtomicType,
-    supertype=NumpyFloatType
-):
+@subtype(NumpyFloatType)
+class NumpyFloat32Type(FloatMixin, AtomicType):
 
     aliases = {np.float32, np.dtype(np.float32)}
     _equiv_complex = "NumpyComplex64Type"
-    _smaller = ("NumpyFloat16Type",)
 
     def __init__(self):
         type_def = np.float32
@@ -265,15 +248,11 @@ class NumpyFloat32Type(
 
 
 @Float64Type.register_backend("numpy")
-class NumpyFloat64Type(
-    FloatMixin,
-    AtomicType,
-    supertype=NumpyFloatType
-):
+@subtype(NumpyFloatType)
+class NumpyFloat64Type(FloatMixin, AtomicType):
 
     aliases = {np.float64, np.dtype(np.float64)}
     _equiv_complex = "NumpyComplex128Type"
-    _smaller = ("NumpyFloat16Type", "NumpyFloat32Type")
 
     def __init__(self):
         type_def = np.float64
@@ -288,16 +267,11 @@ class NumpyFloat64Type(
 
 
 @Float80Type.register_backend("numpy")
-class NumpyFloat80Type(
-    FloatMixin,
-    AtomicType,
-    add_to_registry=has_longdouble,
-    supertype=NumpyFloatType
-):
+@subtype(NumpyFloatType)
+class NumpyFloat80Type(FloatMixin, AtomicType, ignore=no_longdouble):
 
     aliases = {np.longdouble, np.dtype(np.longdouble)}
     _equiv_complex = "NumpyComplex160Type"
-    _smaller = ("NumpyFloat16Type", "NumpyFloat32Type", "NumpyFloat64Type")
 
     def __init__(self):
         type_def = np.longdouble
@@ -317,14 +291,10 @@ class NumpyFloat80Type(
 
 
 @FloatType.register_backend("python")
-class PythonFloatType(
-    FloatMixin,
-    AtomicType
-):
+class PythonFloatType(FloatMixin, AtomicType):
 
     aliases = set()
     _equiv_complex = "PythonComplexType"
-    _smaller = ("PythonFloat64Type")
 
     def __init__(self):
         type_def = float
@@ -339,15 +309,11 @@ class PythonFloatType(
 
 
 @Float64Type.register_backend("python")
-class PythonFloat64Type(
-    FloatMixin,
-    AtomicType,
-    supertype=PythonFloatType
-):
+@subtype(NumpyFloatType)
+class PythonFloat64Type(FloatMixin, AtomicType):
 
     aliases = set()
     _equiv_complex = "PythonComplex128Type"
-    _smaller = ()
 
     def __init__(self):
         type_def = float

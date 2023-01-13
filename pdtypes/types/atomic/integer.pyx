@@ -18,15 +18,11 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AdapterType, AtomicType
-from .base import generic
+from .base import generic, subtype
 
 from pdtypes.error import shorten_list
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
-
-
-# TODO: BooleanTypes/IntegerTypes should implement a standard make_nullable()
-# method.
 
 
 ######################
@@ -92,30 +88,52 @@ class IntegerMixin:
 
     def downcast(self, series: pd.Series) -> AtomicType:
         """Reduce the itemsize of an integer type to fit the observed range."""
-        min_val = series.min()
-        max_val = series.max()
-        print(max_val)
-        for s in self._smaller:
-            classdef = forward_declare[s]
-            print(classdef.max, max_val <= classdef.max)
-            if min_val >= classdef.min and max_val <= classdef.max:
-                instance = classdef.instance()
-                if isinstance(self, AdapterType):
-                    return self.replace(atomic_type=instance)
-                return instance
+        min_val = int(series.min())
+        max_val = int(series.max())
+        for s in self.smaller:
+            if min_val >= s.min and max_val <= s.max:
+                return s
         return self
 
     def force_nullable(self) -> AtomicType:
         """Create an equivalent integer type that can accept missing values."""
-        if not self.is_nullable:
-            return self.supertype.instance(backend="pandas")
-        return self
+        if self.is_nullable:
+            return self
+        return self.supertype.instance(backend="pandas")
 
     @property
     def is_nullable(self) -> bool:
         if isinstance(self.dtype, np.dtype):
             return np.issubdtype(self.dtype, "O")
         return True
+
+    @property
+    def is_signed(self) -> bool:
+        return not self.is_subtype(UnsignedIntegerType)
+
+    @property
+    def smaller(self) -> list:
+        subtypes = [
+            x for x in self.root.subtypes if (
+                x.backend == self.backend and
+                x.is_signed == self.is_signed and
+                (x.itemsize or np.inf) < (self.itemsize or np.inf)
+            )
+        ]
+        subtypes.sort(key=lambda x: x.itemsize)
+        return subtypes
+
+
+class RootIntegerSpecialCase(IntegerMixin):
+
+    @property
+    def smaller(self) -> list:
+        result = super().smaller
+        try:
+            result.append(UInt64Type.instance(backend=self.backend))
+        except TypeError:
+            pass
+        return result
 
 
 #############################
@@ -124,17 +142,13 @@ class IntegerMixin:
 
 
 @generic
-class IntegerType(
-    IntegerMixin,
-    AtomicType
-):
+class IntegerType(RootIntegerSpecialCase, AtomicType):
     """Generic integer supertype."""
 
     name = "int"
-    aliases={int, "int", "integer"}
-    min=-np.inf
-    max=np.inf
-    _smaller=("Int8Type", "Int16Type", "Int32Type", "Int64Type", "UInt64Type")
+    aliases = {int, "int", "integer"}
+    min = -np.inf
+    max = np.inf
 
     def __init__(self):
         super().__init__(
@@ -146,30 +160,23 @@ class IntegerType(
 
 
 @generic
-class SignedIntegerType(
-    IntegerType,
-    supertype=IntegerType
-):
+@subtype(IntegerType)
+class SignedIntegerType(IntegerType):
     """Generic signed integer supertype."""
 
     name="signed"
     aliases={"signed", "signed int", "signed integer", "i"}
-    _smaller=("Int8Type", "Int16Type", "Int32Type", "Int64Type")
 
 
 @generic
-class UnsignedIntegerType(
-    IntegerMixin,
-    AtomicType,
-    supertype=IntegerType
-):
+@subtype(IntegerType)
+class UnsignedIntegerType(IntegerMixin, AtomicType):
     """Generic 8-bit unsigned integer type."""
 
     name="uint"
     aliases={"unsigned", "unsigned int", "unsigned integer", "uint", "u"}
     min=0
     max=2**64 - 1
-    _smaller=("UInt8Type", "UInt16Type", "UInt32Type", "UInt64Type")
 
     def __init__(self):
         super().__init__(
@@ -181,18 +188,14 @@ class UnsignedIntegerType(
 
 
 @generic
-class Int8Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=SignedIntegerType
-):
+@subtype(SignedIntegerType)
+class Int8Type(IntegerMixin, AtomicType):
     """Generic 8-bit signed integer type."""
 
     name="int8"
     aliases={"int8", "i1"}
     min=-2**7
     max=2**7 - 1
-    _smaller=()
 
     def __init__(self):
         super().__init__(
@@ -203,18 +206,14 @@ class Int8Type(
         )
 
 @generic
-class Int16Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=SignedIntegerType
-):
+@subtype(SignedIntegerType)
+class Int16Type(IntegerMixin, AtomicType):
     """Generic 16-bit signed integer type."""
 
     name="int16"
     aliases={"int16", "i2"}
     min=-2**15
     max=2**15 - 1
-    _smaller=("Int8Type",)
 
     def __init__(self):
         super().__init__(
@@ -226,18 +225,14 @@ class Int16Type(
 
 
 @generic
-class Int32Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=SignedIntegerType
-):
+@subtype(SignedIntegerType)
+class Int32Type(IntegerMixin, AtomicType):
     """Generic 32-bit signed integer type."""
 
     name="int32"
     aliases={"int32", "i4"}
     min=-2**31
     max=2**31 - 1
-    _smaller=("Int8Type", "Int16Type")
 
     def __init__(self):
         super().__init__(
@@ -249,18 +244,14 @@ class Int32Type(
 
 
 @generic
-class Int64Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=SignedIntegerType
-):
+@subtype(SignedIntegerType)
+class Int64Type(IntegerMixin, AtomicType):
     """Generic 64-bit signed integer type."""
 
     name="int64"
     aliases={"int64", "i8"}
     min=-2**63
     max=2**63 - 1
-    _smaller=("Int8Type", "Int16Type", "Int32Type")
 
     def __init__(self):
         super().__init__(
@@ -272,18 +263,14 @@ class Int64Type(
 
 
 @generic
-class UInt8Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=UnsignedIntegerType
-):
+@subtype(UnsignedIntegerType)
+class UInt8Type(IntegerMixin, AtomicType):
     """Generic 8-bit unsigned integer type."""
 
     name="uint8"
-    aliases={"uint8", "u1"}
+    aliases={"uint8", "unsigned int8", "u1"}
     min=0
     max=2**8 - 1
-    _smaller=()
 
     def __init__(self):
         super().__init__(
@@ -295,18 +282,14 @@ class UInt8Type(
 
 
 @generic
-class UInt16Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=UnsignedIntegerType
-):
+@subtype(UnsignedIntegerType)
+class UInt16Type(IntegerMixin, AtomicType):
     """Generic 16-bit unsigned integer type."""
 
     name="uint16"
-    aliases={"uint16", "u2"}
+    aliases={"uint16", "unsiged int16", "u2"}
     min=0
     max=2**16 - 1
-    _smaller=("UInt8Type")
 
     def __init__(self):
         super().__init__(
@@ -318,18 +301,14 @@ class UInt16Type(
 
 
 @generic
-class UInt32Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=UnsignedIntegerType
-):
+@subtype(UnsignedIntegerType)
+class UInt32Type(IntegerMixin, AtomicType):
     """Generic 32-bit unsigned integer type."""
 
     name="uint32"
-    aliases={"uint32", "u4"}
+    aliases={"uint32", "unsigned int32", "u4"}
     min=0
     max=2**32 - 1
-    _smaller=("UInt8Type", "UInt16Type")
 
     def __init__(self):
         super().__init__(
@@ -341,18 +320,14 @@ class UInt32Type(
 
 
 @generic
-class UInt64Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=UnsignedIntegerType
-):
+@subtype(UnsignedIntegerType)
+class UInt64Type(IntegerMixin, AtomicType):
     """Generic 64-bit unsigned integer type."""
 
     name="uint64"
-    aliases={"uint64", "u8"}
+    aliases={"uint64", "unsigned int64", "u8"}
     min=0
     max=2**64 - 1
-    _smaller=("UInt8Type", "UInt16Type", "UInt32Type")
 
     def __init__(self):
         super().__init__(
@@ -363,57 +338,18 @@ class UInt64Type(
         )
 
 
-############################
-####    PYTHON TYPES    ####
-############################
-
-
-@IntegerType.register_backend("python")
-class PythonIntegerType(
-    IntegerMixin,
-    AtomicType
-):
-    """Python integer supertype."""
-
-    aliases=set()
-    min=-np.inf
-    max=np.inf
-    _smaller=()
-
-    def __init__(self):
-        super().__init__(
-            type_def=int,
-            dtype=np.dtype("O"),
-            na_value=pd.NA,
-            itemsize=None
-        )
-
-@SignedIntegerType.register_backend("python")
-class PythonSignedIntegerType(
-    PythonIntegerType,
-    supertype=PythonIntegerType
-):
-    """Python signed integer supertype."""
-
-    aliases=set()
-
-
 ###########################
 ####    NUMPY TYPES    ####
 ###########################
 
 
 @IntegerType.register_backend("numpy")
-class NumpyIntegerType(
-    IntegerMixin,
-    AtomicType
-):
+class NumpyIntegerType(RootIntegerSpecialCase, AtomicType):
     """Numpy integer type."""
 
     aliases={np.integer}
     min=-2**63
     max=2**63 - 1
-    _smaller=("NumpyInt8Type", "NumpyInt16Type", "NumpyInt32Type")
 
     def __init__(self):
         super().__init__(
@@ -425,27 +361,21 @@ class NumpyIntegerType(
 
 
 @SignedIntegerType.register_backend("numpy")
-class NumpySignedIntegerType(
-    NumpyIntegerType,
-    supertype=NumpyIntegerType
-):
+@subtype(NumpyIntegerType)
+class NumpySignedIntegerType(NumpyIntegerType):
     """Numpy signed integer type."""
 
     aliases={np.signedinteger}
 
 
 @UnsignedIntegerType.register_backend("numpy")
-class NumpyUnsignedIntegerType(
-    IntegerMixin,
-    AtomicType,
-    supertype=NumpyIntegerType
-):
+@subtype(NumpyIntegerType)
+class NumpyUnsignedIntegerType(IntegerMixin, AtomicType):
     """Numpy unsigned integer type."""
 
     aliases={np.unsignedinteger}
     min=0
     max=2**64 - 1
-    _smaller=("NumpyUInt8Type", "NumpyUInt16Type", "NumpyUInt32Type")
 
     def __init__(self):
         super().__init__(
@@ -457,17 +387,13 @@ class NumpyUnsignedIntegerType(
 
 
 @Int8Type.register_backend("numpy")
-class NumpyInt8Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=NumpySignedIntegerType
-):
+@subtype(NumpySignedIntegerType)
+class NumpyInt8Type(IntegerMixin, AtomicType):
     """8-bit numpy integer subtype."""
 
     aliases={np.int8, np.dtype(np.int8)}
     min=-2**7
     max=2**7 - 1
-    _smaller=()
 
     def __init__(self):
         super().__init__(
@@ -479,17 +405,13 @@ class NumpyInt8Type(
 
 
 @Int16Type.register_backend("numpy")
-class NumpyInt16Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=NumpySignedIntegerType
-):
+@subtype(NumpySignedIntegerType)
+class NumpyInt16Type(IntegerMixin, AtomicType):
     """16-bit numpy integer subtype."""
 
     aliases={np.int16, np.dtype(np.int16)}
     min=-2**15
     max=2**15 - 1
-    _smaller=("NumpyInt8Type",)
 
     def __init__(self):
         super().__init__(
@@ -501,17 +423,13 @@ class NumpyInt16Type(
 
 
 @Int32Type.register_backend("numpy")
-class NumpyInt32Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=NumpySignedIntegerType
-):
+@subtype(NumpySignedIntegerType)
+class NumpyInt32Type(IntegerMixin, AtomicType):
     """32-bit numpy integer subtype."""
 
     aliases={np.int32, np.dtype(np.int32)}
     min=-2**31
     max=2**31 - 1
-    _smaller=("NumpyInt8Type", "NumpyInt16Type")
 
     def __init__(self):
         super().__init__(
@@ -523,17 +441,13 @@ class NumpyInt32Type(
 
 
 @Int64Type.register_backend("numpy")
-class NumpyInt64Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=NumpySignedIntegerType
-):
+@subtype(NumpySignedIntegerType)
+class NumpyInt64Type(IntegerMixin, AtomicType):
     """64-bit numpy integer subtype."""
 
     aliases={np.int64, np.dtype(np.int64)}
     min=-2**63
     max=2**63 - 1
-    _smaller=("NumpyInt8Type", "NumpyInt16Type", "NumpyInt32Type")
 
     def __init__(self):
         super().__init__(
@@ -545,17 +459,13 @@ class NumpyInt64Type(
 
 
 @UInt8Type.register_backend("numpy")
-class NumpyUInt8Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=NumpyUnsignedIntegerType
-):
+@subtype(NumpyUnsignedIntegerType)
+class NumpyUInt8Type(IntegerMixin, AtomicType):
     """8-bit numpy unsigned integer subtype."""
 
     aliases={np.uint8, np.dtype(np.uint8)}
     min=0
     max=2**8 - 1
-    _smaller=()
 
     def __init__(self):
         super().__init__(
@@ -567,17 +477,13 @@ class NumpyUInt8Type(
 
 
 @UInt16Type.register_backend("numpy")
-class NumpyUInt16Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=NumpyUnsignedIntegerType
-):
+@subtype(NumpyUnsignedIntegerType)
+class NumpyUInt16Type(IntegerMixin, AtomicType):
     """16-bit numpy unsigned integer subtype."""
 
     aliases={np.uint16, np.dtype(np.uint16)}
     min=0
     max=2**16 - 1
-    _smaller=("NumpyUInt8Type",)
 
     def __init__(self):
         super().__init__(
@@ -589,17 +495,13 @@ class NumpyUInt16Type(
 
 
 @UInt32Type.register_backend("numpy")
-class NumpyUInt32Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=NumpyUnsignedIntegerType
-):
+@subtype(NumpyUnsignedIntegerType)
+class NumpyUInt32Type(IntegerMixin, AtomicType):
     """32-bit numpy unsigned integer subtype."""
 
     aliases={np.uint32, np.dtype(np.uint32)}
     min=0
     max=2**32 - 1
-    _smaller=("NumpyUInt8Type", "NumpyUInt16Type")
 
     def __init__(self):
         super().__init__(
@@ -611,17 +513,13 @@ class NumpyUInt32Type(
 
 
 @UInt64Type.register_backend("numpy")
-class NumpyUInt64Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=NumpyUnsignedIntegerType
-):
+@subtype(NumpyUnsignedIntegerType)
+class NumpyUInt64Type(IntegerMixin, AtomicType):
     """64-bit numpy unsigned integer subtype."""
 
     aliases={np.uint64, np.dtype(np.uint64)}
     min=0
     max=2**64 - 1
-    _smaller=("NumpyUInt8Type", "NumpyUInt16Type", "NumpyUInt32Type")
 
     def __init__(self):
         super().__init__(
@@ -638,16 +536,12 @@ class NumpyUInt64Type(
 
 
 @IntegerType.register_backend("pandas")
-class PandasIntegerType(
-    IntegerMixin,
-    AtomicType
-):
+class PandasIntegerType(RootIntegerSpecialCase, AtomicType):
     """Pandas integer supertype."""
 
     aliases=set()
     min=-2**63
     max=2**63 - 1
-    _smaller=("PandasInt8Type", "PandasInt16Type", "PandasInt32Type")
 
     def __init__(self):
         super().__init__(
@@ -659,27 +553,21 @@ class PandasIntegerType(
 
 
 @SignedIntegerType.register_backend("pandas")
-class PandasSignedIntegerType(
-    PandasIntegerType,
-    supertype=PandasIntegerType
-):
+@subtype(PandasIntegerType)
+class PandasSignedIntegerType(PandasIntegerType):
     """Python signed integer supertype."""
 
     aliases=set()
 
 
 @UnsignedIntegerType.register_backend("pandas")
-class PandasUnsignedIntegerType(
-    IntegerMixin,
-    AtomicType,
-    supertype=PandasIntegerType
-):
+@subtype(PandasIntegerType)
+class PandasUnsignedIntegerType(IntegerMixin, AtomicType):
     """Numpy unsigned integer type."""
 
     aliases=set()
     min=0
     max=2**64 - 1
-    _smaller=("PandasUInt8Type", "PandasUInt16Type", "PandasUInt32Type")
 
     def __init__(self):
         super().__init__(
@@ -691,17 +579,13 @@ class PandasUnsignedIntegerType(
 
 
 @Int8Type.register_backend("pandas")
-class PandasInt8Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=PandasSignedIntegerType
-):
+@subtype(PandasSignedIntegerType)
+class PandasInt8Type(IntegerMixin, AtomicType):
     """8-bit numpy integer subtype."""
 
     aliases={pd.Int8Dtype(), "Int8"}
     min=-2**7
     max=2**7 - 1
-    _smaller=()
 
     def __init__(self):
         super().__init__(
@@ -713,17 +597,13 @@ class PandasInt8Type(
 
 
 @Int16Type.register_backend("pandas")
-class PandasInt16Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=PandasSignedIntegerType
-):
+@subtype(PandasSignedIntegerType)
+class PandasInt16Type(IntegerMixin, AtomicType):
     """16-bit numpy integer subtype."""
 
     aliases={pd.Int16Dtype(), "Int16"}
     min=-2**15
     max=2**15 - 1
-    _smaller=("PandasInt8Type",)
 
     def __init__(self):
         super().__init__(
@@ -735,17 +615,13 @@ class PandasInt16Type(
 
 
 @Int32Type.register_backend("pandas")
-class PandasInt32Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=PandasSignedIntegerType
-):
+@subtype(PandasSignedIntegerType)
+class PandasInt32Type(IntegerMixin, AtomicType):
     """32-bit numpy integer subtype."""
 
     aliases={pd.Int32Dtype(), "Int32"}
     min=-2**31
     max=2**31 - 1
-    _smaller=("PandasInt8Type", "PandasInt16Type")
 
     def __init__(self):
         super().__init__(
@@ -757,17 +633,13 @@ class PandasInt32Type(
 
 
 @Int64Type.register_backend("pandas")
-class PandasInt64Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=PandasSignedIntegerType
-):
+@subtype(PandasSignedIntegerType)
+class PandasInt64Type(IntegerMixin, AtomicType):
     """64-bit numpy integer subtype."""
 
     aliases={pd.Int64Dtype(), "Int64"}
     min=-2**63
     max=2**63 - 1
-    _smaller=("PandasInt8Type", "PandasInt16Type", "PandasInt32Type")
 
     def __init__(self):
         super().__init__(
@@ -779,17 +651,13 @@ class PandasInt64Type(
 
 
 @UInt8Type.register_backend("pandas")
-class PandasUInt8Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=PandasUnsignedIntegerType
-):
+@subtype(PandasUnsignedIntegerType)
+class PandasUInt8Type(IntegerMixin, AtomicType):
     """8-bit numpy integer subtype."""
 
     aliases={pd.UInt8Dtype(), "UInt8"}
     min=0
     max=2**8 - 1
-    _smaller=()
 
     def __init__(self):
         super().__init__(
@@ -801,17 +669,13 @@ class PandasUInt8Type(
 
 
 @UInt16Type.register_backend("pandas")
-class PandasUInt16Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=PandasUnsignedIntegerType
-):
+@subtype(PandasUnsignedIntegerType)
+class PandasUInt16Type(IntegerMixin, AtomicType):
     """16-bit numpy integer subtype."""
 
     aliases={pd.UInt16Dtype(), "UInt16"}
     min=0
     max=2**16 - 1
-    _smaller=("PandasUInt8Type",)
 
     def __init__(self):
         super().__init__(
@@ -823,17 +687,13 @@ class PandasUInt16Type(
 
 
 @UInt32Type.register_backend("pandas")
-class PandasUInt32Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=PandasUnsignedIntegerType
-):
+@subtype(PandasUnsignedIntegerType)
+class PandasUInt32Type(IntegerMixin, AtomicType):
     """32-bit numpy integer subtype."""
 
     aliases={pd.UInt32Dtype(), "UInt32"}
     min=0
     max=2**32 - 1
-    _smaller=("PandasUInt8Type", "PandasUInt16Type")
 
     def __init__(self):
         super().__init__(
@@ -845,17 +705,13 @@ class PandasUInt32Type(
 
 
 @UInt64Type.register_backend("pandas")
-class PandasUInt64Type(
-    IntegerMixin,
-    AtomicType,
-    supertype=PandasUnsignedIntegerType
-):
+@subtype(PandasUnsignedIntegerType)
+class PandasUInt64Type(IntegerMixin, AtomicType):
     """64-bit numpy integer subtype."""
 
     aliases={pd.UInt64Dtype(), "UInt64"}
     min=0
     max=2**64 - 1
-    _smaller=("PandasUInt8Type", "PandasUInt16Type", "PandasUInt32Type")
 
     def __init__(self):
         super().__init__(
@@ -864,6 +720,36 @@ class PandasUInt64Type(
             na_value=pd.NA,
             itemsize=8
         )
+
+
+############################
+####    PYTHON TYPES    ####
+############################
+
+
+@IntegerType.register_backend("python")
+class PythonIntegerType(RootIntegerSpecialCase, AtomicType):
+    """Python integer supertype."""
+
+    aliases=set()
+    min=-np.inf
+    max=np.inf
+
+    def __init__(self):
+        super().__init__(
+            type_def=int,
+            dtype=np.dtype("O"),
+            na_value=pd.NA,
+            itemsize=None
+        )
+
+
+@SignedIntegerType.register_backend("python")
+@subtype(PythonIntegerType)
+class PythonSignedIntegerType(PythonIntegerType):
+    """Python signed integer supertype."""
+
+    aliases=set()
 
 
 #########################################
@@ -961,12 +847,3 @@ cdef dict platform_specific_aliases = {
 }
 for alias, lookup in platform_specific_aliases.items():
     AtomicType.registry.aliases[lookup].register_alias(alias)
-
-
-#######################
-####    PRIVATE    ####
-#######################
-
-
-cdef dict forward_declare = locals()
-

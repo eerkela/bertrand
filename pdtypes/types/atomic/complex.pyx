@@ -3,7 +3,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AdapterType, AtomicType
-from .base import generic
+from .base import generic, subtype
 cimport pdtypes.types.atomic.float as float_types
 
 from pdtypes.error import shorten_list
@@ -13,9 +13,13 @@ import pdtypes.types.cast as cast
 
 # TODO: consider ftol in downcast()?
 
-# TODO: forward declare should replace the string with the appropriate
-# class definition.  That way, extending .downcast should consist of just
-# appending a class definition to type.smaller (list).
+
+# TODO: might need a special case for root FloatType that considers
+# Complex160Type in downcast
+
+
+# TODO: come up with a way to link equiv_complex/equiv_float that doesn't
+# rely on forward declaration
 
 
 #########################
@@ -23,7 +27,7 @@ import pdtypes.types.cast as cast
 #########################
 
 
-cdef bint has_clongdouble = np.dtype(np.clongdouble).itemsize > 16
+cdef bint no_clongdouble = not (np.dtype(np.clongdouble).itemsize > 16)
 
 
 ######################
@@ -35,20 +39,27 @@ class ComplexMixin:
 
     def downcast(self, series: pd.Series) -> AtomicType:
         """Reduce the itemsize of a complex type to fit the observed range."""
-        for s in self._smaller:
-            try:
-                instance = forward_declare[s].instance(backend=self.backend)
-            except:
-                continue
-            attempt = series.astype(instance.dtype)
+        for s in self.smaller:
+            attempt = series.astype(s.dtype)
             if (attempt == series).all():
-                return instance
+                return s
         return self
 
     @property
     def equiv_float(self) -> AtomicType:
         _class = float_types.forward_declare[self._equiv_float]
         return _class.instance(backend=self.backend)
+
+    @property
+    def smaller(self) -> list:
+        subtypes = [
+            x for x in self.root.subtypes if (
+                x.backend == self.backend and
+                (x.itemsize or np.inf) < (self.itemsize or np.inf)
+            )
+        ]
+        subtypes.sort(key=lambda x: x.itemsize)
+        return subtypes
 
 
 #############################
@@ -57,17 +68,13 @@ class ComplexMixin:
 
 
 @generic
-class ComplexType(
-    ComplexMixin,
-    AtomicType
-):
+class ComplexType(ComplexMixin, AtomicType):
 
     name = "complex"
     aliases = {
         complex, "complex", "cfloat", "complex float", "complex floating", "c"
     }
     _equiv_float = "FloatType"
-    _smaller = ("Complex64Type", "Complex128Type", "Complex160Type")
 
     def __init__(self):
         type_def = complex
@@ -82,18 +89,14 @@ class ComplexType(
 
 
 @generic
-class Complex64Type(
-    ComplexMixin,
-    AtomicType,
-    supertype=ComplexType
-):
+@subtype(ComplexType)
+class Complex64Type(ComplexMixin, AtomicType):
 
     name = "complex64"
     aliases = {
         "complex64", "csingle", "complex single", "singlecomplex", "c8", "F"
     }
     _equiv_float = "Float32Type"
-    _smaller = ()
 
     def __init__(self):
         type_def = np.complex64
@@ -108,18 +111,14 @@ class Complex64Type(
 
 
 @generic
-class Complex128Type(
-    ComplexMixin,
-    AtomicType,
-    supertype=ComplexType
-):
+@subtype(ComplexType)
+class Complex128Type(ComplexMixin, AtomicType):
 
     name = "complex128"
     aliases = {
         "complex128", "cdouble", "complex double", "complex_", "c16", "D"
     }
     _equiv_float = "Float64Type"
-    _smaller = ("Complex64Type",)
 
     def __init__(self):
         type_def = complex
@@ -134,12 +133,8 @@ class Complex128Type(
 
 
 @generic
-class Complex160Type(
-    ComplexMixin,
-    AtomicType,
-    add_to_registry=has_clongdouble,
-    supertype=ComplexType
-):
+@subtype(ComplexType)
+class Complex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
 
     name = "complex160"
     aliases = {
@@ -148,7 +143,6 @@ class Complex160Type(
         "longcomplex", "long complex", "c20", "G"
     }
     _equiv_float = "Float80Type"
-    _smaller = ("Complex64Type", "Complex128Type")
 
     def __init__(self):
         type_def = np.clongdouble
@@ -168,16 +162,10 @@ class Complex160Type(
 
 
 @ComplexType.register_backend("numpy")
-class NumpyComplexType(
-    ComplexMixin,
-    AtomicType
-):
+class NumpyComplexType(ComplexMixin, AtomicType):
 
     aliases = {np.complexfloating}
     _equiv_float = "NumpyFloatType"
-    _smaller = (
-        "NumpyComplex64Type", "NumpyComplex128Type", "NumpyComplex160Type"
-    )
 
     def __init__(self):
         type_def = np.complex128
@@ -192,15 +180,11 @@ class NumpyComplexType(
 
 
 @Complex64Type.register_backend("numpy")
-class NumpyComplex64Type(
-    ComplexMixin,
-    AtomicType,
-    supertype=NumpyComplexType
-):
+@subtype(NumpyComplexType)
+class NumpyComplex64Type(ComplexMixin, AtomicType):
 
     aliases = {np.complex64, np.dtype(np.complex64)}
     _equiv_float = "NumpyFloat32Type"
-    _smaller = ()
 
     def __init__(self):
         type_def = np.complex64
@@ -215,15 +199,11 @@ class NumpyComplex64Type(
 
 
 @Complex128Type.register_backend("numpy")
-class NumpyComplex128Type(
-    ComplexMixin,
-    AtomicType,
-    supertype=NumpyComplexType
-):
+@subtype(NumpyComplexType)
+class NumpyComplex128Type(ComplexMixin, AtomicType):
 
     aliases = {np.complex128, np.dtype(np.complex128)}
     _equiv_float = "NumpyFloat64Type"
-    _smaller = ("NumpyComplex64Type",)
 
     def __init__(self):
         type_def = np.complex128
@@ -238,16 +218,11 @@ class NumpyComplex128Type(
 
 
 @Complex160Type.register_backend("numpy")
-class NumpyComplex160Type(
-    ComplexMixin,
-    AtomicType,
-    add_to_registry=has_clongdouble,
-    supertype=NumpyComplexType
-):
+@subtype(NumpyComplexType)
+class NumpyComplex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
 
     aliases = {np.clongdouble, np.dtype(np.clongdouble)}
     _equiv_float = "NumpyFloat80Type"
-    _smaller = ("NumpyComplex64Type", "NumpyComplex128Type")
 
     def __init__(self):
         type_def = np.clongdouble
@@ -267,14 +242,10 @@ class NumpyComplex160Type(
 
 
 @ComplexType.register_backend("python")
-class PythonComplexType(
-    ComplexMixin,
-    AtomicType
-):
+class PythonComplexType(ComplexMixin, AtomicType):
 
     aliases = set()
     _equiv_float = "PythonFloatType"
-    _smaller = ()
 
     def __init__(self):
         type_def = complex
@@ -289,15 +260,11 @@ class PythonComplexType(
 
 
 @Complex128Type.register_backend("python")
-class PythonComplex128Type(
-    ComplexMixin,
-    AtomicType,
-    supertype=PythonComplexType
-):
+@subtype(PythonComplexType)
+class PythonComplex128Type(ComplexMixin, AtomicType):
 
     aliases = set()
     _equiv_float = "PythonFloat64Type"
-    _smaller = ()
 
     def __init__(self):
         type_def = complex

@@ -15,6 +15,8 @@ cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 
+# TODO: BooleanTypes should implement a standard make_nullable() method.
+
 # TODO: add datetime_like `since` hint to to_datetime, to_timedelta
 
 
