@@ -3,13 +3,13 @@ import decimal
 from types import MappingProxyType
 from typing import Any, Union, Sequence
 
-cimport cython
 import numpy as np
 cimport numpy as np
 import pandas as pd
 import regex as re  # using alternate python regex engine
 
 from .base cimport AtomicType, CompositeType
+from .base import generic, lru_cache
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -29,33 +29,19 @@ import pdtypes.types.resolve as resolve
 # -> these could potentially replace the constants in util/time/
 
 
+@generic
 class DatetimeType(AtomicType):
 
     name = "datetime"
-    aliases = {
-        "datetime": {}
-    }
+    aliases = {"datetime"}
 
     def __init__(self):
         super().__init__(
             type_def=None,
-            dtype=None,
+            dtype=np.dtype(np.object_),
             na_value=pd.NaT,
-            itemsize=None,
-            slug=self.slugify()
+            itemsize=None
         )
-
-    ########################
-    ####    REQUIRED    ####
-    ########################
-
-    @classmethod
-    def slugify(cls):
-        return cls.name
-
-    @property
-    def kwargs(self) -> MappingProxyType:
-        return MappingProxyType({})
 
     ###############################
     #####    CUSTOMIZATIONS    ####
@@ -72,28 +58,17 @@ class DatetimeType(AtomicType):
             )
         return other == self or any(other in a for a in subtypes)
 
-    @classmethod
-    def resolve(cls, backend: str = None, *args) -> AtomicType:
-        if backend is None:
-            call = cls.instance
-        elif backend == "pandas":
-            call = PandasTimestampType.resolve
-        elif backend == "python":
-            call = PyDatetimeType.resolve 
-        elif backend == "numpy":
-            call = NumpyDatetime64Type.resolve
-        return call(*args)
 
+@lru_cache(64)
+@DatetimeType.register_backend("pandas")
+class PandasTimestampType(AtomicType):
 
-class PandasTimestampType(AtomicType, cache_size=64, supertype=DatetimeType):
-
-    name = "Timestamp"
     aliases = {
-        pd.Timestamp: {},
+        pd.Timestamp,
         # pd.DatetimeTZDtype() handled in resolve_typespec_dtype special case
-        "Timestamp": {},
-        "pandas.Timestamp": {},
-        "pd.Timestamp": {},
+        "Timestamp",
+        "pandas.Timestamp",
+        "pd.Timestamp",
     }
 
     def __init__(self, tz: datetime.tzinfo = None):
@@ -101,40 +76,22 @@ class PandasTimestampType(AtomicType, cache_size=64, supertype=DatetimeType):
             dtype = np.dtype("M8[ns]")
         else:
             dtype = pd.DatetimeTZDtype(tz=tz)
-
-        self.tz = tz
-
         super().__init__(
             type_def=pd.Timestamp,
             dtype=dtype,
             na_value=pd.NaT,
             itemsize=8,
-            slug=self.slugify(tz=tz)
+            tz=tz
         )
-
-    ########################
-    ####    REQUIRED    ####
-    ########################
 
     @classmethod
     def slugify(cls, tz: datetime.tzinfo = None):
         slug = cls.name
         if tz is not None:
-            slug += f"[{tz}]"
+            slug += f"[{cls.backend}, {tz}]"
+        else:
+            slug += f"[{cls.backend}]"
         return slug
-
-    @property
-    def kwargs(self) -> MappingProxyType:
-        return MappingProxyType({"tz": self.tz})
-
-    ##############################
-    ####    CUSTOMIZATIONS    ####
-    ##############################
-
-    def _generate_supertype(self, type_def: type) -> AtomicType:
-        if type_def is None:
-            return None
-        return type_def.instance()
 
     def contains(self, other: Any) -> bool:
         other = resolve.resolve_type(other)
@@ -155,48 +112,29 @@ class PandasTimestampType(AtomicType, cache_size=64, supertype=DatetimeType):
         return cls.instance(tz=example.tz, **defaults)
 
 
-class PyDatetimeType(AtomicType, cache_size=64, supertype=DatetimeType):
+@lru_cache(64)
+@DatetimeType.register_backend("python")
+class PyDatetimeType(AtomicType):
 
-    name = "pydatetime"
-    aliases = {
-        datetime.datetime: {},
-        "pydatetime": {},
-        "datetime.datetime": {},
-    }
+    aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
 
     def __init__(self, tz: datetime.tzinfo = None):
-        self.tz = tz
         super().__init__(
             type_def=datetime.datetime,
             dtype=np.dtype("O"),
             na_value=pd.NaT,
             itemsize=None,
-            slug=self.slugify(tz=tz)
+            tz=tz
         )
-
-    ########################
-    ####    REQUIRED    ####
-    ########################
 
     @classmethod
     def slugify(cls, tz: datetime.tzinfo = None):
         slug = cls.name
         if tz is not None:
-            slug += f"[{tz}]"
+            slug += f"[{cls.backend}, {tz}]"
+        else:
+            slug += f"[{cls.backend}]"
         return slug
-
-    @property
-    def kwargs(self) -> MappingProxyType:
-        return MappingProxyType({"tz": self.tz})
-
-    ##############################
-    ####    CUSTOMIZATIONS    ####
-    ##############################
-
-    def _generate_supertype(self, type_def: type) -> AtomicType:
-        if type_def is None:
-            return None
-        return type_def.instance()
 
     def contains(self, other: Any) -> bool:
         other = resolve.resolve_type(other)
@@ -217,16 +155,17 @@ class PyDatetimeType(AtomicType, cache_size=64, supertype=DatetimeType):
         return cls.instance(tz=example.tzinfo, **defaults)
 
 
-class NumpyDatetime64Type(AtomicType, cache_size=64, supertype=DatetimeType):
+@lru_cache(64)
+@DatetimeType.register_backend("numpy")
+class NumpyDatetime64Type(AtomicType):
 
-    name = "M8"
     aliases = {
-        np.datetime64: {},
+        np.datetime64,
         # np.dtype("M8") handled in resolve_typespec_dtype special case
-        "M8": {},
-        "datetime64": {},
-        "numpy.datetime64": {},
-        "np.datetime64": {},
+        "M8",
+        "datetime64",
+        "numpy.datetime64",
+        "np.datetime64",
     }
 
     def __init__(self, unit: str = None, step_size: int = 1):
@@ -238,43 +177,23 @@ class NumpyDatetime64Type(AtomicType, cache_size=64, supertype=DatetimeType):
                 raise ValueError(f"unit not understood: {repr(unit)}")
             dtype = np.dtype(f"M8[{step_size}{unit}]")
 
-        self.unit = unit
-        self.step_size = step_size
-
         super().__init__(
             type_def=np.datetime64,
             dtype=dtype,
             na_value=pd.NaT,
             itemsize=8,
-            slug=self.slugify(unit=unit, step_size=step_size)
+            unit=unit,
+            step_size=step_size
         )
-
-    ########################
-    ####    REQUIRED    ####
-    ########################
 
     @classmethod
     def slugify(cls, unit: str = None, step_size: int = 1) -> str:
         slug = cls.name
         if unit is not None:
-            slug += f"[{step_size}{unit}]"
+            slug += f"[{cls.backend}, {step_size}{unit}]"
+        else:
+            slug += f"[{cls.backend}]"
         return slug
-
-    @property
-    def kwargs(self) -> MappingProxyType:
-        return MappingProxyType({
-            "unit": self.unit,
-            "step_size": self.step_size
-        })
-
-    ##############################
-    ####    CUSTOMIZATIONS    ####
-    ##############################
-
-    def _generate_supertype(self, type_def: type) -> AtomicType:
-        if type_def is None:
-            return None
-        return type_def.instance()
 
     def contains(self, other: Any) -> bool:
         other = resolve.resolve_type(other)

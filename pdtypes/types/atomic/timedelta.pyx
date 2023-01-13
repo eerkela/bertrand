@@ -10,6 +10,7 @@ import pandas as pd
 import regex as re  # using alternate python regex engine
 
 from .base cimport AtomicType, CompositeType
+from .base import generic, lru_cache
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -26,33 +27,19 @@ import pdtypes.types.resolve as resolve
 # -> these could potentially replace the constants in util/time/
 
 
+@generic
 class TimedeltaType(AtomicType):
 
     name = "timedelta"
-    aliases = {
-        "timedelta": {}
-    }
+    aliases = {"timedelta"}
 
     def __init__(self):
         super().__init__(
             type_def=None,
-            dtype=None,
+            dtype=np.dtype("O"),
             na_value=pd.NaT,
-            itemsize=None,
-            slug=self.slugify()
+            itemsize=None
         )
-
-    ########################
-    ####    REQUIRED    ####
-    ########################
-
-    @classmethod
-    def slugify(cls):
-        return cls.name
-
-    @property
-    def kwargs(self) -> MappingProxyType:
-        return MappingProxyType({})
 
     ###############################
     #####    CUSTOMIZATIONS    ####
@@ -69,92 +56,46 @@ class TimedeltaType(AtomicType):
             )
         return other == self or any(other in a for a in subtypes)
 
-    @classmethod
-    def resolve(cls, backend: str = None, *args) -> AtomicType:
-        if backend is None:
-            call = cls.instance
-        elif backend == "pandas":
-            call = PandasTimedeltaType.resolve
-        elif backend == "python":
-            call = PyTimedeltaType.resolve 
-        elif backend == "numpy":
-            call = NumpyTimedelta64Type.resolve
-        return call(*args)
 
+@TimedeltaType.register_backend("pandas")
+class PandasTimedeltaType(AtomicType):
 
-class PandasTimedeltaType(AtomicType, supertype=TimedeltaType):
-
-    name = "Timedelta"
-    aliases = {
-        pd.Timedelta: {},
-        "Timedelta": {},
-        "pandas.Timedelta": {},
-        "pd.Timedelta": {},
-    }
+    aliases = {pd.Timedelta, "Timedelta", "pandas.Timedelta", "pd.Timedelta"}
 
     def __init__(self):
         super().__init__(
             type_def=pd.Timedelta,
             dtype=np.dtype("m8[ns]"),
             na_value=pd.NaT,
-            itemsize=8,
-            slug=self.slugify()
+            itemsize=8
         )
 
-    ########################
-    ####    REQUIRED    ####
-    ########################
 
-    @classmethod
-    def slugify(cls):
-        return cls.name
+@TimedeltaType.register_backend("python")
+class PyTimedeltaType(AtomicType):
 
-    @property
-    def kwargs(self) -> MappingProxyType:
-        return MappingProxyType({})
-
-
-class PyTimedeltaType(AtomicType, supertype=TimedeltaType):
-
-    name = "pytimedelta"
-    aliases = {
-        datetime.timedelta: {},
-        "pytimedelta": {},
-        "datetime.timedelta": {},
-    }
+    aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
 
     def __init__(self):
         super().__init__(
             type_def=datetime.timedelta,
             dtype=np.dtype("O"),
             na_value=pd.NaT,
-            itemsize=None,
-            slug=self.slugify()
+            itemsize=None
         )
 
-    ########################
-    ####    REQUIRED    ####
-    ########################
 
-    @classmethod
-    def slugify(cls):
-        return cls.name
+@lru_cache(64)
+@TimedeltaType.register_backend("numpy")
+class NumpyTimedelta64Type(AtomicType):
 
-    @property
-    def kwargs(self) -> MappingProxyType:
-        return MappingProxyType({})
-
-
-class NumpyTimedelta64Type(AtomicType, cache_size=64, supertype=TimedeltaType):
-
-    name = "m8"
     aliases = {
-        np.timedelta64: {},
+        np.timedelta64,
         # np.dtype("m8") handled in resolve_typespec_dtype special case
-        "m8": {},
-        "timedelta64": {},
-        "numpy.timedelta64": {},
-        "np.timedelta64": {},
+        "m8",
+        "timedelta64",
+        "numpy.timedelta64",
+        "np.timedelta64",
     }
 
     def __init__(self, unit: str = None, step_size: int = 1):
@@ -166,43 +107,23 @@ class NumpyTimedelta64Type(AtomicType, cache_size=64, supertype=TimedeltaType):
                 raise ValueError(f"unit not understood: {repr(unit)}")
             dtype = np.dtype(f"m8[{step_size}{unit}]")
 
-        self.unit = unit
-        self.step_size = step_size
-
         super().__init__(
             type_def=np.timedelta64,
             dtype=dtype,
             na_value=pd.NaT,
             itemsize=8,
-            slug=self.slugify(unit=unit, step_size=step_size)
+            unit=unit,
+            step_size=step_size
         )
-
-    ########################
-    ####    REQUIRED    ####
-    ########################
 
     @classmethod
     def slugify(cls, unit: str = None, step_size: int = 1) -> str:
         slug = cls.name
         if unit is not None:
-            slug += f"[{step_size}{unit}]"
+            slug += f"[{cls.backend}, {step_size}{unit}]"
+        else:
+            slug += f"[{cls.backend}]"
         return slug
-
-    @property
-    def kwargs(self) -> MappingProxyType:
-        return MappingProxyType({
-            "unit": self.unit,
-            "step_size": self.step_size
-        })
-
-    ##############################
-    ####    CUSTOMIZATIONS    ####
-    ##############################
-
-    def _generate_supertype(self, type_def: type) -> AtomicType:
-        if type_def is None:
-            return None
-        return type_def.instance()
 
     def contains(self, other: Any) -> bool:
         other = resolve.resolve_type(other)

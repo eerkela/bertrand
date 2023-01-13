@@ -23,3 +23,11 @@ from .complex import (
     NumpyComplexType, NumpyComplex64Type, NumpyComplex128Type,
     NumpyComplex160Type, PythonComplexType, PythonComplex128Type
 )
+from .decimal import DecimalType, PyDecimalType
+from .datetime import (
+    DatetimeType, NumpyDatetime64Type, PandasTimestampType, PyDatetimeType
+)
+from .timedelta import (
+    TimedeltaType, NumpyTimedelta64Type, PandasTimedeltaType, PyTimedeltaType
+)
+from .string import StringType, PythonStringType, PyArrowStringType
