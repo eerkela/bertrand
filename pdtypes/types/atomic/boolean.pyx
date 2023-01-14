@@ -15,8 +15,6 @@ cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 
-# TODO: BooleanTypes should implement a standard make_nullable() method.
-
 # TODO: add datetime_like `since` hint to to_datetime, to_timedelta
 
 
@@ -26,6 +24,19 @@ import pdtypes.types.resolve as resolve
 
 
 class BooleanMixin:
+
+    def force_nullable(self) -> AtomicType:
+        """Create an equivalent boolean type that can accept missing values."""
+        if self.is_nullable:
+            return self
+        return self.generic.instance(backend="pandas")
+
+    @property
+    def is_nullable(self) -> bool:
+        """Check if a boolean type supports missing values."""
+        if isinstance(self.dtype, np.dtype):
+            return np.issubdtype(self.dtype, "O")
+        return True
 
     def parse(self, input_str: str):
         if input_str in resolve.na_strings:

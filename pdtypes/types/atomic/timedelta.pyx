@@ -21,7 +21,7 @@ import pdtypes.types.resolve as resolve
 # TODO: import timedelta helpers from pdtypes.util.time
 # TODO: update type hints from Any to datetime_like, timezone_like, etc.
 
-# TODO: parse() should account for self.unit/step_size
+# TODO: parse() should account for self.unit/step_size/timezone
 
 # TODO: add min/max?
 # -> these could potentially replace the constants in util/time/
@@ -40,21 +40,6 @@ class TimedeltaType(AtomicType):
             na_value=pd.NaT,
             itemsize=None
         )
-
-    ###############################
-    #####    CUSTOMIZATIONS    ####
-    ###############################
-
-    def contains(self, other: Any) -> bool:
-        other = resolve.resolve_type(other)
-
-        # respect wildcard rules in subtypes
-        subtypes = self.subtypes.atomic_types - {self}
-        if isinstance(other, CompositeType):
-            return all(
-                o == self or any(o in a for a in subtypes) for o in other
-            )
-        return other == self or any(other in a for a in subtypes)
 
 
 @TimedeltaType.register_backend("pandas")

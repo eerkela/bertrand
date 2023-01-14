@@ -13,6 +13,13 @@ cimport pdtypes.types.resolve as resolve
 # na_value and return as-is.
 # That way you can explicitly pass a type to SparseType to ensure it is sparse
 
+# Any AtomicType method that returns an AtomicType must be wrapped in
+# self.replace().
+# -> maybe implement a ._patch(self) method that dynamically adds wrapper
+# methods for whitelisted AtomicType methods?  This would allow the sparse/
+# categorical interface to match the underlying AtomicType.  It would just
+# have to be applied before super().__init__()
+
 
 cdef class Null:
     pass

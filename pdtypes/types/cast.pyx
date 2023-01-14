@@ -335,6 +335,15 @@ def to_object(
 ######################
 
 
+def within_tolerance(series_1, series_2, tol) -> bool:
+    """Check if every element of a series is within tolerance of another
+    series.
+    """
+    if not tol:  # fastpath if tolerance=0
+        return (series_1 == series_2).all()
+    return not ((series_1 - series_2).abs() > tol).any()
+
+
 cdef class SeriesWrapper:
     """Base wrapper for pd.Series objects.
 

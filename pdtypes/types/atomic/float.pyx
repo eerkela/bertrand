@@ -6,37 +6,11 @@ import pandas as pd
 
 from .base cimport AdapterType, AtomicType
 from .base import generic, subtype
-cimport pdtypes.types.atomic.complex as complex_types
+import pdtypes.types.atomic.complex as complex_types
 
 from pdtypes.error import shorten_list
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
-
-
-# TODO: some types are aliases of each other.  Can reduce repetition by
-# exploiting inheritance.
-
-
-# TODO: float methods are not aware of when they are wrapped in an AdapterType.
-# The only way around this is to implement a separate AdapterType method that
-# calls the base method and just wraps the result.  This will always be
-# exposed, but may throw an AttributeError if the wrapped AtomicType does not
-# implement that method.
-
-
-# TODO: consider ftol in downcast()?
-# -> ftol -> tol, signifies the maximum amount of precision loss that can
-# occur before an error is raised.  If this is complex, real and imaginary
-# components are considered separately.
-# -> implement a Tolerance object as a cdef class, similar to Timezone, Epoch
-
-
-# TODO: might need a special case for root FloatType that considers
-# Float80Type in downcast
-
-
-# TODO: come up with a way to link equiv_complex/equiv_float that doesn't
-# rely on forward declaration
 
 
 #########################
@@ -54,29 +28,42 @@ cdef bint no_longdouble = not (np.dtype(np.longdouble).itemsize > 8)
 
 class FloatMixin:
 
-    def downcast(self, series: pd.Series) -> AtomicType:
+    def downcast(
+        self,
+        series: pd.Series,
+        tol = 0
+    ) -> AtomicType:
         """Reduce the itemsize of a float type to fit the observed range."""
         for s in self.smaller:
             attempt = series.astype(s.dtype)
-            if (attempt == series).all():
+            if cast.within_tolerance(attempt, series, tol=tol):
                 return s
         return self
 
     @property
     def equiv_complex(self) -> AtomicType:
-        _class = complex_types.forward_declare[self._equiv_complex]
-        return _class.instance(backend=self.backend)
+        candidates = complex_types.ComplexType.instance().subtypes
+        for x in candidates:
+            if type(x).__name__ == self._equiv_complex:
+                return x
+        raise TypeError(f"{repr(self)} has no equivalent complex type")
 
     @property
     def smaller(self) -> list:
-        subtypes = [
+        result = [
             x for x in self.root.subtypes if (
                 x.backend == self.backend and
-                (x.itemsize or np.inf) < (self.itemsize or np.inf)
+                x not in FloatType.backends.values()
             )
         ]
-        subtypes.sort(key=lambda x: x.itemsize)
-        return subtypes
+        if not self.is_root:
+            result = [
+                x for x in result if (
+                    (x.itemsize or np.inf) < (self.itemsize or np.inf)
+                )
+            ]
+        result.sort(key=lambda x: x.itemsize)
+        return result
 
 
 #############################
@@ -325,11 +312,3 @@ class PythonFloat64Type(FloatMixin, AtomicType):
             na_value=np.nan,
             itemsize=8
         )
-
-
-#######################
-####    PRIVATE    ####
-#######################
-
-
-cdef dict forward_declare = locals()

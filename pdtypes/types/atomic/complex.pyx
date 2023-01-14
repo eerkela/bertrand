@@ -4,7 +4,7 @@ import pandas as pd
 
 from .base cimport AdapterType, AtomicType
 from .base import generic, subtype
-cimport pdtypes.types.atomic.float as float_types
+import pdtypes.types.atomic.float as float_types
 
 from pdtypes.error import shorten_list
 cimport pdtypes.types.cast as cast
@@ -12,14 +12,7 @@ import pdtypes.types.cast as cast
 
 
 # TODO: consider ftol in downcast()?
-
-
-# TODO: might need a special case for root FloatType that considers
-# Complex160Type in downcast
-
-
-# TODO: come up with a way to link equiv_complex/equiv_float that doesn't
-# rely on forward declaration
+# -> have to consider real/imag separately
 
 
 #########################
@@ -37,29 +30,42 @@ cdef bint no_clongdouble = not (np.dtype(np.clongdouble).itemsize > 16)
 
 class ComplexMixin:
 
-    def downcast(self, series: pd.Series) -> AtomicType:
+    def downcast(
+        self,
+        series: pd.Series,
+        tol = 0
+    ) -> AtomicType:
         """Reduce the itemsize of a complex type to fit the observed range."""
         for s in self.smaller:
             attempt = series.astype(s.dtype)
-            if (attempt == series).all():
+            if cast.within_tolerance(attempt, series, tol=tol):
                 return s
         return self
 
     @property
     def equiv_float(self) -> AtomicType:
-        _class = float_types.forward_declare[self._equiv_float]
-        return _class.instance(backend=self.backend)
+        candidates = float_types.FloatType.instance().subtypes
+        for x in candidates:
+            if type(x).__name__ == self._equiv_float:
+                return x
+        raise TypeError(f"{repr(self)} has no equivalent float type")
 
     @property
     def smaller(self) -> list:
-        subtypes = [
+        result = [
             x for x in self.root.subtypes if (
                 x.backend == self.backend and
-                (x.itemsize or np.inf) < (self.itemsize or np.inf)
+                x not in ComplexType.backends.values()
             )
         ]
-        subtypes.sort(key=lambda x: x.itemsize)
-        return subtypes
+        if not self.is_root:
+            result = [
+                x for x in result if (
+                    (x.itemsize or np.inf) < (self.itemsize or np.inf)
+                )
+            ]
+        result.sort(key=lambda x: x.itemsize)
+        return result
 
 
 #############################
@@ -276,11 +282,3 @@ class PythonComplex128Type(ComplexMixin, AtomicType):
             na_value=type_def("nan+nanj"),
             itemsize=16
         )
-
-
-#######################
-####    PRIVATE    ####
-#######################
-
-
-cdef dict forward_declare = locals()

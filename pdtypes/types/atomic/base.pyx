@@ -19,42 +19,9 @@ import pdtypes.types.resolve as resolve
 
 # TODO: re-enable AtomicTypeRegistry name validation
 
-
-# TODO: if ignore=False in AtomicType.__init_subclass__(), don't add any
-# supertypes/backends.
-
-
-# TODO: these go in individual AtomicType definitions, under cls.flyweights
-# cdef LRUDict object_registry = LRUDict(maxsize=cache_size)
-
-
-# TODO: add default values for AtomicType objects
-# - aliases: empty set
-# - na_value: pd.NA
-# - dtype: np.dtype("O")
-# - itemsize: None
-
-
 # AtomicType.name should mirror slug.  Maybe when validating name,
 # AtomicTypeRegistry should just call self.slugify() and check that it is
 # unique?
-
-# When a type is added to the
-# registry, check if its name has already been registered.  If it has, check
-# that its backend is unique.  If it has not, reject it.  Else, add the
-# backend to its dynamic resolution table, which is consulted in the parent
-# type's .resolve() constructor.
-
-
-# in AtomicType.__init_subclass__(), if a supertype argument is given, check if
-# it is a GenericType.  If it is, force cls.name == supertype.name,
-# hasattr(cls, "extension"), and cls.extension not in supertype.extensions
-# has not been registered.  The type can then be accessed through the extension
-# "name[{backend}, ...]" in resolve_type
-
-
-# TODO: modify .contains for all @generic types to respect wildcards for
-# different backends.
 
 
 ##########################
@@ -83,9 +50,13 @@ cdef class BaseType:
 ###########################
 
 
-cdef tuple generic_wrapped_methods = (
-    "_generate_subtypes", "generic", "instance", "resolve"
+cdef tuple generic_methods = (
+    "_generate_subtypes", "contains", "generic", "instance", "resolve"
 )
+
+
+# alias for resolve.pyx module
+_resolve = resolve
 
 
 def generic(class_def: type):
@@ -104,12 +75,39 @@ def generic(class_def: type):
             f"have arguments other than self"
         )
 
+    @classmethod
+    def register_backend(cls, backend: str):
+        def decorator(wrapped: type):
+            if not issubclass(wrapped, AtomicType):
+                raise TypeError(
+                    f"`generic.register_backend()` can only be applied to "
+                    f"AtomicType definitions"
+                )
+            if wrapped._ignored or cls._ignored:
+                return wrapped
+            if backend in cls.backends:
+                raise TypeError(
+                    f"`backend` must be unique, not one of {set(cls.backends)}"
+                )
+
+            wrapped._generic = cls
+            wrapped.name = cls.name
+            wrapped.backend = backend
+            cls.backends[backend] = wrapped
+            return wrapped
+
+        return decorator
+
+    class_def.register_backend = register_backend
+    if class_def._ignored:
+        return class_def
+
     # overwrite class attributes
     class_def.is_generic = True
     class_def.backend = None
     class_def.backends = {None: class_def}
 
-    cdef dict orig = {k: getattr(class_def, k) for k in generic_wrapped_methods}
+    cdef dict orig = {k: getattr(class_def, k) for k in generic_methods}
 
     def _generate_subtypes(self, types: set) -> frozenset:
         result = orig["_generate_subtypes"](self, types)
@@ -117,6 +115,17 @@ def generic(class_def: type):
             if k is not None:
                 result |= v.instance().subtypes.atomic_types
         return result
+
+    def contains(self, other: Any) -> bool:
+        other = _resolve.resolve_type(other)
+
+        # respect wildcard rules in subtypes
+        subtypes = self.subtypes.atomic_types - {self}
+        if isinstance(other, CompositeType):
+            return all(
+                o == self or any(o in a for a in subtypes) for o in other
+            )
+        return other == self or any(other in a for a in subtypes)
 
     @property
     def generic(self) -> AtomicType:
@@ -143,32 +152,10 @@ def generic(class_def: type):
             return cls.backends[backend].resolve(*args)
         return orig["resolve"](*args)
 
-    @classmethod
-    def register_backend(cls, backend: str):
-        def decorator(wrapped: type):
-            if not issubclass(wrapped, AtomicType):
-                raise TypeError(
-                    f"`generic.register_backend()` can only be applied to "
-                    f"AtomicType definitions"
-                )
-            if backend in cls.backends:
-                raise TypeError(
-                    f"`backend` must be unique, not one of {set(cls.backends)}"
-                )
-
-            wrapped._generic = cls
-            wrapped.name = cls.name
-            wrapped.backend = backend
-            cls.backends[backend] = wrapped
-            return wrapped
-
-        return decorator
-
     # patch in new methods
     loc = locals()
     for k in orig:
         setattr(class_def, k, loc[k])
-    class_def.register_backend = register_backend
     return class_def
 
 
@@ -182,7 +169,6 @@ def lru_cache(maxsize: int):
             raise TypeError(
                 f"`@lru_cache()` can only be applied to AtomicType definitions"
             )
-
         class_def.flyweights = LRUDict(maxsize=maxsize)
         return class_def
 
@@ -191,14 +177,16 @@ def lru_cache(maxsize: int):
 
 def subtype(supertype: type):
     """Class decorator to establish type hierarchies."""
-    if not issubclass(supertype, AtomicType):
-            raise TypeError(f"`supertype` must be a subclass of AtomicType")
 
     def decorator(class_def: type):
         if not issubclass(class_def, AtomicType):
             raise TypeError(
                 f"`@subtype()` can only be applied to AtomicType definitions"
             )
+        if not issubclass(supertype, AtomicType):
+            raise TypeError(f"`supertype` must be a subclass of AtomicType")
+        if class_def._ignored or supertype._ignored:
+            return class_def
 
         # break circular references
         if supertype is class_def:
@@ -220,7 +208,6 @@ def subtype(supertype: type):
         return class_def
 
     return decorator
-
 
 
 cdef class AtomicTypeRegistry:
@@ -637,6 +624,10 @@ cdef class AtomicType(BaseType):
             return all(o in self.subtypes.atomic_types for o in other)
         return other in self.subtypes.atomic_types
 
+    @property
+    def is_root(self) -> bool:
+        return self._supertype_def is None
+
     def is_subtype(self, other) -> bool:
         """Reverse of `AtomicType.contains()`.
 
@@ -855,6 +846,7 @@ cdef class AtomicType(BaseType):
             cls.is_categorical = False
 
         # validate subclass properties and add to registry, if directed
+        cls._ignored = ignore
         if not ignore:
             cls.registry.add(cls)
             cls.aliases.add(cls)  # cls always aliases itself

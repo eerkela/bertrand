@@ -43,21 +43,6 @@ class DatetimeType(AtomicType):
             itemsize=None
         )
 
-    ###############################
-    #####    CUSTOMIZATIONS    ####
-    ###############################
-
-    def contains(self, other: Any) -> bool:
-        other = resolve.resolve_type(other)
-
-        # respect wildcard rules in subtypes
-        subtypes = self.subtypes.atomic_types - {self}
-        if isinstance(other, CompositeType):
-            return all(
-                o == self or any(o in a for a in subtypes) for o in other
-            )
-        return other == self or any(other in a for a in subtypes)
-
 
 @lru_cache(64)
 @DatetimeType.register_backend("pandas")

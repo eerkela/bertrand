@@ -25,6 +25,12 @@ cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 
 
+# TODO: int[numpy/pandas].smaller currently includes uint64 (as intended), but
+# its min/max caps out at 2**63.  As such, in cast methods, a range check will
+# always ignore uint64[numpy/pandas], even when it should be considered.  This
+# also affects the default dtype for these types.
+
+
 ######################
 ####    MIXINS    ####
 ######################
@@ -99,7 +105,7 @@ class IntegerMixin:
         """Create an equivalent integer type that can accept missing values."""
         if self.is_nullable:
             return self
-        return self.supertype.instance(backend="pandas")
+        return self.generic.instance(backend="pandas")
 
     @property
     def is_nullable(self) -> bool:
@@ -113,26 +119,30 @@ class IntegerMixin:
 
     @property
     def smaller(self) -> list:
-        subtypes = [
+        """Get a list of types that `self` can be downcasted to."""
+        result = [
             x for x in self.root.subtypes if (
                 x.backend == self.backend and
                 x.is_signed == self.is_signed and
                 (x.itemsize or np.inf) < (self.itemsize or np.inf)
             )
         ]
-        subtypes.sort(key=lambda x: x.itemsize)
-        return subtypes
-
-
-class RootIntegerSpecialCase(IntegerMixin):
-
-    @property
-    def smaller(self) -> list:
-        result = super().smaller
-        try:
-            result.append(UInt64Type.instance(backend=self.backend))
-        except TypeError:
-            pass
+        result.sort(key=lambda x: x.itemsize)
+        if self.is_root:  # consider unsigned types
+            max_signed = max(
+                x.max for x in self.subtypes if (
+                    x.is_signed and not np.isinf(x.max)
+                )
+            )
+            larger = [
+                x for x in UnsignedIntegerType.instance().subtypes if (
+                    x.backend == self.backend and
+                    x.max > max_signed and
+                    x not in UnsignedIntegerType.backends.values()
+                )
+            ]
+            larger.sort(key=lambda x: (x.itemsize or np.inf))
+            result.extend(larger)
         return result
 
 
@@ -142,7 +152,7 @@ class RootIntegerSpecialCase(IntegerMixin):
 
 
 @generic
-class IntegerType(RootIntegerSpecialCase, AtomicType):
+class IntegerType(IntegerMixin, AtomicType):
     """Generic integer supertype."""
 
     name = "int"
@@ -344,7 +354,7 @@ class UInt64Type(IntegerMixin, AtomicType):
 
 
 @IntegerType.register_backend("numpy")
-class NumpyIntegerType(RootIntegerSpecialCase, AtomicType):
+class NumpyIntegerType(IntegerMixin, AtomicType):
     """Numpy integer type."""
 
     aliases={np.integer}
@@ -536,7 +546,7 @@ class NumpyUInt64Type(IntegerMixin, AtomicType):
 
 
 @IntegerType.register_backend("pandas")
-class PandasIntegerType(RootIntegerSpecialCase, AtomicType):
+class PandasIntegerType(IntegerMixin, AtomicType):
     """Pandas integer supertype."""
 
     aliases=set()
@@ -728,7 +738,7 @@ class PandasUInt64Type(IntegerMixin, AtomicType):
 
 
 @IntegerType.register_backend("python")
-class PythonIntegerType(RootIntegerSpecialCase, AtomicType):
+class PythonIntegerType(IntegerMixin, AtomicType):
     """Python integer supertype."""
 
     aliases=set()
