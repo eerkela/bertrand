@@ -29,6 +29,11 @@ import pdtypes.types.resolve as resolve
 # -> these could potentially replace the constants in util/time/
 
 
+################################
+####    GENERIC DATETIME    ####
+################################
+
+
 @generic
 class DatetimeType(AtomicType):
 
@@ -42,6 +47,11 @@ class DatetimeType(AtomicType):
             na_value=pd.NaT,
             itemsize=None
         )
+
+
+################################
+####    PANDAS TIMESTAMP    ####
+################################
 
 
 @lru_cache(64)
@@ -87,19 +97,21 @@ class PandasTimestampType(AtomicType):
                 return all(isinstance(o, type(self)) for o in other)
             return isinstance(other, type(self))
 
-        subtypes = self.subtypes.atomic_types
-        if isinstance(other, CompositeType):
-            return all(o in subtypes for o in other)
-        return other in subtypes
+        return super().contains(other)
 
     @classmethod
     def detect(cls, example: pd.Timestamp, **defaults) -> AtomicType:
         return cls.instance(tz=example.tz, **defaults)
 
 
+###############################
+####    PYTHON DATETIME    ####
+###############################
+
+
 @lru_cache(64)
 @DatetimeType.register_backend("python")
-class PyDatetimeType(AtomicType):
+class PythonDatetimeType(AtomicType):
 
     aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
 
@@ -130,14 +142,16 @@ class PyDatetimeType(AtomicType):
                 return all(isinstance(o, type(self)) for o in other)
             return isinstance(other, type(self))
 
-        subtypes = self.subtypes.atomic_types
-        if isinstance(other, CompositeType):
-            return all(o in subtypes for o in other)
-        return other in subtypes
+        return super().contains(other)
 
     @classmethod
     def detect(cls, example: datetime.datetime, **defaults) -> AtomicType:
         return cls.instance(tz=example.tzinfo, **defaults)
+
+
+################################
+####    NUMPY DATETIME64    ####
+################################
 
 
 @lru_cache(64)
@@ -189,10 +203,7 @@ class NumpyDatetime64Type(AtomicType):
                 return all(isinstance(o, type(self)) for o in other)
             return isinstance(other, type(self))
 
-        subtypes = self.subtypes.atomic_types
-        if isinstance(other, CompositeType):
-            return all(o in subtypes for o in other)
-        return other in subtypes
+        return super().contains(other)
 
     @classmethod
     def detect(cls, example: np.datetime64, **defaults) -> AtomicType:

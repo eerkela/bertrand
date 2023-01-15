@@ -17,13 +17,6 @@ cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 
-# TODO: re-enable AtomicTypeRegistry name validation
-
-# AtomicType.name should mirror slug.  Maybe when validating name,
-# AtomicTypeRegistry should just call self.slugify() and check that it is
-# unique?
-
-
 ##########################
 ####    PRIMITIVES    ####
 ##########################
@@ -50,13 +43,7 @@ cdef class BaseType:
 ###########################
 
 
-cdef tuple generic_methods = (
-    "_generate_subtypes", "contains", "generic", "instance", "resolve"
-)
-
-
-# alias for resolve.pyx module
-_resolve = resolve
+cdef tuple generic_methods = ("_generate_subtypes", "instance", "resolve")
 
 
 def generic(class_def: type):
@@ -85,15 +72,19 @@ def generic(class_def: type):
                 )
             if wrapped._ignored or cls._ignored:
                 return wrapped
+
+            # check backend is unique
             if backend in cls.backends:
                 raise TypeError(
                     f"`backend` must be unique, not one of {set(cls.backends)}"
                 )
 
+            # assign attributes
             wrapped._generic = cls
             wrapped.name = cls.name
             wrapped.backend = backend
             cls.backends[backend] = wrapped
+            wrapped.registry.flush()
             return wrapped
 
         return decorator
@@ -116,21 +107,6 @@ def generic(class_def: type):
                 result |= v.instance().subtypes.atomic_types
         return result
 
-    def contains(self, other: Any) -> bool:
-        other = _resolve.resolve_type(other)
-
-        # respect wildcard rules in subtypes
-        subtypes = self.subtypes.atomic_types - {self}
-        if isinstance(other, CompositeType):
-            return all(
-                o == self or any(o in a for a in subtypes) for o in other
-            )
-        return other == self or any(other in a for a in subtypes)
-
-    @property
-    def generic(self) -> AtomicType:
-        return self
-
     @classmethod
     def instance(cls, backend: str = None, *args, **kwargs) -> AtomicType:
         if backend is None:
@@ -144,13 +120,13 @@ def generic(class_def: type):
 
     @classmethod
     def resolve(cls, backend: str = None, *args: str) -> AtomicType:
-        if backend is not None:
-            if backend not in cls.backends:
-                raise TypeError(
-                    f"{cls.name} backend not recognzied: {repr(backend)}"
-                )
-            return cls.backends[backend].resolve(*args)
-        return orig["resolve"](*args)
+        if backend is None:
+            return orig["resolve"](*args)  # TODO: in the case of
+        if backend not in cls.backends:
+            raise TypeError(
+                f"{cls.name} backend not recognzied: {repr(backend)}"
+            )
+        return cls.backends[backend].resolve(*args)
 
     # patch in new methods
     loc = locals()
@@ -177,33 +153,37 @@ def lru_cache(maxsize: int):
 
 def subtype(supertype: type):
     """Class decorator to establish type hierarchies."""
+    if not issubclass(supertype, AtomicType):
+        raise TypeError(f"`supertype` must be a subclass of AtomicType")
 
     def decorator(class_def: type):
         if not issubclass(class_def, AtomicType):
             raise TypeError(
                 f"`@subtype()` can only be applied to AtomicType definitions"
             )
-        if not issubclass(supertype, AtomicType):
-            raise TypeError(f"`supertype` must be a subclass of AtomicType")
         if class_def._ignored or supertype._ignored:
             return class_def
 
         # break circular references
-        if supertype is class_def:
-            raise TypeError("Type cannot be registered to itself")
+        ref = supertype
+        while ref is not None:
+            if ref is class_def:
+                raise TypeError(
+                    "Type hierarchy cannot contain circular references"
+                )
+            ref = ref._parent
 
         # check type is not already registered
-        if class_def._supertype_def:
+        if class_def._parent:
             raise TypeError(
-                f"Types can only be registered to one supertype at a "
+                f"AtomicTypes can only be registered to one supertype at a "
                 f"time (`{class_def.__name__}` is currently registered to "
-                f"`{class_def._supertype_def.__name__}`)"
+                f"`{class_def._parent.__name__}`)"
             )
-        else:
-            class_def._supertype_def = supertype
-            supertype._subtype_defs |= {class_def}
 
-        # flush registry to synchronize instances
+        # assign attributes
+        class_def._parent = supertype
+        supertype._children.add(class_def)
         AtomicType.registry.flush()
         return class_def
 
@@ -247,7 +227,7 @@ cdef class AtomicTypeRegistry:
             if k in self.aliases:
                 raise TypeError(
                     f"{subclass.__name__} alias {repr(k)} is already "
-                    f"registered to {self.aliases[k].base.__name__}"
+                    f"registered to {self.aliases[k].__name__}"
                 )
 
     cdef int validate_slugify(self, type subclass) except -1:
@@ -307,8 +287,8 @@ cdef class AtomicTypeRegistry:
             )
 
         # validate AtomicType properties
-        # if hasattr(new_type, "name"):
-        #     self.validate_name(new_type)
+        if hasattr(new_type, "name"):
+            self.validate_name(new_type)
         self.validate_aliases(new_type)
         self.validate_slugify(new_type)
 
@@ -478,8 +458,6 @@ cdef class AtomicType(BaseType):
 
     registry: TypeRegistry = AtomicTypeRegistry()
     flyweights: dict[int, AtomicType] = {}
-    is_generic = False
-    is_nullable = True
 
     def __init__(
         self,
@@ -608,11 +586,9 @@ cdef class AtomicType(BaseType):
         Override this if your AtomicType implements custom logic to generate
         supertype instances (due to an interface mismatch or similar obstacle).
         """
-        if type_def is None:
-            return None
-        return type_def.instance(**self.kwargs)
+        return None if type_def is None else type_def.instance()
 
-    def contains(self, other):
+    def contains(self, other: Any) -> bool:
         """Test whether `other` is a subtype of the given AtomicType.
         This is functionally equivalent to `other in self`, except that it
         applies automatic type resolution to `other`.
@@ -620,13 +596,31 @@ cdef class AtomicType(BaseType):
         custom logic for membership tests of the given type.
         """
         other = resolve.resolve_type(other)
+
+        # respect wildcard rules in subtypes
+        subtypes = self.subtypes.atomic_types - {self}
         if isinstance(other, CompositeType):
-            return all(o in self.subtypes.atomic_types for o in other)
-        return other in self.subtypes.atomic_types
+            return all(
+                o == self or any(o in a for a in subtypes) for o in other
+            )
+        return other == self or any(other in a for a in subtypes)
+
+    @property
+    def generic(self) -> AtomicType:
+        """Return the generic equivalent for this AtomicType."""
+        if self.registry.needs_updating(self._generic_cache):
+            if self._generic is None:
+                result = None
+            elif self.is_generic:
+                result = self
+            else:
+                result = self._generic.instance()
+            self._generic_cache = self.registry.remember(result)
+        return self._generic_cache.value
 
     @property
     def is_root(self) -> bool:
-        return self._supertype_def is None
+        return self._parent is None
 
     def is_subtype(self, other) -> bool:
         """Reverse of `AtomicType.contains()`.
@@ -651,12 +645,12 @@ cdef class AtomicType(BaseType):
         The result is cached between `AtomicType.registry` updates, and can be
         customized via the `_generate_subtypes()` helper method.
         """
-        if self.registry.needs_updating(self._subtypes):
+        if self.registry.needs_updating(self._subtype_cache):
             subtype_defs = traverse_subtypes(type(self))
             result = self._generate_subtypes(subtype_defs)
-            self._subtypes = self.registry.remember(result)
+            self._subtype_cache = self.registry.remember(result)
 
-        return CompositeType(self._subtypes.value)
+        return CompositeType(self._subtype_cache.value)
 
     @property
     def supertype(self) -> AtomicType:
@@ -666,11 +660,11 @@ cdef class AtomicType(BaseType):
         The result is cached between `AtomicType.registry` updates, and can be
         customized via the `_generate_supertype()` helper method.
         """
-        if self.registry.needs_updating(self._supertype):
-            result = self._generate_supertype(self._supertype_def)
-            self._supertype = self.registry.remember(result)
+        if self.registry.needs_updating(self._supertype_cache):
+            result = self._generate_supertype(self._parent)
+            self._supertype_cache = self.registry.remember(result)
 
-        return self._supertype.value
+        return self._supertype_cache.value
 
     #####################
     ####    ALIAS    ####
@@ -690,7 +684,7 @@ cdef class AtomicType(BaseType):
     ) -> None:
         """Register a new alias for this AtomicType."""
         if alias in cls.registry.aliases:
-            other = cls.registry.aliases[alias].base
+            other = cls.registry.aliases[alias]
             if other is cls:
                 return None
             if overwrite:
@@ -711,10 +705,6 @@ cdef class AtomicType(BaseType):
     ####################
     ####    MISC    ####
     ####################
-
-    @property
-    def generic(self) -> AtomicType:
-        return self._generic.instance()
 
     def parse(self, input_str: str) -> Any:
         """Convert an input string into an object of the corresponding type.
@@ -745,10 +735,7 @@ cdef class AtomicType(BaseType):
     def unwrap(self) -> AtomicType:
         """Strip any AdapterTypes that have been attached to this AtomicType.
         """
-        result = self
-        while hasattr(result, "atomic_type"):
-            result = result.atomic_type
-        return result
+        return self
 
     ###########################
     ####    CONVERSIONS    ####
@@ -838,18 +825,30 @@ cdef class AtomicType(BaseType):
 
     @classmethod
     def __init_subclass__(cls, ignore: bool = False, **kwargs):
-        # initialize required fields
-        cls._subtype_defs = frozenset()
-        cls._supertype_def = None
-        if not issubclass(cls, AdapterType):
-            cls.is_sparse = False
-            cls.is_categorical = False
+        valid = AtomicType.__subclasses__() + AdapterType.__subclasses__()
+        if cls not in valid:
+            raise TypeError(
+                f"{cls.__name__} cannot inherit from another AtomicType "
+                f"definition"
+            )
 
-        # validate subclass properties and add to registry, if directed
+        # initialize required fields
+        cls._children = set()
+        cls._generic = None
         cls._ignored = ignore
-        if not ignore:
-            cls.registry.add(cls)
+        cls._parent = None
+        cls.backend = None
+        cls.backends = {}
+        cls.is_generic = False
+        if not issubclass(cls, AdapterType):
+            cls.is_categorical = getattr(cls, "is_categorical", False)
+            cls.is_nullable = getattr(cls, "is_nullable", True)
+            cls.is_sparse = getattr(cls, "is_sparse", False)
+
+        # add to registry
+        if not cls._ignored:
             cls.aliases.add(cls)  # cls always aliases itself
+            cls.registry.add(cls)
 
         # allow cooperative inheritance
         super(AtomicType, cls).__init_subclass__(**kwargs)
@@ -931,6 +930,14 @@ cdef class AdapterType(AtomicType):
 
         # construct new AdapterType
         return self.instance(atomic_type=atomic_type, **adapter_kwargs)
+
+    def unwrap(self) -> AtomicType:
+        """Strip any AdapterTypes that have been attached to this AtomicType.
+        """
+        result = self.atomic_type
+        while isinstance(result, AdapterType):
+            result = result.atomic_type
+        return result
 
     def __dir__(self) -> list:
         result = dir(type(self))
@@ -1318,7 +1325,7 @@ cdef class CompositeType(BaseType):
 cdef void _traverse_subtypes(type atomic_type, set result):
     """Recursive helper for traverse_subtypes()"""
     result.add(atomic_type)
-    for subtype in atomic_type._subtype_defs:
+    for subtype in atomic_type._children:
         _traverse_subtypes(subtype, result=result)
 
 

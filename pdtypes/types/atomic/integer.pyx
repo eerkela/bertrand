@@ -171,11 +171,21 @@ class IntegerType(IntegerMixin, AtomicType):
 
 @generic
 @subtype(IntegerType)
-class SignedIntegerType(IntegerType):
+class SignedIntegerType(IntegerMixin, AtomicType):
     """Generic signed integer supertype."""
 
-    name="signed"
-    aliases={"signed", "signed int", "signed integer", "i"}
+    name = "signed"
+    aliases = {"signed", "signed int", "signed integer", "i"}
+    min = -np.inf
+    max = np.inf
+
+    def __init__(self):
+        super().__init__(
+            type_def=int,
+            dtype=np.dtype(np.int64),
+            na_value=pd.NA,
+            itemsize=None
+        )
 
 
 @generic
@@ -183,7 +193,7 @@ class SignedIntegerType(IntegerType):
 class UnsignedIntegerType(IntegerMixin, AtomicType):
     """Generic 8-bit unsigned integer type."""
 
-    name="uint"
+    name="unsigned"
     aliases={"unsigned", "unsigned int", "unsigned integer", "uint", "u"}
     min=0
     max=2**64 - 1
@@ -372,10 +382,20 @@ class NumpyIntegerType(IntegerMixin, AtomicType):
 
 @SignedIntegerType.register_backend("numpy")
 @subtype(NumpyIntegerType)
-class NumpySignedIntegerType(NumpyIntegerType):
+class NumpySignedIntegerType(IntegerMixin, AtomicType):
     """Numpy signed integer type."""
 
     aliases={np.signedinteger}
+    min=-2**63
+    max=2**63 - 1
+
+    def __init__(self):
+        super().__init__(
+            type_def=np.int64,
+            dtype=np.dtype(np.int64),
+            na_value=pd.NA,
+            itemsize=8
+        )
 
 
 @UnsignedIntegerType.register_backend("numpy")
@@ -564,10 +584,20 @@ class PandasIntegerType(IntegerMixin, AtomicType):
 
 @SignedIntegerType.register_backend("pandas")
 @subtype(PandasIntegerType)
-class PandasSignedIntegerType(PandasIntegerType):
+class PandasSignedIntegerType(IntegerMixin, AtomicType):
     """Python signed integer supertype."""
 
     aliases=set()
+    min=-2**63
+    max=2**63 - 1
+
+    def __init__(self):
+        super().__init__(
+            type_def=np.int64,
+            dtype=pd.Int64Dtype(),
+            na_value=pd.NA,
+            itemsize=8
+        )
 
 
 @UnsignedIntegerType.register_backend("pandas")
@@ -738,6 +768,7 @@ class PandasUInt64Type(IntegerMixin, AtomicType):
 
 
 @IntegerType.register_backend("python")
+@SignedIntegerType.register_backend("python")
 class PythonIntegerType(IntegerMixin, AtomicType):
     """Python integer supertype."""
 
@@ -752,14 +783,6 @@ class PythonIntegerType(IntegerMixin, AtomicType):
             na_value=pd.NA,
             itemsize=None
         )
-
-
-@SignedIntegerType.register_backend("python")
-@subtype(PythonIntegerType)
-class PythonSignedIntegerType(PythonIntegerType):
-    """Python signed integer supertype."""
-
-    aliases=set()
 
 
 #########################################

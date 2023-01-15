@@ -11,23 +11,24 @@ from .integer import (
     PandasIntegerType, PandasSignedIntegerType, PandasUnsignedIntegerType,
     PandasInt8Type, PandasInt16Type, PandasInt32Type, PandasInt64Type,
     PandasUInt8Type, PandasUInt16Type, PandasUInt32Type, PandasUInt64Type,
-    PythonIntegerType, PythonSignedIntegerType
+    PythonIntegerType
 )
 from .float import (
     FloatType, Float16Type, Float32Type, Float64Type, Float80Type,
     NumpyFloatType, NumpyFloat16Type, NumpyFloat32Type, NumpyFloat64Type,
-    NumpyFloat80Type, PythonFloatType, PythonFloat64Type
+    NumpyFloat80Type, PythonFloatType
 )
 from .complex import (
     ComplexType, Complex64Type, Complex128Type, Complex160Type,
     NumpyComplexType, NumpyComplex64Type, NumpyComplex128Type,
-    NumpyComplex160Type, PythonComplexType, PythonComplex128Type
+    NumpyComplex160Type, PythonComplexType
 )
-from .decimal import DecimalType, PyDecimalType
+from .decimal import DecimalType, PythonDecimalType
 from .datetime import (
-    DatetimeType, NumpyDatetime64Type, PandasTimestampType, PyDatetimeType
+    DatetimeType, NumpyDatetime64Type, PandasTimestampType, PythonDatetimeType
 )
 from .timedelta import (
-    TimedeltaType, NumpyTimedelta64Type, PandasTimedeltaType, PyTimedeltaType
+    TimedeltaType, NumpyTimedelta64Type, PandasTimedeltaType,
+    PythonTimedeltaType
 )
 from .string import StringType, PythonStringType, PyArrowStringType

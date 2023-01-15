@@ -20,6 +20,11 @@ import pdtypes.types.resolve as resolve
 # -> These would be a numpy-only feature if implemented
 
 
+#########################
+####    CONSTANTS    ####
+#########################
+
+
 cdef object default_string_dtype
 cdef bint pyarrow_installed
 
@@ -31,6 +36,11 @@ try:
 except ImportError:
     default_string_dtype = pd.StringDtype("python")
     pyarrow_installed = False
+
+
+##############################
+####    GENERIC STRING    ####
+##############################
 
 
 @generic
@@ -60,6 +70,11 @@ class StringType(AtomicType):
         )
 
 
+############################
+####   PYTHON STRING    ####
+############################
+
+
 @StringType.register_backend("python")
 class PythonStringType(AtomicType):
 
@@ -72,6 +87,11 @@ class PythonStringType(AtomicType):
             na_value=pd.NA,
             itemsize=None
         )
+
+
+##############################
+####    PYARROW STRING    ####
+##############################
 
 
 @StringType.register_backend("pyarrow")

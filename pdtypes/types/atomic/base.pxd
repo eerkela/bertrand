@@ -37,8 +37,9 @@ cdef class AtomicTypeRegistry:
 
 cdef class AtomicType(BaseType):
     cdef:
-        CacheValue _subtypes
-        CacheValue _supertype
+        CacheValue _generic_cache
+        CacheValue _subtype_cache
+        CacheValue _supertype_cache
         bint _is_frozen
 
     cdef readonly:

@@ -1,8 +1,6 @@
 import decimal
-from types import MappingProxyType
 from typing import Union, Sequence
 
-cimport cython
 import numpy as np
 cimport numpy as np
 import pandas as pd
@@ -14,6 +12,11 @@ cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
+
+
+###############################
+####    GENERIC DECIMAL    ####
+###############################
 
 
 @generic
@@ -31,8 +34,13 @@ class DecimalType(AtomicType):
         )
 
 
+##############################
+####    PYTHON DECIMAL    ####
+##############################
+
+
 @DecimalType.register_backend("python")
-class PyDecimalType(AtomicType):
+class PythonDecimalType(AtomicType):
 
     aliases = {decimal.Decimal}
 
@@ -43,5 +51,3 @@ class PyDecimalType(AtomicType):
             na_value=pd.NA,
             itemsize=None
         )
-
-

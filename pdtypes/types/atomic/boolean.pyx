@@ -100,9 +100,9 @@ class BooleanMixin:
         pass
 
 
-#############################
-####    GENERIC TYPES    ####
-#############################
+###############################
+####    GENERIC BOOLEAN    ####
+###############################
 
 
 @generic
@@ -122,11 +122,6 @@ class BooleanType(BooleanMixin, AtomicType):
         )
 
 
-###########################
-####    NUMPY TYPES    ####
-###########################
-
-
 @BooleanType.register_backend("numpy")
 class NumpyBooleanType(BooleanMixin, AtomicType):
 
@@ -142,11 +137,6 @@ class NumpyBooleanType(BooleanMixin, AtomicType):
         )
 
 
-############################
-####    PANDAS TYPES    ####
-############################
-
-
 @BooleanType.register_backend("pandas")
 class PandasBooleanType(BooleanMixin, AtomicType):
 
@@ -159,11 +149,6 @@ class PandasBooleanType(BooleanMixin, AtomicType):
             na_value=pd.NA,
             itemsize=1
         )
-
-
-############################
-####    PYTHON TYPES    ####
-############################
 
 
 @BooleanType.register_backend("python")

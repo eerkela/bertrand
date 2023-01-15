@@ -27,6 +27,11 @@ import pdtypes.types.resolve as resolve
 # -> these could potentially replace the constants in util/time/
 
 
+#################################
+####    GENERIC TIMEDELTA    ####
+#################################
+
+
 @generic
 class TimedeltaType(AtomicType):
 
@@ -40,6 +45,11 @@ class TimedeltaType(AtomicType):
             na_value=pd.NaT,
             itemsize=None
         )
+
+
+################################
+####    PANDAS TIMEDELTA    ####
+################################
 
 
 @TimedeltaType.register_backend("pandas")
@@ -56,8 +66,13 @@ class PandasTimedeltaType(AtomicType):
         )
 
 
+################################
+####    PYTHON TIMEDELTA    ####
+################################
+
+
 @TimedeltaType.register_backend("python")
-class PyTimedeltaType(AtomicType):
+class PythonTimedeltaType(AtomicType):
 
     aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
 
@@ -68,6 +83,11 @@ class PyTimedeltaType(AtomicType):
             na_value=pd.NaT,
             itemsize=None
         )
+
+
+#################################
+####    NUMPY TIMEDELTA64    ####
+#################################
 
 
 @lru_cache(64)

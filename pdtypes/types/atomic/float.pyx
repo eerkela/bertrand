@@ -13,13 +13,6 @@ cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 
 
-#########################
-####    CONSTANTS    ####
-#########################
-
-
-cdef bint no_longdouble = not (np.dtype(np.longdouble).itemsize > 8)
-
 
 ######################
 ####    MIXINS    ####
@@ -66,9 +59,9 @@ class FloatMixin:
         return result
 
 
-#############################
-####    GENERIC TYPES    ####
-#############################
+###############################
+####    FLOAT SUPERTYPE    ####
+###############################
 
 
 @generic
@@ -88,6 +81,29 @@ class FloatType(FloatMixin, AtomicType):
             na_value=np.nan,
             itemsize=8
         )
+
+
+@FloatType.register_backend("numpy")
+class NumpyFloatType(FloatMixin, AtomicType):
+
+    aliases = {np.floating}
+    _equiv_complex = "NumpyComplexType"
+
+    def __init__(self):
+        type_def = np.float64
+        self.min = type_def(-2**53)
+        self.max = type_def(2**53)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype(np.float64),
+            na_value=np.nan,
+            itemsize=8
+        )
+
+
+#######################
+####    FLOAT16    ####
+#######################
 
 
 @generic
@@ -110,6 +126,30 @@ class Float16Type(FloatMixin, AtomicType):
         )
 
 
+@subtype(NumpyFloatType)
+@Float16Type.register_backend("numpy")
+class NumpyFloat16Type(FloatMixin, AtomicType):
+
+    aliases = {np.float16, np.dtype(np.float16)}
+    _equiv_complex = "NumpyComplex64Type"
+
+    def __init__(self):
+        type_def = np.float16
+        self.min = type_def(-2**11)
+        self.max = type_def(2**11)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype(np.float16),
+            na_value=np.nan,
+            itemsize=2
+        )
+
+
+#######################
+####    FLOAT32    ####
+#######################
+
+
 @generic
 @subtype(FloatType)
 class Float32Type(FloatMixin, AtomicType):
@@ -128,6 +168,30 @@ class Float32Type(FloatMixin, AtomicType):
             na_value=np.nan,
             itemsize=4
         )
+
+
+@subtype(NumpyFloatType)
+@Float32Type.register_backend("numpy")
+class NumpyFloat32Type(FloatMixin, AtomicType):
+
+    aliases = {np.float32, np.dtype(np.float32)}
+    _equiv_complex = "NumpyComplex64Type"
+
+    def __init__(self):
+        type_def = np.float32
+        self.min = type_def(-2**24)
+        self.max = type_def(2**24)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype(np.float32),
+            na_value=np.nan,
+            itemsize=4
+        )
+
+
+#######################
+####    FLOAT64    ####
+#######################
 
 
 @generic
@@ -150,9 +214,57 @@ class Float64Type(FloatMixin, AtomicType):
         )
 
 
+@subtype(NumpyFloatType)
+@Float64Type.register_backend("numpy")
+class NumpyFloat64Type(FloatMixin, AtomicType):
+
+    aliases = {np.float64, np.dtype(np.float64)}
+    _equiv_complex = "NumpyComplex128Type"
+
+    def __init__(self):
+        type_def = np.float64
+        self.min = type_def(-2**53)
+        self.max = type_def(2**53)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype(np.float64),
+            na_value=np.nan,
+            itemsize=8
+        )
+
+
+@FloatType.register_backend("python")
+@Float64Type.register_backend("python")
+class PythonFloatType(FloatMixin, AtomicType):
+
+    aliases = set()
+    _equiv_complex = "PythonComplexType"
+
+    def __init__(self):
+        type_def = float
+        self.min = type_def(-2**53)
+        self.max = type_def(2**53)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype("O"),
+            na_value=np.nan,
+            itemsize=8
+        )
+
+
+############################################
+####    x86 EXTENDED PRECISION FLOAT    ####
+############################################
+
+
+# NOTE: this type is platform-specific and may not be exposed depending on
+# hardware configuration.
+cdef bint has_longdouble = (np.dtype(np.longdouble).itemsize > 8)
+
+
 @generic
 @subtype(FloatType)
-class Float80Type(FloatMixin, AtomicType, ignore=no_longdouble):
+class Float80Type(FloatMixin, AtomicType, ignore=not has_longdouble):
 
     name = "float80"
     aliases = {
@@ -173,89 +285,9 @@ class Float80Type(FloatMixin, AtomicType, ignore=no_longdouble):
         )
 
 
-###########################
-####    NUMPY TYPES    ####
-###########################
-
-
-@FloatType.register_backend("numpy")
-class NumpyFloatType(FloatMixin, AtomicType):
-
-    aliases = {np.floating}
-    _equiv_complex = "NumpyComplexType"
-
-    def __init__(self):
-        type_def = np.float64
-        self.min = type_def(-2**53)
-        self.max = type_def(2**53)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.float64),
-            na_value=np.nan,
-            itemsize=8
-        )
-
-
-@Float16Type.register_backend("numpy")
 @subtype(NumpyFloatType)
-class NumpyFloat16Type(FloatMixin, AtomicType):
-
-    aliases = {np.float16, np.dtype(np.float16)}
-    _equiv_complex = "NumpyComplex64Type"
-
-    def __init__(self):
-        type_def = np.float16
-        self.min = type_def(-2**11)
-        self.max = type_def(2**11)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.float16),
-            na_value=np.nan,
-            itemsize=2
-        )
-
-
-@Float32Type.register_backend("numpy")
-@subtype(NumpyFloatType)
-class NumpyFloat32Type(FloatMixin, AtomicType):
-
-    aliases = {np.float32, np.dtype(np.float32)}
-    _equiv_complex = "NumpyComplex64Type"
-
-    def __init__(self):
-        type_def = np.float32
-        self.min = type_def(-2**24)
-        self.max = type_def(2**24)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.float32),
-            na_value=np.nan,
-            itemsize=4
-        )
-
-
-@Float64Type.register_backend("numpy")
-@subtype(NumpyFloatType)
-class NumpyFloat64Type(FloatMixin, AtomicType):
-
-    aliases = {np.float64, np.dtype(np.float64)}
-    _equiv_complex = "NumpyComplex128Type"
-
-    def __init__(self):
-        type_def = np.float64
-        self.min = type_def(-2**53)
-        self.max = type_def(2**53)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.float64),
-            na_value=np.nan,
-            itemsize=8
-        )
-
-
 @Float80Type.register_backend("numpy")
-@subtype(NumpyFloatType)
-class NumpyFloat80Type(FloatMixin, AtomicType, ignore=no_longdouble):
+class NumpyFloat80Type(FloatMixin, AtomicType, ignore=not has_longdouble):
 
     aliases = {np.longdouble, np.dtype(np.longdouble)}
     _equiv_complex = "NumpyComplex160Type"
@@ -269,46 +301,4 @@ class NumpyFloat80Type(FloatMixin, AtomicType, ignore=no_longdouble):
             dtype=np.dtype(np.longdouble),
             na_value=np.nan,
             itemsize=np.dtype(np.longdouble).itemsize
-        )
-
-
-############################
-####    PYTHON TYPES    ####
-############################
-
-
-@FloatType.register_backend("python")
-class PythonFloatType(FloatMixin, AtomicType):
-
-    aliases = set()
-    _equiv_complex = "PythonComplexType"
-
-    def __init__(self):
-        type_def = float
-        self.min = type_def(-2**53)
-        self.max = type_def(2**53)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype("O"),
-            na_value=np.nan,
-            itemsize=8
-        )
-
-
-@Float64Type.register_backend("python")
-@subtype(NumpyFloatType)
-class PythonFloat64Type(FloatMixin, AtomicType):
-
-    aliases = set()
-    _equiv_complex = "PythonComplex128Type"
-
-    def __init__(self):
-        type_def = float
-        self.min = type_def(-2**53)
-        self.max = type_def(2**53)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype("O"),
-            na_value=np.nan,
-            itemsize=8
         )
