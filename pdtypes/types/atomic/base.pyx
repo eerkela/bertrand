@@ -121,7 +121,7 @@ def generic(class_def: type):
     @classmethod
     def resolve(cls, backend: str = None, *args: str) -> AtomicType:
         if backend is None:
-            return orig["resolve"](*args)  # TODO: in the case of
+            return orig["resolve"](*args)
         if backend not in cls.backends:
             raise TypeError(
                 f"{cls.name} backend not recognzied: {repr(backend)}"

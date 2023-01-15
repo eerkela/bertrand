@@ -111,4 +111,3 @@ class PyArrowStringType(AtomicType, ignore=not pyarrow_installed):
 # add pyarrow string extension type to PyArrowStringType aliases
 if pyarrow_installed:
     PyArrowStringType.register_alias(pd.StringDtype("pyarrow"))
-
