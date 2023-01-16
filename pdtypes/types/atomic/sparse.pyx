@@ -7,6 +7,7 @@ import pandas as pd
 from .base cimport AtomicType, AdapterType
 
 cimport pdtypes.types.resolve as resolve
+import pdtypes.types.resolve as resolve
 
 
 # TODO: if SparseType is called on a SparseType, just replace that type's

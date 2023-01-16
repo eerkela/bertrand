@@ -259,12 +259,12 @@ class PythonFloatType(FloatMixin, AtomicType):
 
 # NOTE: this type is platform-specific and may not be exposed depending on
 # hardware configuration.
-cdef bint has_longdouble = (np.dtype(np.longdouble).itemsize > 8)
+cdef bint no_longdouble = (np.dtype(np.longdouble).itemsize <= 8)
 
 
 @generic
 @subtype(FloatType)
-class Float80Type(FloatMixin, AtomicType, ignore=not has_longdouble):
+class Float80Type(FloatMixin, AtomicType, ignore=no_longdouble):
 
     name = "float80"
     aliases = {
@@ -287,7 +287,7 @@ class Float80Type(FloatMixin, AtomicType, ignore=not has_longdouble):
 
 @subtype(NumpyFloatType)
 @Float80Type.register_backend("numpy")
-class NumpyFloat80Type(FloatMixin, AtomicType, ignore=not has_longdouble):
+class NumpyFloat80Type(FloatMixin, AtomicType, ignore=no_longdouble):
 
     aliases = {np.longdouble, np.dtype(np.longdouble)}
     _equiv_complex = "NumpyComplex160Type"

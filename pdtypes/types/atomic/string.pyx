@@ -95,6 +95,7 @@ class PythonStringType(AtomicType):
 
 
 @StringType.register_backend("pyarrow")
+@StringType.register_backend("arrow")
 class PyArrowStringType(AtomicType, ignore=not pyarrow_installed):
 
     aliases = {"arrowstr"}

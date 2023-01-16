@@ -139,10 +139,7 @@ class NumpyTimedelta64Type(AtomicType):
                 return all(isinstance(o, type(self)) for o in other)
             return isinstance(other, type(self))
 
-        subtypes = self.subtypes.atomic_types
-        if isinstance(other, CompositeType):
-            return all(o in subtypes for o in other)
-        return other in subtypes
+        return super().contains(other)
 
     @classmethod
     def detect(cls, example: np.datetime64, **defaults) -> AtomicType:

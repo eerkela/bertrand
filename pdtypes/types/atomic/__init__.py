@@ -32,3 +32,4 @@ from .timedelta import (
     PythonTimedeltaType
 )
 from .string import StringType, PythonStringType, PyArrowStringType
+from .object import ObjectType

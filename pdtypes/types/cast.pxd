@@ -1,4 +1,14 @@
+cimport numpy as np
+
 cimport pdtypes.types.atomic as atomic
+
+
+cdef np.ndarray[object] _apply_with_errors(
+    np.ndarray[object] arr,
+    object call,
+    object na_value,
+    str errors
+)
 
 
 cdef class SeriesWrapper:

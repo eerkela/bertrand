@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 import decimal
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 cimport numpy as np
 import numpy as np
@@ -20,6 +20,8 @@ import pdtypes.types.resolve as resolve
 
 # TODO: have SeriesWrapper automatically subset NAs, rather than using
 # exclude_na.  .exclude_na just gets replaced with .replace_na()
+
+# TODO: top-level to_x() functions are respondible for input validation
 
 
 ######################
@@ -70,12 +72,13 @@ def to_boolean(
     series: Iterable,
     dtype: resolve.resolvable = bool,
     rounding: str = None,
-    ftol: int | float | complex | decimal.Decimal = 1e-6,
+    tol: int | float | complex | decimal.Decimal = 1e-6,
     errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to boolean representation."""
-    series = SeriesWrapper(series)
+    if not isinstance(series, SeriesWrapper):
+        series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
     # validate input
@@ -89,7 +92,7 @@ def to_boolean(
         "to_boolean",
         dtype=dtype,
         rounding=rounding,
-        ftol=ftol,
+        tol=tol,
         errors=errors,
         **kwargs
     )
@@ -99,12 +102,13 @@ def to_integer(
     series: Iterable,
     dtype: resolve.resolvable = int,
     rounding: str = None,
-    ftol: int | float | complex | decimal.Decimal = 1e-6,
+    tol: int | float | complex | decimal.Decimal = 1e-6,
     errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to integer representation."""
-    series = SeriesWrapper(series)
+    if not isinstance(series, SeriesWrapper):
+        series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
     # validate input
@@ -118,7 +122,7 @@ def to_integer(
         "to_integer",
         dtype=dtype,
         rounding=rounding,
-        ftol=ftol,
+        tol=tol,
         errors=errors,
         **kwargs
     )
@@ -126,14 +130,14 @@ def to_integer(
 
 def to_float(
     series: Iterable,
-    dtype: resolve.resolvable = int,
-    rounding: str = None,
-    ftol: int | float | complex | decimal.Decimal = 1e-6,
+    dtype: resolve.resolvable = float,
+    tol: int | float | complex | decimal.Decimal = 1e-6,
     errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to float representation."""
-    series = SeriesWrapper(series)
+    if not isinstance(series, SeriesWrapper):
+        series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
     # validate input
@@ -146,8 +150,7 @@ def to_float(
     return series.do_conversion(
         "to_float",
         dtype=dtype,
-        rounding=rounding,
-        ftol=ftol,
+        tol=tol,
         errors=errors,
         **kwargs
     )
@@ -155,14 +158,14 @@ def to_float(
 
 def to_complex(
     series: Iterable,
-    dtype: resolve.resolvable = int,
-    rounding: str = None,
-    ftol: int | float | complex | decimal.Decimal = 1e-6,
+    dtype: resolve.resolvable = complex,
+    tol: int | float | complex | decimal.Decimal = 1e-6,
     errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to complex representation."""
-    series = SeriesWrapper(series)
+    if not isinstance(series, SeriesWrapper):
+        series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
     # validate input
@@ -175,8 +178,7 @@ def to_complex(
     return series.do_conversion(
         "to_complex",
         dtype=dtype,
-        rounding=rounding,
-        ftol=ftol,
+        tol=tol,
         errors=errors,
         **kwargs
     )
@@ -186,12 +188,13 @@ def to_decimal(
     series: Iterable,
     dtype: resolve.resolvable = int,
     rounding: str = None,
-    ftol: int | float | complex | decimal.Decimal = 1e-6,
+    tol: int | float | complex | decimal.Decimal = 1e-6,
     errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to decimal representation."""
-    series = SeriesWrapper(series)
+    if not isinstance(series, SeriesWrapper):
+        series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
     # validate input
@@ -205,7 +208,7 @@ def to_decimal(
         "to_decimal",
         dtype=dtype,
         rounding=rounding,
-        ftol=ftol,
+        tol=tol,
         errors=errors,
         **kwargs
     )
@@ -215,12 +218,13 @@ def to_datetime(
     series: Iterable,
     dtype: resolve.resolvable = int,
     rounding: str = None,
-    ftol: int | float | complex | decimal.Decimal = 1e-6,
+    tol: int | float | complex | decimal.Decimal = 1e-6,
     errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to datetime representation."""
-    series = SeriesWrapper(series)
+    if not isinstance(series, SeriesWrapper):
+        series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
     # validate input
@@ -234,7 +238,7 @@ def to_datetime(
         "to_datetime",
         dtype=dtype,
         rounding=rounding,
-        ftol=ftol,
+        tol=tol,
         errors=errors,
         **kwargs
     )
@@ -244,13 +248,13 @@ def to_timedelta(
     series: Iterable,
     dtype: resolve.resolvable = int,
     rounding: str = None,
-    ftol: int | float | complex | decimal.Decimal = 1e-6,
+    tol: int | float | complex | decimal.Decimal = 1e-6,
     errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to timedelta representation."""
-    # wrap data/target type
-    series = SeriesWrapper(series)
+    if not isinstance(series, SeriesWrapper):
+        series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
     # validate input
@@ -264,7 +268,7 @@ def to_timedelta(
         "to_timedelta",
         dtype=dtype,
         rounding=rounding,
-        ftol=ftol,
+        tol=tol,
         errors=errors,
         **kwargs
     )
@@ -272,15 +276,13 @@ def to_timedelta(
 
 def to_string(
     series: Iterable,
-    dtype: resolve.resolvable = int,
-    rounding: str = None,
-    ftol: int | float | complex | decimal.Decimal = 1e-6,
+    dtype: resolve.resolvable = str,
     errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
-    # wrap data/target type
-    series = SeriesWrapper(series)
+    if not isinstance(series, SeriesWrapper):
+        series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
     # validate input
@@ -293,8 +295,6 @@ def to_string(
     return series.do_conversion(
         "to_string",
         dtype=dtype,
-        rounding=rounding,
-        ftol=ftol,
         errors=errors,
         **kwargs
     )
@@ -302,15 +302,14 @@ def to_string(
 
 def to_object(
     series: Iterable,
-    dtype: resolve.resolvable = int,
-    rounding: str = None,
-    ftol: int | float | complex | decimal.Decimal = 1e-6,
+    dtype: resolve.resolvable = object,
+    call: Callable = None,
     errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
-    # wrap data/target type
-    series = SeriesWrapper(series)
+    if not isinstance(series, SeriesWrapper):
+        series = SeriesWrapper(series)
     dtype = resolve.resolve_type(dtype)
 
     # validate input
@@ -323,8 +322,7 @@ def to_object(
     return series.do_conversion(
         "to_object",
         dtype=dtype,
-        rounding=rounding,
-        ftol=ftol,
+        call=call,
         errors=errors,
         **kwargs
     )
@@ -342,6 +340,51 @@ def within_tolerance(series_1, series_2, tol) -> bool:
     if not tol:  # fastpath if tolerance=0
         return (series_1 == series_2).all()
     return not ((series_1 - series_2).abs() > tol).any()
+
+
+cdef np.ndarray[object] _apply_with_errors(
+    np.ndarray[object] arr,
+    object call,
+    object na_value,
+    str errors
+):
+    """Apply a function over an object array using the given error-handling
+    rule
+    """
+    cdef unsigned int arr_length = arr.shape[0]
+    cdef unsigned int i
+    cdef np.ndarray[object] result = np.full(arr_length, na_value, dtype="O")
+
+    for i in range(arr_length):
+        try:
+            result[i] = call(arr[i])
+        except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
+            raise  # never coerce on these error types
+        except Exception as err:
+            if errors == "coerce":
+                continue  # np.full() implicitly fills with na_value
+            raise err
+
+    return result
+
+
+def apply_with_errors(
+    series: pd.Series,
+    call: Callable,
+    na_value: Any,
+    errors: str = "raise"
+) -> pd.Series:
+    return pd.Series(
+        _apply_with_errors(
+            series.to_numpy(dtype="O"),
+            call=call,
+            na_value=na_value,
+            errors=errors
+        ),
+        index=series.index,
+        dtype="O"
+    )
+
 
 
 cdef class SeriesWrapper:

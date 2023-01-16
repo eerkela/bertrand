@@ -18,6 +18,9 @@ import pdtypes.types.resolve as resolve
 # TODO: add datetime_like `since` hint to to_datetime, to_timedelta
 
 
+# TODO: fully implement boolean to_x conversions
+
+
 ######################
 ####    MIXINS    ####
 ######################
@@ -46,37 +49,6 @@ class BooleanMixin:
                 f"could not interpret boolean string: {input_str}"
             )
         return self.type_def(input_str == "True")
-    
-    def to_float(
-        self,
-        series: cast.SeriesWrapper,
-        dtype: AtomicType,
-        downcast: bool = False,
-        **unused
-    ) -> pd.Series:
-        """Convert boolean data to a floating point data type."""
-        # downcast float dtype if directed
-        if downcast:
-            dtype = dtype.downcast(min=0, max=1)
-
-        # astype(float) fails when given pd.NA in an object series
-        if pd.api.types.is_object_dtype(series):
-            series.series = self.to_boolean(series, self)
-
-        return series.astype(dtype.dtype)
-
-    def to_complex(
-        self,
-        series: cast.SeriesWrapper,
-        dtype: AtomicType,
-        downcast: bool = False,
-        **unused
-    ) -> pd.Series:
-        """Convert boolean data to a complex data type."""
-        if downcast:
-            dtype = dtype.downcast(min=0, max=1)
-
-        return series.astype(dtype.dtype)
 
     def to_decimal(
         self,
@@ -85,9 +57,7 @@ class BooleanMixin:
         **unused
     ) -> pd.Series:
         """Convert boolean data to a decimal data type."""
-        with series.exclude_na(dtype.na_value):
-            series.series += decimal.Decimal(0)
-        return series.series
+        return series + dtype.type_def(0)  # ~2x faster than loop
 
     def to_datetime(
         self,

@@ -220,12 +220,12 @@ class PythonComplexType(ComplexMixin, AtomicType):
 ##############################################
 
 
-cdef bint no_clongdouble = (np.dtype(np.clongdouble).itemsize > 16)
+cdef bint no_clongdouble = (np.dtype(np.clongdouble).itemsize <= 16)
 
 
 @generic
 @subtype(ComplexType)
-class Complex160Type(ComplexMixin, AtomicType, ignore=not has_clongdouble):
+class Complex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
 
     name = "complex160"
     aliases = {

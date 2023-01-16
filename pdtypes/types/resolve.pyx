@@ -228,4 +228,9 @@ cdef atomic.AtomicType resolve_typespec_dtype(object input_dtype):
 cdef atomic.AtomicType resolve_typespec_type(type input_type):
     """Resolve a runtime type definition, returning a corresponding AtomicType.
     """
-    return atomic.AtomicType.registry.aliases[input_type].instance()
+    cdef dict aliases = atomic.AtomicType.registry.aliases
+
+    if input_type in aliases:
+        return aliases[input_type].instance()
+
+    return atomic.ObjectType.instance(base=input_type)

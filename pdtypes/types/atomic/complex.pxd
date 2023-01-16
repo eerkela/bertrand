@@ -1,2 +1,2 @@
-cdef bint has_clongdouble
+cdef bint no_clongdouble
 cdef dict forward_declare
