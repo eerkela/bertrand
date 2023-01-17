@@ -15,15 +15,6 @@ cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 
-# TODO: conversions aren't exactly efficient.
-# -> involves 3 loops.  1st applies `call` over series, 2nd runs detect_type
-# on object series, and 3rd converts from resulting series to final dtype.
-# -> 2nd loop should be replaced by inference from running `call` on 1st
-# element of series.
-# -> 3rd loop should only trigger if dtype.dtype != np.dtype("O").
-# -> these conversions should be packaged as a helper method to stay DRY.
-
-
 #######################
 ####    GENERIC    ####
 #######################
@@ -85,10 +76,14 @@ class ObjectType(AtomicType):
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a boolean data type."""
+        # hook into __bool__() magic method
+        if call is None:
+            call = lambda x: dtype.type_def(bool(x))
+
         return two_step_conversion(
             series=series,
             dtype=dtype,
-            call=bool if call is None else call,
+            call=call,
             errors=errors,
             conv_func=cast.to_boolean,
             **unused
@@ -103,10 +98,14 @@ class ObjectType(AtomicType):
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to an integer data type."""
+        # hook into __int__() magic method
+        if call is None:
+            call = lambda x: dtype.type_def(int(x))
+
         return two_step_conversion(
             series=series,
             dtype=dtype,
-            call=int if call is None else call,
+            call=call,
             errors=errors,
             conv_func=cast.to_integer,
             **unused
@@ -121,10 +120,14 @@ class ObjectType(AtomicType):
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a float data type."""
+        # hook into __float__() magic method
+        if call is None:
+            call = lambda x: dtype.type_def(float(x))
+
         return two_step_conversion(
             series=series,
             dtype=dtype,
-            call=float if call is None else call,
+            call=call,
             errors=errors,
             conv_func=cast.to_float,
             **unused
@@ -139,10 +142,14 @@ class ObjectType(AtomicType):
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a complex data type."""
+        # hook into __complex__() magic method
+        if call is None:
+            call = lambda x: dtype.type_def(complex(x))
+
         return two_step_conversion(
             series=series,
             dtype=dtype,
-            call=complex if call is None else call,
+            call=call,
             errors=errors,
             conv_func=cast.to_complex,
             **unused
@@ -211,10 +218,14 @@ class ObjectType(AtomicType):
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a string data type."""
+        # hook into __str__() magic method
+        if call is None:
+            call = lambda x: dtype.type_def(str(x))
+
         return two_step_conversion(
             series=series,
             dtype=dtype,
-            call=str if call is None else call,
+            call=call,
             errors=errors,
             conv_func=cast.to_string,
             **unused
@@ -229,17 +240,24 @@ class ObjectType(AtomicType):
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to an object data type."""
-        # base case to prevent infinite loops
-        if series.element_type == dtype:
-            return series.series
+        if call is None:
+            call = dtype.type_def
 
-        return two_step_conversion(
+        def wrapped_call(object val):
+            cdef object result = call(val)
+            cdef type output_type = type(result)
+
+            if output_type != dtype.type_def:
+                raise ValueError(
+                    f"`call` must return an object of type {dtype.type_def}"
+                )
+            return result
+
+        return cast.apply_with_errors(
             series=series,
-            dtype=dtype,
-            call=dtype.type_def if call is None else call,
-            errors=errors,
-            conv_func=cast.to_object,
-            **unused
+            call=wrapped_call,
+            na_value=dtype.na_value,
+            errors=errors
         )
 
 
@@ -254,7 +272,7 @@ class Test:
         self.x = x
 
     def as_boolean(self):
-        print("as_boolean called")
+        print("Test.as_boolean called!")
         return bool(self)
 
     def __bool__(self) -> bool:
@@ -275,11 +293,11 @@ class Test:
 
 class Test2:
 
-    def __init__(self, x: str = "foo"):
-        self.x = x
+    def __init__(self, x: Test):
+        self.x = f"{x} bar"
 
     def as_boolean(self):
-        print("as_boolean called")
+        print("Test2.as_boolean called!")
         return bool(self)
 
     def __bool__(self) -> bool:
@@ -307,10 +325,20 @@ def two_step_conversion(
     **unused
 ) -> pd.Series:
     """A conversion in two parts."""
+    def wrapped_call(object val):
+        cdef object result = call(val)
+        cdef type output_type = type(result)
+
+        if output_type != dtype.type_def:
+            raise ValueError(
+                f"`call` must return an object of type {dtype.type_def}"
+            )
+        return result
+
     return conv_func(
         cast.apply_and_wrap(
             series=series,
-            call=call,
+            call=wrapped_call,
             na_value=dtype.na_value,
             errors=errors
         ),
