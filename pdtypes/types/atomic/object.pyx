@@ -15,6 +15,15 @@ cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 
+# TODO: conversions aren't exactly efficient.
+# -> involves 3 loops.  1st applies `call` over series, 2nd runs detect_type
+# on object series, and 3rd converts from resulting series to final dtype.
+# -> 2nd loop should be replaced by inference from running `call` on 1st
+# element of series.
+# -> 3rd loop should only trigger if dtype.dtype != np.dtype("O").
+# -> these conversions should be packaged as a helper method to stay DRY.
+
+
 #######################
 ####    GENERIC    ####
 #######################
@@ -76,19 +85,14 @@ class ObjectType(AtomicType):
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a boolean data type."""
-        if call is None:
-            call = bool  # hook into object's __bool__() magic method
-
-        # apply `call` to each element of series (dtype=object)
-        series = apply_and_wrap(
+        return two_step_conversion(
             series=series,
-            call=call,
-            na_value=dtype.na_value,
-            errors=errors
+            dtype=dtype,
+            call=bool if call is None else call,
+            errors=errors,
+            conv_func=cast.to_boolean,
+            **unused
         )
-
-        # cast from object series to final dtype
-        return cast.to_boolean(series, dtype=dtype, errors=errors, **unused)
 
     def to_integer(
         self,
@@ -99,19 +103,14 @@ class ObjectType(AtomicType):
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to an integer data type."""
-        if call is None:
-            call = int  # hook into object's __int__() magic method
-
-        # apply `call` to each element of series (dtype=object)
-        series = apply_and_wrap(
+        return two_step_conversion(
             series=series,
-            call=call,
-            na_value=dtype.na_value,
-            errors=errors
+            dtype=dtype,
+            call=int if call is None else call,
+            errors=errors,
+            conv_func=cast.to_integer,
+            **unused
         )
-
-        # cast from object series to final dtype
-        return cast.to_integer(series, dtype=dtype, errors=errors, **unused)
 
     def to_float(
         self,
@@ -122,19 +121,14 @@ class ObjectType(AtomicType):
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a float data type."""
-        if call is None:
-            call = float  # hook into object's __float__() magic method
-
-        # apply `call` to each element of series (dtype=object)
-        series = apply_and_wrap(
+        return two_step_conversion(
             series=series,
-            call=call,
-            na_value=dtype.na_value,
-            errors=errors
+            dtype=dtype,
+            call=float if call is None else call,
+            errors=errors,
+            conv_func=cast.to_float,
+            **unused
         )
-
-        # cast from object series to final dtype
-        return cast.to_float(series, dtype=dtype, errors=errors, **unused)
 
     def to_complex(
         self,
@@ -145,19 +139,14 @@ class ObjectType(AtomicType):
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a complex data type."""
-        if call is None:
-            call = complex  # hook into object's __complex__() magic method
-
-        # apply `call` to each element of series (dtype=object)
-        series = apply_and_wrap(
+        return two_step_conversion(
             series=series,
-            call=call,
-            na_value=dtype.na_value,
-            errors=errors
+            dtype=dtype,
+            call=complex if call is None else call,
+            errors=errors,
+            conv_func=cast.to_complex,
+            **unused
         )
-
-        # cast from object series to final dtype
-        return cast.to_complex(series, dtype=dtype, errors=errors, **unused)
 
     def to_decimal(
         self,
@@ -168,22 +157,90 @@ class ObjectType(AtomicType):
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a decimal data type."""
-        # TODO: this doesn't seem to be particularly efficient
-
-        if call is None:
-            call = dtype.type_def
-
-        # apply `call` to each element of series (dtype=object)
-        series = apply_and_wrap(
+        return two_step_conversion(
             series=series,
-            call=call,
-            na_value=dtype.na_value,
-            errors=errors
+            dtype=dtype,
+            call=dtype.type_def if call is None else call,
+            errors=errors,
+            conv_func=cast.to_decimal,
+            **unused
         )
 
-        # cast from object series to final dtype
-        return cast.to_decimal(series, dtype=dtype, errors=errors, **unused)
+    def to_datetime(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        call: Callable = None,
+        errors: str = "raise",
+        **unused
+    ) -> pd.Series:
+        """Convert unstructured objects to a datetime data type."""
+        return two_step_conversion(
+            series=series,
+            dtype=dtype,
+            call=dtype.type_def if call is None else call,
+            errors=errors,
+            conv_func=cast.to_datetime,
+            **unused
+        )
 
+    def to_timedelta(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        call: Callable = None,
+        errors: str = "raise",
+        **unused
+    ) -> pd.Series:
+        """Convert unstructured objects to a timedelta data type."""
+        return two_step_conversion(
+            series=series,
+            dtype=dtype,
+            call=dtype.type_def if call is None else call,
+            errors=errors,
+            conv_func=cast.to_timedelta,
+            **unused
+        )
+
+    def to_string(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        call: Callable = None,
+        errors: str = "raise",
+        **unused
+    ) -> pd.Series:
+        """Convert unstructured objects to a string data type."""
+        return two_step_conversion(
+            series=series,
+            dtype=dtype,
+            call=str if call is None else call,
+            errors=errors,
+            conv_func=cast.to_string,
+            **unused
+        )
+
+    def to_object(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        call: Callable = None,
+        errors: str = "raise",
+        **unused
+    ) -> pd.Series:
+        """Convert unstructured objects to an object data type."""
+        # base case to prevent infinite loops
+        if series.element_type == dtype:
+            return series.series
+
+        return two_step_conversion(
+            series=series,
+            dtype=dtype,
+            call=dtype.type_def if call is None else call,
+            errors=errors,
+            conv_func=cast.to_object,
+            **unused
+        )
 
 
 #######################
@@ -191,24 +248,76 @@ class ObjectType(AtomicType):
 #######################
 
 
-cdef cast.SeriesWrapper apply_and_wrap(
-    cast.SeriesWrapper series,
-    object call,
-    object na_value,
-    str errors
-):
-    return cast.SeriesWrapper(
-        cast.apply_with_errors(
-            series.series,
+class Test:
+
+    def __init__(self, x: str = "foo"):
+        self.x = x
+
+    def as_boolean(self):
+        print("as_boolean called")
+        return bool(self)
+
+    def __bool__(self) -> bool:
+        return np.random.rand() > 0.5
+
+    def __int__(self) -> int:
+        return np.random.randint(10)
+
+    def __float__(self) -> float:
+        return np.random.rand()
+
+    def __complex__(self) -> complex:
+        return complex(np.random.rand(), np.random.rand())
+
+    def __str__(self) -> str:
+        return self.x
+
+
+class Test2:
+
+    def __init__(self, x: str = "foo"):
+        self.x = x
+
+    def as_boolean(self):
+        print("as_boolean called")
+        return bool(self)
+
+    def __bool__(self) -> bool:
+        return np.random.rand() > 0.5
+
+    def __int__(self) -> int:
+        return np.random.randint(10)
+
+    def __float__(self) -> float:
+        return np.random.rand()
+
+    def __complex__(self) -> complex:
+        return complex(np.random.rand(), np.random.rand())
+
+    def __str__(self) -> str:
+        return self.x
+
+
+def two_step_conversion(
+    series: cast.SeriesWrapper,
+    dtype: AtomicType ,
+    call: Callable,
+    errors: str,
+    conv_func: Callable,
+    **unused
+) -> pd.Series:
+    """A conversion in two parts."""
+    return conv_func(
+        cast.apply_and_wrap(
+            series=series,
             call=call,
-            na_value=na_value,
+            na_value=dtype.na_value,
             errors=errors
         ),
-        hasnans=None if errors == "coerce" else series.hasnans,
-        is_na=None if errors == "coerce" else False,
-        # element_type=atomic.{x}
+        dtype=dtype,
+        errors=errors,
+        **unused
     )
-
 
 
 cdef object from_caller(str name, int stack_index = 0):

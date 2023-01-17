@@ -333,15 +333,6 @@ def to_object(
 ######################
 
 
-def within_tolerance(series_1, series_2, tol) -> bool:
-    """Check if every element of a series is within tolerance of another
-    series.
-    """
-    if not tol:  # fastpath if tolerance=0
-        return (series_1 == series_2).all()
-    return not ((series_1 - series_2).abs() > tol).any()
-
-
 cdef np.ndarray[object] _apply_with_errors(
     np.ndarray[object] arr,
     object call,
@@ -372,7 +363,7 @@ def apply_with_errors(
     series: pd.Series,
     call: Callable,
     na_value: Any,
-    errors: str = "raise"
+    errors: str
 ) -> pd.Series:
     return pd.Series(
         _apply_with_errors(
@@ -385,6 +376,34 @@ def apply_with_errors(
         dtype="O"
     )
 
+
+def apply_and_wrap(
+    series: pd.Series,
+    call: Callable,
+    na_value: Any,
+    errors: str,
+    element_type: atomic.AtomicType = None
+) -> SeriesWrapper:
+    return SeriesWrapper(
+        apply_with_errors(
+            series,
+            call=call,
+            na_value=na_value,
+            errors=errors
+        ),
+        hasnans=None if errors == "coerce" else series.hasnans,
+        is_na=None if errors == "coerce" else False,
+        # element_type=element_type
+    )
+
+
+def within_tolerance(series_1, series_2, tol) -> bool:
+    """Check if every element of a series is within tolerance of another
+    series.
+    """
+    if not tol:  # fastpath if tolerance=0
+        return (series_1 == series_2).all()
+    return not ((series_1 - series_2).abs() > tol).any()
 
 
 cdef class SeriesWrapper:
