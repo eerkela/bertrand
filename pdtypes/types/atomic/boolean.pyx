@@ -28,6 +28,8 @@ import pdtypes.types.resolve as resolve
 
 class BooleanMixin:
 
+    conversion_func = cast.to_boolean
+
     def force_nullable(self) -> AtomicType:
         """Create an equivalent boolean type that can accept missing values."""
         if self.is_nullable:

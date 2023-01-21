@@ -17,10 +17,28 @@ cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 
-# TODO: account for `errors` in each conversion.
-# -> write a custom cython loop rather than using np.frompyfunc.  This
-# replaces most (if not all) np.frompyfunc loops.  errors="coerce" simply
-# replaces the problematic value with dtype.na_value
+# conversions
+# +------------------------------------------------
+# |           | b | i | f | c | d | d | t | s | o |
+# +-----------+------------------------------------
+# | bool      | x | x | x | x | x |   |   | x | x |
+# +-----------+---+---+---+---+---+---+---+---+---+
+# | int       |   |   |   |   |   |   |   |   | x |
+# +-----------+---+---+---+---+---+---+---+---+---+
+# | float     |   |   |   |   |   |   |   |   | x |
+# +-----------+---+---+---+---+---+---+---+---+---+
+# | complex   |   |   |   |   |   |   |   |   | x |
+# +-----------+---+---+---+---+---+---+---+---+---+
+# | decimal   |   |   |   |   |   |   |   |   | x |
+# +-----------+---+---+---+---+---+---+---+---+---+
+# | datetime  |   |   |   |   |   |   |   |   | x |
+# +-----------+---+---+---+---+---+---+---+---+---+
+# | timedelta |   |   |   |   |   |   |   |   | x |
+# +-----------+---+---+---+---+---+---+---+---+---+
+# | string    |   |   |   |   |   |   |   |   | x |
+# +-----------+---+---+---+---+---+---+---+---+---+
+# | object    | x | x | x | x | x | x | x | x | x |
+# +-----------+---+---+---+---+---+---+---+---+---+
 
 
 ##########################
@@ -318,6 +336,7 @@ cdef class AtomicType(BaseType):
 
     registry: TypeRegistry = AtomicTypeRegistry()
     flyweights: dict[int, AtomicType] = {}
+    conversion_func = cast.to_object
 
     def __init__(
         self,
@@ -601,16 +620,14 @@ cdef class AtomicType(BaseType):
         functions when they are called on objects of the given type.
         """
         if dtype.dtype == np.dtype("O"):
-            return cast.apply_with_errors(
-                series,
-                call=dtype.type_def,
-                na_value=dtype.na_value,
-                errors=errors
-            )
+            series.apply_with_errors(call=dtype.type_def, errors=errors)
+            return series.series
     
         if series.hasnans:
             dtype = dtype.force_nullable()
-        return series.astype(dtype.dtype, copy=False)
+
+        result = series.astype(dtype.dtype, copy=False)
+        return result
 
     def to_integer(
         self,
@@ -633,19 +650,11 @@ cdef class AtomicType(BaseType):
             dtype = dtype.downcast(series)
 
         if dtype.dtype == np.dtype("O"):
-            return cast.apply_with_errors(
-                series,
-                call=dtype.type_def,
-                na_value=dtype.na_value,
-                errors=errors
-            )
+            series.apply_with_errors(call=dtype.type_def, errors=errors)
+            return series.series
 
         if series.hasnans:
             dtype = dtype.force_nullable()
-
-        # converting object series to pandas extension type is inconsistent
-        if isinstance(dtype.dtype, pd.api.extensions.ExtensionDtype):
-            series.series = series.rectify()
 
         return series.astype(dtype.dtype, copy=False)
 
@@ -662,12 +671,8 @@ cdef class AtomicType(BaseType):
             dtype = dtype.downcast(series)
 
         if dtype.dtype == np.dtype("O"):
-            return cast.apply_with_errors(
-                series,
-                call=dtype.type_def,
-                na_value=dtype.na_value,
-                errors=errors
-            )
+            series.apply_with_errors(call=dtype.type_def, errors=errors)
+            return series.series
 
         return series.astype(dtype.dtype)
 
@@ -684,12 +689,8 @@ cdef class AtomicType(BaseType):
             dtype = dtype.downcast(series)
 
         if dtype.dtype == np.dtype("O"):
-            return cast.apply_with_errors(
-                series,
-                call=dtype.type_def,
-                na_value=dtype.na_value,
-                errors=errors
-            )
+            series.apply_with_errors(call=dtype.type_def, errors=errors)
+            return series.series
 
         return series.astype(dtype.dtype)
 
@@ -701,12 +702,8 @@ cdef class AtomicType(BaseType):
         **unused
     ) -> pd.Series:
         """Convert boolean data to a decimal data type."""
-        return cast.apply_with_errors(
-            series,
-            call=dtype.type_def,
-            na_value=dtype.na_value,
-            errors=errors
-        )
+        series.apply_with_errors(call=dtype.type_def, errors=errors)
+        return series.series
 
 
 
@@ -731,15 +728,22 @@ cdef class AtomicType(BaseType):
         errors: str = "raise",
         **unused
     ) -> pd.Series:
-        """Convert generic data to an object data type."""
+        """Convert arbitrary data to an object data type."""
         if call is None:
             call = dtype.type_def
-        return cast.apply_with_errors(
-            series,
-            call=dtype.type_def,
-            na_value=dtype.na_value,
-            errors=errors
-        )
+
+        def wrapped_call(object val):
+            cdef object result = call(val)
+            cdef type output_type = type(result)
+
+            if output_type != dtype.type_def:
+                raise ValueError(
+                    f"`call` must return an object of type {dtype.type_def}"
+                )
+            return result
+
+        series.apply_with_errors(call=wrapped_call, errors=errors)
+        return series.series
 
     def unwrap(self) -> AtomicType:
         """Strip any AdapterTypes that have been attached to this AtomicType.
@@ -758,7 +762,14 @@ cdef class AtomicType(BaseType):
         return isinstance(other, AtomicType) and self.hash == other.hash
 
     def __getattr__(self, name: str) -> Any:
-        return self.kwargs[name]
+        try:
+            return self.kwargs[name]
+        except KeyError as err:
+            err_msg = (
+                f"{repr(type(self).__name__)} object has no attribute: "
+                f"{repr(name)}"
+            )
+            raise AttributeError(err_msg) from err
 
     @classmethod
     def __init_subclass__(cls, ignore: bool = False, **kwargs):

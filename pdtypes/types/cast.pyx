@@ -16,12 +16,9 @@ import pdtypes.types.resolve as resolve
 
 # TODO: sparse types currently broken
 
-# TODO: have SeriesWrapper accept other SeriesWrapper objects
-
-# TODO: have SeriesWrapper automatically subset NAs, rather than using
-# exclude_na.  .exclude_na just gets replaced with .replace_na()
-
 # TODO: top-level to_x() functions are respondible for input validation
+
+# TODO: have to account for empty series in each conversion.
 
 
 ######################
@@ -35,37 +32,10 @@ def cast(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to the given data type."""
-    # TODO: SeriesWrapper must accept other SeriesWrappers
-    # if dtype is None:
-    #     dtype = SeriesWrapper(series).element_type
-    # else:
     dtype = resolve.resolve_type(dtype)
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
-
-    # get specialized conversion function
-    unwrapped = dtype.unwrap()
-    if unwrapped.is_subtype(atomic.BooleanType):
-        endpoint = to_boolean
-    elif unwrapped.is_subtype(atomic.IntegerType):
-        endpoint = to_integer
-    elif unwrapped.is_subtype(atomic.FloatType):
-        endpoint = to_float
-    elif unwrapped.is_subtype(atomic.ComplexType):
-        endpoint = to_complex
-    elif unwrapped.is_subtype(atomic.DecimalType):
-        endpoint = to_decimal
-    elif unwrapped.is_subtype(atomic.DatetimeType):
-        endpoint = to_datetime
-    elif unwrapped.is_subtype(atomic.TimedeltaType):
-        endpoint = to_timedelta
-    elif unwrapped.is_subtype(atomic.StringType):
-        endpoint = to_string
-    else:
-        endpoint = to_object
-
-    # apply conversion function
-    return endpoint(series, dtype, **kwargs)
+    return dtype.conversion_func(series, dtype, **kwargs)
 
 
 def to_boolean(
@@ -77,19 +47,18 @@ def to_boolean(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to boolean representation."""
-    if not isinstance(series, SeriesWrapper):
-        series = SeriesWrapper(series)
+    # validate dtype
     dtype = resolve.resolve_type(dtype)
-
-    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
     if not dtype.unwrap().is_subtype(atomic.BooleanType):
         raise ValueError(f"`dtype` must be a boolean type, not {dtype}")
 
-    # delegate to SeriesWrapper.do_conversion()
-    return series.do_conversion(
-        "to_boolean",
+    # TODO: collate and validate args
+
+    return do_conversion(
+        series,
+        "to_boolean",  # not passed to conversion method
         dtype=dtype,
         rounding=rounding,
         tol=tol,
@@ -107,19 +76,18 @@ def to_integer(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to integer representation."""
-    if not isinstance(series, SeriesWrapper):
-        series = SeriesWrapper(series)
+    # validate dtype
     dtype = resolve.resolve_type(dtype)
-
-    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
     if not dtype.unwrap().is_subtype(atomic.IntegerType):
         raise ValueError(f"`dtype` must be an integer type, not {dtype}")
 
-    # delegate to SeriesWrapper.do_conversion()
-    return series.do_conversion(
-        "to_integer",
+    # TODO: collate and validate args
+
+    return do_conversion(
+        series,
+        "to_integer",  # not passed to conversion method
         dtype=dtype,
         rounding=rounding,
         tol=tol,
@@ -136,19 +104,18 @@ def to_float(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to float representation."""
-    if not isinstance(series, SeriesWrapper):
-        series = SeriesWrapper(series)
+    # validate dtype
     dtype = resolve.resolve_type(dtype)
-
-    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
     if not dtype.is_subtype(atomic.FloatType):
         raise ValueError(f"`dtype` must be a float type, not {dtype}")
 
-    # delegate to SeriesWrapper.do_conversion()
-    return series.do_conversion(
-        "to_float",
+    # TODO: collate and validate args
+
+    return do_conversion(
+        series,
+        "to_float",  # not passed to conversion method
         dtype=dtype,
         tol=tol,
         errors=errors,
@@ -164,19 +131,18 @@ def to_complex(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to complex representation."""
-    if not isinstance(series, SeriesWrapper):
-        series = SeriesWrapper(series)
+    # validate dtype
     dtype = resolve.resolve_type(dtype)
-
-    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
     if not dtype.is_subtype(atomic.ComplexType):
         raise ValueError(f"`dtype` must be a complex type, not {dtype}")
 
-    # delegate to SeriesWrapper.do_conversion()
-    return series.do_conversion(
-        "to_complex",
+    # TODO: collate and validate args
+
+    return do_conversion(
+        series,
+        "to_complex",  # not passed to conversion method
         dtype=dtype,
         tol=tol,
         errors=errors,
@@ -193,19 +159,18 @@ def to_decimal(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to decimal representation."""
-    if not isinstance(series, SeriesWrapper):
-        series = SeriesWrapper(series)
+    # validate dtype
     dtype = resolve.resolve_type(dtype)
-
-    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
     if not dtype.is_subtype(atomic.DecimalType):
         raise ValueError(f"`dtype` must be a decimal type, not {dtype}")
 
-    # delegate to SeriesWrapper.do_conversion()
-    return series.do_conversion(
-        "to_decimal",
+    # TODO: collate and validate args
+
+    return do_conversion(
+        series,
+        "to_decimal",  # not passed to conversion method
         dtype=dtype,
         rounding=rounding,
         tol=tol,
@@ -223,19 +188,18 @@ def to_datetime(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to datetime representation."""
-    if not isinstance(series, SeriesWrapper):
-        series = SeriesWrapper(series)
+    # validate dtype
     dtype = resolve.resolve_type(dtype)
-
-    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
     if not dtype.is_subtype(atomic.DatetimeType):
         raise ValueError(f"`dtype` must be a datetime type, not {dtype}")
 
-    # delegate to SeriesWrapper.do_conversion()
-    return series.do_conversion(
-        "to_datetime",
+    # TODO: collate and validate args
+
+    return do_conversion(
+        series,
+        "to_datetime",  # not passed to conversion method
         dtype=dtype,
         rounding=rounding,
         tol=tol,
@@ -253,19 +217,18 @@ def to_timedelta(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to timedelta representation."""
-    if not isinstance(series, SeriesWrapper):
-        series = SeriesWrapper(series)
+    # validate dtype
     dtype = resolve.resolve_type(dtype)
-
-    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
     if not dtype.is_subtype(atomic.TimedeltaType):
         raise ValueError(f"`dtype` must be a timedelta type, not {dtype}")
 
-    # delegate to SeriesWrapper.do_conversion()
-    return series.do_conversion(
-        "to_timedelta",
+    # TODO: collate and validate args
+
+    return do_conversion(
+        series,
+        "to_timedelta",  # not passed to conversion method
         dtype=dtype,
         rounding=rounding,
         tol=tol,
@@ -281,19 +244,18 @@ def to_string(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
-    if not isinstance(series, SeriesWrapper):
-        series = SeriesWrapper(series)
+    # validate dtype
     dtype = resolve.resolve_type(dtype)
-
-    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
     if not dtype.is_subtype(atomic.StringType):
         raise ValueError(f"`dtype` must be a string type, not {dtype}")
 
-    # delegate to SeriesWrapper.do_conversion()
-    return series.do_conversion(
-        "to_string",
+    # TODO: collate and validate args
+
+    return do_conversion(
+        series,
+        "to_string",  # not passed to conversion method
         dtype=dtype,
         errors=errors,
         **kwargs
@@ -308,19 +270,18 @@ def to_object(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
-    if not isinstance(series, SeriesWrapper):
-        series = SeriesWrapper(series)
+    # validate dtype
     dtype = resolve.resolve_type(dtype)
-
-    # validate input
     if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
     if not dtype.is_subtype(atomic.ObjectType):
         raise ValueError(f"`dtype` must be an object type, not {dtype}")
 
-    # delegate to SeriesWrapper.do_conversion()
-    return series.do_conversion(
-        "to_object",
+    # TODO: collate and validate args
+
+    return do_conversion(
+        series,
+        "to_object",  # not passed to conversion method
         dtype=dtype,
         call=call,
         errors=errors,
@@ -333,19 +294,87 @@ def to_object(
 ######################
 
 
-cdef np.ndarray[object] _apply_with_errors(
+def as_series(data) -> pd.Series:
+    """Convert the given data into a corresponding pd.Series object."""
+    if isinstance(data, pd.Series):
+        return data
+
+    if isinstance(data, np.ndarray):
+        return pd.Series(np.atleast_1d(data))
+
+    return pd.Series(data, dtype="O")
+
+
+def do_conversion(
+    data,
+    endpoint: str,
+    dtype: atomic.AtomicType,
+    errors: str,
+    **kwargs
+) -> pd.Series:
+    """Perform a conversion on input data, automatically splitting into groups
+    if its elements are non-homogenous.
+    """
+    data = as_series(data)
+    if errors == "ignore":
+        original = data.copy()
+
+    try:
+        with SeriesWrapper(data, dtype.na_value) as series:
+            element_type = detect.detect_type(series)
+            if isinstance(element_type, atomic.CompositeType):
+                groups = series.groupby(element_type.index, sort=False)
+                series.series = groups.transform(
+                    lambda grp: getattr(grp.name, endpoint)(
+                        SeriesWrapper(
+                            grp,
+                            fill_value=dtype.na_value,
+                            hasnans=series.hasnans
+                        ),
+                        dtype=dtype,
+                        errors=errors,
+                        **kwargs
+                    )
+                )
+            else:
+                series.series = getattr(element_type, endpoint)(
+                    series,
+                    dtype=dtype,
+                    errors=errors,
+                    **kwargs
+                )
+        return series.series
+
+    except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
+        raise  # never ignore these errors
+
+    except Exception as err:
+        if errors == "ignore":
+            return original
+        raise err
+
+
+cdef tuple _apply_with_errors(
     np.ndarray[object] arr,
     object call,
-    object na_value,
     str errors
 ):
     """Apply a function over an object array using the given error-handling
-    rule
+    rule.
     """
     cdef unsigned int arr_length = arr.shape[0]
     cdef unsigned int i
-    cdef np.ndarray[object] result = np.full(arr_length, na_value, dtype="O")
+    cdef np.ndarray[object] result = np.full(arr_length, None, dtype="O")
+    cdef bint has_errors = False
+    cdef np.ndarray[np.uint8_t, cast=True] index
 
+    # index is only necessary if errors="coerce"
+    if errors == "coerce":
+        index = np.full(arr_length, False)
+    else:
+        index = None
+
+    # apply `call` at every index of array and record errors
     for i in range(arr_length):
         try:
             result[i] = call(arr[i])
@@ -353,48 +382,12 @@ cdef np.ndarray[object] _apply_with_errors(
             raise  # never coerce on these error types
         except Exception as err:
             if errors == "coerce":
-                continue  # np.full() implicitly fills with na_value
+                has_errors = True
+                index[i] = True
+                continue
             raise err
 
-    return result
-
-
-def apply_with_errors(
-    series: pd.Series,
-    call: Callable,
-    na_value: Any,
-    errors: str
-) -> pd.Series:
-    return pd.Series(
-        _apply_with_errors(
-            series.to_numpy(dtype="O"),
-            call=call,
-            na_value=na_value,
-            errors=errors
-        ),
-        index=series.index,
-        dtype="O"
-    )
-
-
-def apply_and_wrap(
-    series: pd.Series,
-    call: Callable,
-    na_value: Any,
-    errors: str,
-    element_type: atomic.AtomicType = None
-) -> SeriesWrapper:
-    return SeriesWrapper(
-        apply_with_errors(
-            series,
-            call=call,
-            na_value=na_value,
-            errors=errors
-        ),
-        hasnans=None if errors == "coerce" else series.hasnans,
-        is_na=None if errors == "coerce" else False,
-        # element_type=element_type
-    )
+    return result, has_errors, index
 
 
 def within_tolerance(series_1, series_2, tol) -> bool:
@@ -416,73 +409,20 @@ cdef class SeriesWrapper:
     def __init__(
         self,
         series: pd.Series,
-        is_na: pd.Series = None,
-        hasnans: bool = None,
-        is_inf: pd.Series = None,
-        hasinfs: bool = None,
-        min: Any = None,
-        idxmin: int = None,
-        max: Any = None,
-        idxmax: int = None,
+        fill_value: Any = pd.NA,
+        hasnans: bool = None
     ):
-        # generate series
-        if isinstance(series, pd.Series):
-            self.series = series
-        elif isinstance(series, np.ndarray):
-            # pandas doesn't like converting scalar numpy arrays
-            if not series.shape:
-                self.series = pd.Series(series[()], dtype=series.dtype)
-            else:
-                self.series = pd.Series(series)
-        else:
-            self.series = pd.Series(series, dtype="O")
-
-        # override hasnans
-        if hasnans is not None:
-            self._hasnans = hasnans
-
-        # override isna()
-        if is_na is not None:
-            self._is_na = pd.Series(
-                np.broadcast_to(is_na, self.series.shape),
-                index=self.series.index
+        if not isinstance(series, pd.Series):
+            raise TypeError(
+                f"`series` must be a pd.Series object, not {type(series)}"
             )
-        elif self._hasnans == False:  # pre-cache a False isna() Series
-            self._is_na = pd.Series(
-                np.broadcast_to(False, self.series.shape),
-                index=self.series.index
-            )
-
-        # override hasinfs
-        if hasinfs is not None:
-            self._hasinfs = hasinfs
-
-        # override isinf()
-        if is_inf is not None:
-            self._is_na = pd.Series(
-                np.broadcast_to(is_inf, self.series.shape),
-                index=self.series.index
-            )
-        elif self._hasinfs == False:  # pre-cache a False isinf() Series
-            self._is_inf = pd.Series(
-                np.broadcast_to(False, self.series.shape),
-                index=self.series.index
-            )
-
-        # override min
-        if min is not None:
-            self._min = min
-        if idxmin is not None:
-            self._idxmin = idxmin
-
-        # override max
-        if max is not None:
-            self._max = max
-        if idxmax is not None:
-            self._idxmax = idxmax
-
-        # detect element type
-        self.element_type = detect.detect_type(self.dropna())
+        self.series = series
+        self.size = len(self.series)
+        if not isinstance(self.series.index, pd.RangeIndex):
+            self.original_index = self.series.index
+            self.series.index = pd.RangeIndex(0, self.size)
+        self.fill_value = fill_value
+        self.hasnans = hasnans
 
     #################################
     ####    CACHED PROPERTIES    ####
@@ -496,185 +436,123 @@ cdef class SeriesWrapper:
         """Alias for IntegerSeries.min()."""
         return self.min(*args, **kwargs)
 
-    def dropna(self) -> pd.Series:
-        """Return the wrapped series with missing values removed."""
-        return self.series[self.notna()]
-
     @property
     def hasinfs(self) -> bool:
-        """TODO"""
+        """Check whether a wrapped series contains infinities."""
+        # TODO: delete this?
         if self._hasinfs is None:
-            self.isinf().any()
+            self._hasinfs = self.isinf().any()
         return self._hasinfs
+
+    @hasinfs.setter
+    def hasinfs(self, val: bool) -> None:
+        # TODO: delete this?
+        self._hasinfs = val
 
     @property
     def hasnans(self) -> bool:
-        """True if `hasnans=True` was supplied to the SeriesWrapper
-        constructor.
-        """
+        """Check whether a wrapped series contains missing values."""
         if self._hasnans is None:
             self._hasnans = self.isna().any()
         return self._hasnans
 
+    @hasnans.setter
+    def hasnans(self, val: bool) -> None:
+        self._hasnans = val
+
     def idxmax(self, *args, **kwargs) -> int:
         """A cached version of pd.Series.idxmax()."""
-        if self._idxmax is None:
-            self._idxmax = self.series.idxmax(*args, **kwargs)
-        return self._idxmax
+        if self.cache.get("idxmax", None) is None:
+            self.cache["idxmax"] = self.series.idxmax(*args, **kwargs)
+            self.cache["max"] = self.series[self.cache["idxmax"]]
+        return self.cache["idxmax"]
 
     def idxmin(self, *args, **kwargs) -> int:
         """A cached version of pd.Series.idxmin()."""
-        if self._idxmin is None:
-            self._idxmin = self.series.idxmin(*args, **kwargs)
-        return self._idxmin
+        if self.cache.get("idxmin", None) is None:
+            self.cache["idxmin"] = self.series.idxmin(*args, **kwargs)
+            self.cache["min"] = self.series[self.cache["idxmin"]]
+        return self.cache["idxmin"]
+
+    def isinf(self,) -> pd.Series:
+        """TODO"""
+        # TODO: delete this?
+        return pd.Series(np.isinf(self.series), index=self.index)
+
+    def max(self, *args, **kwargs) -> int:
+        """A cached version of pd.Series.max()."""
+        if self.cache.get("max", None) is None:
+            self.cache["max"] = self.series.max(*args, **kwargs)
+        return self.cache["max"]
+
+    def min(self, *args, **kwargs) -> int:
+        """A cached version of pd.Series.min()."""
+        if self.cache.get("min", None) is None:
+            self.cache["min"] = self.series.min(*args, **kwargs)
+        return self.cache["min"]
+
+    #############################
+    ####    EXTRA METHODS    ####
+    #############################
+
+    def __enter__(self) -> SeriesWrapper:
+        is_na = self.isna()
+        self.hasnans = is_na.any()
+        if self.hasnans:
+            self.series = self.series[~is_na]
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self.hasnans:
+            result = pd.Series(
+                np.full(self.size, fill_value=self.fill_value, dtype="O"),
+                dtype=self.dtype
+            )
+            result.update(self.series)
+            self.series = result
+
+        if self.original_index is not None:
+            self.series.index = self.original_index
+
+    def apply_with_errors(self, call: Callable, errors: str) -> None:
+        """Apply `call` over the series, applying the specified error handling
+        rule at each index.
+
+        Can only be called within an `exclude_na()` context block.
+        """
+        result, has_errors, index = _apply_with_errors(
+            self.to_numpy(dtype="O"),
+            call=call,
+            errors=errors
+        )
+        self.series = pd.Series(result, index=self.index, dtype="O")
+        if has_errors:
+            self.series = self[~index]
+            self.hasnans = True
 
     @property
     def imag(self) -> SeriesWrapper:
-        if self._imag is None:
-            self._imag = SeriesWrapper(
+        """Get the imaginary component of a wrapped series."""
+        if self.cache.get("imag", None) is None:
+            self.cache["imag"] = SeriesWrapper(
                 pd.Series(
                     np.imag(self.series),
                     index=self.series.index
                 )
             )
-        return self._imag
-
-    def isinf(self) -> pd.Series:
-        """TODO"""
-        if self._is_inf is None:
-            self._is_inf = pd.Series(
-                np.isinf(self.series),
-                index=self.series.index
-            )
-        return self._is_inf
-
-    def isna(self) -> pd.Series:
-        """A cached version of the ordinary Series.isna() method."""
-        # cached
-        if self._is_na is None:
-            self._is_na = self.series.isna()
-        return self._is_na
-
-    def isnull(self) -> pd.Series:
-        """An alias for SeriesWrapper.isna()."""
-        return self.isna()
-
-    def max(self, *args, **kwargs) -> int:
-        """A cached version of pd.Series.max()."""
-        if self._max is None:
-            self._max = self.series.max(*args, **kwargs)
-        return self._max
-
-    def min(self, *args, **kwargs) -> int:
-        """A cached version of pd.Series.min()."""
-        if self._min is None:
-            self._min = self.series.min(*args, **kwargs)
-        return self._min
-
-    def notna(self) -> pd.Series:
-        """A cached version of the ordinary Series.notna() method."""
-        return self.isna().__invert__()
-
-    def notnull(self) -> pd.Series:
-        """An alias for SeriesWrapper.notna()"""
-        return self.notna()
+        return self.cache["imag"]
 
     @property
     def real(self) -> SeriesWrapper:
-        if self._real is None:
-            self._real = SeriesWrapper(
+        """Get the real component of a wrapped series."""
+        if self.cache.get("None", None) is None:
+            self.cache["real"] = SeriesWrapper(
                 pd.Series(
                     np.real(self.series),
                     index=self.series.index
                 )
             )
-        return self._real
-
-    ##############################
-    ####    HELPER METHODS    ####
-    ##############################
-
-    def do_conversion(
-        self,
-        conversion: str,
-        dtype: atomic.AtomicType,
-        errors: str,
-        **kwargs
-    ) -> pd.Series:
-        """Perform a conversion on a SeriesWrapper object, automatically
-        splitting into groups if it is non-homogenous
-        """
-        try:
-            with self.exclude_na(dtype.na_value):
-                if isinstance(self.element_type, atomic.CompositeType):
-                    groups = self.groupby(self.element_type.index, sort=False)
-                    self.series = groups.transform(
-                        lambda grp: getattr(grp.name, conversion)(
-                            SeriesWrapper(
-                                grp,
-                                hasnans=self.hasnans,
-                                is_na=False
-                            ),
-                            dtype=dtype,
-                            errors=errors,
-                            **kwargs
-                        )
-                    )
-                else:
-                    self.series = getattr(self.element_type, conversion)(
-                        self,
-                        dtype=dtype,
-                        errors=errors,
-                        **kwargs
-                    )
-
-            return self.series
-
-        except Exception as err:
-            if errors == "ignore":
-                return self.series
-            raise err
-
-    @contextmanager
-    def exclude_na(
-        self,
-        fill_value: Any,
-        array_type: np.dtype = None
-    ) -> Iterator[SeriesWrapper]:
-        """Provides a context manager that strips missing values from the
-        decorated series and replaces them at the end of the context block.
-        Operations within the block can safely disregard missing values.
-        """
-        # fastpath: skip subsetting if series does not have missing values
-        if not self.hasnans:
-            yield self
-
-        # strip missing values and reconstruct after context block
-        else:
-            # determine intermediate array type
-            if array_type is None:
-                array_type = np.dtype("O")
-
-            # strip nans
-            self.series = self.dropna()
-
-            # yield context
-            try:
-                yield self
-
-            # replace nans
-            finally:
-                result = np.full(
-                    self.isna().shape,
-                    fill_value=fill_value,
-                    dtype=array_type
-                )
-                result[self.notna()] = self.series
-                self.series = pd.Series(
-                    result,
-                    index=self.isna().index,
-                    dtype=self.dtype
-                )
+        return self.cache["real"]
 
     def rectify(self) -> pd.Series:
         """Convert an improperly-formatted object series to a standardized
@@ -684,9 +562,18 @@ cdef class SeriesWrapper:
             return self.astype(self.element_type.dtype, copy=False)
         return self.series
 
-    ###############################
-    ####    DYNAMIC WRAPPER    ####
-    ###############################
+    @property
+    def series(self) -> pd.Series:
+        return self._series
+
+    @series.setter
+    def series(self, val: pd.Series) -> None:
+        self.cache = {}
+        self._series = val
+
+    #############################
+    ####    MAGIC METHODS    ####
+    #############################
 
     def __abs__(self) -> pd.Series:
         return abs(self.series)

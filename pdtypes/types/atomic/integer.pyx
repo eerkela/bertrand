@@ -29,6 +29,17 @@ import pdtypes.types.cast as cast
 # its min/max caps out at 2**63.  As such, in cast methods, a range check will
 # always ignore uint64[numpy/pandas], even when it should be considered.  This
 # also affects the default dtype for these types.
+# -> min/max must always match the underlying dtype.  Just write in some
+# special cases to upcast supertypes based on observed data, which trigger
+# when overflow is detected
+
+
+# TODO: implement an upcast() method that's called to represent data which is
+# normally beyond the default min/max range
+# int -> int[python]/unsigned
+# int[numpy] -> unsigned[numpy]
+# int[pandas] -> unsigned[pandas]
+# signed -> signed[python]
 
 
 ######################
@@ -37,6 +48,8 @@ import pdtypes.types.cast as cast
 
 
 class IntegerMixin:
+
+    conversion_func = cast.to_integer
 
     ##############################
     ####    CUSTOMIZATIONS    ####
@@ -52,17 +65,15 @@ class IntegerMixin:
         """Convert integer data to a boolean data type."""
         # check for overflow
         if series.min() < 0 or series.max() > 1:
+            index = (series < 0) | (series > 1)
             if errors == "coerce":
-                series = cast.SeriesWrapper(
-                    series.abs().clip(0, 1),
-                    is_na=series.isna(),
-                    hasnans=series.hasnans
-                )
+                # series.series = series.abs().clip(0, 1)
+                series.series = series[~index]
+                series.hasnans = True
             else:
-                index = series[(series < 0) | (series > 1)].index.values
                 raise OverflowError(
                     f"values exceed {dtype} range at index "
-                    f"{shorten_list(index)}"
+                    f"{shorten_list(series[index].index.values)}"
                 )
 
         # delegate to AtomicType.to_boolean()
@@ -81,12 +92,25 @@ class IntegerMixin:
         **unused
     ) -> pd.Series:
         """Convert integer data to another integer data type."""
-        # check for overflow
-        if series.min() < dtype.min or series.max() > dtype.max:
+        min_val = int(series.min())
+        max_val = int(series.max())
+        if min_val < dtype.min or max_val > dtype.max:
+            index = (series < dtype.min) | (series > dtype.max) 
             if errors == "coerce":
-                pass
-        
-        raise NotImplementedError()
+                series.series = series[~index]
+                series.hasnans = True
+            else:
+                raise OverflowError(
+                    f"values exceed {dtype} range at index "
+                    f"{shorten_list(series[index].index.values)}"
+                )
+
+        return super().to_integer(
+            series=series,
+            dtype=dtype,
+            errors=errors,
+            **unused
+        )
 
     ######################
     ####    EXTRAS    ####
@@ -118,6 +142,17 @@ class IntegerMixin:
         return not self.is_subtype(UnsignedIntegerType)
 
     @property
+    def larger(self) -> list:
+        """Get a list of types that `self` can be upcasted to."""
+        result = [
+            x for x in self.subtypes if x.min < self.min or x.max > self.max
+        ]
+        print(result)
+        result = [x for x in result if not any(x in y for y in result)]
+        print(result)
+        return sorted(result, key=lambda x: x.itemsize or np.inf)
+
+    @property
     def smaller(self) -> list:
         """Get a list of types that `self` can be downcasted to."""
         result = [
@@ -145,6 +180,8 @@ class IntegerMixin:
             result.extend(larger)
         return result
 
+    # TODO: def upcast(self, series: pd.Series) -> AtomicType:
+
 
 #############################
 ####    GENERIC TYPES    ####
@@ -157,8 +194,8 @@ class IntegerType(IntegerMixin, AtomicType):
 
     name = "int"
     aliases = {int, "int", "integer"}
-    min = -np.inf
-    max = np.inf
+    min = -2**63
+    max = 2**63 - 1
 
     def __init__(self):
         super().__init__(
@@ -795,13 +832,13 @@ class PythonIntegerType(IntegerMixin, AtomicType):
 # factory automatically resolves these, so we can just piggyback off it.
 cdef dict platform_specific_aliases = {
     # C char
-    "char": np.dtype(np.byte),
+    "char": str(np.dtype(np.byte)),
     "signed char": "char",
     "byte": "char",
     "b": "char",
 
     # C short
-    "short": np.dtype(np.short),
+    "short": str(np.dtype(np.short)),
     "short int": "short",
     "short integer": "short",
     "signed short": "short",
@@ -810,11 +847,11 @@ cdef dict platform_specific_aliases = {
     "h": "short",
 
     # C int
-    "intc": np.dtype(np.intc),
+    "intc": str(np.dtype(np.intc)),
     "signed intc": "intc",
 
     # C long
-    "long": np.dtype(np.int_),
+    "long": str(np.dtype(np.int_)),
     "long int": "long",
     "long integer": "long",
     "signed long": "long",
@@ -823,7 +860,7 @@ cdef dict platform_specific_aliases = {
     "l": "long",
 
     # C long long
-    "long long": np.dtype(np.longlong),
+    "long long": str(np.dtype(np.longlong)),
     "long long int": "long long",
     "long long integer": "long long",
     "signed long long": "long long",
@@ -834,38 +871,38 @@ cdef dict platform_specific_aliases = {
     "q": "long long",
 
     # C ssize_t
-    "ssize_t": np.dtype(np.intp),
+    "ssize_t": str(np.dtype(np.intp)),
     "intp": "ssize_t",
     "int0": "ssize_t",
     "p": "ssize_t",
 
     # C unsigned char
-    "unsigned char": np.dtype(np.ubyte),
+    "unsigned char": str(np.dtype(np.ubyte)),
     "unsigned byte": "unsigned char",
     "ubyte": "unsigned char",
     "B": "unsigned char",
 
     # C unsigned short
-    "unsigned short": np.dtype(np.ushort),
+    "unsigned short": str(np.dtype(np.ushort)),
     "unsigned short int": "unsigned short",
     "unsigned short integer": "unsigned short",
     "ushort": "unsigned short",
     "H": "unsigned short",
 
     # C unsigned int
-    "unsigned intc": np.dtype(np.uintc),
+    "unsigned intc": str(np.dtype(np.uintc)),
     "uintc": "unsigned intc",
     "I": "unsigned intc",
 
     # C unsigned long
-    "unsigned long": np.dtype(np.uint),
+    "unsigned long": str(np.dtype(np.uint)),
     "unsigned long int": "unsigned long",
     "unsigned long integer": "unsigned long",
     "ulong": "unsigned long",
     "L": "unsigned long",
 
     # C unsigned long long
-    "unsigned long long": np.dtype(np.ulonglong),
+    "unsigned long long": str(np.dtype(np.ulonglong)),
     "unsigned long long int": "unsigned long long",
     "unsigned long long integer": "unsigned long long",
     "ulonglong": "unsigned long long",
@@ -873,7 +910,7 @@ cdef dict platform_specific_aliases = {
     "Q": "unsigned long long",
 
     # C size_t
-    "size_t": np.dtype(np.uintp),
+    "size_t": str(np.dtype(np.uintp)),
     "uintp": "size_t",
     "uint0": "size_t",
     "P": "size_t",
