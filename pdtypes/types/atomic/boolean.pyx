@@ -21,6 +21,12 @@ import pdtypes.types.resolve as resolve
 # TODO: fully implement boolean to_x conversions
 
 
+# TODO: bool.to_integer() fails for object series to pandas extension type.
+# -> pd.Series([True, False], dtype="O").astype(pd.Int64Dtype())
+# -> convert to equivalent numpy type, then to pandas type.  Probably have to
+# do this for all object to_integer conversions.
+
+
 ######################
 ####    MIXINS    ####
 ######################

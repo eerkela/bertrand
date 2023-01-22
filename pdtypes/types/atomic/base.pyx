@@ -619,15 +619,16 @@ cdef class AtomicType(BaseType):
         method will be propagated to the top-level `to_boolean()` and `cast()`
         functions when they are called on objects of the given type.
         """
+        # apply dtype.type_def if not astype=compliant
         if dtype.dtype == np.dtype("O"):
             series.apply_with_errors(call=dtype.type_def, errors=errors)
             return series.series
     
+        # account for missing/coerced values in series
         if series.hasnans:
             dtype = dtype.force_nullable()
 
-        result = series.astype(dtype.dtype, copy=False)
-        return result
+        return series.astype(dtype.dtype, copy=False)
 
     def to_integer(
         self,
@@ -646,15 +647,26 @@ cdef class AtomicType(BaseType):
         method will be propagated to the top-level `to_integer()` and `cast()`
         functions when they are called on objects of the given type.
         """
+        # downcast if applicable
         if downcast:
             dtype = dtype.downcast(series)
 
+        # apply dtype.type_def if not astype-compliant
         if dtype.dtype == np.dtype("O"):
             series.apply_with_errors(call=dtype.type_def, errors=errors)
             return series.series
 
+        # account for missing/coerced values in series
         if series.hasnans:
             dtype = dtype.force_nullable()
+
+        # do a 2-step conversion for object series to pandas extension type
+        if pd.api.types.is_object_dtype(series) and dtype.backend == "pandas":
+            # NOTE: pandas doesn't like converting arbitrary objects to
+            # nullable integer extension types.  Luckily, numpy has no such
+            # problem, and SeriesWrapper means we never have to consider NAs.
+            series.series = series.astype(dtype.dtype.numpy_dtype)
+            return series.astype(dtype.dtype)
 
         return series.astype(dtype.dtype, copy=False)
 

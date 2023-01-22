@@ -16,6 +16,7 @@
 import numpy as np
 cimport numpy as np
 import pandas as pd
+from typing import Union
 
 from .base cimport AdapterType, AtomicType
 from .base import generic, subtype
@@ -23,23 +24,6 @@ from .base import generic, subtype
 from pdtypes.error import shorten_list
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
-
-
-# TODO: int[numpy/pandas].smaller currently includes uint64 (as intended), but
-# its min/max caps out at 2**63.  As such, in cast methods, a range check will
-# always ignore uint64[numpy/pandas], even when it should be considered.  This
-# also affects the default dtype for these types.
-# -> min/max must always match the underlying dtype.  Just write in some
-# special cases to upcast supertypes based on observed data, which trigger
-# when overflow is detected
-
-
-# TODO: implement an upcast() method that's called to represent data which is
-# normally beyond the default min/max range
-# int -> int[python]/unsigned
-# int[numpy] -> unsigned[numpy]
-# int[pandas] -> unsigned[pandas]
-# signed -> signed[python]
 
 
 ######################
@@ -67,7 +51,6 @@ class IntegerMixin:
         if series.min() < 0 or series.max() > 1:
             index = (series < 0) | (series > 1)
             if errors == "coerce":
-                # series.series = series.abs().clip(0, 1)
                 series.series = series[~index]
                 series.hasnans = True
             else:
@@ -92,19 +75,21 @@ class IntegerMixin:
         **unused
     ) -> pd.Series:
         """Convert integer data to another integer data type."""
-        min_val = int(series.min())
-        max_val = int(series.max())
-        if min_val < dtype.min or max_val > dtype.max:
-            index = (series < dtype.min) | (series > dtype.max) 
-            if errors == "coerce":
-                series.series = series[~index]
-                series.hasnans = True
-            else:
-                raise OverflowError(
-                    f"values exceed {dtype} range at index "
-                    f"{shorten_list(series[index].index.values)}"
-                )
+        # check for overflow
+        if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
+            dtype = dtype.upcast(series)  # attempt to upcast
+            if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
+                index = (series < dtype.min) | (series > dtype.max) 
+                if errors == "coerce":
+                    series.series = series[~index]
+                    series.hasnans = True
+                else:
+                    raise OverflowError(
+                        f"values exceed {dtype} range at index "
+                        f"{shorten_list(series[index].index.values)}"
+                    )
 
+        # delegate to AtomicType.to_integer()
         return super().to_integer(
             series=series,
             dtype=dtype,
@@ -112,17 +97,73 @@ class IntegerMixin:
             **unused
         )
 
+    def to_float(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str,
+        **unused
+    ) -> pd.Series:
+        """Convert integer data to a float data type."""
+        # TODO: do naive conversion (accounting for object types?), then
+        # backtrack to check for overflow/precision loss
+        raise NotImplementedError()
+
+    def to_complex(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str,
+        **unused
+    ) -> pd.Series:
+        """Convert integer data to a complex data type."""
+        raise NotImplementedError()
+
+    def to_decimal(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str,
+        **unused
+    ) -> pd.Series:
+        """Convert integer data to a decimal data type."""
+        return series + dtype.type_def(0)  # ~2x faster than loop
+
+    def to_datetime(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str,
+        **unused
+    ) -> pd.Series:
+        """Convert integer data to a datetime data type."""
+        raise NotImplementedError()
+
+    def to_timedelta(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str,
+        **unused
+    ) -> pd.Series:
+        """Convert integer data to a timedelta data type."""
+        raise NotImplementedError()
+
     ######################
     ####    EXTRAS    ####
     ######################
 
-    def downcast(self, series: pd.Series) -> AtomicType:
+    def downcast(
+        self,
+        series: Union[pd.Series, cast.SeriesWrapper]
+    ) -> AtomicType:
         """Reduce the itemsize of an integer type to fit the observed range."""
         min_val = int(series.min())
         max_val = int(series.max())
-        for s in self.smaller:
-            if min_val >= s.min and max_val <= s.max:
-                return s
+        for t in self.smaller:
+            if min_val < t.min or max_val > t.max:
+                continue
+            return t
         return self
 
     def force_nullable(self) -> AtomicType:
@@ -144,13 +185,19 @@ class IntegerMixin:
     @property
     def larger(self) -> list:
         """Get a list of types that `self` can be upcasted to."""
+        # get all subtypes with range different to self
         result = [
             x for x in self.subtypes if x.min < self.min or x.max > self.max
         ]
-        print(result)
-        result = [x for x in result if not any(x in y for y in result)]
-        print(result)
-        return sorted(result, key=lambda x: x.itemsize or np.inf)
+
+        # collapse supertypes
+        result = [
+            x for x in result if not any(x != y and x in y for y in result)
+        ]
+
+        # sort by combined range + itemsize
+        rank = lambda x: (x.max - x.min) or (x.itemsize or np.inf)
+        return sorted(result, key=rank)
 
     @property
     def smaller(self) -> list:
@@ -162,25 +209,20 @@ class IntegerMixin:
                 (x.itemsize or np.inf) < (self.itemsize or np.inf)
             )
         ]
-        result.sort(key=lambda x: x.itemsize)
-        if self.is_root:  # consider unsigned types
-            max_signed = max(
-                x.max for x in self.subtypes if (
-                    x.is_signed and not np.isinf(x.max)
-                )
-            )
-            larger = [
-                x for x in UnsignedIntegerType.instance().subtypes if (
-                    x.backend == self.backend and
-                    x.max > max_signed and
-                    x not in UnsignedIntegerType.backends.values()
-                )
-            ]
-            larger.sort(key=lambda x: (x.itemsize or np.inf))
-            result.extend(larger)
-        return result
+        return sorted(result, key=lambda x: x.itemsize)
 
-    # TODO: def upcast(self, series: pd.Series) -> AtomicType:
+    def upcast(
+        self,
+        series: Union[pd.Series, cast.SeriesWrapper]
+    ) -> AtomicType:
+        """Increase the width of an integer type to fit the observed range."""
+        min_val = int(series.min())
+        max_val = int(series.max())
+        for t in self.larger:
+            if min_val < t.min or max_val > t.max:
+                continue
+            return t
+        return self
 
 
 #############################
@@ -202,7 +244,7 @@ class IntegerType(IntegerMixin, AtomicType):
             type_def=int,
             dtype=np.dtype(np.int64),
             na_value=pd.NA,
-            itemsize=None
+            itemsize=8
         )
 
 
@@ -213,15 +255,15 @@ class SignedIntegerType(IntegerMixin, AtomicType):
 
     name = "signed"
     aliases = {"signed", "signed int", "signed integer", "i"}
-    min = -np.inf
-    max = np.inf
+    min = -2**63
+    max = 2**63 - 1
 
     def __init__(self):
         super().__init__(
             type_def=int,
             dtype=np.dtype(np.int64),
             na_value=pd.NA,
-            itemsize=None
+            itemsize=8
         )
 
 
