@@ -6,7 +6,7 @@ import inspect
 
 import pandas as pd
 
-from pdtypes.util.type_hints import array_like
+from pdtypes.type_hints import array_like
 
 
 # TODO: create an @debug() decorator that uses inspect to check input/output

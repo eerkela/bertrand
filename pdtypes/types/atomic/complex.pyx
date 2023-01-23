@@ -15,6 +15,9 @@ import pdtypes.types.cast as cast
 # -> have to consider real/imag separately
 
 
+# TODO: complex snapping needs to consider real, imag separately
+
+
 ######################
 ####    MIXINS    ####
 ######################
@@ -41,6 +44,21 @@ class ComplexMixin:
             if type(x).__name__ == self._equiv_float:
                 return x
         raise TypeError(f"{repr(self)} has no equivalent float type")
+
+    def round(
+        self,
+        series: cast.SeriesWrapper,
+        rule: str = "half_even",
+        decimals: int = 0
+    ) -> pd.Series:
+        """Round a complex series to the given number of decimal places using
+        the specified rounding rule.
+
+        NOTE: this method rounds real and imaginary components separately.
+        """
+        real = series.real.round(rule=rule, decimals=decimals)
+        imag = series.imag.round(rule=rule, decimals=decimals)
+        return real + imag * 1j
 
     @property
     def smaller(self) -> list:

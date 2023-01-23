@@ -12,6 +12,28 @@ cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
+from pdtypes.util.round import round_decimal
+
+
+######################
+####    MIXINS    ####
+######################
+
+
+class DecimalMixin:
+
+    conversion_func = cast.to_decimal
+
+    def round(
+        self,
+        series: cast.SeriesWrapper,
+        rule: str = "half_even",
+        decimals: int = 0
+    ) -> pd.Series:
+        """Round a decimal series to the given number of decimal places using
+        the specified rounding rule.
+        """
+        return round_decimal(series.series, rule=rule, decimals=decimals)
 
 
 ###############################
@@ -20,7 +42,7 @@ import pdtypes.types.resolve as resolve
 
 
 @generic
-class DecimalType(AtomicType):
+class DecimalType(DecimalMixin, AtomicType):
 
     name = "decimal"
     aliases = {"decimal"}
@@ -40,7 +62,7 @@ class DecimalType(AtomicType):
 
 
 @DecimalType.register_backend("python")
-class PythonDecimalType(AtomicType):
+class PythonDecimalType(DecimalMixin, AtomicType):
 
     aliases = {decimal.Decimal}
 

@@ -25,6 +25,8 @@ from pdtypes.error import shorten_list
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 
+from pdtypes.util.round import round_div
+
 
 ######################
 ####    MIXINS    ####
@@ -101,13 +103,52 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        # tol: numeric = 1e-6
+        tol,
+        downcast: bool,
         errors: str,
         **unused
     ) -> pd.Series:
         """Convert integer data to a float data type."""
-        # TODO: do naive conversion (accounting for object types?), then
+        # do naive conversion
+        if dtype.dtype == np.dtype("O"):
+            result = np.frompyfunc(dtype.type_def, 1, 1)(series)
+        else:
+            result = series.astype(dtype.dtype)
+
         # backtrack to check for overflow/precision loss
-        raise NotImplementedError()
+        if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
+            # overflow
+            infs = np.isinf(result)
+            if infs.any():
+                if errors == "coerce":
+                    result = result[~infs]
+                    series.series = series[~infs]
+                    series.hasnans = True
+                else:
+                    raise OverflowError(
+                        f"values exceed {dtype} range at index "
+                        f"{shorten_list(series[infs].index.values)}"
+                    )
+
+            # precision loss
+            if errors != "coerce":  # coercion ignores precision loss
+                reverse = dtype.to_integer(
+                    cast.SeriesWrapper(
+                        result,
+                        fill_value=np.nan,
+                        hasnans=series.hasnans
+                    ),
+                    dtype=self,
+                    erorrs=errors,
+                    **unused
+                )
+                if not cast.within_tolerance(series, reverse, tol=tol):
+                    raise ValueError(f"precision loss detected")
+
+        if downcast:
+            return result.astype(dtype.downcast(result).dtype)
+        return result
 
     def to_complex(
         self,
@@ -198,6 +239,23 @@ class IntegerMixin:
         # sort by combined range + itemsize
         rank = lambda x: (x.max - x.min) or (x.itemsize or np.inf)
         return sorted(result, key=rank)
+
+    def round(
+        self,
+        series: cast.SeriesWrapper,
+        rule: str = "half_even",
+        decimals: int = 0
+    ) -> pd.Series:
+        """Round an integer series to the given number of decimal places using
+        the specified rounding rule.
+
+        NOTE: this function does not do anything unless the input to `decimals`
+        is negative.
+        """
+        if decimals < 0:
+            scale = 10**(-1 * decimals)
+            return round_div(series.series, scale, rule=rule) * scale
+        return series.series
 
     @property
     def smaller(self) -> list:

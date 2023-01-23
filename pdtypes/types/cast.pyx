@@ -20,6 +20,10 @@ import pdtypes.types.resolve as resolve
 
 # TODO: have to account for empty series in each conversion.
 
+# TODO: attach rounding functions to SeriesWrapper.
+# -> SeriesWrapper.snap()/SeriesWrapper.round().  These depend on element type,
+# so turns out I do need to retain it after all.
+
 
 ######################
 ####    PUBLIC    ####
@@ -100,6 +104,7 @@ def to_float(
     series: Iterable,
     dtype: resolve.resolvable = float,
     tol: int | float | complex | decimal.Decimal = 1e-6,
+    downcast: bool = False,
     errors: str = "raise",
     **kwargs
 ) -> pd.Series:
@@ -118,6 +123,7 @@ def to_float(
         "to_float",  # not passed to conversion method
         dtype=dtype,
         tol=tol,
+        downcast=downcast,
         errors=errors,
         **kwargs
     )
@@ -321,9 +327,8 @@ def do_conversion(
 
     try:
         with SeriesWrapper(data, dtype.na_value) as series:
-            element_type = detect.detect_type(series)
-            if isinstance(element_type, atomic.CompositeType):
-                groups = series.groupby(element_type.index, sort=False)
+            if isinstance(series.element_type, atomic.CompositeType):
+                groups = series.groupby(series.element_type.index, sort=False)
                 series.series = groups.transform(
                     lambda grp: getattr(grp.name, endpoint)(
                         SeriesWrapper(
@@ -337,7 +342,7 @@ def do_conversion(
                     )
                 )
             else:
-                series.series = getattr(element_type, endpoint)(
+                series.series = getattr(series.element_type, endpoint)(
                     series,
                     dtype=dtype,
                     errors=errors,
@@ -410,7 +415,8 @@ cdef class SeriesWrapper:
         self,
         series: pd.Series,
         fill_value: Any = pd.NA,
-        hasnans: bool = None
+        hasnans: bool = None,
+        element_type: atomic.BaseType = None
     ):
         if not isinstance(series, pd.Series):
             raise TypeError(
@@ -423,18 +429,29 @@ cdef class SeriesWrapper:
             self.series.index = pd.RangeIndex(0, self.size)
         self.fill_value = fill_value
         self.hasnans = hasnans
+        self.element_type = element_type
 
-    #################################
-    ####    CACHED PROPERTIES    ####
-    #################################
+    ##########################
+    ####    PROPERTIES    ####
+    ##########################
 
-    def argmax(self, *args, **kwargs) -> int:
-        """Alias for IntegerSeries.max()."""
-        return self.max(*args, **kwargs)
+    @property
+    def element_type(self) -> atomic.BaseType:
+        if self._element_type is None:
+            self._element_type = detect.detect_type(self.dropna())
+        return self._element_type
 
-    def argmin(self, *args, **kwargs) -> int:
-        """Alias for IntegerSeries.min()."""
-        return self.min(*args, **kwargs)
+    @element_type.setter
+    def element_type(self, val: atomic.BaseType) -> None:
+        if (
+            isinstance(val, atomic.CompositeType) and
+            getattr(val.index, "shape", None) != self.shape
+        ):
+            raise ValueError(
+                f"`element_type.index` must have the same shape as the series "
+                f"it describes"
+            )
+        self._element_type = val
 
     @property
     def hasinfs(self) -> bool:
@@ -459,6 +476,51 @@ cdef class SeriesWrapper:
     @hasnans.setter
     def hasnans(self, val: bool) -> None:
         self._hasnans = val
+
+    @property
+    def imag(self) -> SeriesWrapper:
+        """Get the imaginary component of a wrapped series."""
+        if self.cache.get("imag", None) is None:
+            self.cache["imag"] = SeriesWrapper(
+                pd.Series(
+                    np.imag(self.series),
+                    index=self.series.index
+                )
+            )
+        return self.cache["imag"]
+
+    @property
+    def real(self) -> SeriesWrapper:
+        """Get the real component of a wrapped series."""
+        if self.cache.get("None", None) is None:
+            self.cache["real"] = SeriesWrapper(
+                pd.Series(
+                    np.real(self.series),
+                    index=self.series.index
+                )
+            )
+        return self.cache["real"]
+
+    @property
+    def series(self) -> pd.Series:
+        return self._series
+
+    @series.setter
+    def series(self, val: pd.Series) -> None:
+        self.cache = {}
+        self._series = val
+
+    ###############################
+    ####    WRAPPED METHODS    ####
+    ###############################
+
+    def argmax(self, *args, **kwargs) -> int:
+        """Alias for IntegerSeries.max()."""
+        return self.max(*args, **kwargs)
+
+    def argmin(self, *args, **kwargs) -> int:
+        """Alias for IntegerSeries.min()."""
+        return self.min(*args, **kwargs)
 
     def idxmax(self, *args, **kwargs) -> int:
         """A cached version of pd.Series.idxmax()."""
@@ -491,15 +553,16 @@ cdef class SeriesWrapper:
             self.cache["min"] = self.series.min(*args, **kwargs)
         return self.cache["min"]
 
-    #############################
-    ####    EXTRA METHODS    ####
-    #############################
+    ###########################
+    ####    NEW METHODS    ####
+    ###########################
 
     def __enter__(self) -> SeriesWrapper:
         is_na = self.isna()
         self.hasnans = is_na.any()
         if self.hasnans:
             self.series = self.series[~is_na]
+        self.element_type = detect.detect_type(self)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -530,30 +593,6 @@ cdef class SeriesWrapper:
             self.series = self[~index]
             self.hasnans = True
 
-    @property
-    def imag(self) -> SeriesWrapper:
-        """Get the imaginary component of a wrapped series."""
-        if self.cache.get("imag", None) is None:
-            self.cache["imag"] = SeriesWrapper(
-                pd.Series(
-                    np.imag(self.series),
-                    index=self.series.index
-                )
-            )
-        return self.cache["imag"]
-
-    @property
-    def real(self) -> SeriesWrapper:
-        """Get the real component of a wrapped series."""
-        if self.cache.get("None", None) is None:
-            self.cache["real"] = SeriesWrapper(
-                pd.Series(
-                    np.real(self.series),
-                    index=self.series.index
-                )
-            )
-        return self.cache["real"]
-
     def rectify(self) -> pd.Series:
         """Convert an improperly-formatted object series to a standardized
         numpy/pandas data type.
@@ -562,14 +601,87 @@ cdef class SeriesWrapper:
             return self.astype(self.element_type.dtype, copy=False)
         return self.series
 
-    @property
-    def series(self) -> pd.Series:
-        return self._series
+    def round(self, rule: str = "half_even", decimals: int = 0) -> pd.Series:
+        """Round the series using to the given number of decimal places using
+        the specified rounding rule.
 
-    @series.setter
-    def series(self, val: pd.Series) -> None:
-        self.cache = {}
-        self._series = val
+        Round numerics according to the specified rule.
+
+        Parameters
+        ----------
+        rule : str, default 'half_even'
+            A string specifying the rounding strategy to use.  Must be one of
+            ('floor', 'ceiling', 'down', 'up', 'half_floor', 'half_ceiling',
+            'half_down', 'half_up', 'half_even'), where `up`/`down` round
+            away/toward zero, and `ceiling`/`floor` round toward +/- infinity,
+            respectively.
+        decimals : int, default 0
+            The number of decimals to round to.  Positive numbers count to the
+            right of the decimal point, and negative values count to the left.
+            0 represents rounding in the ones place of `val`.  This follows the
+            convention set out in `numpy.around`.
+
+        Returns
+        -------
+        pd.Series
+            The result of rounding `val` according to the given rule.
+
+        Raises
+        ------
+        ValueError
+            If `rule` is not one of the accepted rounding rules ('floor',
+            'ceiling', 'down', 'up', 'half_floor', 'half_ceiling', 'half_down',
+            'half_up', 'half_even').
+        """
+        return self.element_type.round(
+            self,
+            rule=rule,
+            decimals=decimals
+        )
+
+    def snap(self, tol: int | float | decimal.Decimal = 1e-6) -> pd.Series:
+        """Snap each element of the series to the nearest integer if it is
+        within the specified tolerance.
+
+        Parameters
+        ----------
+        tol : int | float | decimal.Decimal
+            The tolerance to use for the conditional check, which represents
+            the width of the 2-sided region around each integer within which
+            rounding is performed.  This can be arbitrarily large, but values
+            over 0.5 are functionally equivalent to rounding half_even.
+
+        Returns
+        -------
+        pd.Series
+            The result of conditionally rounding the series around integers,
+            with tolerance `tol`.
+        """
+        # return self.element_type.snap(self, tol=Tolerance(tol), rule=rule)
+        if not tol:  # trivial case, tol=0
+            return self.series
+        rounded = self.round("half_even", decimals=0)
+        return self.where(np.abs(self - rounded) > tol, rounded)
+
+    def snap_round(
+        self,
+        tol: int | float | decimal.Decimal,
+        rule: str = "half_even"
+    ) -> pd.Series:
+        """Snap the series to the nearest integer within `tol`, and then round
+        the remaining results according to the given rule.
+        """
+        # don't snap if rounding to nearest
+        cdef set nearest = {
+            "half_floor", "half_ceiling", "half_down", "half_up", "half_even"
+        }
+
+        result = self.series
+        if tol and rule not in nearest:
+            result = self.snap(tol=tol)
+        if rule:
+            result = self.round(rule=rule)
+        return result
 
     #############################
     ####    MAGIC METHODS    ####

@@ -9,6 +9,6 @@ except ImportError:
     PYARROW_INSTALLED = False
 
 
-from .check import check_dtype, get_dtype, is_dtype
+# from .check import check_dtype, get_dtype, is_dtype
 # from .cast import coerce_dtype
 # from .attach import *

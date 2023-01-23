@@ -11,7 +11,7 @@ import pdtypes.types.atomic.complex as complex_types
 from pdtypes.error import shorten_list
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
-
+from pdtypes.util.round import round_float
 
 
 ######################
@@ -20,6 +20,8 @@ import pdtypes.types.cast as cast
 
 
 class FloatMixin:
+
+    conversion_func = cast.to_float
 
     def downcast(
         self,
@@ -40,6 +42,17 @@ class FloatMixin:
             if type(x).__name__ == self._equiv_complex:
                 return x
         raise TypeError(f"{repr(self)} has no equivalent complex type")
+
+    def round(
+        self,
+        series: cast.SeriesWrapper,
+        rule: str = "half_even",
+        decimals: int = 0
+    ) -> pd.Series:
+        """Round a floating point series to the given number of decimal places
+        using the specified rounding rule.
+        """
+        return round_float(series.series, rule=rule, decimals=decimals)
 
     @property
     def smaller(self) -> list:
