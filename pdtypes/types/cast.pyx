@@ -13,6 +13,9 @@ import pdtypes.types.detect as detect
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
+from pdtypes.type_hints import array_like, numeric
+from pdtypes.util.round import Tolerance
+
 
 # TODO: sparse types currently broken
 
@@ -23,6 +26,16 @@ import pdtypes.types.resolve as resolve
 # TODO: attach rounding functions to SeriesWrapper.
 # -> SeriesWrapper.snap()/SeriesWrapper.round().  These depend on element type,
 # so turns out I do need to retain it after all.
+
+
+# apply_with_errors should return a pd.Series object rather than modifying
+# a SeriesWrapper in-place.  hasnans is set True if the output shape does not
+# match the input shape:
+# series.series = series.apply_with_errors(call=call, errors=errors)
+# if len(series) != series.size:
+#   series.hasnans = True
+
+# TODO: cast.cast([1, 2**64], "float") currently yields an object array
 
 
 ######################
@@ -75,7 +88,7 @@ def to_integer(
     series: Iterable,
     dtype: resolve.resolvable = int,
     rounding: str = None,
-    tol: int | float | complex | decimal.Decimal = 1e-6,
+    tol: numeric | Tolerance = 1e-6,
     errors: str = "raise",
     **kwargs
 ) -> pd.Series:
@@ -86,6 +99,10 @@ def to_integer(
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
     if not dtype.unwrap().is_subtype(atomic.IntegerType):
         raise ValueError(f"`dtype` must be an integer type, not {dtype}")
+
+    # validate tolerance
+    if not isinstance(tol, Tolerance):
+        tol = Tolerance(tol)
 
     # TODO: collate and validate args
 
@@ -395,13 +412,13 @@ cdef tuple _apply_with_errors(
     return result, has_errors, index
 
 
-def within_tolerance(series_1, series_2, tol) -> bool:
+def within_tolerance(series_1, series_2, tol) -> array_like:
     """Check if every element of a series is within tolerance of another
     series.
     """
     if not tol:  # fastpath if tolerance=0
-        return (series_1 == series_2).all()
-    return not ((series_1 - series_2).abs() > tol).any()
+        return series_1 == series_2
+    return ~((series_1 - series_2).abs() > tol)
 
 
 cdef class SeriesWrapper:
@@ -539,7 +556,7 @@ cdef class SeriesWrapper:
     def isinf(self,) -> pd.Series:
         """TODO"""
         # TODO: delete this?
-        return pd.Series(np.isinf(self.series), index=self.index)
+        return pd.Series(np.isinf(self.rectify()), index=self.index)
 
     def max(self, *args, **kwargs) -> int:
         """A cached version of pd.Series.max()."""
@@ -577,7 +594,7 @@ cdef class SeriesWrapper:
         if self.original_index is not None:
             self.series.index = self.original_index
 
-    def apply_with_errors(self, call: Callable, errors: str) -> None:
+    def apply_with_errors(self, call: Callable, errors: str) -> pd.Series:
         """Apply `call` over the series, applying the specified error handling
         rule at each index.
 
@@ -588,17 +605,20 @@ cdef class SeriesWrapper:
             call=call,
             errors=errors
         )
-        self.series = pd.Series(result, index=self.index, dtype="O")
+        result = pd.Series(result, index=self.index, dtype="O")
         if has_errors:
-            self.series = self[~index]
-            self.hasnans = True
+            result = result[~index]
+        return result
 
     def rectify(self) -> pd.Series:
         """Convert an improperly-formatted object series to a standardized
         numpy/pandas data type.
         """
-        if pd.api.types.is_object_dtype(self):
-            return self.astype(self.element_type.dtype, copy=False)
+        if (
+            pd.api.types.is_object_dtype(self) and
+            self.element_type.dtype != np.dtype("O")
+        ):
+            return self.astype(self.element_type.dtype)
         return self.series
 
     def round(self, rule: str = "half_even", decimals: int = 0) -> pd.Series:

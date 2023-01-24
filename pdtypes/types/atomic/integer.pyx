@@ -25,7 +25,7 @@ from pdtypes.error import shorten_list
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 
-from pdtypes.util.round import round_div
+from pdtypes.util.round import round_div, Tolerance
 
 
 ######################
@@ -103,8 +103,7 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        # tol: numeric = 1e-6
-        tol,
+        tol: Tolerance,
         downcast: bool,
         errors: str,
         **unused
@@ -115,14 +114,19 @@ class IntegerMixin:
             result = np.frompyfunc(dtype.type_def, 1, 1)(series)
         else:
             result = series.astype(dtype.dtype)
+        result = cast.SeriesWrapper(
+            result,
+            fill_value=np.nan,
+            hasnans=series.hasnans
+        )
 
         # backtrack to check for overflow/precision loss
         if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
             # overflow
-            infs = np.isinf(result)
+            infs = result.isinf()
             if infs.any():
                 if errors == "coerce":
-                    result = result[~infs]
+                    result.series = result[~infs]
                     series.series = series[~infs]
                     series.hasnans = True
                 else:
@@ -133,22 +137,17 @@ class IntegerMixin:
 
             # precision loss
             if errors != "coerce":  # coercion ignores precision loss
-                reverse = dtype.to_integer(
-                    cast.SeriesWrapper(
-                        result,
-                        fill_value=np.nan,
-                        hasnans=series.hasnans
-                    ),
-                    dtype=self,
-                    erorrs=errors,
-                    **unused
-                )
-                if not cast.within_tolerance(series, reverse, tol=tol):
-                    raise ValueError(f"precision loss detected")
+                reverse = super().to_integer(result, dtype=self.upcast(result))
+                index = ~cast.within_tolerance(series, reverse, tol=tol.real)
+                if index.any():
+                    raise ValueError(
+                        f"precision loss detected at index "
+                        f"{shorten_list(series[index].index.values)}"
+                    )
 
         if downcast:
-            return result.astype(dtype.downcast(result).dtype)
-        return result
+            return dtype.downcast(result, tol=tol.real)
+        return result.series
 
     def to_complex(
         self,

@@ -50,14 +50,21 @@ def round_float(
     """
     # select rounding strategy
     try:
-        round_func = rounding_rules[rule]
+        # use numpy-accelerated rounding if available, else default to generic
+        if np.issubdtype(getattr(val, "dtype", np.dtype("O")), "O"):
+            round_func = generic_rounding_rules[rule]
+        else:
+            round_func = specialized_rounding_rules[rule]
     except KeyError as err:
-        err_msg = (f"`rule` must be one of {tuple(rounding_rules)}, not "
-                   f"{repr(rule)}")
+        err_msg = (
+            f"`rule` must be one of {tuple(generic_rounding_rules)}, not "
+            f"{repr(rule)}"
+        )
         raise ValueError(err_msg) from err
 
     if decimals:
-        scale_factor = 10**decimals
+        scale_factor = 10 ** decimals
+        val *= scale_factor
         return round_func(val * scale_factor) / scale_factor
 
     return round_func(val)
@@ -68,7 +75,25 @@ def round_float(
 #######################
 
 
-cdef dict rounding_rules = {
+def _generic_round_half_even(v):
+    floor_even = 2 * (v // 1 % 2) - 1
+    return floor_even * ((floor_even * v + 0.5) // 1)
+
+
+cdef dict generic_rounding_rules = {
+    "floor": lambda v: v // 1,
+    "ceiling": lambda v: -(-v // 1),
+    "down": lambda v: abs(v) // 1 * np.sign(v),
+    "up": lambda v: -(-abs(v) // 1) * np.sign(v),
+    "half_floor": lambda v: -((-v + 0.5) // 1),
+    "half_ceiling": lambda v: (v + 0.5) // 1,
+    "half_down": lambda v: -((-abs(v) + 0.5) // 1) * np.sign(v),
+    "half_up": lambda v: (abs(v) + 0.5) // 1 * np.sign(v),
+    "half_even": _generic_round_half_even
+}
+
+
+cdef dict specialized_rounding_rules = {
     "floor": np.floor,
     "ceiling": np.ceil,
     "down": np.trunc,

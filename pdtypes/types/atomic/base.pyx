@@ -16,6 +16,8 @@ import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
+from pdtypes.util.round import Tolerance
+
 
 # conversions
 # +------------------------------------------------
@@ -23,19 +25,19 @@ import pdtypes.types.resolve as resolve
 # +-----------+------------------------------------
 # | bool      | x | x | x | x | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | int       |   |   |   |   |   |   |   |   | x |
+# | int       | x | x | x |   | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | float     |   |   |   |   |   |   |   |   | x |
+# | float     |   | x |   |   |   |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | complex   |   |   |   |   |   |   |   |   | x |
+# | complex   |   |   |   |   |   |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | decimal   |   |   |   |   |   |   |   |   | x |
+# | decimal   |   |   |   |   |   |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | datetime  |   |   |   |   |   |   |   |   | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | timedelta |   |   |   |   |   |   |   |   | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | string    |   |   |   |   |   |   |   |   | x |
+# | string    |   |   |   |   |   |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | object    | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
@@ -621,8 +623,7 @@ cdef class AtomicType(BaseType):
         """
         # apply dtype.type_def if not astype=compliant
         if dtype.dtype == np.dtype("O"):
-            series.apply_with_errors(call=dtype.type_def, errors=errors)
-            return series.series
+            return series.apply_with_errors(call=dtype.type_def, errors=errors)
     
         # account for missing/coerced values in series
         if series.hasnans:
@@ -653,8 +654,7 @@ cdef class AtomicType(BaseType):
 
         # apply dtype.type_def if not astype-compliant
         if dtype.dtype == np.dtype("O"):
-            series.apply_with_errors(call=dtype.type_def, errors=errors)
-            return series.series
+            return series.apply_with_errors(call=dtype.type_def, errors=errors)
 
         # account for missing/coerced values in series
         if series.hasnans:
@@ -665,8 +665,9 @@ cdef class AtomicType(BaseType):
             # NOTE: pandas doesn't like converting arbitrary objects to
             # nullable integer extension types.  Luckily, numpy has no such
             # problem, and SeriesWrapper means we never have to consider NAs.
-            series.series = series.astype(dtype.dtype.numpy_dtype)
-            return series.astype(dtype.dtype)
+            intermediate = dtype.dtype.numpy_dtype
+            final = dtype.dtype
+            return series.astype(intermediate).astype(final)
 
         return series.astype(dtype.dtype, copy=False)
 
@@ -674,6 +675,7 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        tol: Tolerance = Tolerance(0),
         downcast: bool = False,
         errors: str = "raise",
         **unused
@@ -683,8 +685,10 @@ cdef class AtomicType(BaseType):
             dtype = dtype.downcast(series)
 
         if dtype.dtype == np.dtype("O"):
-            series.apply_with_errors(call=dtype.type_def, errors=errors)
-            return series.series
+            return series.apply_with_errors(call=dtype.type_def, errors=errors)
+
+        if downcast:
+            return dtype.downcast(series, tol=tol.real)
 
         return series.astype(dtype.dtype)
 
@@ -701,8 +705,7 @@ cdef class AtomicType(BaseType):
             dtype = dtype.downcast(series)
 
         if dtype.dtype == np.dtype("O"):
-            series.apply_with_errors(call=dtype.type_def, errors=errors)
-            return series.series
+            return series.apply_with_errors(call=dtype.type_def, errors=errors)
 
         return series.astype(dtype.dtype)
 
@@ -714,8 +717,7 @@ cdef class AtomicType(BaseType):
         **unused
     ) -> pd.Series:
         """Convert boolean data to a decimal data type."""
-        series.apply_with_errors(call=dtype.type_def, errors=errors)
-        return series.series
+        return series.apply_with_errors(call=dtype.type_def, errors=errors)
 
 
 
@@ -754,8 +756,7 @@ cdef class AtomicType(BaseType):
                 )
             return result
 
-        series.apply_with_errors(call=wrapped_call, errors=errors)
-        return series.series
+        return series.apply_with_errors(call=dtype.type_def, errors=errors)
 
     def unwrap(self) -> AtomicType:
         """Strip any AdapterTypes that have been attached to this AtomicType.
