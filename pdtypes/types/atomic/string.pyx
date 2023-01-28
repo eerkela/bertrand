@@ -20,9 +20,9 @@ import pdtypes.types.resolve as resolve
 # -> These would be a numpy-only feature if implemented
 
 
-#########################
-####    CONSTANTS    ####
-#########################
+##################################
+####    MIXINS & CONSTANTS    ####
+##################################
 
 
 cdef object default_string_dtype
@@ -38,15 +38,21 @@ except ImportError:
     pyarrow_installed = False
 
 
+class StringMixin:
+
+    pass
+
+
 ##############################
 ####    GENERIC STRING    ####
 ##############################
 
 
 @generic
-class StringType(AtomicType):
+class StringType(StringMixin, AtomicType):
     """String supertype."""
 
+    conversion_func = cast.to_string  # all subtypes/backends inherit this
     name = "string"
     aliases = {
         str,
@@ -76,7 +82,7 @@ class StringType(AtomicType):
 
 
 @StringType.register_backend("python")
-class PythonStringType(AtomicType):
+class PythonStringType(StringMixin, AtomicType):
 
     aliases = {pd.StringDtype("python"), "pystr"}
 
@@ -96,7 +102,7 @@ class PythonStringType(AtomicType):
 
 @StringType.register_backend("pyarrow")
 @StringType.register_backend("arrow")
-class PyArrowStringType(AtomicType, ignore=not pyarrow_installed):
+class PyArrowStringType(StringMixin, AtomicType, ignore=not pyarrow_installed):
 
     aliases = {"arrowstr"}
 

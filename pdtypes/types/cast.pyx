@@ -17,25 +17,35 @@ from pdtypes.type_hints import array_like, numeric
 from pdtypes.util.round import Tolerance
 
 
+# TODO: downcast flag should accept resolvable type specifiers as well as
+# booleans.  If a non-boolean value is given, it will not downcast below the
+# specified type.
+
+
 # TODO: sparse types currently broken
 
 # TODO: top-level to_x() functions are respondible for input validation
 
 # TODO: have to account for empty series in each conversion.
 
-# TODO: attach rounding functions to SeriesWrapper.
-# -> SeriesWrapper.snap()/SeriesWrapper.round().  These depend on element type,
-# so turns out I do need to retain it after all.
+
+# TODO: every conversion returns a SeriesWrapper instance, which allows them
+# to be interoperable.
+# SeriesWrapper.to_float(self, dtype, ...) -> SeriesWrapper:
+#     return self.element_type.to_float(series=self, dtype=dtype, ...)
+
+# then you can just stack 2-step conversions, like so:
+# IntegerType.to_complex():
+#     result = self.to_float(equiv_float, ...)
+#     return result.to_complex(dtype, ...)
 
 
-# apply_with_errors should return a pd.Series object rather than modifying
-# a SeriesWrapper in-place.  hasnans is set True if the output shape does not
-# match the input shape:
-# series.series = series.apply_with_errors(call=call, errors=errors)
-# if len(series) != series.size:
-#   series.hasnans = True
+# TODO: add a reject_non_integer argument to snap_round that will throw a
+# precision loss error if the results of the operation are not exact integer
+# values.  This saves on some boilerplate when doing float conversions.
 
-# TODO: cast.cast([1, 2**64], "float") currently yields an object array
+# round, snap, and snap_round should return SeriesWrappers to make them
+# compatible with dispatch().
 
 
 ######################
@@ -175,7 +185,7 @@ def to_complex(
 
 def to_decimal(
     series: Iterable,
-    dtype: resolve.resolvable = int,
+    dtype: resolve.resolvable = decimal.Decimal,
     rounding: str = None,
     tol: int | float | complex | decimal.Decimal = 1e-6,
     errors: str = "raise",
@@ -204,7 +214,7 @@ def to_decimal(
 
 def to_datetime(
     series: Iterable,
-    dtype: resolve.resolvable = int,
+    dtype: resolve.resolvable = "datetime",
     rounding: str = None,
     tol: int | float | complex | decimal.Decimal = 1e-6,
     errors: str = "raise",
@@ -233,7 +243,7 @@ def to_datetime(
 
 def to_timedelta(
     series: Iterable,
-    dtype: resolve.resolvable = int,
+    dtype: resolve.resolvable = "timedelta",
     rounding: str = None,
     tol: int | float | complex | decimal.Decimal = 1e-6,
     errors: str = "raise",
@@ -313,67 +323,8 @@ def to_object(
 
 
 ######################
-####    HELPERS   ####
+####    PRIVATE   ####
 ######################
-
-
-def as_series(data) -> pd.Series:
-    """Convert the given data into a corresponding pd.Series object."""
-    if isinstance(data, pd.Series):
-        return data
-
-    if isinstance(data, np.ndarray):
-        return pd.Series(np.atleast_1d(data))
-
-    return pd.Series(data, dtype="O")
-
-
-def do_conversion(
-    data,
-    endpoint: str,
-    dtype: atomic.AtomicType,
-    errors: str,
-    **kwargs
-) -> pd.Series:
-    """Perform a conversion on input data, automatically splitting into groups
-    if its elements are non-homogenous.
-    """
-    data = as_series(data)
-    if errors == "ignore":
-        original = data.copy()
-
-    try:
-        with SeriesWrapper(data, dtype.na_value) as series:
-            if isinstance(series.element_type, atomic.CompositeType):
-                groups = series.groupby(series.element_type.index, sort=False)
-                series.series = groups.transform(
-                    lambda grp: getattr(grp.name, endpoint)(
-                        SeriesWrapper(
-                            grp,
-                            fill_value=dtype.na_value,
-                            hasnans=series.hasnans
-                        ),
-                        dtype=dtype,
-                        errors=errors,
-                        **kwargs
-                    )
-                )
-            else:
-                series.series = getattr(series.element_type, endpoint)(
-                    series,
-                    dtype=dtype,
-                    errors=errors,
-                    **kwargs
-                )
-        return series.series
-
-    except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
-        raise  # never ignore these errors
-
-    except Exception as err:
-        if errors == "ignore":
-            return original
-        raise err
 
 
 cdef tuple _apply_with_errors(
@@ -412,7 +363,39 @@ cdef tuple _apply_with_errors(
     return result, has_errors, index
 
 
-def within_tolerance(series_1, series_2, tol) -> array_like:
+def as_series(data) -> pd.Series:
+    """Convert the given data into a corresponding pd.Series object."""
+    if isinstance(data, pd.Series):
+        return data.copy()
+
+    if isinstance(data, np.ndarray):
+        return pd.Series(np.atleast_1d(data))
+
+    return pd.Series(data, dtype="O")
+
+
+def do_conversion(
+    data,
+    endpoint: str,
+    *args,
+    errors: str = "raise",
+    **kwargs
+) -> pd.Series:
+    try:
+        with SeriesWrapper(as_series(data)) as series:
+            result = getattr(series, endpoint)(*args, errors=errors, **kwargs)
+            series.series = result.series
+            series.hasnans = result.hasnans
+            series.element_type = result.element_type
+        return series.series
+    except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
+        raise  # never ignore these errors
+    except Exception as err:
+        if errors == "ignore":
+            return data
+        raise err
+
+def within_tolerance(series_1, series_2, tol: numeric) -> array_like:
     """Check if every element of a series is within tolerance of another
     series.
     """
@@ -431,7 +414,6 @@ cdef class SeriesWrapper:
     def __init__(
         self,
         series: pd.Series,
-        fill_value: Any = pd.NA,
         hasnans: bool = None,
         element_type: atomic.BaseType = None
     ):
@@ -441,10 +423,6 @@ cdef class SeriesWrapper:
             )
         self.series = series
         self.size = len(self.series)
-        if not isinstance(self.series.index, pd.RangeIndex):
-            self.original_index = self.series.index
-            self.series.index = pd.RangeIndex(0, self.size)
-        self.fill_value = fill_value
         self.hasnans = hasnans
         self.element_type = element_type
 
@@ -498,24 +476,38 @@ cdef class SeriesWrapper:
     def imag(self) -> SeriesWrapper:
         """Get the imaginary component of a wrapped series."""
         if self.cache.get("imag", None) is None:
-            self.cache["imag"] = SeriesWrapper(
-                pd.Series(
-                    np.imag(self.series),
-                    index=self.series.index
-                )
+            # NOTE: np.imag() fails when applied over object arrays that may
+            # contain complex values.  In this case, we reduce it to a loop.
+            if pd.api.types.is_object_dtype(self.series):
+                result = np.frompyfunc(np.imag, 1, 1)(self.series)
+            else:
+                result = pd.Series(np.imag(self.series), index=self.index)
+
+            target = getattr(
+                self.element_type,
+                "equiv_float",
+                self.element_type
             )
+            self.cache["imag"] = SeriesWrapper(result, element_type=target)
         return self.cache["imag"]
 
     @property
     def real(self) -> SeriesWrapper:
         """Get the real component of a wrapped series."""
         if self.cache.get("None", None) is None:
-            self.cache["real"] = SeriesWrapper(
-                pd.Series(
-                    np.real(self.series),
-                    index=self.series.index
-                )
+            # NOTE: np.real() fails when applied over object arrays that may
+            # contain complex values.  In this case, we reduce it to a loop.
+            if pd.api.types.is_object_dtype(self.series):
+                result = np.frompyfunc(np.real, 1, 1)(self.series)
+            else:
+                result = pd.Series(np.real(self.series), index=self.index)
+
+            target = getattr(
+                self.element_type,
+                "equiv_float",
+                self.element_type
             )
+            self.cache["real"] = SeriesWrapper(result, element_type=target)
         return self.cache["real"]
 
     @property
@@ -524,20 +516,57 @@ cdef class SeriesWrapper:
 
     @series.setter
     def series(self, val: pd.Series) -> None:
-        self.cache = {}
+        if not isinstance(val, pd.Series):
+            raise TypeError(
+                f"`series` must be a pandas Series object, not {type(val)}"
+            )
         self._series = val
+        self.cache = {}
 
     ###############################
     ####    WRAPPED METHODS    ####
     ###############################
 
-    def argmax(self, *args, **kwargs) -> int:
+    def argmax(self, *args, **kwargs):
         """Alias for IntegerSeries.max()."""
         return self.max(*args, **kwargs)
 
-    def argmin(self, *args, **kwargs) -> int:
+    def argmin(self, *args, **kwargs):
         """Alias for IntegerSeries.min()."""
         return self.min(*args, **kwargs)
+
+    def astype(
+        self,
+        dtype: atomic.AtomicType,
+        errors: str = "raise"
+    ) -> SeriesWrapper:
+        """`astype()` equivalent for SeriesWrapper instances that works for
+        object-based type specifiers.
+        """
+        # apply dtype.type_def elementwise if not astype-compliant
+        if dtype.unwrap().dtype == np.dtype("O"):
+            result = self.apply_with_errors(
+                call=dtype.type_def,
+                errors=errors
+            )
+            result.element_type = dtype
+            return result
+
+        # default to pd.Series.astype()
+        if pd.api.types.is_object_dtype(self) and dtype.backend == "pandas":
+            # NOTE: pandas doesn't like converting arbitrary objects to
+            # nullable extension types.  Luckily, numpy has no such problem,
+            # and SeriesWrapper automatically filters out NAs.
+            target = dtype.dtype
+            result = self.series.astype(target.numpy_dtype).astype(target)
+        else:
+            result = self.series.astype(dtype.dtype, copy=False)
+
+        return SeriesWrapper(
+            result,
+            hasnans=self.hasnans,
+            element_type=dtype
+        )
 
     def idxmax(self, *args, **kwargs) -> int:
         """A cached version of pd.Series.idxmax()."""
@@ -553,18 +582,13 @@ cdef class SeriesWrapper:
             self.cache["min"] = self.series[self.cache["idxmin"]]
         return self.cache["idxmin"]
 
-    def isinf(self,) -> pd.Series:
-        """TODO"""
-        # TODO: delete this?
-        return pd.Series(np.isinf(self.rectify()), index=self.index)
-
-    def max(self, *args, **kwargs) -> int:
+    def max(self, *args, **kwargs):
         """A cached version of pd.Series.max()."""
         if self.cache.get("max", None) is None:
             self.cache["max"] = self.series.max(*args, **kwargs)
         return self.cache["max"]
 
-    def min(self, *args, **kwargs) -> int:
+    def min(self, *args, **kwargs):
         """A cached version of pd.Series.min()."""
         if self.cache.get("min", None) is None:
             self.cache["min"] = self.series.min(*args, **kwargs)
@@ -575,30 +599,41 @@ cdef class SeriesWrapper:
     ###########################
 
     def __enter__(self) -> SeriesWrapper:
+        # normalize index
+        if not isinstance(self.series.index, pd.RangeIndex):
+            self.original_index = self.series.index
+            self.series.index = pd.RangeIndex(0, self.size)
+
+        # drop missing values
         is_na = self.isna()
         self.hasnans = is_na.any()
-        if self.hasnans:
+        if self._hasnans:
             self.series = self.series[~is_na]
-        self.element_type = detect.detect_type(self)
+
+        # detect element type if not set manually
+        if self._element_type is None:
+            self.element_type = detect.detect_type(self.series)
+
+        # enter context block
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        # replace missing values, aligning on index
         if self.hasnans:
             result = pd.Series(
-                np.full(self.size, fill_value=self.fill_value, dtype="O"),
+                np.full(self.size, self.element_type.na_value, dtype="O"),
                 dtype=self.dtype
             )
             result.update(self.series)
             self.series = result
 
+        # replace original index
         if self.original_index is not None:
             self.series.index = self.original_index
 
-    def apply_with_errors(self, call: Callable, errors: str) -> pd.Series:
+    def apply_with_errors(self, call: Callable, errors: str) -> SeriesWrapper:
         """Apply `call` over the series, applying the specified error handling
         rule at each index.
-
-        Can only be called within an `exclude_na()` context block.
         """
         result, has_errors, index = _apply_with_errors(
             self.to_numpy(dtype="O"),
@@ -608,17 +643,63 @@ cdef class SeriesWrapper:
         result = pd.Series(result, index=self.index, dtype="O")
         if has_errors:
             result = result[~index]
-        return result
+        return SeriesWrapper(
+            result,
+            hasnans=has_errors or self.hasnans
+        )
+
+    def dispatch(self, endpoint: str, *args, **kwargs) -> SeriesWrapper:
+        """Apply an AtomicType method over the series.
+
+        If the series is non-homogenous (contains elements of more than one
+        type), then each type is processed separately.  The dispatched method
+        must accept a SeriesWrapper as its first argument, and any additional
+        arguments to this function are passed directly to it.
+        """
+        # group by AtomicType and transform
+        if isinstance(self.element_type, atomic.CompositeType):
+            groups = self.groupby(self.element_type.index, sort=False)
+            result = groups.transform(lambda grp: getattr(grp.name, endpoint)(
+                SeriesWrapper(
+                    grp,
+                    hasnans=self.hasnans,
+                    element_type=grp.name
+                ),
+                *args,
+                **kwargs
+            ).series)
+
+        # no grouping necessary, delegate directly to AtomicType
+        else:
+            result = getattr(self.element_type, endpoint)(
+                self,
+                *args,
+                **kwargs
+            ).series
+
+        # construct new SeriesWrapper with results
+        hasnans = self.hasnans
+        if len(result) < self.size:
+            hasnans = True  # account for coerced nans
+        return SeriesWrapper(
+            result,
+            hasnans=hasnans
+        )
+
+    def isinf(self) -> pd.Series:
+        """TODO"""
+        return self.isin([np.inf, -np.inf])
 
     def rectify(self) -> pd.Series:
         """Convert an improperly-formatted object series to a standardized
         numpy/pandas data type.
         """
+        # TODO: deprecate this
         if (
             pd.api.types.is_object_dtype(self) and
             self.element_type.dtype != np.dtype("O")
         ):
-            return self.astype(self.element_type.dtype)
+            return self.astype(self.element_type)
         return self.series
 
     def round(self, rule: str = "half_even", decimals: int = 0) -> pd.Series:
@@ -653,13 +734,9 @@ cdef class SeriesWrapper:
             'ceiling', 'down', 'up', 'half_floor', 'half_ceiling', 'half_down',
             'half_up', 'half_even').
         """
-        return self.element_type.round(
-            self,
-            rule=rule,
-            decimals=decimals
-        )
+        return self.dispatch("round", rule=rule, decimals=decimals)
 
-    def snap(self, tol: int | float | decimal.Decimal = 1e-6) -> pd.Series:
+    def snap(self, tol: numeric = 1e-6) -> pd.Series:
         """Snap each element of the series to the nearest integer if it is
         within the specified tolerance.
 
@@ -677,20 +754,37 @@ cdef class SeriesWrapper:
             The result of conditionally rounding the series around integers,
             with tolerance `tol`.
         """
-        # return self.element_type.snap(self, tol=Tolerance(tol), rule=rule)
         if not tol:  # trivial case, tol=0
             return self.series
+
         rounded = self.round("half_even", decimals=0)
         return self.where(np.abs(self - rounded) > tol, rounded)
 
     def snap_round(
         self,
-        tol: int | float | decimal.Decimal,
+        tol: numeric = 1e-6,
         rule: str = "half_even"
-    ) -> pd.Series:
+    ) -> SeriesWrapper:
         """Snap the series to the nearest integer within `tol`, and then round
         the remaining results according to the given rule.
         """
+        # snap round, checking for precision loss
+        if tol or rounding is None:
+            rounded = series.round("half_even")
+            index = ~cast.within_tolerance(series, rounded, tol=tol.real)
+            if tol:
+                series.series = series.where(index, rounded)
+            if rounding is None and index.any():
+                if errors == "coerce":
+                    series.series = series.round("down")
+                else:
+                    raise ValueError(
+                        f"precision loss detected at index "
+                        f"{shorten_list(series[index].index.values)}"
+                    )
+        if rounding:
+            series.series = series.round(rounding)
+
         # don't snap if rounding to nearest
         cdef set nearest = {
             "half_floor", "half_ceiling", "half_down", "half_up", "half_even"
@@ -701,6 +795,132 @@ cdef class SeriesWrapper:
             result = self.snap(tol=tol)
         if rule:
             result = self.round(rule=rule)
+        return result
+
+    def to_boolean(
+        self,
+        dtype: atomic.AtomicType,
+        **kwargs: str
+    ) -> SeriesWrapper:
+        """Convert arbitrary series data to a boolean data type.
+
+        This function hooks into an AtomicType's `to_boolean()` method, which
+        holds implementation logic.
+        """
+        result = self.dispatch("to_boolean", dtype=dtype, **kwargs)
+        result.element_type = dtype
+        return result
+
+    def to_integer(
+        self,
+        dtype: atomic.AtomicType,
+        **kwargs: str
+    ) -> SeriesWrapper:
+        """Convert arbitrary series data to a boolean data type.
+
+        This function hooks into an AtomicType's `to_integer()` method, which
+        holds implementation logic.
+        """
+        result = self.dispatch("to_integer", dtype=dtype, **kwargs)
+        result.element_type = dtype
+        return result
+
+    def to_float(
+        self,
+        dtype: atomic.AtomicType,
+        **kwargs: str
+    ) -> SeriesWrapper:
+        """Convert arbitrary series data to a boolean data type.
+
+        This function hooks into an AtomicType's `to_float()` method, which
+        holds implementation logic.
+        """
+        result = self.dispatch("to_float", dtype=dtype, **kwargs)
+        result.element_type = dtype
+        return result
+
+    def to_complex(
+        self,
+        dtype: atomic.AtomicType,
+        **kwargs: str
+    ) -> SeriesWrapper:
+        """Convert arbitrary series data to a boolean data type.
+
+        This function hooks into an AtomicType's `to_complex()` method, which
+        holds implementation logic.
+        """
+        result = self.dispatch("to_complex", dtype=dtype, **kwargs)
+        result.element_type = dtype
+        return result
+
+    def to_decimal(
+        self,
+        dtype: atomic.AtomicType,
+        **kwargs: str
+    ) -> SeriesWrapper:
+        """Convert arbitrary series data to a boolean data type.
+
+        This function hooks into an AtomicType's `to_decimal()` method, which
+        holds implementation logic.
+        """
+        result = self.dispatch("to_decimal", dtype=dtype, **kwargs)
+        result.element_type = dtype
+        return result
+
+    def to_datetime(
+        self,
+        dtype: atomic.AtomicType,
+        **kwargs: str
+    ) -> SeriesWrapper:
+        """Convert arbitrary series data to a boolean data type.
+
+        This function hooks into an AtomicType's `to_datetime()` method, which
+        holds implementation logic.
+        """
+        result = self.dispatch("to_datetime", dtype=dtype, **kwargs)
+        result.element_type = dtype
+        return result
+
+    def to_timedelta(
+        self,
+        dtype: atomic.AtomicType,
+        **kwargs: str
+    ) -> SeriesWrapper:
+        """Convert arbitrary series data to a boolean data type.
+
+        This function hooks into an AtomicType's `to_timedelta()` method, which
+        holds implementation logic.
+        """
+        result = self.dispatch("to_timedelta", dtype=dtype, **kwargs)
+        result.element_type = dtype
+        return result
+
+    def to_string(
+        self,
+        dtype: atomic.AtomicType,
+        **kwargs: str
+    ) -> SeriesWrapper:
+        """Convert arbitrary series data to a boolean data type.
+
+        This function hooks into an AtomicType's `to_string()` method, which
+        holds implementation logic.
+        """
+        result = self.dispatch("to_string", dtype=dtype, **kwargs)
+        result.element_type = dtype
+        return result
+
+    def to_object(
+        self,
+        dtype: atomic.AtomicType,
+        **kwargs: str
+    ) -> SeriesWrapper:
+        """Convert arbitrary series data to a boolean data type.
+
+        This function hooks into an AtomicType's `to_object()` method, which
+        holds implementation logic.
+        """
+        result = self.dispatch("to_object", dtype=dtype, **kwargs)
+        result.element_type = dtype
         return result
 
     #############################

@@ -27,6 +27,7 @@ import pdtypes.types.resolve as resolve
 @lru_cache(64)
 class ObjectType(AtomicType):
 
+    conversion_func = cast.to_object  # all subtypes/backends inherit this
     name = "object"
     aliases = {"object", "obj", "O", "pyobject", "object_", "object0"}
 

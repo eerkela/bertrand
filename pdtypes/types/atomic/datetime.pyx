@@ -29,14 +29,25 @@ import pdtypes.types.resolve as resolve
 # -> these could potentially replace the constants in util/time/
 
 
-################################
-####    GENERIC DATETIME    ####
-################################
+######################
+####    MIXINS    ####
+######################
+
+
+class DatetimeMixin:
+
+    pass
+
+
+#######################
+####    GENERIC    ####
+#######################
 
 
 @generic
-class DatetimeType(AtomicType):
+class DatetimeType(DatetimeMixin, AtomicType):
 
+    conversion_func = cast.to_datetime  # all subtypes/backends inherit this
     name = "datetime"
     aliases = {"datetime"}
 
@@ -49,114 +60,14 @@ class DatetimeType(AtomicType):
         )
 
 
-################################
-####    PANDAS TIMESTAMP    ####
-################################
-
-
-@lru_cache(64)
-@DatetimeType.register_backend("pandas")
-class PandasTimestampType(AtomicType):
-
-    aliases = {
-        pd.Timestamp,
-        # pd.DatetimeTZDtype() handled in resolve_typespec_dtype special case
-        "Timestamp",
-        "pandas.Timestamp",
-        "pd.Timestamp",
-    }
-
-    def __init__(self, tz: datetime.tzinfo = None):
-        if tz is None:
-            dtype = np.dtype("M8[ns]")
-        else:
-            dtype = pd.DatetimeTZDtype(tz=tz)
-        super().__init__(
-            type_def=pd.Timestamp,
-            dtype=dtype,
-            na_value=pd.NaT,
-            itemsize=8,
-            tz=tz
-        )
-
-    @classmethod
-    def slugify(cls, tz: datetime.tzinfo = None):
-        slug = cls.name
-        if tz is not None:
-            slug += f"[{cls.backend}, {tz}]"
-        else:
-            slug += f"[{cls.backend}]"
-        return slug
-
-    def contains(self, other: Any) -> bool:
-        other = resolve.resolve_type(other)
-
-        # treat tz=None as wildcard
-        if self.tz is None:
-            if isinstance(other, CompositeType):
-                return all(isinstance(o, type(self)) for o in other)
-            return isinstance(other, type(self))
-
-        return super().contains(other)
-
-    @classmethod
-    def detect(cls, example: pd.Timestamp, **defaults) -> AtomicType:
-        return cls.instance(tz=example.tz, **defaults)
-
-
-###############################
-####    PYTHON DATETIME    ####
-###############################
-
-
-@lru_cache(64)
-@DatetimeType.register_backend("python")
-class PythonDatetimeType(AtomicType):
-
-    aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
-
-    def __init__(self, tz: datetime.tzinfo = None):
-        super().__init__(
-            type_def=datetime.datetime,
-            dtype=np.dtype("O"),
-            na_value=pd.NaT,
-            itemsize=None,
-            tz=tz
-        )
-
-    @classmethod
-    def slugify(cls, tz: datetime.tzinfo = None):
-        slug = cls.name
-        if tz is not None:
-            slug += f"[{cls.backend}, {tz}]"
-        else:
-            slug += f"[{cls.backend}]"
-        return slug
-
-    def contains(self, other: Any) -> bool:
-        other = resolve.resolve_type(other)
-
-        # treat tz=None as wildcard
-        if self.tz is None:
-            if isinstance(other, CompositeType):
-                return all(isinstance(o, type(self)) for o in other)
-            return isinstance(other, type(self))
-
-        return super().contains(other)
-
-    @classmethod
-    def detect(cls, example: datetime.datetime, **defaults) -> AtomicType:
-        return cls.instance(tz=example.tzinfo, **defaults)
-
-
-################################
-####    NUMPY DATETIME64    ####
-################################
+#####################
+####    NUMPY    ####
+#####################
 
 
 @lru_cache(64)
 @DatetimeType.register_backend("numpy")
-class NumpyDatetime64Type(AtomicType):
+class NumpyDatetime64Type(DatetimeMixin, AtomicType):
 
     aliases = {
         np.datetime64,
@@ -220,6 +131,105 @@ class NumpyDatetime64Type(AtomicType):
             step_size = int(match.group("step_size") or 1)
             return cls.instance(unit=unit, step_size=step_size)
         return cls.instance()
+
+######################
+####    PANDAS    ####
+######################
+
+
+@lru_cache(64)
+@DatetimeType.register_backend("pandas")
+class PandasTimestampType(DatetimeMixin, AtomicType):
+
+    aliases = {
+        pd.Timestamp,
+        # pd.DatetimeTZDtype() handled in resolve_typespec_dtype special case
+        "Timestamp",
+        "pandas.Timestamp",
+        "pd.Timestamp",
+    }
+
+    def __init__(self, tz: datetime.tzinfo = None):
+        if tz is None:
+            dtype = np.dtype("M8[ns]")
+        else:
+            dtype = pd.DatetimeTZDtype(tz=tz)
+        super().__init__(
+            type_def=pd.Timestamp,
+            dtype=dtype,
+            na_value=pd.NaT,
+            itemsize=8,
+            tz=tz
+        )
+
+    @classmethod
+    def slugify(cls, tz: datetime.tzinfo = None):
+        slug = cls.name
+        if tz is not None:
+            slug += f"[{cls.backend}, {tz}]"
+        else:
+            slug += f"[{cls.backend}]"
+        return slug
+
+    def contains(self, other: Any) -> bool:
+        other = resolve.resolve_type(other)
+
+        # treat tz=None as wildcard
+        if self.tz is None:
+            if isinstance(other, CompositeType):
+                return all(isinstance(o, type(self)) for o in other)
+            return isinstance(other, type(self))
+
+        return super().contains(other)
+
+    @classmethod
+    def detect(cls, example: pd.Timestamp, **defaults) -> AtomicType:
+        return cls.instance(tz=example.tz, **defaults)
+
+
+######################
+####    PYTHON    ####
+######################
+
+
+@lru_cache(64)
+@DatetimeType.register_backend("python")
+class PythonDatetimeType(DatetimeMixin, AtomicType):
+
+    aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
+
+    def __init__(self, tz: datetime.tzinfo = None):
+        super().__init__(
+            type_def=datetime.datetime,
+            dtype=np.dtype("O"),
+            na_value=pd.NaT,
+            itemsize=None,
+            tz=tz
+        )
+
+    @classmethod
+    def slugify(cls, tz: datetime.tzinfo = None):
+        slug = cls.name
+        if tz is not None:
+            slug += f"[{cls.backend}, {tz}]"
+        else:
+            slug += f"[{cls.backend}]"
+        return slug
+
+    def contains(self, other: Any) -> bool:
+        other = resolve.resolve_type(other)
+
+        # treat tz=None as wildcard
+        if self.tz is None:
+            if isinstance(other, CompositeType):
+                return all(isinstance(o, type(self)) for o in other)
+            return isinstance(other, type(self))
+
+        return super().contains(other)
+
+    @classmethod
+    def detect(cls, example: datetime.datetime, **defaults) -> AtomicType:
+        return cls.instance(tz=example.tzinfo, **defaults)
 
 
 #######################

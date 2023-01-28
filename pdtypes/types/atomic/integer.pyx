@@ -22,10 +22,14 @@ from .base cimport AdapterType, AtomicType
 from .base import generic, subtype
 
 from pdtypes.error import shorten_list
+from pdtypes.type_hints import numeric
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 
 from pdtypes.util.round import round_div, Tolerance
+
+
+# TODO: make upcast() a series method?
 
 
 ######################
@@ -35,176 +39,9 @@ from pdtypes.util.round import round_div, Tolerance
 
 class IntegerMixin:
 
-    conversion_func = cast.to_integer
-
-    ##############################
-    ####    CUSTOMIZATIONS    ####
-    ##############################
-
-    def to_boolean(
-        self,
-        series: cast.SeriesWrapper,
-        dtype: AtomicType,
-        errors: str,
-        **unused
-    ) -> pd.Series:
-        """Convert integer data to a boolean data type."""
-        # check for overflow
-        if series.min() < 0 or series.max() > 1:
-            index = (series < 0) | (series > 1)
-            if errors == "coerce":
-                series.series = series[~index]
-                series.hasnans = True
-            else:
-                raise OverflowError(
-                    f"values exceed {dtype} range at index "
-                    f"{shorten_list(series[index].index.values)}"
-                )
-
-        # delegate to AtomicType.to_boolean()
-        return super().to_boolean(
-            series=series,
-            dtype=dtype,
-            errors=errors,
-            **unused
-        )
-
-    def to_integer(
-        self,
-        series: cast.SeriesWrapper,
-        dtype: AtomicType,
-        errors: str,
-        **unused
-    ) -> pd.Series:
-        """Convert integer data to another integer data type."""
-        # check for overflow
-        if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
-            dtype = dtype.upcast(series)  # attempt to upcast
-            if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
-                index = (series < dtype.min) | (series > dtype.max) 
-                if errors == "coerce":
-                    series.series = series[~index]
-                    series.hasnans = True
-                else:
-                    raise OverflowError(
-                        f"values exceed {dtype} range at index "
-                        f"{shorten_list(series[index].index.values)}"
-                    )
-
-        # delegate to AtomicType.to_integer()
-        return super().to_integer(
-            series=series,
-            dtype=dtype,
-            errors=errors,
-            **unused
-        )
-
-    def to_float(
-        self,
-        series: cast.SeriesWrapper,
-        dtype: AtomicType,
-        tol: Tolerance,
-        downcast: bool,
-        errors: str,
-        **unused
-    ) -> pd.Series:
-        """Convert integer data to a float data type."""
-        # do naive conversion
-        if dtype.dtype == np.dtype("O"):
-            result = np.frompyfunc(dtype.type_def, 1, 1)(series)
-        else:
-            result = series.astype(dtype.dtype)
-        result = cast.SeriesWrapper(
-            result,
-            fill_value=np.nan,
-            hasnans=series.hasnans
-        )
-
-        # backtrack to check for overflow/precision loss
-        if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
-            # overflow
-            infs = result.isinf()
-            if infs.any():
-                if errors == "coerce":
-                    result.series = result[~infs]
-                    series.series = series[~infs]
-                    series.hasnans = True
-                else:
-                    raise OverflowError(
-                        f"values exceed {dtype} range at index "
-                        f"{shorten_list(series[infs].index.values)}"
-                    )
-
-            # precision loss
-            if errors != "coerce":  # coercion ignores precision loss
-                reverse = super().to_integer(result, dtype=self.upcast(result))
-                index = ~cast.within_tolerance(series, reverse, tol=tol.real)
-                if index.any():
-                    raise ValueError(
-                        f"precision loss detected at index "
-                        f"{shorten_list(series[index].index.values)}"
-                    )
-
-        if downcast:
-            return dtype.downcast(result, tol=tol.real)
-        return result.series
-
-    def to_complex(
-        self,
-        series: cast.SeriesWrapper,
-        dtype: AtomicType,
-        errors: str,
-        **unused
-    ) -> pd.Series:
-        """Convert integer data to a complex data type."""
-        raise NotImplementedError()
-
-    def to_decimal(
-        self,
-        series: cast.SeriesWrapper,
-        dtype: AtomicType,
-        errors: str,
-        **unused
-    ) -> pd.Series:
-        """Convert integer data to a decimal data type."""
-        return series + dtype.type_def(0)  # ~2x faster than loop
-
-    def to_datetime(
-        self,
-        series: cast.SeriesWrapper,
-        dtype: AtomicType,
-        errors: str,
-        **unused
-    ) -> pd.Series:
-        """Convert integer data to a datetime data type."""
-        raise NotImplementedError()
-
-    def to_timedelta(
-        self,
-        series: cast.SeriesWrapper,
-        dtype: AtomicType,
-        errors: str,
-        **unused
-    ) -> pd.Series:
-        """Convert integer data to a timedelta data type."""
-        raise NotImplementedError()
-
-    ######################
-    ####    EXTRAS    ####
-    ######################
-
-    def downcast(
-        self,
-        series: Union[pd.Series, cast.SeriesWrapper]
-    ) -> AtomicType:
-        """Reduce the itemsize of an integer type to fit the observed range."""
-        min_val = int(series.min())
-        max_val = int(series.max())
-        for t in self.smaller:
-            if min_val < t.min or max_val > t.max:
-                continue
-            return t
-        return self
+    ############################
+    ####    TYPE METHODS    ####
+    ############################
 
     def force_nullable(self) -> AtomicType:
         """Create an equivalent integer type that can accept missing values."""
@@ -239,23 +76,6 @@ class IntegerMixin:
         rank = lambda x: (x.max - x.min) or (x.itemsize or np.inf)
         return sorted(result, key=rank)
 
-    def round(
-        self,
-        series: cast.SeriesWrapper,
-        rule: str = "half_even",
-        decimals: int = 0
-    ) -> pd.Series:
-        """Round an integer series to the given number of decimal places using
-        the specified rounding rule.
-
-        NOTE: this function does not do anything unless the input to `decimals`
-        is negative.
-        """
-        if decimals < 0:
-            scale = 10**(-1 * decimals)
-            return round_div(series.series, scale, rule=rule) * scale
-        return series.series
-
     @property
     def smaller(self) -> list:
         """Get a list of types that `self` can be downcasted to."""
@@ -270,7 +90,7 @@ class IntegerMixin:
 
     def upcast(
         self,
-        series: Union[pd.Series, cast.SeriesWrapper]
+        series: cast.SeriesWrapper
     ) -> AtomicType:
         """Increase the width of an integer type to fit the observed range."""
         min_val = int(series.min())
@@ -281,16 +101,213 @@ class IntegerMixin:
             return t
         return self
 
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
 
-#############################
-####    GENERIC TYPES    ####
-#############################
+    def downcast(
+        self,
+        series: cast.SeriesWrapper,
+        smallest: AtomicType = None
+    ) -> cast.SeriesWrapper:
+        """Reduce the itemsize of an integer type to fit the observed range."""
+        # get downcast candidates
+        smaller = self.smaller
+        if smallest is not None and smallest in smaller:
+            # TODO: if smallest == self, this branch will never be chosen.
+            # int.downcast([1, 2, 3], "int64") -> int8, not int64
+            smaller = smaller[smaller.index(smallest):]
+
+        # return smallest that fits observed range
+        min_val = int(series.min())
+        max_val = int(series.max())
+        for t in smaller:
+            if min_val < t.min or max_val > t.max:
+                continue
+            return super().to_integer(series, t)
+        return series
+
+    def round(
+        self,
+        series: cast.SeriesWrapper,
+        rule: str = "half_even",
+        decimals: int = 0
+    ) -> cast.SeriesWrapper:
+        """Round an integer series to the given number of decimal places using
+        the specified rounding rule.
+
+        NOTE: this function does not do anything unless the input to `decimals`
+        is negative.
+        """
+        if decimals < 0:
+            scale = 10**(-1 * decimals)
+            return cast.SeriesWrapper(
+                round_div(series.series, scale, rule=rule) * scale,
+                hasnans=series.hasnans,
+                element_type=series.element_type
+            )
+        return series
+
+    def to_boolean(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str = "raise",
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to a boolean data type."""
+        # check for overflow
+        if series.min() < 0 or series.max() > 1:
+            index = (series < 0) | (series > 1)
+            if errors == "coerce":
+                series.series = series[~index]
+                series.hasnans = True
+            else:
+                raise OverflowError(
+                    f"values exceed {dtype} range at index "
+                    f"{shorten_list(series[index].index.values)}"
+                )
+
+        # delegate to AtomicType.to_boolean()
+        return super().to_boolean(
+            series=series,
+            dtype=dtype,
+            errors=errors,
+            **unused
+        )
+
+    def to_integer(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to another integer data type."""
+        # check for overflow
+        if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
+            dtype = dtype.upcast(series)  # attempt to upcast
+            if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
+                index = (series < dtype.min) | (series > dtype.max) 
+                if errors == "coerce":
+                    series.series = series[~index]
+                    series.hasnans = True
+                else:
+                    raise OverflowError(
+                        f"values exceed {dtype} range at index "
+                        f"{shorten_list(series[index].index.values)}"
+                    )
+
+        # delegate to AtomicType.to_integer()
+        return super().to_integer(
+            series=series,
+            dtype=dtype,
+            errors=errors,
+            **unused
+        )
+
+    def to_float(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        tol: numeric = 0,
+        downcast: bool = False,
+        errors: str = "raise",
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to a float data type."""
+        # parse tolerance
+        tol = Tolerance(tol)
+
+        # do naive conversion
+        result = series.astype(dtype)
+
+        # backtrack to check for overflow/precision loss
+        if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
+            # overflow
+            infs = result.isinf()
+            if infs.any():
+                if errors == "coerce":
+                    result.series = result[~infs]
+                    result.hasnans = True
+                    series.series = series[~infs]  # mirror on original
+                else:
+                    raise OverflowError(
+                        f"values exceed {dtype} range at index "
+                        f"{shorten_list(series[infs].index.values)}"
+                    )
+
+            # precision loss
+            if errors != "coerce":  # coercion ignores precision loss
+                # NOTE: we can bypass overflow/precision loss checks by
+                # delegating straight to AtomicType
+                reverse = super().to_integer(result, dtype=self.upcast(result))
+                bad = ~cast.within_tolerance(series, reverse, tol=tol.real)
+                if bad.any():
+                    raise ValueError(
+                        f"precision loss exceeds tolerance "
+                        f"{str(tol.real)[:8]} at index "
+                        f"{shorten_list(bad[bad].index.values)}"
+                    )
+
+        if downcast:
+            return dtype.downcast(result, tol=tol.real)
+        return result
+
+    def to_complex(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to a complex data type."""
+        result = series.to_float(dtype=dtype.equiv_float, **unused)
+        return result.to_complex(dtype=dtype, **unused)
+
+    def to_decimal(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to a decimal data type."""
+        return cast.SeriesWrapper(
+            series + dtype.type_def(0),  # ~2x faster than apply loop
+            hasnans=series.hasnans,
+            element_type=dtype
+        )
+
+    def to_datetime(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to a datetime data type."""
+        raise NotImplementedError()
+
+    def to_timedelta(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to a timedelta data type."""
+        raise NotImplementedError()
+
+
+#######################
+####    GENERIC    ####
+#######################
 
 
 @generic
 class IntegerType(IntegerMixin, AtomicType):
     """Generic integer supertype."""
 
+    conversion_func = cast.to_integer  # all subtypes/backends inherit this
     name = "int"
     aliases = {int, "int", "integer"}
     min = -2**63
@@ -494,9 +511,9 @@ class UInt64Type(IntegerMixin, AtomicType):
         )
 
 
-###########################
-####    NUMPY TYPES    ####
-###########################
+#####################
+####    NUMPY    ####
+#####################
 
 
 @IntegerType.register_backend("numpy")
@@ -696,9 +713,9 @@ class NumpyUInt64Type(IntegerMixin, AtomicType):
         )
 
 
-############################
-####    PANDAS TYPES    ####
-############################
+######################
+####    PANDAS    ####
+######################
 
 
 @IntegerType.register_backend("pandas")
@@ -898,9 +915,9 @@ class PandasUInt64Type(IntegerMixin, AtomicType):
         )
 
 
-############################
-####    PYTHON TYPES    ####
-############################
+######################
+####    PYTHON    ####
+######################
 
 
 @IntegerType.register_backend("python")
@@ -921,14 +938,14 @@ class PythonIntegerType(IntegerMixin, AtomicType):
         )
 
 
-#########################################
-####    PLATFORM-SPECIFIC ALIASES    ####
-#########################################
+#######################
+####    PRIVATE    ####
+#######################
 
 
-# the following aliases are platform-specific and may be assigned to different
-# AtomicTypes based on hardware configuration.  Luckily, numpy's dtype()
-# factory automatically resolves these, so we can just piggyback off it.
+# these aliases are platform-specific and may be assigned to different integer
+# types based on hardware configuration.  Luckily, numpy's dtype() factory
+# automatically resolves these, so we can just piggyback off it.
 cdef dict platform_specific_aliases = {
     # C char
     "char": str(np.dtype(np.byte)),

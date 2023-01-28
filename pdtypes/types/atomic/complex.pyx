@@ -2,40 +2,31 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
+from pdtypes.error import shorten_list
+from pdtypes.type_hints import numeric
+cimport pdtypes.types.cast as cast
+import pdtypes.types.cast as cast
+from pdtypes.util.round import Tolerance
+
 from .base cimport AdapterType, AtomicType
 from .base import generic, subtype
 import pdtypes.types.atomic.float as float_types
 
-from pdtypes.error import shorten_list
-cimport pdtypes.types.cast as cast
-import pdtypes.types.cast as cast
 
+##################################
+####    MIXINS & CONSTANTS    ####
+##################################
 
-# TODO: consider ftol in downcast()?
-# -> have to consider real/imag separately
-
-
-# TODO: complex snapping needs to consider real, imag separately
-
-
-######################
-####    MIXINS    ####
-######################
+# NOTE: x86 extended precision float type (long double) is platform-specific
+# and may not be exposed depending on hardware configuration.
+cdef bint no_clongdouble = (np.dtype(np.clongdouble).itemsize <= 16)
 
 
 class ComplexMixin:
 
-    def downcast(
-        self,
-        series: pd.Series,
-        tol = 0
-    ) -> AtomicType:
-        """Reduce the itemsize of a complex type to fit the observed range."""
-        for s in self.smaller:
-            attempt = series.astype(s.dtype)
-            if cast.within_tolerance(attempt, series, tol=tol):
-                return s
-        return self
+    ############################
+    ####    TYPE METHODS    ####
+    ############################
 
     @property
     def equiv_float(self) -> AtomicType:
@@ -45,20 +36,7 @@ class ComplexMixin:
                 return x
         raise TypeError(f"{repr(self)} has no equivalent float type")
 
-    def round(
-        self,
-        series: cast.SeriesWrapper,
-        rule: str = "half_even",
-        decimals: int = 0
-    ) -> pd.Series:
-        """Round a complex series to the given number of decimal places using
-        the specified rounding rule.
 
-        NOTE: this method rounds real and imaginary components separately.
-        """
-        real = series.real.round(rule=rule, decimals=decimals)
-        imag = series.imag.round(rule=rule, decimals=decimals)
-        return real + imag * 1j
 
     @property
     def smaller(self) -> list:
@@ -77,15 +55,134 @@ class ComplexMixin:
         result.sort(key=lambda x: x.itemsize)
         return result
 
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
 
-#################################
-####    COMPLEX SUPERTYPE    ####
-#################################
+    def downcast(
+        self,
+        series: cast.SeriesWrapper,
+        tol: numeric = 0
+    ) -> cast.SeriesWrapper:
+        """Reduce the itemsize of a complex type to fit the observed range."""
+        tol = Tolerance(tol)
+        equiv_float = self.equiv_float
+        real = equiv_float.downcast(series.real, tol=tol.real)
+        imag = equiv_float.downcast(series.imag, tol=tol.imag)
+        return combine_real_imag(real, imag)
+
+    def round(
+        self,
+        series: cast.SeriesWrapper,
+        rule: str = "half_even",
+        decimals: int = 0
+    ) -> cast.SeriesWrapper:
+        """Round a complex series to the given number of decimal places using
+        the specified rounding rule.
+
+        NOTE: this method rounds real and imaginary components separately.
+        """
+        real = series.real.round(rule=rule, decimals=decimals)
+        imag = series.imag.round(rule=rule, decimals=decimals)
+        return combine_real_imag(real, imag)
+
+    def to_boolean(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert complex data to a boolean data type."""
+        # 2-step conversion: complex -> float, float -> bool
+        result = series.to_float(dtype=self.equiv_float, **unused)
+        return result.to_boolean(dtype=dtype, **unused)
+
+    def to_integer(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        tol: numeric = 1e-6,
+        errors: str = "raise",
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert complex data to an integer data type."""
+        # 2-step conversion: complex -> float, float -> int
+        result = series.to_float(dtype=self.equiv_float, tol=tol, errors=errors)
+        return result.to_integer(dtype=dtype, **unused)
+
+    def to_float(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        tol: numeric = 0,
+        errors: str = "raise",
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert complex data to a float data type."""
+        real = series.real
+
+        # check for nonzero imag
+        if errors != "coerce":  # ignore if coercing
+            tol = Tolerance(tol)
+            bad = ~cast.within_tolerance(series.imag, 0, tol=tol.imag)
+            if bad.any():
+                raise ValueError(
+                    f"imaginary component exceeds tolerance {tol.imag:.9f} at "
+                    f"index {shorten_list(bad[bad].index.values)}"
+                )
+
+        # TODO: infinite recursion with downcast=True
+        return real.to_float(dtype=dtype, tol=tol, errors=errors, **unused)
+
+    def to_decimal(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        tol: numeric = 1e-6,
+        errors: str = "raise",
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert complex data to a decimal data type."""
+        # 2-step conversion: complex -> float, float -> decimal
+        result = series.to_float(dtype=self.equiv_float, tol=tol, errors=errors)
+        return result.to_decimal(dtype=dtype, **unused)
+
+    def to_datetime(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        tol: numeric = 1e-6,
+        errors: str = "raise",
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert complex data to a datetime data type."""
+        # 2-step conversion: complex -> float, float -> datetime
+        result = series.to_float(dtype=self.equiv_float, tol=tol, errors=errors)
+        return result.to_datetime(dtype=dtype, **unused)
+
+    def to_timedelta(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        tol: numeric = 1e-6,
+        errors: str = "raise",
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert complex data to a timedelta data type."""
+        # 2-step conversion: complex -> float, float -> timedelta
+        result = series.to_float(dtype=self.equiv_float, tol=tol, errors=errors)
+        return result.to_timedelta(dtype=dtype, **unused)
+
+
+#######################
+####    GENERIC    ####
+#######################
 
 
 @generic
 class ComplexType(ComplexMixin, AtomicType):
 
+    conversion_func = cast.to_complex  # all subtypes/backends inherit this
     name = "complex"
     aliases = {
         complex, "complex", "cfloat", "complex float", "complex floating", "c"
@@ -102,30 +199,6 @@ class ComplexType(ComplexMixin, AtomicType):
             na_value=type_def("nan+nanj"),
             itemsize=16
         )
-
-
-@ComplexType.register_backend("numpy")
-class NumpyComplexType(ComplexMixin, AtomicType):
-
-    aliases = {np.complexfloating}
-    _equiv_float = "NumpyFloatType"
-
-    def __init__(self):
-        type_def = np.complex128
-        self.min = type_def(-2**53)
-        self.max = type_def(2**53)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.complex128),
-            na_value=type_def("nan+nanj"),
-            itemsize=16
-        )
-
-
-#########################
-####    COMPLEX64    ####
-#########################
-
 
 @generic
 @subtype(ComplexType)
@@ -149,30 +222,6 @@ class Complex64Type(ComplexMixin, AtomicType):
         )
 
 
-@subtype(NumpyComplexType)
-@Complex64Type.register_backend("numpy")
-class NumpyComplex64Type(ComplexMixin, AtomicType):
-
-    aliases = {np.complex64, np.dtype(np.complex64)}
-    _equiv_float = "NumpyFloat32Type"
-
-    def __init__(self):
-        type_def = np.complex64
-        self.min = type_def(-2**24)
-        self.max = type_def(2**24)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.complex64),
-            na_value=type_def("nan+nanj"),
-            itemsize=8
-        )
-
-
-##########################
-####    COMPLEX128    ####
-##########################
-
-
 @generic
 @subtype(ComplexType)
 class Complex128Type(ComplexMixin, AtomicType):
@@ -193,52 +242,6 @@ class Complex128Type(ComplexMixin, AtomicType):
             na_value=type_def("nan+nanj"),
             itemsize=16
         )
-
-
-@subtype(NumpyComplexType)
-@Complex128Type.register_backend("numpy")
-class NumpyComplex128Type(ComplexMixin, AtomicType):
-
-    aliases = {np.complex128, np.dtype(np.complex128)}
-    _equiv_float = "NumpyFloat64Type"
-
-    def __init__(self):
-        type_def = np.complex128
-        self.min = type_def(-2**53)
-        self.max = type_def(2**53)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.complex128),
-            na_value=type_def("nan+nanj"),
-            itemsize=16
-        )
-
-
-@ComplexType.register_backend("python")
-@Complex128Type.register_backend("python")
-class PythonComplexType(ComplexMixin, AtomicType):
-
-    aliases = set()
-    _equiv_float = "PythonFloatType"
-
-    def __init__(self):
-        type_def = complex
-        self.min = type_def(-2**53)
-        self.max = type_def(2**53)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype("O"),
-            na_value=type_def("nan+nanj"),
-            itemsize=16
-        )
-
-
-##############################################
-####    x86 EXTENDED PRECISION COMPLEX    ####
-##############################################
-
-
-cdef bint no_clongdouble = (np.dtype(np.clongdouble).itemsize <= 16)
 
 
 @generic
@@ -265,6 +268,66 @@ class Complex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
         )
 
 
+#####################
+####    NUMPY    ####
+#####################
+
+
+@ComplexType.register_backend("numpy")
+class NumpyComplexType(ComplexMixin, AtomicType):
+
+    aliases = {np.complexfloating}
+    _equiv_float = "NumpyFloatType"
+
+    def __init__(self):
+        type_def = np.complex128
+        self.min = type_def(-2**53)
+        self.max = type_def(2**53)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype(np.complex128),
+            na_value=type_def("nan+nanj"),
+            itemsize=16
+        )
+
+
+@subtype(NumpyComplexType)
+@Complex64Type.register_backend("numpy")
+class NumpyComplex64Type(ComplexMixin, AtomicType):
+
+    aliases = {np.complex64, np.dtype(np.complex64)}
+    _equiv_float = "NumpyFloat32Type"
+
+    def __init__(self):
+        type_def = np.complex64
+        self.min = type_def(-2**24)
+        self.max = type_def(2**24)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype(np.complex64),
+            na_value=type_def("nan+nanj"),
+            itemsize=8
+        )
+
+
+@subtype(NumpyComplexType)
+@Complex128Type.register_backend("numpy")
+class NumpyComplex128Type(ComplexMixin, AtomicType):
+
+    aliases = {np.complex128, np.dtype(np.complex128)}
+    _equiv_float = "NumpyFloat64Type"
+
+    def __init__(self):
+        type_def = np.complex128
+        self.min = type_def(-2**53)
+        self.max = type_def(2**53)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype(np.complex128),
+            na_value=type_def("nan+nanj"),
+            itemsize=16
+        )
+
 
 @subtype(NumpyComplexType)
 @Complex160Type.register_backend("numpy")
@@ -283,3 +346,52 @@ class NumpyComplex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
             na_value=type_def("nan+nanj"),
             itemsize=np.dtype(np.clongdouble).itemsize
         )
+
+
+######################
+####    PYTHON    ####
+######################
+
+
+@ComplexType.register_backend("python")
+@Complex128Type.register_backend("python")
+class PythonComplexType(ComplexMixin, AtomicType):
+
+    aliases = set()
+    _equiv_float = "PythonFloatType"
+
+    def __init__(self):
+        type_def = complex
+        self.min = type_def(-2**53)
+        self.max = type_def(2**53)
+        super().__init__(
+            type_def=type_def,
+            dtype=np.dtype("O"),
+            na_value=type_def("nan+nanj"),
+            itemsize=16
+        )
+
+
+#######################
+####    PRIVATE    ####
+#######################
+
+
+cdef cast.SeriesWrapper combine_real_imag(
+    cast.SeriesWrapper real,
+    cast.SeriesWrapper imag
+):
+    """Merge separate real, imaginary components into a complex series."""
+    largest = max(
+        [real.element_type, imag.element_type],
+        key=lambda x: x.itemsize or np.inf
+    )
+    result = real + imag * 1j
+    return cast.SeriesWrapper(
+        result,
+        hasnans=real.hasnans or imag.hasnans,
+        element_type=largest.equiv_complex
+    )
+
+
+

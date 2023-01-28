@@ -27,14 +27,24 @@ import pdtypes.types.resolve as resolve
 # -> these could potentially replace the constants in util/time/
 
 
-#################################
-####    GENERIC TIMEDELTA    ####
-#################################
+######################
+####    MIXINS    ####
+######################
+
+class TimedeltaMixin:
+
+    pass
+
+
+#######################
+####    GENERIC    ####
+#######################
 
 
 @generic
-class TimedeltaType(AtomicType):
+class TimedeltaType(TimedeltaMixin, AtomicType):
 
+    conversion_func = cast.to_timedelta  # all subtypes/backends inherit this
     name = "timedelta"
     aliases = {"timedelta"}
 
@@ -47,52 +57,14 @@ class TimedeltaType(AtomicType):
         )
 
 
-################################
-####    PANDAS TIMEDELTA    ####
-################################
-
-
-@TimedeltaType.register_backend("pandas")
-class PandasTimedeltaType(AtomicType):
-
-    aliases = {pd.Timedelta, "Timedelta", "pandas.Timedelta", "pd.Timedelta"}
-
-    def __init__(self):
-        super().__init__(
-            type_def=pd.Timedelta,
-            dtype=np.dtype("m8[ns]"),
-            na_value=pd.NaT,
-            itemsize=8
-        )
-
-
-################################
-####    PYTHON TIMEDELTA    ####
-################################
-
-
-@TimedeltaType.register_backend("python")
-class PythonTimedeltaType(AtomicType):
-
-    aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
-
-    def __init__(self):
-        super().__init__(
-            type_def=datetime.timedelta,
-            dtype=np.dtype("O"),
-            na_value=pd.NaT,
-            itemsize=None
-        )
-
-
-#################################
-####    NUMPY TIMEDELTA64    ####
-#################################
+#####################
+####    NUMPY    ####
+#####################
 
 
 @lru_cache(64)
 @TimedeltaType.register_backend("numpy")
-class NumpyTimedelta64Type(AtomicType):
+class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
 
     aliases = {
         np.timedelta64,
@@ -156,6 +128,44 @@ class NumpyTimedelta64Type(AtomicType):
             step_size = int(match.group("step_size") or 1)
             return cls.instance(unit=unit, step_size=step_size)
         return cls.instance()
+
+
+######################
+####    PANDAS    ####
+######################
+
+
+@TimedeltaType.register_backend("pandas")
+class PandasTimedeltaType(TimedeltaMixin, AtomicType):
+
+    aliases = {pd.Timedelta, "Timedelta", "pandas.Timedelta", "pd.Timedelta"}
+
+    def __init__(self):
+        super().__init__(
+            type_def=pd.Timedelta,
+            dtype=np.dtype("m8[ns]"),
+            na_value=pd.NaT,
+            itemsize=8
+        )
+
+
+######################
+####    PYTHON    ####
+######################
+
+
+@TimedeltaType.register_backend("python")
+class PythonTimedeltaType(TimedeltaMixin, AtomicType):
+
+    aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
+
+    def __init__(self):
+        super().__init__(
+            type_def=datetime.timedelta,
+            dtype=np.dtype("O"),
+            na_value=pd.NaT,
+            itemsize=None
+        )
 
 
 #######################

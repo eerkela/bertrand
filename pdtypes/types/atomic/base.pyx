@@ -9,6 +9,7 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
+from pdtypes.type_hints import numeric
 from pdtypes.util.structs cimport LRUDict
 
 cimport pdtypes.types.cast as cast
@@ -19,17 +20,22 @@ import pdtypes.types.resolve as resolve
 from pdtypes.util.round import Tolerance
 
 
+# TODO: add global defaults for every conversion parameter.  These can be
+# modified to change the behavior of the cast() function on a global level.
+# TOLERANCE = 1e-6
+
+
 # conversions
 # +------------------------------------------------
 # |           | b | i | f | c | d | d | t | s | o |
 # +-----------+------------------------------------
 # | bool      | x | x | x | x | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | int       | x | x | x |   | x |   |   | x | x |
+# | int       | x | x | x | x | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | float     |   | x |   |   |   |   |   | x | x |
+# | float     | x | x | x | x | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | complex   |   |   |   |   |   |   |   | x | x |
+# | complex   | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | decimal   |   |   |   |   |   |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
@@ -41,6 +47,46 @@ from pdtypes.util.round import Tolerance
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | object    | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
+
+
+# implement boolean flags for every AtomicType:
+# - is_boolean (in bool)
+# - is_integer (in int)
+# - is_signed (in signed)
+# - is_unsigned (in unsigned)
+# - is_float (in float)
+# - is_complex (in complex)
+# - is_decimal (in decimal)
+# - is_datetime (in datetime)
+# - is_timedelta (in timedelta)
+# - is_string (in string)
+# - is_object (in object)
+# - is_nullable (if isinstance(self.dtype, np.dtype): in bool/int)  # manually defined where False?
+# - is_sparse (wrapped in SparseType)
+# - is_categorical (wrapped in CategoricalType)
+# - is_root (NOT decorated with @subtype)
+# - is_generic (decorated with @generic)
+
+# These can all be initialized as AtomicType class variables and then
+# overridden in Mixins.
+# -> this probably breaks AdapterTypes, which would have to implement a
+# separate wrapper for each flag (return self.is_x or self.atomic_type.is_x).
+# -> is this such a bad idea?  Fields where the expected value is True rather
+# than false have to be handled in special cases.
+
+# probably better if the is_type flags are runtime @properties.  Then they'd
+# always reflect their decorator configuration, similar to conversion_func.
+# In fact, could maybe boil this down to an inherit_flags() helper function.
+
+# There could be a synthesis of the two, where decorators manage the state of
+# each flag.  Maybe they replace any flag where the value differs from
+# AtomicType?
+
+# Under this paradigm, is_nullable defaults to False for all boolean, integer
+# types.  It must be manually set True to bypass this.
+
+# Actually, this sucks because the whole point of the program is to replace
+# the is_... checks entirely.
 
 
 ##########################
@@ -336,9 +382,26 @@ cdef class AtomicType(BaseType):
         * `to_object(...)`:
     """
 
+    # default fields.  These are managed internally via type decorators.
     registry: TypeRegistry = AtomicTypeRegistry()
     flyweights: dict[int, AtomicType] = {}
     conversion_func = cast.to_object
+    # is_boolean = False
+    # is_integer = False
+    # is_signed = False
+    # is_unsigned = False
+    # is_float = False
+    # is_complex = False
+    # is_decimal = False
+    # is_datetime = False
+    # is_timedelta = False
+    # is_string = False
+    # is_object = True
+    # is_nullable = True
+    # is_sparse = False
+    # is_categorical = False
+    # is_generic = True  # set False in @register_backend
+    # is_root = True  # set False in @subtype
 
     def __init__(
         self,
@@ -374,6 +437,14 @@ cdef class AtomicType(BaseType):
     #############################
     ####    CLASS METHODS    ####
     #############################
+
+    @classmethod
+    def _inherit_flags(cls, other: type) -> None:
+        for k, base in AtomicType.__dict__.items():
+            if k.startswith("is_") and isinstance(base, bool):
+                new = getattr(other, k, base)
+                if new != base:
+                    setattr(cls, k, new)
 
     @classmethod
     def clear_aliases(cls) -> None:
@@ -414,6 +485,10 @@ cdef class AtomicType(BaseType):
 
         # return flyweight
         return result
+
+    @property
+    def is_root(self) -> bool:
+        return self._parent is None
 
     @classmethod
     def register_alias(cls, alias: Any, overwrite: bool = False) -> None:
@@ -474,10 +549,6 @@ cdef class AtomicType(BaseType):
         return self._generic_cache.value
 
     @property
-    def is_root(self) -> bool:
-        return self._parent is None
-
-    @property
     def root(self) -> AtomicType:
         """Return the root node of this AtomicType's subtype hierarchy."""
         if self.supertype is None:
@@ -513,9 +584,9 @@ cdef class AtomicType(BaseType):
 
         return self._supertype_cache.value
 
-    #######################
-    ####    METHODS    ####
-    #######################
+    ############################
+    ####    TYPE METHODS    ####
+    ############################
 
     def _generate_subtypes(self, types: set) -> frozenset:
         """Given a set of subtype definitions, map them to their corresponding
@@ -605,13 +676,22 @@ cdef class AtomicType(BaseType):
         cdef dict merged = {**self.kwargs, **kwargs}
         return self.instance(**merged)
 
+    def unwrap(self) -> AtomicType:
+        """Strip any AdapterTypes that have been attached to this AtomicType.
+        """
+        return self
+
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
+
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         errors: str = "raise",
         **unused
-    ) -> pd.Series:
+    ) -> cast.SeriesWrapper:
         """Convert generic data to a boolean data type.
 
         Note: this method does not do any cleaning/pre-processing of the
@@ -621,15 +701,11 @@ cdef class AtomicType(BaseType):
         method will be propagated to the top-level `to_boolean()` and `cast()`
         functions when they are called on objects of the given type.
         """
-        # apply dtype.type_def if not astype=compliant
-        if dtype.dtype == np.dtype("O"):
-            return series.apply_with_errors(call=dtype.type_def, errors=errors)
-    
         # account for missing/coerced values in series
         if series.hasnans:
             dtype = dtype.force_nullable()
 
-        return series.astype(dtype.dtype, copy=False)
+        return series.astype(dtype, errors=errors)
 
     def to_integer(
         self,
@@ -638,7 +714,7 @@ cdef class AtomicType(BaseType):
         downcast: bool = False,
         errors: str = "raise",
         **unused
-    ) -> pd.Series:
+    ) -> cast.SeriesWrapper:
         """Convert generic data to an integer data type.
 
         Note: this method does not do any cleaning/pre-processing of the
@@ -648,66 +724,44 @@ cdef class AtomicType(BaseType):
         method will be propagated to the top-level `to_integer()` and `cast()`
         functions when they are called on objects of the given type.
         """
-        # downcast if applicable
-        if downcast:
-            dtype = dtype.downcast(series)
-
-        # apply dtype.type_def if not astype-compliant
-        if dtype.dtype == np.dtype("O"):
-            return series.apply_with_errors(call=dtype.type_def, errors=errors)
-
         # account for missing/coerced values in series
         if series.hasnans:
             dtype = dtype.force_nullable()
 
-        # do a 2-step conversion for object series to pandas extension type
-        if pd.api.types.is_object_dtype(series) and dtype.backend == "pandas":
-            # NOTE: pandas doesn't like converting arbitrary objects to
-            # nullable integer extension types.  Luckily, numpy has no such
-            # problem, and SeriesWrapper means we never have to consider NAs.
-            intermediate = dtype.dtype.numpy_dtype
-            final = dtype.dtype
-            return series.astype(intermediate).astype(final)
-
-        return series.astype(dtype.dtype, copy=False)
+        result = series.astype(dtype, errors=errors)
+        if downcast:
+            return dtype.downcast(series)
+        return result
 
     def to_float(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: Tolerance = Tolerance(0),
+        tol: numeric = 0,
         downcast: bool = False,
         errors: str = "raise",
         **unused
-    ) -> pd.Series:
+    ) -> cast.SeriesWrapper:
         """Convert boolean data to a floating point data type."""
+        result = series.astype(dtype, errors=errors)
         if downcast:
-            dtype = dtype.downcast(series)
-
-        if dtype.dtype == np.dtype("O"):
-            return series.apply_with_errors(call=dtype.type_def, errors=errors)
-
-        if downcast:
-            return dtype.downcast(series, tol=tol.real)
-
-        return series.astype(dtype.dtype)
+            return dtype.downcast(result, tol=tol)
+        return result
 
     def to_complex(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        tol: numeric = 0,
         downcast: bool = False,
         errors: str = "raise",
         **unused
-    ) -> pd.Series:
+    ) -> cast.SeriesWrapper:
         """Convert boolean data to a complex data type."""
+        result = series.astype(dtype, errors=errors)
         if downcast:
-            dtype = dtype.downcast(series)
-
-        if dtype.dtype == np.dtype("O"):
-            return series.apply_with_errors(call=dtype.type_def, errors=errors)
-
-        return series.astype(dtype.dtype)
+            return dtype.downcast(result, tol=tol)
+        return result
 
     def to_decimal(
         self,
@@ -715,9 +769,9 @@ cdef class AtomicType(BaseType):
         dtype: AtomicType,
         errors: str = "raise",
         **unused
-    ) -> pd.Series:
+    ) -> cast.SeriesWrapper:
         """Convert boolean data to a decimal data type."""
-        return series.apply_with_errors(call=dtype.type_def, errors=errors)
+        return series.astype(dtype, errors=errors)
 
 
 
@@ -725,14 +779,15 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        errors: str = "raise",
         **unused
-    ) -> pd.Series:
+    ) -> cast.SeriesWrapper:
         """Convert arbitrary data to a string data type.
 
         Override this to change the behavior of the generic `to_string()` and
         `cast()` functions on objects of the given type.
         """
-        return series.astype(dtype.dtype)
+        return series.astype(dtype, errors=errors)
 
     def to_object(
         self,
@@ -741,7 +796,7 @@ cdef class AtomicType(BaseType):
         call: Callable = None,
         errors: str = "raise",
         **unused
-    ) -> pd.Series:
+    ) -> cast.SeriesWrapper:
         """Convert arbitrary data to an object data type."""
         if call is None:
             call = dtype.type_def
@@ -756,12 +811,9 @@ cdef class AtomicType(BaseType):
                 )
             return result
 
-        return series.apply_with_errors(call=dtype.type_def, errors=errors)
-
-    def unwrap(self) -> AtomicType:
-        """Strip any AdapterTypes that have been attached to this AtomicType.
-        """
-        return self
+        result = series.apply_with_errors(call=dtype.type_def, errors=errors)
+        result.element_type = dtype
+        return result
 
     #############################
     ####    MAGIC METHODS    ####
@@ -973,6 +1025,9 @@ def generic(class_def: type):
                 )
 
             # assign attributes
+            wrapped.conversion_func = cls.conversion_func
+            # wrapped._inherit_flags(cls)
+            # wrapped.is_generic = False
             wrapped._generic = cls
             wrapped.name = cls.name
             wrapped.backend = backend
@@ -982,6 +1037,7 @@ def generic(class_def: type):
 
         return decorator
 
+    # register_backend is needed to compile type definitions
     class_def.register_backend = register_backend
     if class_def._ignored:
         return class_def
@@ -1075,6 +1131,9 @@ def subtype(supertype: type):
             )
 
         # assign attributes
+        class_def.conversion_func = supertype.conversion_func
+        # class_def._inherit_flags(supertype)
+        # class_def.is_root = False
         class_def._parent = supertype
         supertype._children.add(class_def)
         AtomicType.registry.flush()

@@ -1,9 +1,9 @@
-import distutils.core
+from setuptools import setup
 from Cython.Build import cythonize
 import numpy
 
 
-distutils.core.setup(
+setup(
     name="pdtypes",
     ext_modules=cythonize(
         [

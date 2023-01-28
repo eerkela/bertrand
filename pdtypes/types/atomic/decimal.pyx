@@ -22,7 +22,9 @@ from pdtypes.util.round import round_decimal
 
 class DecimalMixin:
 
-    conversion_func = cast.to_decimal
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
 
     def round(
         self,
@@ -36,14 +38,15 @@ class DecimalMixin:
         return round_decimal(series.series, rule=rule, decimals=decimals)
 
 
-###############################
-####    GENERIC DECIMAL    ####
-###############################
+#######################
+####    GENERIC    ####
+#######################
 
 
 @generic
 class DecimalType(DecimalMixin, AtomicType):
 
+    conversion_func = cast.to_boolean  # all subtypes/backends inherit this
     name = "decimal"
     aliases = {"decimal"}
 

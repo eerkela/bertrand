@@ -21,12 +21,6 @@ import pdtypes.types.resolve as resolve
 # TODO: fully implement boolean to_x conversions
 
 
-# TODO: bool.to_integer() fails for object series to pandas extension type.
-# -> pd.Series([True, False], dtype="O").astype(pd.Int64Dtype())
-# -> convert to equivalent numpy type, then to pandas type.  Probably have to
-# do this for all object to_integer conversions.
-
-
 ######################
 ####    MIXINS    ####
 ######################
@@ -34,7 +28,11 @@ import pdtypes.types.resolve as resolve
 
 class BooleanMixin:
 
-    conversion_func = cast.to_boolean
+    # is_boolean = True
+
+    ############################
+    ####    TYPE METHODS    ####
+    ############################
 
     def force_nullable(self) -> AtomicType:
         """Create an equivalent boolean type that can accept missing values."""
@@ -58,14 +56,22 @@ class BooleanMixin:
             )
         return self.type_def(input_str == "True")
 
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
+
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         **unused
-    ) -> pd.Series:
+    ) -> cast.SeriesWrapper:
         """Convert boolean data to a decimal data type."""
-        return series + dtype.type_def(0)  # ~2x faster than loop
+        return cast.SeriesWrapper(
+            series + dtype.type_def(0),  # ~2x faster than loop
+            hasnans=series.hasnans,
+            element_type=dtype
+        )
 
     def to_datetime(
         self,
@@ -73,20 +79,21 @@ class BooleanMixin:
         dtype: AtomicType,
         unit: str = "ns",
         since: str = "UTC"
-    ):
+    ) -> cast.SeriesWrapper:
         """Convert boolean data to a datetime data type."""
-        pass
+        raise NotImplementedError()
 
 
-###############################
-####    GENERIC BOOLEAN    ####
-###############################
+#######################
+####    GENERIC    ####
+#######################
 
 
 @generic
 class BooleanType(BooleanMixin, AtomicType):
     """Boolean supertype."""
 
+    conversion_func = cast.to_boolean  # all subtypes/backends inherit this
     name = "bool"
     aliases = {bool, "bool", "boolean", "bool_", "bool8", "b1", "?"}
     is_nullable = False
@@ -98,6 +105,11 @@ class BooleanType(BooleanMixin, AtomicType):
             na_value=pd.NA,
             itemsize=1
         )
+
+
+#####################
+####    NUMPY    ####
+#####################
 
 
 @BooleanType.register_backend("numpy")
@@ -115,6 +127,11 @@ class NumpyBooleanType(BooleanMixin, AtomicType):
         )
 
 
+######################
+####    PANDAS    ####
+######################
+
+
 @BooleanType.register_backend("pandas")
 class PandasBooleanType(BooleanMixin, AtomicType):
 
@@ -127,6 +144,11 @@ class PandasBooleanType(BooleanMixin, AtomicType):
             na_value=pd.NA,
             itemsize=1
         )
+
+
+######################
+####    PYTHON    ####
+######################
 
 
 @BooleanType.register_backend("python")
