@@ -223,9 +223,8 @@ class IntegerMixin:
                 bad = ~cast.within_tolerance(series, reverse, tol=tol.real)
                 if bad.any():
                     raise ValueError(
-                        f"precision loss exceeds tolerance "
-                        f"{str(tol.real)[:8]} at index "
-                        f"{shorten_list(bad[bad].index.values)}"
+                        f"precision loss exceeds tolerance {tol.real:.2e} at "
+                        f"index {shorten_list(bad[bad].index.values)}"
                     )
 
         if downcast:

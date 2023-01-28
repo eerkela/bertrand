@@ -23,6 +23,13 @@ from pdtypes.util.round import Tolerance
 # TODO: add global defaults for every conversion parameter.  These can be
 # modified to change the behavior of the cast() function on a global level.
 # TOLERANCE = 1e-6
+# -> these should be managed under a `flags` global object.
+# - flags.downcast
+# - flags.tolerance
+# - flags.rounding
+# - flags.errors
+# - flags.true
+# - flags.false
 
 
 # conversions
@@ -37,7 +44,7 @@ from pdtypes.util.round import Tolerance
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | complex   | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | decimal   | x | x |   | x | x |   |   | x | x |
+# | decimal   | x | x | x | x | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | datetime  |   |   |   |   |   |   |   |   | x |
 # +-----------+---+---+---+---+---+---+---+---+---+

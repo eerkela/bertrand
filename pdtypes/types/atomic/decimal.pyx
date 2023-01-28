@@ -5,6 +5,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
+from pdtypes.error import shorten_list
 from pdtypes.type_hints import numeric
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -93,6 +94,54 @@ class DecimalMixin:
             errors=errors,
             **unused
         )
+
+    def to_float(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        tol: numeric = 1e-6,
+        downcast: bool = False,
+        errors: str = "raise",
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert decimal data to a floating point data type."""
+        # parse tolerance
+        tol = Tolerance(tol)
+
+        # do naive conversion
+        result = series.astype(dtype)
+
+        # backtrack to check for overflow/precision loss
+        if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
+            # overflow
+            infs = result.isinf() ^ series.isinf()
+            if infs.any():
+                if errors == "coerce":
+                    result.series = result[~infs]
+                    result.hasnans = True
+                    series.series = series[~infs]  # mirror on original
+                else:
+                    raise OverflowError(
+                        f"values exceed {dtype} range at index "
+                        f"{shorten_list(series[infs].index.values)}"
+                    )
+
+            # precision loss
+            if errors != "coerce":  # coercion ignores precision loss
+                # NOTE: we can bypass overflow/precision loss checks by
+                # delegating straight to AtomicType
+                reverse = super().to_decimal(result, dtype=self)
+                bad = ~cast.within_tolerance(series, reverse, tol=tol.real)
+                if bad.any():
+                    raise ValueError(
+                        f"precision loss exceeds tolerance {tol.real:.2e} at "
+                        f"index {shorten_list(bad[bad].index.values)}"
+                    )
+
+        if downcast:
+            return dtype.downcast(result, tol=tol.real)
+        return result
+
 
     # TODO: to_float
     # -> consider overflow, precision loss
