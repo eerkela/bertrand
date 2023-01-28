@@ -29,6 +29,8 @@ import pdtypes.types.resolve as resolve
 class BooleanMixin:
 
     # is_boolean = True
+    min = 0
+    max = 1
 
     ############################
     ####    TYPE METHODS    ####

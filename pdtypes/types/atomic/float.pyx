@@ -15,6 +15,17 @@ import pdtypes.types.cast as cast
 from pdtypes.util.round import round_float, Tolerance
 
 
+# TODO: might be able to implement a standardized dtype.check_for_overflow
+# method.
+
+# def AtomicType.check_for_overflow(
+#     self,
+#     series: cast.SeriesWrapper,
+#     errors: str = "raise"
+# ) -> None:
+
+
+
 ##################################
 ####    MIXINS & CONSTANTS    ####
 ##################################
@@ -101,39 +112,13 @@ class FloatMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert floating point data to a boolean data type."""
-        tol = Tolerance(tol)
-
-        # snap round, checking for precision loss
-        if rounding is None or tol:
-            rounded = series.round("half_even")
-            index = ~cast.within_tolerance(series, rounded, tol=tol.real)
-            if tol:
-                series.series = series.where(index, rounded)
-            if rounding is None and index.any():
-                if errors == "coerce":
-                    series.series = series.round("down")
-                else:
-                    raise ValueError(
-                        f"precision loss detected at index "
-                        f"{shorten_list(series[index].index.values)}"
-                    )
-        if rounding:
-            series.series = series.round(rounding)
+        # apply tolerance + rounding, rejecting any non-integer results
+        series = cast.snap_round(series, Tolerance(tol).real, rounding, errors)
 
         # check for overflow
-        min_val = int(series.min())
-        max_val = int(series.max())
-        if min_val < 0 or max_val > 1:
-            index = (series < 0) | (series > 1)
-            if errors == "coerce":
-                series.series = series[~index]
-                series.hasnans = True
-            else:
-                raise OverflowError(
-                    f"values exceed {dtype} range at index "
-                    f"{shorten_list(series[index].index.values)}"
-                )
+        dtype = cast.check_for_overflow(series, dtype, errors)
 
+        # pass to AtomicType.to_boolean()
         return super().to_boolean(
             series=series,
             dtype=dtype,
@@ -142,7 +127,6 @@ class FloatMixin:
             errors=errors,
             **unused
         )
-
 
     def to_integer(
         self,
@@ -154,40 +138,11 @@ class FloatMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert floating point data to an integer data type."""
-        tol = Tolerance(tol)
-
-        # snap round, checking for precision loss
-        if tol or rounding is None:
-            rounded = series.round("half_even")
-            index = ~cast.within_tolerance(series, rounded, tol=tol.real)
-            if tol:
-                series.series = series.where(index, rounded)
-            if rounding is None and index.any():
-                if errors == "coerce":
-                    series.series = series.round("down")
-                else:
-                    raise ValueError(
-                        f"precision loss detected at index "
-                        f"{shorten_list(series[index].index.values)}"
-                    )
-        if rounding:
-            series.series = series.round(rounding)
+        # apply tolerance + rounding, rejecting any non-integer results
+        series = cast.snap_round(series, Tolerance(tol).real, rounding, errors)
 
         # check for overflow
-        min_val = int(series.min())
-        max_val = int(series.max())
-        if min_val < dtype.min or max_val > dtype.max:
-            dtype = dtype.upcast(series)  # attempt to upcast
-            if min_val < dtype.min or max_val > dtype.max:
-                index = (series < dtype.min) | (series > dtype.max)
-                if errors == "coerce":
-                    series.series = series[~index]
-                    series.hasnans = True
-                else:
-                    raise OverflowError(
-                        f"values exceed {dtype} range at index "
-                        f"{shorten_list(series[index].index.values)}"
-                    )
+        dtype = cast.check_for_overflow(series, dtype, errors)
 
         # pass to AtomicType.to_integer()
         return super().to_integer(

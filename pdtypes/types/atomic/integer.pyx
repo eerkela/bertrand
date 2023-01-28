@@ -81,9 +81,9 @@ class IntegerMixin:
         """Get a list of types that `self` can be downcasted to."""
         result = [
             x for x in self.root.subtypes if (
+                (x.itemsize or np.inf) < (self.itemsize or np.inf) and
                 x.backend == self.backend and
-                x.is_signed == self.is_signed and
-                (x.itemsize or np.inf) < (self.itemsize or np.inf)
+                x.is_signed == self.is_signed
             )
         ]
         return sorted(result, key=lambda x: x.itemsize)
@@ -95,10 +95,14 @@ class IntegerMixin:
         """Increase the width of an integer type to fit the observed range."""
         min_val = int(series.min())
         max_val = int(series.max())
-        for t in self.larger:
-            if min_val < t.min or max_val > t.max:
-                continue
-            return t
+        if min_val < self.min or max_val > self.max:
+            for t in self.larger:
+                if min_val > t.min and max_val < t.max:
+                    return t
+            raise OverflowError(
+                f"{self} could not be upcast to match observed range "
+                f"{(series.min(), series.max())}"
+            )
         return self
 
     ##############################
@@ -156,19 +160,7 @@ class IntegerMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a boolean data type."""
-        # check for overflow
-        if series.min() < 0 or series.max() > 1:
-            index = (series < 0) | (series > 1)
-            if errors == "coerce":
-                series.series = series[~index]
-                series.hasnans = True
-            else:
-                raise OverflowError(
-                    f"values exceed {dtype} range at index "
-                    f"{shorten_list(series[index].index.values)}"
-                )
-
-        # delegate to AtomicType.to_boolean()
+        dtype = cast.check_for_overflow(series, dtype, errors)
         return super().to_boolean(
             series=series,
             dtype=dtype,
@@ -184,21 +176,7 @@ class IntegerMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to another integer data type."""
-        # check for overflow
-        if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
-            dtype = dtype.upcast(series)  # attempt to upcast
-            if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
-                index = (series < dtype.min) | (series > dtype.max) 
-                if errors == "coerce":
-                    series.series = series[~index]
-                    series.hasnans = True
-                else:
-                    raise OverflowError(
-                        f"values exceed {dtype} range at index "
-                        f"{shorten_list(series[index].index.values)}"
-                    )
-
-        # delegate to AtomicType.to_integer()
+        dtype = cast.check_for_overflow(series, dtype, errors)
         return super().to_integer(
             series=series,
             dtype=dtype,
@@ -258,11 +236,12 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        tol: numeric = 0,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a complex data type."""
-        result = series.to_float(dtype=dtype.equiv_float, **unused)
-        return result.to_complex(dtype=dtype, **unused)
+        result = series.to_float(dtype=dtype.equiv_float, tol=tol, **unused)
+        return result.to_complex(dtype=dtype, tol=tol, **unused)
 
     def to_decimal(
         self,

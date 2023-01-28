@@ -13,6 +13,7 @@ import pdtypes.types.detect as detect
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
+from pdtypes.error import shorten_list
 from pdtypes.type_hints import array_like, numeric
 from pdtypes.util.round import Tolerance
 
@@ -27,25 +28,6 @@ from pdtypes.util.round import Tolerance
 # TODO: top-level to_x() functions are respondible for input validation
 
 # TODO: have to account for empty series in each conversion.
-
-
-# TODO: every conversion returns a SeriesWrapper instance, which allows them
-# to be interoperable.
-# SeriesWrapper.to_float(self, dtype, ...) -> SeriesWrapper:
-#     return self.element_type.to_float(series=self, dtype=dtype, ...)
-
-# then you can just stack 2-step conversions, like so:
-# IntegerType.to_complex():
-#     result = self.to_float(equiv_float, ...)
-#     return result.to_complex(dtype, ...)
-
-
-# TODO: add a reject_non_integer argument to snap_round that will throw a
-# precision loss error if the results of the operation are not exact integer
-# values.  This saves on some boilerplate when doing float conversions.
-
-# round, snap, and snap_round should return SeriesWrappers to make them
-# compatible with dispatch().
 
 
 ######################
@@ -374,6 +356,40 @@ def as_series(data) -> pd.Series:
     return pd.Series(data, dtype="O")
 
 
+def check_for_overflow(
+    series: SeriesWrapper,
+    dtype: atomic.AtomicType,
+    errors: str
+) -> atomic.AtomicType:
+    """Ensure that a series does not overflow past the allowable range of the
+    given AtomicType.  If overflow is detected, attempt to upcast the
+    AtomicType to fit or coerce the series if directed.
+    """
+    # TODO: may want to incorporate a tolerance here to allow for clipping
+
+    if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
+        # attempt to upcast
+        if hasattr(dtype, "upcast"):
+            try:
+                return dtype.upcast(series)
+            except OverflowError:
+                pass
+
+        # process error
+        index = (series < dtype.min) | (series > dtype.max)
+        if errors == "coerce":
+            # series.series = series[~index].clip(dtype.min, dtype.max)
+            series.series = series[~index]
+            series.hasnans = True
+        else:
+            raise OverflowError(
+                f"values exceed {dtype} range at index "
+                f"{shorten_list(series[index].index.values)}"
+            )
+
+    return dtype
+
+
 def do_conversion(
     data,
     endpoint: str,
@@ -394,6 +410,44 @@ def do_conversion(
         if errors == "ignore":
             return data
         raise err
+
+
+def snap_round(
+    series: SeriesWrapper,
+    tol: numeric,
+    rule: str,
+    errors: str
+) -> SeriesWrapper:
+    """Snap a SeriesWrapper to the nearest integer within `tol`, and then round
+    the remaining results according to the given rule.  Rejects any outputs
+    that are not integer-like by the end of this process.
+    """
+    # NOTE: semantics are a bit messy here, but they minimize rounding
+    # operations as much as possible.
+
+    # apply tolerance, then check for non-integers if necessary
+    if tol or rule is None:
+        rounded = series.round("half_even")  # compute once
+        outside = ~within_tolerance(series, rounded, tol=tol)
+        if tol:
+            series.series = series.series.where(outside, rounded)
+
+        # check for non-integer (ignore if rounding)
+        if rule is None and outside.any():
+            if errors == "coerce":
+                series.series = series.round("down").series
+            else:
+                raise ValueError(
+                    f"precision loss exceeds tolerance {tol:.2e} at index "
+                    f"{shorten_list(outside[outside].index.values)}"
+                )
+
+    # apply final rounding rule
+    if rule:
+        series.series = series.round(rule)
+
+    return series
+
 
 def within_tolerance(series_1, series_2, tol: numeric) -> array_like:
     """Check if every element of a series is within tolerance of another
@@ -566,6 +620,14 @@ cdef class SeriesWrapper:
             result,
             hasnans=self.hasnans,
             element_type=dtype
+        )
+
+    def copy(self, *args, **kwargs) -> SeriesWrapper:
+        """Duplicate a SeriesWrapper."""
+        return SeriesWrapper(
+            self.series.copy(*args, **kwargs),
+            hasnans=self._hasnans,
+            element_type=self._element_type
         )
 
     def idxmax(self, *args, **kwargs) -> int:
@@ -759,43 +821,6 @@ cdef class SeriesWrapper:
 
         rounded = self.round("half_even", decimals=0)
         return self.where(np.abs(self - rounded) > tol, rounded)
-
-    def snap_round(
-        self,
-        tol: numeric = 1e-6,
-        rule: str = "half_even"
-    ) -> SeriesWrapper:
-        """Snap the series to the nearest integer within `tol`, and then round
-        the remaining results according to the given rule.
-        """
-        # snap round, checking for precision loss
-        if tol or rounding is None:
-            rounded = series.round("half_even")
-            index = ~cast.within_tolerance(series, rounded, tol=tol.real)
-            if tol:
-                series.series = series.where(index, rounded)
-            if rounding is None and index.any():
-                if errors == "coerce":
-                    series.series = series.round("down")
-                else:
-                    raise ValueError(
-                        f"precision loss detected at index "
-                        f"{shorten_list(series[index].index.values)}"
-                    )
-        if rounding:
-            series.series = series.round(rounding)
-
-        # don't snap if rounding to nearest
-        cdef set nearest = {
-            "half_floor", "half_ceiling", "half_down", "half_up", "half_even"
-        }
-
-        result = self.series
-        if tol and rule not in nearest:
-            result = self.snap(tol=tol)
-        if rule:
-            result = self.round(rule=rule)
-        return result
 
     def to_boolean(
         self,
