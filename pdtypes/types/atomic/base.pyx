@@ -20,6 +20,24 @@ import pdtypes.types.resolve as resolve
 from pdtypes.util.round import Tolerance
 
 
+# TODO: consider adding an @dispatch decorator that adds an AtomicType method
+# to the list of dispatchable methods.  This is automatically integrated with
+# dispatch() and added as a property of SeriesWrapper objects, which separates
+# the notions of data methods and type methods conceptually.  Data methods
+# must accept a SeriesWrapper as their first argument and return another
+# SeriesWrapper with the appropriate data.  They must accept **kwargs in their
+# signature.
+# -> This allows users to specify arbitrary methods that work on any data type,
+# as long as it implements a corresponding @dispatch method.
+# -> Effectively, this decorator attaches a method to a type's .dispatched
+# class attribute, which is a dictionary with method names as keys and callable
+# methods as values.  This replaces getattr() checks in dispatch().
+# -> SeriesWrapper.__getattr__() first checks for a dispatched method with the
+# matching name, and then defaults to series if no match is found.  In the case
+# of non-homogenous data, it does this independently for each type in the
+# series, and then constructs a new CompositeType with the appropriate index.
+
+
 # TODO: add global defaults for every conversion parameter.  These can be
 # modified to change the behavior of the cast() function on a global level.
 # TOLERANCE = 1e-6

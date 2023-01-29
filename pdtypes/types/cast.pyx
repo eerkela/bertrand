@@ -419,7 +419,7 @@ def snap_round(
     errors: str
 ) -> SeriesWrapper:
     """Snap a SeriesWrapper to the nearest integer within `tol`, and then round
-    the remaining results according to the given rule.  Rejects any outputs
+    any remaining results according to the given rule.  Rejects any outputs
     that are not integer-like by the end of this process.
     """
     # NOTE: semantics are a bit messy here, but they minimize rounding
