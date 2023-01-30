@@ -601,9 +601,9 @@ cdef class SeriesWrapper:
         if dtype.unwrap().dtype == np.dtype("O"):
             result = self.apply_with_errors(
                 call=dtype.type_def,
-                errors=errors
+                errors=errors,
+                element_type=dtype
             )
-            result.element_type = dtype
             return result
 
         # default to pd.Series.astype()
@@ -693,7 +693,12 @@ cdef class SeriesWrapper:
         if self.original_index is not None:
             self.series.index = self.original_index
 
-    def apply_with_errors(self, call: Callable, errors: str) -> SeriesWrapper:
+    def apply_with_errors(
+        self,
+        call: Callable,
+        errors: str = "raise",
+        element_type: atomic.BaseType = None
+    ) -> SeriesWrapper:
         """Apply `call` over the series, applying the specified error handling
         rule at each index.
         """
@@ -707,7 +712,8 @@ cdef class SeriesWrapper:
             result = result[~index]
         return SeriesWrapper(
             result,
-            hasnans=has_errors or self.hasnans
+            hasnans=has_errors or self.hasnans,
+            element_type=element_type
         )
 
     def dispatch(self, endpoint: str, *args, **kwargs) -> SeriesWrapper:

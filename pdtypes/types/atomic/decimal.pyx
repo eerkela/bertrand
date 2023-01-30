@@ -111,9 +111,8 @@ class DecimalMixin:
         # do naive conversion
         result = series.astype(dtype)
 
-        # backtrack to check for overflow/precision loss
+        # check for overflow
         if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
-            # overflow
             infs = result.isinf() ^ series.isinf()
             if infs.any():
                 if errors == "coerce":
@@ -126,25 +125,21 @@ class DecimalMixin:
                         f"{shorten_list(series[infs].index.values)}"
                     )
 
-            # precision loss
-            if errors != "coerce":  # coercion ignores precision loss
-                # NOTE: we can bypass overflow/precision loss checks by
-                # delegating straight to AtomicType
-                reverse = super().to_decimal(result, dtype=self)
-                bad = ~cast.within_tolerance(series, reverse, tol=tol.real)
-                if bad.any():
-                    raise ValueError(
-                        f"precision loss exceeds tolerance {tol.real:.2e} at "
-                        f"index {shorten_list(bad[bad].index.values)}"
-                    )
+        # backtrack to check for precision loss
+        if errors != "coerce":  # coercion ignores precision loss
+            # NOTE: we can bypass overflow/precision loss checks by
+            # delegating straight to AtomicType
+            reverse = super().to_decimal(result, dtype=self)
+            bad = ~cast.within_tolerance(series, reverse, tol=tol.real)
+            if bad.any():
+                raise ValueError(
+                    f"precision loss exceeds tolerance {tol.real:.2e} at "
+                    f"index {shorten_list(bad[bad].index.values)}"
+                )
 
         if downcast:
             return dtype.downcast(result, tol=tol.real)
         return result
-
-
-    # TODO: to_float
-    # -> consider overflow, precision loss
 
     def to_complex(
         self,

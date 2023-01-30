@@ -13,13 +13,15 @@
     +----+   +----+   +----+   +----+   +----+   +----+   +----+   +----+
 
 """
+from functools import partial
+
 import numpy as np
 cimport numpy as np
 import pandas as pd
 from typing import Union
 
 from .base cimport AdapterType, AtomicType
-from .base import generic, subtype
+from .base import dispatch, generic, subtype
 
 from pdtypes.error import shorten_list
 from pdtypes.type_hints import numeric
@@ -274,6 +276,34 @@ class IntegerMixin:
     ) -> cast.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
         raise NotImplementedError()
+
+    @dispatch
+    def to_string(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        base: int = 0,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to a string data type in any base."""
+        # use decimal representation
+        if not base or base == 10:
+            return super().to_string(series=series, dtype=dtype, **unused)
+
+        # use non-decimal base
+        if not 2 <= base <= 36:
+            raise ValueError("`base` must be >= 2 and <= 36, or 0")
+        return super().to_string(
+            series.apply_with_errors(
+                partial(int_to_base, base=base),
+                errors="raise"
+            ),
+            dtype=dtype,
+            **unused
+        )
+
+
+
 
 
 #######################
@@ -919,6 +949,31 @@ class PythonIntegerType(IntegerMixin, AtomicType):
 #######################
 ####    PRIVATE    ####
 #######################
+
+
+cdef Py_UNICODE[36] base_lookup = (
+    [chr(ord("0") + i) for i in range(10)] + 
+    [chr(ord("A") + i) for i in range(26)]
+)
+
+
+cdef str int_to_base(object val, unsigned char base):
+    if not val:
+        return "0"
+
+    cdef bint negative = val < 0
+    if negative:
+        val = abs(val)
+
+    cdef list chars = []
+    while val:
+        chars.append(base_lookup[<unsigned char> val % base])
+        val //= base
+
+    cdef str result = "".join(chars[::-1])
+    if negative:
+        result = "-" + result
+    return result
 
 
 # these aliases are platform-specific and may be assigned to different integer

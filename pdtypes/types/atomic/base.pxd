@@ -24,6 +24,7 @@ cdef class BaseType:
 cdef class AtomicTypeRegistry:
     cdef:
         CacheValue _aliases
+        CacheValue _dispatch_map
         CacheValue _regex
         CacheValue _resolvable
         list atomic_types

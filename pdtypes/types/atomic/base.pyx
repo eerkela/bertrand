@@ -1,3 +1,4 @@
+from collections import defaultdict
 import inspect
 from itertools import combinations
 import regex as re  # using alternate regex
@@ -18,6 +19,21 @@ cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 from pdtypes.util.round import Tolerance
+
+
+# TODO: dispatch can construct new CompositeTypes for composite inputs.
+# The function passed to transform constructs a new series full of
+# series.element_type with the same index as the group, and adds it to a
+# list.  After transforming, you join all of these indices into a single
+# index of the same shape as the output, and then convert into a numpy array.
+# This forms the new index for the CompositeType.  If any groups return a
+# different element_type than they started with (grp.name), then generate
+# new groups for SeriesWrapper.
+# -> Maybe in the case of composite input, series isn't even stored, it's just
+# held as a groupby object.  The .series accessor reconstructs the series
+# by joining each group.
+
+
 
 
 # TODO: consider adding an @dispatch decorator that adds an AtomicType method
@@ -68,7 +84,7 @@ from pdtypes.util.round import Tolerance
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | timedelta |   |   |   |   |   |   |   |   | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | string    |   |   |   |   |   |   |   | x | x |
+# | string    | x | x | x |   | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | object    | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
@@ -176,6 +192,30 @@ cdef class AtomicTypeRegistry:
 
         # return cached value
         return self._aliases.value
+
+    @property
+    def dispatch_map(self) -> dict[str, dict[AtomicType, Callable]]:
+        """Return an up-to-date dictionary of all methods that are currently
+        being dispatched to SeriesWrapper objects based on their type.
+
+        The returned dictionary maps method names to dictionaries of their own,
+        which track the AtomicType instances for which that method is defined.
+        The values of these nested dictionaries are the methods in question.
+        """
+        # check if cache is out of date
+        if self.needs_updating(self._dispatch_map):
+            result = defaultdict(lambda: {})
+            for atomic_type in self.atomic_types:
+                # NOTE: __dict__ is always empty for cython types
+                attributes = dir(atomic_type)
+                for name in attributes:
+                    method = getattr(atomic_type, name)
+                    if callable(method) and hasattr(method, "_dispatch"):
+                        result[name] |= {atomic_type: method}
+            self._dispatch_map = self.remember(dict(result))
+
+        # return cached value
+        return self._dispatch_map.value
 
     @property
     def regex(self) -> re.Pattern:
@@ -836,8 +876,11 @@ cdef class AtomicType(BaseType):
                 )
             return result
 
-        result = series.apply_with_errors(call=dtype.type_def, errors=errors)
-        result.element_type = dtype
+        result = series.apply_with_errors(
+            call=dtype.type_def,
+            errors=errors,
+            element_type=dtype
+        )
         return result
 
     #############################
@@ -1014,6 +1057,15 @@ cdef class AdapterType(AtomicType):
 
 
 cdef tuple generic_methods = ("_generate_subtypes", "instance", "resolve")
+
+
+def dispatch(method):
+    """Use the given method for series of the associated type."""
+    def wrapper(self, *args, **kwargs):
+        return method(self, *args, **kwargs)
+
+    wrapper._dispatch = True
+    return wrapper
 
 
 def generic(class_def: type):

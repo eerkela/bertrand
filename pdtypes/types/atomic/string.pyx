@@ -1,6 +1,7 @@
 import decimal
+from functools import partial
 from types import MappingProxyType
-from typing import Union, Sequence
+from typing import Iterable, Union
 
 cimport cython
 import numpy as np
@@ -25,6 +26,10 @@ import pdtypes.types.resolve as resolve
 ##################################
 
 
+cdef set default_false = {"false", "f", "no", "n", "off", "0"}
+cdef set default_true = {"true", "t", "yes", "y", "on", "1"}
+
+
 cdef object default_string_dtype
 cdef bint pyarrow_installed
 
@@ -40,12 +45,98 @@ except ImportError:
 
 class StringMixin:
 
-    pass
+
+    #############################
+    ####    SERIES METHODS   ####
+    #############################
+
+    def to_boolean(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        true: str | Iterable[str] = default_true,
+        false: str | Iterable[str] = default_false,
+        errors: str = False,
+        ignore_case: bool = True,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert string data to a boolean data type."""
+        # convert to set
+        true = {true} if isinstance(true, str) else set(true)
+        false = {false} if isinstance(false, str) else set(false)
+
+        # ensure true, false are disjoint
+        if not true.isdisjoint(false):
+            intersection = true.intersection(false)
+            err_msg = f"`true` and `false` must be disjoint "
+            if len(intersection) == 1:
+                err_msg += (
+                    f"({repr(intersection.pop())} is present in both sets)"
+                )
+            else:
+                err_msg += f"({intersection} are present in both sets)"
+            raise ValueError(err_msg)
+
+        # configure values for lookup function
+        cdef dict lookup = dict.fromkeys(true, 1) | dict.fromkeys(false, 0)
+        if "*" in true:
+            fill = 1
+        elif "*" in false:
+            fill = 0
+        else:
+            fill = -1
+
+        # apply lookup function with specified errors
+        result = series.apply_with_errors(
+            partial(
+                boolean_apply,
+                lookup=lookup,
+                ignore_case=ignore_case,
+                fill=fill
+            ),
+            errors=errors
+        )
+
+        # delegate to AtomicType.to_boolean()
+        return super().to_boolean(
+            result,
+            dtype=dtype,
+            errors=errors,
+            **unused
+        )
+
+    def to_integer(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        base: int = 0,
+        errors: str = "raise",
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert string data to an integer data type with the given base."""
+        result = series.apply_with_errors(
+            partial(int, base=base),
+            errors=errors,
+            element_type=resolve.resolve_type(int)
+        )
+        return result.to_integer(dtype=dtype, errors=errors, **unused)
+
+    def to_float(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert string data to a floating point data type."""
+        decimal_type = resolve.resolve_type("decimal")
+        result = series.to_decimal(dtype=decimal_type, **unused)
+        return result.to_float(dtype=dtype, **unused)
 
 
-##############################
-####    GENERIC STRING    ####
-##############################
+
+#######################
+####    GENERIC    ####
+#######################
 
 
 @generic
@@ -76,9 +167,9 @@ class StringType(StringMixin, AtomicType):
         )
 
 
-############################
-####   PYTHON STRING    ####
-############################
+#####################
+####   PYTHON    ####
+#####################
 
 
 @StringType.register_backend("python")
@@ -95,9 +186,9 @@ class PythonStringType(StringMixin, AtomicType):
         )
 
 
-##############################
-####    PYARROW STRING    ####
-##############################
+#######################
+####    PYARROW    ####
+#######################
 
 
 @StringType.register_backend("pyarrow")
@@ -115,6 +206,25 @@ class PyArrowStringType(StringMixin, AtomicType, ignore=not pyarrow_installed):
         )
 
 
+#######################
+####    PRIVATE    ####
+#######################
+
+
+cdef char boolean_apply(
+    str val,
+    dict lookup,
+    bint ignore_case,
+    char fill
+) except -1:
+    if ignore_case:
+        val = val.lower()
+    if fill == -1:
+        return lookup[val]
+    return lookup.get(val, fill)
+
+
 # add pyarrow string extension type to PyArrowStringType aliases
 if pyarrow_installed:
+    # NOTE: if pyarrow isn't installed, StringDtype("pyarrow") throws an error
     PyArrowStringType.register_alias(pd.StringDtype("pyarrow"))
