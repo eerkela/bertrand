@@ -133,6 +133,7 @@ class IntegerMixin:
             return super().to_integer(series, t)
         return series
 
+    @dispatch
     def round(
         self,
         series: cast.SeriesWrapper,
@@ -154,6 +155,7 @@ class IntegerMixin:
             )
         return series
 
+    @dispatch
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -170,6 +172,7 @@ class IntegerMixin:
             **unused
         )
 
+    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
@@ -186,6 +189,7 @@ class IntegerMixin:
             **unused
         )
 
+    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
@@ -233,6 +237,7 @@ class IntegerMixin:
             return dtype.downcast(result, tol=tol.real)
         return result
 
+    @dispatch
     def to_complex(
         self,
         series: cast.SeriesWrapper,
@@ -244,6 +249,7 @@ class IntegerMixin:
         result = series.to_float(dtype=dtype.equiv_float, tol=tol, **unused)
         return result.to_complex(dtype=dtype, tol=tol, **unused)
 
+    @dispatch
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
@@ -257,6 +263,7 @@ class IntegerMixin:
             element_type=dtype
         )
 
+    @dispatch
     def to_datetime(
         self,
         series: cast.SeriesWrapper,
@@ -267,6 +274,7 @@ class IntegerMixin:
         """Convert integer data to a datetime data type."""
         raise NotImplementedError()
 
+    @dispatch
     def to_timedelta(
         self,
         series: cast.SeriesWrapper,

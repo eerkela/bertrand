@@ -6,7 +6,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AtomicType, CompositeType
-from .base import lru_cache
+from .base import dispatch, lru_cache
 
 from pdtypes.error import shorten_list
 cimport pdtypes.types.cast as cast
@@ -72,6 +72,7 @@ class ObjectType(AtomicType):
 
         return super().contains(other)
 
+    @dispatch
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -90,6 +91,7 @@ class ObjectType(AtomicType):
             **unused
         )
 
+    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
@@ -108,6 +110,7 @@ class ObjectType(AtomicType):
             **unused
         )
 
+    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
@@ -126,6 +129,7 @@ class ObjectType(AtomicType):
             **unused
         )
 
+    @dispatch
     def to_complex(
         self,
         series: cast.SeriesWrapper,
@@ -144,6 +148,7 @@ class ObjectType(AtomicType):
             **unused
         )
 
+    @dispatch
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
@@ -162,6 +167,7 @@ class ObjectType(AtomicType):
             **unused
         )
 
+    @dispatch
     def to_datetime(
         self,
         series: cast.SeriesWrapper,
@@ -180,6 +186,7 @@ class ObjectType(AtomicType):
             **unused
         )
 
+    @dispatch
     def to_timedelta(
         self,
         series: cast.SeriesWrapper,
@@ -198,6 +205,7 @@ class ObjectType(AtomicType):
             **unused
         )
 
+    @dispatch
     def to_string(
         self,
         series: cast.SeriesWrapper,

@@ -5,7 +5,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AdapterType, AtomicType
-from .base import generic, subtype
+from .base import dispatch, generic, subtype
 import pdtypes.types.atomic.complex as complex_types
 
 from pdtypes.error import shorten_list
@@ -87,6 +87,7 @@ class FloatMixin:
                 return attempt
         return series
 
+    @dispatch
     def round(
         self,
         series: cast.SeriesWrapper,
@@ -97,11 +98,12 @@ class FloatMixin:
         using the specified rounding rule.
         """
         return cast.SeriesWrapper(
-            round_float(series.rectify(), rule=rule, decimals=decimals),
+            round_float(series.rectify().series, rule=rule, decimals=decimals),
             hasnans=series.hasnans,
             element_type=series.element_type
         )
 
+    @dispatch
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -128,6 +130,7 @@ class FloatMixin:
             **unused
         )
 
+    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,

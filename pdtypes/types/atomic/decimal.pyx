@@ -14,7 +14,7 @@ import pdtypes.types.resolve as resolve
 from pdtypes.util.round import round_decimal, Tolerance
 
 from .base cimport AtomicType
-from .base import generic
+from .base import dispatch, generic
 
 
 ######################
@@ -28,6 +28,7 @@ class DecimalMixin:
     ####    SERIES METHODS    ####
     ##############################
 
+    @dispatch
     def round(
         self,
         series: cast.SeriesWrapper,
@@ -43,6 +44,7 @@ class DecimalMixin:
             element_type=series.element_type
         )
 
+    @dispatch
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -69,6 +71,7 @@ class DecimalMixin:
             **unused
         )
 
+    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
@@ -95,6 +98,7 @@ class DecimalMixin:
             **unused
         )
 
+    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
@@ -141,6 +145,7 @@ class DecimalMixin:
             return dtype.downcast(result, tol=tol.real)
         return result
 
+    @dispatch
     def to_complex(
         self,
         series: cast.SeriesWrapper,

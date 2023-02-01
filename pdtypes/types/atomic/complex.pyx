@@ -9,7 +9,7 @@ import pdtypes.types.cast as cast
 from pdtypes.util.round import Tolerance
 
 from .base cimport AdapterType, AtomicType
-from .base import generic, subtype
+from .base import dispatch, generic, subtype
 import pdtypes.types.atomic.float as float_types
 
 
@@ -71,6 +71,7 @@ class ComplexMixin:
         imag = equiv_float.downcast(series.imag, tol=tol.imag)
         return combine_real_imag(real, imag)
 
+    @dispatch
     def round(
         self,
         series: cast.SeriesWrapper,
@@ -86,6 +87,7 @@ class ComplexMixin:
         imag = series.imag.round(rule=rule, decimals=decimals)
         return combine_real_imag(real, imag)
 
+    @dispatch
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -97,6 +99,7 @@ class ComplexMixin:
         result = series.to_float(dtype=self.equiv_float, **unused)
         return result.to_boolean(dtype=dtype, **unused)
 
+    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
@@ -110,6 +113,7 @@ class ComplexMixin:
         result = series.to_float(dtype=self.equiv_float, tol=tol, errors=errors)
         return result.to_integer(dtype=dtype, **unused)
 
+    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
@@ -134,6 +138,7 @@ class ComplexMixin:
         # TODO: infinite recursion with downcast=True
         return real.to_float(dtype=dtype, tol=tol, errors=errors, **unused)
 
+    @dispatch
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
@@ -147,6 +152,7 @@ class ComplexMixin:
         result = series.to_float(dtype=self.equiv_float, tol=tol, errors=errors)
         return result.to_decimal(dtype=dtype, **unused)
 
+    @dispatch
     def to_datetime(
         self,
         series: cast.SeriesWrapper,
@@ -160,6 +166,7 @@ class ComplexMixin:
         result = series.to_float(dtype=self.equiv_float, tol=tol, errors=errors)
         return result.to_datetime(dtype=dtype, **unused)
 
+    @dispatch
     def to_timedelta(
         self,
         series: cast.SeriesWrapper,

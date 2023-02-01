@@ -9,7 +9,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AtomicType
-from .base import generic
+from .base import dispatch, generic
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -45,11 +45,11 @@ except ImportError:
 
 class StringMixin:
 
-
     #############################
     ####    SERIES METHODS   ####
     #############################
 
+    @dispatch
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -105,6 +105,7 @@ class StringMixin:
             **unused
         )
 
+    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
@@ -121,6 +122,7 @@ class StringMixin:
         )
         return result.to_integer(dtype=dtype, errors=errors, **unused)
 
+    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,

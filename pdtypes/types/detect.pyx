@@ -81,7 +81,7 @@ cdef atomic.CompositeType detect_vector_type(np.ndarray[object] arr):
     cdef type element_type
     cdef type class_def
     cdef atomic.AtomicType result
-    cdef atomic.AtomicType[:] index = np.empty(arr_length, dtype="O")
+    cdef np.ndarray[object] index = np.empty(arr_length, dtype="O")
 
     # loop through input array (fast)
     for i in range(arr_length):

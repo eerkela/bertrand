@@ -399,6 +399,15 @@ cdef class AtomicTypeRegistry:
 ######################
 
 
+def dispatch(method):
+    """Use the given method for series of the associated type."""
+    def wrapper(self, *args, **kwargs):
+        return method(self, *args, **kwargs)
+
+    wrapper._dispatch = True
+    return wrapper
+
+
 cdef class AtomicType(BaseType):
     """Base type for all user-defined atomic types.
     Notes
@@ -750,6 +759,7 @@ cdef class AtomicType(BaseType):
     ####    SERIES METHODS    ####
     ##############################
 
+    @dispatch
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -772,6 +782,7 @@ cdef class AtomicType(BaseType):
 
         return series.astype(dtype, errors=errors)
 
+    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
@@ -798,6 +809,7 @@ cdef class AtomicType(BaseType):
             return dtype.downcast(series)
         return result
 
+    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
@@ -813,6 +825,7 @@ cdef class AtomicType(BaseType):
             return dtype.downcast(result, tol=tol)
         return result
 
+    @dispatch
     def to_complex(
         self,
         series: cast.SeriesWrapper,
@@ -828,6 +841,7 @@ cdef class AtomicType(BaseType):
             return dtype.downcast(result, tol=tol)
         return result
 
+    @dispatch
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
@@ -839,7 +853,7 @@ cdef class AtomicType(BaseType):
         return series.astype(dtype, errors=errors)
 
 
-
+    @dispatch
     def to_string(
         self,
         series: cast.SeriesWrapper,
@@ -854,6 +868,7 @@ cdef class AtomicType(BaseType):
         """
         return series.astype(dtype, errors=errors)
 
+    @dispatch
     def to_object(
         self,
         series: cast.SeriesWrapper,
@@ -1059,15 +1074,6 @@ cdef class AdapterType(AtomicType):
 cdef tuple generic_methods = ("_generate_subtypes", "instance", "resolve")
 
 
-def dispatch(method):
-    """Use the given method for series of the associated type."""
-    def wrapper(self, *args, **kwargs):
-        return method(self, *args, **kwargs)
-
-    wrapper._dispatch = True
-    return wrapper
-
-
 def generic(class_def: type):
     """Class decorator to mark generic AtomicType definitions.
 
@@ -1234,7 +1240,7 @@ cdef class CompositeType(BaseType):
     def __init__(
         self,
         atomic_types = None,
-        AtomicType[:] index = None
+        np.ndarray[object] index = None
     ):
         # parse argument
         if atomic_types is None:  # empty
@@ -1244,7 +1250,7 @@ cdef class CompositeType(BaseType):
         elif isinstance(atomic_types, CompositeType):  # copy
             self.atomic_types = atomic_types.atomic_types.copy()
             if index is None:
-                index = atomic_types._index
+                index = atomic_types.index
         elif (
             hasattr(atomic_types, "__iter__") and
             not isinstance(atomic_types, str)
@@ -1267,7 +1273,7 @@ cdef class CompositeType(BaseType):
             )
 
         # assign index
-        self._index = index
+        self.index = index
     
     ###############################
     ####    UTILITY METHODS    ####
@@ -1297,13 +1303,7 @@ cdef class CompositeType(BaseType):
         return self.union(atomic_type.subtypes for atomic_type in self)
 
     cdef void forget_index(self):
-        self._index = None
-
-    @property
-    def index(self) -> np.ndarray:
-        if self._index is None:
-            return None
-        return self._index.base.base
+        self.index = None
 
     ####################################
     ####    STATIC WRAPPER (SET)    ####

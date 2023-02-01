@@ -64,10 +64,10 @@ cdef class AdapterType(AtomicType):
 
 
 cdef class CompositeType(BaseType):
-    cdef:
-        AtomicType[:] _index
-
     cdef readonly:
         set atomic_types
+
+    cdef public:
+        np.ndarray index
 
     cdef void forget_index(self)

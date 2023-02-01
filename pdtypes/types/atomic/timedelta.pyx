@@ -10,7 +10,7 @@ import pandas as pd
 import regex as re  # using alternate python regex engine
 
 from .base cimport AtomicType, CompositeType
-from .base import generic, lru_cache
+from .base import dispatch, generic, lru_cache
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast

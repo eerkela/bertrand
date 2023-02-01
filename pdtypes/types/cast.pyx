@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 import decimal
+from functools import partial, wraps
 from typing import Any, Callable, Iterable, Iterator
 
 cimport numpy as np
@@ -16,6 +17,11 @@ import pdtypes.types.resolve as resolve
 from pdtypes.error import shorten_list
 from pdtypes.type_hints import array_like, numeric
 from pdtypes.util.round import Tolerance
+
+
+# TODO: dispatch() -> dispatch_method().  This is a decorator that wraps the
+# result of a function call.
+
 
 
 # TODO: downcast flag should accept resolvable type specifiers as well as
@@ -430,7 +436,7 @@ def snap_round(
         rounded = series.round("half_even")  # compute once
         outside = ~within_tolerance(series, rounded, tol=tol)
         if tol:
-            series.series = series.series.where(outside, rounded)
+            series.series = series.where(outside.series, rounded.series).series
 
         # check for non-integer (ignore if rounding)
         if rule is None and outside.any():
@@ -444,7 +450,7 @@ def snap_round(
 
     # apply final rounding rule
     if rule:
-        series.series = series.round(rule)
+        series.series = series.round(rule).series
 
     return series
 
@@ -459,7 +465,7 @@ def within_tolerance(series_1, series_2, tol: numeric) -> array_like:
 
 
 cdef class SeriesWrapper:
-    """Base wrapper for pd.Series objects.
+    """Wrapper for type-aware pd.Series objects.
 
     Implements a dynamic wrapper according to the Gang of Four's Decorator
     Pattern (not to be confused with python decorators).
@@ -471,10 +477,6 @@ cdef class SeriesWrapper:
         hasnans: bool = None,
         element_type: atomic.BaseType = None
     ):
-        if not isinstance(series, pd.Series):
-            raise TypeError(
-                f"`series` must be a pd.Series object, not {type(series)}"
-            )
         self.series = series
         self.size = len(self.series)
         self.hasnans = hasnans
@@ -501,19 +503,6 @@ cdef class SeriesWrapper:
                 f"it describes"
             )
         self._element_type = val
-
-    @property
-    def hasinfs(self) -> bool:
-        """Check whether a wrapped series contains infinities."""
-        # TODO: delete this?
-        if self._hasinfs is None:
-            self._hasinfs = self.isinf().any()
-        return self._hasinfs
-
-    @hasinfs.setter
-    def hasinfs(self, val: bool) -> None:
-        # TODO: delete this?
-        self._hasinfs = val
 
     @property
     def hasnans(self) -> bool:
@@ -575,7 +564,7 @@ cdef class SeriesWrapper:
                 f"`series` must be a pandas Series object, not {type(val)}"
             )
         self._series = val
-        self.cache = {}
+        self.cache = {}  # reset cache
 
     ###############################
     ####    WRAPPED METHODS    ####
@@ -693,6 +682,28 @@ cdef class SeriesWrapper:
         if self.original_index is not None:
             self.series.index = self.original_index
 
+    def __getattr__(self, name: str) -> Any:
+        dispatch_map = atomic.AtomicType.registry.dispatch_map
+        if name in dispatch_map:  # dispatch method
+            return self.dispatch(name)
+
+        # fall back to pandas
+        fallback = getattr(self.series, name)
+        if callable(fallback):  # dynamically wrap series outputs
+
+            @wraps(fallback)
+            def wrapper(*args, **kwargs):
+                result = fallback(*args, **kwargs)
+                if isinstance(result, pd.Series):
+                    return SeriesWrapper(result)
+                return result
+
+            return wrapper
+
+        if isinstance(fallback, pd.Series):  # re-wrap
+            return SeriesWrapper(fallback)
+        return fallback
+
     def apply_with_errors(
         self,
         call: Callable,
@@ -716,95 +727,100 @@ cdef class SeriesWrapper:
             element_type=element_type
         )
 
-    def dispatch(self, endpoint: str, *args, **kwargs) -> SeriesWrapper:
-        """Apply an AtomicType method over the series.
-
-        If the series is non-homogenous (contains elements of more than one
-        type), then each type is processed separately.  The dispatched method
-        must accept a SeriesWrapper as its first argument, and any additional
-        arguments to this function are passed directly to it.
+    def dispatch(self, endpoint: str) -> Callable:
+        """Decorate the named method, dispatching it across every type present
+        in a SeriesWrapper instance.
         """
-        # group by AtomicType and transform
-        if isinstance(self.element_type, atomic.CompositeType):
-            groups = self.groupby(self.element_type.index, sort=False)
-            result = groups.transform(lambda grp: getattr(grp.name, endpoint)(
-                SeriesWrapper(
+        dispatch_map = atomic.AtomicType.registry.dispatch_map
+        submap = dispatch_map[endpoint]
+        element_type = self.element_type
+
+        # series is homogenous
+        if isinstance(element_type, atomic.AtomicType):
+            # check for corresponding AtomicType method
+            call = submap.get(type(element_type), None)
+            if call is not None:
+                return partial(call, element_type, self)
+
+            # fall back to pandas implementation
+            call = getattr(self.series, endpoint)
+
+            @wraps(call)
+            def wrapper(*args, **kwargs):
+                result = call(*args, **kwargs)
+                if isinstance(result, pd.Series):
+                    return SeriesWrapper(result)
+                return result
+
+            return wrapper
+
+        # series is composite
+        groups = self.series.groupby(element_type.index, sort=False)
+        output_types = set()
+        indices = []
+
+        def wrapper(*args, **kwargs):
+            def transform(grp):
+                atomic_type = grp.name
+                grp = SeriesWrapper(
                     grp,
                     hasnans=self.hasnans,
-                    element_type=grp.name
-                ),
-                *args,
-                **kwargs
-            ).series)
+                    element_type=atomic_type
+                )
+                call = submap.get(type(atomic_type), None)
+                if call is not None:
+                    result = call(atomic_type, grp, *args, **kwargs)
+                else:
+                    call = getattr(grp.series, endpoint)
+                    result = SeriesWrapper(call(*args, **kwargs))
+                if not self.hasnans:
+                    self.hasnans=result.hasnans
+                output_types.add(result.element_type)
+                indices.append(
+                    pd.Series(
+                        np.full(result.shape, result.element_type),
+                        index=result.series.index
+                    )
+                )
+                return result.series
 
-        # no grouping necessary, delegate directly to AtomicType
-        else:
-            result = getattr(self.element_type, endpoint)(
-                self,
-                *args,
-                **kwargs
-            ).series
+            result = groups.transform(transform)
+            result_type = resolve.resolve_type(output_types)
+            if len(result_type) == 1:
+                result_type = result_type.pop()
+            else:
+                index = pd.Series(
+                    np.empty(result.shape, dtype="O"),
+                    index=result.index
+                )
+                for i in indices:
+                    index.update(i)
+                result_type.index = index.to_numpy()
+            return SeriesWrapper(
+                result,
+                hasnans=self.hasnans,
+                element_type=result_type
+            )
 
-        # construct new SeriesWrapper with results
-        hasnans = self.hasnans
-        if len(result) < self.size:
-            hasnans = True  # account for coerced nans
-        return SeriesWrapper(
-            result,
-            hasnans=hasnans
-        )
+        return wrapper
 
-    def isinf(self) -> pd.Series:
+    def isinf(self) -> SeriesWrapper:
         """TODO"""
         return self.isin([np.inf, -np.inf])
 
-    def rectify(self) -> pd.Series:
+    def rectify(self) -> SeriesWrapper:
         """Convert an improperly-formatted object series to a standardized
         numpy/pandas data type.
         """
         # TODO: deprecate this
         if (
-            pd.api.types.is_object_dtype(self) and
+            pd.api.types.is_object_dtype(self.series) and
             self.element_type.dtype != np.dtype("O")
         ):
             return self.astype(self.element_type)
-        return self.series
+        return self
 
-    def round(self, rule: str = "half_even", decimals: int = 0) -> pd.Series:
-        """Round the series using to the given number of decimal places using
-        the specified rounding rule.
-
-        Round numerics according to the specified rule.
-
-        Parameters
-        ----------
-        rule : str, default 'half_even'
-            A string specifying the rounding strategy to use.  Must be one of
-            ('floor', 'ceiling', 'down', 'up', 'half_floor', 'half_ceiling',
-            'half_down', 'half_up', 'half_even'), where `up`/`down` round
-            away/toward zero, and `ceiling`/`floor` round toward +/- infinity,
-            respectively.
-        decimals : int, default 0
-            The number of decimals to round to.  Positive numbers count to the
-            right of the decimal point, and negative values count to the left.
-            0 represents rounding in the ones place of `val`.  This follows the
-            convention set out in `numpy.around`.
-
-        Returns
-        -------
-        pd.Series
-            The result of rounding `val` according to the given rule.
-
-        Raises
-        ------
-        ValueError
-            If `rule` is not one of the accepted rounding rules ('floor',
-            'ceiling', 'down', 'up', 'half_floor', 'half_ceiling', 'half_down',
-            'half_up', 'half_even').
-        """
-        return self.dispatch("round", rule=rule, decimals=decimals)
-
-    def snap(self, tol: numeric = 1e-6) -> pd.Series:
+    def snap(self, tol: numeric = 1e-6) -> SeriesWrapper:
         """Snap each element of the series to the nearest integer if it is
         within the specified tolerance.
 
@@ -818,274 +834,262 @@ cdef class SeriesWrapper:
 
         Returns
         -------
-        pd.Series
+        SeriesWrapper
             The result of conditionally rounding the series around integers,
             with tolerance `tol`.
         """
         if not tol:  # trivial case, tol=0
-            return self.series
+            return self.copy()
 
-        rounded = self.round("half_even", decimals=0)
-        return self.where(np.abs(self - rounded) > tol, rounded)
+        rounded = self.round("half_even")
+        return SeriesWrapper(
+            self.series.where((
+                (self - rounded).abs() > tol).series,
+                rounded.series
+            ),
+            hasnans=self.hasnans,
+            element_type=self.element_type
+        )
 
-    def to_boolean(
-        self,
-        dtype: atomic.AtomicType,
-        **kwargs: str
-    ) -> SeriesWrapper:
-        """Convert arbitrary series data to a boolean data type.
+    #################################
+    ####   DISPATCHED METHODS    ####
+    #################################
 
-        This function hooks into an AtomicType's `to_boolean()` method, which
-        holds implementation logic.
-        """
-        result = self.dispatch("to_boolean", dtype=dtype, **kwargs)
-        result.element_type = dtype
-        return result
+    # NOTE: SeriesWrapper dynamically inherits every @dispatch method that is
+    # defined by its element_type.  In the case of a composite series, these
+    # dispatched methods are applied independently to each type that is present
+    # in the series.  If a dispatched method is not defined for a given
+    # element_type, then SeriesWrapper automatically falls back to the pandas
+    # implementation, if one exists.  See __getattr__() for more details on how
+    # this is done.
 
-    def to_integer(
-        self,
-        dtype: atomic.AtomicType,
-        **kwargs: str
-    ) -> SeriesWrapper:
-        """Convert arbitrary series data to a boolean data type.
 
-        This function hooks into an AtomicType's `to_integer()` method, which
-        holds implementation logic.
-        """
-        result = self.dispatch("to_integer", dtype=dtype, **kwargs)
-        result.element_type = dtype
-        return result
+    ##########################
+    ####    ARITHMETIC    ####
+    ##########################
 
-    def to_float(
-        self,
-        dtype: atomic.AtomicType,
-        **kwargs: str
-    ) -> SeriesWrapper:
-        """Convert arbitrary series data to a boolean data type.
+    # NOTE: math operators can change the element_type of a series
 
-        This function hooks into an AtomicType's `to_float()` method, which
-        holds implementation logic.
-        """
-        result = self.dispatch("to_float", dtype=dtype, **kwargs)
-        result.element_type = dtype
-        return result
+    def __abs__(self) -> SeriesWrapper:
+        return SeriesWrapper(abs(self.series), hasnans=self._hasnans)
 
-    def to_complex(
-        self,
-        dtype: atomic.AtomicType,
-        **kwargs: str
-    ) -> SeriesWrapper:
-        """Convert arbitrary series data to a boolean data type.
+    def __add__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series + other, hasnans=self._hasnans)
 
-        This function hooks into an AtomicType's `to_complex()` method, which
-        holds implementation logic.
-        """
-        result = self.dispatch("to_complex", dtype=dtype, **kwargs)
-        result.element_type = dtype
-        return result
+    def __and__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series & other, hasnans=self._hasnans)
 
-    def to_decimal(
-        self,
-        dtype: atomic.AtomicType,
-        **kwargs: str
-    ) -> SeriesWrapper:
-        """Convert arbitrary series data to a boolean data type.
+    def __divmod__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(divmod(self.series, other), hasnans=self._hasnans)
 
-        This function hooks into an AtomicType's `to_decimal()` method, which
-        holds implementation logic.
-        """
-        result = self.dispatch("to_decimal", dtype=dtype, **kwargs)
-        result.element_type = dtype
-        return result
+    def __eq__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series == other, hasnans=self._hasnans)
 
-    def to_datetime(
-        self,
-        dtype: atomic.AtomicType,
-        **kwargs: str
-    ) -> SeriesWrapper:
-        """Convert arbitrary series data to a boolean data type.
+    def __floordiv__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series // other, hasnans=self._hasnans)
 
-        This function hooks into an AtomicType's `to_datetime()` method, which
-        holds implementation logic.
-        """
-        result = self.dispatch("to_datetime", dtype=dtype, **kwargs)
-        result.element_type = dtype
-        return result
+    def __ge__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series >= other, hasnans=self._hasnans)
 
-    def to_timedelta(
-        self,
-        dtype: atomic.AtomicType,
-        **kwargs: str
-    ) -> SeriesWrapper:
-        """Convert arbitrary series data to a boolean data type.
+    def __gt__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series > other, hasnans=self._hasnans)
 
-        This function hooks into an AtomicType's `to_timedelta()` method, which
-        holds implementation logic.
-        """
-        result = self.dispatch("to_timedelta", dtype=dtype, **kwargs)
-        result.element_type = dtype
-        return result
+    def __iadd__(self, other) -> None:
+        self.series += other
+        self._element_type = None
 
-    def to_string(
-        self,
-        dtype: atomic.AtomicType,
-        **kwargs: str
-    ) -> SeriesWrapper:
-        """Convert arbitrary series data to a boolean data type.
+    def __iand__(self, other) -> None:
+        self.series &= other
+        self._element_type = None
 
-        This function hooks into an AtomicType's `to_string()` method, which
-        holds implementation logic.
-        """
-        result = self.dispatch("to_string", dtype=dtype, **kwargs)
-        result.element_type = dtype
-        return result
+    def __idiv__(self, other) -> None:
+        self.series /= other
+        self._element_type = None
 
-    def to_object(
-        self,
-        dtype: atomic.AtomicType,
-        **kwargs: str
-    ) -> SeriesWrapper:
-        """Convert arbitrary series data to a boolean data type.
+    def __ifloordiv__(self, other) -> None:
+        self.series //= other
+        self._element_type = None
 
-        This function hooks into an AtomicType's `to_object()` method, which
-        holds implementation logic.
-        """
-        result = self.dispatch("to_object", dtype=dtype, **kwargs)
-        result.element_type = dtype
-        return result
+    def __ilshift__(self, other) -> None:
+        self.series <<= other
+        self._element_type = None
+
+    def __imod__(self, other) -> None:
+        self.series %= other
+        self._element_type = None
+
+    def __imul__(self, other) -> None:
+        self.series *= other
+        self._element_type = None
+
+    def __invert__(self) -> SeriesWrapper:
+        return SeriesWrapper(~self.series, hasnans=self._hasnans)
+
+    def __ior__(self, other) -> None:
+        self.series |= other
+        self._element_type = None
+
+    def __ipow__(self, other) -> None:
+        self.series **= other
+        self._element_type = None
+
+    def __irshift__(self, other) -> None:
+        self.series >>= other
+        self._element_type = None
+
+    def __isub__(self, other) -> None:
+        self.series -= other
+        self._element_type = None
+
+    def __ixor__(self, other) -> None:
+        self.series ^= other
+        self._element_type = None
+
+    def __le__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series <= other, hasnans=self._hasnans)
+
+    def __lshift__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series << other, hasnans=self._hasnans)
+
+    def __lt__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series < other, hasnans=self._hasnans)
+
+    def __mod__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series % other, hasnans=self._hasnans)
+
+    def __mul__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series * other, hasnans=self._hasnans)
+
+    def __ne__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series != other, hasnans=self._hasnans)
+
+    def __neg__(self) -> SeriesWrapper:
+        return SeriesWrapper(-self.series, hasnans=self._hasnans)
+
+    def __or__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series | other, hasnans=self._hasnans)
+
+    def __pos__(self) -> SeriesWrapper:
+        return SeriesWrapper(+self.series, hasnans=self._hasnans)
+
+    def __pow__(self, other, mod) -> SeriesWrapper:
+        return SeriesWrapper(
+            self.series.__pow__(other, mod),
+            hasnans=self._hasnans
+        )
+
+    def __radd__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(other + self.series, hasnans=self._hasnans)
+
+    def __rand__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(other & self.series, hasnans=self._hasnans)
+
+    def __rdivmod__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(divmod(other, self.series), hasnans=self._hasnans)
+
+    def __rfloordiv__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(other // self.series, hasnans=self._hasnans)
+
+    def __rlshift__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(other << self.series, hasnans=self._hasnans)
+
+    def __rmod__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(other % self.series, hasnans=self._hasnans)
+
+    def __rmul__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(other * self.series, hasnans=self._hasnans)
+
+    def __ror__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(other | self.series, hasnans=self._hasnans)
+
+    def __rpow__(self, other, mod) -> SeriesWrapper:
+        return SeriesWrapper(
+            self.series.__rpow__(other, mod),
+            hasnans=self._hasnans
+        )
+
+    def __rrshift__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(other >> self.series, hasnans=self._hasnans)
+
+    def __rshift__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(other >> self.series, hasnans=self._hasnans)
+
+    def __rsub__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(other - self.series, hasnans=self._hasnans)
+
+    def __rtruediv__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(other / self.series, hasnans=self._hasnans)
+
+    def __rxor__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(other ^ self.series, hasnans=self._hasnans)
+
+    def __sub__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series - other, hasnans=self._hasnans)
+
+    def __truediv__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series / other, hasnans=self._hasnans)
+
+    def __xor__(self, other) -> SeriesWrapper:
+        return SeriesWrapper(self.series ^ other, hasnans=self._hasnans)
 
     #############################
     ####    MAGIC METHODS    ####
     #############################
 
-    def __abs__(self) -> pd.Series:
-        return abs(self.series)
-
-    def __add__(self, other) -> pd.Series:
-        return self.series + other
-
-    def __and__(self, other) -> pd.Series:
-        return self.series & other
-
     def __contains__(self, val) -> bool:
-        return self.series.__contains__(val)
-
-    def __delattr__(self, name):
-        delattr(self.series, name)
-
-    def __delete__(self, instance):
-        self.series.__delete__(instance)
+        return val in self.series
 
     def __delitem__(self, key) -> None:
         del self.series[key]
+        self._element_type = None
 
     def __dir__(self) -> list[str]:
+        # direct SeriesWrapper attributes
         result = dir(type(self))
         result += list(self.__dict__.keys())
+
+        # pd.Series attributes
         result += [x for x in dir(self.series) if x not in result]
+
+        # dispatched attributes
+        result += [x for x in atomic.AtomicType.registry.dispatch_map]
+
         return result
-
-    def __div__(self, other) -> pd.Series:
-        return self.series / other
-
-    def __divmod__(self, other) -> pd.Series:
-        return divmod(self.series, other)
-
-    def __eq__(self, other) -> pd.Series:
-        return self.series == other
 
     def __float__(self) -> float:
         return float(self.series)
 
-    def __floordiv__(self, other) -> pd.Series:
-        return self.series // other
-
-    def __ge__(self, other) -> pd.Series:
-        return self.series >= other
-
-    def __get__(self, instance, class_):
-        return self.series.__get__(instance, class_)
-
-    def __getattr__(self, name) -> Any:
-        return getattr(self.series, name)
-
     def __getitem__(self, key) -> Any:
-        return self.series[key]
+        result = self.series[key]
 
-    def __gt__(self, other) -> pd.Series:
-        return self.series > other
+        # slicing: re-wrap result
+        if isinstance(result, pd.Series):
+            # slicing can change element_type of result, but only if composite
+            if isinstance(self._element_type, atomic.CompositeType):
+                element_type = None
+            else:
+                element_type = self._element_type
+
+            # wrap
+            result = SeriesWrapper(
+                result,
+                hasnans=self._hasnans,
+                element_type=element_type
+            )
+
+        return result
 
     def __hex__(self) -> hex:
         return hex(self.series)
 
-    def __iadd__(self, other) -> None:
-        self.series += other
-
-    def __iand__(self, other) -> None:
-        self.series &= other
-
-    def __idiv__(self, other) -> None:
-        self.series /= other
-
-    def __ifloordiv__(self, other) -> None:
-        self.series //= other
-
-    def __ilshift__(self, other) -> None:
-        self.series <<= other
-
-    def __imod__(self, other) -> None:
-        self.series %= other
-
-    def __imul__(self, other) -> None:
-        self.series *= other
-
     def __int__(self) -> int:
         return int(self.series)
-
-    def __invert__(self) -> pd.Series:
-        return ~ self.series
-
-    def __ior__(self, other) -> None:
-        self.series |= other
-
-    def __ipow__(self, other) -> None:
-        self.series **= other
-
-    def __irshift__(self, other) -> None:
-        self.series >>= other
-
-    def __isub__(self, other) -> None:
-        self.series -= other
 
     def __iter__(self) -> Iterator:
         return self.series.__iter__()
 
-    def __ixor__(self, other) -> None:
-        self.series ^= other
-
-    def __le__(self, other) -> pd.Series:
-        return self.series <= other
-
     def __len__(self) -> int:
         return len(self.series)
-
-    def __lshift__(self, other) -> pd.Series:
-        return self.series << other
-
-    def __lt__(self, other) -> pd.Series:
-        return self.series < other
-
-    def __mod__(self, other) -> pd.Series:
-        return self.series % other
-
-    def __mul__(self, other) -> pd.Series:
-        return self.series * other
-
-    def __ne__(self, other) -> pd.Series:
-        return self.series != other
-
-    def __neg__(self) -> pd.Series:
-        return - self.series
 
     def __next__(self):
         return self.series.__next__()
@@ -1093,71 +1097,14 @@ cdef class SeriesWrapper:
     def __oct__(self) -> oct:
         return oct(self.series)
 
-    def __or__(self, other) -> pd.Series:
-        return self.series | other
-
-    def __pos__(self) -> pd.Series:
-        return + self.series
-
-    def __pow__(self, other, mod) -> pd.Series:
-        return self.series.__pow__(other, mod)
-
-    def __radd__(self, other) -> pd.Series:
-        return other + self.series
-
-    def __rand__(self, other) -> pd.Series:
-        return other & self.series
-
-    def __rdiv__(self, other) -> pd.Series:
-        return other / self.series
-
-    def __rdivmod__(self, other) -> pd.Series:
-        return divmod(other, self.series)
-
     def __repr__(self) -> str:
         return repr(self.series)
 
-    def __rfloordiv__(self, other) -> pd.Series:
-        return other // self.series
-
-    def __rlshift__(self, other) -> pd.Series:
-        return other << self.series
-
-    def __rmod__(self, other) -> pd.Series:
-        return other % self.series
-
-    def __rmul__(self, other) -> pd.Series:
-        return other * self.series
-
-    def __ror__(self, other) -> pd.Series:
-        return other | self.series
-
-    def __rpow__(self, other, mod) -> pd.Series:
-        return self.series.__rpow__(other, mod)
-
-    def __rrshift__(self, other) -> pd.Series:
-        return other >> self.series
-
-    def __rshift__(self, other) -> pd.Series:
-        return self.series >> other
-
-    def __rsub__(self, other) -> pd.Series:
-        return other - self.series
-
-    def __rxor__(self, other) -> pd.Series:
-        return other ^ self.series
-
-    def __set__(self, instance, value):
-        self.series.__set__(instance, value)
-
     def __setitem__(self, key, val) -> None:
         self.series[key] = val
+        self._element_type = None
+        if self._hasnans == False:
+            self._hasnans = None
 
     def __str__(self) -> str:
         return str(self.series)
-
-    def __sub__(self, other) -> pd.Series:
-        return self.series - other
-
-    def __xor__(self, other) -> pd.Series:
-        return self.series ^ other

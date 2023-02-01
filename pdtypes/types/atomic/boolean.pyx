@@ -7,7 +7,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AtomicType
-from .base import generic
+from .base import dispatch, generic
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -62,6 +62,7 @@ class BooleanMixin:
     ####    SERIES METHODS    ####
     ##############################
 
+    @dispatch
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
@@ -75,6 +76,7 @@ class BooleanMixin:
             element_type=dtype
         )
 
+    @dispatch
     def to_datetime(
         self,
         series: cast.SeriesWrapper,
