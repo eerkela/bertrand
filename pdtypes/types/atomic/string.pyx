@@ -96,6 +96,7 @@ class StringMixin:
             ),
             errors=errors
         )
+        result.element_type = bool
 
         # delegate to AtomicType.to_boolean()
         return super().to_boolean(
@@ -117,9 +118,9 @@ class StringMixin:
         """Convert string data to an integer data type with the given base."""
         result = series.apply_with_errors(
             partial(int, base=base),
-            errors=errors,
-            element_type=resolve.resolve_type(int)
+            errors=errors
         )
+        result.element_type = int
         return result.to_integer(dtype=dtype, errors=errors, **unused)
 
     @dispatch

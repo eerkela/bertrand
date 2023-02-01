@@ -299,12 +299,9 @@ def two_step_conversion(
             )
         return result
 
-    # apply `wrapped_call` over series
-    series.series = series.apply_with_errors(call=wrapped_call, errors=errors)
-    if len(series) < series.size:
-        series.hasnans = True
-
-    # pass to delegated conversion
+    # apply `wrapped_call` over series and pass to delegated conversion
+    series = series.apply_with_errors(call=wrapped_call, errors=errors)
+    series.element_type = dtype
     return conv_func(series, dtype=dtype, errors=errors, **unused)
 
 

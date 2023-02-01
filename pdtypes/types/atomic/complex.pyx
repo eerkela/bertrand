@@ -131,11 +131,11 @@ class ComplexMixin:
             bad = ~cast.within_tolerance(series.imag, 0, tol=tol.imag)
             if bad.any():
                 raise ValueError(
-                    f"imaginary component exceeds tolerance {tol.imag:.9f} at "
-                    f"index {shorten_list(bad[bad].index.values)}"
+                    f"imaginary component exceeds tolerance "
+                    f"{float(tol.imag):g} at index "
+                    f"{shorten_list(bad[bad].index.values)}"
                 )
 
-        # TODO: infinite recursion with downcast=True
         return real.to_float(dtype=dtype, tol=tol, errors=errors, **unused)
 
     @dispatch
@@ -394,11 +394,9 @@ cdef cast.SeriesWrapper combine_real_imag(
         key=lambda x: x.itemsize or np.inf
     )
     result = real + imag * 1j
-    return cast.SeriesWrapper(
-        result,
-        hasnans=real.hasnans or imag.hasnans,
-        element_type=largest.equiv_complex
-    )
+    result.hasnans = real.hasnans or imag.hasnans
+    result.element_type = largest.equiv_complex
+    return result
 
 
 

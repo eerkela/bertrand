@@ -212,9 +212,9 @@ class IntegerMixin:
             infs = result.isinf()
             if infs.any():
                 if errors == "coerce":
-                    result.series = result[~infs]
+                    result = result[~infs]
                     result.hasnans = True
-                    series.series = series[~infs]  # mirror on original
+                    series = series[~infs]  # mirror on original
                 else:
                     raise OverflowError(
                         f"values exceed {dtype} range at index "
@@ -229,8 +229,9 @@ class IntegerMixin:
                 bad = ~cast.within_tolerance(series, reverse, tol=tol.real)
                 if bad.any():
                     raise ValueError(
-                        f"precision loss exceeds tolerance {tol.real:.2e} at "
-                        f"index {shorten_list(bad[bad].index.values)}"
+                        f"precision loss exceeds tolerance "
+                        f"{float(tol.real):g} at index "
+                        f"{shorten_list(bad[bad].index.values)}"
                     )
 
         if downcast:
@@ -301,14 +302,12 @@ class IntegerMixin:
         # use non-decimal base
         if not 2 <= base <= 36:
             raise ValueError("`base` must be >= 2 and <= 36, or 0")
-        return super().to_string(
-            series.apply_with_errors(
-                partial(int_to_base, base=base),
-                errors="raise"
-            ),
-            dtype=dtype,
-            **unused
+        result = series.apply_with_errors(
+            partial(int_to_base, base=base),
+            errors="raise"
         )
+        result.element_type = str
+        return super().to_string(result, dtype=dtype, **unused)
 
 
 

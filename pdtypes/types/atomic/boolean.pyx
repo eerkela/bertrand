@@ -70,11 +70,9 @@ class BooleanMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a decimal data type."""
-        return cast.SeriesWrapper(
-            series + dtype.type_def(0),  # ~2x faster than loop
-            hasnans=series.hasnans,
-            element_type=dtype
-        )
+        result = series + dtype.type_def(0)  # ~2x faster than loop
+        result.element_type = dtype
+        return result
 
     @dispatch
     def to_datetime(

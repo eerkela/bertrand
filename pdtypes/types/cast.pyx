@@ -478,7 +478,6 @@ cdef class SeriesWrapper:
         element_type: atomic.BaseType = None
     ):
         self.series = series
-        self.size = len(self.series)
         self.hasnans = hasnans
         self.element_type = element_type
 
@@ -493,15 +492,17 @@ cdef class SeriesWrapper:
         return self._element_type
 
     @element_type.setter
-    def element_type(self, val: atomic.BaseType) -> None:
-        if (
-            isinstance(val, atomic.CompositeType) and
-            getattr(val.index, "shape", None) != self.shape
-        ):
-            raise ValueError(
-                f"`element_type.index` must have the same shape as the series "
-                f"it describes"
-            )
+    def element_type(self, val: resolve.resolvable) -> None:
+        if val is not None:
+            val = resolve.resolve_type(val)
+            if (
+                isinstance(val, atomic.CompositeType) and
+                getattr(val.index, "shape", None) != self.shape
+            ):
+                raise ValueError(
+                    f"`element_type.index` must have the same shape as the "
+                    f"series it describes"
+                )
         self._element_type = val
 
     @property
@@ -518,40 +519,36 @@ cdef class SeriesWrapper:
     @property
     def imag(self) -> SeriesWrapper:
         """Get the imaginary component of a wrapped series."""
-        if self.cache.get("imag", None) is None:
-            # NOTE: np.imag() fails when applied over object arrays that may
-            # contain complex values.  In this case, we reduce it to a loop.
-            if pd.api.types.is_object_dtype(self.series):
-                result = np.frompyfunc(np.imag, 1, 1)(self.series)
-            else:
-                result = pd.Series(np.imag(self.series), index=self.index)
+        # NOTE: np.imag() fails when applied over object arrays that may
+        # contain complex values.  In this case, we reduce it to a loop.
+        if pd.api.types.is_object_dtype(self.series):
+            result = np.frompyfunc(np.imag, 1, 1)(self.series)
+        else:
+            result = pd.Series(np.imag(self.series), index=self.index)
 
-            target = getattr(
-                self.element_type,
-                "equiv_float",
-                self.element_type
-            )
-            self.cache["imag"] = SeriesWrapper(result, element_type=target)
-        return self.cache["imag"]
+        target = getattr(
+            self.element_type,
+            "equiv_float",
+            self.element_type
+        )
+        return SeriesWrapper(result, element_type=target)
 
     @property
     def real(self) -> SeriesWrapper:
         """Get the real component of a wrapped series."""
-        if self.cache.get("None", None) is None:
-            # NOTE: np.real() fails when applied over object arrays that may
-            # contain complex values.  In this case, we reduce it to a loop.
-            if pd.api.types.is_object_dtype(self.series):
-                result = np.frompyfunc(np.real, 1, 1)(self.series)
-            else:
-                result = pd.Series(np.real(self.series), index=self.index)
+        # NOTE: np.real() fails when applied over object arrays that may
+        # contain complex values.  In this case, we reduce it to a loop.
+        if pd.api.types.is_object_dtype(self.series):
+            result = np.frompyfunc(np.real, 1, 1)(self.series)
+        else:
+            result = pd.Series(np.real(self.series), index=self.index)
 
-            target = getattr(
-                self.element_type,
-                "equiv_float",
-                self.element_type
-            )
-            self.cache["real"] = SeriesWrapper(result, element_type=target)
-        return self.cache["real"]
+        target = getattr(
+            self.element_type,
+            "equiv_float",
+            self.element_type
+        )
+        return SeriesWrapper(result, element_type=target)
 
     @property
     def series(self) -> pd.Series:
@@ -564,7 +561,8 @@ cdef class SeriesWrapper:
                 f"`series` must be a pandas Series object, not {type(val)}"
             )
         self._series = val
-        self.cache = {}  # reset cache
+        self._max = None
+        self._min = None
 
     ###############################
     ####    WRAPPED METHODS    ####
@@ -590,9 +588,9 @@ cdef class SeriesWrapper:
         if dtype.unwrap().dtype == np.dtype("O"):
             result = self.apply_with_errors(
                 call=dtype.type_def,
-                errors=errors,
-                element_type=dtype
+                errors=errors
             )
+            result.element_type=dtype
             return result
 
         # default to pd.Series.astype()
@@ -619,41 +617,29 @@ cdef class SeriesWrapper:
             element_type=self._element_type
         )
 
-    def idxmax(self, *args, **kwargs) -> int:
-        """A cached version of pd.Series.idxmax()."""
-        if self.cache.get("idxmax", None) is None:
-            self.cache["idxmax"] = self.series.idxmax(*args, **kwargs)
-            self.cache["max"] = self.series[self.cache["idxmax"]]
-        return self.cache["idxmax"]
-
-    def idxmin(self, *args, **kwargs) -> int:
-        """A cached version of pd.Series.idxmin()."""
-        if self.cache.get("idxmin", None) is None:
-            self.cache["idxmin"] = self.series.idxmin(*args, **kwargs)
-            self.cache["min"] = self.series[self.cache["idxmin"]]
-        return self.cache["idxmin"]
-
     def max(self, *args, **kwargs):
         """A cached version of pd.Series.max()."""
-        if self.cache.get("max", None) is None:
-            self.cache["max"] = self.series.max(*args, **kwargs)
-        return self.cache["max"]
+        if self._max is None:
+            self._max = self.series.max(*args, **kwargs)
+        return self._max
 
     def min(self, *args, **kwargs):
         """A cached version of pd.Series.min()."""
-        if self.cache.get("min", None) is None:
-            self.cache["min"] = self.series.min(*args, **kwargs)
-        return self.cache["min"]
+        if self._min is None:
+            self._min = self.series.min(*args, **kwargs)
+        return self._min
 
     ###########################
     ####    NEW METHODS    ####
     ###########################
 
     def __enter__(self) -> SeriesWrapper:
+        self._original_shape = self.series.shape
+
         # normalize index
         if not isinstance(self.series.index, pd.RangeIndex):
-            self.original_index = self.series.index
-            self.series.index = pd.RangeIndex(0, self.size)
+            self._original_index = self.series.index
+            self.series.index = pd.RangeIndex(0, self._original_shape[0])
 
         # drop missing values
         is_na = self.isna()
@@ -672,15 +658,19 @@ cdef class SeriesWrapper:
         # replace missing values, aligning on index
         if self.hasnans:
             result = pd.Series(
-                np.full(self.size, self.element_type.na_value, dtype="O"),
+                np.full(
+                    self._original_shape,
+                    self.element_type.na_value,
+                    dtype="O"
+                ),
                 dtype=self.dtype
             )
             result.update(self.series)
             self.series = result
 
         # replace original index
-        if self.original_index is not None:
-            self.series.index = self.original_index
+        if self._original_index is not None:
+            self.series.index = self._original_index
 
     def __getattr__(self, name: str) -> Any:
         dispatch_map = atomic.AtomicType.registry.dispatch_map
@@ -695,37 +685,32 @@ cdef class SeriesWrapper:
             def wrapper(*args, **kwargs):
                 result = fallback(*args, **kwargs)
                 if isinstance(result, pd.Series):
-                    return SeriesWrapper(result)
+                    return SeriesWrapper(result, hasnans=self._hasnans)
                 return result
 
             return wrapper
 
         if isinstance(fallback, pd.Series):  # re-wrap
-            return SeriesWrapper(fallback)
+            return SeriesWrapper(fallback, hasnans=self._hasnans)
         return fallback
 
     def apply_with_errors(
         self,
         call: Callable,
-        errors: str = "raise",
-        element_type: atomic.BaseType = None
+        errors: str = "raise"
     ) -> SeriesWrapper:
         """Apply `call` over the series, applying the specified error handling
         rule at each index.
         """
         result, has_errors, index = _apply_with_errors(
-            self.to_numpy(dtype="O"),
+            self.series.to_numpy(dtype="O"),
             call=call,
             errors=errors
         )
         result = pd.Series(result, index=self.index, dtype="O")
         if has_errors:
             result = result[~index]
-        return SeriesWrapper(
-            result,
-            hasnans=has_errors or self.hasnans,
-            element_type=element_type
-        )
+        return SeriesWrapper(result, hasnans=has_errors or self._hasnans)
 
     def dispatch(self, endpoint: str) -> Callable:
         """Decorate the named method, dispatching it across every type present
@@ -749,7 +734,7 @@ cdef class SeriesWrapper:
             def wrapper(*args, **kwargs):
                 result = call(*args, **kwargs)
                 if isinstance(result, pd.Series):
-                    return SeriesWrapper(result)
+                    return SeriesWrapper(result, hasnans=self._hasnans)
                 return result
 
             return wrapper
@@ -764,7 +749,7 @@ cdef class SeriesWrapper:
                 atomic_type = grp.name
                 grp = SeriesWrapper(
                     grp,
-                    hasnans=self.hasnans,
+                    hasnans=self._hasnans,
                     element_type=atomic_type
                 )
                 call = submap.get(type(atomic_type), None)
@@ -772,7 +757,10 @@ cdef class SeriesWrapper:
                     result = call(atomic_type, grp, *args, **kwargs)
                 else:
                     call = getattr(grp.series, endpoint)
-                    result = SeriesWrapper(call(*args, **kwargs))
+                    result = SeriesWrapper(
+                        call(*args, **kwargs),
+                        hasnans=self._hasnans
+                    )
                 if not self.hasnans:
                     self.hasnans=result.hasnans
                 output_types.add(result.element_type)
@@ -785,7 +773,7 @@ cdef class SeriesWrapper:
                 return result.series
 
             result = groups.transform(transform)
-            result_type = resolve.resolve_type(output_types)
+            result_type = atomic.CompositeType(output_types)
             if len(result_type) == 1:
                 result_type = result_type.pop()
             else:
@@ -798,7 +786,7 @@ cdef class SeriesWrapper:
                 result_type.index = index.to_numpy()
             return SeriesWrapper(
                 result,
-                hasnans=self.hasnans,
+                hasnans=self._hasnans,
                 element_type=result_type
             )
 
@@ -847,8 +835,8 @@ cdef class SeriesWrapper:
                 (self - rounded).abs() > tol).series,
                 rounded.series
             ),
-            hasnans=self.hasnans,
-            element_type=self.element_type
+            hasnans=self._hasnans,
+            element_type=self._element_type
         )
 
     #################################
@@ -1105,6 +1093,8 @@ cdef class SeriesWrapper:
         self._element_type = None
         if self._hasnans == False:
             self._hasnans = None
+        self._max = None
+        self._min = None
 
     def __str__(self) -> str:
         return str(self.series)

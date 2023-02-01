@@ -891,11 +891,8 @@ cdef class AtomicType(BaseType):
                 )
             return result
 
-        result = series.apply_with_errors(
-            call=dtype.type_def,
-            errors=errors,
-            element_type=dtype
-        )
+        result = series.apply_with_errors(call=dtype.type_def, errors=errors)
+        result.element_type = dtype
         return result
 
     #############################

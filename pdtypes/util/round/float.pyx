@@ -64,7 +64,6 @@ def round_float(
 
     if decimals:
         scale_factor = 10 ** decimals
-        val *= scale_factor
         return round_func(val * scale_factor) / scale_factor
 
     return round_func(val)

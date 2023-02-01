@@ -120,9 +120,9 @@ class DecimalMixin:
             infs = result.isinf() ^ series.isinf()
             if infs.any():
                 if errors == "coerce":
-                    result.series = result[~infs]
+                    result = result[~infs]
                     result.hasnans = True
-                    series.series = series[~infs]  # mirror on original
+                    series = series[~infs]  # mirror on original
                 else:
                     raise OverflowError(
                         f"values exceed {dtype} range at index "
@@ -137,7 +137,7 @@ class DecimalMixin:
             bad = ~cast.within_tolerance(series, reverse, tol=tol.real)
             if bad.any():
                 raise ValueError(
-                    f"precision loss exceeds tolerance {tol.real:.2e} at "
+                    f"precision loss exceeds tolerance {float(tol.real):g} at "
                     f"index {shorten_list(bad[bad].index.values)}"
                 )
 
