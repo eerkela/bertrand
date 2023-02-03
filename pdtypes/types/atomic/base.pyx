@@ -21,10 +21,6 @@ import pdtypes.types.resolve as resolve
 from pdtypes.util.round import Tolerance
 
 
-# complex string regex.  re.sub("\s+", "")
-# r"\(?(?P<real>[+-]?[0-9.]+)(?P<imag>[+-][0-9.]+)?j?\)?"
-
-
 # conversions
 # +------------------------------------------------
 # |           | b | i | f | c | d | d | t | s | o |
@@ -43,7 +39,7 @@ from pdtypes.util.round import Tolerance
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | timedelta |   |   |   |   |   |   |   |   | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | string    | x | x | x |   | x |   |   | x | x |
+# | string    | x | x | x | x | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | object    | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
@@ -695,6 +691,8 @@ cdef class AtomicType(BaseType):
         if input_str in resolve.na_strings:
             return resolve.na_strings[input_str]
 
+        # return cast.cast(input_str, self)[0]
+
         if self.type_def is None:
             raise ValueError(
                 f"{repr(str(self))} types have no associated type_def"
@@ -723,7 +721,7 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        errors: str = cast.defaults.errors,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert generic data to a boolean data type.
@@ -735,7 +733,6 @@ cdef class AtomicType(BaseType):
         method will be propagated to the top-level `to_boolean()` and `cast()`
         functions when they are called on objects of the given type.
         """
-        dtype = cast.filter_dtype(dtype, bool)
         if series.hasnans:
             dtype = dtype.force_nullable()
         return series.astype(dtype, errors=errors)
@@ -745,8 +742,8 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        downcast: bool = cast.defaults.downcast,
-        errors: str = cast.defaults.errors,
+        downcast: bool,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert generic data to an integer data type.
@@ -758,10 +755,8 @@ cdef class AtomicType(BaseType):
         method will be propagated to the top-level `to_integer()` and `cast()`
         functions when they are called on objects of the given type.
         """
-        # account for missing/coerced values in series
         if series.hasnans:
             dtype = dtype.force_nullable()
-
         result = series.astype(dtype, errors=errors)
         if downcast:
             return dtype.downcast(series)
@@ -772,9 +767,9 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: Tolerance = cast.defaults.tol,
-        downcast: bool = cast.defaults.downcast,
-        errors: str = cast.defaults.errors,
+        tol: Tolerance,
+        downcast: bool,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a floating point data type."""
@@ -788,9 +783,9 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: Tolerance = cast.defaults.tol,
-        downcast: bool = cast.defaults.downcast,
-        errors: str = cast.defaults.errors,
+        tol: Tolerance,
+        downcast: bool,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a complex data type."""
@@ -804,7 +799,7 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        errors: str = cast.defaults.errors,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a decimal data type."""
@@ -816,7 +811,7 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        errors: str = cast.defaults.errors,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert arbitrary data to a string data type.
@@ -831,18 +826,21 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        call: Callable = None,
-        errors: str = cast.defaults.errors,
+        call: Callable,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert arbitrary data to an object data type."""
-        if call is None:
+        direct = call is None
+        if direct:
             call = dtype.type_def
 
         def wrapped_call(object val):
             cdef object result = call(val)
-            cdef type output_type = type(result)
+            if direct:
+                return result
 
+            cdef type output_type = type(result)
             if output_type != dtype.type_def:
                 raise ValueError(
                     f"`call` must return an object of type {dtype.type_def}"

@@ -98,7 +98,13 @@ class DecimalMixin:
     ) -> cast.SeriesWrapper:
         """Convert decimal data to a floating point data type."""
         # do naive conversion
-        result = series.astype(dtype)
+        if dtype.itemsize > 8:
+            # NOTE: series.astype() implicitly calls Decimal.__float__(), which
+            # is limited to 64-bits.  Converting to an intermediate string
+            # representation avoids this.
+            result = series.apply_with_errors(str).astype(dtype)
+        else:
+            result = series.astype(dtype)
 
         # check for overflow
         if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
@@ -116,10 +122,10 @@ class DecimalMixin:
 
         # backtrack to check for precision loss
         if errors != "coerce":  # coercion ignores precision loss
-            # NOTE: we can bypass overflow/precision loss checks by
-            # delegating straight to AtomicType
-            reverse = super().to_decimal(result, dtype=self)
-            bad = ~series.within_tol(reverse, tol=tol.real)
+            bad = ~series.within_tol(
+                result.to_decimal(self, errors="raise"),
+                tol=tol.real
+            )
             if bad.any():
                 raise ValueError(
                     f"precision loss exceeds tolerance {float(tol.real):g} at "

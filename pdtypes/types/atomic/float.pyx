@@ -68,8 +68,16 @@ class FloatMixin:
         """Reduce the itemsize of a float type to fit the observed range."""
         for s in self.smaller:
             try:
-                attempt = super().to_float(series, dtype=s)
+                attempt = super().to_float(
+                    series,
+                    dtype=s,
+                    tol=tol,
+                    downcast=False,
+                    errors="raise"
+                )
             except Exception:
+                # NOTE: if this method mysteriously fails to downcast for some
+                # reason, check that it does not enter this block
                 continue
             if attempt.within_tol(series, tol=tol.real).all():
                 return attempt
@@ -107,7 +115,6 @@ class FloatMixin:
         series, dtype = series.boundscheck(dtype, int(tol.real), errors)
         if series.hasnans:
             dtype = dtype.force_nullable()
-
         return series.astype(dtype, errors=errors)
 
     @dispatch
@@ -131,6 +138,30 @@ class FloatMixin:
             errors=errors,
             **unused
         )
+
+
+class LongDoubleSpecialCase:
+    """Special cases of the above conversions for longdouble types."""
+
+    @dispatch
+    def to_decimal(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """A special case of FloatMixin.to_decimal() that bypasses `TypeError:
+        conversion from numpy.float128 to Decimal is not supported`.
+        """
+        # convert to integer ratio and then to decimal
+        def call(x):
+            n, d = x.as_integer_ratio()
+            return dtype.type_def(n) / d
+
+        result = series.apply_with_errors(call=call, errors=errors)
+        result.element_type=dtype
+        return result
 
 
 #######################
@@ -216,7 +247,7 @@ class Float64Type(FloatMixin, AtomicType):
 
 @generic
 @subtype(FloatType)
-class Float80Type(FloatMixin, AtomicType, ignore=no_longdouble):
+class Float80Type(LongDoubleSpecialCase, AtomicType, ignore=no_longdouble):
 
     name = "float80"
     aliases = {
@@ -313,7 +344,7 @@ class NumpyFloat64Type(FloatMixin, AtomicType):
 
 @subtype(NumpyFloatType)
 @Float80Type.register_backend("numpy")
-class NumpyFloat80Type(FloatMixin, AtomicType, ignore=no_longdouble):
+class NumpyFloat80Type(LongDoubleSpecialCase, AtomicType, ignore=no_longdouble):
 
     aliases = {np.longdouble, np.dtype(np.longdouble)}
     _equiv_complex = "NumpyComplex160Type"
@@ -327,7 +358,6 @@ class NumpyFloat80Type(FloatMixin, AtomicType, ignore=no_longdouble):
             na_value=np.nan,
             itemsize=np.dtype(np.longdouble).itemsize
         )
-
 
 
 ######################

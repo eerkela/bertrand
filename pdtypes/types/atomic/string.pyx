@@ -1,5 +1,6 @@
 import decimal
 from functools import partial
+import re  # normal python regex for compatibility with pd.Series.str.extract
 from types import MappingProxyType
 from typing import Iterable, Union
 
@@ -15,6 +16,8 @@ cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
+
+from pdtypes.util.round cimport Tolerance
 
 
 # TODO: add fixed-length numpy string backend?
@@ -111,6 +114,56 @@ class StringMixin:
         result = series.to_decimal(dtype=decimal_type, **unused)
         return result.to_float(dtype=dtype, **unused)
 
+    @dispatch
+    def to_complex(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        tol: Tolerance,
+        downcast: bool,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert string data to a complex data type."""
+        # NOTE: this is technically a 3-step conversion: (1) str -> str,
+        # (2) str -> float, (3) float -> complex.  This allows for full
+        # precision loss/overflow/downcast checks for both real + imag.
+
+        # (1) separate real, imaginary components via regex
+        components = series.str.extract(complex_pattern)
+        real = cast.SeriesWrapper(
+            components["real"],
+            hasnans=series.hasnans,
+            element_type=self
+        )
+        imag = cast.SeriesWrapper(
+            components["imag"],
+            hasnans=series.hasnans,
+            element_type=self
+        )
+
+        # (2) convert real, imag to float, applying checks independently
+        real = self.to_float(
+            real,
+            dtype.equiv_float,
+            tol=Tolerance(tol.real),
+            downcast=False,
+            errors="raise"
+        )
+        imag = self.to_float(
+            imag,
+            dtype.equiv_float,
+            tol=Tolerance(tol.imag),
+            downcast=False,
+            errors="raise"
+        )
+
+        # (3) combine floats into complex result
+        result = real + imag * 1j
+        result.element_type = dtype
+        if downcast:
+            return dtype.downcast(result, tol=tol)
+        return result
+
 
 #######################
 ####    GENERIC    ####
@@ -187,6 +240,11 @@ class PyArrowStringType(StringMixin, AtomicType, ignore=not pyarrow_installed):
 #######################
 ####    PRIVATE    ####
 #######################
+
+
+cdef object complex_pattern = re.compile(
+    r"\(?(?P<real>[+-]?[0-9.]+)(?P<imag>[+-][0-9.]+)?j?\)?"
+)
 
 
 cdef char boolean_apply(

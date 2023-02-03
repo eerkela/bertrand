@@ -402,6 +402,3 @@ cdef cast.SeriesWrapper combine_real_imag(
     result.hasnans = real.hasnans or imag.hasnans
     result.element_type = largest.equiv_complex
     return result
-
-
-
