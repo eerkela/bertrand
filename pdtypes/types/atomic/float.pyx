@@ -15,17 +15,6 @@ import pdtypes.types.cast as cast
 from pdtypes.util.round import round_float, Tolerance
 
 
-# TODO: might be able to implement a standardized dtype.check_for_overflow
-# method.
-
-# def AtomicType.check_for_overflow(
-#     self,
-#     series: cast.SeriesWrapper,
-#     errors: str = "raise"
-# ) -> None:
-
-
-
 ##################################
 ####    MIXINS & CONSTANTS    ####
 ##################################
@@ -74,16 +63,15 @@ class FloatMixin:
     def downcast(
         self,
         series: cast.SeriesWrapper,
-        tol: numeric = 0
+        tol: Tolerance = cast.defaults.tol
     ) -> cast.SeriesWrapper:
         """Reduce the itemsize of a float type to fit the observed range."""
-        tol = Tolerance(tol)
         for s in self.smaller:
             try:
                 attempt = super().to_float(series, dtype=s)
             except Exception:
                 continue
-            if cast.within_tolerance(attempt, series, tol=tol.real).all():
+            if attempt.within_tol(series, tol=tol.real).all():
                 return attempt
         return series
 
@@ -108,46 +96,33 @@ class FloatMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        rounding: str = None,
-        tol: numeric = 1e-6,
-        errors: str = "raise",
+        rounding: str,
+        tol: Tolerance,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert floating point data to a boolean data type."""
-        # apply tolerance + rounding, rejecting any non-integer results
-        series = cast.snap_round(series, Tolerance(tol).real, rounding, errors)
+        dtype = cast.filter_dtype(dtype, bool)
+        series = series.snap_round(tol.real, rounding, errors)
+        series, dtype = series.boundscheck(dtype, int(tol.real), errors)
+        if series.hasnans:
+            dtype = dtype.force_nullable()
 
-        # check for overflow
-        dtype = cast.check_for_overflow(series, dtype, errors)
-
-        # pass to AtomicType.to_boolean()
-        return super().to_boolean(
-            series=series,
-            dtype=dtype,
-            rounding=rounding,
-            tol=tol,
-            errors=errors,
-            **unused
-        )
+        return series.astype(dtype, errors=errors)
 
     @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        rounding: str = None,
-        tol: numeric = 1e-6,
-        errors: str = "raise",
+        rounding: str,
+        tol: Tolerance,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert floating point data to an integer data type."""
-        # apply tolerance + rounding, rejecting any non-integer results
-        series = cast.snap_round(series, Tolerance(tol).real, rounding, errors)
-
-        # check for overflow
-        dtype = cast.check_for_overflow(series, dtype, errors)
-
-        # pass to AtomicType.to_integer()
+        series = series.snap_round(tol.real, rounding, errors)
+        series, dtype = series.boundscheck(dtype, int(tol.real), errors)
         return super().to_integer(
             series=series,
             dtype=dtype,

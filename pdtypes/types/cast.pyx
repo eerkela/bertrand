@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import tzinfo
 import decimal
 from functools import partial, wraps
 from typing import Any, Callable, Iterable, Iterator
@@ -6,34 +7,343 @@ from typing import Any, Callable, Iterable, Iterator
 cimport numpy as np
 import numpy as np
 import pandas as pd
+import pytz
 
 cimport pdtypes.types.atomic as atomic
-import pdtypes.types.atomic as atomic
 cimport pdtypes.types.detect as detect
-import pdtypes.types.detect as detect
 cimport pdtypes.types.resolve as resolve
+import pdtypes.types.atomic as atomic
+import pdtypes.types.detect as detect
 import pdtypes.types.resolve as resolve
 
 from pdtypes.error import shorten_list
-from pdtypes.type_hints import array_like, numeric
-from pdtypes.util.round import Tolerance
-
-
-# TODO: dispatch() -> dispatch_method().  This is a decorator that wraps the
-# result of a function call.
-
+from pdtypes.type_hints import array_like, datetime_like, numeric
+from pdtypes.util.round cimport Tolerance
 
 
 # TODO: downcast flag should accept resolvable type specifiers as well as
 # booleans.  If a non-boolean value is given, it will not downcast below the
 # specified type.
 
-
 # TODO: sparse types currently broken
 
 # TODO: top-level to_x() functions are respondible for input validation
 
 # TODO: have to account for empty series in each conversion.
+
+
+#######################
+####   DEFAULTS    ####
+#######################
+
+
+cdef class CastDefaults:
+
+    cdef:
+        unsigned char _base
+        bint _categorical
+        object _downcast
+        object _epoch
+        str _errors
+        set _false
+        bint _ignore_case
+        str _rounding
+        bint _sparse
+        unsigned int _step_size
+        Tolerance _tol
+        object _tz
+        set _true
+        str _unit
+
+    def __init__(self):
+        self._base = 0
+        self._categorical = False
+        self._downcast = False
+        self._errors = "raise"
+        self._false = {"false", "f", "no", "n", "off", "0"}
+        self._rounding = None
+        self._sparse = False
+        self._step_size = 1
+        self._tol = Tolerance(1e-6)
+        self._true = {"true", "t", "yes", "y", "on", "1"}
+        self._unit = "ns"
+
+    @property
+    def base(self) -> int:
+        return self._base
+
+    @base.setter
+    def base(self, val: int) -> None:
+        if val is None:
+            raise ValueError(f"default `base` cannot be None")
+        self._base = validate_base(val)
+
+    @property
+    def categorical(self) -> bool:
+        return self._categorical
+
+    @categorical.setter
+    def categorical(self, val: bool) -> None:
+        if val is None:
+            raise ValueError(f"default `categorical` cannot be None")
+        self._categorical = val
+
+    @property
+    def downcast(self) -> bool:  # TODO: object?
+        return self._downcast
+
+    @downcast.setter
+    def downcast(self, val: bool) -> None:
+        if val is None:
+            raise ValueError(f"default `downcast` cannot be None")
+        self._downcast = validate_downcast(val)
+
+    @property
+    def epoch(self) -> np.datetime64:
+        return self._epoch
+
+    @epoch.setter
+    def epoch(self, val: str | datetime_like) -> None:
+        if val is None:
+            raise ValueError(f"default `epoch` cannot be None")
+        self._epoch = validate_epoch(val)
+
+    @property
+    def errors(self) -> str:
+        return self._errors
+
+    @errors.setter
+    def errors(self, val: str) -> None:
+        if val is None:
+            raise ValueError(f"default `errors` cannot be None")
+        self._errors = validate_errors(val)
+
+    @property
+    def false(self) -> set:
+        return self._false
+
+    @false.setter
+    def false(self, val: str | set[str]) -> None:
+        if val is None:
+            raise ValueError(f"default `false` cannot be None")
+        self._false = validate_false(val)
+
+    @property
+    def ignore_case(self) -> bool:
+        return self._ignore_case
+
+    @ignore_case.setter
+    def ignore_case(self, val: bool) -> None:
+        if val is None:
+            raise ValueError(f"default `ignore_case` cannot be None")
+        self._ignore_case = validate_ignore_case(val)
+
+    @property
+    def rounding(self) -> str:
+        return self._rounding
+
+    @rounding.setter
+    def rounding(self, val: str) -> None:
+        self._rounding = validate_rounding(val)
+
+    @property
+    def sparse(self) -> bool:
+        return self._sparse
+
+    @sparse.setter
+    def sparse(self, val: bool) -> None:
+        if val is None:
+            raise ValueError(f"default `sparse` cannot be None")
+        self._sparse = validate_sparse(val)
+
+    @property
+    def step_size(self) -> int:
+        return self._step_size
+
+    @step_size.setter
+    def step_size(self, val: int) -> None:
+        if val is None:
+            raise ValueError(f"default `step_size` cannot be None")
+        self._step_size = validate_step_size(val)
+
+    @property
+    def tol(self) -> Tolerance:
+        return self._tol
+
+    @tol.setter
+    def tol(self, val: numeric) -> None:
+        if val is None:
+            raise ValueError(f"default `tol` cannot be None")
+        self._tol = validate_tol(val)
+
+    @property
+    def true(self) -> set:
+        return self._true
+
+    @true.setter
+    def true(self, val: str | set[str]) -> None:
+        if val is None:
+            raise ValueError(f"default `true` cannot be None")
+        self._true = validate_true(val)
+
+    @property
+    def tz(self) -> pytz.BaseTzInfo:
+        return self._tz
+
+    @tz.setter
+    def tz(self, val: str | tzinfo) -> None:
+        self._tz = validate_timezone(val)
+
+    @property
+    def unit(self) -> str:
+        return self._unit
+
+    @unit.setter
+    def unit(self, val: str) -> None:
+        if val is None:
+            raise ValueError(f"default `unit` cannot be None")
+        self._unit = validate_unit(val)
+
+
+defaults = CastDefaults()
+
+
+def validate_base(val: int) -> int:
+    if val is None:
+        return defaults.base
+
+    if val != 0 and not 2 <= val <= 36:
+        raise ValueError(f"`base` must be >= 2 and <= 36, or 0")
+    return val
+
+
+def validate_categorical(val: bool) -> bool:
+    if val is None:
+        return defaults.categorical
+    return val
+
+
+def validate_downcast(
+    val: bool | resolve.resolvable
+) -> bool | atomic.AtomicType:
+    if val is None:
+        return defaults.downcast
+
+    if not isinstance(val, bool):
+        val = resolve.resolve_type(val)
+        if isinstance(val, atomic.CompositeType):
+            raise ValueError(f"`downcast` must be atomic, not {repr(val)}")
+        return val.unwrap()
+    return val
+
+
+def validate_dtype(
+    dtype: resolve.resolvable,
+    supertype: resolve.resolvable = None
+) -> atomic.AtomicType:
+    """Resolve a type specifier and reject it if it is composite or not a
+    subtype of the given supertype.
+    """
+    dtype = resolve.resolve_type(dtype)
+    if not isinstance(dtype, atomic.AtomicType):
+        raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
+
+    if supertype is not None:
+        supertype = resolve.resolve_type(supertype)
+        if not dtype.unwrap().is_subtype(supertype):
+            raise ValueError(f"`dtype` must be {supertype}-like, not {dtype}")
+
+    return dtype
+
+
+def validate_epoch(val: str | datetime_like) -> np.datetime64:
+    # TODO: check for shorthand strings ("utc", "julian", etc.), then
+    # string_to_datetime, then datetime_to_datetime.  Epoch has unit "s"
+    return np.datetime64(str)
+
+
+def validate_errors(val: str) -> str:
+    if val is None:
+        return defaults.errors
+
+    valid = ("raise", "coerce", "ignore")
+    if val not in valid:
+        raise ValueError(f"`errors` must be one of {valid}, not {repr(val)}")
+    return val
+
+
+def validate_false(val: str | set[str]) -> set[str]:
+    if val is None:
+        return defaults.false
+
+    if isinstance(val, str):
+        return {val}
+    return set(val)
+
+
+def validate_ignore_case(val: bool) -> bool:
+    if val is None:
+        return defaults.ignore_case
+    return val
+
+
+def validate_rounding(val: str) -> str:
+    if val is None:
+        return defaults.rounding
+
+    # TODO: get valid from rounding module itself
+    valid = (
+        "floor", "ceiling", "down", "up", "half_floor", "half_ceiling",
+        "half_down", "half_up", "half_even"
+    )
+    if val is not None and val not in valid:
+        raise ValueError(f"`rounding` must be one of {valid}, not {repr(val)}")
+    return val
+
+
+def validate_sparse(val: bool) -> bool:
+    if val is None:
+        return defaults.sparse
+    return val
+
+
+def validate_step_size(val: int) -> int:
+    if val is None:
+        return defaults.step_size
+
+    if val < 1:
+        raise ValueError(f"`step_size` cannot be negative")
+    return val
+
+
+def validate_timezone(val: str | tzinfo) -> pytz.BaseTzInfo:
+    return None if val is None else pytz.timezone(val)
+
+
+def validate_tol(val: numeric) -> Tolerance:
+    if val is None:
+        return defaults.tol
+    return Tolerance(val)
+
+
+def validate_true(val: str | set[str]) -> set[str]:
+    if val is None:
+        return defaults.true
+
+    if isinstance(val, str):
+        return {val}
+    return set(val)
+
+
+def validate_unit(val: str) -> str:
+    if val is None:
+        return defaults.unit
+
+    # TODO: get valid from time module itself
+    valid = ("ns", "ms", "us", "s", "m", "h", "D", "W", "M", "Y")
+    if val not in valid:
+        raise ValueError(f"`unit` must be one of {valid}, not {repr(val)}")
+    return val
 
 
 ######################
@@ -47,36 +357,53 @@ def cast(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to the given data type."""
-    dtype = resolve.resolve_type(dtype)
-    if isinstance(dtype, atomic.CompositeType):
-        raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
-    return dtype.conversion_func(series, dtype, **kwargs)
+    # delegate to appropriate to_x function below
+    return dtype.conversion_func(series, validate_dtype(dtype), **kwargs)
 
 
 def to_boolean(
     series: Iterable,
     dtype: resolve.resolvable = bool,
+    tol: numeric = None,
     rounding: str = None,
-    tol: int | float | complex | decimal.Decimal = 1e-6,
-    errors: str = "raise",
+    true: str | Iterable[str] = None,
+    false: str | Iterable[str] = None,
+    ignore_case: bool = None,
+    call: Callable = None,
+    errors: str = None,
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to boolean representation."""
-    # validate dtype
-    dtype = resolve.resolve_type(dtype)
-    if isinstance(dtype, atomic.CompositeType):
-        raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
-    if not dtype.unwrap().is_subtype(atomic.BooleanType):
-        raise ValueError(f"`dtype` must be a boolean type, not {dtype}")
+    # validate args
+    dtype = validate_dtype(dtype, atomic.BooleanType)
+    tol = validate_tol(tol)
+    rounding = validate_rounding(rounding)
+    true = validate_true(true)
+    false = validate_false(false)
+    errors = validate_errors(errors)
 
-    # TODO: collate and validate args
+    # ensure true, false are disjoint
+    if not true.isdisjoint(false):
+        intersection = true.intersection(false)
+        err_msg = f"`true` and `false` must be disjoint "
+        if len(intersection) == 1:
+            err_msg += (
+                f"({repr(intersection.pop())} is present in both sets)"
+            )
+        else:
+            err_msg += f"({intersection} are present in both sets)"
+        raise ValueError(err_msg)
 
+    # delegate to SeriesWrapper.to_boolean
     return do_conversion(
         series,
-        "to_boolean",  # not passed to conversion method
+        "to_boolean",
         dtype=dtype,
-        rounding=rounding,
         tol=tol,
+        rounding=rounding,
+        true=true,
+        false=false,
+        ignore_case=ignore_case,
         errors=errors,
         **kwargs
     )
@@ -85,31 +412,38 @@ def to_boolean(
 def to_integer(
     series: Iterable,
     dtype: resolve.resolvable = int,
+    tol: numeric = None,
     rounding: str = None,
-    tol: numeric | Tolerance = 1e-6,
-    errors: str = "raise",
+    unit: str = None,
+    step_size: int = None,
+    base: int = None,
+    call: Callable = None,
+    downcast: bool | resolve.resolvable = None,
+    errors: str = None,
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to integer representation."""
-    # validate dtype
-    dtype = resolve.resolve_type(dtype)
-    if isinstance(dtype, atomic.CompositeType):
-        raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
-    if not dtype.unwrap().is_subtype(atomic.IntegerType):
-        raise ValueError(f"`dtype` must be an integer type, not {dtype}")
+    # validate args
+    dtype = validate_dtype(dtype, atomic.IntegerType)
+    tol = validate_tol(tol)
+    rounding = validate_rounding(rounding)
+    unit = validate_unit(unit)
+    step_size = validate_step_size(step_size)
+    base = validate_base(base)
+    downcast = validate_downcast(downcast)
+    errors = validate_errors(errors)
 
-    # validate tolerance
-    if not isinstance(tol, Tolerance):
-        tol = Tolerance(tol)
-
-    # TODO: collate and validate args
-
+    # delegate to SeriesWrapper.to_integer
     return do_conversion(
         series,
-        "to_integer",  # not passed to conversion method
+        "to_integer",
         dtype=dtype,
-        rounding=rounding,
         tol=tol,
+        rounding=rounding,
+        unit=unit,
+        step_size=step_size,
+        base=base,
+        downcast=downcast,
         errors=errors,
         **kwargs
     )
@@ -118,26 +452,34 @@ def to_integer(
 def to_float(
     series: Iterable,
     dtype: resolve.resolvable = float,
-    tol: int | float | complex | decimal.Decimal = 1e-6,
-    downcast: bool = False,
-    errors: str = "raise",
+    tol: numeric = None,
+    rounding: str = None,
+    unit: str = None,
+    step_size: int = None,
+    call: Callable = None,
+    downcast: bool | resolve.resolvable = None,
+    errors: str = None,
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to float representation."""
-    # validate dtype
-    dtype = resolve.resolve_type(dtype)
-    if isinstance(dtype, atomic.CompositeType):
-        raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
-    if not dtype.is_subtype(atomic.FloatType):
-        raise ValueError(f"`dtype` must be a float type, not {dtype}")
+    # validate args
+    dtype = validate_dtype(dtype, atomic.FloatType)
+    tol = validate_tol(tol)
+    rounding = validate_rounding(rounding)
+    unit = validate_unit(unit)
+    step_size = validate_step_size(step_size)
+    downcast = validate_downcast(downcast)
+    errors = validate_errors(errors)
 
-    # TODO: collate and validate args
-
+    # delegate to SeriesWrapper.to_float
     return do_conversion(
         series,
-        "to_float",  # not passed to conversion method
+        "to_float",
         dtype=dtype,
         tol=tol,
+        rounding=rounding,
+        unit=unit,
+        step_size=step_size,
         downcast=downcast,
         errors=errors,
         **kwargs
@@ -147,25 +489,35 @@ def to_float(
 def to_complex(
     series: Iterable,
     dtype: resolve.resolvable = complex,
-    tol: int | float | complex | decimal.Decimal = 1e-6,
-    errors: str = "raise",
+    tol: numeric = None,
+    rounding: str = None,
+    unit: str = None,
+    step_size: int = None,
+    call: Callable = None,
+    downcast: bool | resolve.resolvable = None,
+    errors: str = None,
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to complex representation."""
-    # validate dtype
-    dtype = resolve.resolve_type(dtype)
-    if isinstance(dtype, atomic.CompositeType):
-        raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
-    if not dtype.is_subtype(atomic.ComplexType):
-        raise ValueError(f"`dtype` must be a complex type, not {dtype}")
+    # validate args
+    dtype = validate_dtype(dtype, atomic.ComplexType)
+    tol = validate_tol(tol)
+    rounding = validate_rounding(rounding)
+    unit = validate_unit(unit)
+    step_size = validate_step_size(step_size)
+    downcast = validate_downcast(downcast)
+    errors = validate_errors(errors)
 
-    # TODO: collate and validate args
-
+    # delegate to SeriesWrapper.to_complex
     return do_conversion(
         series,
-        "to_complex",  # not passed to conversion method
+        "to_complex",
         dtype=dtype,
         tol=tol,
+        rounding=rounding,
+        unit=unit,
+        step_size=step_size,
+        downcast=downcast,
         errors=errors,
         **kwargs
     )
@@ -174,27 +526,32 @@ def to_complex(
 def to_decimal(
     series: Iterable,
     dtype: resolve.resolvable = decimal.Decimal,
+    tol: numeric = None,
     rounding: str = None,
-    tol: int | float | complex | decimal.Decimal = 1e-6,
-    errors: str = "raise",
+    unit: str = None,
+    step_size: int = None,
+    call: Callable = None,
+    errors: str = None,
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to decimal representation."""
-    # validate dtype
-    dtype = resolve.resolve_type(dtype)
-    if isinstance(dtype, atomic.CompositeType):
-        raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
-    if not dtype.is_subtype(atomic.DecimalType):
-        raise ValueError(f"`dtype` must be a decimal type, not {dtype}")
+    # validate args
+    dtype = validate_dtype(dtype, atomic.DecimalType)
+    tol = validate_tol(tol)
+    rounding = validate_rounding(rounding)
+    unit = validate_unit(unit)
+    step_size = validate_step_size(step_size)
+    errors = validate_errors(errors)
 
-    # TODO: collate and validate args
-
+    # delegate to SeriesWrapper.to_decimal
     return do_conversion(
         series,
-        "to_decimal",  # not passed to conversion method
+        "to_decimal",
         dtype=dtype,
-        rounding=rounding,
         tol=tol,
+        rounding=rounding,
+        unit=unit,
+        step_size=step_size,
         errors=errors,
         **kwargs
     )
@@ -203,9 +560,6 @@ def to_decimal(
 def to_datetime(
     series: Iterable,
     dtype: resolve.resolvable = "datetime",
-    rounding: str = None,
-    tol: int | float | complex | decimal.Decimal = 1e-6,
-    errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to datetime representation."""
@@ -216,25 +570,13 @@ def to_datetime(
     if not dtype.is_subtype(atomic.DatetimeType):
         raise ValueError(f"`dtype` must be a datetime type, not {dtype}")
 
-    # TODO: collate and validate args
-
-    return do_conversion(
-        series,
-        "to_datetime",  # not passed to conversion method
-        dtype=dtype,
-        rounding=rounding,
-        tol=tol,
-        errors=errors,
-        **kwargs
-    )
+    # delegate to SeriesWrapper.to_datetime
+    return do_conversion(series, "to_datetime", dtype=dtype, **kwargs)
 
 
 def to_timedelta(
     series: Iterable,
     dtype: resolve.resolvable = "timedelta",
-    rounding: str = None,
-    tol: int | float | complex | decimal.Decimal = 1e-6,
-    errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to timedelta representation."""
@@ -245,23 +587,13 @@ def to_timedelta(
     if not dtype.is_subtype(atomic.TimedeltaType):
         raise ValueError(f"`dtype` must be a timedelta type, not {dtype}")
 
-    # TODO: collate and validate args
-
-    return do_conversion(
-        series,
-        "to_timedelta",  # not passed to conversion method
-        dtype=dtype,
-        rounding=rounding,
-        tol=tol,
-        errors=errors,
-        **kwargs
-    )
+    # delegate to SeriesWrapper.to_timedelta
+    return do_conversion(series, "to_timedelta", dtype=dtype, **kwargs)
 
 
 def to_string(
     series: Iterable,
     dtype: resolve.resolvable = str,
-    errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
@@ -272,22 +604,13 @@ def to_string(
     if not dtype.is_subtype(atomic.StringType):
         raise ValueError(f"`dtype` must be a string type, not {dtype}")
 
-    # TODO: collate and validate args
-
-    return do_conversion(
-        series,
-        "to_string",  # not passed to conversion method
-        dtype=dtype,
-        errors=errors,
-        **kwargs
-    )
+    # delegate to SeriesWrapper.to_string
+    return do_conversion(series, "to_string", dtype=dtype, **kwargs)
 
 
 def to_object(
     series: Iterable,
     dtype: resolve.resolvable = object,
-    call: Callable = None,
-    errors: str = "raise",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
@@ -298,170 +621,13 @@ def to_object(
     if not dtype.is_subtype(atomic.ObjectType):
         raise ValueError(f"`dtype` must be an object type, not {dtype}")
 
-    # TODO: collate and validate args
-
-    return do_conversion(
-        series,
-        "to_object",  # not passed to conversion method
-        dtype=dtype,
-        call=call,
-        errors=errors,
-        **kwargs
-    )
+    # delegate to SeriesWrapper.to_object
+    return do_conversion(series, "to_object", dtype=dtype, **kwargs)
 
 
 ######################
 ####    PRIVATE   ####
 ######################
-
-
-cdef tuple _apply_with_errors(
-    np.ndarray[object] arr,
-    object call,
-    str errors
-):
-    """Apply a function over an object array using the given error-handling
-    rule.
-    """
-    cdef unsigned int arr_length = arr.shape[0]
-    cdef unsigned int i
-    cdef np.ndarray[object] result = np.full(arr_length, None, dtype="O")
-    cdef bint has_errors = False
-    cdef np.ndarray[np.uint8_t, cast=True] index
-
-    # index is only necessary if errors="coerce"
-    if errors == "coerce":
-        index = np.full(arr_length, False)
-    else:
-        index = None
-
-    # apply `call` at every index of array and record errors
-    for i in range(arr_length):
-        try:
-            result[i] = call(arr[i])
-        except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
-            raise  # never coerce on these error types
-        except Exception as err:
-            if errors == "coerce":
-                has_errors = True
-                index[i] = True
-                continue
-            raise err
-
-    return result, has_errors, index
-
-
-def as_series(data) -> pd.Series:
-    """Convert the given data into a corresponding pd.Series object."""
-    if isinstance(data, pd.Series):
-        return data.copy()
-
-    if isinstance(data, np.ndarray):
-        return pd.Series(np.atleast_1d(data))
-
-    return pd.Series(data, dtype="O")
-
-
-def check_for_overflow(
-    series: SeriesWrapper,
-    dtype: atomic.AtomicType,
-    errors: str
-) -> atomic.AtomicType:
-    """Ensure that a series does not overflow past the allowable range of the
-    given AtomicType.  If overflow is detected, attempt to upcast the
-    AtomicType to fit or coerce the series if directed.
-    """
-    # TODO: may want to incorporate a tolerance here to allow for clipping
-
-    if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
-        # attempt to upcast
-        if hasattr(dtype, "upcast"):
-            try:
-                return dtype.upcast(series)
-            except OverflowError:
-                pass
-
-        # process error
-        index = (series < dtype.min) | (series > dtype.max)
-        if errors == "coerce":
-            # series.series = series[~index].clip(dtype.min, dtype.max)
-            series.series = series[~index]
-            series.hasnans = True
-        else:
-            raise OverflowError(
-                f"values exceed {dtype} range at index "
-                f"{shorten_list(series[index].index.values)}"
-            )
-
-    return dtype
-
-
-def do_conversion(
-    data,
-    endpoint: str,
-    *args,
-    errors: str = "raise",
-    **kwargs
-) -> pd.Series:
-    try:
-        with SeriesWrapper(as_series(data)) as series:
-            result = getattr(series, endpoint)(*args, errors=errors, **kwargs)
-            series.series = result.series
-            series.hasnans = result.hasnans
-            series.element_type = result.element_type
-        return series.series
-    except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
-        raise  # never ignore these errors
-    except Exception as err:
-        if errors == "ignore":
-            return data
-        raise err
-
-
-def snap_round(
-    series: SeriesWrapper,
-    tol: numeric,
-    rule: str,
-    errors: str
-) -> SeriesWrapper:
-    """Snap a SeriesWrapper to the nearest integer within `tol`, and then round
-    any remaining results according to the given rule.  Rejects any outputs
-    that are not integer-like by the end of this process.
-    """
-    # NOTE: semantics are a bit messy here, but they minimize rounding
-    # operations as much as possible.
-
-    # apply tolerance, then check for non-integers if necessary
-    if tol or rule is None:
-        rounded = series.round("half_even")  # compute once
-        outside = ~within_tolerance(series, rounded, tol=tol)
-        if tol:
-            series.series = series.where(outside.series, rounded.series).series
-
-        # check for non-integer (ignore if rounding)
-        if rule is None and outside.any():
-            if errors == "coerce":
-                series.series = series.round("down").series
-            else:
-                raise ValueError(
-                    f"precision loss exceeds tolerance {tol:.2e} at index "
-                    f"{shorten_list(outside[outside].index.values)}"
-                )
-
-    # apply final rounding rule
-    if rule:
-        series.series = series.round(rule).series
-
-    return series
-
-
-def within_tolerance(series_1, series_2, tol: numeric) -> array_like:
-    """Check if every element of a series is within tolerance of another
-    series.
-    """
-    if not tol:  # fastpath if tolerance=0
-        return series_1 == series_2
-    return ~((series_1 - series_2).abs() > tol)
 
 
 cdef class SeriesWrapper:
@@ -660,7 +826,7 @@ cdef class SeriesWrapper:
             result = pd.Series(
                 np.full(
                     self._original_shape,
-                    self.element_type.na_value,
+                    getattr(self.element_type, "na_value", pd.NA),
                     dtype="O"
                 ),
                 dtype=self.dtype
@@ -712,6 +878,51 @@ cdef class SeriesWrapper:
             result = result[~index]
         return SeriesWrapper(result, hasnans=has_errors or self._hasnans)
 
+    def boundscheck(
+        self,
+        dtype: atomic.AtomicType,
+        tol: numeric,
+        errors: str
+    ) -> tuple[SeriesWrapper, atomic.AtomicType]:
+        """Ensure that a series does not overflow past the allowable range of the
+        given AtomicType.  If overflow is detected, attempt to upcast the
+        AtomicType to fit or coerce the series if directed.
+        """
+        series = self
+        if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
+            # adjust dtype to fit series (attempt to upcast)
+            if hasattr(dtype, "upcast"):
+                try:
+                    return series, dtype.upcast(series)
+                except OverflowError:
+                    pass
+
+            # adjust series to fit dtype - clip around min/max
+            index = (series < dtype.min) | (series > dtype.max)
+            if tol:
+                within = (series < dtype.min - tol) | (series > dtype.max + tol)
+                within ^= index
+                element_type = series.element_type
+                series = series.where(
+                    ~within.series,
+                    series.clip(dtype.min, dtype.max).series
+                )
+                series.element_type = element_type
+                index ^= within
+
+            # check if any values are still overflowing
+            if index.any():
+                if errors == "coerce":
+                    series = series[~index]
+                    series.hasnans = True
+                else:
+                    raise OverflowError(
+                        f"values exceed {dtype} range at index "
+                        f"{shorten_list(series[index].index.values)}"
+                    )
+
+        return series, dtype
+
     def dispatch(self, endpoint: str) -> Callable:
         """Decorate the named method, dispatching it across every type present
         in a SeriesWrapper instance.
@@ -741,8 +952,6 @@ cdef class SeriesWrapper:
 
         # series is composite
         groups = self.series.groupby(element_type.index, sort=False)
-        output_types = set()
-        indices = []
 
         def wrapper(*args, **kwargs):
             def transform(grp):
@@ -761,34 +970,11 @@ cdef class SeriesWrapper:
                         call(*args, **kwargs),
                         hasnans=self._hasnans
                     )
-                if not self.hasnans:
-                    self.hasnans=result.hasnans
-                output_types.add(result.element_type)
-                indices.append(
-                    pd.Series(
-                        np.full(result.shape, result.element_type),
-                        index=result.series.index
-                    )
-                )
+                self.hasnans = self.hasnans or result.hasnans
                 return result.series
 
             result = groups.transform(transform)
-            result_type = atomic.CompositeType(output_types)
-            if len(result_type) == 1:
-                result_type = result_type.pop()
-            else:
-                index = pd.Series(
-                    np.empty(result.shape, dtype="O"),
-                    index=result.index
-                )
-                for i in indices:
-                    index.update(i)
-                result_type.index = index.to_numpy()
-            return SeriesWrapper(
-                result,
-                hasnans=self._hasnans,
-                element_type=result_type
-            )
+            return SeriesWrapper(result, hasnans=self.hasnans)
 
         return wrapper
 
@@ -839,6 +1025,50 @@ cdef class SeriesWrapper:
             element_type=self._element_type
         )
 
+    def snap_round(
+        self,
+        tol: numeric,
+        rule: str,
+        errors: str
+    ) -> SeriesWrapper:
+        """Snap a SeriesWrapper to the nearest integer within `tol`, and then
+        round any remaining results according to the given rule.  Rejects any
+        outputs that are not integer-like by the end of this process.
+        """
+        series = self
+
+        # apply tolerance, then check for non-integers if not rounding
+        if tol or rule is None:
+            rounded = series.round("half_even")  # compute once
+            outside = ~series.within_tol(rounded, tol=tol)
+            if tol:
+                series = series.where(outside.series, rounded.series)
+                series.element_type = self._element_type
+
+            # check for non-integer (ignore if rounding)
+            if rule is None and outside.any():
+                if errors == "coerce":
+                    series = series.round("down")
+                else:
+                    raise ValueError(
+                        f"precision loss exceeds tolerance {float(tol):g} at "
+                        f"index {shorten_list(outside[outside].index.values)}"
+                    )
+
+        # round according to specified rule
+        if rule:
+            series = series.round(rule)
+
+        return series
+
+    def within_tol(self, other, tol: numeric) -> array_like:
+        """Check if every element of a series is within tolerance of another
+        series.
+        """
+        if not tol:  # fastpath if tolerance=0
+            return self == other
+        return ~((self - other).abs() > tol)
+
     #################################
     ####   DISPATCHED METHODS    ####
     #################################
@@ -851,12 +1081,13 @@ cdef class SeriesWrapper:
     # implementation, if one exists.  See __getattr__() for more details on how
     # this is done.
 
-
     ##########################
     ####    ARITHMETIC    ####
     ##########################
 
-    # NOTE: math operators can change the element_type of a series
+    # NOTE: math operators can change the element_type of a SeriesWrapper in
+    # unexpected ways.  If you know the final element_type ahead of time, set
+    # it manually by assigning to the result's .element_type field.
 
     def __abs__(self) -> SeriesWrapper:
         return SeriesWrapper(abs(self.series), hasnans=self._hasnans)
@@ -882,56 +1113,68 @@ cdef class SeriesWrapper:
     def __gt__(self, other) -> SeriesWrapper:
         return SeriesWrapper(self.series > other, hasnans=self._hasnans)
 
-    def __iadd__(self, other) -> None:
+    def __iadd__(self, other) -> SeriesWrapper:
         self.series += other
         self._element_type = None
+        return self
 
-    def __iand__(self, other) -> None:
+    def __iand__(self, other) -> SeriesWrapper:
         self.series &= other
         self._element_type = None
+        return self
 
-    def __idiv__(self, other) -> None:
+    def __idiv__(self, other) -> SeriesWrapper:
         self.series /= other
         self._element_type = None
+        return self
 
-    def __ifloordiv__(self, other) -> None:
+    def __ifloordiv__(self, other) -> SeriesWrapper:
         self.series //= other
         self._element_type = None
+        return self
 
-    def __ilshift__(self, other) -> None:
+    def __ilshift__(self, other) -> SeriesWrapper:
         self.series <<= other
         self._element_type = None
+        return self
 
-    def __imod__(self, other) -> None:
+    def __imod__(self, other) -> SeriesWrapper:
         self.series %= other
         self._element_type = None
+        return self
 
-    def __imul__(self, other) -> None:
+    def __imul__(self, other) -> SeriesWrapper:
         self.series *= other
         self._element_type = None
+        return self
 
     def __invert__(self) -> SeriesWrapper:
         return SeriesWrapper(~self.series, hasnans=self._hasnans)
 
-    def __ior__(self, other) -> None:
+    def __ior__(self, other) -> SeriesWrapper:
         self.series |= other
         self._element_type = None
+        return self
 
-    def __ipow__(self, other) -> None:
+    def __ipow__(self, other) -> SeriesWrapper:
         self.series **= other
         self._element_type = None
+        return self
 
-    def __irshift__(self, other) -> None:
+    def __irshift__(self, other) -> SeriesWrapper:
         self.series >>= other
         self._element_type = None
+        return self
 
-    def __isub__(self, other) -> None:
+    def __isub__(self, other) -> SeriesWrapper:
         self.series -= other
         self._element_type = None
+        return self
 
-    def __ixor__(self, other) -> None:
+    def __ixor__(self, other) -> SeriesWrapper:
         self.series ^= other
         self._element_type = None
+        return self
 
     def __le__(self, other) -> SeriesWrapper:
         return SeriesWrapper(self.series <= other, hasnans=self._hasnans)
@@ -1079,7 +1322,7 @@ cdef class SeriesWrapper:
     def __len__(self) -> int:
         return len(self.series)
 
-    def __next__(self):
+    def __next__(self) -> Any:
         return self.series.__next__()
 
     def __oct__(self) -> oct:
@@ -1098,3 +1341,68 @@ cdef class SeriesWrapper:
 
     def __str__(self) -> str:
         return str(self.series)
+
+
+cdef tuple _apply_with_errors(np.ndarray[object] arr, object call, str errors):
+    """Apply a function over an object array using the given error-handling
+    rule.
+    """
+    cdef unsigned int arr_length = arr.shape[0]
+    cdef unsigned int i
+    cdef np.ndarray[object] result = np.full(arr_length, None, dtype="O")
+    cdef bint has_errors = False
+    cdef np.ndarray[np.uint8_t, cast=True] index
+
+    # index is only necessary if errors="coerce"
+    if errors == "coerce":
+        index = np.full(arr_length, False)
+    else:
+        index = None
+
+    # apply `call` at every index of array and record errors
+    for i in range(arr_length):
+        try:
+            result[i] = call(arr[i])
+        except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
+            raise  # never coerce on these error types
+        except Exception as err:
+            if errors == "coerce":
+                has_errors = True
+                index[i] = True
+                continue
+            raise err
+
+    return result, has_errors, index
+
+
+def as_series(data) -> pd.Series:
+    """Convert the given data into a corresponding pd.Series object."""
+    if isinstance(data, pd.Series):
+        return data.copy()
+
+    if isinstance(data, np.ndarray):
+        return pd.Series(np.atleast_1d(data))
+
+    return pd.Series(data, dtype="O")
+
+
+def do_conversion(
+    data,
+    endpoint: str,
+    *args,
+    errors: str = defaults.errors,
+    **kwargs
+) -> pd.Series:
+    try:
+        with SeriesWrapper(as_series(data)) as series:
+            result = getattr(series, endpoint)(*args, errors=errors, **kwargs)
+            series.series = result.series
+            series.hasnans = result.hasnans
+            series.element_type = result.element_type
+        return series.series
+    except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
+        raise  # never ignore these errors
+    except Exception as err:
+        if errors == "ignore":
+            return data
+        raise err

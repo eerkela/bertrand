@@ -20,6 +20,8 @@ cimport numpy as np
 import pandas as pd
 from typing import Union
 
+import pytz
+
 from .base cimport AdapterType, AtomicType
 from .base import dispatch, generic, subtype
 
@@ -64,7 +66,7 @@ class IntegerMixin:
     @property
     def larger(self) -> list:
         """Get a list of types that `self` can be upcasted to."""
-        # get all subtypes with range different to self
+        # get all subtypes with range greater than self
         result = [
             x for x in self.subtypes if x.min < self.min or x.max > self.max
         ]
@@ -160,28 +162,29 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        errors: str = "raise",
+        tol: Tolerance,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a boolean data type."""
-        dtype = cast.check_for_overflow(series, dtype, errors)
-        return super().to_boolean(
-            series=series,
-            dtype=dtype,
-            errors=errors,
-            **unused
-        )
+        dtype = cast.filter_dtype(dtype, bool)
+        series, dtype = series.boundscheck(dtype, int(tol.real), errors)
+        if series.hasnans:
+            dtype = dtype.force_nullable()
+
+        return series.astype(dtype, errors=errors)
 
     @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        tol: Tolerance,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to another integer data type."""
-        dtype = cast.check_for_overflow(series, dtype, errors)
+        series, dtype = series.boundscheck(dtype, int(tol.real), errors)
         return super().to_integer(
             series=series,
             dtype=dtype,
@@ -194,16 +197,12 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: numeric = 0,
-        downcast: bool = False,
-        errors: str = "raise",
+        tol: Tolerance,
+        downcast: bool | AtomicType,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a float data type."""
-        # parse tolerance
-        tol = Tolerance(tol)
-
-        # do naive conversion
         result = series.astype(dtype)
 
         # backtrack to check for overflow/precision loss
@@ -226,7 +225,7 @@ class IntegerMixin:
                 # NOTE: we can bypass overflow/precision loss checks by
                 # delegating straight to AtomicType
                 reverse = super().to_integer(result, dtype=self.upcast(result))
-                bad = ~cast.within_tolerance(series, reverse, tol=tol.real)
+                bad = ~series.within_tol(reverse, tol.real)
                 if bad.any():
                     raise ValueError(
                         f"precision loss exceeds tolerance "
@@ -235,7 +234,7 @@ class IntegerMixin:
                     )
 
         if downcast:
-            return dtype.downcast(result, tol=tol.real)
+            return dtype.downcast(result, tol=tol)
         return result
 
     @dispatch
@@ -243,7 +242,7 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: numeric = 0,
+        tol: Tolerance,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a complex data type."""
@@ -269,6 +268,9 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        tz: pytz.BaseTzInfo,
+        unit: str,
+        step_size: int,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -280,6 +282,8 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        unit: str,
+        step_size: int,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -291,7 +295,7 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        base: int = 0,
+        base: int,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a string data type in any base."""
@@ -308,9 +312,6 @@ class IntegerMixin:
         )
         result.element_type = str
         return super().to_string(result, dtype=dtype, **unused)
-
-
-
 
 
 #######################

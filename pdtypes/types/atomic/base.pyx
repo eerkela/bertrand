@@ -21,49 +21,8 @@ import pdtypes.types.resolve as resolve
 from pdtypes.util.round import Tolerance
 
 
-# TODO: dispatch can construct new CompositeTypes for composite inputs.
-# The function passed to transform constructs a new series full of
-# series.element_type with the same index as the group, and adds it to a
-# list.  After transforming, you join all of these indices into a single
-# index of the same shape as the output, and then convert into a numpy array.
-# This forms the new index for the CompositeType.  If any groups return a
-# different element_type than they started with (grp.name), then generate
-# new groups for SeriesWrapper.
-# -> Maybe in the case of composite input, series isn't even stored, it's just
-# held as a groupby object.  The .series accessor reconstructs the series
-# by joining each group.
-
-
-
-
-# TODO: consider adding an @dispatch decorator that adds an AtomicType method
-# to the list of dispatchable methods.  This is automatically integrated with
-# dispatch() and added as a property of SeriesWrapper objects, which separates
-# the notions of data methods and type methods conceptually.  Data methods
-# must accept a SeriesWrapper as their first argument and return another
-# SeriesWrapper with the appropriate data.  They must accept **kwargs in their
-# signature.
-# -> This allows users to specify arbitrary methods that work on any data type,
-# as long as it implements a corresponding @dispatch method.
-# -> Effectively, this decorator attaches a method to a type's .dispatched
-# class attribute, which is a dictionary with method names as keys and callable
-# methods as values.  This replaces getattr() checks in dispatch().
-# -> SeriesWrapper.__getattr__() first checks for a dispatched method with the
-# matching name, and then defaults to series if no match is found.  In the case
-# of non-homogenous data, it does this independently for each type in the
-# series, and then constructs a new CompositeType with the appropriate index.
-
-
-# TODO: add global defaults for every conversion parameter.  These can be
-# modified to change the behavior of the cast() function on a global level.
-# TOLERANCE = 1e-6
-# -> these should be managed under a `flags` global object.
-# - flags.downcast
-# - flags.tolerance
-# - flags.rounding
-# - flags.errors
-# - flags.true
-# - flags.false
+# complex string regex.  re.sub("\s+", "")
+# r"\(?(?P<real>[+-]?[0-9.]+)(?P<imag>[+-][0-9.]+)?j?\)?"
 
 
 # conversions
@@ -764,7 +723,7 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        errors: str = "raise",
+        errors: str = cast.defaults.errors,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert generic data to a boolean data type.
@@ -776,10 +735,9 @@ cdef class AtomicType(BaseType):
         method will be propagated to the top-level `to_boolean()` and `cast()`
         functions when they are called on objects of the given type.
         """
-        # account for missing/coerced values in series
+        dtype = cast.filter_dtype(dtype, bool)
         if series.hasnans:
             dtype = dtype.force_nullable()
-
         return series.astype(dtype, errors=errors)
 
     @dispatch
@@ -787,8 +745,8 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        downcast: bool = False,
-        errors: str = "raise",
+        downcast: bool = cast.defaults.downcast,
+        errors: str = cast.defaults.errors,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert generic data to an integer data type.
@@ -814,9 +772,9 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: numeric = 0,
-        downcast: bool = False,
-        errors: str = "raise",
+        tol: Tolerance = cast.defaults.tol,
+        downcast: bool = cast.defaults.downcast,
+        errors: str = cast.defaults.errors,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a floating point data type."""
@@ -830,9 +788,9 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: numeric = 0,
-        downcast: bool = False,
-        errors: str = "raise",
+        tol: Tolerance = cast.defaults.tol,
+        downcast: bool = cast.defaults.downcast,
+        errors: str = cast.defaults.errors,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a complex data type."""
@@ -846,7 +804,7 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        errors: str = "raise",
+        errors: str = cast.defaults.errors,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a decimal data type."""
@@ -858,7 +816,7 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        errors: str = "raise",
+        errors: str = cast.defaults.errors,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert arbitrary data to a string data type.
@@ -874,7 +832,7 @@ cdef class AtomicType(BaseType):
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         call: Callable = None,
-        errors: str = "raise",
+        errors: str = cast.defaults.errors,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert arbitrary data to an object data type."""

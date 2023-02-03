@@ -77,8 +77,8 @@ class ObjectType(AtomicType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        call: Callable = None,
-        errors: str = "raise",
+        call: Callable,
+        errors: str,
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a boolean data type."""
@@ -96,8 +96,8 @@ class ObjectType(AtomicType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        call: Callable = None,
-        errors: str = "raise",
+        call: Callable,
+        errors: str,
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to an integer data type."""
@@ -115,8 +115,8 @@ class ObjectType(AtomicType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        call: Callable = None,
-        errors: str = "raise",
+        call: Callable,
+        errors: str,
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a float data type."""
@@ -134,8 +134,8 @@ class ObjectType(AtomicType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        call: Callable = None,
-        errors: str = "raise",
+        call: Callable,
+        errors: str,
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a complex data type."""
@@ -153,8 +153,8 @@ class ObjectType(AtomicType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        call: Callable = None,
-        errors: str = "raise",
+        call: Callable,
+        errors: str,
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a decimal data type."""
@@ -172,8 +172,8 @@ class ObjectType(AtomicType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        call: Callable = None,
-        errors: str = "raise",
+        call: Callable,
+        errors: str,
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a datetime data type."""
@@ -191,8 +191,8 @@ class ObjectType(AtomicType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        call: Callable = None,
-        errors: str = "raise",
+        call: Callable,
+        errors: str,
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a timedelta data type."""
@@ -210,8 +210,8 @@ class ObjectType(AtomicType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        call: Callable = None,
-        errors: str = "raise",
+        call: Callable,
+        errors: str,
         **unused
     ) -> pd.Series:
         """Convert unstructured objects to a string data type."""
@@ -294,7 +294,7 @@ def two_step_conversion(
         cdef type output_type = type(result)
 
         if output_type != dtype.type_def:
-            raise ValueError(
+            raise TypeError(
                 f"`call` must return an object of type {dtype.type_def}"
             )
         return result

@@ -26,10 +26,6 @@ import pdtypes.types.resolve as resolve
 ##################################
 
 
-cdef set default_false = {"false", "f", "no", "n", "off", "0"}
-cdef set default_true = {"true", "t", "yes", "y", "on", "1"}
-
-
 cdef object default_string_dtype
 cdef bint pyarrow_installed
 
@@ -54,37 +50,21 @@ class StringMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        true: str | Iterable[str] = default_true,
-        false: str | Iterable[str] = default_false,
-        errors: str = False,
-        ignore_case: bool = True,
+        true: set,
+        false: set,
+        errors: str,
+        ignore_case: bool,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert string data to a boolean data type."""
-        # convert to set
-        true = {true} if isinstance(true, str) else set(true)
-        false = {false} if isinstance(false, str) else set(false)
-
-        # ensure true, false are disjoint
-        if not true.isdisjoint(false):
-            intersection = true.intersection(false)
-            err_msg = f"`true` and `false` must be disjoint "
-            if len(intersection) == 1:
-                err_msg += (
-                    f"({repr(intersection.pop())} is present in both sets)"
-                )
-            else:
-                err_msg += f"({intersection} are present in both sets)"
-            raise ValueError(err_msg)
-
-        # configure values for lookup function
+        # configure lookup dict
         cdef dict lookup = dict.fromkeys(true, 1) | dict.fromkeys(false, 0)
         if "*" in true:
-            fill = 1
+            fill = 1  # KeyErrors become truthy
         elif "*" in false:
-            fill = 0
+            fill = 0  # KeyErrors become falsy
         else:
-            fill = -1
+            fill = -1  # raise
 
         # apply lookup function with specified errors
         result = series.apply_with_errors(
@@ -98,21 +78,17 @@ class StringMixin:
         )
         result.element_type = bool
 
-        # delegate to AtomicType.to_boolean()
-        return super().to_boolean(
-            result,
-            dtype=dtype,
-            errors=errors,
-            **unused
-        )
+        if series.hasnans:
+            dtype = dtype.force_nullable()
+        return series.astype(dtype, errors=errors)
 
     @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        base: int = 0,
-        errors: str = "raise",
+        base: int,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert string data to an integer data type with the given base."""
@@ -134,7 +110,6 @@ class StringMixin:
         decimal_type = resolve.resolve_type("decimal")
         result = series.to_decimal(dtype=decimal_type, **unused)
         return result.to_float(dtype=dtype, **unused)
-
 
 
 #######################

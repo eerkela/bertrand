@@ -21,6 +21,15 @@ cdef class Tolerance:
     def __bool__(self) -> bool:
         return bool(self.real) or bool(self.imag)
 
+    def __int__(self) -> int:
+        return int(self.real)
+
+    def __float__(self) -> float:
+        return float(self.real)
+
+    def __complex__(self) -> complex:
+        return complex(self.real, self.imag)
+
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.real}+{self.imag}j)"
 

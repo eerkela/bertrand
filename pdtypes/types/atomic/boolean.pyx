@@ -5,6 +5,7 @@ cimport cython
 import numpy as np
 cimport numpy as np
 import pandas as pd
+import pytz
 
 from .base cimport AtomicType
 from .base import dispatch, generic
@@ -79,8 +80,9 @@ class BooleanMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        unit: str = "ns",
-        since: str = "UTC"
+        tz: pytz.BaseTzInfo,
+        unit: str,
+        since: np.datetime64
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a datetime data type."""
         raise NotImplementedError()
@@ -165,101 +167,3 @@ class PythonBooleanType(BooleanMixin, AtomicType):
             na_value=pd.NA,
             itemsize=1
         )
-
-
-#######################
-####    PRIVATE    ####
-#######################
-
-
-# StringType.to_boolean(
-#     self,
-#     series: cast.SeriesWrapper,
-#     dtype: AtomicType,
-#     true: Sequence[str] = ("true", "t", "yes", "y", "on", "1"),
-#     false: Sequence[str] = ("false", "f", "no", "n", "off", "0"),
-#     errors: str = "raise"
-# ):
-#     fill_value, true, false = parse_true_false_strings(dtype, true, false)
-#     if not pd.isna(fill_value):
-#         errors = "coerce"
-# 
-#     lookup = dict.fromkeys(true, True)
-#     lookup |= dict.fromkeys(false, False)
-# 
-#     result, hasnans = string_to_boolean(
-#         series.to_numpy(),
-#         lookup=lookup,
-#         errors=errors,
-#         fill_value=fill_value
-#     )
-# 
-#     if (series.hasnans or hasnans) and not dtype.is_nullable:
-#         dtype = dtype.replace(backend="pandas")
-# 
-#     return pd.Series(result, index=series.index, dtype=dtype.dtype)
-
-
-cdef tuple parse_true_false_strings(AtomicType dtype, tuple true, tuple false):
-    """Remove wildcards from `true`/`false` and find an appropriate
-    `fill_value` for BooleanType.parse()
-    """
-    fill_value = dtype.na_value
-
-    # check for '*' in `true`
-    if "*" in true:
-        fill_value = dtype.type_def(True)
-        while "*" in true:
-            true.remove("*")
-
-    # check for '*' in `false`
-    if "*" in false:
-        if fill_value == True:
-            raise ValueError(
-                "wildcard '*' can be in either `true` or `false`, not both"
-            )
-        fill_value = dtype.type_def(False)
-        while "*" in false:
-            false.remove("*")
-
-    # unescape '\*' literals
-    true = tuple(s.replace(r"\*", "*") for s in true)
-    false = tuple(s.replace(r"\*", "*") for s in false)
-
-    # return
-    return (fill_value, true, false)
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef np.ndarray[object] string_to_boolean_vector(
-    np.ndarray[str] arr,
-    tuple true,
-    tuple false,
-    str errors,
-    object fill_value
-):
-    """Convert boolean strings ('True', 'False', 'yes', 'no', 'on', 'off',
-    etc.) into their equivalent boolean value.
-    """
-    cdef unsigned int arr_length = arr.shape[0]
-    cdef unsigned int i
-    cdef dict lookup = {}
-    cdef np.ndarray[object] result = np.full(arr_length, fill_value, dtype="O")
-
-    lookup = dict.fromkeys(true, True)
-    lookup |= dict.fromkeys(false, False)
-    lookup |= {k.lower(): v for k, v in resolve.na_strings.items()}
-
-    # step through array
-    for i in range(arr_length):
-        try:
-            result[i] = lookup[arr[i].strip().lower()]
-        except KeyError as err:
-            if errors == "coerce":
-                continue  # np.full(...) implicitly fills with `fill_value`
-            err_msg = (f"non-boolean value encountered at index {i}: "
-                       f"{repr(arr[i])}")
-            raise ValueError(err_msg) from err
-
-    return result

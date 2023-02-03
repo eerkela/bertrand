@@ -2,11 +2,13 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
+import pytz
+
 from pdtypes.error import shorten_list
 from pdtypes.type_hints import numeric
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
-from pdtypes.util.round import Tolerance
+from pdtypes.util.round cimport Tolerance
 
 from .base cimport AdapterType, AtomicType
 from .base import dispatch, generic, subtype
@@ -27,6 +29,17 @@ class ComplexMixin:
     ############################
     ####    TYPE METHODS    ####
     ############################
+
+    def downcast(
+        self,
+        series: cast.SeriesWrapper,
+        tol: Tolerance
+    ) -> cast.SeriesWrapper:
+        """Reduce the itemsize of a complex type to fit the observed range."""
+        equiv_float = self.equiv_float
+        real = equiv_float.downcast(series.real, tol=tol.real)
+        imag = equiv_float.downcast(series.imag, tol=tol.imag)
+        return combine_real_imag(real, imag)
 
     @property
     def equiv_float(self) -> AtomicType:
@@ -59,23 +72,11 @@ class ComplexMixin:
     ####    SERIES METHODS    ####
     ##############################
 
-    def downcast(
-        self,
-        series: cast.SeriesWrapper,
-        tol: numeric = 0
-    ) -> cast.SeriesWrapper:
-        """Reduce the itemsize of a complex type to fit the observed range."""
-        tol = Tolerance(tol)
-        equiv_float = self.equiv_float
-        real = equiv_float.downcast(series.real, tol=tol.real)
-        imag = equiv_float.downcast(series.imag, tol=tol.imag)
-        return combine_real_imag(real, imag)
-
     @dispatch
     def round(
         self,
         series: cast.SeriesWrapper,
-        rule: str = "half_even",
+        rule: str = cast.defaults.rounding,
         decimals: int = 0
     ) -> cast.SeriesWrapper:
         """Round a complex series to the given number of decimal places using
@@ -104,8 +105,8 @@ class ComplexMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: numeric = 1e-6,
-        errors: str = "raise",
+        tol: Tolerance,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert complex data to an integer data type."""
@@ -118,8 +119,8 @@ class ComplexMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: numeric = 0,
-        errors: str = "raise",
+        tol: Tolerance,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert complex data to a float data type."""
@@ -127,8 +128,7 @@ class ComplexMixin:
 
         # check for nonzero imag
         if errors != "coerce":  # ignore if coercing
-            tol = Tolerance(tol)
-            bad = ~cast.within_tolerance(series.imag, 0, tol=tol.imag)
+            bad = ~series.imag.within_tol(0, tol=tol.imag)
             if bad.any():
                 raise ValueError(
                     f"imaginary component exceeds tolerance "
@@ -143,8 +143,8 @@ class ComplexMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: numeric = 1e-6,
-        errors: str = "raise",
+        tol: Tolerance,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert complex data to a decimal data type."""
@@ -157,8 +157,11 @@ class ComplexMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: numeric = 1e-6,
-        errors: str = "raise",
+        tz: pytz.BaseTzInfo,
+        unit: str,
+        step_size: int,
+        tol: Tolerance,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert complex data to a datetime data type."""
@@ -171,8 +174,10 @@ class ComplexMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: numeric = 1e-6,
-        errors: str = "raise",
+        unit: str,
+        step_size: int,
+        tol: Tolerance,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert complex data to a timedelta data type."""

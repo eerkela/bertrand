@@ -12,7 +12,6 @@ setup(
             # "pdtypes/cast/util/time/*.pyx",
             # "pdtypes/cast/util/time/datetime/*.pyx",
             # "pdtypes/cast/util/time/timedelta/*.pyx",
-            "pdtypes/check/*.pyx",
             "pdtypes/types/*.pyx",
             "pdtypes/types/atomic/*.pyx",
             "pdtypes/util/*.pyx",

@@ -49,46 +49,34 @@ class DecimalMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        rounding: str = None,
-        tol: numeric = 1e-6,
-        errors: str = "raise",
+        rounding: str,
+        tol: Tolerance,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert decimal data to a boolean data type."""
-        # apply tolerance + rounding, rejecting any non-integer results
-        series = cast.snap_round(series, Tolerance(tol).real, rounding, errors)
+        dtype = cast.filter_dtype(dtype, bool)
 
-        # check for overflow
-        dtype = cast.check_for_overflow(series, dtype, errors)
+        series = series.snap_round(tol.real, rounding, errors)
+        series, dtype = series.boundscheck(dtype, int(tol.real), errors)
+        if series.hasnans:
+            dtype = dtype.force_nullable()
 
-        # pass to AtomicType.to_boolean()
-        return super().to_boolean(
-            series=series,
-            dtype=dtype,
-            rounding=rounding,
-            tol=tol,
-            errors=errors,
-            **unused
-        )
+        return series.astype(dtype, errors=errors)
 
     @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        rounding: str = None,
-        tol: numeric = 1e-6,
-        errors: str = "raise",
+        rounding: str,
+        tol: Tolerance,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert decimal data to an integer data type."""
-        # apply tolerance + rounding, rejecting any non-integer results
-        series = cast.snap_round(series, Tolerance(tol).real, rounding, errors)
-
-        # check for overflow
-        dtype = cast.check_for_overflow(series, dtype, errors)
-
-        # pass to AtomicType.to_integer()
+        series = series.snap_round(tol.real, rounding, errors)
+        series, dtype = series.boundscheck(dtype, int(tol.real), errors)
         return super().to_integer(
             series=series,
             dtype=dtype,
@@ -103,15 +91,12 @@ class DecimalMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: numeric = 1e-6,
-        downcast: bool = False,
-        errors: str = "raise",
+        tol: Tolerance,
+        downcast: bool,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert decimal data to a floating point data type."""
-        # parse tolerance
-        tol = Tolerance(tol)
-
         # do naive conversion
         result = series.astype(dtype)
 
@@ -134,7 +119,7 @@ class DecimalMixin:
             # NOTE: we can bypass overflow/precision loss checks by
             # delegating straight to AtomicType
             reverse = super().to_decimal(result, dtype=self)
-            bad = ~cast.within_tolerance(series, reverse, tol=tol.real)
+            bad = ~series.within_tol(reverse, tol=tol.real)
             if bad.any():
                 raise ValueError(
                     f"precision loss exceeds tolerance {float(tol.real):g} at "
@@ -150,7 +135,7 @@ class DecimalMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: numeric = 1e-6,
+        tol: numeric,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert decimal data to a complex data type."""
