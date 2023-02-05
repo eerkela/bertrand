@@ -55,14 +55,9 @@ class DecimalMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert decimal data to a boolean data type."""
-        dtype = cast.filter_dtype(dtype, bool)
-
         series = series.snap_round(tol.real, rounding, errors)
         series, dtype = series.boundscheck(dtype, int(tol.real), errors)
-        if series.hasnans:
-            dtype = dtype.force_nullable()
-
-        return series.astype(dtype, errors=errors)
+        return super().to_boolean(series, dtype, errors=errors)
 
     @dispatch
     def to_integer(
@@ -71,6 +66,7 @@ class DecimalMixin:
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
+        downcast: bool,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -78,12 +74,10 @@ class DecimalMixin:
         series = series.snap_round(tol.real, rounding, errors)
         series, dtype = series.boundscheck(dtype, int(tol.real), errors)
         return super().to_integer(
-            series=series,
-            dtype=dtype,
-            rounding=rounding,
-            tol=tol,
-            errors=errors,
-            **unused
+            series,
+            dtype,
+            downcast=downcast,
+            errors=errors
         )
 
     @dispatch
@@ -102,7 +96,7 @@ class DecimalMixin:
             # NOTE: series.astype() implicitly calls Decimal.__float__(), which
             # is limited to 64-bits.  Converting to an intermediate string
             # representation avoids this.
-            result = series.apply_with_errors(str).astype(dtype)
+            result = series.astype(str).astype(dtype)
         else:
             result = series.astype(dtype)
 
@@ -117,7 +111,7 @@ class DecimalMixin:
                 else:
                     raise OverflowError(
                         f"values exceed {dtype} range at index "
-                        f"{shorten_list(series[infs].index.values)}"
+                        f"{shorten_list(infs[infs].index.values)}"
                     )
 
         # backtrack to check for precision loss
@@ -142,11 +136,25 @@ class DecimalMixin:
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: numeric,
+        downcast: bool,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert decimal data to a complex data type."""
-        result = series.to_float(dtype=dtype.equiv_float, tol=tol, **unused)
-        return result.to_complex(dtype=dtype, tol=tol, **unused)
+        series = self.to_float(
+            series,
+            dtype.equiv_float,
+            tol=tol,
+            downcast=False,
+            errors=errors
+        )
+        return series.to_complex(
+            dtype=dtype,
+            tol=tol,
+            downcast=downcast,
+            errors=errors
+            **unused
+        )
 
 
 #######################

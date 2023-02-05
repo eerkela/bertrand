@@ -80,10 +80,7 @@ class StringMixin:
             errors=errors
         )
         result.element_type = bool
-
-        if series.hasnans:
-            dtype = dtype.force_nullable()
-        return series.astype(dtype, errors=errors)
+        return super().to_boolean(series, dtype, errors=errors)
 
     @dispatch
     def to_integer(
@@ -100,19 +97,33 @@ class StringMixin:
             errors=errors
         )
         result.element_type = int
-        return result.to_integer(dtype=dtype, errors=errors, **unused)
+        return result.to_integer(
+            dtype=dtype,
+            base=base,
+            errors=errors,
+            **unused
+        )
 
     @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        tol: Tolerance,
+        downcast: bool,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert string data to a floating point data type."""
         decimal_type = resolve.resolve_type("decimal")
-        result = series.to_decimal(dtype=decimal_type, **unused)
-        return result.to_float(dtype=dtype, **unused)
+        result = self.to_decimal(series, decimal_type, errors=errors)
+        return result.to_float(
+            dtype=dtype,
+            tol=tol,
+            downcast=downcast,
+            errors=errors,
+            **unused
+        )
 
     @dispatch
     def to_complex(
@@ -121,6 +132,7 @@ class StringMixin:
         dtype: AtomicType,
         tol: Tolerance,
         downcast: bool,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert string data to a complex data type."""
@@ -160,9 +172,13 @@ class StringMixin:
         # (3) combine floats into complex result
         result = real + imag * 1j
         result.element_type = dtype
-        if downcast:
-            return dtype.downcast(result, tol=tol)
-        return result
+        return super().to_complex(
+            result,
+            dtype,
+            tol=tol,
+            downcast=downcast,
+            errors=errors
+        )
 
 
 #######################

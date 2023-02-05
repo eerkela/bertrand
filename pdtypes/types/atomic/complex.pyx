@@ -93,26 +93,50 @@ class ComplexMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        tol: Tolerance,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert complex data to a boolean data type."""
         # 2-step conversion: complex -> float, float -> bool
-        result = series.to_float(dtype=self.equiv_float, **unused)
-        return result.to_boolean(dtype=dtype, **unused)
+        result = self.to_float(
+            series,
+            self.equiv_float,
+            tol=tol,
+            downcast=False,
+            errors=errors,
+            **unused
+        )
+        return result.to_boolean(dtype=dtype, tol=tol, errors=errors, **unused)
 
     @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        rounding: str,
         tol: Tolerance,
+        downcast: bool,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert complex data to an integer data type."""
         # 2-step conversion: complex -> float, float -> int
-        result = series.to_float(dtype=self.equiv_float, tol=tol, errors=errors)
-        return result.to_integer(dtype=dtype, **unused)
+        result = self.to_float(
+            series,
+            self.equiv_float,
+            tol=tol,
+            downcast=False,
+            errors=errors
+        )
+        return result.to_integer(
+            dtype=dtype,
+            rounding=rounding,
+            tol=tol,
+            downcast=downcast,
+            errors=errors,
+            **unused
+        )
 
     @dispatch
     def to_float(
@@ -120,6 +144,7 @@ class ComplexMixin:
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
+        downcast: bool,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -136,7 +161,13 @@ class ComplexMixin:
                     f"{shorten_list(bad[bad].index.values)}"
                 )
 
-        return real.to_float(dtype=dtype, tol=tol, errors=errors, **unused)
+        return real.to_float(
+            dtype=dtype,
+            tol=tol,
+            downcast=downcast,
+            errors=errors,
+            **unused
+        )
 
     @dispatch
     def to_decimal(
@@ -149,8 +180,14 @@ class ComplexMixin:
     ) -> cast.SeriesWrapper:
         """Convert complex data to a decimal data type."""
         # 2-step conversion: complex -> float, float -> decimal
-        result = series.to_float(dtype=self.equiv_float, tol=tol, errors=errors)
-        return result.to_decimal(dtype=dtype, **unused)
+        result = self.to_float(
+            series,
+            self.equiv_float,
+            tol=tol,
+            downcast=False,
+            errors=errors
+        )
+        return result.to_decimal(dtype=dtype, tol=tol, errors=errors, **unused)
 
     @dispatch
     def to_datetime(
@@ -166,8 +203,22 @@ class ComplexMixin:
     ) -> cast.SeriesWrapper:
         """Convert complex data to a datetime data type."""
         # 2-step conversion: complex -> float, float -> datetime
-        result = series.to_float(dtype=self.equiv_float, tol=tol, errors=errors)
-        return result.to_datetime(dtype=dtype, **unused)
+        result = self.to_float(
+            series,
+            self.equiv_float,
+            tol=tol,
+            downcast=False,
+            errors=errors
+        )
+        return result.to_datetime(
+            dtype=dtype,
+            tz=tz,
+            unit=unit,
+            step_size=step_size,
+            tol=tol,
+            errors=errors,
+            **unused
+        )
 
     @dispatch
     def to_timedelta(
@@ -182,8 +233,21 @@ class ComplexMixin:
     ) -> cast.SeriesWrapper:
         """Convert complex data to a timedelta data type."""
         # 2-step conversion: complex -> float, float -> timedelta
-        result = series.to_float(dtype=self.equiv_float, tol=tol, errors=errors)
-        return result.to_timedelta(dtype=dtype, **unused)
+        result = self.to_float(
+            series,
+            self.equiv_float,
+            tol=tol,
+            downcast=False,
+            errors=errors
+        )
+        return result.to_timedelta(
+            dtype=dtype,
+            unit=unit,
+            step_size=step_size,
+            tol=tol,
+            errors=errors,
+            **unused
+        )
 
 
 #######################

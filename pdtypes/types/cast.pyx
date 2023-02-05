@@ -59,12 +59,15 @@ cdef class CastDefaults:
         self._base = 0
         self._categorical = False
         self._downcast = False
+        self._epoch = np.datetime64(0, "s")
         self._errors = "raise"
         self._false = {"false", "f", "no", "n", "off", "0"}
+        self._ignore_case = True
         self._rounding = None
         self._sparse = False
         self._step_size = 1
         self._tol = Tolerance(1e-6)
+        self._tz = None
         self._true = {"true", "t", "yes", "y", "on", "1"}
         self._unit = "ns"
 
@@ -257,6 +260,9 @@ def validate_dtype(
 
 
 def validate_epoch(val: str | datetime_like) -> np.datetime64:
+    if val is None:
+        return defaults.epoch
+
     # TODO: check for shorthand strings ("utc", "julian", etc.), then
     # string_to_datetime, then datetime_to_datetime.  Epoch has unit "s"
     return np.datetime64(str)
@@ -366,6 +372,10 @@ def to_boolean(
     dtype: resolve.resolvable = bool,
     tol: numeric = None,
     rounding: str = None,
+    unit: str = None,
+    step_size: int = None,
+    epoch: str | datetime_like = None,
+    tz: str | tzinfo = None,
     true: str | Iterable[str] = None,
     false: str | Iterable[str] = None,
     ignore_case: bool = None,
@@ -378,6 +388,10 @@ def to_boolean(
     dtype = validate_dtype(dtype, atomic.BooleanType)
     tol = validate_tol(tol)
     rounding = validate_rounding(rounding)
+    unit = validate_unit(unit)
+    step_size = validate_step_size(step_size)
+    epoch = validate_epoch(epoch)
+    tz = validate_timezone(tz)
     true = validate_true(true)
     false = validate_false(false)
     errors = validate_errors(errors)
@@ -401,6 +415,10 @@ def to_boolean(
         dtype=dtype,
         tol=tol,
         rounding=rounding,
+        unit=unit,
+        step_size=step_size,
+        epoch=epoch,
+        tz=tz,
         true=true,
         false=false,
         ignore_case=ignore_case,
@@ -416,6 +434,8 @@ def to_integer(
     rounding: str = None,
     unit: str = None,
     step_size: int = None,
+    epoch: str | datetime_like = None,
+    tz: str | tzinfo = None,
     base: int = None,
     call: Callable = None,
     downcast: bool | resolve.resolvable = None,
@@ -429,6 +449,8 @@ def to_integer(
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
+    epoch = validate_epoch(epoch)
+    tz = validate_timezone(tz)
     base = validate_base(base)
     downcast = validate_downcast(downcast)
     errors = validate_errors(errors)
@@ -442,7 +464,9 @@ def to_integer(
         rounding=rounding,
         unit=unit,
         step_size=step_size,
+        epoch=epoch,
         base=base,
+        call=call,
         downcast=downcast,
         errors=errors,
         **kwargs
@@ -744,12 +768,16 @@ cdef class SeriesWrapper:
 
     def astype(
         self,
-        dtype: atomic.AtomicType,
+        dtype: resolve.resolvable,
         errors: str = "raise"
     ) -> SeriesWrapper:
         """`astype()` equivalent for SeriesWrapper instances that works for
         object-based type specifiers.
         """
+        dtype = resolve.resolve_type(dtype)
+        if isinstance(dtype, atomic.CompositeType):
+            raise ValueError(f"`dtype` must be atomic, not {repr(dtype)}")
+
         # apply dtype.type_def elementwise if not astype-compliant
         if dtype.unwrap().dtype == np.dtype("O"):
             result = self.apply_with_errors(
@@ -767,7 +795,7 @@ cdef class SeriesWrapper:
             target = dtype.dtype
             result = self.series.astype(target.numpy_dtype).astype(target)
         else:
-            result = self.series.astype(dtype.dtype, copy=False)
+            result = self.series.astype(dtype.dtype)
 
         return SeriesWrapper(
             result,

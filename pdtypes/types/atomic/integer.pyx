@@ -132,7 +132,12 @@ class IntegerMixin:
         for t in smaller:
             if min_val < t.min or max_val > t.max:
                 continue
-            return super().to_integer(series, t)
+            return super().to_integer(
+                series,
+                t,
+                downcast=False,
+                errors="raise"
+            )
         return series
 
     @dispatch
@@ -167,18 +172,15 @@ class IntegerMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a boolean data type."""
-        dtype = cast.filter_dtype(dtype, bool)
         series, dtype = series.boundscheck(dtype, int(tol.real), errors)
-        if series.hasnans:
-            dtype = dtype.force_nullable()
-
-        return series.astype(dtype, errors=errors)
+        return super().to_boolean(series, dtype, errors=errors)
 
     @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        downcast: bool,
         tol: Tolerance,
         errors: str,
         **unused
@@ -188,8 +190,8 @@ class IntegerMixin:
         return super().to_integer(
             series=series,
             dtype=dtype,
-            errors=errors,
-            **unused
+            downcast=downcast,
+            errors=errors
         )
 
     @dispatch
@@ -243,10 +245,17 @@ class IntegerMixin:
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a complex data type."""
-        result = series.to_float(dtype=dtype.equiv_float, tol=tol, **unused)
+        result = self.to_float(
+            series,
+            dtype.equiv_float,
+            tol=tol,
+            downcast=False,
+            errors=errors
+        )
         return result.to_complex(dtype=dtype, tol=tol, **unused)
 
     @dispatch
@@ -296,22 +305,21 @@ class IntegerMixin:
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         base: int,
+        errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a string data type in any base."""
         # use decimal representation
         if not base or base == 10:
-            return super().to_string(series=series, dtype=dtype, **unused)
+            return super().to_string(series=series, dtype=dtype, errors=errors)
 
         # use non-decimal base
-        if not 2 <= base <= 36:
-            raise ValueError("`base` must be >= 2 and <= 36, or 0")
         result = series.apply_with_errors(
             partial(int_to_base, base=base),
             errors="raise"
         )
         result.element_type = str
-        return super().to_string(result, dtype=dtype, **unused)
+        return super().to_string(result, dtype=dtype, errors=errors)
 
 
 #######################
