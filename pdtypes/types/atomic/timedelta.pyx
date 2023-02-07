@@ -1,5 +1,5 @@
 import datetime
-import decimal
+from functools import partial
 from types import MappingProxyType
 from typing import Any, Union, Sequence
 
@@ -13,6 +13,11 @@ from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, lru_cache
 
 from pdtypes.util.round cimport Tolerance
+from pdtypes.util.round import round_div
+from pdtypes.util.time cimport Epoch
+from pdtypes.util.time import (
+    convert_unit, pytimedelta_to_ns, timedelta_string_to_ns, valid_units
+)
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -20,13 +25,8 @@ cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 
-# TODO: import timedelta helpers from pdtypes.util.time
-# TODO: update type hints from Any to datetime_like, timezone_like, etc.
-
-# TODO: parse() should account for self.unit/step_size/timezone
-
-# TODO: add min/max?
-# -> these could potentially replace the constants in util/time/
+# TODO: timedelta -> float does not retain longdouble precision.  This is due
+# to the / operator in convert_unit() defaulting to float64.
 
 
 ######################
@@ -41,31 +41,33 @@ class TimedeltaMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        tol: Tolerance,
+        rounding: str,
         unit: str,
         step_size: int,
-        epoch: np.datetime64,
-        rounding: str,
+        epoch: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to a boolean data type."""
-        # 2-step conversion: timedelta -> int, int -> bool
-        result = self.to_integer(
+        # 2-step conversion: timedelta -> decimal, decimal -> bool
+        series = self.to_decimal(
             series,
-            resolve.resolve_type(int),
+            resolve.resolve_type("decimal"),
+            tol=tol,
+            rounding=rounding,
             unit=unit,
             step_size=step_size,
             epoch=epoch,
-            rounding=rounding,
-            downcast=False,
             errors=errors
         )
-        return result.to_boolean(
+        return series.to_boolean(
             dtype=dtype,
+            tol=tol,
+            rounding=rounding,
             unit=unit,
             step_size=step_size,
             epoch=epoch,
-            rounding=rounding,
             errors=errors,
             **unused
         )
@@ -77,7 +79,7 @@ class TimedeltaMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: np.datetime64,
+        epoch: Epoch,
         tol: Tolerance,
         rounding: str,
         downcast: bool,
@@ -86,7 +88,7 @@ class TimedeltaMixin:
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to a floating point data type."""
         # convert to nanoseconds, then from nanoseconds to final unit
-        result = self.to_integer(
+        series = self.to_integer(
             series,
             resolve.resolve_type(int),
             unit="ns",
@@ -96,18 +98,18 @@ class TimedeltaMixin:
             downcast=False,
             errors=errors
         )
+        if unit != "ns" or step_size != 1:
+            series.series = convert_unit(
+                series.series,
+                "ns",
+                unit,
+                rounding=rounding,
+                since=epoch
+            )
+            if step_size != 1:
+                series.series /= step_size
 
-        # TODO: pass through time.convert_unit(
-        #     result,
-        #     "ns",
-        #     unit,
-        #     step_size=step_size,
-        #     rounding=rounding,
-        #     epoch=epoch.
-        #     return_type="float"
-        # )
-
-        return result.to_float(
+        return series.to_float(
             dtype=dtype,
             unit=unit,
             step_size=step_size,
@@ -126,7 +128,7 @@ class TimedeltaMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: np.datetime64,
+        epoch: Epoch,
         tol: Tolerance,
         rounding: str,
         downcast: bool,
@@ -135,7 +137,7 @@ class TimedeltaMixin:
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to a complex data type."""
         # 2-step conversion: timedelta -> float, float -> complex
-        result = self.to_float(
+        series = self.to_float(
             series,
             dtype.equiv_float,
             unit=unit,
@@ -145,7 +147,7 @@ class TimedeltaMixin:
             downcast=False,
             errors=errors
         )
-        return result.to_complex(
+        return series.to_complex(
             dtype=dtype,
             unit=unit,
             step_size=step_size,
@@ -164,7 +166,7 @@ class TimedeltaMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: np.datetime64,
+        epoch: Epoch,
         tol: Tolerance,
         rounding: str,
         errors: str,
@@ -172,7 +174,7 @@ class TimedeltaMixin:
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to a decimal data type."""
         # convert to nanoseconds, then from nanoseconds to final unit
-        result = self.to_integer(
+        series = self.to_integer(
             series,
             resolve.resolve_type(int),
             unit="ns",
@@ -182,18 +184,7 @@ class TimedeltaMixin:
             downcast=False,
             errors=errors
         )
-
-        # TODO: pass through time.convert_unit(
-        #     result,
-        #     "ns",
-        #     unit,
-        #     step_size=step_size,
-        #     rounding=rounding,
-        #     epoch=epoch.
-        #     return_type="decimal"
-        # )
-
-        return result.to_decimal(
+        series = series.to_decimal(
             dtype=dtype,
             unit=unit,
             step_size=step_size,
@@ -203,8 +194,22 @@ class TimedeltaMixin:
             errors=errors,
             **unused
         )
+        if unit != "ns" or step_size != 1:
+            series.series = convert_unit(
+                series.series,
+                "ns",
+                unit,
+                rounding=rounding,
+                since=epoch
+            )
+            if step_size != 1:
+                series.series /= step_size
+
+        return series
+
 
     # TODO: to_datetime
+
 
     @dispatch
     def to_timedelta(
@@ -219,23 +224,21 @@ class TimedeltaMixin:
             return series
 
         # 2-step conversion: timedelta -> int, int -> timedelta
-        result = self.to_integer(
+        series = self.to_integer(
             series,
             resolve.resolve_type(int),
             unit="ns",
             step_size=1,
-            epoch=np.datetime64(0, "s"),
+            epoch=Epoch("utc"),
             rounding=None,
             downcast=False,
             errors=errors
         )
-        return result.to_timedelta(
+        return series.to_timedelta(  # TODO: have to define int -> timedelta
             dtype=dtype,
             errors=errors,
             **unused
         )
-
-    # TODO: to_string with format?
 
 
 #######################
@@ -278,6 +281,10 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
         "numpy.timedelta64",
         "np.timedelta64",
     }
+    # NOTE: these epochs are chosen to minimize the available range, so that
+    # conversions work regardless of leap days.
+    max = convert_unit(2**63 - 1, "Y", "ns", since=Epoch("cocoa"))
+    min = convert_unit(-2**63 + 1, "Y", "ns", since=Epoch("j2000"))
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
@@ -296,6 +303,10 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
             unit=unit,
             step_size=step_size
         )
+
+    ############################
+    ####    TYPE METHODS    ####
+    ############################
 
     @classmethod
     def slugify(cls, unit: str = None, step_size: int = 1) -> str:
@@ -333,6 +344,50 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
             return cls.instance(unit=unit, step_size=step_size)
         return cls.instance()
 
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
+
+    @dispatch
+    def to_integer(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        epoch: Epoch,
+        rounding: str,
+        downcast: bool,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert python timedeltas to an integer data type."""
+        # NOTE: using numpy m8 array is ~2x faster than iterating through the
+        # series with a scalar conversion function
+        m8_str = f"m8[{self.step_size}{self.unit}]"
+        arr = series.series.to_numpy(m8_str).view(np.int64).astype("O")
+        arr *= self.step_size
+        arr = convert_unit(
+            arr,
+            self.unit,
+            unit,
+            rounding=rounding or "down",
+            since=epoch
+        )
+        series = cast.SeriesWrapper(
+            pd.Series(arr, index=series.series.index),
+            hasnans=series.hasnans,
+            element_type=resolve.resolve_type(int)
+        )
+
+        series, dtype = series.boundscheck(dtype, tol=0, errors=errors)
+        return super().to_integer(
+            series,
+            dtype,
+            downcast=downcast,
+            errors=errors
+        )
+
 
 ######################
 ####    PANDAS    ####
@@ -343,8 +398,8 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
 class PandasTimedeltaType(TimedeltaMixin, AtomicType):
 
     aliases = {pd.Timedelta, "Timedelta", "pandas.Timedelta", "pd.Timedelta"}
-    max = 2**63 - 1
-    min = -2**63 + 1  # -2**63 reserved for NaT
+    max = pd.Timedelta.max.value
+    min = pd.Timedelta.min.value
 
     def __init__(self):
         super().__init__(
@@ -361,30 +416,26 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: np.datetime64,
+        epoch: Epoch,
         rounding: str,
         downcast: bool,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert pandas Timedeltas to an integer data type."""
-        if pd.api.types.is_timedelta64_ns_dtype(series.series):
-            series = series.astype(np.int64)
-        else:
-            series = series.apply_with_errors(lambda x: x.value)
-            series.element_type = int
+        # NOTE: rectify object series to take advantage of astype()
+        if pd.api.types.is_object_dtype(series.series):
+            series.series = series.series.astype("m8[ns]")
+        series = series.astype(np.int64)
 
         if unit != "ns" or step_size != 1:
-            raise NotImplementedError()
-            # TODO: pass through time.convert_unit(
-            #     series,
-            #     "ns",
-            #     unit,
-            #     step_size=step_size,
-            #     since=epoch,
-            #     rounding=rounding,
-            #     return_type="int"
-            # )
+            convert_ns_to_unit(
+                series,
+                unit=unit,
+                step_size=step_size,
+                rounding=rounding,
+                epoch=epoch
+            )
 
         series, dtype = series.boundscheck(dtype, tol=0, errors=errors)
         return super().to_integer(
@@ -404,6 +455,8 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
 class PythonTimedeltaType(TimedeltaMixin, AtomicType):
 
     aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
+    max = pytimedelta_to_ns(datetime.timedelta.max)
+    min = pytimedelta_to_ns(datetime.timedelta.min)
 
     def __init__(self):
         super().__init__(
@@ -420,7 +473,7 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: np.datetime64,
+        epoch: Epoch,
         rounding: str,
         downcast: bool,
         errors: str,
@@ -431,16 +484,13 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
         series.element_type = int
 
         if unit != "ns" or step_size != 1:
-            raise NotImplementedError()
-            # TODO: pass through time.convert_unit(
-            #     series,
-            #     "ns",
-            #     unit,
-            #     step_size=step_size,
-            #     since=epoch,
-            #     rounding=rounding,
-            #     return_type="int"
-            # )
+            convert_ns_to_unit(
+                series,
+                unit=unit,
+                step_size=step_size,
+                rounding=rounding,
+                epoch=epoch
+            )
 
         series, dtype = series.boundscheck(dtype, tol=0, errors=errors)
         return super().to_integer(
@@ -461,15 +511,25 @@ cdef object m8_pattern = re.compile(
 )
 
 
-cdef np.ndarray pytimedelta_ns_coefs = np.array(
-    [24 * 60 * 60 * 10**9, 10**9, 10**3],
-    dtype="O"
-)
-
-
-cdef object pytimedelta_to_ns(object delta):
-    """Convert a python timedelta into an integer number of nanoseconds."""
-    return np.dot(
-        [delta.days, delta.seconds, delta.microseconds],
-        pytimedelta_ns_coefs
+def convert_ns_to_unit(
+    series: cast.SeriesWrapper,
+    unit: str,
+    step_size: int,
+    rounding: str,
+    epoch: Epoch
+) -> None:
+    """Helper for converting between integer time units."""
+    series.series = convert_unit(
+        series.series,
+        "ns",
+        unit,
+        since=epoch,
+        rounding=rounding or "down",
     )
+    if step_size != 1:
+        series.series = round_div(
+            series.series,
+            step_size,
+            rule=rounding or "down"
+        )
+

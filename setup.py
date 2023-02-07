@@ -16,6 +16,7 @@ setup(
             "pdtypes/types/atomic/*.pyx",
             "pdtypes/util/*.pyx",
             "pdtypes/util/round/*.pyx",
+            "pdtypes/util/time/*.pyx",
             # "pdtypes/types/parse/*.pyx",
         ],
         language_level="3",

@@ -27,6 +27,9 @@ import pdtypes.types.resolve as resolve
 
 # TODO: add min/max?
 # -> these could potentially replace the constants in util/time/
+# -> use datetime_to_ns with datetime.min, datetime.max.  Remember to subtract
+# 14 hours to accomodate all IANA timezones (the most extreme is Etc/GMT-14,
+# Pacific/Kiritimati.
 
 
 ######################
@@ -50,6 +53,8 @@ class DatetimeType(DatetimeMixin, AtomicType):
     conversion_func = cast.to_datetime  # all subtypes/backends inherit this
     name = "datetime"
     aliases = {"datetime"}
+    max = 0
+    min = 1  # these values always trip overflow/upcast check
 
     def __init__(self):
         super().__init__(
@@ -77,6 +82,8 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
         "numpy.datetime64",
         "np.datetime64",
     }
+    max = 291061508645168328945024000000000000  # unit="Y"
+    min = -291061508645168391112243200000000000  # unit="Y"
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
@@ -148,6 +155,8 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
         "pandas.Timestamp",
         "pd.Timestamp",
     }
+    max = 2**63 - 1
+    min = -2**63 + 1  # -2**63 reserved for NaT
 
     def __init__(self, tz: datetime.tzinfo = None):
         if tz is None:
@@ -197,6 +206,8 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
 class PythonDatetimeType(DatetimeMixin, AtomicType):
 
     aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
+    max = 253402300799999999000
+    min = -62135596800000000000
 
     def __init__(self, tz: datetime.tzinfo = None):
         super().__init__(

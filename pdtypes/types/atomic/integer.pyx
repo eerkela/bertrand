@@ -266,11 +266,9 @@ class IntegerMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a decimal data type."""
-        return cast.SeriesWrapper(
-            series + dtype.type_def(0),  # ~2x faster than apply loop
-            hasnans=series.hasnans,
-            element_type=dtype
-        )
+        result = series + dtype.type_def(0)  # ~2x faster than apply loop
+        result.element_type = dtype
+        return result
 
     @dispatch
     def to_datetime(

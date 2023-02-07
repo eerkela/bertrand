@@ -8,6 +8,7 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 import pytz
+import tzlocal
 
 cimport pdtypes.types.atomic as atomic
 cimport pdtypes.types.detect as detect
@@ -19,6 +20,7 @@ import pdtypes.types.resolve as resolve
 from pdtypes.error import shorten_list
 from pdtypes.type_hints import array_like, datetime_like, numeric
 from pdtypes.util.round cimport Tolerance
+from pdtypes.util.time cimport Epoch
 
 
 # TODO: downcast flag should accept resolvable type specifiers as well as
@@ -59,7 +61,7 @@ cdef class CastDefaults:
         self._base = 0
         self._categorical = False
         self._downcast = False
-        self._epoch = np.datetime64(0, "s")
+        self._epoch = Epoch("utc")
         self._errors = "raise"
         self._false = {"false", "f", "no", "n", "off", "0"}
         self._ignore_case = True
@@ -259,13 +261,10 @@ def validate_dtype(
     return dtype
 
 
-def validate_epoch(val: str | datetime_like) -> np.datetime64:
+def validate_epoch(val: str | datetime_like) -> Epoch:
     if val is None:
         return defaults.epoch
-
-    # TODO: check for shorthand strings ("utc", "julian", etc.), then
-    # string_to_datetime, then datetime_to_datetime.  Epoch has unit "s"
-    return np.datetime64(str)
+    return Epoch(val)
 
 
 def validate_errors(val: str) -> str:
@@ -323,6 +322,8 @@ def validate_step_size(val: int) -> int:
 
 
 def validate_timezone(val: str | tzinfo) -> pytz.BaseTzInfo:
+    if val == "local":
+        return pytz.timezone(tzlocal.get_localzone_name())
     return None if val is None else pytz.timezone(val)
 
 
@@ -480,6 +481,8 @@ def to_float(
     rounding: str = None,
     unit: str = None,
     step_size: int = None,
+    epoch: str | datetime_like = None,
+    tz: str | tzinfo = None,
     call: Callable = None,
     downcast: bool | resolve.resolvable = None,
     errors: str = None,
@@ -492,6 +495,8 @@ def to_float(
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
+    epoch = validate_epoch(epoch)
+    tz = validate_timezone(tz)
     downcast = validate_downcast(downcast)
     errors = validate_errors(errors)
 
@@ -504,6 +509,9 @@ def to_float(
         rounding=rounding,
         unit=unit,
         step_size=step_size,
+        epoch=epoch,
+        tz=tz,
+        call=call,
         downcast=downcast,
         errors=errors,
         **kwargs
@@ -554,6 +562,8 @@ def to_decimal(
     rounding: str = None,
     unit: str = None,
     step_size: int = None,
+    epoch: str | datetime_like = None,
+    tz: str | tzinfo = None,
     call: Callable = None,
     errors: str = None,
     **kwargs
@@ -565,6 +575,8 @@ def to_decimal(
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
+    epoch = validate_epoch(epoch)
+    tz = validate_timezone(tz)
     errors = validate_errors(errors)
 
     # delegate to SeriesWrapper.to_decimal
@@ -576,6 +588,9 @@ def to_decimal(
         rounding=rounding,
         unit=unit,
         step_size=step_size,
+        epoch=epoch,
+        tz=tz,
+        call=call,
         errors=errors,
         **kwargs
     )
