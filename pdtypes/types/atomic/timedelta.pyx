@@ -12,18 +12,17 @@ import regex as re  # using alternate python regex engine
 from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, lru_cache
 
+cimport pdtypes.types.cast as cast
+import pdtypes.types.cast as cast
+cimport pdtypes.types.resolve as resolve
+import pdtypes.types.resolve as resolve
+
 from pdtypes.util.round cimport Tolerance
 from pdtypes.util.round import round_div
 from pdtypes.util.time cimport Epoch
 from pdtypes.util.time import (
     convert_unit, pytimedelta_to_ns, timedelta_string_to_ns, valid_units
 )
-
-cimport pdtypes.types.cast as cast
-import pdtypes.types.cast as cast
-cimport pdtypes.types.resolve as resolve
-import pdtypes.types.resolve as resolve
-
 
 # TODO: timedelta -> float does not retain longdouble precision.  This is due
 # to the / operator in convert_unit() defaulting to float64.
@@ -35,6 +34,10 @@ import pdtypes.types.resolve as resolve
 
 
 class TimedeltaMixin:
+
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
 
     @dispatch
     def to_boolean(
@@ -361,9 +364,8 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
-        """Convert python timedeltas to an integer data type."""
-        # NOTE: using numpy m8 array is ~2x faster than iterating through the
-        # series with a scalar conversion function
+        """Convert numpy timedelta64s into an integer data type."""
+        # NOTE: using numpy m8 array is ~2x faster than looping through series
         m8_str = f"m8[{self.step_size}{self.unit}]"
         arr = series.series.to_numpy(m8_str).view(np.int64).astype("O")
         arr *= self.step_size
@@ -423,11 +425,7 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
         **unused
     ) -> cast.SeriesWrapper:
         """Convert pandas Timedeltas to an integer data type."""
-        # NOTE: rectify object series to take advantage of astype()
-        if pd.api.types.is_object_dtype(series.series):
-            series.series = series.series.astype("m8[ns]")
-        series = series.astype(np.int64)
-
+        series = series.rectify().astype(np.int64)
         if unit != "ns" or step_size != 1:
             convert_ns_to_unit(
                 series,
@@ -532,4 +530,3 @@ def convert_ns_to_unit(
             step_size,
             rule=rounding or "down"
         )
-

@@ -52,14 +52,6 @@ cdef object build_iso_8601_regex():
 cdef object iso_8601_pattern = build_iso_8601_regex()
 
 
-cdef long int min_pandas_timestamp_ns = -2**63 + 1
-cdef long int max_pandas_timestamp_ns = 2**63 - 1
-cdef object min_pydatetime_ns = -62135596800000000000
-cdef object max_pydatetime_ns = 253402300799999999000
-cdef object min_numpy_datetime64_ns = -291061508645168391112243200000000000
-cdef object max_numpy_datetime64_ns = 291061508645168328945024000000000000
-
-
 cdef object py_naive_utc = datetime.datetime.utcfromtimestamp(0)
 cdef object py_aware_utc = pytz.timezone("UTC").localize(py_naive_utc)
 

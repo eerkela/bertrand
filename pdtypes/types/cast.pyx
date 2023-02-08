@@ -803,14 +803,17 @@ cdef class SeriesWrapper:
             return result
 
         # default to pd.Series.astype()
-        if pd.api.types.is_object_dtype(self) and dtype.backend == "pandas":
+        target = dtype.dtype
+        if (
+            pd.api.types.is_object_dtype(self.series) and
+            hasattr(target, "numpy_dtype")
+        ):
             # NOTE: pandas doesn't like converting arbitrary objects to
             # nullable extension types.  Luckily, numpy has no such problem,
             # and SeriesWrapper automatically filters out NAs.
-            target = dtype.dtype
             result = self.series.astype(target.numpy_dtype).astype(target)
         else:
-            result = self.series.astype(dtype.dtype)
+            result = self.series.astype(target)
 
         return SeriesWrapper(
             result,

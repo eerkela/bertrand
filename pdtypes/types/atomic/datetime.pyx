@@ -16,9 +16,18 @@ import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
+from pdtypes.util.round cimport Tolerance
+from pdtypes.util.round import round_div
+from pdtypes.util.time cimport Epoch
+from pdtypes.util.time import (
+    convert_unit, pydatetime_to_ns, numpy_datetime64_to_ns, valid_units
+)
 
-# TODO: import datetime helpers from pdtypes.util.time
-# TODO: update type hints from Any to datetime_like, timezone_like, etc.
+
+# TODO: allow for naive tz specification for pandas/python datetime to_integer
+# methods.
+# -> add `tz` argument for all conversions.
+
 
 # TODO: parse() should account for self.tz/unit/step_size
 # TODO: allow for tz="local"
@@ -29,7 +38,7 @@ import pdtypes.types.resolve as resolve
 # -> these could potentially replace the constants in util/time/
 # -> use datetime_to_ns with datetime.min, datetime.max.  Remember to subtract
 # 14 hours to accomodate all IANA timezones (the most extreme is Etc/GMT-14,
-# Pacific/Kiritimati.
+# Pacific/Kiritimati).
 
 
 ######################
@@ -39,7 +48,180 @@ import pdtypes.types.resolve as resolve
 
 class DatetimeMixin:
 
-    pass
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
+
+    @dispatch
+    def to_boolean(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        tol: Tolerance,
+        rounding: str,
+        unit: str,
+        step_size: int,
+        epoch: Epoch,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert timedelta data to a boolean data type."""
+        # 2-step conversion: timedelta -> decimal, decimal -> bool
+        series = self.to_decimal(
+            series,
+            resolve.resolve_type("decimal"),
+            tol=tol,
+            rounding=rounding,
+            unit=unit,
+            step_size=step_size,
+            epoch=epoch,
+            errors=errors
+        )
+        return series.to_boolean(
+            dtype=dtype,
+            tol=tol,
+            rounding=rounding,
+            unit=unit,
+            step_size=step_size,
+            epoch=epoch,
+            errors=errors,
+            **unused
+        )
+
+    @dispatch
+    def to_float(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        epoch: Epoch,
+        tol: Tolerance,
+        rounding: str,
+        downcast: bool,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert timedelta data to a floating point data type."""
+        # convert to nanoseconds, then from nanoseconds to final unit
+        series = self.to_integer(
+            series,
+            resolve.resolve_type(int),
+            unit="ns",
+            step_size=1,
+            epoch=epoch,
+            rounding=None,
+            downcast=False,
+            errors=errors
+        )
+        if unit != "ns" or step_size != 1:
+            series.series = convert_unit(
+                series.series,
+                "ns",
+                unit,
+                rounding=rounding,
+                since=epoch
+            )
+            if step_size != 1:
+                series.series /= step_size
+
+        return series.to_float(
+            dtype=dtype,
+            unit=unit,
+            step_size=step_size,
+            epoch=epoch,
+            tol=tol,
+            rounding=rounding,
+            downcast=downcast,
+            errors=errors,
+            **unused
+        )
+
+    @dispatch
+    def to_complex(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        epoch: Epoch,
+        tol: Tolerance,
+        rounding: str,
+        downcast: bool,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert timedelta data to a complex data type."""
+        # 2-step conversion: timedelta -> float, float -> complex
+        series = self.to_float(
+            series,
+            dtype.equiv_float,
+            unit=unit,
+            step_size=step_size,
+            epoch=epoch,
+            rounding=rounding,
+            downcast=False,
+            errors=errors
+        )
+        return series.to_complex(
+            dtype=dtype,
+            unit=unit,
+            step_size=step_size,
+            epoch=epoch,
+            tol=tol,
+            rounding=rounding,
+            downcast=downcast,
+            errors=errors,
+            **unused
+        )
+
+    @dispatch
+    def to_decimal(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        epoch: Epoch,
+        tol: Tolerance,
+        rounding: str,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert timedelta data to a decimal data type."""
+        # convert to nanoseconds, then from nanoseconds to final unit
+        series = self.to_integer(
+            series,
+            resolve.resolve_type(int),
+            unit="ns",
+            step_size=1,
+            epoch=epoch,
+            rounding=None,
+            downcast=False,
+            errors=errors
+        )
+        series = series.to_decimal(
+            dtype=dtype,
+            unit=unit,
+            step_size=step_size,
+            epoch=epoch,
+            tol=tol,
+            rounding=rounding,
+            errors=errors,
+            **unused
+        )
+        if unit != "ns" or step_size != 1:
+            series.series = convert_unit(
+                series.series,
+                "ns",
+                unit,
+                rounding=rounding,
+                since=epoch
+            )
+            if step_size != 1:
+                series.series /= step_size
+
+        return series
 
 
 #######################
@@ -82,8 +264,9 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
         "numpy.datetime64",
         "np.datetime64",
     }
-    max = 291061508645168328945024000000000000  # unit="Y"
-    min = -291061508645168391112243200000000000  # unit="Y"
+    # NOTE: maximum datetime64 appears to be biased toward UTC epoch
+    max = numpy_datetime64_to_ns(np.datetime64(2**63 - 1 - 1970, "Y"))
+    min = numpy_datetime64_to_ns(np.datetime64(-2**63 + 1, "Y"))
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
@@ -102,6 +285,10 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
             unit=unit,
             step_size=step_size
         )
+
+    ###########################
+    ####   TYPE METHODS    ####
+    ###########################
 
     @classmethod
     def slugify(cls, unit: str = None, step_size: int = 1) -> str:
@@ -139,6 +326,63 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
             return cls.instance(unit=unit, step_size=step_size)
         return cls.instance()
 
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
+
+    @dispatch
+    def to_integer(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        epoch: Epoch,
+        rounding: str,
+        downcast: bool,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert numpy datetime64s into an integer data type."""
+        # NOTE: using numpy M8 array is ~2x faster than looping through series
+        M8_str = f"M8[{self.step_size}{self.unit}]"
+        arr = series.series.to_numpy(M8_str).view(np.int64).astype("O")
+        arr *= self.step_size
+        if epoch:  # apply epoch offset if not utc
+            arr = convert_unit(
+                arr,
+                self.unit,
+                "ns"
+            )
+            arr -= epoch.offset  # retains full ns precision from epoch
+            arr = convert_unit(
+                arr,
+                "ns",
+                unit,
+                rounding=rounding or "down"
+            )
+        else:  # skip straight to final unit
+            arr = convert_unit(
+                arr,
+                self.unit,
+                unit,
+                rounding=rounding or "down"
+            )
+        series = cast.SeriesWrapper(
+            pd.Series(arr, index=series.series.index),
+            hasnans=series.hasnans,
+            element_type=resolve.resolve_type(int)
+        )
+
+        series, dtype = series.boundscheck(dtype, tol=0, errors=errors)
+        return super().to_integer(
+            series,
+            dtype,
+            downcast=downcast,
+            errors=errors
+        )
+
+
 ######################
 ####    PANDAS    ####
 ######################
@@ -171,6 +415,10 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
             tz=tz
         )
 
+    ############################
+    ####    TYPE METHODS    ####
+    ############################
+
     @classmethod
     def slugify(cls, tz: datetime.tzinfo = None):
         slug = cls.name
@@ -193,7 +441,47 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
 
     @classmethod
     def detect(cls, example: pd.Timestamp, **defaults) -> AtomicType:
-        return cls.instance(tz=example.tz, **defaults)
+        return cls.instance(tz=example.tzinfo, **defaults)
+
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
+
+    @dispatch
+    def to_integer(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        epoch: Epoch,
+        rounding: str,
+        downcast: bool,
+        errors: str,
+        **kwargs
+    ) -> cast.SeriesWrapper:
+        """Convert pandas Timestamps into an integer data type."""
+        # TODO: .tz_localize() after series.rectify() if self.tz is None?
+        series = series.rectify().astype(np.int64)
+        if epoch:
+            series.series = series.series.astype("O")  # overflow-safe
+            series.series -= epoch.offset
+
+        if unit != "ns" or step_size != 1:
+            convert_ns_to_unit(
+                series,
+                unit=unit,
+                step_size=step_size,
+                rounding=rounding
+            )
+
+        series, dtype = series.boundscheck(dtype, tol=0, errors=errors)
+        return super().to_integer(
+            series,
+            dtype,
+            downcast=downcast,
+            errors=errors
+        )
 
 
 ######################
@@ -206,8 +494,8 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
 class PythonDatetimeType(DatetimeMixin, AtomicType):
 
     aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
-    max = 253402300799999999000
-    min = -62135596800000000000
+    max = pydatetime_to_ns(datetime.datetime.max)
+    min = pydatetime_to_ns(datetime.datetime.min)
 
     def __init__(self, tz: datetime.tzinfo = None):
         super().__init__(
@@ -217,6 +505,10 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
             itemsize=None,
             tz=tz
         )
+
+    ############################
+    ####    TYPE METHODS    ####
+    ############################
 
     @classmethod
     def slugify(cls, tz: datetime.tzinfo = None):
@@ -242,6 +534,46 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
     def detect(cls, example: datetime.datetime, **defaults) -> AtomicType:
         return cls.instance(tz=example.tzinfo, **defaults)
 
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
+
+    @dispatch
+    def to_integer(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        epoch: Epoch,
+        rounding: str,
+        downcast: bool,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert python datetimes into an integer data type."""
+        # TODO: use a partial to include naive tz behavior
+        series = series.apply_with_errors(pydatetime_to_ns)
+        series.element_type = int
+        if epoch:
+            series.series -= epoch.offset
+
+        if unit != "ns" or step_size != 1:
+            convert_ns_to_unit(
+                series,
+                unit=unit,
+                step_size=step_size,
+                rounding=rounding,
+            )
+
+        series, dtype = series.boundscheck(dtype, tol=0, errors=errors)
+        return super().to_integer(
+            series,
+            dtype,
+            downcast=downcast,
+            errors=errors
+        )
+
 
 #######################
 ####    PRIVATE    ####
@@ -251,3 +583,23 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
 cdef object M8_pattern = re.compile(
     r"(?P<step_size>[0-9]+)?(?P<unit>ns|us|ms|s|m|h|D|W|M|Y)"
 )
+
+def convert_ns_to_unit(
+    series: cast.SeriesWrapper,
+    unit: str,
+    step_size: int,
+    rounding: str
+) -> None:
+    """Helper for converting between integer time units."""
+    series.series = convert_unit(
+        series.series,
+        "ns",
+        unit,
+        rounding=rounding or "down",
+    )
+    if step_size != 1:
+        series.series = round_div(
+            series.series,
+            step_size,
+            rule=rounding or "down"
+        )

@@ -208,6 +208,9 @@ class IntegerMixin:
         result = series.astype(dtype)
 
         # backtrack to check for overflow/precision loss
+        # NOTE: integers can always be exactly represented as long as their
+        # width in bits fits within the mantissa of the specified floating
+        # point type with exponent 1 (listed in the IEEE 754 specification).
         if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
             # overflow
             infs = result.isinf()

@@ -240,7 +240,7 @@ def convert_unit(
             f"`to_unit` must be one of {valid_units}, not {repr(to_unit)}"
         )
     if since is None:
-        since = epoch.Epoch(pd.Timestamp(0))
+        since = epoch.Epoch("utc")
 
     # trivial case - no conversion necessary
     if from_unit == to_unit:

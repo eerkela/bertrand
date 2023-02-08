@@ -21,6 +21,12 @@ import pdtypes.types.resolve as resolve
 from pdtypes.util.round import Tolerance
 
 
+# TODO: move type_def, dtype, itemsize, na_value to class variables.  They
+# can be overridden in __init__ if a type defines it.
+# -> in this case, check that cls.__init__ != AtomicType.__init__
+# -> this also solves ambiguity with type_def in ObjectType constructor.
+
+
 # conversions
 # +------------------------------------------------
 # |           | b | i | f | c | d | d | t | s | o |
@@ -35,7 +41,7 @@ from pdtypes.util.round import Tolerance
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | decimal   | x | x | x | x | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | datetime  |   |   |   |   |   |   |   |   | x |
+# | datetime  | x | x | x | x | x |   |   |   | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | timedelta | x | x | x | x | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
@@ -757,10 +763,10 @@ cdef class AtomicType(BaseType):
         """
         if series.hasnans:
             dtype = dtype.force_nullable()
-        result = series.astype(dtype, errors=errors)
+        series = series.astype(dtype, errors=errors)
         if downcast:
             return dtype.downcast(series)
-        return result
+        return series
 
     @dispatch
     def to_float(
@@ -773,10 +779,10 @@ cdef class AtomicType(BaseType):
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a floating point data type."""
-        result = series.astype(dtype, errors=errors)
+        series = series.astype(dtype, errors=errors)
         if downcast:
-            return dtype.downcast(result, tol=tol)
-        return result
+            return dtype.downcast(series, tol=tol)
+        return series
 
     @dispatch
     def to_complex(
@@ -789,10 +795,10 @@ cdef class AtomicType(BaseType):
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a complex data type."""
-        result = series.astype(dtype, errors=errors)
+        series = series.astype(dtype, errors=errors)
         if downcast:
-            return dtype.downcast(result, tol=tol)
-        return result
+            return dtype.downcast(series, tol=tol)
+        return series
 
     @dispatch
     def to_decimal(
@@ -847,9 +853,9 @@ cdef class AtomicType(BaseType):
                 )
             return result
 
-        result = series.apply_with_errors(call=dtype.type_def, errors=errors)
-        result.element_type = dtype
-        return result
+        series = series.apply_with_errors(call=dtype.type_def, errors=errors)
+        series.element_type = dtype
+        return series
 
     #############################
     ####    MAGIC METHODS    ####
