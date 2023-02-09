@@ -9,7 +9,7 @@ cimport numpy as np
 import pandas as pd
 import regex as re  # using alternate python regex engine
 
-from .base cimport AtomicType, CompositeType
+from .base cimport AtomicType, BaseType, CompositeType
 from .base import dispatch, generic, lru_cache
 
 cimport pdtypes.types.cast as cast
@@ -85,7 +85,7 @@ class TimedeltaMixin:
         epoch: Epoch,
         tol: Tolerance,
         rounding: str,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -134,7 +134,7 @@ class TimedeltaMixin:
         epoch: Epoch,
         tol: Tolerance,
         rounding: str,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -434,7 +434,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
         step_size: int,
         epoch: Epoch,
         rounding: str,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -511,7 +511,7 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
         step_size: int,
         epoch: Epoch,
         rounding: str,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -582,7 +582,7 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
         step_size: int,
         epoch: Epoch,
         rounding: str,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:

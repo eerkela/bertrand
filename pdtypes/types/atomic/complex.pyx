@@ -10,7 +10,7 @@ cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 from pdtypes.util.round cimport Tolerance
 
-from .base cimport AdapterType, AtomicType
+from .base cimport AdapterType, AtomicType, BaseType
 from .base import dispatch, generic, subtype
 import pdtypes.types.atomic.float as float_types
 
@@ -33,12 +33,21 @@ class ComplexMixin:
     def downcast(
         self,
         series: cast.SeriesWrapper,
-        tol: Tolerance
+        tol: Tolerance,
+        smallest: BaseType = None
     ) -> cast.SeriesWrapper:
         """Reduce the itemsize of a complex type to fit the observed range."""
         equiv_float = self.equiv_float
-        real = equiv_float.downcast(series.real, tol=tol.real)
-        imag = equiv_float.downcast(series.imag, tol=tol.imag)
+        real = equiv_float.downcast(
+            series.real,
+            tol=tol.real,
+            smallest=smallest
+        )
+        imag = equiv_float.downcast(
+            series.imag,
+            tol=tol.imag,
+            smallest=smallest
+        )
         return combine_real_imag(real, imag)
 
     @property
@@ -116,7 +125,7 @@ class ComplexMixin:
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -144,7 +153,7 @@ class ComplexMixin:
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:

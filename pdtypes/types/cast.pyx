@@ -23,10 +23,6 @@ from pdtypes.util.round cimport Tolerance
 from pdtypes.util.time cimport Epoch
 
 
-# TODO: downcast flag should accept resolvable type specifiers as well as
-# booleans.  If a non-boolean value is given, it will not downcast below the
-# specified type.
-
 # TODO: sparse types currently broken
 
 # TODO: top-level to_x() functions are respondible for input validation
@@ -239,12 +235,10 @@ def validate_downcast(
     if val is None:
         return defaults.downcast
 
-    if not isinstance(val, bool):
-        val = resolve.resolve_type(val)
-        if isinstance(val, atomic.CompositeType):
-            raise ValueError(f"`downcast` must be atomic, not {repr(val)}")
-        return val.unwrap()
-    return val
+    if isinstance(val, bool):
+        return val
+
+    return resolve.resolve_type(val)
 
 
 def validate_dtype(
@@ -728,7 +722,7 @@ cdef class SeriesWrapper:
     @property
     def element_type(self) -> atomic.BaseType:
         if self._element_type is None:
-            self._element_type = detect.detect_type(self.dropna())
+            self._element_type = detect.detect_type(self.series)
         return self._element_type
 
     @element_type.setter
@@ -968,10 +962,9 @@ cdef class SeriesWrapper:
         given AtomicType.  If overflow is detected, attempt to upcast the
         AtomicType to fit or coerce the series if directed.
         """
-        # TODO: add a round up step before casting vals to int?
         series = self
-        min_val = int(series.min())
-        max_val = int(series.max())
+        min_val = series.min()
+        max_val = series.max()
         if min_val < dtype.min or max_val > dtype.max:
             # attempt to upcast dtype to fit series
             try:
@@ -979,7 +972,7 @@ cdef class SeriesWrapper:
             except OverflowError:
                 pass
 
-            # process OverflowError
+            # continue with OverflowError
             index = (series < dtype.min) | (series > dtype.max)
             if errors == "coerce":
                 series = series[~index]
@@ -1146,8 +1139,8 @@ cdef class SeriesWrapper:
     # defined by its element_type.  In the case of a composite series, these
     # dispatched methods are applied independently to each type that is present
     # in the series.  If a dispatched method is not defined for a given
-    # element_type, then SeriesWrapper automatically falls back to the pandas
-    # implementation, if one exists.  See __getattr__() for more details on how
+    # element_type, then SeriesWrapper automatically defaults to the pandas
+    # implementation if one exists.  See __getattr__() for more details on how
     # this is done.
 
     ##########################
@@ -1156,7 +1149,10 @@ cdef class SeriesWrapper:
 
     # NOTE: math operators can change the element_type of a SeriesWrapper in
     # unexpected ways.  If you know the final element_type ahead of time, set
-    # it manually by assigning to the result's .element_type field.
+    # it manually after the operation by assigning to the result's
+    # .element_type field.  Otherwise it will automatically be forgotten and
+    # regenerated when you next request it, which can be expensive if the final
+    # series has dtype="O".
 
     def __abs__(self) -> SeriesWrapper:
         return SeriesWrapper(abs(self.series), hasnans=self._hasnans)

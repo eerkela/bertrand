@@ -4,7 +4,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AdapterType, AtomicType
+from .base cimport AdapterType, AtomicType, BaseType
 from .base import dispatch, generic, subtype
 import pdtypes.types.atomic.complex as complex_types
 
@@ -63,10 +63,21 @@ class FloatMixin:
     def downcast(
         self,
         series: cast.SeriesWrapper,
-        tol: Tolerance = cast.defaults.tol
+        tol: Tolerance = cast.defaults.tol,
+        smallest: BaseType = None
     ) -> cast.SeriesWrapper:
         """Reduce the itemsize of a float type to fit the observed range."""
-        for s in self.smaller:
+        # get downcast candidates
+        smaller = self.smaller
+        if smallest:
+            filtered = []
+            for t in reversed(smaller):
+                filtered.append(t)
+                if t in smallest:
+                    break  # stop at largest type contained in `smallest`
+            smaller = reversed(filtered)
+
+        for s in smaller:
             try:
                 attempt = super().to_float(
                     series,
@@ -123,7 +134,7 @@ class FloatMixin:
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:

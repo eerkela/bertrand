@@ -735,8 +735,8 @@ cdef class AtomicType(BaseType):
         series.
         """
         # NOTE: this takes advantage of SeriesWrapper's min/max caching.
-        min_val = int(series.min())
-        max_val = int(series.max())
+        min_val = series.min()
+        max_val = series.max()
         if min_val < self.min or max_val > self.max:
             # recursively search for a larger alternative
             for t in self.larger:
@@ -784,7 +784,7 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -801,7 +801,8 @@ cdef class AtomicType(BaseType):
             dtype = dtype.force_nullable()
         series = series.astype(dtype, errors=errors)
         if downcast:
-            return dtype.downcast(series)
+            smallest = downcast if not isinstance(downcast, bool) else None
+            return dtype.downcast(series, smallest=smallest)
         return series
 
     @dispatch
@@ -810,14 +811,15 @@ cdef class AtomicType(BaseType):
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a floating point data type."""
         series = series.astype(dtype, errors=errors)
         if downcast:
-            return dtype.downcast(series, tol=tol)
+            smallest = downcast if not isinstance(downcast, bool) else None
+            return dtype.downcast(series, tol=tol, smallest=smallest)
         return series
 
     @dispatch
@@ -826,14 +828,15 @@ cdef class AtomicType(BaseType):
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a complex data type."""
         series = series.astype(dtype, errors=errors)
         if downcast:
-            return dtype.downcast(series, tol=tol)
+            smallest = downcast if not isinstance(downcast, bool) else None
+            return dtype.downcast(series, tol=tol, smallest=smallest)
         return series
 
     @dispatch

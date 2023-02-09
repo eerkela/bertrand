@@ -9,7 +9,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AtomicType
+from .base cimport AtomicType, BaseType
 from .base import dispatch, generic
 
 cimport pdtypes.types.cast as cast
@@ -110,7 +110,6 @@ class StringMixin:
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
-        downcast: bool,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -120,7 +119,6 @@ class StringMixin:
         return result.to_float(
             dtype=dtype,
             tol=tol,
-            downcast=downcast,
             errors=errors,
             **unused
         )
@@ -131,7 +129,7 @@ class StringMixin:
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:

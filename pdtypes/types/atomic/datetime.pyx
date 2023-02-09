@@ -8,7 +8,7 @@ cimport numpy as np
 import pandas as pd
 import regex as re  # using alternate python regex engine
 
-from .base cimport AtomicType, CompositeType
+from .base cimport AtomicType, BaseType, CompositeType
 from .base import dispatch, generic, lru_cache
 
 cimport pdtypes.types.cast as cast
@@ -98,7 +98,7 @@ class DatetimeMixin:
         epoch: Epoch,
         tol: Tolerance,
         rounding: str,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -147,7 +147,7 @@ class DatetimeMixin:
         epoch: Epoch,
         tol: Tolerance,
         rounding: str,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -339,7 +339,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
         step_size: int,
         epoch: Epoch,
         rounding: str,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -456,7 +456,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
         step_size: int,
         epoch: Epoch,
         rounding: str,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **kwargs
     ) -> cast.SeriesWrapper:
@@ -547,7 +547,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
         step_size: int,
         epoch: Epoch,
         rounding: str,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:

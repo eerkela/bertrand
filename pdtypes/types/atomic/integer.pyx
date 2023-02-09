@@ -25,7 +25,7 @@ import pytz
 from pdtypes.error import shorten_list
 from pdtypes.type_hints import numeric
 
-from .base cimport AdapterType, AtomicType
+from .base cimport AdapterType, AtomicType, BaseType
 from .base import dispatch, generic, subtype
 
 cimport pdtypes.types.cast as cast
@@ -74,12 +74,16 @@ class IntegerMixin:
     @property
     def larger(self) -> list:
         """Get a list of types that this type can be upcasted to."""
-        result = [  # get all subtypes with range wider than self
+        # get all subtypes with range wider than self
+        result = [
             x for x in self.subtypes if x.min < self.min or x.max > self.max
         ]
-        result = [  # collapse types that are not unique
+
+        # collapse types that are not unique
+        result = [
             x for x in result if not any(x != y and x in y for y in result)
         ]
+
         return sorted(result, key=lambda x: x.max - x.min)
 
     @property
@@ -101,17 +105,20 @@ class IntegerMixin:
     def downcast(
         self,
         series: cast.SeriesWrapper,
-        smallest: AtomicType = None
+        smallest: BaseType = None
     ) -> cast.SeriesWrapper:
         """Reduce the itemsize of an integer type to fit the observed range."""
         # get downcast candidates
         smaller = self.smaller
-        if smallest is not None and smallest in smaller:
-            # TODO: if smallest == self, this branch will never be chosen.
-            # int.downcast([1, 2, 3], "int64") -> int8, not int64
-            smaller = smaller[smaller.index(smallest):]
+        if smallest:
+            filtered = []
+            for t in reversed(smaller):
+                filtered.append(t)
+                if t in smallest:
+                    break  # stop at largest type contained in `smallest`
+            smaller = reversed(filtered)
 
-        # return smallest that fits observed range
+        # return smallest type that fits observed range
         min_val = int(series.min())
         max_val = int(series.max())
         for t in smaller:
@@ -164,7 +171,7 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -183,7 +190,7 @@ class IntegerMixin:
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
-        downcast: bool | AtomicType,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -222,7 +229,8 @@ class IntegerMixin:
                     )
 
         if downcast:
-            return dtype.downcast(result, tol=tol)
+            smallest = downcast if not isinstance(downcast, bool) else None
+            return dtype.downcast(result, tol=tol, smallest=smallest)
         return result
 
     @dispatch

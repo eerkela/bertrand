@@ -13,7 +13,7 @@ cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 from pdtypes.util.round import round_decimal, Tolerance
 
-from .base cimport AtomicType
+from .base cimport AtomicType, BaseType
 from .base import dispatch, generic
 
 
@@ -66,7 +66,7 @@ class DecimalMixin:
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -86,7 +86,7 @@ class DecimalMixin:
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -127,7 +127,8 @@ class DecimalMixin:
                 )
 
         if downcast:
-            return dtype.downcast(result, tol=tol.real)
+            smallest = downcast if not isinstance(downcast, bool) else None
+            return dtype.downcast(result, tol=tol.real, smallest=smallest)
         return result
 
     @dispatch
@@ -136,7 +137,7 @@ class DecimalMixin:
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: numeric,
-        downcast: bool,
+        downcast: bool | BaseType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
