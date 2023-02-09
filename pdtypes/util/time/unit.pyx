@@ -127,6 +127,7 @@ cdef dict as_ns = {
     "D": 24 * 60 * 60 * 10**9,
     "W": 7 * 24 * 60 * 60 * 10**9,
 }
+as_ns_public = as_ns  # python-facing alias for as_ns
 
 
 cdef tuple valid_units = tuple(as_ns) + ("M", "Y")

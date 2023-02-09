@@ -374,7 +374,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
             element_type=resolve.resolve_type(int)
         )
 
-        series, dtype = series.boundscheck(dtype, tol=0, errors=errors)
+        series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_integer(
             series,
             dtype,
@@ -475,7 +475,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
                 rounding=rounding
             )
 
-        series, dtype = series.boundscheck(dtype, tol=0, errors=errors)
+        series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_integer(
             series,
             dtype,
@@ -566,7 +566,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
                 rounding=rounding,
             )
 
-        series, dtype = series.boundscheck(dtype, tol=0, errors=errors)
+        series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_integer(
             series,
             dtype,

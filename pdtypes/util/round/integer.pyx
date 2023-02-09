@@ -72,7 +72,7 @@ def round_div(
     try:  # get numerator bias for given rounding rule
         bias = integer_rounding_bias[rule](numerator, denominator)
     except KeyError as err:
-        valid_rules = ('floor') + tuple(integer_rounding_bias)
+        valid_rules = ('floor',) + tuple(integer_rounding_bias)
         err_msg = f"`rule` must be one of {valid_rules}, not {repr(rule)}"
         raise ValueError(err_msg) from err
 

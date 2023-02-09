@@ -110,8 +110,8 @@ class FloatMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert floating point data to a boolean data type."""
-        series = series.snap_round(tol.real, rounding, errors)
-        series, dtype = series.boundscheck(dtype, int(tol.real), errors)
+        series = series.snap_round(tol.real, rounding, errors=errors)
+        series, dtype = series.boundscheck(dtype, errors=errors)
         if series.hasnans:
             dtype = dtype.force_nullable()
         return super().to_boolean(series, dtype, errors=errors)
@@ -129,7 +129,7 @@ class FloatMixin:
     ) -> cast.SeriesWrapper:
         """Convert floating point data to an integer data type."""
         series = series.snap_round(tol.real, rounding, errors)
-        series, dtype = series.boundscheck(dtype, int(tol.real), errors)
+        series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_integer(
             series,
             dtype,

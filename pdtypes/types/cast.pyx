@@ -222,6 +222,11 @@ def validate_base(val: int) -> int:
     return val
 
 
+def validate_call(val: Callable) -> Callable:
+    if val is not None and not callable(val):
+        raise ValueError(f"`call` must be callable, not {val}")
+
+
 def validate_categorical(val: bool) -> bool:
     if val is None:
         return defaults.categorical
@@ -395,6 +400,7 @@ def to_boolean(
     tz = validate_timezone(tz)
     true = validate_true(true)
     false = validate_false(false)
+    call = validate_call(call)
     errors = validate_errors(errors)
 
     # ensure true, false are disjoint
@@ -453,6 +459,7 @@ def to_integer(
     epoch = validate_epoch(epoch)
     tz = validate_timezone(tz)
     base = validate_base(base)
+    call = validate_call(call)
     downcast = validate_downcast(downcast)
     errors = validate_errors(errors)
 
@@ -497,6 +504,7 @@ def to_float(
     step_size = validate_step_size(step_size)
     epoch = validate_epoch(epoch)
     tz = validate_timezone(tz)
+    call = validate_call(call)
     downcast = validate_downcast(downcast)
     errors = validate_errors(errors)
 
@@ -537,6 +545,7 @@ def to_complex(
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
+    call = validate_call(call)
     downcast = validate_downcast(downcast)
     errors = validate_errors(errors)
 
@@ -577,6 +586,7 @@ def to_decimal(
     step_size = validate_step_size(step_size)
     epoch = validate_epoch(epoch)
     tz = validate_timezone(tz)
+    call = validate_call(call)
     errors = validate_errors(errors)
 
     # delegate to SeriesWrapper.to_decimal
@@ -616,18 +626,43 @@ def to_datetime(
 def to_timedelta(
     series: Iterable,
     dtype: resolve.resolvable = "timedelta",
+    tol: numeric = None,
+    rounding: str = None,
+    unit: str = None,
+    step_size: int = None,
+    epoch: str | datetime_like = None,
+    tz: str | tzinfo = None,
+    call: Callable = None,
+    errors: str = None,
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to timedelta representation."""
-    # validate dtype
-    dtype = resolve.resolve_type(dtype)
-    if isinstance(dtype, atomic.CompositeType):
-        raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
-    if not dtype.is_subtype(atomic.TimedeltaType):
-        raise ValueError(f"`dtype` must be a timedelta type, not {dtype}")
+    # validate args
+    dtype = validate_dtype(dtype, atomic.TimedeltaType)
+    tol = validate_tol(tol)
+    rounding = validate_rounding(rounding)
+    unit = validate_unit(unit)
+    step_size = validate_step_size(step_size)
+    epoch = validate_epoch(epoch)
+    tz = validate_timezone(tz)
+    call = validate_call(call)
+    errors = validate_errors(errors)
 
     # delegate to SeriesWrapper.to_timedelta
-    return do_conversion(series, "to_timedelta", dtype=dtype, **kwargs)
+    return do_conversion(
+        series,
+        "to_timedelta",
+        dtype=dtype,
+        tol=tol,
+        rounding=rounding,
+        unit=unit,
+        step_size=step_size,
+        epoch=epoch,
+        tz=tz,
+        call=call,
+        errors=errors,
+        **kwargs
+    )
 
 
 def to_string(
@@ -927,45 +962,33 @@ cdef class SeriesWrapper:
     def boundscheck(
         self,
         dtype: atomic.AtomicType,
-        tol: numeric,
         errors: str
     ) -> tuple[SeriesWrapper, atomic.AtomicType]:
         """Ensure that a series does not overflow past the allowable range of the
         given AtomicType.  If overflow is detected, attempt to upcast the
         AtomicType to fit or coerce the series if directed.
         """
+        # TODO: add a round up step before casting vals to int?
         series = self
-        if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
-            # adjust dtype to fit series (attempt to upcast)
-            if hasattr(dtype, "upcast"):
-                try:
-                    return series, dtype.upcast(series)
-                except OverflowError:
-                    pass
+        min_val = int(series.min())
+        max_val = int(series.max())
+        if min_val < dtype.min or max_val > dtype.max:
+            # attempt to upcast dtype to fit series
+            try:
+                return series, dtype.upcast(series)
+            except OverflowError:
+                pass
 
-            # adjust series to fit dtype - clip around min/max
+            # process OverflowError
             index = (series < dtype.min) | (series > dtype.max)
-            if tol:
-                within = (series < dtype.min - tol) | (series > dtype.max + tol)
-                within ^= index
-                element_type = series.element_type
-                series = series.where(
-                    ~within.series,
-                    series.clip(dtype.min, dtype.max).series
+            if errors == "coerce":
+                series = series[~index]
+                series.hasnans = True
+            else:
+                raise OverflowError(
+                    f"values exceed {dtype} range at index "
+                    f"{shorten_list(series[index].index.values)}"
                 )
-                series.element_type = element_type
-                index ^= within
-
-            # check if any values are still overflowing
-            if index.any():
-                if errors == "coerce":
-                    series = series[~index]
-                    series.hasnans = True
-                else:
-                    raise OverflowError(
-                        f"values exceed {dtype} range at index "
-                        f"{shorten_list(series[index].index.values)}"
-                    )
 
         return series, dtype
 

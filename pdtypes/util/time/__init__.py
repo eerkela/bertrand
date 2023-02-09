@@ -40,6 +40,7 @@ from .timedelta import (
     timedelta_string_to_ns
 )
 from .unit import convert_unit
+from .unit import as_ns_public as as_ns
 from .unit import valid_units_public as valid_units
 
 

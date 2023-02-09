@@ -33,7 +33,7 @@ from pdtypes.util.round import Tolerance
 # +-----------+------------------------------------
 # | bool      | x | x | x | x | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | int       | x | x | x | x | x |   |   | x | x |
+# | int       | x | x | x | x | x |   | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | float     | x | x | x | x | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
@@ -591,6 +591,17 @@ cdef class AtomicType(BaseType):
         return self.supertype.root
 
     @property
+    def larger(self) -> list:
+        """return a list of candidate AtomicTypes that this type can be
+        upcasted to in the event of overflow.
+
+        Override this to change the behavior of a bounded type (with
+        appropriate `.min`/`.max` fields) when an OverflowError is detected.
+        Note that candidate types will always be tested in order.
+        """
+        return []  # NOTE: empty list skips upcasting entirely
+
+    @property
     def subtypes(self) -> CompositeType:
         """Return a CompositeType containing instances for every subtype
         currently registered to this AtomicType.
@@ -664,6 +675,7 @@ cdef class AtomicType(BaseType):
         """Test whether `other` is a subtype of the given AtomicType.
         This is functionally equivalent to `other in self`, except that it
         applies automatic type resolution to `other`.
+
         Override this to change the behavior of the `in` keyword and implement
         custom logic for membership tests of the given type.
         """
@@ -716,6 +728,30 @@ cdef class AtomicType(BaseType):
     def unwrap(self) -> AtomicType:
         """Strip any AdapterTypes that have been attached to this AtomicType.
         """
+        return self
+
+    def upcast(self, series: cast.SeriesWrapper) -> AtomicType:
+        """Attempt to upcast an AtomicType to fit the observed range of a
+        series.
+        """
+        # NOTE: this takes advantage of SeriesWrapper's min/max caching.
+        min_val = int(series.min())
+        max_val = int(series.max())
+        if min_val < self.min or max_val > self.max:
+            # recursively search for a larger alternative
+            for t in self.larger:
+                try:
+                    return t.upcast(series)
+                except OverflowError:
+                    pass
+
+            # no matching type could be found
+            raise OverflowError(
+                f"could not upcast {self} to fit observed range ({min_val}, "
+                f"{max_val})"
+            )
+
+        # series fits type
         return self
 
     ##############################

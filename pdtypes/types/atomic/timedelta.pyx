@@ -21,11 +21,11 @@ from pdtypes.util.round cimport Tolerance
 from pdtypes.util.round import round_div
 from pdtypes.util.time cimport Epoch
 from pdtypes.util.time import (
-    convert_unit, pytimedelta_to_ns, timedelta_string_to_ns, valid_units
+    as_ns, convert_unit, pytimedelta_to_ns, timedelta_string_to_ns, valid_units
 )
 
 # TODO: timedelta -> float does not retain longdouble precision.  This is due
-# to the / operator in convert_unit() defaulting to float64.
+# to the / operator in convert_unit() defaulting to float64 precision.
 
 
 ######################
@@ -266,6 +266,31 @@ class TimedeltaType(TimedeltaMixin, AtomicType):
             itemsize=None
         )
 
+    ############################
+    ####    TYPE METHODS    ####
+    ############################
+
+    @property
+    def larger(self) -> list:
+        """Get a list of types that this type can be upcasted to."""
+        # start with subtypes that have range wider than self
+        result = [
+            x for x in self.subtypes if x.min < self.min or x.max > self.max
+        ]
+        result.sort(key=lambda x: x.max - x.min)
+
+        # add subtypes that are themselves upcast-only.
+        others = [
+            x for x in self.subtypes
+            if (
+                x != self and
+                x.min == self.min and
+                x.max == self.max
+            )
+        ]
+        result.extend(sorted(others, key=lambda x: x.itemsize or np.inf))
+        return result
+
 
 #####################
 ####    NUMPY    ####
@@ -284,19 +309,29 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
         "numpy.timedelta64",
         "np.timedelta64",
     }
-    # NOTE: these epochs are chosen to minimize the available range, so that
-    # conversions work regardless of leap days.
-    max = convert_unit(2**63 - 1, "Y", "ns", since=Epoch("cocoa"))
-    min = convert_unit(-2**63 + 1, "Y", "ns", since=Epoch("j2000"))
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
             dtype = np.dtype("m8")
+            self.min = 1
+            self.max = 0  # NOTE: these values always trigger upcast check
         else:
-            valid_units = {"ns", "us", "ms", "s", "m", "h", "D", "W", "M", "Y"}
-            if unit not in valid_units:
-                raise ValueError(f"unit not understood: {repr(unit)}")
             dtype = np.dtype(f"m8[{step_size}{unit}]")
+            # NOTE: these epochs are chosen to minimize range in the event of
+            # irregular units ('Y'/'M'), so that conversions work regardless of
+            # leap days and irregular month lengths.
+            self.max = convert_unit(
+                2**63 - 1,
+                unit,
+                "ns",
+                since=Epoch(pd.Timestamp("2001-02-01"))
+            )
+            self.min = convert_unit(
+                -2**63 + 1,  # NOTE: -2**63 reserved for NaT
+                unit,
+                "ns",
+                since=Epoch(pd.Timestamp("2000-02-01"))
+            )
 
         super().__init__(
             type_def=np.timedelta64,
@@ -336,6 +371,13 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
         unit, step_size = np.datetime_data(example)
         return cls.instance(unit=unit, step_size=step_size, **defaults)
 
+    @property
+    def larger(self) -> list:
+        """Get a list of types that `self` can be upcasted to."""
+        if self.unit is None:
+            return [self.instance(unit=u) for u in valid_units]
+        return []
+
     @classmethod
     def resolve(cls, context: str = None) -> AtomicType:
         if context is not None:
@@ -350,6 +392,38 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
     ##############################
     ####    SERIES METHODS    ####
     ##############################
+
+    def from_ns(
+        self,
+        series: cast.SeriesWrapper,
+        rounding: str,
+        epoch: Epoch
+    ) -> cast.SeriesWrapper:
+        """Convert nanosecond offsets from the given epoch into numpy
+        timedelta64s with this type's unit and step size.
+        """
+        series.series = convert_unit(
+            series.series,
+            "ns",
+            self.unit,
+            rounding=rounding or "down",
+            since=epoch
+        )
+        if self.step_size != 1:
+            series.series = round_div(
+                series.series,
+                self.step_size,
+                rule=rounding or "down"
+            )
+        m8_str = f"m8[{self.step_size}{self.unit}]"
+        return cast.SeriesWrapper(
+            pd.Series(
+                list(series.series.to_numpy(m8_str)),
+                dtype="O"
+            ),
+            hasnans=series.hasnans,
+            element_type=self
+        )
 
     @dispatch
     def to_integer(
@@ -382,7 +456,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
             element_type=resolve.resolve_type(int)
         )
 
-        series, dtype = series.boundscheck(dtype, tol=0, errors=errors)
+        series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_integer(
             series,
             dtype,
@@ -411,6 +485,23 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
             itemsize=8
         )
 
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
+
+    def from_ns(
+        self,
+        series: cast.SeriesWrapper,
+        rounding: str,
+        epoch: Epoch
+    ) -> cast.SeriesWrapper:
+        """Convert nanosecond offsets into pandas Timedeltas."""
+        return cast.SeriesWrapper(
+            pd.to_timedelta(series.series, unit="ns"),
+            hasnans=series.hasnans,
+            element_type=self
+        )
+
     @dispatch
     def to_integer(
         self,
@@ -435,7 +526,7 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
                 epoch=epoch
             )
 
-        series, dtype = series.boundscheck(dtype, tol=0, errors=errors)
+        series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_integer(
             series,
             dtype,
@@ -464,6 +555,24 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
             itemsize=None
         )
 
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
+
+    def from_ns(
+        self,
+        series: cast.SeriesWrapper,
+        rounding: str,
+        epoch: Epoch
+    ) -> cast.SeriesWrapper:
+        """Convert nanosecond offsets into python timedeltas."""
+        result = round_div(series.series, as_ns["us"], rule=rounding or "down")
+        return cast.SeriesWrapper(
+            pd.Series(result.to_numpy("m8[us]").astype("O")),
+            hasnans=series.hasnans,
+            element_type=self
+        )
+
     @dispatch
     def to_integer(
         self,
@@ -490,7 +599,7 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
                 epoch=epoch
             )
 
-        series, dtype = series.boundscheck(dtype, tol=0, errors=errors)
+        series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_integer(
             series,
             dtype,

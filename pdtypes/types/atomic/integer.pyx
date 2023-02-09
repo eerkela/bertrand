@@ -22,15 +22,23 @@ from typing import Union
 
 import pytz
 
+from pdtypes.error import shorten_list
+from pdtypes.type_hints import numeric
+
 from .base cimport AdapterType, AtomicType
 from .base import dispatch, generic, subtype
 
-from pdtypes.error import shorten_list
-from pdtypes.type_hints import numeric
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
+cimport pdtypes.types.resolve as resolve
+import pdtypes.types.resolve as resolve
 
-from pdtypes.util.round import round_div, Tolerance
+from pdtypes.util.round cimport Tolerance
+from pdtypes.util.round import round_div
+from pdtypes.util.time cimport Epoch
+from pdtypes.util.time import (
+    convert_unit, valid_units
+)
 
 
 # TODO: make upcast() a series method?
@@ -65,24 +73,18 @@ class IntegerMixin:
 
     @property
     def larger(self) -> list:
-        """Get a list of types that `self` can be upcasted to."""
-        # get all subtypes with range greater than self
-        result = [
+        """Get a list of types that this type can be upcasted to."""
+        result = [  # get all subtypes with range wider than self
             x for x in self.subtypes if x.min < self.min or x.max > self.max
         ]
-
-        # collapse supertypes
-        result = [
+        result = [  # collapse types that are not unique
             x for x in result if not any(x != y and x in y for y in result)
         ]
-
-        # sort by combined range + itemsize
-        rank = lambda x: (x.max - x.min) or (x.itemsize or np.inf)
-        return sorted(result, key=rank)
+        return sorted(result, key=lambda x: x.max - x.min)
 
     @property
     def smaller(self) -> list:
-        """Get a list of types that `self` can be downcasted to."""
+        """Get a list of types that this type can be downcasted to."""
         result = [
             x for x in self.root.subtypes if (
                 (x.itemsize or np.inf) < (self.itemsize or np.inf) and
@@ -91,23 +93,6 @@ class IntegerMixin:
             )
         ]
         return sorted(result, key=lambda x: x.itemsize)
-
-    def upcast(
-        self,
-        series: cast.SeriesWrapper
-    ) -> AtomicType:
-        """Increase the width of an integer type to fit the observed range."""
-        min_val = int(series.min())
-        max_val = int(series.max())
-        if min_val < self.min or max_val > self.max:
-            for t in self.larger:
-                if min_val > t.min and max_val < t.max:
-                    return t
-            raise OverflowError(
-                f"{self} could not be upcast to match observed range "
-                f"{(series.min(), series.max())}"
-            )
-        return self
 
     ##############################
     ####    SERIES METHODS    ####
@@ -167,12 +152,11 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tol: Tolerance,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a boolean data type."""
-        series, dtype = series.boundscheck(dtype, int(tol.real), errors)
+        series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_boolean(series, dtype, errors=errors)
 
     @dispatch
@@ -181,12 +165,11 @@ class IntegerMixin:
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         downcast: bool,
-        tol: Tolerance,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to another integer data type."""
-        series, dtype = series.boundscheck(dtype, int(tol.real), errors)
+        series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_integer(
             series=series,
             dtype=dtype,
@@ -278,14 +261,37 @@ class IntegerMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tz: pytz.BaseTzInfo,
         unit: str,
         step_size: int,
+        tz: pytz.BaseTzInfo,
+        epoch: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a datetime data type."""
-        raise NotImplementedError()
+        # convert to python integer to avoid overflow
+        series = cast.SeriesWrapper(
+            series.series.astype("O"),
+            hasnans=series.hasnans,
+            element_type=resolve.resolve_type(int)
+        )
+
+        # convert to ns
+        if step_size != 1:
+            series.series *= step_size
+        series.series = convert_unit(series.series, unit, "ns")
+
+        # account for non-utc epoch
+        if epoch:
+            series.series += epoch.offset
+
+        # check for overflow and upcast if applicable
+        series, dtype = series.boundscheck(dtype, errors=errors)
+
+        # convert to final representation
+
+
+
 
     @dispatch
     def to_timedelta(
@@ -294,11 +300,29 @@ class IntegerMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
+        rounding: str,
+        epoch: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
-        raise NotImplementedError()
+        # convert to python integer to avoid overflow
+        series = cast.SeriesWrapper(
+            series.series.astype("O"),
+            hasnans=series.hasnans,
+            element_type=resolve.resolve_type(int)
+        )
+
+        # convert to ns
+        if step_size != 1:
+            series.series *= step_size
+        series.series = convert_unit(series.series, unit, "ns", since=epoch)
+
+        # check for overflow and upcast if applicable
+        series, dtype = series.boundscheck(dtype, errors)
+
+        # convert to final representation
+        return dtype.from_ns(series, rounding=rounding, epoch=epoch)
 
     @dispatch
     def to_string(

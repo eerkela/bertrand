@@ -56,7 +56,7 @@ class DecimalMixin:
     ) -> cast.SeriesWrapper:
         """Convert decimal data to a boolean data type."""
         series = series.snap_round(tol.real, rounding, errors)
-        series, dtype = series.boundscheck(dtype, int(tol.real), errors)
+        series, dtype = series.boundscheck(dtype, errors)
         return super().to_boolean(series, dtype, errors=errors)
 
     @dispatch
@@ -72,7 +72,7 @@ class DecimalMixin:
     ) -> cast.SeriesWrapper:
         """Convert decimal data to an integer data type."""
         series = series.snap_round(tol.real, rounding, errors)
-        series, dtype = series.boundscheck(dtype, int(tol.real), errors)
+        series, dtype = series.boundscheck(dtype, errors)
         return super().to_integer(
             series,
             dtype,
