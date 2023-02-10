@@ -1,11 +1,14 @@
 import datetime
 import decimal
+from functools import partial
 from types import MappingProxyType
 from typing import Any, Union, Sequence
+import warnings
 
 import numpy as np
 cimport numpy as np
 import pandas as pd
+import pytz
 import regex as re  # using alternate python regex engine
 
 from .base cimport AtomicType, BaseType, CompositeType
@@ -20,7 +23,8 @@ from pdtypes.util.round cimport Tolerance
 from pdtypes.util.round import round_div
 from pdtypes.util.time cimport Epoch
 from pdtypes.util.time import (
-    convert_unit, pydatetime_to_ns, numpy_datetime64_to_ns, valid_units
+    convert_unit, ns_to_pydatetime, numpy_datetime64_to_ns, pydatetime_to_ns,
+    pytimedelta_to_ns, valid_units
 )
 
 
@@ -236,7 +240,7 @@ class DatetimeType(DatetimeMixin, AtomicType):
     name = "datetime"
     aliases = {"datetime"}
     max = 0
-    min = 1  # these values always trip overflow/upcast check
+    min = 1  # NOTE: these values always trip overflow/upcast check
 
     def __init__(self):
         super().__init__(
@@ -245,6 +249,27 @@ class DatetimeType(DatetimeMixin, AtomicType):
             na_value=pd.NaT,
             itemsize=None
         )
+
+    ############################
+    ####    TYPE METHODS    ####
+    ############################
+
+    @property
+    def larger(self) -> list:
+        """Get a list of types that this type can be upcasted to."""
+        # start with bounded subtypes that have range wider than self
+        candidates = set(self.subtypes) - {self}
+        result = [
+            x for x in candidates if (
+                x.min <= x.max and (x.min < self.min or x.max > self.max)
+            )
+        ]
+        result.sort(key=lambda x: x.max - x.min)
+
+        # add subtypes that are themselves upcast-only
+        others = [x for x in candidates if x.min > x.max]
+        result.extend(sorted(others, key=lambda x: x.min - x.max))
+        return result
 
 
 #####################
@@ -264,18 +289,30 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
         "numpy.datetime64",
         "np.datetime64",
     }
-    # NOTE: maximum datetime64 appears to be biased toward UTC epoch
-    max = numpy_datetime64_to_ns(np.datetime64(2**63 - 1 - 1970, "Y"))
-    min = numpy_datetime64_to_ns(np.datetime64(-2**63 + 1, "Y"))
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
             dtype = np.dtype("M8")
+            # NOTE: these min/max values always trigger upcast check.
+            self.min = 1  # increase this to take precedence when upcasting
+            self.max = 0
         else:
-            valid_units = {"ns", "us", "ms", "s", "m", "h", "D", "W", "M", "Y"}
-            if unit not in valid_units:
-                raise ValueError(f"unit not understood: {repr(unit)}")
             dtype = np.dtype(f"M8[{step_size}{unit}]")
+            # NOTE: min/max datetime64 depends on unit
+            if unit == "Y":  # appears to be biased toward UTC
+                min_M8 = np.datetime64(-2**63 + 1, "Y")
+                max_M8 = np.datetime64(2**63 - 1 - 1970, "Y")
+            elif unit == "W":  # appears almost identical to unit="D"
+                min_M8 = np.datetime64((-2**63 + 1 + 10956) // 7 + 1, "W")
+                max_M8 = np.datetime64((2**63 - 1 + 10956) // 7 , "W")
+            elif unit == "D":
+                min_M8 = np.datetime64(-2**63 + 1 + 10956, "D")  # 10956 ??
+                max_M8 = np.datetime64(2**63 - 1, "D")  # unbiased ??
+            else:
+                min_M8 = np.datetime64(-2**63 + 1, unit)
+                max_M8 = np.datetime64(2**63 - 1, unit)
+            self.min = numpy_datetime64_to_ns(min_M8)
+            self.max = numpy_datetime64_to_ns(max_M8)
 
         super().__init__(
             type_def=np.datetime64,
@@ -315,6 +352,13 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
         unit, step_size = np.datetime_data(example)
         return cls.instance(unit=unit, step_size=step_size, **defaults)
 
+    @property
+    def larger(self) -> list:
+        """Get a list of types that this type can be upcasted to."""
+        if self.unit is None:
+            return [self.instance(unit=u) for u in valid_units]
+        return []
+
     @classmethod
     def resolve(cls, context: str = None) -> AtomicType:
         if context is not None:
@@ -329,6 +373,36 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
     ##############################
     ####    SERIES METHODS    ####
     ##############################
+
+    def from_ns(
+        self,
+        series: cast.SeriesWrapper,
+        rounding: str
+    ) -> cast.SeriesWrapper:
+        """Convert nanosecond offsets from the given epoch into numpy
+        timedelta64s with this type's unit and step size.
+        """
+        series.series = convert_unit(
+            series.series,
+            "ns",
+            self.unit,
+            rounding=rounding or "down"
+        )
+        if self.step_size != 1:
+            series.series = round_div(
+                series.series,
+                self.step_size,
+                rule=rounding or "down"
+            )
+        M8_str = f"M8[{self.step_size}{self.unit}]"
+        return cast.SeriesWrapper(
+            pd.Series(
+                list(series.series.to_numpy(M8_str)),
+                dtype="O"
+            ),
+            hasnans=series.hasnans,
+            element_type=self
+        )
 
     @dispatch
     def to_integer(
@@ -399,14 +473,29 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
         "pandas.Timestamp",
         "pd.Timestamp",
     }
-    max = 2**63 - 1
-    min = -2**63 + 1  # -2**63 reserved for NaT
 
     def __init__(self, tz: datetime.tzinfo = None):
+        self.min = pd.Timestamp.min.value
+        self.max = pd.Timestamp.max.value
         if tz is None:
             dtype = np.dtype("M8[ns]")
         else:
             dtype = pd.DatetimeTZDtype(tz=tz)
+
+            # NOTE: timezone localization can cause Timestamps to overflow if
+            # they are close to min/max.  We adjust range to compensate.
+            with warnings.catch_warnings():
+                # these generate a 'discarding nonzero nanoseconds' warning
+                warnings.simplefilter("ignore", UserWarning)
+                min_offset = tz.utcoffset(pd.Timestamp.min.to_pydatetime())
+                max_offset = tz.utcoffset(pd.Timestamp.max.to_pydatetime())
+            min_offset = pytimedelta_to_ns(min_offset)
+            max_offset = pytimedelta_to_ns(max_offset)
+            if min_offset > 0:
+                self.min += min_offset
+            if max_offset < 0:
+                self.max += max_offset
+
         super().__init__(
             type_def=pd.Timestamp,
             dtype=dtype,
@@ -443,9 +532,37 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
     def detect(cls, example: pd.Timestamp, **defaults) -> AtomicType:
         return cls.instance(tz=example.tzinfo, **defaults)
 
+    @classmethod
+    def resolve(cls, context: str = None) -> AtomicType:
+        if context is not None:
+            return cls.instance(tz=pytz.timezone(context))
+        return cls.instance()
+
     ##############################
     ####    SERIES METHODS    ####
     ##############################
+
+    def from_ns(
+        self,
+        series: cast.SeriesWrapper,
+        rounding: str
+    ) -> cast.SeriesWrapper:
+        """Convert nanosecond offsets from the UTC epoch into pandas
+        Timestamps.
+        """
+        # convert using pd.to_datetime, accounting for timezone
+        if self.tz is None:
+            result = pd.to_datetime(series.series, unit="ns")
+        else:
+            result = pd.to_datetime(series.series, unit="ns", utc=True)
+            if self.tz != pytz.utc:
+                result = result.dt.tz_convert(self.tz)
+
+        return cast.SeriesWrapper(
+            result,
+            hasnans=series.hasnans,
+            element_type=series.element_type
+        )
 
     @dispatch
     def to_integer(
@@ -537,6 +654,20 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
     ##############################
     ####    SERIES METHODS    ####
     ##############################
+
+    def from_ns(
+        self,
+        series: cast.SeriesWrapper,
+        rounding: str
+    ) -> cast.SeriesWrapper:
+        """Convert nanosecond offsets from the UTC epoch into python
+        datetimes.
+        """
+        # convert elementwise
+        call = partial(ns_to_pydatetime, tz=self.tz)
+        series = series.apply_with_errors(call)
+        series.element_type = self
+        return series
 
     @dispatch
     def to_integer(

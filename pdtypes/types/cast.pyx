@@ -23,9 +23,11 @@ from pdtypes.util.round cimport Tolerance
 from pdtypes.util.time cimport Epoch
 
 
-# TODO: sparse types currently broken
+# TODO: sparse types currently broken.
+# -> maybe account for these outside of the conversions themselves, and just
+# unwrap() it to do the conversion.  It's possible they'll just work out of
+# the box though.
 
-# TODO: top-level to_x() functions are respondible for input validation
 
 # TODO: have to account for empty series in each conversion.
 
@@ -603,18 +605,56 @@ def to_decimal(
 def to_datetime(
     series: Iterable,
     dtype: resolve.resolvable = "datetime",
+    tol: numeric = None,
+    rounding: str = None,
+    unit: str = None,
+    step_size: int = None,
+    epoch: str | datetime_like = None,
+    tz: str | tzinfo = None,
+    call: Callable = None,
+    errors: str = None,
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to datetime representation."""
-    # validate dtype
-    dtype = resolve.resolve_type(dtype)
-    if isinstance(dtype, atomic.CompositeType):
-        raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
-    if not dtype.is_subtype(atomic.DatetimeType):
-        raise ValueError(f"`dtype` must be a datetime type, not {dtype}")
+    # validate args
+    dtype = validate_dtype(dtype, atomic.DatetimeType)
+    tol = validate_tol(tol)
+    rounding = validate_rounding(rounding)
+    unit = validate_unit(unit)
+    step_size = validate_step_size(step_size)
+    epoch = validate_epoch(epoch)
+    tz = validate_timezone(tz)
+    call = validate_call(call)
+    errors = validate_errors(errors)
+
+    # reconcile `tz` argument with `dtype.tz`, if it is supported
+    if tz:
+        dtype_tz = getattr(dtype, "tz", None)
+        if dtype_tz and dtype_tz != tz:  # timezone conflict
+            raise TypeError(
+                f"`tz` argument must match `dtype.tz` if it is defined "
+                f"({dtype_tz} != {tz})"
+            )
+        try:
+            dtype = dtype.replace(tz=tz)
+        except TypeError as err:
+            err_msg = f"{dtype} objects do not carry timezone information"
+            raise TypeError(err_msg) from err
 
     # delegate to SeriesWrapper.to_datetime
-    return do_conversion(series, "to_datetime", dtype=dtype, **kwargs)
+    return do_conversion(
+        series,
+        "to_datetime",
+        dtype=dtype,
+        tol=tol,
+        rounding=rounding,
+        unit=unit,
+        step_size=step_size,
+        epoch=epoch,
+        call=call,
+        errors=errors,
+        **kwargs
+    )
 
 
 def to_timedelta(
@@ -1455,7 +1495,7 @@ def do_conversion(
     data,
     endpoint: str,
     *args,
-    errors: str = defaults.errors,
+    errors: str,
     **kwargs
 ) -> pd.Series:
     try:

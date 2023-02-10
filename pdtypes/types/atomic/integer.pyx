@@ -41,9 +41,6 @@ from pdtypes.util.time import (
 )
 
 
-# TODO: make upcast() a series method?
-
-
 ######################
 ####    MIXINS    ####
 ######################
@@ -54,6 +51,36 @@ class IntegerMixin:
     ############################
     ####    TYPE METHODS    ####
     ############################
+
+    def downcast(
+        self,
+        series: cast.SeriesWrapper,
+        smallest: BaseType = None
+    ) -> cast.SeriesWrapper:
+        """Reduce the itemsize of an integer type to fit the observed range."""
+        # get downcast candidates
+        smaller = self.smaller
+        if smallest:
+            filtered = []
+            for t in reversed(smaller):
+                filtered.append(t)
+                if t in smallest:
+                    break  # stop at largest type contained in `smallest`
+            smaller = reversed(filtered)
+
+        # return smallest type that fits observed range
+        min_val = int(series.min())
+        max_val = int(series.max())
+        for t in smaller:
+            if min_val < t.min or max_val > t.max:
+                continue
+            return super().to_integer(
+                series,
+                t,
+                downcast=False,
+                errors="raise"
+            )
+        return series
 
     def force_nullable(self) -> AtomicType:
         """Create an equivalent integer type that can accept missing values."""
@@ -101,36 +128,6 @@ class IntegerMixin:
     ##############################
     ####    SERIES METHODS    ####
     ##############################
-
-    def downcast(
-        self,
-        series: cast.SeriesWrapper,
-        smallest: BaseType = None
-    ) -> cast.SeriesWrapper:
-        """Reduce the itemsize of an integer type to fit the observed range."""
-        # get downcast candidates
-        smaller = self.smaller
-        if smallest:
-            filtered = []
-            for t in reversed(smaller):
-                filtered.append(t)
-                if t in smallest:
-                    break  # stop at largest type contained in `smallest`
-            smaller = reversed(filtered)
-
-        # return smallest type that fits observed range
-        min_val = int(series.min())
-        max_val = int(series.max())
-        for t in smaller:
-            if min_val < t.min or max_val > t.max:
-                continue
-            return super().to_integer(
-                series,
-                t,
-                downcast=False,
-                errors="raise"
-            )
-        return series
 
     @dispatch
     def round(
@@ -271,7 +268,7 @@ class IntegerMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        tz: pytz.BaseTzInfo,
+        rounding: str,
         epoch: Epoch,
         errors: str,
         **unused
@@ -287,7 +284,7 @@ class IntegerMixin:
         # convert to ns
         if step_size != 1:
             series.series *= step_size
-        series.series = convert_unit(series.series, unit, "ns")
+        series.series = convert_unit(series.series, unit, "ns", since=epoch)
 
         # account for non-utc epoch
         if epoch:
@@ -297,9 +294,7 @@ class IntegerMixin:
         series, dtype = series.boundscheck(dtype, errors=errors)
 
         # convert to final representation
-
-
-
+        return dtype.from_ns(series, rounding=rounding)
 
     @dispatch
     def to_timedelta(

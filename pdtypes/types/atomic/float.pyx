@@ -31,35 +31,6 @@ class FloatMixin:
     ####    TYPE METHODS    ####
     ############################
 
-    @property
-    def equiv_complex(self) -> AtomicType:
-        candidates = complex_types.ComplexType.instance().subtypes
-        for x in candidates:
-            if type(x).__name__ == self._equiv_complex:
-                return x
-        raise TypeError(f"{repr(self)} has no equivalent complex type")
-
-    @property
-    def smaller(self) -> list:
-        result = [
-            x for x in self.root.subtypes if (
-                x.backend == self.backend and
-                x not in FloatType.backends.values()
-            )
-        ]
-        if not self.is_root:
-            result = [
-                x for x in result if (
-                    (x.itemsize or np.inf) < (self.itemsize or np.inf)
-                )
-            ]
-        result.sort(key=lambda x: x.itemsize)
-        return result
-
-    ##############################
-    ####    SERIES METHODS    ####
-    ##############################
-
     def downcast(
         self,
         series: cast.SeriesWrapper,
@@ -93,6 +64,35 @@ class FloatMixin:
             if attempt.within_tol(series, tol=tol.real).all():
                 return attempt
         return series
+
+    @property
+    def equiv_complex(self) -> AtomicType:
+        candidates = complex_types.ComplexType.instance().subtypes
+        for x in candidates:
+            if type(x).__name__ == self._equiv_complex:
+                return x
+        raise TypeError(f"{repr(self)} has no equivalent complex type")
+
+    @property
+    def smaller(self) -> list:
+        result = [
+            x for x in self.root.subtypes if (
+                x.backend == self.backend and
+                x not in FloatType.backends.values()
+            )
+        ]
+        if not self.is_root:
+            result = [
+                x for x in result if (
+                    (x.itemsize or np.inf) < (self.itemsize or np.inf)
+                )
+            ]
+        result.sort(key=lambda x: x.itemsize)
+        return result
+
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
 
     @dispatch
     def round(

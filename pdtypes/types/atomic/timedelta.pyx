@@ -273,22 +273,18 @@ class TimedeltaType(TimedeltaMixin, AtomicType):
     @property
     def larger(self) -> list:
         """Get a list of types that this type can be upcasted to."""
-        # start with subtypes that have range wider than self
+        # start with bounded subtypes that have range wider than self
+        candidates = set(self.subtypes) - {self}
         result = [
-            x for x in self.subtypes if x.min < self.min or x.max > self.max
+            x for x in candidates if (
+                x.min <= x.max and (x.min < self.min or x.max > self.max)
+            )
         ]
         result.sort(key=lambda x: x.max - x.min)
 
-        # add subtypes that are themselves upcast-only.
-        others = [
-            x for x in self.subtypes
-            if (
-                x != self and
-                x.min == self.min and
-                x.max == self.max
-            )
-        ]
-        result.extend(sorted(others, key=lambda x: x.itemsize or np.inf))
+        # add subtypes that are themselves upcast-only
+        others = [x for x in candidates if x.min > x.max]
+        result.extend(sorted(others, key=lambda x: x.min - x.max))
         return result
 
 
@@ -313,8 +309,9 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
             dtype = np.dtype("m8")
-            self.min = 1
-            self.max = 0  # NOTE: these values always trigger upcast check
+            # NOTE: these min/max values always trigger upcast check.
+            self.min = 1  # increase this to take precedence when upcasting
+            self.max = 0
         else:
             dtype = np.dtype(f"m8[{step_size}{unit}]")
             # NOTE: these epochs are chosen to minimize range in the event of
@@ -373,7 +370,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
 
     @property
     def larger(self) -> list:
-        """Get a list of types that `self` can be upcasted to."""
+        """Get a list of types that this type can be upcasted to."""
         if self.unit is None:
             return [self.instance(unit=u) for u in valid_units]
         return []
@@ -568,7 +565,7 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
         """Convert nanosecond offsets into python timedeltas."""
         result = round_div(series.series, as_ns["us"], rule=rounding or "down")
         return cast.SeriesWrapper(
-            pd.Series(result.to_numpy("m8[us]").astype("O")),
+            pd.Series(result.to_numpy("m8[us]").astype("O"), dtype="O"),
             hasnans=series.hasnans,
             element_type=self
         )
