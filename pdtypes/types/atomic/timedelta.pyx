@@ -416,6 +416,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
         return cast.SeriesWrapper(
             pd.Series(
                 list(series.series.to_numpy(m8_str)),
+                index=series.series.index,
                 dtype="O"
             ),
             hasnans=series.hasnans,
@@ -565,7 +566,11 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
         """Convert nanosecond offsets into python timedeltas."""
         result = round_div(series.series, as_ns["us"], rule=rounding or "down")
         return cast.SeriesWrapper(
-            pd.Series(result.to_numpy("m8[us]").astype("O"), dtype="O"),
+            pd.Series(
+                result.to_numpy("m8[us]").astype("O"),
+                index=series.series.index,
+                dtype="O"
+            ),
             hasnans=series.hasnans,
             element_type=self
         )

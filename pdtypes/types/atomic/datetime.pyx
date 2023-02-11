@@ -398,6 +398,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
         return cast.SeriesWrapper(
             pd.Series(
                 list(series.series.to_numpy(M8_str)),
+                index=series.series.index,
                 dtype="O"
             ),
             hasnans=series.hasnans,

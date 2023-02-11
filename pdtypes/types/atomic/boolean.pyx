@@ -15,11 +15,18 @@ import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
+from pdtypes.util.time cimport Epoch
+from pdtypes.util.time import convert_unit
+
 
 # TODO: add datetime_like `since` hint to to_datetime, to_timedelta
 
 
 # TODO: fully implement boolean to_x conversions
+
+
+# TODO: to_timedelta([True, False, None, 1, 2, 3], "m8[s]", unit="s")
+# yields NAs for integer part rather than converting as expected.
 
 
 ######################
@@ -80,12 +87,58 @@ class BooleanMixin:
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        tz: pytz.BaseTzInfo,
         unit: str,
-        since: np.datetime64
+        step_size: int,
+        rounding: str,
+        epoch: Epoch,
+        errors: str,
+        **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a datetime data type."""
-        raise NotImplementedError()
+        series = self.to_integer(
+            series,
+            dtype=resolve.resolve_type(int),
+            downcast=False,
+            errors="raise"
+        )
+        return series.to_datetime(
+            dtype=dtype,
+            unit=unit,
+            step_size=step_size,
+            rounding=rounding,
+            epoch=epoch,
+            errors=errors,
+            **unused
+        )
+
+    @dispatch
+    def to_timedelta(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        rounding: str,
+        epoch: Epoch,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to a timedelta data type."""
+        series = self.to_integer(
+            series,
+            dtype=resolve.resolve_type(int),
+            downcast=False,
+            errors="raise"
+        )
+        return series.to_timedelta(
+            dtype=dtype,
+            unit=unit,
+            step_size=step_size,
+            rounding=rounding,
+            epoch=epoch,
+            errors=errors,
+            **unused
+        )
 
 
 #######################
