@@ -142,10 +142,11 @@ Counting leap years:
 >>> leaps_between(1970 + np.arange(-6, 6), 2000)
 array([9, 8, 8, 8, 8, 7, 7, 7, 7, 6, 6, 6])
 """
+import cython
 import numpy as np
 cimport numpy as np
 
-from pdtypes.type_hints import array_like
+from pdtypes.type_hints import array_like, numeric
 
 
 #########################
@@ -173,10 +174,10 @@ cdef np.ndarray days_per_month = np.array(
 
 
 def date_to_days(
-    year: int | array_like,
-    month: int | array_like,
-    day: int | array_like
-) -> int | array_like:
+    year: numeric | array_like,
+    month: numeric | array_like,
+    day: numeric | array_like
+) -> numeric | array_like:
     """Convert proleptic Gregorian calendar dates into day offsets from the utc
     epoch ('1970-01-01 00:00:00+0000').
 

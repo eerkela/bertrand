@@ -1,4 +1,5 @@
 import decimal
+from functools import partial
 from typing import Union, Sequence
 
 import numpy as np
@@ -11,10 +12,22 @@ cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
-from pdtypes.util.round import round_decimal, Tolerance
+
+from pdtypes.util.round cimport Tolerance
+from pdtypes.util.round import round_decimal
+from pdtypes.util.time cimport Epoch
+from pdtypes.util.time import (
+    as_ns, convert_unit, round_months_to_ns, round_years_to_ns
+)
 
 from .base cimport AtomicType, BaseType
 from .base import dispatch, generic
+
+
+# TODO: decimal -> timedelta unit "M" does not properly account for fractional
+# months due to presence of // operator in date_to_days.  The only way to
+# address this is to either eliminate the division operation or process the
+# fractional component separately.
 
 
 ######################
@@ -155,6 +168,80 @@ class DecimalMixin:
             downcast=downcast,
             errors=errors
             **unused
+        )
+
+    @dispatch
+    def to_datetime(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        epoch: Epoch,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to a datetime data type."""
+        # round fractional inputs to the nearest nanosecond
+        if unit == "Y":
+            ns = round_years_to_ns(series.series * step_size, since=epoch)
+        elif unit == "M":
+            ns = round_months_to_ns(series.series * step_size, since=epoch)
+        else:
+            cast_to_int = np.frompyfunc(int, 1, 1)
+            ns = cast_to_int(series.series * step_size * as_ns[unit])
+
+        # account for non-utc epoch
+        if epoch:
+            ns += epoch.offset
+
+        series = cast.SeriesWrapper(
+            ns,
+            hasnans=series.hasnans,
+            element_type=resolve.resolve_type(int)
+        )
+
+        # check for overflow and upcast if applicable
+        series, dtype = series.boundscheck(dtype, errors=errors)
+
+        # convert to final representation
+        return dtype.from_ns(series, **unused)
+
+    @dispatch
+    def to_timedelta(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        epoch: Epoch,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to a timedelta data type."""
+        # round fractional inputs to the nearest nanosecond
+        if unit == "Y":  # account for leap days
+            ns = round_years_to_ns(series.series * step_size, since=epoch)
+        elif unit == "M":  # account for irregular lengths
+            ns = round_months_to_ns(series.series * step_size, since=epoch)
+        else:
+            cast_to_int = np.frompyfunc(int, 1, 1)
+            ns = cast_to_int(series.series * step_size * as_ns[unit])
+
+        series = cast.SeriesWrapper(
+            ns,
+            hasnans=series.hasnans,
+            element_type=resolve.resolve_type(int)
+        )
+
+        # check for overflow and upcast if necessary
+        series, dtype = series.boundscheck(dtype, errors=errors)
+
+        # convert to final representation
+        return dtype.from_ns(
+            series,
+            epoch=epoch,
+            **unused,
         )
 
 

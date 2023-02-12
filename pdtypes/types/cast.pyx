@@ -627,20 +627,6 @@ def to_datetime(
     call = validate_call(call)
     errors = validate_errors(errors)
 
-    # reconcile `tz` argument with `dtype.tz`, if it is supported
-    if tz:
-        dtype_tz = getattr(dtype, "tz", None)
-        if dtype_tz and dtype_tz != tz:  # timezone conflict
-            raise TypeError(
-                f"`tz` argument must match `dtype.tz` if it is defined "
-                f"({dtype_tz} != {tz})"
-            )
-        try:
-            dtype = dtype.replace(tz=tz)
-        except TypeError as err:
-            err_msg = f"{dtype} objects do not carry timezone information"
-            raise TypeError(err_msg) from err
-
     # delegate to SeriesWrapper.to_datetime
     return do_conversion(
         series,
@@ -650,6 +636,7 @@ def to_datetime(
         rounding=rounding,
         unit=unit,
         step_size=step_size,
+        tz=tz,
         epoch=epoch,
         call=call,
         errors=errors,

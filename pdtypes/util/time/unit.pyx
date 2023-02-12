@@ -109,6 +109,12 @@ import pdtypes.util.time.epoch as epoch
 # TODO: ensure unit length definitions are correct for all values/offsets
 
 
+# TODO: convert_unit doesn't retain nanosecond precision for decimal inputs
+# with unit 'M'.  Also, negative years have different behavior compared to
+# floats/ints.
+# -> return to a convert_unit_fraction approach?
+
+
 #########################
 ####    CONSTANTS    ####
 #########################
@@ -132,6 +138,9 @@ as_ns_public = as_ns  # python-facing alias for as_ns
 
 cdef tuple valid_units = tuple(as_ns) + ("M", "Y")
 valid_units_public = valid_units  # python-facing alias for valid_units
+
+
+cdef object cast_to_int = np.frompyfunc(int, 1, 1)
 
 
 ######################
@@ -270,7 +279,7 @@ def convert_unit(
 
     # regular -> irregular
     if from_unit in as_ns:
-        return _convert_unit_integer_regular_to_irregular(
+        return _convert_unit_regular_to_irregular(
             val,
             from_unit=from_unit,
             to_unit=to_unit,
@@ -279,7 +288,7 @@ def convert_unit(
         )
 
     # irregular -> regular
-    return _convert_unit_integer_irregular_to_regular(
+    return _convert_unit_irregular_to_regular(
         val,
         from_unit=from_unit,
         to_unit=to_unit,
@@ -293,25 +302,12 @@ def convert_unit(
 #######################
 
 
-cdef object round_years_to_ns(object years, epoch.Epoch since):
-    """An optimized fastpath for `convert_unit_float()` that assumes fractional
-    year input and integer nanosecond output.  Only accepts scalars.
-
-    This task is required in the main loop of all string to timedelta
-    conversions wherever they contain references to years.  By importing and
-    using this function over the more full-featured `convert_unit_float()`,
-    each conversion can avoid a significant number of potential branch checks
-    and vectorization loops.
-
-        .. note:: always rounds down (toward zero).
+def round_years_to_ns(object years, epoch.Epoch since):
+    """Convert a fractional number of years from a given epoch into an integer
+    number of nanoseconds.
     """
-    cdef object diff
-    cdef object residual
-    cdef dict end
-    cdef short unit_length
-
     # handle integer and fractional components separately
-    diff = int(years)
+    diff = cast_to_int(years)
     residual = years - diff
 
     # convert integer component to utc day offset and establish ending date
@@ -326,32 +322,19 @@ cdef object round_years_to_ns(object years, epoch.Epoch since):
     )
 
     # subtract off epoch to get total elapsed days
-    if epoch:
-        diff -= epoch.offset // as_ns["D"]
+    if since:
+        diff -= since.offset // as_ns["D"]
 
     # scale fractional component by unit length and reintroduce integer
-    return diff * as_ns["D"] + int(residual * unit_length * as_ns["D"])
+    return diff * as_ns["D"] + cast_to_int(residual * unit_length * as_ns["D"])
 
 
-cdef object round_months_to_ns(object months, epoch.Epoch since):
-    """An optimized fastpath for `convert_unit_float()` that assumes fractional
-    month input and integer nanosecond output.  Only accepts scalars.
-
-    This task is required in the main loop of all string to timedelta
-    conversions wherever they contain references to months.  By importing and
-    using this function over the more full-featured `convert_unit_float()`,
-    each conversion can avoid a significant number of potential branch checks
-    and vectorization loops.
-
-        .. note:: always rounds down (toward zero).
+def round_months_to_ns(months, epoch.Epoch since):
+    """Convert a fractional number of months from a given epoch into an integer
+    number of nanoseconds.
     """
-    cdef object diff
-    cdef object residual
-    cdef dict end
-    cdef char unit_length
-
     # handle integer and fractional components separately
-    diff = int(months)
+    diff = cast_to_int(months)
     residual = months - diff
 
     # convert integer component to utc day offset and establish ending date
@@ -367,10 +350,10 @@ cdef object round_months_to_ns(object months, epoch.Epoch since):
         diff -= since.offset // as_ns["D"]
 
     # scale fractional component by unit length and reintroduce integer
-    return diff * as_ns["D"] + int(residual * unit_length * as_ns["D"])
+    return diff * as_ns["D"] + cast_to_int(residual * unit_length * as_ns["D"])
 
 
-def _convert_unit_integer_irregular_to_regular(
+def _convert_unit_irregular_to_regular(
     val: numeric | array_like,
     from_unit: str,
     to_unit: str,
@@ -417,7 +400,7 @@ def _convert_unit_integer_irregular_to_regular(
     return round_div(val, as_ns[to_unit], rule=rounding)
 
 
-def _convert_unit_integer_regular_to_irregular(
+def _convert_unit_regular_to_irregular(
     val: numeric | array_like,
     from_unit: str,
     to_unit: str,

@@ -8,8 +8,8 @@ import pandas as pd
 
 from pdtypes.type_hints import datetime_like
 
-from .unit cimport as_ns, round_months_to_ns, round_years_to_ns
-from .unit import convert_unit
+from .unit cimport as_ns
+from .unit import convert_unit, round_months_to_ns, round_years_to_ns
 cimport pdtypes.util.time.epoch as epoch
 
 

@@ -23,8 +23,8 @@ from pdtypes.util.round cimport Tolerance
 from pdtypes.util.round import round_div
 from pdtypes.util.time cimport Epoch
 from pdtypes.util.time import (
-    convert_unit, ns_to_pydatetime, numpy_datetime64_to_ns, pydatetime_to_ns,
-    pytimedelta_to_ns, valid_units
+    as_ns, convert_unit, ns_to_pydatetime, numpy_datetime64_to_ns,
+    pydatetime_to_ns, pytimedelta_to_ns, valid_units
 )
 
 
@@ -37,12 +37,6 @@ from pdtypes.util.time import (
 # TODO: allow for tz="local"
 # -> handled in Timezone factory, which needs to be introduced wherever `tz` is
 # referenced (instance, __init__)
-
-# TODO: add min/max?
-# -> these could potentially replace the constants in util/time/
-# -> use datetime_to_ns with datetime.min, datetime.max.  Remember to subtract
-# 14 hours to accomodate all IANA timezones (the most extreme is Etc/GMT-14,
-# Pacific/Kiritimati).
 
 
 ######################
@@ -271,6 +265,14 @@ class DatetimeType(DatetimeMixin, AtomicType):
         result.extend(sorted(others, key=lambda x: x.min - x.max))
         return result
 
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
+
+    # NOTE: because this type has no associated scalars, it will never be given
+    # as the result of a detect_type() operation.  It can only be specified
+    # manually, as the target of a resolve_type() call.
+
 
 #####################
 ####    NUMPY    ####
@@ -377,11 +379,19 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
     def from_ns(
         self,
         series: cast.SeriesWrapper,
-        rounding: str
+        rounding: str,
+        tz: pytz.BaseTzInfo,
+        **unused
     ) -> cast.SeriesWrapper:
         """Convert nanosecond offsets from the given epoch into numpy
         timedelta64s with this type's unit and step size.
         """
+        if tz:
+            raise TypeError(
+                f"np.datetime64 objects do not carry timezone information"
+            )
+
+        # convert from nanoseconds to final unit
         series.series = convert_unit(
             series.series,
             "ns",
@@ -474,28 +484,17 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
         "pandas.Timestamp",
         "pd.Timestamp",
     }
+    # NOTE: timezone localization can cause pd.Timestamp objects to overflow.
+    # In order to account for this, we artificially reduce the available range
+    # to ensure that all timezones, no matter how extreme, are representable.
+    min = pd.Timestamp.min.value + 14 * as_ns["h"]  # UTC-14 is furthest ahead
+    max = pd.Timestamp.max.value - 12 * as_ns["h"]  # UTC+12 is furthest behind
 
     def __init__(self, tz: datetime.tzinfo = None):
-        self.min = pd.Timestamp.min.value
-        self.max = pd.Timestamp.max.value
         if tz is None:
             dtype = np.dtype("M8[ns]")
         else:
             dtype = pd.DatetimeTZDtype(tz=tz)
-
-            # NOTE: timezone localization can cause Timestamps to overflow if
-            # they are close to min/max.  We adjust range to compensate.
-            with warnings.catch_warnings():
-                # these generate a 'discarding nonzero nanoseconds' warning
-                warnings.simplefilter("ignore", UserWarning)
-                min_offset = tz.utcoffset(pd.Timestamp.min.to_pydatetime())
-                max_offset = tz.utcoffset(pd.Timestamp.max.to_pydatetime())
-            min_offset = pytimedelta_to_ns(min_offset)
-            max_offset = pytimedelta_to_ns(max_offset)
-            if min_offset > 0:
-                self.min += min_offset
-            if max_offset < 0:
-                self.max += max_offset
 
         super().__init__(
             type_def=pd.Timestamp,
@@ -546,18 +545,24 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
     def from_ns(
         self,
         series: cast.SeriesWrapper,
-        rounding: str
+        tz: pytz.BaseTzInfo,
+        **unused
     ) -> cast.SeriesWrapper:
         """Convert nanosecond offsets from the UTC epoch into pandas
         Timestamps.
         """
+        # reconcile `tz` argument with timezone attached to dtype, if given
+        dtype = self
+        if tz:
+            dtype = dtype.replace(tz=tz)
+
         # convert using pd.to_datetime, accounting for timezone
-        if self.tz is None:
+        if dtype.tz is None:
             result = pd.to_datetime(series.series, unit="ns")
         else:
             result = pd.to_datetime(series.series, unit="ns", utc=True)
-            if self.tz != pytz.utc:
-                result = result.dt.tz_convert(self.tz)
+            if dtype.tz != pytz.utc:
+                result = result.dt.tz_convert(dtype.tz)
 
         return cast.SeriesWrapper(
             result,
@@ -659,15 +664,21 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
     def from_ns(
         self,
         series: cast.SeriesWrapper,
-        rounding: str
+        tz: pytz.BaseTzInfo,
+        **unused
     ) -> cast.SeriesWrapper:
         """Convert nanosecond offsets from the UTC epoch into python
         datetimes.
         """
+        # reconcile `tz` argument with timezone attached to dtype, if given
+        dtype = self
+        if tz:
+            dtype = dtype.replace(tz=tz)
+
         # convert elementwise
-        call = partial(ns_to_pydatetime, tz=self.tz)
+        call = partial(ns_to_pydatetime, tz=dtype.tz)
         series = series.apply_with_errors(call)
-        series.element_type = self
+        series.element_type = dtype
         return series
 
     @dispatch

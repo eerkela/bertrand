@@ -1,3 +1,4 @@
+import decimal
 from types import MappingProxyType
 
 import numpy as np
@@ -12,7 +13,13 @@ from pdtypes.error import shorten_list
 from pdtypes.type_hints import numeric
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
-from pdtypes.util.round import round_float, Tolerance
+cimport pdtypes.types.resolve as resolve
+import pdtypes.types.resolve as resolve
+
+from pdtypes.util.round cimport Tolerance
+from pdtypes.util.round import round_float
+from pdtypes.util.time cimport Epoch
+from pdtypes.util.time import convert_unit
 
 
 ##################################
@@ -20,8 +27,8 @@ from pdtypes.util.round import round_float, Tolerance
 ##################################
 
 
-# NOTE: x86 extended precision float type (long double) is platform-specific
-# and may not be exposed depending on hardware configuration.
+# NOTE: x86 extended precision floating point (long double) is
+# platform-specific and may not be exposed depending on hardware configuration.
 cdef bint no_longdouble = (np.dtype(np.longdouble).itemsize <= 8)
 
 
@@ -146,6 +153,62 @@ class FloatMixin:
             dtype,
             downcast=downcast,
             errors=errors
+        )
+
+    @dispatch
+    def to_datetime(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        rounding: str,
+        epoch: Epoch,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to a timedelta data type."""
+        series = self.to_decimal(
+            series,
+            dtype=resolve.resolve_type(decimal.Decimal),
+            errors="raise"
+        )
+        return series.to_datetime(
+            dtype=dtype,
+            unit=unit,
+            step_size=step_size,
+            rounding=rounding,
+            epoch=epoch,
+            errors=errors,
+            **unused
+        )
+
+    @dispatch
+    def to_timedelta(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        rounding: str,
+        epoch: Epoch,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert integer data to a timedelta data type."""
+        series = self.to_decimal(
+            series,
+            dtype=resolve.resolve_type(decimal.Decimal),
+            errors="raise"
+        )
+        return series.to_timedelta(
+            dtype=dtype,
+            unit=unit,
+            step_size=step_size,
+            rounding=rounding,
+            epoch=epoch,
+            errors=errors,
+            **unused
         )
 
 

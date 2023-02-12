@@ -268,7 +268,6 @@ class IntegerMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        rounding: str,
         epoch: Epoch,
         errors: str,
         **unused
@@ -294,7 +293,7 @@ class IntegerMixin:
         series, dtype = series.boundscheck(dtype, errors=errors)
 
         # convert to final representation
-        return dtype.from_ns(series, rounding=rounding)
+        return dtype.from_ns(series, **unused)
 
     @dispatch
     def to_timedelta(
@@ -303,7 +302,6 @@ class IntegerMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        rounding: str,
         epoch: Epoch,
         errors: str,
         **unused
@@ -311,7 +309,7 @@ class IntegerMixin:
         """Convert integer data to a timedelta data type."""
         # convert to python integer to avoid overflow
         series = cast.SeriesWrapper(
-            series.series.astype("O"),
+            series.series.astype("O", copy=False),
             hasnans=series.hasnans,
             element_type=resolve.resolve_type(int)
         )
@@ -321,11 +319,11 @@ class IntegerMixin:
             series.series *= step_size
         series.series = convert_unit(series.series, unit, "ns", since=epoch)
 
-        # check for overflow and upcast if applicable
-        series, dtype = series.boundscheck(dtype, errors)
+        # check for overflow and upcast if necessary
+        series, dtype = series.boundscheck(dtype, errors=errors)
 
         # convert to final representation
-        return dtype.from_ns(series, rounding=rounding, epoch=epoch)
+        return dtype.from_ns(series, epoch=epoch, **unused)
 
     @dispatch
     def to_string(

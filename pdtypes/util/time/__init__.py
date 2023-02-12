@@ -39,7 +39,7 @@ from .timedelta import (
     numpy_timedelta64_to_ns, pandas_timedelta_to_ns, pytimedelta_to_ns,
     timedelta_string_to_ns
 )
-from .unit import convert_unit
+from .unit import convert_unit, round_months_to_ns, round_years_to_ns
 from .unit import as_ns_public as as_ns
 from .unit import valid_units_public as valid_units
 

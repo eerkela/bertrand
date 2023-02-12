@@ -287,6 +287,14 @@ class TimedeltaType(TimedeltaMixin, AtomicType):
         result.extend(sorted(others, key=lambda x: x.min - x.max))
         return result
 
+    ##############################
+    ####    SERIES METHODS    ####
+    ##############################
+
+    # NOTE: because this type has no associated scalars, it will never be given
+    # as the result of a detect_type() operation.  It can only be specified
+    # manually, as the target of a resolve_type() call.
+
 
 #####################
 ####    NUMPY    ####
@@ -394,11 +402,13 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
         self,
         series: cast.SeriesWrapper,
         rounding: str,
-        epoch: Epoch
+        epoch: Epoch,
+        **unused
     ) -> cast.SeriesWrapper:
         """Convert nanosecond offsets from the given epoch into numpy
         timedelta64s with this type's unit and step size.
         """
+        # convert from ns to final unit
         series.series = convert_unit(
             series.series,
             "ns",
@@ -490,10 +500,10 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
     def from_ns(
         self,
         series: cast.SeriesWrapper,
-        rounding: str,
-        epoch: Epoch
+        **unused
     ) -> cast.SeriesWrapper:
         """Convert nanosecond offsets into pandas Timedeltas."""
+        # convert using pd.to_timedelta()
         return cast.SeriesWrapper(
             pd.to_timedelta(series.series, unit="ns"),
             hasnans=series.hasnans,
@@ -561,10 +571,13 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
         self,
         series: cast.SeriesWrapper,
         rounding: str,
-        epoch: Epoch
+        **unused
     ) -> cast.SeriesWrapper:
         """Convert nanosecond offsets into python timedeltas."""
+        # convert to us
         result = round_div(series.series, as_ns["us"], rule=rounding or "down")
+
+        # NOTE: m8[us].astype("O") implicitly converts to datetime.timedelta
         return cast.SeriesWrapper(
             pd.Series(
                 result.to_numpy("m8[us]").astype("O"),
