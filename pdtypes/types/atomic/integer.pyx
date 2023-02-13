@@ -331,21 +331,31 @@ class IntegerMixin:
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         base: int,
+        format: str,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a string data type in any base."""
         # use decimal representation
         if not base or base == 10:
-            return super().to_string(series=series, dtype=dtype, errors=errors)
+            return super().to_string(
+                series=series,
+                dtype=dtype, format=format,
+                errors=errors
+            )
 
-        # use non-decimal base
+        # use non-decimal base (iterate once)
         result = series.apply_with_errors(
-            partial(int_to_base, base=base),
+            lambda x: f"{int_to_base(x, base=base):{format}}",
             errors="raise"
         )
         result.element_type = str
-        return super().to_string(result, dtype=dtype, errors=errors)
+        return super().to_string(
+            series=result,
+            dtype=dtype,
+            format=None,
+            errors=errors
+        )
 
 
 #######################

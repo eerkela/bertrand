@@ -41,11 +41,11 @@ from pdtypes.util.round import Tolerance
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | decimal   | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | datetime  | x | x | x | x | x |   |   |   | x |
+# | datetime  | x | x | x | x | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | timedelta | x | x | x | x | x |   |   | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | string    | x | x | x | x | x |   |   | x | x |
+# | string    | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | object    | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
@@ -856,6 +856,7 @@ cdef class AtomicType(BaseType):
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        format: str,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -864,6 +865,12 @@ cdef class AtomicType(BaseType):
         Override this to change the behavior of the generic `to_string()` and
         `cast()` functions on objects of the given type.
         """
+        if format:
+            series = series.apply_with_errors(
+                lambda x: f"{x:{format}}",
+                errors=errors
+            )
+            series.element_type = str
         return series.astype(dtype, errors=errors)
 
     @dispatch
@@ -968,14 +975,6 @@ cdef class AtomicType(BaseType):
 #######################
 ####    ADAPTER    ####
 #######################
-
-
-class Test:
-    x = 1
-
-    def __init__(self, y):
-        self.y = y
-
 
 
 cdef class AdapterType(AtomicType):

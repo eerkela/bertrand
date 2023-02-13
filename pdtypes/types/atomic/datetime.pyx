@@ -750,23 +750,6 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
             errors=errors
         )
 
-    @dispatch
-    def to_string(
-        self,
-        series: cast.SeriesWrapper,
-        format: str,
-        **unused
-    ) -> cast.SeriesWrapper:
-        """Convert pandas Timestamps into a formatted string data type."""
-        if format:
-            fmt = lambda x: x.strftime(format)
-            series = series.apply_with_errors(fmt, errors="raise")
-        return super().to_string(
-            series=series,
-            format=format,
-            **unused
-        )
-
 
 ######################
 ####    PYTHON    ####
@@ -915,24 +898,6 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
             downcast=downcast,
             errors=errors
         )
-
-    @dispatch
-    def to_string(
-        self,
-        series: cast.SeriesWrapper,
-        format: str,
-        **unused
-    ) -> cast.SeriesWrapper:
-        """Convert python datetimes into a formatted string data type."""
-        if format:
-            fmt = lambda x: x.strftime(format)
-            series = series.apply_with_errors(fmt, errors="raise")
-        return super().to_string(
-            series=series,
-            format=format,
-            **unused
-        )
-
 
 
 #######################
