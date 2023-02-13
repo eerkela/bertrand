@@ -49,6 +49,8 @@ orig_getattribute = pd.Series.__getattribute__
 def new_getattribute(self, name: str):
     # check if attribute name is being dispatched
     if name in AtomicType.registry.dispatch_map:
+        print(f"wrapping {repr(name)}")
+
         # wrap series and dispatch to element type
         def dispatch(*args, **kwargs):
             with SeriesWrapper(self) as series:

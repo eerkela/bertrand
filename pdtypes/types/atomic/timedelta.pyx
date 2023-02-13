@@ -9,7 +9,7 @@ cimport numpy as np
 import pandas as pd
 import regex as re  # using alternate python regex engine
 
-from .base cimport AtomicType, BaseType, CompositeType
+from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, lru_cache
 
 cimport pdtypes.types.cast as cast
@@ -55,9 +55,10 @@ class TimedeltaMixin:
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to a boolean data type."""
         # 2-step conversion: timedelta -> decimal, decimal -> bool
+        transfer_type = resolve.resolve_type("decimal")
         series = self.to_decimal(
             series,
-            resolve.resolve_type("decimal"),
+            dtype=transfer_type,
             tol=tol,
             rounding=rounding,
             unit=unit,
@@ -65,7 +66,8 @@ class TimedeltaMixin:
             epoch=epoch,
             errors=errors
         )
-        return series.to_boolean(
+        return transfer_type.to_boolean(
+            series,
             dtype=dtype,
             tol=tol,
             rounding=rounding,
@@ -85,20 +87,21 @@ class TimedeltaMixin:
         epoch: Epoch,
         tol: Tolerance,
         rounding: str,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to a floating point data type."""
         # convert to nanoseconds, then from nanoseconds to final unit
+        transfer_type = resolve.resolve_type(int)
         series = self.to_integer(
             series,
-            resolve.resolve_type(int),
+            dtype=transfer_type,
             unit="ns",
             step_size=1,
             epoch=epoch,
             rounding=None,
-            downcast=False,
+            downcast=None,
             errors=errors
         )
         if unit != "ns" or step_size != 1:
@@ -111,8 +114,10 @@ class TimedeltaMixin:
             )
             if step_size != 1:
                 series.series /= step_size
+            transfer_type = resolve.resolve_type(float)
 
-        return series.to_float(
+        return transfer_type.to_float(
+            series,
             dtype=dtype,
             unit=unit,
             step_size=step_size,
@@ -133,23 +138,25 @@ class TimedeltaMixin:
         epoch: Epoch,
         tol: Tolerance,
         rounding: str,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to a complex data type."""
         # 2-step conversion: timedelta -> float, float -> complex
+        transfer_type = dtype.equiv_float
         series = self.to_float(
             series,
-            dtype.equiv_float,
+            dtype=transfer_type,
             unit=unit,
             step_size=step_size,
             epoch=epoch,
             rounding=rounding,
-            downcast=False,
+            downcast=None,
             errors=errors
         )
-        return series.to_complex(
+        return transfer_type.to_complex(
+            series,
             dtype=dtype,
             unit=unit,
             step_size=step_size,
@@ -174,18 +181,20 @@ class TimedeltaMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to a decimal data type."""
-        # convert to nanoseconds, then from nanoseconds to final unit
+        # 2-step conversion: timedelta -> ns, ns -> decimal
+        transfer_type = resolve.resolve_type(int)
         series = self.to_integer(
             series,
-            resolve.resolve_type(int),
+            dtype=transfer_type,
             unit="ns",
             step_size=1,
             epoch=epoch,
             rounding=None,
-            downcast=False,
+            downcast=None,
             errors=errors
         )
-        series = series.to_decimal(
+        series = transfer_type.to_decimal(
+            series,
             dtype=dtype,
             unit=unit,
             step_size=step_size,
@@ -225,17 +234,19 @@ class TimedeltaMixin:
             return series.rectify()
 
         # 2-step conversion: timedelta -> int, int -> timedelta
+        transfer_type = resolve.resolve_type(int)
         series = self.to_integer(
             series,
-            resolve.resolve_type(int),
+            dtype=transfer_type,
             unit="ns",
             step_size=1,
             epoch=Epoch("utc"),
             rounding=None,
-            downcast=False,
+            downcast=None,
             errors=errors
         )
-        return series.to_timedelta(  # TODO: have to define int -> timedelta
+        return transfer_type.to_timedelta(
+            series,
             dtype=dtype,
             errors=errors,
             **unused
@@ -439,7 +450,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
         step_size: int,
         epoch: Epoch,
         rounding: str,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -515,7 +526,7 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
         step_size: int,
         epoch: Epoch,
         rounding: str,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -592,7 +603,7 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
         step_size: int,
         epoch: Epoch,
         rounding: str,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:

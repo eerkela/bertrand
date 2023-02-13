@@ -98,7 +98,7 @@ class BooleanMixin:
         series = self.to_integer(
             series,
             dtype=transfer_type,
-            downcast=False,
+            downcast=None,
             errors="raise"
         )
         return transfer_type.to_datetime(
@@ -128,7 +128,7 @@ class BooleanMixin:
         series = self.to_integer(
             series,
             dtype=transfer_type,
-            downcast=False,
+            downcast=None,
             errors="raise"
         )
         return transfer_type.to_timedelta(

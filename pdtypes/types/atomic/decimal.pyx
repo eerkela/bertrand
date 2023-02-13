@@ -45,6 +45,7 @@ class DecimalMixin:
         """Round a decimal series to the given number of decimal places using
         the specified rounding rule.
         """
+        rule = cast.validate_rounding(rule)
         return cast.SeriesWrapper(
             round_decimal(series.series, rule=rule, decimals=decimals),
             hasnans=series.hasnans,
@@ -190,7 +191,7 @@ class DecimalMixin:
         # backtrack to check for precision loss
         if errors != "coerce":  # coercion ignores precision loss
             bad = ~series.within_tol(
-                result.to_decimal(self, errors="raise"),
+                dtype.to_decimal(result, dtype=self, errors="raise"),
                 tol=tol.real
             )
             if bad.any():

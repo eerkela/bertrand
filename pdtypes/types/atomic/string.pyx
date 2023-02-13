@@ -73,7 +73,7 @@ class StringMixin:
             fill = -1  # raise
 
         # apply lookup function with specified errors
-        result = series.apply_with_errors(
+        series = series.apply_with_errors(
             partial(
                 boolean_apply,
                 lookup=lookup,
@@ -82,7 +82,7 @@ class StringMixin:
             ),
             errors=errors
         )
-        result.element_type = bool
+        series.element_type = bool
         return super().to_boolean(series, dtype, errors=errors)
 
     def to_integer(
@@ -94,12 +94,14 @@ class StringMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert string data to an integer data type with the given base."""
-        result = series.apply_with_errors(
+        transfer_type = resolve.resolve_type(int)
+        series = series.apply_with_errors(
             partial(int, base=base),
             errors=errors
         )
-        result.element_type = int
-        return result.to_integer(
+        series.element_type = transfer_type
+        return transfer_type.to_integer(
+            series,
             dtype=dtype,
             base=base,
             errors=errors,
@@ -115,9 +117,10 @@ class StringMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert string data to a floating point data type."""
-        decimal_type = resolve.resolve_type("decimal")
-        result = self.to_decimal(series, decimal_type, errors=errors)
-        return result.to_float(
+        transfer_type = resolve.resolve_type("decimal")
+        series = self.to_decimal(series, transfer_type, errors=errors)
+        return transfer_type.to_float(
+            series,
             dtype=dtype,
             tol=tol,
             errors=errors,
@@ -154,24 +157,24 @@ class StringMixin:
         # (2) convert real, imag to float, applying checks independently
         real = self.to_float(
             real,
-            dtype.equiv_float,
+            dtype=dtype.equiv_float,
             tol=Tolerance(tol.real),
-            downcast=False,
+            downcast=None,
             errors="raise"
         )
         imag = self.to_float(
             imag,
-            dtype.equiv_float,
+            dtype=dtype.equiv_float,
             tol=Tolerance(tol.imag),
-            downcast=False,
+            downcast=None,
             errors="raise"
         )
 
         # (3) combine floats into complex result
-        result = real + imag * 1j
-        result.element_type = dtype
+        series = real + imag * 1j
+        series.element_type = dtype
         return super().to_complex(
-            result,
+            series,
             dtype,
             tol=tol,
             downcast=downcast,
@@ -199,12 +202,15 @@ class StringMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert string data into a timedelta representation."""
+        # 2-step conversion: str -> int, int -> timedelta
+        transfer_type = resolve.resolve_type(int)
         series = series.apply_with_errors(
             partial(timedelta_string_to_ns, as_hours=as_hours, since=epoch),
             errors=errors
         )
-        series.element_type = int
-        return series.to_timedelta(
+        series.element_type = transfer_type
+        return transfer_type.to_timedelta(
+            series,
             dtype=dtype,
             unit="ns",
             step_size=1,

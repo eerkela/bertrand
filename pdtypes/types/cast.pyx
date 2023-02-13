@@ -922,7 +922,11 @@ cdef class SeriesWrapper:
             "equiv_float",
             self.element_type
         )
-        return SeriesWrapper(result, element_type=target)
+        return SeriesWrapper(
+            result,
+            hasnans=self._hasnans,
+            element_type=target
+        )
 
     @property
     def real(self) -> SeriesWrapper:
@@ -939,7 +943,11 @@ cdef class SeriesWrapper:
             "equiv_float",
             self.element_type
         )
-        return SeriesWrapper(result, element_type=target)
+        return SeriesWrapper(
+            result,
+            hasnans=self._hasnans,
+            element_type=target
+        )
 
     @property
     def series(self) -> pd.Series:

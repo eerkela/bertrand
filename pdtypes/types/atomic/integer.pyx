@@ -145,6 +145,7 @@ class IntegerMixin:
         NOTE: this function does not do anything unless the input to `decimals`
         is negative.
         """
+        rule = cast.validate_rounding(rule)
         if decimals < 0:
             scale = 10**(-1 * decimals)
             return cast.SeriesWrapper(
