@@ -451,6 +451,9 @@ def cast(
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to the given data type."""
+    # validate args
+    dtype = validate_dtype(dtype)
+
     # delegate to appropriate to_x function below
     return dtype.conversion_func(series, validate_dtype(dtype), **kwargs)
 
@@ -820,18 +823,25 @@ def to_string(
 def to_object(
     series: Iterable,
     dtype: resolve.resolvable = object,
+    call: Callable = None,
+    errors: str = None,
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
-    # validate dtype
-    dtype = resolve.resolve_type(dtype)
-    if isinstance(dtype, atomic.CompositeType):
-        raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
-    if not dtype.is_subtype(atomic.ObjectType):
-        raise ValueError(f"`dtype` must be an object type, not {dtype}")
+    # validate args
+    dtype = validate_dtype(dtype, atomic.ObjectType)
+    call = validate_call(call)
+    errors = validate_errors(errors)
 
     # delegate to SeriesWrapper.to_object
-    return do_conversion(series, "to_object", dtype=dtype, **kwargs)
+    return do_conversion(
+        series,
+        "to_object",
+        dtype=dtype,
+        call=call,
+        errors=errors,
+        **kwargs
+    )
 
 
 ######################

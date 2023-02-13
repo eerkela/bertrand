@@ -24,8 +24,10 @@ from pdtypes.util.time import (
     as_ns, convert_unit, pytimedelta_to_ns, timedelta_string_to_ns, valid_units
 )
 
-# TODO: timedelta -> float does not retain longdouble precision.  This is due
-# to the / operator in convert_unit() defaulting to float64 precision.
+
+# NOTE: timedelta -> float does not retain longdouble precision.  This is due
+# to the / operator in convert_unit() defaulting to float64 precision, which is
+# probably unfixable.
 
 
 ######################
@@ -223,8 +225,9 @@ class TimedeltaMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to another timedelta data type."""
-        if dtype.unwrap() == series.element_type.unwrap():
-            return series
+        # trivial case: no conversion necessary
+        if dtype == series.element_type:
+            return series.rectify()
 
         # 2-step conversion: timedelta -> int, int -> timedelta
         series = self.to_integer(

@@ -24,12 +24,6 @@ from .base cimport AtomicType, BaseType
 from .base import dispatch, generic
 
 
-# TODO: decimal -> timedelta unit "M" does not properly account for fractional
-# months due to presence of // operator in date_to_days.  The only way to
-# address this is to either eliminate the division operation or process the
-# fractional component separately.
-
-
 ######################
 ####    MIXINS    ####
 ######################
@@ -253,7 +247,7 @@ class DecimalMixin:
 @generic
 class DecimalType(DecimalMixin, AtomicType):
 
-    conversion_func = cast.to_boolean  # all subtypes/backends inherit this
+    conversion_func = cast.to_decimal  # all subtypes/backends inherit this
     name = "decimal"
     aliases = {"decimal"}
 

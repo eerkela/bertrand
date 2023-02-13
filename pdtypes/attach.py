@@ -2,26 +2,29 @@ from __future__ import annotations
 
 import pandas as pd
 
-from pdtypes.check import check_dtype, get_dtype
-from pdtypes.util.type_hints import array_like, dtype_like
+from pdtypes.types import (
+    AtomicType, CompositeType, detect_type, resolvable, resolve_type
+)
+from pdtypes.types.cast import cast as cast_standalone
 
 
-def series_check_dtype(
-    self: pd.Series,
-    dtype: dtype_like | array_like,
-    exact: bool = False
-) -> bool:
-    """A modified calling signature for `pdtypes.check.check_dtype`, which
-    allows it to be attached directly to pandas Series objects.
-    """
-    return check_dtype(self, dtype=dtype, exact=exact)
+def cast(self, dtype: resolvable, **kwargs) -> pd.Series:
+    """Convert a pd.Series object to another data type."""
+    return cast_standalone(self, dtype=dtype, **kwargs)
 
 
-def series_get_dtype(self: pd.Series) -> type | tuple[type, ...]:
-    """A modified calling signature for `pdtypes.check.get_dtype`, which
-    allows it to be attached directly to pandas Series objects.
-    """
-    return get_dtype(self)
+def check_type(self, dtype: resolvable, exact: bool = False) -> bool:
+    """Check the type of a pd.Series object."""
+    series_type = detect_type(self.dropna())
+    target_type = resolve_type(dtype)
+    if exact:
+        return series_type == target_type
+    return series_type in target_type
+
+
+def get_type(self) -> AtomicType | CompositeType:
+    """Retrieve the element type of a pd.Series object."""
+    return detect_type(self.dropna())
 
 
 ##################################
@@ -29,11 +32,11 @@ def series_get_dtype(self: pd.Series) -> type | tuple[type, ...]:
 ##################################
 
 
-pd.Series.check_dtype = series_check_dtype
-pd.Series.get_dtype = series_get_dtype
+pd.Series.check_type = check_type
+pd.Series.cast = cast
+pd.Series.get_type = get_type
 
 
 ################################
 ####    END MONKEY PATCH    ####
 ################################
-
