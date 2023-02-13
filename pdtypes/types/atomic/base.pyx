@@ -758,7 +758,6 @@ cdef class AtomicType(BaseType):
     ####    SERIES METHODS    ####
     ##############################
 
-    @dispatch
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -779,12 +778,11 @@ cdef class AtomicType(BaseType):
             dtype = dtype.force_nullable()
         return series.astype(dtype, errors=errors)
 
-    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -799,47 +797,42 @@ cdef class AtomicType(BaseType):
         """
         if series.hasnans:
             dtype = dtype.force_nullable()
+
         series = series.astype(dtype, errors=errors)
-        if downcast:
-            smallest = downcast if not isinstance(downcast, bool) else None
-            return dtype.downcast(series, smallest=smallest)
+        if downcast is not None:
+            return dtype.downcast(series, smallest=downcast)
         return series
 
-    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a floating point data type."""
         series = series.astype(dtype, errors=errors)
-        if downcast:
-            smallest = downcast if not isinstance(downcast, bool) else None
-            return dtype.downcast(series, tol=tol, smallest=smallest)
+        if downcast is not None:
+            return dtype.downcast(series, smallest=downcast, tol=tol)
         return series
 
-    @dispatch
     def to_complex(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert boolean data to a complex data type."""
         series = series.astype(dtype, errors=errors)
-        if downcast:
-            smallest = downcast if not isinstance(downcast, bool) else None
-            return dtype.downcast(series, tol=tol, smallest=smallest)
+        if downcast is not None:
+            return dtype.downcast(series, smallest=downcast, tol=tol)
         return series
 
-    @dispatch
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
@@ -850,8 +843,6 @@ cdef class AtomicType(BaseType):
         """Convert boolean data to a decimal data type."""
         return series.astype(dtype, errors=errors)
 
-
-    @dispatch
     def to_string(
         self,
         series: cast.SeriesWrapper,
@@ -873,7 +864,6 @@ cdef class AtomicType(BaseType):
             series.element_type = str
         return series.astype(dtype, errors=errors)
 
-    @dispatch
     def to_object(
         self,
         series: cast.SeriesWrapper,

@@ -12,7 +12,7 @@ import pandas as pd
 import pytz
 import regex as re  # using alternate python regex engine
 
-from .base cimport AtomicType, BaseType, CompositeType
+from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, lru_cache
 
 cimport pdtypes.types.cast as cast
@@ -53,7 +53,6 @@ class DatetimeMixin:
     ####    SERIES METHODS    ####
     ##############################
 
-    @dispatch
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -68,9 +67,10 @@ class DatetimeMixin:
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to a boolean data type."""
         # 2-step conversion: timedelta -> decimal, decimal -> bool
+        transfer_type = resolve.resolve_type("decimal")
         series = self.to_decimal(
             series,
-            resolve.resolve_type("decimal"),
+            dtype=transfer_type,
             tol=tol,
             rounding=rounding,
             unit=unit,
@@ -78,7 +78,8 @@ class DatetimeMixin:
             epoch=epoch,
             errors=errors
         )
-        return series.to_boolean(
+        return transfer_type.to_boolean(
+            series,
             dtype=dtype,
             tol=tol,
             rounding=rounding,
@@ -89,7 +90,6 @@ class DatetimeMixin:
             **unused
         )
 
-    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
@@ -99,25 +99,26 @@ class DatetimeMixin:
         epoch: Epoch,
         tol: Tolerance,
         rounding: str,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to a floating point data type."""
         # convert to nanoseconds, then from nanoseconds to final unit
+        transfer_type = resolve.resolve_type(int)
         series = self.to_integer(
             series,
-            resolve.resolve_type(int),
+            dtype=transfer_type,
             unit="ns",
             step_size=1,
             epoch=epoch,
             rounding=None,
-            downcast=False,
+            downcast=None,
             errors=errors
         )
         if unit != "ns" or step_size != 1:
             series.series = convert_unit(
-                series.series,
+                series.series.astype("O"),
                 "ns",
                 unit,
                 rounding=rounding,
@@ -125,8 +126,10 @@ class DatetimeMixin:
             )
             if step_size != 1:
                 series.series /= step_size
+            transfer_type = resolve.resolve_type(float)
 
-        return series.to_float(
+        return transfer_type.to_float(
+            series,
             dtype=dtype,
             unit=unit,
             step_size=step_size,
@@ -138,7 +141,6 @@ class DatetimeMixin:
             **unused
         )
 
-    @dispatch
     def to_complex(
         self,
         series: cast.SeriesWrapper,
@@ -148,23 +150,25 @@ class DatetimeMixin:
         epoch: Epoch,
         tol: Tolerance,
         rounding: str,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to a complex data type."""
         # 2-step conversion: timedelta -> float, float -> complex
+        transfer_type = dtype.equiv_float
         series = self.to_float(
             series,
-            dtype.equiv_float,
+            dtype=transfer_type,
             unit=unit,
             step_size=step_size,
             epoch=epoch,
             rounding=rounding,
-            downcast=False,
+            downcast=None,
             errors=errors
         )
-        return series.to_complex(
+        return transfer_type.to_complex(
+            series,
             dtype=dtype,
             unit=unit,
             step_size=step_size,
@@ -176,7 +180,6 @@ class DatetimeMixin:
             **unused
         )
 
-    @dispatch
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
@@ -190,18 +193,20 @@ class DatetimeMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert timedelta data to a decimal data type."""
-        # convert to nanoseconds, then from nanoseconds to final unit
+        # 2-step conversion: datetime -> ns, ns -> decimal
+        transfer_type = resolve.resolve_type(int)
         series = self.to_integer(
             series,
-            resolve.resolve_type(int),
+            dtype=transfer_type,
             unit="ns",
             step_size=1,
             epoch=epoch,
             rounding=None,
-            downcast=False,
+            downcast=None,
             errors=errors
         )
-        series = series.to_decimal(
+        series = transfer_type.to_decimal(
+            series,
             dtype=dtype,
             unit=unit,
             step_size=step_size,
@@ -450,6 +455,8 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
+        """Convert ISO 8601 strings to a numpy datetime64 data type."""
+        # 2-step conversion: string -> ns, ns -> datetime64
         if format and not is_iso_8601_format_string(format):
             raise TypeError(
                 f"np.datetime64 strings must be in ISO 8601 format"
@@ -459,20 +466,20 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
                 "np.datetime64 objects do not carry timezone information"
             )
 
+        transfer_type = resolve.resolve_type(int)
         series = series.apply_with_errors(
             iso_8601_to_ns,
             errors=errors
         )
-        series.element_type = int
-        return series.to_datetime(
+        series.element_type = transfer_type
+        return transfer_type.to_datetime(
+            series,
             format=format,
             tz=tz,
             errors=errors,
             **unused
         )
 
-
-    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
@@ -481,7 +488,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
         step_size: int,
         epoch: Epoch,
         rounding: str,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -714,7 +721,6 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
             element_type=dtype
         )
 
-    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
@@ -723,7 +729,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
         step_size: int,
         epoch: Epoch,
         rounding: str,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **kwargs
     ) -> cast.SeriesWrapper:
@@ -863,7 +869,6 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
         series.element_type = dtype
         return series
 
-    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
@@ -872,7 +877,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
         step_size: int,
         epoch: Epoch,
         rounding: str,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:

@@ -70,19 +70,17 @@ class BooleanMixin:
     ####    SERIES METHODS    ####
     ##############################
 
-    @dispatch
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         **unused
     ) -> cast.SeriesWrapper:
-        """Convert boolean data to a decimal data type."""
-        result = series + dtype.type_def(0)  # ~2x faster than loop
-        result.element_type = dtype
-        return result
+        """Convert boolean data into an equivalent decimal representation."""
+        series = series + dtype.type_def(0)  # ~2x faster than loop
+        series.element_type = dtype
+        return series
 
-    @dispatch
     def to_datetime(
         self,
         series: cast.SeriesWrapper,
@@ -94,14 +92,17 @@ class BooleanMixin:
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
-        """Convert boolean data to a datetime data type."""
+        """Convert boolean data into an equivalent datetime representation."""
+        # 2-step conversion: bool -> int, int -> datetime
+        transfer_type = resolve.resolve_type(int)
         series = self.to_integer(
             series,
-            dtype=resolve.resolve_type(int),
+            dtype=transfer_type,
             downcast=False,
             errors="raise"
         )
-        return series.to_datetime(
+        return transfer_type.to_datetime(
+            series,
             dtype=dtype,
             unit=unit,
             step_size=step_size,
@@ -111,7 +112,6 @@ class BooleanMixin:
             **unused
         )
 
-    @dispatch
     def to_timedelta(
         self,
         series: cast.SeriesWrapper,
@@ -124,13 +124,15 @@ class BooleanMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
+        transfer_type = resolve.resolve_type(int)
         series = self.to_integer(
             series,
-            dtype=resolve.resolve_type(int),
+            dtype=transfer_type,
             downcast=False,
             errors="raise"
         )
-        return series.to_timedelta(
+        return transfer_type.to_timedelta(
+            series,
             dtype=dtype,
             unit=unit,
             step_size=step_size,

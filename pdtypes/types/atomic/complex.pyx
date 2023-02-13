@@ -8,9 +8,11 @@ from pdtypes.error import shorten_list
 from pdtypes.type_hints import numeric
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
-from pdtypes.util.round cimport Tolerance
 
-from .base cimport AdapterType, AtomicType, BaseType
+from pdtypes.util.round cimport Tolerance
+from pdtypes.util.time cimport Epoch
+
+from .base cimport AdapterType, AtomicType, CompositeType
 from .base import dispatch, generic, subtype
 import pdtypes.types.atomic.float as float_types
 
@@ -34,19 +36,19 @@ class ComplexMixin:
         self,
         series: cast.SeriesWrapper,
         tol: Tolerance,
-        smallest: BaseType = None
+        smallest: CompositeType = None
     ) -> cast.SeriesWrapper:
         """Reduce the itemsize of a complex type to fit the observed range."""
         equiv_float = self.equiv_float
         real = equiv_float.downcast(
             series.real,
-            tol=tol.real,
-            smallest=smallest
+            smallest=smallest,
+            tol=tol
         )
         imag = equiv_float.downcast(
             series.imag,
-            tol=tol.imag,
-            smallest=smallest
+            smallest=smallest,
+            tol=Tolerance(tol.imag)
         )
         return combine_real_imag(real, imag)
 
@@ -57,8 +59,6 @@ class ComplexMixin:
             if type(x).__name__ == self._equiv_float:
                 return x
         raise TypeError(f"{repr(self)} has no equivalent float type")
-
-
 
     @property
     def smaller(self) -> list:
@@ -85,60 +85,85 @@ class ComplexMixin:
     def round(
         self,
         series: cast.SeriesWrapper,
-        rule: str = cast.defaults.rounding,
-        decimals: int = 0
+        decimals: int = 0,
+        rule: str = "half_even"
     ) -> cast.SeriesWrapper:
         """Round a complex series to the given number of decimal places using
         the specified rounding rule.
-
-        NOTE: this method rounds real and imaginary components separately.
         """
-        real = series.real.round(rule=rule, decimals=decimals)
-        imag = series.imag.round(rule=rule, decimals=decimals)
+        equiv_float = self.equiv_float
+        real = equiv_float.round(series.real, decimals=decimals, rule=rule)
+        imag = equiv_float.round(series.imag, decimals=decimals, rule=rule)
         return combine_real_imag(real, imag)
 
     @dispatch
+    def snap(
+        self,
+        series: cast.SeriesWrapper,
+        tol: numeric = 1e-6
+    ) -> cast.SeriesWrapper:
+        """Snap each element of the series to the nearest integer if it is
+        within the specified tolerance.
+        """
+        tol = Tolerance(tol)
+        if not tol:  # trivial case, tol=0
+            return series.copy()
+
+        equiv_float = self.equiv_float
+        real = equiv_float.snap(series.real, tol=tol.real)
+        imag = equiv_float.snap(series.imag, tol=tol.imag)
+        return combine_real_imag(real, imag)
+
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        rounding: str,
         tol: Tolerance,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert complex data to a boolean data type."""
         # 2-step conversion: complex -> float, float -> bool
-        result = self.to_float(
+        transfer_type = self.equiv_float
+        series = self.to_float(
             series,
-            self.equiv_float,
+            dtype=transfer_type,
             tol=tol,
-            downcast=False,
+            downcast=None,
+            errors=errors
+        )
+        return transfer_type.to_boolean(
+            series,
+            dtype=dtype,
+            rounding=rounding,
+            tol=tol,
             errors=errors,
             **unused
         )
-        return result.to_boolean(dtype=dtype, tol=tol, errors=errors, **unused)
 
-    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert complex data to an integer data type."""
         # 2-step conversion: complex -> float, float -> int
-        result = self.to_float(
+        transfer_type = self.equiv_float
+        series = self.to_float(
             series,
-            self.equiv_float,
+            dtype=transfer_type,
             tol=tol,
-            downcast=False,
+            downcast=None,
             errors=errors
         )
-        return result.to_integer(
+        return transfer_type.to_integer(
+            series,
             dtype=dtype,
             rounding=rounding,
             tol=tol,
@@ -147,17 +172,17 @@ class ComplexMixin:
             **unused
         )
 
-    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert complex data to a float data type."""
+        transfer_type = self.equiv_float
         real = series.real
 
         # check for nonzero imag
@@ -170,7 +195,8 @@ class ComplexMixin:
                     f"{shorten_list(bad[bad].index.values)}"
                 )
 
-        return real.to_float(
+        return transfer_type.to_float(
+            real,
             dtype=dtype,
             tol=tol,
             downcast=downcast,
@@ -178,7 +204,6 @@ class ComplexMixin:
             **unused
         )
 
-    @dispatch
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
@@ -189,71 +214,88 @@ class ComplexMixin:
     ) -> cast.SeriesWrapper:
         """Convert complex data to a decimal data type."""
         # 2-step conversion: complex -> float, float -> decimal
-        result = self.to_float(
+        transfer_type = self.equiv_float
+        series = self.to_float(
             series,
-            self.equiv_float,
+            dtype=transfer_type,
             tol=tol,
-            downcast=False,
+            downcast=None,
             errors=errors
         )
-        return result.to_decimal(dtype=dtype, tol=tol, errors=errors, **unused)
-
-    @dispatch
-    def to_datetime(
-        self,
-        series: cast.SeriesWrapper,
-        dtype: AtomicType,
-        tz: pytz.BaseTzInfo,
-        unit: str,
-        step_size: int,
-        tol: Tolerance,
-        errors: str,
-        **unused
-    ) -> cast.SeriesWrapper:
-        """Convert complex data to a datetime data type."""
-        # 2-step conversion: complex -> float, float -> datetime
-        result = self.to_float(
+        return transfer_type.to_decimal(
             series,
-            self.equiv_float,
-            tol=tol,
-            downcast=False,
-            errors=errors
-        )
-        return result.to_datetime(
             dtype=dtype,
-            tz=tz,
-            unit=unit,
-            step_size=step_size,
             tol=tol,
             errors=errors,
             **unused
         )
 
-    @dispatch
+    def to_datetime(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        tol: Tolerance,
+        unit: str,
+        step_size: int,
+        rounding: str,
+        tz: pytz.BaseTzInfo,
+        epoch: Epoch,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert complex data to a datetime data type."""
+        # 2-step conversion: complex -> float, float -> datetime
+        transfer_type = self.equiv_float
+        series = self.to_float(
+            series,
+            dtype=transfer_type,
+            tol=tol,
+            downcast=None,
+            errors=errors
+        )
+        return transfer_type.to_datetime(
+            series,
+            dtype=dtype,
+            tol=tol,
+            unit=unit,
+            step_size=step_size,
+            rounding=rounding,
+            tz=tz,
+            epoch=epoch,
+            errors=errors,
+            **unused
+        )
+
     def to_timedelta(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        tol: Tolerance,
         unit: str,
         step_size: int,
-        tol: Tolerance,
+        rounding: str,
+        epoch: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert complex data to a timedelta data type."""
         # 2-step conversion: complex -> float, float -> timedelta
-        result = self.to_float(
+        transfer_type = self.equiv_float
+        series = self.to_float(
             series,
-            self.equiv_float,
+            dtype=transfer_type,
             tol=tol,
-            downcast=False,
+            downcast=None,
             errors=errors
         )
-        return result.to_timedelta(
+        return transfer_type.to_timedelta(
+            series,
             dtype=dtype,
+            tol=tol,
             unit=unit,
             step_size=step_size,
-            tol=tol,
+            rounding=rounding,
+            epoch=epoch,
             errors=errors,
             **unused
         )

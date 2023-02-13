@@ -52,7 +52,6 @@ class StringMixin:
     ####    SERIES METHODS   ####
     #############################
 
-    @dispatch
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -86,7 +85,6 @@ class StringMixin:
         result.element_type = bool
         return super().to_boolean(series, dtype, errors=errors)
 
-    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
@@ -108,7 +106,6 @@ class StringMixin:
             **unused
         )
 
-    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
@@ -127,7 +124,6 @@ class StringMixin:
             **unused
         )
 
-    @dispatch
     def to_complex(
         self,
         series: cast.SeriesWrapper,
@@ -182,7 +178,6 @@ class StringMixin:
             errors=errors
         )
 
-    @dispatch
     def to_datetime(
         self,
         series: cast.SeriesWrapper,
@@ -192,7 +187,6 @@ class StringMixin:
         """Convert string data into a datetime data type."""
         return dtype.from_string(series, dtype=dtype, **unused)
 
-    @dispatch
     def to_timedelta(
         self,
         series: cast.SeriesWrapper,

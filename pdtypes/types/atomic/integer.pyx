@@ -25,7 +25,7 @@ import pytz
 from pdtypes.error import shorten_list
 from pdtypes.type_hints import numeric
 
-from .base cimport AdapterType, AtomicType, BaseType
+from .base cimport AdapterType, AtomicType, CompositeType
 from .base import dispatch, generic, subtype
 
 cimport pdtypes.types.cast as cast
@@ -55,18 +55,21 @@ class IntegerMixin:
     def downcast(
         self,
         series: cast.SeriesWrapper,
-        smallest: BaseType = None
+        smallest: CompositeType = None
     ) -> cast.SeriesWrapper:
         """Reduce the itemsize of an integer type to fit the observed range."""
         # get downcast candidates
         smaller = self.smaller
-        if smallest:
-            filtered = []
-            for t in reversed(smaller):
-                filtered.append(t)
-                if t in smallest:
-                    break  # stop at largest type contained in `smallest`
-            smaller = reversed(filtered)
+        if smallest is not None:
+            if self in smallest:
+                smaller = []
+            else:
+                filtered = []
+                for t in reversed(smaller):
+                    filtered.append(t)
+                    if t in smallest:
+                        break
+                smaller = reversed(filtered)
 
         # return smallest type that fits observed range
         min_val = int(series.min())
@@ -76,8 +79,8 @@ class IntegerMixin:
                 continue
             return super().to_integer(
                 series,
-                t,
-                downcast=False,
+                dtype=t,
+                downcast=None,
                 errors="raise"
             )
         return series
@@ -133,8 +136,8 @@ class IntegerMixin:
     def round(
         self,
         series: cast.SeriesWrapper,
-        rule: str = "half_even",
-        decimals: int = 0
+        decimals: int = 0,
+        rule: str = "half_even"
     ) -> cast.SeriesWrapper:
         """Round an integer series to the given number of decimal places using
         the specified rounding rule.
@@ -152,6 +155,14 @@ class IntegerMixin:
         return series
 
     @dispatch
+    def snap(self, series: cast.SeriesWrapper) -> cast.SeriesWrapper:
+        """Snap each element of the series to the nearest integer if it is
+        within the specified tolerance.
+
+        For integers, this is an identity function.
+        """
+        return series.copy()
+
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -163,12 +174,11 @@ class IntegerMixin:
         series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_boolean(series, dtype, errors=errors)
 
-    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -181,13 +191,12 @@ class IntegerMixin:
             errors=errors
         )
 
-    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -216,7 +225,12 @@ class IntegerMixin:
             if errors != "coerce":  # coercion ignores precision loss
                 # NOTE: we can bypass overflow/precision loss checks by
                 # delegating straight to AtomicType
-                reverse = super().to_integer(result, dtype=self.upcast(result))
+                reverse = super().to_integer(
+                    result,
+                    dtype=self.upcast(result),
+                    downcast=None,
+                    errors="raise"
+                )
                 bad = ~series.within_tol(reverse, tol.real)
                 if bad.any():
                     raise ValueError(
@@ -225,31 +239,37 @@ class IntegerMixin:
                         f"{shorten_list(bad[bad].index.values)}"
                     )
 
-        if downcast:
-            smallest = downcast if not isinstance(downcast, bool) else None
-            return dtype.downcast(result, tol=tol, smallest=smallest)
+        if downcast is not None:
+            return dtype.downcast(result, smallest=downcast, tol=tol)
         return result
 
-    @dispatch
     def to_complex(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a complex data type."""
-        result = self.to_float(
+        transfer_type = dtype.equiv_float
+        series = self.to_float(
             series,
-            dtype.equiv_float,
+            dtype=transfer_type,
             tol=tol,
-            downcast=False,
+            downcast=None,
             errors=errors
         )
-        return result.to_complex(dtype=dtype, tol=tol, **unused)
+        return transfer_type.to_complex(
+            series,
+            dtype=dtype,
+            tol=tol,
+            downcast=downcast,
+            errors=errors,
+            **unused
+        )
 
-    @dispatch
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
@@ -261,13 +281,13 @@ class IntegerMixin:
         result.element_type = dtype
         return result
 
-    @dispatch
     def to_datetime(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
+        rounding: str,
         epoch: Epoch,
         errors: str,
         **unused
@@ -277,7 +297,7 @@ class IntegerMixin:
         series = cast.SeriesWrapper(
             series.series.astype("O"),
             hasnans=series.hasnans,
-            element_type=resolve.resolve_type(int)
+            element_type=resolve.resolve_type(PythonIntegerType)
         )
 
         # convert to ns
@@ -293,15 +313,23 @@ class IntegerMixin:
         series, dtype = series.boundscheck(dtype, errors=errors)
 
         # convert to final representation
-        return dtype.from_ns(series, **unused)
+        return dtype.from_ns(
+            series,
+            unit=unit,
+            step_size=step_size,
+            rounding=rounding,
+            epoch=epoch,
+            errors=errors,
+            **unused
+        )
 
-    @dispatch
     def to_timedelta(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
+        rounding: str,
         epoch: Epoch,
         errors: str,
         **unused
@@ -309,9 +337,9 @@ class IntegerMixin:
         """Convert integer data to a timedelta data type."""
         # convert to python integer to avoid overflow
         series = cast.SeriesWrapper(
-            series.series.astype("O", copy=False),
+            series.series.astype("O"),
             hasnans=series.hasnans,
-            element_type=resolve.resolve_type(int)
+            element_type=resolve.resolve_type(PythonIntegerType)
         )
 
         # convert to ns
@@ -323,9 +351,16 @@ class IntegerMixin:
         series, dtype = series.boundscheck(dtype, errors=errors)
 
         # convert to final representation
-        return dtype.from_ns(series, epoch=epoch, **unused)
+        return dtype.from_ns(
+            series,
+            unit=unit,
+            step_size=step_size,
+            rounding=rounding,
+            epoch=epoch,
+            errors=errors,
+            **unused
+        )
 
-    @dispatch
     def to_string(
         self,
         series: cast.SeriesWrapper,
@@ -336,24 +371,20 @@ class IntegerMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a string data type in any base."""
-        # use decimal representation
-        if not base or base == 10:
-            return super().to_string(
-                series=series,
-                dtype=dtype, format=format,
-                errors=errors
-            )
+        # use non-decimal base, in conjunction with format
+        if base and base != 10:
+            if format:
+                call = lambda x: f"{int_to_base(x, base=base):{format}}"
+            else:
+                call = partial(int_to_base, base=base)
+            series = series.apply_with_errors(call, errors="raise")
+            series.element_type = str
+            format = None
 
-        # use non-decimal base (iterate once)
-        result = series.apply_with_errors(
-            lambda x: f"{int_to_base(x, base=base):{format}}",
-            errors="raise"
-        )
-        result.element_type = str
         return super().to_string(
-            series=result,
+            series=series,
             dtype=dtype,
-            format=None,
+            format=format,
             errors=errors
         )
 

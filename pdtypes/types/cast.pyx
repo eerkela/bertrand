@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from datetime import tzinfo
 import decimal
 from functools import partial, wraps
+import inspect
 from typing import Any, Callable, Iterable, Iterator
 
 cimport numpy as np
@@ -32,6 +33,10 @@ from pdtypes.util.time cimport Epoch
 # TODO: have to account for empty series in each conversion.
 
 
+# TODO: @dispatch should match the signatures of whatever method it is attached
+# to.
+
+
 #######################
 ####   DEFAULTS    ####
 #######################
@@ -44,7 +49,7 @@ cdef class CastDefaults:
         unsigned char _base
         bint _categorical
         bint _day_first
-        object _downcast
+        atomic.CompositeType _downcast
         object _epoch
         str _errors
         set _false
@@ -64,7 +69,7 @@ cdef class CastDefaults:
         self._as_hours = False
         self._base = 0
         self._categorical = False
-        self._downcast = False
+        self._downcast = None
         self._epoch = Epoch("utc")
         self._errors = "raise"
         self._false = {"false", "f", "no", "n", "off", "0"}
@@ -118,11 +123,11 @@ cdef class CastDefaults:
         self._day_first = validate_day_first(val)
 
     @property
-    def downcast(self) -> bool:  # TODO: object?
+    def downcast(self) -> atomic.CompositeType:
         return self._downcast
 
     @downcast.setter
-    def downcast(self, val: bool) -> None:
+    def downcast(self, val: bool | resolve.resolvable) -> None:
         if val is None:
             raise ValueError(f"default `downcast` cannot be None")
         self._downcast = validate_downcast(val)
@@ -301,14 +306,15 @@ def validate_day_first(val: bool) -> bool:
 
 def validate_downcast(
     val: bool | resolve.resolvable
-) -> bool | atomic.AtomicType:
+) -> atomic.CompositeType:
     if val is None:
         return defaults.downcast
 
+    # convert booleans into CompositeTypes: empty set is truthy, None is false
     if isinstance(val, bool):
-        return val
+        return atomic.CompositeType() if val else None
 
-    return resolve.resolve_type(val)
+    return resolve.resolve_type({val})
 
 
 def validate_dtype(
@@ -1065,26 +1071,25 @@ cdef class SeriesWrapper:
             self.series.index = self._original_index
 
     def __getattr__(self, name: str) -> Any:
-        dispatch_map = atomic.AtomicType.registry.dispatch_map
-        if name in dispatch_map:  # dispatch method
-            return self.dispatch(name)
+        # dynamically re-wrap series outputs
+        attr = getattr(self.series, name)
 
-        # fall back to pandas
-        fallback = getattr(self.series, name)
-        if callable(fallback):  # dynamically wrap series outputs
+        # method - return a decorator
+        if callable(attr):
 
-            @wraps(fallback)
+            @wraps(attr)
             def wrapper(*args, **kwargs):
-                result = fallback(*args, **kwargs)
+                result = attr(*args, **kwargs)
                 if isinstance(result, pd.Series):
                     return SeriesWrapper(result, hasnans=self._hasnans)
                 return result
 
             return wrapper
 
-        if isinstance(fallback, pd.Series):  # re-wrap
-            return SeriesWrapper(fallback, hasnans=self._hasnans)
-        return fallback
+        # attribute
+        if isinstance(attr, pd.Series):
+            return SeriesWrapper(attr, hasnans=self._hasnans)
+        return attr
 
     def apply_with_errors(
         self,
@@ -1136,60 +1141,54 @@ cdef class SeriesWrapper:
 
         return series, dtype
 
-    def dispatch(self, endpoint: str) -> Callable:
-        """Decorate the named method, dispatching it across every type present
-        in a SeriesWrapper instance.
+    def dispatch(self, endpoint: str, *args, **kwargs) -> SeriesWrapper:
+        """For every type that is present in the series, invoke the named
+        endpoint.
         """
-        dispatch_map = atomic.AtomicType.registry.dispatch_map
-        submap = dispatch_map[endpoint]
-        element_type = self.element_type
-
         # series is homogenous
-        if isinstance(element_type, atomic.AtomicType):
+        if isinstance(self.element_type, atomic.AtomicType):
             # check for corresponding AtomicType method
-            call = submap.get(type(element_type), None)
+            call = getattr(self.element_type, endpoint, None)
             if call is not None:
-                return partial(call, element_type, self)
+                return call(self, *args, **kwargs)
 
             # fall back to pandas implementation
-            call = getattr(self.series, endpoint)
-
-            @wraps(call)
-            def wrapper(*args, **kwargs):
-                result = call(*args, **kwargs)
-                if isinstance(result, pd.Series):
-                    return SeriesWrapper(result, hasnans=self._hasnans)
-                return result
-
-            return wrapper
+            call = getattr(pd.Series, endpoint)
+            pars = inspect.signature(call).parameters
+            kwargs = {k: v for k, v in kwargs.items() if k in pars}
+            result = call(self.series, *args, **kwargs)
+            if isinstance(result, pd.Series):
+                return SeriesWrapper(result, hasnans=self._hasnans)
+            return result
 
         # series is composite
-        groups = self.series.groupby(element_type.index, sort=False)
+        groups = self.series.groupby(self.element_type.index, sort=False)
+        pars = getattr(pd.Series, endpoint, None)
+        if pars is not None:  # introspect before grouping
+            pars = inspect.signature(pars).parameters
 
-        def wrapper(*args, **kwargs):
-            def transform(grp):
-                atomic_type = grp.name
-                grp = SeriesWrapper(
-                    grp,
-                    hasnans=self._hasnans,
-                    element_type=atomic_type
+        def transform(grp):
+            # check for corresponding AtomicType method
+            call = getattr(grp.name, endpoint, None)
+            if call is not None:
+                result = call(
+                    SeriesWrapper(grp, hasnans=self._hasnans),
+                    *args,
+                    **kwargs
                 )
-                call = submap.get(type(atomic_type), None)
-                if call is not None:
-                    result = call(atomic_type, grp, *args, **kwargs)
-                else:
-                    call = getattr(grp.series, endpoint)
-                    result = SeriesWrapper(
-                        call(*args, **kwargs),
-                        hasnans=self._hasnans
-                    )
-                self.hasnans = self.hasnans or result.hasnans
-                return result.series
+                self.hasnans = self._hasnans or result._hasnans
+                result = result.series
 
-            result = groups.transform(transform)
-            return SeriesWrapper(result, hasnans=self.hasnans)
+            # fall back to pandas implementation
+            else:
+                call = getattr(pd.Series, endpoint)
+                kw = {k: v for k, v in kwargs.items() if k in pars}
+                result = call(grp, *args, **kw)
 
-        return wrapper
+            return result
+
+        result = groups.transform(transform)
+        return SeriesWrapper(result, hasnans=self._hasnans)
 
     def isinf(self) -> SeriesWrapper:
         """TODO"""
@@ -1199,80 +1198,9 @@ cdef class SeriesWrapper:
         """Convert an improperly-formatted object series to a standardized
         numpy/pandas data type.
         """
-        # TODO: deprecate this
-        if (
-            pd.api.types.is_object_dtype(self.series) and
-            self.element_type.dtype != np.dtype("O")
-        ):
+        if self.series.dtype != self.element_type.dtype:
             return self.astype(self.element_type)
         return self
-
-    def snap(self, tol: numeric = 1e-6) -> SeriesWrapper:
-        """Snap each element of the series to the nearest integer if it is
-        within the specified tolerance.
-
-        Parameters
-        ----------
-        tol : int | float | decimal.Decimal
-            The tolerance to use for the conditional check, which represents
-            the width of the 2-sided region around each integer within which
-            rounding is performed.  This can be arbitrarily large, but values
-            over 0.5 are functionally equivalent to rounding half_even.
-
-        Returns
-        -------
-        SeriesWrapper
-            The result of conditionally rounding the series around integers,
-            with tolerance `tol`.
-        """
-        if not tol:  # trivial case, tol=0
-            return self.copy()
-
-        rounded = self.round("half_even")
-        return SeriesWrapper(
-            self.series.where((
-                (self - rounded).abs() > tol).series,
-                rounded.series
-            ),
-            hasnans=self._hasnans,
-            element_type=self._element_type
-        )
-
-    def snap_round(
-        self,
-        tol: numeric,
-        rule: str,
-        errors: str
-    ) -> SeriesWrapper:
-        """Snap a SeriesWrapper to the nearest integer within `tol`, and then
-        round any remaining results according to the given rule.  Rejects any
-        outputs that are not integer-like by the end of this process.
-        """
-        series = self
-
-        # apply tolerance, then check for non-integers if not rounding
-        if tol or rule is None:
-            rounded = series.round("half_even")  # compute once
-            outside = ~series.within_tol(rounded, tol=tol)
-            if tol:
-                series = series.where(outside.series, rounded.series)
-                series.element_type = self._element_type
-
-            # check for non-integer (ignore if rounding)
-            if rule is None and outside.any():
-                if errors == "coerce":
-                    series = series.round("down")
-                else:
-                    raise ValueError(
-                        f"precision loss exceeds tolerance {float(tol):g} at "
-                        f"index {shorten_list(outside[outside].index.values)}"
-                    )
-
-        # round according to specified rule
-        if rule:
-            series = series.round(rule)
-
-        return series
 
     def within_tol(self, other, tol: numeric) -> array_like:
         """Check if every element of a series is within tolerance of another
@@ -1285,6 +1213,9 @@ cdef class SeriesWrapper:
     #################################
     ####   DISPATCHED METHODS    ####
     #################################
+
+    # TODO: this is superseded by new @dispatch behavior.  Dispatched methods
+    # will not appear here.
 
     # NOTE: SeriesWrapper dynamically inherits every @dispatch method that is
     # defined by its element_type.  In the case of a composite series, these
@@ -1611,7 +1542,7 @@ def do_conversion(
 ) -> pd.Series:
     try:
         with SeriesWrapper(as_series(data)) as series:
-            result = getattr(series, endpoint)(*args, errors=errors, **kwargs)
+            result = series.dispatch(endpoint, *args, errors=errors, **kwargs)
             series.series = result.series
             series.hasnans = result.hasnans
             series.element_type = result.element_type

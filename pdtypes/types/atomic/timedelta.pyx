@@ -41,7 +41,6 @@ class TimedeltaMixin:
     ####    SERIES METHODS    ####
     ##############################
 
-    @dispatch
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -77,7 +76,6 @@ class TimedeltaMixin:
             **unused
         )
 
-    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
@@ -126,7 +124,6 @@ class TimedeltaMixin:
             **unused
         )
 
-    @dispatch
     def to_complex(
         self,
         series: cast.SeriesWrapper,
@@ -164,7 +161,6 @@ class TimedeltaMixin:
             **unused
         )
 
-    @dispatch
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
@@ -216,7 +212,6 @@ class TimedeltaMixin:
     # TODO: to_datetime
 
 
-    @dispatch
     def to_timedelta(
         self,
         series: cast.SeriesWrapper,
@@ -436,7 +431,6 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
             element_type=self
         )
 
-    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
@@ -513,7 +507,6 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
             element_type=self
         )
 
-    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
@@ -591,7 +584,6 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
             element_type=self
         )
 
-    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,

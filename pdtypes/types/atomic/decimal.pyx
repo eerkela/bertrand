@@ -20,7 +20,7 @@ from pdtypes.util.time import (
     as_ns, convert_unit, round_months_to_ns, round_years_to_ns
 )
 
-from .base cimport AtomicType, BaseType
+from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic
 
 
@@ -39,8 +39,8 @@ class DecimalMixin:
     def round(
         self,
         series: cast.SeriesWrapper,
-        rule: str = "half_even",
-        decimals: int = 0
+        decimals: int = 0,
+        rule: str = "half_even"
     ) -> cast.SeriesWrapper:
         """Round a decimal series to the given number of decimal places using
         the specified rounding rule.
@@ -52,6 +52,64 @@ class DecimalMixin:
         )
 
     @dispatch
+    def snap(
+        self,
+        series: cast.SeriesWrapper,
+        tol: numeric = 1e-6
+    ) -> cast.SeriesWrapper:
+        """Snap each element of the series to the nearest integer if it is
+        within the specified tolerance.
+        """
+        tol = Tolerance(tol)
+        if not tol:  # trivial case, tol=0
+            return series.copy()
+
+        rounded = self.round(series, rule="half_even")
+        return cast.SeriesWrapper(
+            series.series.where((
+                (series.series - rounded).abs() > tol.real),
+                rounded.series
+            ),
+            hasnans=series.hasnans,
+            element_type=series.element_type
+        )
+
+    def snap_round(
+        self,
+        series: cast.SeriesWrapper,
+        tol: numeric,
+        rule: str,
+        errors: str
+    ) -> cast.SeriesWrapper:
+        """Snap a series to the nearest integer within `tol`, and then round
+        any remaining results according to the given rule.  Rejects any outputs
+        that are not integer-like by the end of this process.
+        """
+        # apply tolerance, then check for non-integers if not rounding
+        if tol or rule is None:
+            rounded = self.round(series, rule="half_even")  # compute once
+            outside = ~series.within_tol(rounded, tol=tol)
+            if tol:
+                element_type = series.element_type
+                series = series.where(outside.series, rounded.series)
+                series.element_type = element_type
+
+            # check for non-integer (ignore if rounding)
+            if rule is None and outside.any():
+                if errors == "coerce":
+                    series = self.round(series, "down")
+                else:
+                    raise ValueError(
+                        f"precision loss exceeds tolerance {float(tol):g} at "
+                        f"index {shorten_list(outside[outside].index.values)}"
+                    )
+
+        # round according to specified rule
+        if rule:
+            series = self.round(series, rule=rule)
+
+        return series
+
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -62,24 +120,33 @@ class DecimalMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert decimal data to a boolean data type."""
-        series = series.snap_round(tol.real, rounding, errors)
-        series, dtype = series.boundscheck(dtype, errors)
-        return super().to_boolean(series, dtype, errors=errors)
+        series = self.snap_round(
+            series,
+            tol=tol.real,
+            rule=rounding,
+            errors=errors
+        )
+        series, dtype = series.boundscheck(dtype, errors=errors)
+        return super().to_boolean(series, dtype=dtype, errors=errors)
 
-    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert decimal data to an integer data type."""
-        series = series.snap_round(tol.real, rounding, errors)
-        series, dtype = series.boundscheck(dtype, errors)
+        series = self.snap_round(
+            series,
+            tol=tol.real,
+            rule=rounding,
+            errors=errors
+        )
+        series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_integer(
             series,
             dtype,
@@ -87,13 +154,12 @@ class DecimalMixin:
             errors=errors
         )
 
-    @dispatch
     def to_float(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -133,38 +199,38 @@ class DecimalMixin:
                     f"index {shorten_list(bad[bad].index.values)}"
                 )
 
-        if downcast:
-            smallest = downcast if not isinstance(downcast, bool) else None
-            return dtype.downcast(result, tol=tol.real, smallest=smallest)
+        if downcast is not None:
+            return dtype.downcast(result, smallest=downcast, tol=tol)
         return result
 
-    @dispatch
     def to_complex(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         tol: numeric,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert decimal data to a complex data type."""
+        # 2-step conversion: decimal -> float, float -> complex
+        transfer_type = dtype.equiv_float
         series = self.to_float(
             series,
-            dtype.equiv_float,
+            dtype=transfer_type,
             tol=tol,
-            downcast=False,
+            downcast=None,
             errors=errors
         )
-        return series.to_complex(
+        return transfer_type.to_complex(
+            series,
             dtype=dtype,
             tol=tol,
             downcast=downcast,
-            errors=errors
+            errors=errors,
             **unused
         )
 
-    @dispatch
     def to_datetime(
         self,
         series: cast.SeriesWrapper,
@@ -199,9 +265,16 @@ class DecimalMixin:
         series, dtype = series.boundscheck(dtype, errors=errors)
 
         # convert to final representation
-        return dtype.from_ns(series, **unused)
+        return dtype.from_ns(
+            series,
+            dtype=dtype,
+            unit=unit,
+            step_size=step_size,
+            epoch=epoch,
+            errors=errors,
+            **unused
+        )
 
-    @dispatch
     def to_timedelta(
         self,
         series: cast.SeriesWrapper,
@@ -234,7 +307,11 @@ class DecimalMixin:
         # convert to final representation
         return dtype.from_ns(
             series,
+            dtype=dtype,
+            unit=unit,
+            step_size=step_size,
             epoch=epoch,
+            errors=errors,
             **unused,
         )
 

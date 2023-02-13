@@ -4,8 +4,9 @@ from types import MappingProxyType
 import numpy as np
 cimport numpy as np
 import pandas as pd
+import pytz
 
-from .base cimport AdapterType, AtomicType, BaseType
+from .base cimport AdapterType, AtomicType, CompositeType
 from .base import dispatch, generic, subtype
 import pdtypes.types.atomic.complex as complex_types
 
@@ -42,12 +43,12 @@ class FloatMixin:
         self,
         series: cast.SeriesWrapper,
         tol: Tolerance = cast.defaults.tol,
-        smallest: BaseType = None
+        smallest: CompositeType = None
     ) -> cast.SeriesWrapper:
         """Reduce the itemsize of a float type to fit the observed range."""
         # get downcast candidates
         smaller = self.smaller
-        if smallest:
+        if smallest is not None:
             filtered = []
             for t in reversed(smaller):
                 filtered.append(t)
@@ -61,7 +62,7 @@ class FloatMixin:
                     series,
                     dtype=s,
                     tol=tol,
-                    downcast=False,
+                    downcast=None,
                     errors="raise"
                 )
             except Exception:
@@ -105,8 +106,8 @@ class FloatMixin:
     def round(
         self,
         series: cast.SeriesWrapper,
-        rule: str = "half_even",
-        decimals: int = 0
+        decimals: int = 0,
+        rule: str = "half_even"
     ) -> cast.SeriesWrapper:
         """Round a floating point series to the given number of decimal places
         using the specified rounding rule.
@@ -118,6 +119,64 @@ class FloatMixin:
         )
 
     @dispatch
+    def snap(
+        self,
+        series: cast.SeriesWrapper,
+        tol: numeric = 1e-6
+    ) -> cast.SeriesWrapper:
+        """Snap each element of the series to the nearest integer if it is
+        within the specified tolerance.
+        """
+        tol = Tolerance(tol)
+        if not tol:  # trivial case, tol=0
+            return series.copy()
+
+        rounded = self.round(series, rule="half_even")
+        return cast.SeriesWrapper(
+            series.series.where((
+                (series.series - rounded).abs() > tol.real),
+                rounded.series
+            ),
+            hasnans=series.hasnans,
+            element_type=series.element_type
+        )
+
+    def snap_round(
+        self,
+        series: cast.SeriesWrapper,
+        tol: numeric,
+        rule: str,
+        errors: str
+    ) -> cast.SeriesWrapper:
+        """Snap a series to the nearest integer within `tol`, and then round
+        any remaining results according to the given rule.  Rejects any outputs
+        that are not integer-like by the end of this process.
+        """
+        # apply tolerance, then check for non-integers if not rounding
+        if tol or rule is None:
+            rounded = self.round(series, rule="half_even")  # compute once
+            outside = ~series.within_tol(rounded, tol=tol)
+            if tol:
+                element_type = series.element_type
+                series = series.where(outside.series, rounded.series)
+                series.element_type = element_type
+
+            # check for non-integer (ignore if rounding)
+            if rule is None and outside.any():
+                if errors == "coerce":
+                    series = self.round(series, "down")
+                else:
+                    raise ValueError(
+                        f"precision loss exceeds tolerance {float(tol):g} at "
+                        f"index {shorten_list(outside[outside].index.values)}"
+                    )
+
+        # round according to specified rule
+        if rule:
+            series = self.round(series, rule=rule)
+
+        return series
+
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -128,34 +187,40 @@ class FloatMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert floating point data to a boolean data type."""
-        series = series.snap_round(tol.real, rounding, errors=errors)
+        series = self.snap_round(
+            series,
+            tol=tol.real,
+            rule=rounding,
+            errors=errors
+        )
         series, dtype = series.boundscheck(dtype, errors=errors)
-        if series.hasnans:
-            dtype = dtype.force_nullable()
-        return super().to_boolean(series, dtype, errors=errors)
+        return super().to_boolean(series, dtype=dtype, errors=errors)
 
-    @dispatch
     def to_integer(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
-        downcast: bool | BaseType,
+        downcast: CompositeType,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert floating point data to an integer data type."""
-        series = series.snap_round(tol.real, rounding, errors)
+        series = self.snap_round(
+            series,
+            tol=tol.real,
+            rule=rounding,
+            errors=errors
+        )
         series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_integer(
             series,
-            dtype,
+            dtype=dtype,
             downcast=downcast,
             errors=errors
         )
 
-    @dispatch
     def to_datetime(
         self,
         series: cast.SeriesWrapper,
@@ -163,27 +228,31 @@ class FloatMixin:
         unit: str,
         step_size: int,
         rounding: str,
+        tz: pytz.BaseTzInfo,
         epoch: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
+        # 2-step conversion: float -> decimal, decimal -> datetime
+        transfer_type = resolve.resolve_type(decimal.Decimal)
         series = self.to_decimal(
             series,
-            dtype=resolve.resolve_type(decimal.Decimal),
+            dtype=transfer_type,
             errors="raise"
         )
-        return series.to_datetime(
+        return transfer_type.to_datetime(
+            series,
             dtype=dtype,
             unit=unit,
             step_size=step_size,
             rounding=rounding,
+            tz=tz,
             epoch=epoch,
             errors=errors,
             **unused
         )
 
-    @dispatch
     def to_timedelta(
         self,
         series: cast.SeriesWrapper,
@@ -196,12 +265,15 @@ class FloatMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
+        # 2-step conversion: float -> decimal, decimal -> timedelta
+        transfer_type = resolve.resolve_type(decimal.Decimal)
         series = self.to_decimal(
             series,
-            dtype=resolve.resolve_type(decimal.Decimal),
+            dtype=transfer_type,
             errors="raise"
         )
-        return series.to_timedelta(
+        return transfer_type.to_timedelta(
+            series,
             dtype=dtype,
             unit=unit,
             step_size=step_size,
@@ -215,7 +287,6 @@ class FloatMixin:
 class LongDoubleSpecialCase:
     """Special cases of the above conversions for longdouble types."""
 
-    @dispatch
     def to_decimal(
         self,
         series: cast.SeriesWrapper,
@@ -226,7 +297,7 @@ class LongDoubleSpecialCase:
         """A special case of FloatMixin.to_decimal() that bypasses `TypeError:
         conversion from numpy.float128 to Decimal is not supported`.
         """
-        # convert to integer ratio and then to decimal
+        # convert longdouble to integer ratio and then to decimal
         def call(x):
             n, d = x.as_integer_ratio()
             return dtype.type_def(n) / d
