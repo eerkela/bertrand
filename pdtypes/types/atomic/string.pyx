@@ -18,6 +18,8 @@ cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 from pdtypes.util.round cimport Tolerance
+from pdtypes.util.time cimport Epoch
+from pdtypes.util.time import timedelta_string_to_ns
 
 
 # TODO: add fixed-length numpy string backend?
@@ -43,6 +45,8 @@ except ImportError:
 
 
 class StringMixin:
+
+    conversion_func = cast.to_string
 
     #############################
     ####    SERIES METHODS   ####
@@ -176,6 +180,43 @@ class StringMixin:
             tol=tol,
             downcast=downcast,
             errors=errors
+        )
+
+    @dispatch
+    def to_datetime(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert string data into a datetime data type."""
+        return dtype.from_string(series, dtype=dtype, **unused)
+
+    @dispatch
+    def to_timedelta(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        epoch: Epoch,
+        as_hours: bool,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert string data into a timedelta representation."""
+        series = series.apply_with_errors(
+            partial(timedelta_string_to_ns, as_hours=as_hours, since=epoch),
+            errors=errors
+        )
+        series.element_type = int
+        return series.to_timedelta(
+            dtype=dtype,
+            unit="ns",
+            step_size=1,
+            epoch=epoch,
+            errors=errors,
+            **unused
         )
 
 

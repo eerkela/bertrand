@@ -49,7 +49,29 @@ cdef object build_iso_8601_regex():
     )
 
 
+cdef object build_iso_8601_strptime_format_regex():
+    """Compile a regex to match strptime/strftime format strings if they
+    are ISO 8601-compliant.
+    """
+    opt = lambda x: rf"({x})?"
+
+    # work from right to left to fully account for optional components
+    cdef str result = r"(%z|Z)?"
+    result = rf"(.%f{result})?"
+    result = rf"(:%S{result})?"
+    result = rf"(:%M{result})?"
+    result = rf"(( |T)%H{result})?"
+    result = rf"(-%d{result})?"
+    result = rf"(-%m{result})?"
+    result = rf"^%Y{result}$"
+    # reference: "%Y-%m-%d %H:%M:%S.%f%z"
+
+    return re.compile(result)
+
+
+cdef object iso_8601_format_pattern = build_iso_8601_strptime_format_regex()
 cdef object iso_8601_pattern = build_iso_8601_regex()
+cdef object parser_overflow_pattern = re.compile(r"out of range|must be in")
 
 
 cdef object py_naive_utc = datetime.datetime.utcfromtimestamp(0)
@@ -61,7 +83,21 @@ cdef object py_aware_utc = pytz.timezone("UTC").localize(py_naive_utc)
 ######################
 
 
-def iso_8601_to_ns(str input_string) -> tuple:
+def filter_dateutil_parser_error(err):
+    err_msg = str(err)
+    if parser_overflow_pattern.search(err_msg):
+        return OverflowError(err_msg)
+    return ValueError(err_msg)
+
+
+def is_iso_8601_format_string(input_string: str) -> bool:
+    """Returns `True` if an strftime/strptime format string complies with the
+    ISO 8601 standard.
+    """
+    return iso_8601_format_pattern.match(input_string) is not None
+
+
+def iso_8601_to_ns(str input_string) -> int:
     """Convert a scalar ISO 8601 string into a nanosecond offset from the
     utc epoch ('1970-01-01 00:00:00+0000').
 
@@ -86,7 +122,6 @@ def iso_8601_to_ns(str input_string) -> tuple:
     cdef double second = float(parts["second"] or 0)
 
     # extract utc offset components
-    cdef bint has_offset = parts["utc_sign"] is not None or "Z" in input_string
     cdef char utc_sign = -1 if parts["utc_sign"] == "-" else 1
     cdef long int utc_hour = int(parts["utc_hour"] or 0)
     cdef long int utc_minute = int(parts["utc_minute"] or 0)
@@ -107,8 +142,28 @@ def iso_8601_to_ns(str input_string) -> tuple:
     cdef object result = date_to_days(sign * year, month, day) * as_ns["D"]
     result += hour * as_ns["h"] + minute * as_ns["m"] + int(second * as_ns["s"])
     result -= utc_sign * (utc_hour * as_ns["h"] + utc_minute * as_ns["m"])
+    return result
 
-    return result, has_offset
+
+def localize_pydatetime(
+    date: datetime.datetime,
+    tz: pytz.BaseTzInfo,
+    utc: bool
+) -> datetime.datetime:
+    """Localize a scalar python datetime to the given timezone."""
+    # return naive
+    if not tz:
+        if not date.tzinfo:  # datetime is already naive
+            return date
+        date = date.astimezone(datetime.timezone.utc)  # as utc
+        return date.replace(tzinfo=None)  # make naive
+
+    # return aware
+    if not date.tzinfo:  # datetime is naive
+        if not utc:  # localize directly to timezone
+            return tz.localize(date)
+        date = date.replace(tzinfo=datetime.timezone.utc)  # as utc
+    return date.astimezone(tz)  # convert to final timezone
 
 
 def ns_to_pydatetime(object ns, object tz = None) -> datetime.datetime:
@@ -195,11 +250,14 @@ def string_to_pydatetime(
 
     # parse using dateutil
     if result is None:
-        result = dateutil.parser.parse(
-            input_string,
-            fuzzy=True,
-            parserinfo=parser_info
-        )
+        try:
+            result = dateutil.parser.parse(
+                input_string,
+                fuzzy=True,
+                parserinfo=parser_info
+            )
+        except dateutil.parser.ParserError as err:
+            raise filter_dateutil_parser_error(err) from None
 
     # apply timezone
     if tz:

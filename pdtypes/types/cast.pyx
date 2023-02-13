@@ -40,12 +40,15 @@ from pdtypes.util.time cimport Epoch
 cdef class CastDefaults:
 
     cdef:
+        bint _as_hours
         unsigned char _base
         bint _categorical
+        bint _day_first
         object _downcast
         object _epoch
         str _errors
         set _false
+        str _format
         bint _ignore_case
         str _rounding
         bint _sparse
@@ -54,8 +57,11 @@ cdef class CastDefaults:
         object _tz
         set _true
         str _unit
+        bint _utc
+        bint _year_first
 
     def __init__(self):
+        self._as_hours = False
         self._base = 0
         self._categorical = False
         self._downcast = False
@@ -70,6 +76,16 @@ cdef class CastDefaults:
         self._tz = None
         self._true = {"true", "t", "yes", "y", "on", "1"}
         self._unit = "ns"
+
+    @property
+    def as_hours(self) -> bool:
+        return self._as_hours
+
+    @as_hours.setter
+    def as_hours(self, val: bool) -> None:
+        if val is None:
+            raise ValueError(f"default `as_hours` cannot be None")
+        self._as_hours = validate_as_hours(val)
 
     @property
     def base(self) -> int:
@@ -89,7 +105,17 @@ cdef class CastDefaults:
     def categorical(self, val: bool) -> None:
         if val is None:
             raise ValueError(f"default `categorical` cannot be None")
-        self._categorical = val
+        self._categorical = validate_categorical(val)
+
+    @property
+    def day_first(self) -> bool:
+        return self._day_first
+
+    @day_first.setter
+    def day_first(self, val: bool) -> None:
+        if val is None:
+            raise ValueError(f"default `day_first` cannot be None")
+        self._day_first = validate_day_first(val)
 
     @property
     def downcast(self) -> bool:  # TODO: object?
@@ -130,6 +156,16 @@ cdef class CastDefaults:
         if val is None:
             raise ValueError(f"default `false` cannot be None")
         self._false = validate_false(val)
+
+    @property
+    def format(self) -> str:
+        return self._format
+
+    @format.setter
+    def format(self, val: str) -> None:
+        if val is None:
+            raise ValueError(f"default `format` cannot be None")
+        self._format = validate_format(val)
 
     @property
     def ignore_case(self) -> bool:
@@ -207,8 +243,34 @@ cdef class CastDefaults:
             raise ValueError(f"default `unit` cannot be None")
         self._unit = validate_unit(val)
 
+    @property
+    def utc(self) -> bool:
+        return self._utc
+
+    @utc.setter
+    def utc(self, val: bool) -> None:
+        if val is None:
+            raise ValueError(f"default `utc` cannot be None")
+        self._utc = validate_utc(val)
+
+    @property
+    def year_first(self) -> bool:
+        return self._year_first
+
+    @year_first.setter
+    def year_first(self, val: bool) -> None:
+        if val is None:
+            raise ValueError(f"default `year_first` cannot be None")
+        self._year_first = validate_year_first(val)
+
 
 defaults = CastDefaults()
+
+
+def validate_as_hours(val: bool) -> bool:
+    if val is None:
+        return defaults.as_hours
+    return val
 
 
 def validate_base(val: int) -> int:
@@ -228,6 +290,12 @@ def validate_call(val: Callable) -> Callable:
 def validate_categorical(val: bool) -> bool:
     if val is None:
         return defaults.categorical
+    return val
+
+
+def validate_day_first(val: bool) -> bool:
+    if val is None:
+        return defaults.day_first
     return val
 
 
@@ -285,6 +353,12 @@ def validate_false(val: str | set[str]) -> set[str]:
     if isinstance(val, str):
         return {val}
     return set(val)
+
+
+def validate_format(val: str) -> str:
+    if val is None:
+        return defaults.format
+    return val
 
 
 def validate_ignore_case(val: bool) -> bool:
@@ -351,6 +425,18 @@ def validate_unit(val: str) -> str:
     valid = ("ns", "ms", "us", "s", "m", "h", "D", "W", "M", "Y")
     if val not in valid:
         raise ValueError(f"`unit` must be one of {valid}, not {repr(val)}")
+    return val
+
+
+def validate_utc(val: bool) -> bool:
+    if val is None:
+        return defaults.utc
+    return val
+
+
+def validate_year_first(val: bool) -> bool:
+    if val is None:
+        return defaults.year_first
     return val
 
 
@@ -605,12 +691,16 @@ def to_decimal(
 def to_datetime(
     series: Iterable,
     dtype: resolve.resolvable = "datetime",
-    tol: numeric = None,
-    rounding: str = None,
     unit: str = None,
     step_size: int = None,
     epoch: str | datetime_like = None,
     tz: str | tzinfo = None,
+    format: str = None,
+    utc: bool = None,
+    day_first: bool = None,
+    year_first: bool = None,
+    tol: numeric = None,
+    rounding: str = None,
     call: Callable = None,
     errors: str = None,
     **kwargs
@@ -624,6 +714,10 @@ def to_datetime(
     step_size = validate_step_size(step_size)
     epoch = validate_epoch(epoch)
     tz = validate_timezone(tz)
+    format = validate_format(format)
+    utc = validate_utc(utc)
+    day_first = validate_day_first(day_first)
+    year_first = validate_year_first(year_first)
     call = validate_call(call)
     errors = validate_errors(errors)
 
@@ -638,6 +732,10 @@ def to_datetime(
         step_size=step_size,
         tz=tz,
         epoch=epoch,
+        format=format,
+        utc=utc,
+        day_first=day_first,
+        year_first=year_first,
         call=call,
         errors=errors,
         **kwargs
@@ -653,6 +751,7 @@ def to_timedelta(
     step_size: int = None,
     epoch: str | datetime_like = None,
     tz: str | tzinfo = None,
+    as_hours: bool = None,
     call: Callable = None,
     errors: str = None,
     **kwargs
@@ -666,6 +765,7 @@ def to_timedelta(
     step_size = validate_step_size(step_size)
     epoch = validate_epoch(epoch)
     tz = validate_timezone(tz)
+    as_hours = validate_as_hours(as_hours)
     call = validate_call(call)
     errors = validate_errors(errors)
 
@@ -680,6 +780,7 @@ def to_timedelta(
         step_size=step_size,
         epoch=epoch,
         tz=tz,
+        as_hours=as_hours,
         call=call,
         errors=errors,
         **kwargs
@@ -689,18 +790,31 @@ def to_timedelta(
 def to_string(
     series: Iterable,
     dtype: resolve.resolvable = str,
+    base: int = None,
+    format: str = None,
+    call: Callable = None,
+    errors: str = None,
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
-    # validate dtype
-    dtype = resolve.resolve_type(dtype)
-    if isinstance(dtype, atomic.CompositeType):
-        raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
-    if not dtype.is_subtype(atomic.StringType):
-        raise ValueError(f"`dtype` must be a string type, not {dtype}")
+    # validate args
+    dtype = validate_dtype(dtype, atomic.StringType)
+    base = validate_base(base)
+    format = validate_format(format)
+    call = validate_call(call)
+    errors = validate_errors(errors)
 
     # delegate to SeriesWrapper.to_string
-    return do_conversion(series, "to_string", dtype=dtype, **kwargs)
+    return do_conversion(
+        series,
+        "to_string",
+        dtype=dtype,
+        base=base,
+        format=format,
+        call=call,
+        errors=errors,
+        **kwargs
+    )
 
 
 def to_object(

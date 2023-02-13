@@ -5,6 +5,7 @@ from types import MappingProxyType
 from typing import Any, Union, Sequence
 import warnings
 
+import dateutil
 import numpy as np
 cimport numpy as np
 import pandas as pd
@@ -23,8 +24,10 @@ from pdtypes.util.round cimport Tolerance
 from pdtypes.util.round import round_div
 from pdtypes.util.time cimport Epoch
 from pdtypes.util.time import (
-    as_ns, convert_unit, ns_to_pydatetime, numpy_datetime64_to_ns,
-    pydatetime_to_ns, pytimedelta_to_ns, valid_units
+    as_ns, convert_unit, filter_dateutil_parser_error, 
+    is_iso_8601_format_string, iso_8601_to_ns, localize_pydatetime,
+    ns_to_pydatetime, numpy_datetime64_to_ns, pydatetime_to_ns,
+    pytimedelta_to_ns, string_to_pydatetime, valid_units
 )
 
 
@@ -273,6 +276,29 @@ class DatetimeType(DatetimeMixin, AtomicType):
     # as the result of a detect_type() operation.  It can only be specified
     # manually, as the target of a resolve_type() call.
 
+    def from_string(
+        self,
+        series: cast.SeriesWrapper,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert string data into an arbitrary datetime data type."""
+        last_err = None
+        for l in self.larger:
+            try:
+                return l.from_string(series, errors="raise", **unused)
+            except OverflowError as err:
+                last_err = err
+
+        # every representation overflows - pick the last one and coerce
+        if errors == "coerce":
+            return l.from_string(
+                series,
+                errors=errors,
+                **unused
+            )
+        raise last_err
+
 
 #####################
 ####    NUMPY    ####
@@ -386,9 +412,10 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
         """Convert nanosecond offsets from the given epoch into numpy
         timedelta64s with this type's unit and step size.
         """
-        if tz:
+        if tz and tz != pytz.utc:
             raise TypeError(
-                f"np.datetime64 objects do not carry timezone information"
+                "np.datetime64 objects do not carry timezone information "
+                f"(must be UTC)"
             )
 
         # convert from nanoseconds to final unit
@@ -414,6 +441,36 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
             hasnans=series.hasnans,
             element_type=self
         )
+
+    def from_string(
+        self,
+        series: cast.SeriesWrapper,
+        format: str,
+        tz: pytz.BaseTzInfo,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        if format and not is_iso_8601_format_string(format):
+            raise TypeError(
+                f"np.datetime64 strings must be in ISO 8601 format"
+            )
+        if tz and tz != pytz.utc:
+            raise TypeError(
+                "np.datetime64 objects do not carry timezone information"
+            )
+
+        series = series.apply_with_errors(
+            iso_8601_to_ns,
+            errors=errors
+        )
+        series.element_type = int
+        return series.to_datetime(
+            format=format,
+            tz=tz,
+            errors=errors,
+            **unused
+        )
+
 
     @dispatch
     def to_integer(
@@ -570,6 +627,93 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
             element_type=series.element_type
         )
 
+    def from_string(
+        self,
+        series: cast.SeriesWrapper,
+        tz: pytz.BaseTzInfo,
+        format: str,
+        utc: bool,
+        day_first: bool,
+        year_first: bool,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert datetime strings into pandas Timestamps."""
+        # reconcile `tz` argument with timezone attached to dtype, if given
+        dtype = self
+        if tz:
+            dtype = dtype.replace(tz=tz)
+
+        # configure kwargs for pd.to_datetime
+        utc = utc or dtype.tz == pytz.utc
+        kwargs = {
+            "dayfirst": day_first,
+            "yearfirst": year_first,
+            "utc": utc,
+            "errors": "raise" if errors == "ignore" else errors
+        }
+        if format:
+            kwargs |= {"format": format, "exact": False}
+
+        # NOTE: pd.to_datetime() can throw lots of different exceptions, not
+        # all of which are immediately clear.  For the sake of simplicity, we
+        # catch and re-raise these only as ValueErrors or OverflowErrors.
+        # Raising from None truncates stack traces, which can get quite long.
+        try:
+            result = pd.to_datetime(series.series, **kwargs)
+
+        # exception 1: outside pd.Timestamp range, but within datetime.datetime
+        except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime as err:
+            raise OverflowError(str(err)) from None
+
+        # exception 2: bad string or outside datetime.datetime range
+        except dateutil.parser.ParserError as err:  # ambiguous
+            raise filter_dateutil_parser_error(err) from None
+
+        # account for missing values introduced during error coercion
+        hasnans = series.hasnans
+        if errors == "coerce":
+            isna = result.isna()
+            hasnans = isna.any()
+            result = result[~isna]
+
+        # localize to final timezone
+        try:
+            # NOTE: if utc=False and there are mixed timezones and/or mixed
+            # aware/naive strings in the input series, the output of
+            # pd.to_datetime() could be malformed.
+            if utc:  # simple - convert to final timezone
+                result = result.dt.tz_convert(dtype.tz)
+            else:
+                # homogenous - either naive or consistent timezone
+                if pd.api.types.is_datetime64_ns_dtype(result):
+                    if not result.dt.tz:  # naive
+                        if dtype.tz is not None:  # localize directly
+                            result = result.dt.tz_localize(dtype.tz)
+                    else:  # aware
+                        result = result.dt.tz_convert(dtype.tz)
+
+                # non-homogenous - either mixed timezone or mixed aware/naive
+                else:
+                    # NOTE: pd.to_datetime() sacrifices ns precision here
+                    localize = partial(
+                        localize_pydatetime,
+                        tz=dtype.tz,
+                        utc=False
+                    )
+                    localize = np.frompyfunc(localize, 1, 1)
+                    result = localize(result).astype(dtype.dtype)
+
+        # exception 3: overflow induced by timezone localization
+        except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime as err:
+            raise OverflowError(str(err)) from None
+
+        return cast.SeriesWrapper(
+            result,
+            hasnans=hasnans,
+            element_type=dtype
+        )
+
     @dispatch
     def to_integer(
         self,
@@ -604,6 +748,23 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
             dtype,
             downcast=downcast,
             errors=errors
+        )
+
+    @dispatch
+    def to_string(
+        self,
+        series: cast.SeriesWrapper,
+        format: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert pandas Timestamps into a formatted string data type."""
+        if format:
+            fmt = lambda x: x.strftime(format)
+            series = series.apply_with_errors(fmt, errors="raise")
+        return super().to_string(
+            series=series,
+            format=format,
+            **unused
         )
 
 
@@ -681,6 +842,44 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
         series.element_type = dtype
         return series
 
+    def from_string(
+        self,
+        series: cast.SeriesWrapper,
+        tz: pytz.BaseTzInfo,
+        format: str,
+        utc: bool,
+        day_first: bool,
+        year_first: bool,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert strings into datetime objects."""
+        # reconcile `tz` argument with timezone attached to dtype, if given
+        dtype = self
+        if tz:
+            dtype = dtype.replace(tz=tz)
+
+        # set up dateutil parserinfo
+        parser_info = dateutil.parser.parserinfo(
+            dayfirst=day_first,
+            yearfirst=year_first
+        )
+
+        # apply elementwise
+        series = series.apply_with_errors(
+            partial(
+                string_to_pydatetime,
+                format=format,
+                parser_info=parser_info,
+                tz=dtype.tz,
+                utc=utc,
+                errors=errors
+            ),
+            errors=errors
+        )
+        series.element_type = dtype
+        return series
+
     @dispatch
     def to_integer(
         self,
@@ -717,6 +916,24 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
             errors=errors
         )
 
+    @dispatch
+    def to_string(
+        self,
+        series: cast.SeriesWrapper,
+        format: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert python datetimes into a formatted string data type."""
+        if format:
+            fmt = lambda x: x.strftime(format)
+            series = series.apply_with_errors(fmt, errors="raise")
+        return super().to_string(
+            series=series,
+            format=format,
+            **unused
+        )
+
+
 
 #######################
 ####    PRIVATE    ####
@@ -726,6 +943,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
 cdef object M8_pattern = re.compile(
     r"(?P<step_size>[0-9]+)?(?P<unit>ns|us|ms|s|m|h|D|W|M|Y)"
 )
+
 
 def convert_ns_to_unit(
     series: cast.SeriesWrapper,

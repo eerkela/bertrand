@@ -970,6 +970,14 @@ cdef class AtomicType(BaseType):
 #######################
 
 
+class Test:
+    x = 1
+
+    def __init__(self, y):
+        self.y = y
+
+
+
 cdef class AdapterType(AtomicType):
     """Special case for AtomicTypes that modify other AtomicTypes."""
 
