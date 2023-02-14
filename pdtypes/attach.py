@@ -58,12 +58,14 @@ def new_getattribute(self, name: str):
     # check if attribute is a mock accessor
     dispatch_map = AtomicType.registry.dispatch_map
     if name in dispatch_map:
-        return Namespace(name, self, dispatch_map[name])
+        original = getattr(pd.Series, name, None)
+        return Namespace(self, dispatch_map[name], original)
 
     # check if attribute corresponds to a naked @dispatch method
     dispatch_map = dispatch_map.get(None, {})
     if name in dispatch_map:
-        return attach(self, name, dispatch_map[name])
+        original = getattr(pd.Series, name, None)
+        return attach(self, name, dispatch_map[name], original)
 
     # attribute is not being managed by `pdtypes` - fall back to pandas
     return orig_getattribute(self, name)
@@ -82,11 +84,22 @@ pd.Series.get_type = get_type
 #######################
 
 
-def attach(data: pd.Series, name: str, submap: dict) -> Callable:
+def attach(
+    data: pd.Series,
+    name: str,
+    submap: dict,
+    original: Callable
+) -> Callable:
     """Decorate the named AtomicType method, globally attaching it to all
     pd.Series objects.
+
+    This function adds some important attributes to the wrapper that it
+    returns.  These include:
+        - `original` (Callable): a reference to the original pandas
+            implementation of the masked method, if one exists.
+        - `dispatched` (dict): a mapping 
     """
-    def wrapper(*args, **kwargs) -> pd.Series:
+    def dispatch_method(*args, **kwargs) -> pd.Series:
         with SeriesWrapper(data) as series:
             result = series.dispatch(name, submap, *args, **kwargs)
             series.series = result.series
@@ -94,32 +107,45 @@ def attach(data: pd.Series, name: str, submap: dict) -> Callable:
             series.element_type = result.element_type
         return series.series
 
-    docmap = {str(k.type_def): v.__qualname__ for k, v in submap.items()}
+    dispatch_method.original = original
+    docmap = {k.type_def: v for k, v in submap.items()}
+    dispatch_method.dispatched = docmap.copy()
+    docmap = {str(k): v.__qualname__ for k, v in docmap.items()}
     docmap = dict(sorted(docmap.items()))
     docmap["..."] = "Series.round"
-    wrapper.__doc__ = (
-        f"A wrapper for `pd.Series.{name}()` that applies custom logic for\n"
-        f"one or more data types:\n{json.dumps(docmap, indent=4)}"
+    dispatch_method.__doc__ = (
+        f"A wrapper that applies custom logic for one or more data types:\n"
+        f"{json.dumps(docmap, indent=4)}"
     )
-    return wrapper
+    return dispatch_method
 
 
 class Namespace:
-    """"""
+    """A mock accessor in the style of `pd.Series.dt`/`pd.Series.str` that
+    holds @dispatch methods that are being applied to pd.Series objects.
 
-    def __init__(self, namespace: str, data: pd.Series, submap: dict):
-        self.namespace = namespace
+    These objects are created dynamically through the optional `namespace`
+    keyword argument of the @dispatch decorator.  
+    """
+
+    def __init__(self, data: pd.Series, submap: dict, original: Any):
         self.data = data
-        self.submap = submap
+        self.dispatched = submap
+        self.original = original
 
     def __getattribute__(self, name: str) -> Any:
         # recover instance attributes.  NOTE: this has to be done delicately
-        # so as to avoid infinite recursion.
-        namespace = super().__getattribute__("namespace")
+        # so as to avoid infinite recursion and enable pass-through access.
         data = super().__getattribute__("data")
-        submap = super().__getattribute__("submap")
+        dispatched = super().__getattribute__("dispatched")
+        original = super().__getattribute__("original")
+        if name == "dispatched":
+            return dispatched
+        if name == "original":
+            return original
 
         # check if attribute name is being dispatched from this namespace
-        if name in submap:
-            return attach(data, name, submap[name])
+        if name in dispatched:
+            original = getattr(original, name, None)
+            return attach(data, name, dispatched[name], original)
         return getattr(data, name)

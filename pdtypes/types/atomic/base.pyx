@@ -18,12 +18,6 @@ import pdtypes.types.resolve as resolve
 from pdtypes.util.round import Tolerance
 
 
-# TODO: move type_def, dtype, itemsize, na_value to class variables.  They
-# can be overridden in __init__ if a type defines it.
-# -> in this case, check that cls.__init__ != AtomicType.__init__
-# -> this also solves ambiguity with type_def in ObjectType constructor.
-
-
 # conversions
 # +------------------------------------------------
 # |           | b | i | f | c | d | d | t | s | o |
@@ -146,7 +140,14 @@ def dispatch(_method=None, *, namespace: str = None):
     """Dispatch an AtomicType method to pandas series' of the given type, so
     that it is discovered during attribute lookup.
     """
+    has_options = _method is not None
+    if has_options:
+        validate_dispatch_signature(_method)
+
     def dispatch_decorator(method):
+        if not has_options:
+            validate_dispatch_signature(method)
+
         @wraps(method)
         def dispatch_wrapper(self, *args, **kwargs):
             return method(self, *args, **kwargs)
@@ -155,9 +156,9 @@ def dispatch(_method=None, *, namespace: str = None):
         dispatch_wrapper._namespace = namespace
         return dispatch_wrapper
 
-    if _method is None:
-        return dispatch_decorator
-    return dispatch_decorator(_method)
+    if has_options:
+        return dispatch_decorator(_method)
+    return dispatch_decorator
 
 
 def generic(class_def: type):
@@ -671,11 +672,13 @@ cdef class AtomicType(BaseType):
         * `to_object(...)`:
     """
 
-    # Bookkeeping fields.  These are managed internally via type decorators.
+    # Internal fields.  These are managed via decorators and should not be
+    # overridden.
     registry: TypeRegistry = AtomicTypeRegistry()
     flyweights: dict[int, AtomicType] = {}
 
-    # Default fields.  These can be overridden in AtomicType definitions.
+    # Default fields.  These can be overridden in AtomicType definitions to
+    # customize their behavior
     conversion_func = cast.to_object
     dtype = np.dtype("O")
     itemsize = None
@@ -1743,3 +1746,28 @@ cdef int validate(
                 f"{subclass.__name__}.{name}() must have the following "
                 f"signature: {dict(expected)}, not {attr_sig}"
             )
+
+
+cdef int validate_dispatch_signature(object call) except -1:
+    """Inspect the signature of an AtomicType method decorated with @dispatch,
+    ensuring that it accepts and returns SeriesWrapper objects.
+    """
+    cdef object sig = inspect.signature(call)
+    cdef object first_type = list(sig.parameters.values())[1].annotation
+    cdef object return_type = sig.return_annotation
+    cdef set valid_annotations = {"SeriesWrapper", cast.SeriesWrapper}
+
+    # NOTE: methods defined in .pyx files will store their SeriesWrapper
+    # annotations as strings, while those defined in .py files store them as
+    # direct references.
+
+    if first_type not in valid_annotations:
+        raise TypeError(
+            f"@dispatch method {call.__qualname__}() must accept a "
+            f"SeriesWrapper as its first argument after self, not {first_type}"
+        )
+    if return_type not in valid_annotations:
+        raise TypeError(
+            f"@dispatch method {call.__qualname__}() must return a "
+            f"SeriesWrapper object, not {return_type}"
+        )
