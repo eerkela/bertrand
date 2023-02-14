@@ -1,5 +1,6 @@
 from collections import defaultdict
 import inspect
+from functools import wraps
 from itertools import combinations
 import regex as re  # using alternate regex
 from types import MappingProxyType
@@ -165,15 +166,22 @@ cdef class AtomicTypeRegistry:
         """
         # check if cache is out of date
         if self.needs_updating(self._dispatch_map):
-            result = defaultdict(lambda: {})
+            # building a dispatch map consists of 4 steps:
+            # 1) For each type held in registry, check for @dispatch methods.
+            # 2) For each @dispatch method, setdefault(namespace, {}).
+            # 3) namespace.setdefault(method_name, {})
+            # 4) method_name |= {atomic_type: method_def}.
+            result = {}
             for atomic_type in self.atomic_types:
-                # NOTE: __dict__ is always empty for cython types
-                attributes = dir(atomic_type)
-                for name in attributes:
-                    method = getattr(atomic_type, name)
-                    if callable(method) and hasattr(method, "_dispatch"):
-                        result[name] |= {atomic_type: method}
-            self._dispatch_map = self.remember(dict(result))
+                for method_name in dir(atomic_type):
+                    method_def = getattr(atomic_type, method_name)
+                    if hasattr(method_def, "_dispatch"):
+                        namespace = method_def._namespace
+                        submap = result.setdefault(namespace, {})
+                        submap = submap.setdefault(method_name, {})
+                        submap[atomic_type] = method_def
+
+            self._dispatch_map = self.remember(result)
 
         # return cached value
         return self._dispatch_map.value
@@ -360,13 +368,22 @@ cdef class AtomicTypeRegistry:
 ######################
 
 
-def dispatch(method):
-    """Use the given method for series of the associated type."""
-    def wrapper(self, *args, **kwargs):
-        return method(self, *args, **kwargs)
+def dispatch(_method=None, *, namespace: str = None):
+    """Dispatch an AtomicType method to pandas series' of the given type, so
+    that it is discovered during attribute lookup.
+    """
+    def dispatch_decorator(method):
+        @wraps(method)
+        def dispatch_wrapper(self, *args, **kwargs):
+            return method(self, *args, **kwargs)
 
-    wrapper._dispatch = True
-    return wrapper
+        dispatch_wrapper._dispatch = True
+        dispatch_wrapper._namespace = namespace
+        return dispatch_wrapper
+
+    if _method is None:
+        return dispatch_decorator
+    return dispatch_decorator(_method)
 
 
 cdef class AtomicType(BaseType):

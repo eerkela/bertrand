@@ -1,4 +1,6 @@
 from __future__ import annotations
+import json
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -7,6 +9,11 @@ from pdtypes.types import (
 )
 from pdtypes.types.cast import SeriesWrapper
 from pdtypes.types.cast import cast as cast_standalone
+
+
+########################
+####    ADAPTERS    ####
+########################
 
 
 def cast(self, dtype: resolvable, **kwargs) -> pd.Series:
@@ -39,30 +46,28 @@ def get_type(self) -> AtomicType | CompositeType:
     return detect_type(self.dropna())
 
 
-##################################
-####    BEGIN MONKEY PATCH    ####
-##################################
+############################
+####    MONKEY PATCH    ####
+############################
 
 
 orig_getattribute = pd.Series.__getattribute__
 
+
 def new_getattribute(self, name: str):
-    # check if attribute name is being dispatched
-    if name in AtomicType.registry.dispatch_map:
-        print(f"wrapping {repr(name)}")
+    # check if attribute is a mock accessor
+    dispatch_map = AtomicType.registry.dispatch_map
+    if name in dispatch_map:
+        return Namespace(name, self, dispatch_map[name])
 
-        # wrap series and dispatch to element type
-        def dispatch(*args, **kwargs):
-            with SeriesWrapper(self) as series:
-                result = series.dispatch(name, *args, **kwargs)
-                series.series = result.series
-                series.hasnans = result.hasnans
-                series.element_type = result.element_type
-            return series.series
-        return dispatch
+    # check if attribute corresponds to a naked @dispatch method
+    dispatch_map = dispatch_map.get(None, {})
+    if name in dispatch_map:
+        return attach(self, name, dispatch_map[name])
 
-    # fall back to original
+    # attribute is not being managed by `pdtypes` - fall back to pandas
     return orig_getattribute(self, name)
+
 
 pd.Series.__getattribute__ = new_getattribute
 
@@ -72,6 +77,48 @@ pd.Series.cast = cast
 pd.Series.get_type = get_type
 
 
-################################
-####    END MONKEY PATCH    ####
-################################
+#######################
+####    PRIVATE    ####
+#######################
+
+
+def attach(data: pd.Series, name: str, submap: dict) -> Callable:
+    """Decorate the named AtomicType method, globally attaching it to all
+    pd.Series objects.
+    """
+    def wrapper(*args, **kwargs) -> pd.Series:
+        with SeriesWrapper(data) as series:
+            result = series.dispatch(name, *args, **kwargs)
+            series.series = result.series
+            series.hasnans = result.hasnans
+            series.element_type = result.element_type
+        return series.series
+
+    submap = {str(k.type_def): v.__qualname__ for k, v in submap.items()}
+    submap = dict(sorted(submap.items()))
+    submap["..."] = "Series.round"
+    wrapper.__doc__ = (
+        f"A wrapper for `pd.Series.{name}()` that applies custom logic for\n"
+        f"one or more data types:\n{json.dumps(submap, indent=4)}"
+    )
+    return wrapper
+
+
+class Namespace:
+
+    def __init__(self, namespace: str, data: pd.Series, submap: dict):
+        self.namespace = namespace
+        self.data = data
+        self.submap = submap
+
+    def __getattribute__(self, name: str) -> Any:
+        # recover instance attributes.  NOTE: this has to be done delicately
+        # so as to avoid infinite recursion.
+        namespace = super().__getattribute__("namespace")
+        data = super().__getattribute__("data")
+        submap = super().__getattribute__("submap")
+
+        # check if attribute name is being dispatched from this namespace
+        if name in submap:
+            return attach(data, name, submap[name])
+        return getattr(data, name)
