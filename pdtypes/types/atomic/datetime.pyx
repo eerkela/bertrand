@@ -1,9 +1,7 @@
 import datetime
 import decimal
 from functools import partial
-from types import MappingProxyType
-from typing import Any, Union, Sequence
-import warnings
+from typing import Any
 
 import dateutil
 import numpy as np
@@ -13,7 +11,7 @@ import pytz
 import regex as re  # using alternate python regex engine
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, generic, lru_cache
+from .base import generic, lru_cache
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -27,7 +25,7 @@ from pdtypes.util.time import (
     as_ns, convert_unit, filter_dateutil_parser_error, 
     is_iso_8601_format_string, iso_8601_to_ns, localize_pydatetime,
     ns_to_pydatetime, numpy_datetime64_to_ns, pydatetime_to_ns,
-    pytimedelta_to_ns, string_to_pydatetime, valid_units
+    string_to_pydatetime, valid_units
 )
 
 
@@ -241,16 +239,9 @@ class DatetimeType(DatetimeMixin, AtomicType):
     conversion_func = cast.to_datetime  # all subtypes/backends inherit this
     name = "datetime"
     aliases = {"datetime"}
+    na_value = pd.NaT
     max = 0
     min = 1  # NOTE: these values always trip overflow/upcast check
-
-    def __init__(self):
-        super().__init__(
-            type_def=None,
-            dtype=np.dtype(np.object_),
-            na_value=pd.NaT,
-            itemsize=None
-        )
 
     ############################
     ####    TYPE METHODS    ####
@@ -322,15 +313,18 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
         "numpy.datetime64",
         "np.datetime64",
     }
+    itemsize = 8
+    na_value = pd.NaT
+    type_def = np.datetime64
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
-            dtype = np.dtype("M8")
+            self.dtype = np.dtype("M8")
             # NOTE: these min/max values always trigger upcast check.
             self.min = 1  # increase this to take precedence when upcasting
             self.max = 0
         else:
-            dtype = np.dtype(f"M8[{step_size}{unit}]")
+            self.dtype = np.dtype(f"M8[{step_size}{unit}]")
             # NOTE: min/max datetime64 depends on unit
             if unit == "Y":  # appears to be biased toward UTC
                 min_M8 = np.datetime64(-2**63 + 1, "Y")
@@ -347,14 +341,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
             self.min = numpy_datetime64_to_ns(min_M8)
             self.max = numpy_datetime64_to_ns(max_M8)
 
-        super().__init__(
-            type_def=np.datetime64,
-            dtype=dtype,
-            na_value=pd.NaT,
-            itemsize=8,
-            unit=unit,
-            step_size=step_size
-        )
+        super().__init__(unit=unit, step_size=step_size)
 
     ###########################
     ####   TYPE METHODS    ####
@@ -551,22 +538,19 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
     # NOTE: timezone localization can cause pd.Timestamp objects to overflow.
     # In order to account for this, we artificially reduce the available range
     # to ensure that all timezones, no matter how extreme, are representable.
+    itemsize = 8
+    na_value = pd.NaT
+    type_def = pd.Timestamp
     min = pd.Timestamp.min.value + 14 * as_ns["h"]  # UTC-14 is furthest ahead
     max = pd.Timestamp.max.value - 12 * as_ns["h"]  # UTC+12 is furthest behind
 
     def __init__(self, tz: datetime.tzinfo = None):
         if tz is None:
-            dtype = np.dtype("M8[ns]")
+            self.dtype = np.dtype("M8[ns]")
         else:
-            dtype = pd.DatetimeTZDtype(tz=tz)
+            self.dtype = pd.DatetimeTZDtype(tz=tz)
 
-        super().__init__(
-            type_def=pd.Timestamp,
-            dtype=dtype,
-            na_value=pd.NaT,
-            itemsize=8,
-            tz=tz
-        )
+        super().__init__(tz=tz)
 
     ############################
     ####    TYPE METHODS    ####
@@ -767,17 +751,13 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
 class PythonDatetimeType(DatetimeMixin, AtomicType):
 
     aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
+    na_value = pd.NaT
+    type_def = datetime.datetime
     max = pydatetime_to_ns(datetime.datetime.max)
     min = pydatetime_to_ns(datetime.datetime.min)
 
     def __init__(self, tz: datetime.tzinfo = None):
-        super().__init__(
-            type_def=datetime.datetime,
-            dtype=np.dtype("O"),
-            na_value=pd.NaT,
-            itemsize=None,
-            tz=tz
-        )
+        super().__init__(tz=tz)
 
     ############################
     ####    TYPE METHODS    ####
@@ -806,6 +786,12 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
     @classmethod
     def detect(cls, example: datetime.datetime, **defaults) -> AtomicType:
         return cls.instance(tz=example.tzinfo, **defaults)
+
+    @classmethod
+    def resolve(cls, context: str = None) -> AtomicType:
+        if context is not None:
+            return cls.instance(tz=pytz.timezone(context))
+        return cls.instance()
 
     ##############################
     ####    SERIES METHODS    ####

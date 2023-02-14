@@ -1,17 +1,13 @@
-from collections import defaultdict
 import inspect
 from functools import wraps
-from itertools import combinations
 import regex as re  # using alternate regex
 from types import MappingProxyType
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
-cimport cython
 cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from pdtypes.type_hints import numeric
 from pdtypes.util.structs cimport LRUDict
 
 cimport pdtypes.types.cast as cast
@@ -64,7 +60,7 @@ from pdtypes.util.round import Tolerance
 # - is_timedelta (in timedelta)
 # - is_string (in string)
 # - is_object (in object)
-# - is_nullable (if isinstance(self.dtype, np.dtype): in bool/int)  # manually defined where False?
+# - is_nullable (if isinstance(self.dtype, np.dtype): in bool/int)
 # - is_sparse (wrapped in SparseType)
 # - is_categorical (wrapped in CategoricalType)
 # - is_root (NOT decorated with @subtype)
@@ -92,6 +88,31 @@ from pdtypes.util.round import Tolerance
 # the is_... checks entirely.
 
 
+
+# @classmethod
+# AtomicType._inherit_flags(cls, parent: type) -> None
+#     for attr in atomic.flag_names:
+#         # do a 3-way comparison between parent, child, and base
+#         base_attr = getattr(AtomicType, attr)
+#         parent_attr = getattr(parent, attr)
+#         child_attr = getattr(cls, attr)
+#         if parent_attr != base_attr and child_attr == base_attr:
+#             setattr(cls, attr, parent_attr)
+
+# alternatively: call dir(parent) and 
+
+
+# AtomicType:
+#     is_integer = False
+#     is_nullable = True
+
+# IntegerType:
+#     is_integer = True
+
+# NumpyIntegerType:
+#     is_nullable = False
+
+
 ##########################
 ####    PRIMITIVES    ####
 ##########################
@@ -111,6 +132,186 @@ cdef class BaseType:
     this is the simplest way of coupling them reliably in the Cython layer.
     """
     pass
+
+
+##########################
+####    DECORATORS    ####
+##########################
+
+
+cdef tuple generic_methods = ("_generate_subtypes", "instance", "resolve")
+
+
+def dispatch(_method=None, *, namespace: str = None):
+    """Dispatch an AtomicType method to pandas series' of the given type, so
+    that it is discovered during attribute lookup.
+    """
+    def dispatch_decorator(method):
+        @wraps(method)
+        def dispatch_wrapper(self, *args, **kwargs):
+            return method(self, *args, **kwargs)
+
+        dispatch_wrapper._dispatch = True
+        dispatch_wrapper._namespace = namespace
+        return dispatch_wrapper
+
+    if _method is None:
+        return dispatch_decorator
+    return dispatch_decorator(_method)
+
+
+def generic(class_def: type):
+    """Class decorator to mark generic AtomicType definitions.
+
+    Generic types are backend-agnostic and act as wildcard containers for
+    more specialized subtypes.  For instance, the generic "int" can contain
+    the backend-specific "int[numpy]", "int[pandas]", and "int[python]"
+    subtypes, which can be resolved as shown. 
+    """
+    if not issubclass(class_def, AtomicType):
+        raise TypeError(f"`@generic` can only be applied to AtomicTypes")
+    if (
+        class_def.__init__ != AtomicType.__init__ and
+        len(inspect.signature(class_def).parameters)
+    ):
+        raise TypeError(
+            f"To be generic, {class_def.__name__}.__init__() cannot "
+            f"have arguments other than self"
+        )
+
+    @classmethod
+    def register_backend(cls, backend: str):
+        def decorator(wrapped: type):
+            if not issubclass(wrapped, AtomicType):
+                raise TypeError(
+                    f"`generic.register_backend()` can only be applied to "
+                    f"AtomicType definitions"
+                )
+            if wrapped._ignored or cls._ignored:
+                return wrapped
+
+            # check backend is unique
+            if backend in cls.backends:
+                raise TypeError(
+                    f"`backend` must be unique, not one of {set(cls.backends)}"
+                )
+
+            # assign attributes
+            wrapped.conversion_func = cls.conversion_func
+            # wrapped._inherit_flags(cls)
+            # wrapped.is_generic = False
+            wrapped._generic = cls
+            wrapped.name = cls.name
+            wrapped.backend = backend
+            cls.backends[backend] = wrapped
+            wrapped.registry.flush()
+            return wrapped
+
+        return decorator
+
+    # register_backend is needed to compile type definitions
+    class_def.register_backend = register_backend
+    if class_def._ignored:
+        return class_def
+
+    # overwrite class attributes
+    class_def.is_generic = True
+    class_def.backend = None
+    class_def.backends = {None: class_def}
+
+    cdef dict orig = {k: getattr(class_def, k) for k in generic_methods}
+
+    def _generate_subtypes(self, types: set) -> frozenset:
+        result = orig["_generate_subtypes"](self, types)
+        for k, v in self.backends.items():
+            if k is not None:
+                result |= v.instance().subtypes.atomic_types
+        return result
+
+    @classmethod
+    def instance(cls, backend: str = None, *args, **kwargs) -> AtomicType:
+        if backend is None:
+            return orig["instance"](*args, **kwargs)
+        extension = cls.backends.get(backend, None)
+        if extension is None:
+            raise TypeError(
+                f"{cls.name} backend not recognized: {repr(backend)}"
+            )
+        return extension.instance(*args, **kwargs)
+
+    @classmethod
+    def resolve(cls, backend: str = None, *args: str) -> AtomicType:
+        if backend is None:
+            return orig["resolve"](*args)
+        if backend not in cls.backends:
+            raise TypeError(
+                f"{cls.name} backend not recognzied: {repr(backend)}"
+            )
+        return cls.backends[backend].resolve(*args)
+
+    # patch in new methods
+    loc = locals()
+    for k in orig:
+        setattr(class_def, k, loc[k])
+    return class_def
+
+
+def lru_cache(maxsize: int):
+    """Class decorator to use a fixed-length LRU dictionary to store flyweight
+    instances of an AtomicType definition.
+    """
+
+    def decorator(class_def: type):
+        if not issubclass(class_def, AtomicType):
+            raise TypeError(
+                f"`@lru_cache()` can only be applied to AtomicType definitions"
+            )
+        class_def.flyweights = LRUDict(maxsize=maxsize)
+        return class_def
+
+    return decorator
+
+
+def subtype(supertype: type):
+    """Class decorator to establish type hierarchies."""
+    if not issubclass(supertype, AtomicType):
+        raise TypeError(f"`supertype` must be a subclass of AtomicType")
+
+    def decorator(class_def: type):
+        if not issubclass(class_def, AtomicType):
+            raise TypeError(
+                f"`@subtype()` can only be applied to AtomicType definitions"
+            )
+        if class_def._ignored or supertype._ignored:
+            return class_def
+
+        # break circular references
+        ref = supertype
+        while ref is not None:
+            if ref is class_def:
+                raise TypeError(
+                    "Type hierarchy cannot contain circular references"
+                )
+            ref = ref._parent
+
+        # check type is not already registered
+        if class_def._parent:
+            raise TypeError(
+                f"AtomicTypes can only be registered to one supertype at a "
+                f"time (`{class_def.__name__}` is currently registered to "
+                f"`{class_def._parent.__name__}`)"
+            )
+
+        # assign attributes
+        class_def.conversion_func = supertype.conversion_func
+        # class_def._inherit_flags(supertype)
+        # class_def.is_root = False
+        class_def._parent = supertype
+        supertype._children.add(class_def)
+        AtomicType.registry.flush()
+        return class_def
+
+    return decorator
 
 
 ########################
@@ -279,7 +480,11 @@ cdef class AtomicTypeRegistry:
         if hasattr(new_type, "name"):
             self.validate_name(new_type)
         self.validate_aliases(new_type)
+        self.validate_dtype(new_type)
+        self.validate_itemsize(new_type)
         self.validate_slugify(new_type)
+        self.validate_na_value(new_type)
+        self.validate_type_def(new_type)
 
         # add type to registry and update hash
         self.atomic_types.append(new_type)
@@ -321,11 +526,7 @@ cdef class AtomicTypeRegistry:
         and that none of its aliases overlap with another registered
         AtomicType.
         """
-        validate(
-            subclass=subclass,
-            name="aliases",
-            expected_type=set
-        )
+        validate(subclass, "aliases", expected_type=set)
 
         # ensure that no aliases are already registered to another AtomicType
         for k in subclass.aliases:
@@ -335,13 +536,30 @@ cdef class AtomicTypeRegistry:
                     f"registered to {self.aliases[k].__name__}"
                 )
 
+    cdef int validate_dtype(self, type subclass) except -1:
+        """Ensure that if a subclass of AtomicType defines a `dtype`
+        attribute, that it is a valid numpy dtype or pandas extension type.
+        """
+        valid_dtypes = (np.dtype, pd.api.extensions.ExtensionDtype)
+        if subclass.dtype is not None:
+            validate(subclass, "dtype", expected_type=valid_dtypes)
+
+    cdef int validate_itemsize(self, type subclass) except -1:
+        """Ensure that if a subclass of AtomicType defines an `itemsize`
+        attribute, that it is a positive integer.
+        """
+        if subclass.itemsize is not None:
+            validate(subclass, "itemsize", expected_type=int)
+            if subclass.itemsize < 1:
+                raise TypeError(f"`{subclass.__name__}.itemsize` must be >= 1")
+
     cdef int validate_slugify(self, type subclass) except -1:
         """Ensure that a subclass of AtomicType has a `slugify()`
         classmethod and that its signature matches __init__.
         """
         validate(
-            subclass=subclass,
-            name="slugify",
+            subclass,
+            "slugify",
             expected_type="classmethod",
             signature=subclass
         )
@@ -350,11 +568,7 @@ cdef class AtomicTypeRegistry:
         """Ensure that a subclass of AtomicType has a unique `name` attribute
         associated with it.
         """
-        validate(
-            subclass=subclass,
-            name="name",
-            expected_type=str,
-        )
+        validate(subclass, "name", expected_type=str)
 
         # ensure subclass.name is unique
         observed_names = {x.name for x in self.atomic_types}
@@ -363,6 +577,22 @@ cdef class AtomicTypeRegistry:
                 f"{subclass.__name__}.name ({repr(subclass.name)}) must be "
                 f"unique (not one of {observed_names})"
             )
+
+    cdef int validate_na_value(self, type subclass) except -1:
+        """Ensure that if a subclass of AtomicType defines an `na_value`
+        attribute, that it is accepted by `pd.isna()`.
+        """
+        if not pd.isna(subclass.na_value):
+            raise TypeError(
+                f"`{subclass.__name__}.na_value` must pass pd.isna()"
+            )
+
+    cdef int validate_type_def(self, type subclass) except -1:
+        """Ensure that if a subclass of AtomicType defines a `type_def`
+        attribute, that it is a valid type definition.
+        """
+        if subclass.type_def is not None:
+            validate(subclass, "type_def", expected_type=type)
 
     #############################
     ####    MAGIC METHODS    ####
@@ -392,26 +622,9 @@ cdef class AtomicTypeRegistry:
 ######################
 
 
-def dispatch(_method=None, *, namespace: str = None):
-    """Dispatch an AtomicType method to pandas series' of the given type, so
-    that it is discovered during attribute lookup.
-    """
-    def dispatch_decorator(method):
-        @wraps(method)
-        def dispatch_wrapper(self, *args, **kwargs):
-            return method(self, *args, **kwargs)
-
-        dispatch_wrapper._dispatch = True
-        dispatch_wrapper._namespace = namespace
-        return dispatch_wrapper
-
-    if _method is None:
-        return dispatch_decorator
-    return dispatch_decorator(_method)
-
-
 cdef class AtomicType(BaseType):
     """Base type for all user-defined atomic types.
+
     Notes
     ----
     This is a metaclass.  Any time another class inherits from it, that class
@@ -458,10 +671,17 @@ cdef class AtomicType(BaseType):
         * `to_object(...)`:
     """
 
-    # default fields.  These are managed internally via type decorators.
+    # Bookkeeping fields.  These are managed internally via type decorators.
     registry: TypeRegistry = AtomicTypeRegistry()
     flyweights: dict[int, AtomicType] = {}
+
+    # Default fields.  These can be overridden in AtomicType definitions.
     conversion_func = cast.to_object
+    dtype = np.dtype("O")
+    itemsize = None
+    na_value = pd.NA
+    type_def = None
+
     # is_boolean = False
     # is_integer = False
     # is_signed = False
@@ -479,32 +699,7 @@ cdef class AtomicType(BaseType):
     # is_generic = True  # set False in @register_backend
     # is_root = True  # set False in @subtype
 
-    def __init__(
-        self,
-        type_def: type,
-        dtype: object,
-        na_value: Any,
-        itemsize: int,
-        **kwargs
-    ):
-        if type_def is not None and not isinstance(type_def, type):
-            raise TypeError(
-                f"`type_def` must be a class definition, not {type(type_def)}"
-            )
-        if not isinstance(dtype, (np.dtype, pd.api.extensions.ExtensionDtype)):
-            raise TypeError(
-                f"`dtype` must be a numpy/pandas dtype object, not "
-                f"{repr(type_def)}"
-            )
-        if not pd.isna(na_value):
-            raise TypeError(f"`na_value` must pass pd.isna()")
-        if itemsize is not None and itemsize < 1:
-            raise TypeError(f"`itemsize` must be positive")
-
-        self.type_def = type_def
-        self.dtype = dtype
-        self.na_value = na_value
-        self.itemsize = itemsize
+    def __init__(self, **kwargs):
         self.kwargs = MappingProxyType(kwargs)
         self.slug = self.slugify(**kwargs)
         self.hash = hash(self.slug)
@@ -1102,163 +1297,7 @@ cdef class AdapterType(AtomicType):
         return getattr(self.atomic_type, name)
 
 
-##########################
-####    DECORATORS    ####
-##########################
 
-
-cdef tuple generic_methods = ("_generate_subtypes", "instance", "resolve")
-
-
-def generic(class_def: type):
-    """Class decorator to mark generic AtomicType definitions.
-
-    Generic types are backend-agnostic and act as wildcard containers for
-    more specialized subtypes.  For instance, the generic "int" can contain
-    the backend-specific "int[numpy]", "int[pandas]", and "int[python]"
-    subtypes, which can be resolved as shown. 
-    """
-    if not issubclass(class_def, AtomicType):
-        raise TypeError(f"`@generic` can only be applied to AtomicTypes")
-    if len(inspect.signature(class_def).parameters):
-        raise TypeError(
-            f"To be generic, {class_def.__name__}.__init__() cannot "
-            f"have arguments other than self"
-        )
-
-    @classmethod
-    def register_backend(cls, backend: str):
-        def decorator(wrapped: type):
-            if not issubclass(wrapped, AtomicType):
-                raise TypeError(
-                    f"`generic.register_backend()` can only be applied to "
-                    f"AtomicType definitions"
-                )
-            if wrapped._ignored or cls._ignored:
-                return wrapped
-
-            # check backend is unique
-            if backend in cls.backends:
-                raise TypeError(
-                    f"`backend` must be unique, not one of {set(cls.backends)}"
-                )
-
-            # assign attributes
-            wrapped.conversion_func = cls.conversion_func
-            # wrapped._inherit_flags(cls)
-            # wrapped.is_generic = False
-            wrapped._generic = cls
-            wrapped.name = cls.name
-            wrapped.backend = backend
-            cls.backends[backend] = wrapped
-            wrapped.registry.flush()
-            return wrapped
-
-        return decorator
-
-    # register_backend is needed to compile type definitions
-    class_def.register_backend = register_backend
-    if class_def._ignored:
-        return class_def
-
-    # overwrite class attributes
-    class_def.is_generic = True
-    class_def.backend = None
-    class_def.backends = {None: class_def}
-
-    cdef dict orig = {k: getattr(class_def, k) for k in generic_methods}
-
-    def _generate_subtypes(self, types: set) -> frozenset:
-        result = orig["_generate_subtypes"](self, types)
-        for k, v in self.backends.items():
-            if k is not None:
-                result |= v.instance().subtypes.atomic_types
-        return result
-
-    @classmethod
-    def instance(cls, backend: str = None, *args, **kwargs) -> AtomicType:
-        if backend is None:
-            return orig["instance"](*args, **kwargs)
-        extension = cls.backends.get(backend, None)
-        if extension is None:
-            raise TypeError(
-                f"{cls.name} backend not recognized: {repr(backend)}"
-            )
-        return extension.instance(*args, **kwargs)
-
-    @classmethod
-    def resolve(cls, backend: str = None, *args: str) -> AtomicType:
-        if backend is None:
-            return orig["resolve"](*args)
-        if backend not in cls.backends:
-            raise TypeError(
-                f"{cls.name} backend not recognzied: {repr(backend)}"
-            )
-        return cls.backends[backend].resolve(*args)
-
-    # patch in new methods
-    loc = locals()
-    for k in orig:
-        setattr(class_def, k, loc[k])
-    return class_def
-
-
-def lru_cache(maxsize: int):
-    """Class decorator to use a fixed-length LRU dictionary to store flyweight
-    instances of an AtomicType definition.
-    """
-
-    def decorator(class_def: type):
-        if not issubclass(class_def, AtomicType):
-            raise TypeError(
-                f"`@lru_cache()` can only be applied to AtomicType definitions"
-            )
-        class_def.flyweights = LRUDict(maxsize=maxsize)
-        return class_def
-
-    return decorator
-
-
-def subtype(supertype: type):
-    """Class decorator to establish type hierarchies."""
-    if not issubclass(supertype, AtomicType):
-        raise TypeError(f"`supertype` must be a subclass of AtomicType")
-
-    def decorator(class_def: type):
-        if not issubclass(class_def, AtomicType):
-            raise TypeError(
-                f"`@subtype()` can only be applied to AtomicType definitions"
-            )
-        if class_def._ignored or supertype._ignored:
-            return class_def
-
-        # break circular references
-        ref = supertype
-        while ref is not None:
-            if ref is class_def:
-                raise TypeError(
-                    "Type hierarchy cannot contain circular references"
-                )
-            ref = ref._parent
-
-        # check type is not already registered
-        if class_def._parent:
-            raise TypeError(
-                f"AtomicTypes can only be registered to one supertype at a "
-                f"time (`{class_def.__name__}` is currently registered to "
-                f"`{class_def._parent.__name__}`)"
-            )
-
-        # assign attributes
-        class_def.conversion_func = supertype.conversion_func
-        # class_def._inherit_flags(supertype)
-        # class_def.is_root = False
-        class_def._parent = supertype
-        supertype._children.add(class_def)
-        AtomicType.registry.flush()
-        return class_def
-
-    return decorator
 
 
 ##############################
@@ -1340,6 +1379,11 @@ cdef class CompositeType(BaseType):
 
     cdef void forget_index(self):
         self.index = None
+
+    @property
+    def subtypes(self) -> CompositeType:
+        """An alias for `CompositeType.expand()`"""
+        return self.expand()
 
     ####################################
     ####    STATIC WRAPPER (SET)    ####
@@ -1681,14 +1725,21 @@ cdef int validate(
 
     # if attribute has a signature match, check it
     if signature is not None:
-        expected = inspect.signature(signature).parameters
+        if (
+            isinstance(signature, type) and
+            signature.__init__ == AtomicType.__init__
+        ):
+            expected = MappingProxyType({})
+        else:
+            expected = inspect.signature(signature).parameters
+
         try:
             attr_sig = inspect.signature(attr).parameters
         except ValueError:  # cython methods aren't introspectable
             attr_sig = MappingProxyType({})
+
         if attr_sig != expected:
             raise TypeError(
                 f"{subclass.__name__}.{name}() must have the following "
                 f"signature: {dict(expected)}, not {attr_sig}"
             )
-

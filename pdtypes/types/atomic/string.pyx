@@ -1,16 +1,13 @@
 import decimal
 from functools import partial
 import re  # normal python regex for compatibility with pd.Series.str.extract
-from types import MappingProxyType
-from typing import Iterable, Union
 
-cimport cython
 import numpy as np
 cimport numpy as np
 import pandas as pd
 
 from .base cimport AtomicType, BaseType
-from .base import dispatch, generic
+from .base import generic
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -243,14 +240,8 @@ class StringType(StringMixin, AtomicType):
         "unicode_",
         "U",
     }
-
-    def __init__(self):
-        super().__init__(
-            type_def=str,
-            dtype=default_string_dtype,
-            na_value=pd.NA,
-            itemsize=None,
-        )
+    dtype = default_string_dtype
+    type_def = str
 
 
 #####################
@@ -262,14 +253,8 @@ class StringType(StringMixin, AtomicType):
 class PythonStringType(StringMixin, AtomicType):
 
     aliases = {pd.StringDtype("python"), "pystr"}
-
-    def __init__(self):
-        super().__init__(
-            type_def=str,
-            dtype=pd.StringDtype("python"),
-            na_value=pd.NA,
-            itemsize=None
-        )
+    dtype = pd.StringDtype("python")
+    type_def = str
 
 
 #######################
@@ -282,14 +267,8 @@ class PythonStringType(StringMixin, AtomicType):
 class PyArrowStringType(StringMixin, AtomicType, ignore=not pyarrow_installed):
 
     aliases = {"arrowstr"}
-
-    def __init__(self):
-        super().__init__(
-            type_def=str,
-            dtype=pd.StringDtype("pyarrow"),
-            na_value=pd.NA,
-            itemsize=None
-        )
+    dtype = pd.StringDtype("pyarrow") if pyarrow_installed else None
+    type_def = str
 
 
 #######################

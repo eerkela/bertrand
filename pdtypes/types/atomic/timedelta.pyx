@@ -1,16 +1,13 @@
 import datetime
-from functools import partial
-from types import MappingProxyType
-from typing import Any, Union, Sequence
+from typing import Any
 
-cimport cython
 import numpy as np
 cimport numpy as np
 import pandas as pd
 import regex as re  # using alternate python regex engine
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, generic, lru_cache
+from .base import generic, lru_cache
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -21,7 +18,7 @@ from pdtypes.util.round cimport Tolerance
 from pdtypes.util.round import round_div
 from pdtypes.util.time cimport Epoch
 from pdtypes.util.time import (
-    as_ns, convert_unit, pytimedelta_to_ns, timedelta_string_to_ns, valid_units
+    as_ns, convert_unit, pytimedelta_to_ns, valid_units
 )
 
 
@@ -264,16 +261,9 @@ class TimedeltaType(TimedeltaMixin, AtomicType):
     conversion_func = cast.to_timedelta  # all subtypes/backends inherit this
     name = "timedelta"
     aliases = {"timedelta"}
+    na_value = pd.NaT
     max = 0
     min = 1  # these values always trip overflow/upcast check
-
-    def __init__(self):
-        super().__init__(
-            type_def=None,
-            dtype=np.dtype("O"),
-            na_value=pd.NaT,
-            itemsize=None
-        )
 
     ############################
     ####    TYPE METHODS    ####
@@ -322,15 +312,18 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
         "numpy.timedelta64",
         "np.timedelta64",
     }
+    itemsize = 8
+    na_value = np.timedelta64("NaT")
+    type_def = np.timedelta64
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
-            dtype = np.dtype("m8")
+            self.dtype = np.dtype("m8")
             # NOTE: these min/max values always trigger upcast check.
             self.min = 1  # increase this to take precedence when upcasting
             self.max = 0
         else:
-            dtype = np.dtype(f"m8[{step_size}{unit}]")
+            self.dtype = np.dtype(f"m8[{step_size}{unit}]")
             # NOTE: these epochs are chosen to minimize range in the event of
             # irregular units ('Y'/'M'), so that conversions work regardless of
             # leap days and irregular month lengths.
@@ -347,14 +340,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
                 since=Epoch(pd.Timestamp("2000-02-01"))
             )
 
-        super().__init__(
-            type_def=np.timedelta64,
-            dtype=dtype,
-            na_value=pd.NaT,
-            itemsize=8,
-            unit=unit,
-            step_size=step_size
-        )
+        super().__init__(unit=unit, step_size=step_size)
 
     ############################
     ####    TYPE METHODS    ####
@@ -490,16 +476,12 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
 class PandasTimedeltaType(TimedeltaMixin, AtomicType):
 
     aliases = {pd.Timedelta, "Timedelta", "pandas.Timedelta", "pd.Timedelta"}
+    dtype = np.dtype("m8[ns]")
+    itemsize = 8
+    na_value = pd.NaT
+    type_def = pd.Timedelta
     max = pd.Timedelta.max.value
     min = pd.Timedelta.min.value
-
-    def __init__(self):
-        super().__init__(
-            type_def=pd.Timedelta,
-            dtype=np.dtype("m8[ns]"),
-            na_value=pd.NaT,
-            itemsize=8
-        )
 
     ##############################
     ####    SERIES METHODS    ####
@@ -559,16 +541,10 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
 class PythonTimedeltaType(TimedeltaMixin, AtomicType):
 
     aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
+    na_value = pd.NaT
+    type_def = datetime.timedelta
     max = pytimedelta_to_ns(datetime.timedelta.max)
     min = pytimedelta_to_ns(datetime.timedelta.min)
-
-    def __init__(self):
-        super().__init__(
-            type_def=datetime.timedelta,
-            dtype=np.dtype("O"),
-            na_value=pd.NaT,
-            itemsize=None
-        )
 
     ##############################
     ####    SERIES METHODS    ####

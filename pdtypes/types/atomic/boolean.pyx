@@ -1,14 +1,11 @@
 import decimal
-from typing import Union, Sequence
 
-cimport cython
 import numpy as np
 cimport numpy as np
 import pandas as pd
-import pytz
 
 from .base cimport AtomicType
-from .base import dispatch, generic
+from .base import generic
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -16,17 +13,6 @@ cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 from pdtypes.util.time cimport Epoch
-from pdtypes.util.time import convert_unit
-
-
-# TODO: add datetime_like `since` hint to to_datetime, to_timedelta
-
-
-# TODO: fully implement boolean to_x conversions
-
-
-# TODO: to_timedelta([True, False, None, 1, 2, 3], "m8[s]", unit="s")
-# yields NAs for integer part rather than converting as expected.
 
 
 ######################
@@ -155,15 +141,10 @@ class BooleanType(BooleanMixin, AtomicType):
     conversion_func = cast.to_boolean  # all subtypes/backends inherit this
     name = "bool"
     aliases = {bool, "bool", "boolean", "bool_", "bool8", "b1", "?"}
+    dtype = np.dtype(np.bool_)
+    itemsize = 1
+    type_def = bool
     is_nullable = False
-
-    def __init__(self):
-        super().__init__(
-            type_def=bool,
-            dtype=np.dtype(np.bool_),
-            na_value=pd.NA,
-            itemsize=1
-        )
 
 
 #####################
@@ -175,15 +156,10 @@ class BooleanType(BooleanMixin, AtomicType):
 class NumpyBooleanType(BooleanMixin, AtomicType):
 
     aliases = {np.bool_, np.dtype(np.bool_)}
+    dtype = np.dtype(np.bool_)
+    itemsize = 1
+    type_def = np.bool_
     is_nullable = False
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.bool_,
-            dtype=np.dtype(np.bool_),
-            na_value=pd.NA,
-            itemsize=1
-        )
 
 
 ######################
@@ -195,14 +171,9 @@ class NumpyBooleanType(BooleanMixin, AtomicType):
 class PandasBooleanType(BooleanMixin, AtomicType):
 
     aliases = {pd.BooleanDtype(), "Boolean"}
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.bool_,
-            dtype=pd.BooleanDtype(),
-            na_value=pd.NA,
-            itemsize=1
-        )
+    dtype = pd.BooleanDtype()
+    itemsize = 1
+    type_def = np.bool_
 
 
 ######################
@@ -214,11 +185,6 @@ class PandasBooleanType(BooleanMixin, AtomicType):
 class PythonBooleanType(BooleanMixin, AtomicType):
 
     aliases = set()
-
-    def __init__(self):
-        super().__init__(
-            type_def=bool,
-            dtype=np.dtype("O"),
-            na_value=pd.NA,
-            itemsize=1
-        )
+    dtype = np.dtype("O")
+    itemsize = 1
+    type_def = bool

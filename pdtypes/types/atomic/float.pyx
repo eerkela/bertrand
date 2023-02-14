@@ -1,12 +1,11 @@
 import decimal
-from types import MappingProxyType
 
 import numpy as np
 cimport numpy as np
 import pandas as pd
 import pytz
 
-from .base cimport AdapterType, AtomicType, CompositeType
+from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, subtype
 import pdtypes.types.atomic.complex as complex_types
 
@@ -20,7 +19,6 @@ import pdtypes.types.resolve as resolve
 from pdtypes.util.round cimport Tolerance
 from pdtypes.util.round import round_float
 from pdtypes.util.time cimport Epoch
-from pdtypes.util.time import convert_unit
 
 
 ##################################
@@ -112,7 +110,6 @@ class FloatMixin:
         """Round a floating point series to the given number of decimal places
         using the specified rounding rule.
         """
-        print("hello world")
         rule = cast.validate_rounding(rule)
         return cast.SeriesWrapper(
             round_float(series.rectify().series, rule=rule, decimals=decimals),
@@ -320,17 +317,13 @@ class FloatType(FloatMixin, AtomicType):
     conversion_func = cast.to_float  # all subtypes/backend inherit this
     name = "float"
     aliases = {float, "float", "floating", "f"}
-    _equiv_complex = "ComplexType"
-    min = -2**53
+    dtype = np.dtype(np.float64)
+    itemsize = 8
+    na_value = np.nan
+    type_def = float
     max = 2**53
-
-    def __init__(self):
-        super().__init__(
-            type_def=float,
-            dtype=np.dtype(np.float64),
-            na_value=np.nan,
-            itemsize=8
-        )
+    min = -2**53
+    _equiv_complex = "ComplexType"
 
 
 @generic
@@ -339,17 +332,13 @@ class Float16Type(FloatMixin, AtomicType):
 
     name = "float16"
     aliases = {"float16", "half", "f2", "e"}
-    _equiv_complex = "Complex64Type"
-    min = -2**11
+    dtype = np.dtype(np.float16)
+    itemsize = 2
+    na_value = np.nan
+    type_def = np.float16
     max = 2**11
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.float16,
-            dtype=np.dtype(np.float16),
-            na_value=np.nan,
-            itemsize=2
-        )
+    min = -2**11
+    _equiv_complex = "Complex64Type"
 
 
 @generic
@@ -358,17 +347,13 @@ class Float32Type(FloatMixin, AtomicType):
 
     name = "float32"
     aliases = {"float32", "single", "f4"}
-    _equiv_complex = "Complex64Type"
-    min = -2**24
+    dtype = np.dtype(np.float32)
+    itemsize = 4
+    na_value = np.nan
+    type_def = np.float32
     max = 2**24
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.float32,
-            dtype=np.dtype(np.float32),
-            na_value=np.nan,
-            itemsize=4
-        )
+    min = -2**24
+    _equiv_complex = "Complex64Type"
 
 
 @generic
@@ -377,17 +362,13 @@ class Float64Type(FloatMixin, AtomicType):
 
     name = "float64"
     aliases = {"float64", "double", "float_", "f8", "d"}
-    _equiv_complex = "Complex128Type"
-    min = -2**53
+    dtype = np.dtype(np.float64)
+    itemsize = 8
+    na_value = np.nan
+    type_def = np.float64
     max = 2**53
-
-    def __init__(self):
-        super().__init__(
-            type_def=float,
-            dtype=np.dtype(np.float64),
-            na_value=np.nan,
-            itemsize=8
-        )
+    min = -2**53
+    _equiv_complex = "Complex128Type"
 
 
 @generic
@@ -399,17 +380,13 @@ class Float80Type(LongDoubleSpecialCase, AtomicType, ignore=no_longdouble):
         "float80", "longdouble", "longfloat", "long double", "long float",
         "f10", "g"
     }
-    _equiv_complex = "Complex160Type"
-    min = -2**64
+    dtype = np.dtype(np.longdouble)
+    itemsize = np.dtype(np.longdouble).itemsize
+    na_value = np.nan
+    type_def = np.longdouble
     max = 2**64
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.longdouble,
-            dtype=np.dtype(np.longdouble),
-            na_value=np.nan,
-            itemsize=np.dtype(np.longdouble).itemsize
-        )
+    min = -2**64
+    _equiv_complex = "Complex160Type"
 
 
 #####################
@@ -421,34 +398,27 @@ class Float80Type(LongDoubleSpecialCase, AtomicType, ignore=no_longdouble):
 class NumpyFloatType(FloatMixin, AtomicType):
 
     aliases = {np.floating}
-    _equiv_complex = "NumpyComplexType"
-    min = -2**53
+    dtype = np.dtype(np.float64)
+    itemsize = 8
+    na_value = np.nan
+    type_def = np.float64
     max = 2**53
+    min = -2**53
+    _equiv_complex = "NumpyComplexType"
 
-    def __init__(self):
-        super().__init__(
-            type_def=np.float64,
-            dtype=np.dtype(np.float64),
-            na_value=np.nan,
-            itemsize=8
-        )
 
 @subtype(NumpyFloatType)
 @Float16Type.register_backend("numpy")
 class NumpyFloat16Type(FloatMixin, AtomicType):
 
     aliases = {np.float16, np.dtype(np.float16)}
-    _equiv_complex = "NumpyComplex64Type"
-    min = -2**11
+    dtype = np.dtype(np.float16)
+    itemsize = 2
+    na_value = np.nan
+    type_def = np.float16
     max = 2**11
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.float16,
-            dtype=np.dtype(np.float16),
-            na_value=np.nan,
-            itemsize=2
-        )
+    min = -2**11
+    _equiv_complex = "NumpyComplex64Type"
 
 
 @subtype(NumpyFloatType)
@@ -456,17 +426,13 @@ class NumpyFloat16Type(FloatMixin, AtomicType):
 class NumpyFloat32Type(FloatMixin, AtomicType):
 
     aliases = {np.float32, np.dtype(np.float32)}
-    _equiv_complex = "NumpyComplex64Type"
-    min = -2**24
+    dtype = np.dtype(np.float32)
+    itemsize = 4
+    na_value = np.nan
+    type_def = np.float32
     max = 2**24
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.float32,
-            dtype=np.dtype(np.float32),
-            na_value=np.nan,
-            itemsize=4
-        )
+    min = -2**24
+    _equiv_complex = "NumpyComplex64Type"
 
 
 @subtype(NumpyFloatType)
@@ -474,17 +440,13 @@ class NumpyFloat32Type(FloatMixin, AtomicType):
 class NumpyFloat64Type(FloatMixin, AtomicType):
 
     aliases = {np.float64, np.dtype(np.float64)}
-    _equiv_complex = "NumpyComplex128Type"
-    min = -2**53
+    dtype = np.dtype(np.float64)
+    itemsize = 8
+    na_value = np.nan
+    type_def = np.float64
     max = 2**53
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.float64,
-            dtype=np.dtype(np.float64),
-            na_value=np.nan,
-            itemsize=8
-        )
+    min = -2**53
+    _equiv_complex = "NumpyComplex128Type"
 
 
 @subtype(NumpyFloatType)
@@ -492,17 +454,13 @@ class NumpyFloat64Type(FloatMixin, AtomicType):
 class NumpyFloat80Type(LongDoubleSpecialCase, AtomicType, ignore=no_longdouble):
 
     aliases = {np.longdouble, np.dtype(np.longdouble)}
-    _equiv_complex = "NumpyComplex160Type"
-    min = -2**64
+    dtype = np.dtype(np.longdouble)
+    itemsize = np.dtype(np.longdouble).itemsize
+    na_value = np.nan
+    type_def = np.longdouble
     max = 2**64
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.longdouble,
-            dtype=np.dtype(np.longdouble),
-            na_value=np.nan,
-            itemsize=np.dtype(np.longdouble).itemsize
-        )
+    min = -2**64
+    _equiv_complex = "NumpyComplex160Type"
 
 
 ######################
@@ -515,14 +473,9 @@ class NumpyFloat80Type(LongDoubleSpecialCase, AtomicType, ignore=no_longdouble):
 class PythonFloatType(FloatMixin, AtomicType):
 
     aliases = set()
-    _equiv_complex = "PythonComplexType"
-    min = -2**53
+    itemsize = 8
+    na_value = np.nan
+    type_def = float
     max = 2**53
-
-    def __init__(self):
-        super().__init__(
-            type_def=float,
-            dtype=np.dtype("O"),
-            na_value=np.nan,
-            itemsize=8
-        )
+    min = -2**53
+    _equiv_complex = "PythonComplexType"

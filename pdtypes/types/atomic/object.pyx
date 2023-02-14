@@ -6,9 +6,8 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, lru_cache
+from .base import lru_cache
 
-from pdtypes.error import shorten_list
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
@@ -32,31 +31,26 @@ class ObjectType(AtomicType):
     name = "object"
     aliases = {"object", "obj", "O", "pyobject", "object_", "object0"}
 
-    def __init__(self, base: type = object):
-        super().__init__(
-            type_def=base,
-            dtype=np.dtype("O"),
-            na_value=pd.NA,
-            itemsize=None,
-            base=base
-        )
+
+    def __init__(self, type_def: type = object):
+        super().__init__(type_def=type_def)
 
     #############################
     ####    CLASS METHODS    ####
     #############################
 
     @classmethod
-    def slugify(cls, base: type = object) -> str:
+    def slugify(cls, type_def: type = object) -> str:
         slug = cls.name
-        if base is not object:
-            slug += f"[{base.__module__}.{base.__name__}]"
+        if type_def is not object:
+            slug += f"[{type_def.__module__}.{type_def.__name__}]"
         return slug
 
     @classmethod
-    def resolve(cls, base: str = None) -> AtomicType:
-        if base is None:
+    def resolve(cls, type_def: str = None) -> AtomicType:
+        if type_def is None:
             return cls.instance()
-        return cls.instance(base=from_caller(base))
+        return cls.instance(type_def=from_caller(type_def))
 
     #######################
     ####    METHODS    ####
@@ -65,8 +59,8 @@ class ObjectType(AtomicType):
     def contains(self, other: Any) -> bool:
         other = resolve.resolve_type(other)
 
-        # treat base=object as wildcard
-        if self.base is object:
+        # treat type_def=object as wildcard
+        if self.type_def is object:
             if isinstance(other, CompositeType):
                 return all(isinstance(o, type(self)) for o in other)
             return isinstance(other, type(self))

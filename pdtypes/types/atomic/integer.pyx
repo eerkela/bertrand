@@ -18,14 +18,10 @@ from functools import partial
 import numpy as np
 cimport numpy as np
 import pandas as pd
-from typing import Union
-
-import pytz
 
 from pdtypes.error import shorten_list
-from pdtypes.type_hints import numeric
 
-from .base cimport AdapterType, AtomicType, CompositeType
+from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, subtype
 
 cimport pdtypes.types.cast as cast
@@ -36,9 +32,7 @@ import pdtypes.types.resolve as resolve
 from pdtypes.util.round cimport Tolerance
 from pdtypes.util.round import round_div
 from pdtypes.util.time cimport Epoch
-from pdtypes.util.time import (
-    convert_unit, valid_units
-)
+from pdtypes.util.time import convert_unit
 
 
 ######################
@@ -402,16 +396,11 @@ class IntegerType(IntegerMixin, AtomicType):
     conversion_func = cast.to_integer  # all subtypes/backends inherit this
     name = "int"
     aliases = {int, "int", "integer"}
-    min = -2**63
+    dtype = np.dtype(np.int64)
+    itemsize = 8
+    type_def = int
     max = 2**63 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=int,
-            dtype=np.dtype(np.int64),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    min = -2**63
 
 
 @generic
@@ -421,16 +410,11 @@ class SignedIntegerType(IntegerMixin, AtomicType):
 
     name = "signed"
     aliases = {"signed", "signed int", "signed integer", "i"}
-    min = -2**63
+    dtype = np.dtype(np.int64)
+    itemsize = 8
+    type_def = int
     max = 2**63 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=int,
-            dtype=np.dtype(np.int64),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    min = -2**63
 
 
 @generic
@@ -438,18 +422,13 @@ class SignedIntegerType(IntegerMixin, AtomicType):
 class UnsignedIntegerType(IntegerMixin, AtomicType):
     """Generic 8-bit unsigned integer type."""
 
-    name="unsigned"
-    aliases={"unsigned", "unsigned int", "unsigned integer", "uint", "u"}
-    min=0
-    max=2**64 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint64,
-            dtype=np.dtype(np.uint64),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    name = "unsigned"
+    aliases = {"unsigned", "unsigned int", "unsigned integer", "uint", "u"}
+    dtype = np.dtype(np.uint64)
+    itemsize = 8
+    type_def = np.uint64
+    max = 2**64 - 1
+    min = 0
 
 
 @generic
@@ -457,36 +436,27 @@ class UnsignedIntegerType(IntegerMixin, AtomicType):
 class Int8Type(IntegerMixin, AtomicType):
     """Generic 8-bit signed integer type."""
 
-    name="int8"
-    aliases={"int8", "i1"}
-    min=-2**7
-    max=2**7 - 1
+    name = "int8"
+    aliases = {"int8", "i1"}
+    dtype = np.dtype(np.int8)
+    itemsize = 1
+    type_def = np.uint8
+    max = 2**7 - 1
+    min = -2**7
 
-    def __init__(self):
-        super().__init__(
-            type_def=np.int8,
-            dtype=np.dtype(np.int8),
-            na_value=pd.NA,
-            itemsize=1
-        )
 
 @generic
 @subtype(SignedIntegerType)
 class Int16Type(IntegerMixin, AtomicType):
     """Generic 16-bit signed integer type."""
 
-    name="int16"
-    aliases={"int16", "i2"}
-    min=-2**15
-    max=2**15 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int16,
-            dtype=np.dtype(np.int16),
-            na_value=pd.NA,
-            itemsize=2
-        )
+    name = "int16"
+    aliases = {"int16", "i2"}
+    dtype = np.dtype(np.int16)
+    itemsize = 2
+    type_def = np.uint16
+    max = 2**15 - 1
+    min = -2**15
 
 
 @generic
@@ -494,18 +464,13 @@ class Int16Type(IntegerMixin, AtomicType):
 class Int32Type(IntegerMixin, AtomicType):
     """Generic 32-bit signed integer type."""
 
-    name="int32"
-    aliases={"int32", "i4"}
-    min=-2**31
-    max=2**31 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int32,
-            dtype=np.dtype(np.int32),
-            na_value=pd.NA,
-            itemsize=4
-        )
+    name = "int32"
+    aliases = {"int32", "i4"}
+    dtype = np.dtype(np.int32)
+    itemsize = 4
+    type_def = np.uint32
+    max = 2**31 - 1
+    min = -2**31
 
 
 @generic
@@ -513,18 +478,13 @@ class Int32Type(IntegerMixin, AtomicType):
 class Int64Type(IntegerMixin, AtomicType):
     """Generic 64-bit signed integer type."""
 
-    name="int64"
-    aliases={"int64", "i8"}
-    min=-2**63
-    max=2**63 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int64,
-            dtype=np.dtype(np.int64),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    name = "int64"
+    aliases = {"int64", "i8"}
+    dtype = np.dtype(np.int64)
+    itemsize = 8
+    type_def = np.uint64
+    max = 2**63 - 1
+    min = -2**63
 
 
 @generic
@@ -532,18 +492,13 @@ class Int64Type(IntegerMixin, AtomicType):
 class UInt8Type(IntegerMixin, AtomicType):
     """Generic 8-bit unsigned integer type."""
 
-    name="uint8"
-    aliases={"uint8", "unsigned int8", "u1"}
-    min=0
-    max=2**8 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint8,
-            dtype=np.dtype(np.uint8),
-            na_value=pd.NA,
-            itemsize=1
-        )
+    name = "uint8"
+    aliases = {"uint8", "unsigned int8", "u1"}
+    dtype = np.dtype(np.uint8)
+    itemsize = 1
+    type_def = np.uint8
+    max = 2**8 - 1
+    min = 0
 
 
 @generic
@@ -551,18 +506,13 @@ class UInt8Type(IntegerMixin, AtomicType):
 class UInt16Type(IntegerMixin, AtomicType):
     """Generic 16-bit unsigned integer type."""
 
-    name="uint16"
-    aliases={"uint16", "unsiged int16", "u2"}
-    min=0
-    max=2**16 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint16,
-            dtype=np.dtype(np.uint16),
-            na_value=pd.NA,
-            itemsize=2
-        )
+    name = "uint16"
+    aliases = {"uint16", "unsiged int16", "u2"}
+    dtype = np.dtype(np.uint16)
+    itemsize = 2
+    type_def = np.uint16
+    max = 2**16 - 1
+    min = 0
 
 
 @generic
@@ -570,18 +520,13 @@ class UInt16Type(IntegerMixin, AtomicType):
 class UInt32Type(IntegerMixin, AtomicType):
     """Generic 32-bit unsigned integer type."""
 
-    name="uint32"
-    aliases={"uint32", "unsigned int32", "u4"}
-    min=0
-    max=2**32 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint32,
-            dtype=np.dtype(np.uint32),
-            na_value=pd.NA,
-            itemsize=4
-        )
+    name = "uint32"
+    aliases = {"uint32", "unsigned int32", "u4"}
+    dtype = np.dtype(np.uint32)
+    itemsize = 4
+    type_def = np.uint32
+    max = 2**32 - 1
+    min = 0
 
 
 @generic
@@ -589,18 +534,13 @@ class UInt32Type(IntegerMixin, AtomicType):
 class UInt64Type(IntegerMixin, AtomicType):
     """Generic 64-bit unsigned integer type."""
 
-    name="uint64"
-    aliases={"uint64", "unsigned int64", "u8"}
-    min=0
-    max=2**64 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint64,
-            dtype=np.dtype(np.uint64),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    name = "uint64"
+    aliases = {"uint64", "unsigned int64", "u8"}
+    dtype = np.dtype(np.uint64)
+    itemsize = 8
+    type_def = np.uint64
+    max = 2**64 - 1
+    min = 0
 
 
 #####################
@@ -612,17 +552,12 @@ class UInt64Type(IntegerMixin, AtomicType):
 class NumpyIntegerType(IntegerMixin, AtomicType):
     """Numpy integer type."""
 
-    aliases={np.integer}
-    min=-2**63
-    max=2**63 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int64,
-            dtype=np.dtype(np.int64),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    aliases = {np.integer}
+    dtype = np.dtype(np.int64)
+    itemsize = 8
+    type_def = np.int64
+    max = 2**63 - 1
+    min = -2**63
 
 
 @subtype(NumpyIntegerType)
@@ -630,17 +565,12 @@ class NumpyIntegerType(IntegerMixin, AtomicType):
 class NumpySignedIntegerType(IntegerMixin, AtomicType):
     """Numpy signed integer type."""
 
-    aliases={np.signedinteger}
-    min=-2**63
-    max=2**63 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int64,
-            dtype=np.dtype(np.int64),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    aliases = {np.signedinteger}
+    dtype = np.dtype(np.int64)
+    itemsize = 8
+    type_def = np.int64
+    max = 2**63 - 1
+    min = -2**63
 
 
 @subtype(NumpyIntegerType)
@@ -648,17 +578,12 @@ class NumpySignedIntegerType(IntegerMixin, AtomicType):
 class NumpyUnsignedIntegerType(IntegerMixin, AtomicType):
     """Numpy unsigned integer type."""
 
-    aliases={np.unsignedinteger}
-    min=0
-    max=2**64 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint64,
-            dtype=np.dtype(np.uint64),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    aliases = {np.unsignedinteger}
+    dtype = np.dtype(np.uint64)
+    itemsize = 8
+    type_def = np.uint64
+    max = 2**64 - 1
+    min = 0
 
 
 @subtype(NumpySignedIntegerType)
@@ -666,17 +591,12 @@ class NumpyUnsignedIntegerType(IntegerMixin, AtomicType):
 class NumpyInt8Type(IntegerMixin, AtomicType):
     """8-bit numpy integer subtype."""
 
-    aliases={np.int8, np.dtype(np.int8)}
-    min=-2**7
-    max=2**7 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int8,
-            dtype=np.dtype(np.int8),
-            na_value=pd.NA,
-            itemsize=1
-        )
+    aliases = {np.int8, np.dtype(np.int8)}
+    dtype = np.dtype(np.int8)
+    itemsize = 1
+    type_def = np.int8
+    max = 2**7 - 1
+    min = -2**7
 
 
 @subtype(NumpySignedIntegerType)
@@ -684,17 +604,12 @@ class NumpyInt8Type(IntegerMixin, AtomicType):
 class NumpyInt16Type(IntegerMixin, AtomicType):
     """16-bit numpy integer subtype."""
 
-    aliases={np.int16, np.dtype(np.int16)}
-    min=-2**15
-    max=2**15 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int16,
-            dtype=np.dtype(np.int16),
-            na_value=pd.NA,
-            itemsize=2
-        )
+    aliases = {np.int16, np.dtype(np.int16)}
+    dtype = np.dtype(np.int16)
+    itemsize = 2
+    type_def = np.int16
+    max = 2**15 - 1
+    min = -2**15
 
 
 @subtype(NumpySignedIntegerType)
@@ -702,17 +617,12 @@ class NumpyInt16Type(IntegerMixin, AtomicType):
 class NumpyInt32Type(IntegerMixin, AtomicType):
     """32-bit numpy integer subtype."""
 
-    aliases={np.int32, np.dtype(np.int32)}
-    min=-2**31
-    max=2**31 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int32,
-            dtype=np.dtype(np.int32),
-            na_value=pd.NA,
-            itemsize=4
-        )
+    aliases = {np.int32, np.dtype(np.int32)}
+    dtype = np.dtype(np.int32)
+    itemsize = 4
+    type_def = np.int32
+    max = 2**31 - 1
+    min = -2**31
 
 
 @subtype(NumpySignedIntegerType)
@@ -720,17 +630,12 @@ class NumpyInt32Type(IntegerMixin, AtomicType):
 class NumpyInt64Type(IntegerMixin, AtomicType):
     """64-bit numpy integer subtype."""
 
-    aliases={np.int64, np.dtype(np.int64)}
-    min=-2**63
-    max=2**63 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int64,
-            dtype=np.dtype(np.int64),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    aliases = {np.int64, np.dtype(np.int64)}
+    dtype = np.dtype(np.int64)
+    itemsize = 8
+    type_def = np.int64
+    max = 2**63 - 1
+    min = -2**63
 
 
 @subtype(NumpyUnsignedIntegerType)
@@ -738,17 +643,12 @@ class NumpyInt64Type(IntegerMixin, AtomicType):
 class NumpyUInt8Type(IntegerMixin, AtomicType):
     """8-bit numpy unsigned integer subtype."""
 
-    aliases={np.uint8, np.dtype(np.uint8)}
-    min=0
-    max=2**8 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint8,
-            dtype=np.dtype(np.uint8),
-            na_value=pd.NA,
-            itemsize=1
-        )
+    aliases = {np.uint8, np.dtype(np.uint8)}
+    dtype = np.dtype(np.uint8)
+    itemsize = 1
+    type_def = np.uint8
+    max = 2**8 - 1
+    min = 0
 
 
 @subtype(NumpyUnsignedIntegerType)
@@ -756,17 +656,12 @@ class NumpyUInt8Type(IntegerMixin, AtomicType):
 class NumpyUInt16Type(IntegerMixin, AtomicType):
     """16-bit numpy unsigned integer subtype."""
 
-    aliases={np.uint16, np.dtype(np.uint16)}
-    min=0
-    max=2**16 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint16,
-            dtype=np.dtype(np.uint16),
-            na_value=pd.NA,
-            itemsize=2
-        )
+    aliases = {np.uint16, np.dtype(np.uint16)}
+    dtype = np.dtype(np.uint16)
+    itemsize = 2
+    type_def = np.uint16
+    max = 2**16 - 1
+    min = 0
 
 
 @subtype(NumpyUnsignedIntegerType)
@@ -774,17 +669,12 @@ class NumpyUInt16Type(IntegerMixin, AtomicType):
 class NumpyUInt32Type(IntegerMixin, AtomicType):
     """32-bit numpy unsigned integer subtype."""
 
-    aliases={np.uint32, np.dtype(np.uint32)}
-    min=0
-    max=2**32 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint32,
-            dtype=np.dtype(np.uint32),
-            na_value=pd.NA,
-            itemsize=4
-        )
+    aliases = {np.uint32, np.dtype(np.uint32)}
+    dtype = np.dtype(np.uint32)
+    itemsize = 4
+    type_def = np.uint32
+    max = 2**32 - 1
+    min = 0
 
 
 @subtype(NumpyUnsignedIntegerType)
@@ -792,17 +682,12 @@ class NumpyUInt32Type(IntegerMixin, AtomicType):
 class NumpyUInt64Type(IntegerMixin, AtomicType):
     """64-bit numpy unsigned integer subtype."""
 
-    aliases={np.uint64, np.dtype(np.uint64)}
-    min=0
-    max=2**64 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint64,
-            dtype=np.dtype(np.uint64),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    aliases = {np.uint64, np.dtype(np.uint64)}
+    dtype = np.dtype(np.uint64)
+    itemsize = 8
+    type_def = np.uint64
+    max = 2**64 - 1
+    min = 0
 
 
 ######################
@@ -814,17 +699,12 @@ class NumpyUInt64Type(IntegerMixin, AtomicType):
 class PandasIntegerType(IntegerMixin, AtomicType):
     """Pandas integer supertype."""
 
-    aliases=set()
-    min=-2**63
-    max=2**63 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int64,
-            dtype=pd.Int64Dtype(),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    aliases = set()
+    dtype = pd.Int64Dtype()
+    itemsize = 8
+    type_def = np.int64
+    max = 2**63 - 1
+    min = -2**63
 
 
 @subtype(PandasIntegerType)
@@ -832,17 +712,12 @@ class PandasIntegerType(IntegerMixin, AtomicType):
 class PandasSignedIntegerType(IntegerMixin, AtomicType):
     """Python signed integer supertype."""
 
-    aliases=set()
-    min=-2**63
-    max=2**63 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int64,
-            dtype=pd.Int64Dtype(),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    aliases = set()
+    dtype = pd.Int64Dtype()
+    itemsize = 8
+    type_def = np.int64
+    max = 2**63 - 1
+    min = -2**63
 
 
 @subtype(PandasIntegerType)
@@ -850,17 +725,12 @@ class PandasSignedIntegerType(IntegerMixin, AtomicType):
 class PandasUnsignedIntegerType(IntegerMixin, AtomicType):
     """Numpy unsigned integer type."""
 
-    aliases=set()
-    min=0
-    max=2**64 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint64,
-            dtype=pd.UInt64Dtype(),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    aliases = set()
+    dtype = pd.UInt64Dtype()
+    itemsize = 8
+    type_def = np.uint64
+    max = 2**64 - 1
+    min = 0
 
 
 @subtype(PandasSignedIntegerType)
@@ -868,17 +738,12 @@ class PandasUnsignedIntegerType(IntegerMixin, AtomicType):
 class PandasInt8Type(IntegerMixin, AtomicType):
     """8-bit numpy integer subtype."""
 
-    aliases={pd.Int8Dtype(), "Int8"}
-    min=-2**7
-    max=2**7 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int8,
-            dtype=pd.Int8Dtype(),
-            na_value=pd.NA,
-            itemsize=1
-        )
+    aliases = {pd.Int8Dtype(), "Int8"}
+    dtype = pd.Int8Dtype()
+    itemsize = 1
+    type_def = np.int8
+    max = 2**7 - 1
+    min = -2**7
 
 
 @subtype(PandasSignedIntegerType)
@@ -886,17 +751,12 @@ class PandasInt8Type(IntegerMixin, AtomicType):
 class PandasInt16Type(IntegerMixin, AtomicType):
     """16-bit numpy integer subtype."""
 
-    aliases={pd.Int16Dtype(), "Int16"}
-    min=-2**15
-    max=2**15 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int16,
-            dtype=pd.Int16Dtype(),
-            na_value=pd.NA,
-            itemsize=2
-        )
+    aliases = {pd.Int16Dtype(), "Int16"}
+    dtype = pd.Int16Dtype()
+    itemsize = 2
+    type_def = np.int16
+    max = 2**15 - 1
+    min = -2**15
 
 
 @subtype(PandasSignedIntegerType)
@@ -904,17 +764,12 @@ class PandasInt16Type(IntegerMixin, AtomicType):
 class PandasInt32Type(IntegerMixin, AtomicType):
     """32-bit numpy integer subtype."""
 
-    aliases={pd.Int32Dtype(), "Int32"}
-    min=-2**31
-    max=2**31 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int32,
-            dtype=pd.Int32Dtype(),
-            na_value=pd.NA,
-            itemsize=4
-        )
+    aliases = {pd.Int32Dtype(), "Int32"}
+    dtype = pd.Int32Dtype()
+    itemsize = 4
+    type_def = np.int32
+    max = 2**31 - 1
+    min = -2**31
 
 
 @subtype(PandasSignedIntegerType)
@@ -922,17 +777,12 @@ class PandasInt32Type(IntegerMixin, AtomicType):
 class PandasInt64Type(IntegerMixin, AtomicType):
     """64-bit numpy integer subtype."""
 
-    aliases={pd.Int64Dtype(), "Int64"}
-    min=-2**63
-    max=2**63 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.int64,
-            dtype=pd.Int64Dtype(),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    aliases = {pd.Int64Dtype(), "Int64"}
+    dtype = pd.Int64Dtype()
+    itemsize = 8
+    type_def = np.int64
+    max = 2**63 - 1
+    min = -2**63
 
 
 @subtype(PandasUnsignedIntegerType)
@@ -940,17 +790,12 @@ class PandasInt64Type(IntegerMixin, AtomicType):
 class PandasUInt8Type(IntegerMixin, AtomicType):
     """8-bit numpy integer subtype."""
 
-    aliases={pd.UInt8Dtype(), "UInt8"}
-    min=0
-    max=2**8 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint8,
-            dtype=pd.UInt8Dtype(),
-            na_value=pd.NA,
-            itemsize=1
-        )
+    aliases = {pd.UInt8Dtype(), "UInt8"}
+    dtype = pd.UInt8Dtype()
+    itemsize = 1
+    type_def = np.uint8
+    max = 2**8 - 1
+    min = 0
 
 
 @subtype(PandasUnsignedIntegerType)
@@ -958,17 +803,12 @@ class PandasUInt8Type(IntegerMixin, AtomicType):
 class PandasUInt16Type(IntegerMixin, AtomicType):
     """16-bit numpy integer subtype."""
 
-    aliases={pd.UInt16Dtype(), "UInt16"}
-    min=0
-    max=2**16 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint16,
-            dtype=pd.UInt16Dtype(),
-            na_value=pd.NA,
-            itemsize=2
-        )
+    aliases = {pd.UInt16Dtype(), "UInt16"}
+    dtype = pd.UInt16Dtype()
+    itemsize = 2
+    type_def = np.uint16
+    max = 2**16 - 1
+    min = 0
 
 
 @subtype(PandasUnsignedIntegerType)
@@ -976,17 +816,12 @@ class PandasUInt16Type(IntegerMixin, AtomicType):
 class PandasUInt32Type(IntegerMixin, AtomicType):
     """32-bit numpy integer subtype."""
 
-    aliases={pd.UInt32Dtype(), "UInt32"}
-    min=0
-    max=2**32 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint32,
-            dtype=pd.UInt32Dtype(),
-            na_value=pd.NA,
-            itemsize=4
-        )
+    aliases = {pd.UInt32Dtype(), "UInt32"}
+    dtype = pd.UInt32Dtype()
+    itemsize = 4
+    type_def = np.uint32
+    max = 2**32 - 1
+    min = 0
 
 
 @subtype(PandasUnsignedIntegerType)
@@ -994,17 +829,12 @@ class PandasUInt32Type(IntegerMixin, AtomicType):
 class PandasUInt64Type(IntegerMixin, AtomicType):
     """64-bit numpy integer subtype."""
 
-    aliases={pd.UInt64Dtype(), "UInt64"}
-    min=0
-    max=2**64 - 1
-
-    def __init__(self):
-        super().__init__(
-            type_def=np.uint64,
-            dtype=pd.UInt64Dtype(),
-            na_value=pd.NA,
-            itemsize=8
-        )
+    aliases = {pd.UInt64Dtype(), "UInt64"}
+    dtype = pd.UInt64Dtype()
+    itemsize = 8
+    type_def = np.uint64
+    max = 2**64 - 1
+    min = 0
 
 
 ######################
@@ -1017,17 +847,10 @@ class PandasUInt64Type(IntegerMixin, AtomicType):
 class PythonIntegerType(IntegerMixin, AtomicType):
     """Python integer supertype."""
 
-    aliases=set()
-    min=-np.inf
-    max=np.inf
-
-    def __init__(self):
-        super().__init__(
-            type_def=int,
-            dtype=np.dtype("O"),
-            na_value=pd.NA,
-            itemsize=None
-        )
+    aliases = set()
+    type_def = int
+    max = np.inf
+    min = -np.inf
 
 
 #######################

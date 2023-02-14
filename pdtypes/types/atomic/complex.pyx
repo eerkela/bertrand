@@ -12,7 +12,7 @@ import pdtypes.types.cast as cast
 from pdtypes.util.round cimport Tolerance
 from pdtypes.util.time cimport Epoch
 
-from .base cimport AdapterType, AtomicType, CompositeType
+from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, subtype
 import pdtypes.types.atomic.float as float_types
 
@@ -314,18 +314,14 @@ class ComplexType(ComplexMixin, AtomicType):
     aliases = {
         complex, "complex", "cfloat", "complex float", "complex floating", "c"
     }
+    dtype = np.dtype(np.complex128)
+    itemsize = 16
+    na_value = complex("nan+nanj")
+    type_def = complex
+    max = 2**53
+    min = -2**53
     _equiv_float = "FloatType"
 
-    def __init__(self):
-        type_def = complex
-        self.min = type_def(-2**53)
-        self.max = type_def(2**53)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.complex128),
-            na_value=type_def("nan+nanj"),
-            itemsize=16
-        )
 
 @generic
 @subtype(ComplexType)
@@ -335,18 +331,13 @@ class Complex64Type(ComplexMixin, AtomicType):
     aliases = {
         "complex64", "csingle", "complex single", "singlecomplex", "c8", "F"
     }
+    dtype = np.dtype(np.complex64)
+    itemsize = 8
+    na_value = np.complex64("nan+nanj")
+    type_def = np.complex64
+    max = 2**24
+    min = -2**24
     _equiv_float = "Float32Type"
-
-    def __init__(self):
-        type_def = np.complex64
-        self.min = type_def(-2**24)
-        self.max = type_def(2**24)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.complex64),
-            na_value=type_def("nan+nanj"),
-            itemsize=8
-        )
 
 
 @generic
@@ -357,18 +348,13 @@ class Complex128Type(ComplexMixin, AtomicType):
     aliases = {
         "complex128", "cdouble", "complex double", "complex_", "c16", "D"
     }
+    dtype = np.dtype(np.complex128)
+    itemsize = 16
+    na_value = np.complex128("nan+nanj")
+    type_def = np.complex128
+    max = 2**53
+    min = -2**53
     _equiv_float = "Float64Type"
-
-    def __init__(self):
-        type_def = complex
-        self.min = type_def(-2**53)
-        self.max = type_def(2**53)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.complex128),
-            na_value=type_def("nan+nanj"),
-            itemsize=16
-        )
 
 
 @generic
@@ -381,18 +367,13 @@ class Complex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
         "complex longfloat", "complex long double", "complex long float",
         "longcomplex", "long complex", "c20", "G"
     }
+    dtype = np.dtype(np.clongdouble)
+    itemsize = np.dtype(np.clongdouble).itemsize
+    na_value = np.clongdouble("nan+nanj")
+    type_def = np.clongdouble
+    max = 2**64
+    min = -2**64
     _equiv_float = "Float80Type"
-
-    def __init__(self):
-        type_def = np.clongdouble
-        self.min = type_def(-2**64)
-        self.max = type_def(2**64)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.clongdouble),
-            na_value=type_def("nan+nanj"),
-            itemsize=np.dtype(np.clongdouble).itemsize
-        )
 
 
 #####################
@@ -404,18 +385,13 @@ class Complex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
 class NumpyComplexType(ComplexMixin, AtomicType):
 
     aliases = {np.complexfloating}
+    dtype = np.dtype(np.complex128)
+    itemsize = 16
+    na_value = np.complex128("nan+nanj")
+    type_def = np.complex128
+    max = 2**53
+    min = -2**53
     _equiv_float = "NumpyFloatType"
-
-    def __init__(self):
-        type_def = np.complex128
-        self.min = type_def(-2**53)
-        self.max = type_def(2**53)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.complex128),
-            na_value=type_def("nan+nanj"),
-            itemsize=16
-        )
 
 
 @subtype(NumpyComplexType)
@@ -423,18 +399,13 @@ class NumpyComplexType(ComplexMixin, AtomicType):
 class NumpyComplex64Type(ComplexMixin, AtomicType):
 
     aliases = {np.complex64, np.dtype(np.complex64)}
+    dtype = np.dtype(np.complex64)
+    itemsize = 8
+    na_value = np.complex64("nan+nanj")
+    type_def = np.complex64
+    max = 2**24
+    min = -2**24
     _equiv_float = "NumpyFloat32Type"
-
-    def __init__(self):
-        type_def = np.complex64
-        self.min = type_def(-2**24)
-        self.max = type_def(2**24)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.complex64),
-            na_value=type_def("nan+nanj"),
-            itemsize=8
-        )
 
 
 @subtype(NumpyComplexType)
@@ -442,18 +413,13 @@ class NumpyComplex64Type(ComplexMixin, AtomicType):
 class NumpyComplex128Type(ComplexMixin, AtomicType):
 
     aliases = {np.complex128, np.dtype(np.complex128)}
+    dtype = np.dtype(np.complex128)
+    itemsize = 16
+    na_value = np.complex128("nan+nanj")
+    type_def = np.complex128
+    max = 2**53
+    min = -2**53
     _equiv_float = "NumpyFloat64Type"
-
-    def __init__(self):
-        type_def = np.complex128
-        self.min = type_def(-2**53)
-        self.max = type_def(2**53)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.complex128),
-            na_value=type_def("nan+nanj"),
-            itemsize=16
-        )
 
 
 @subtype(NumpyComplexType)
@@ -461,18 +427,13 @@ class NumpyComplex128Type(ComplexMixin, AtomicType):
 class NumpyComplex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
 
     aliases = {np.clongdouble, np.dtype(np.clongdouble)}
+    dtype = np.dtype(np.clongdouble)
+    itemsize = np.dtype(np.clongdouble).itemsize
+    na_value = np.clongdouble("nan+nanj")
+    type_def = np.clongdouble
+    max = 2**64
+    min = -2**64
     _equiv_float = "NumpyFloat80Type"
-
-    def __init__(self):
-        type_def = np.clongdouble
-        self.min = type_def(-2**64)
-        self.max = type_def(2**64)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype(np.clongdouble),
-            na_value=type_def("nan+nanj"),
-            itemsize=np.dtype(np.clongdouble).itemsize
-        )
 
 
 ######################
@@ -485,18 +446,12 @@ class NumpyComplex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
 class PythonComplexType(ComplexMixin, AtomicType):
 
     aliases = set()
+    itemsize = 16
+    na_value = complex("nan+nanj")
+    type_def = complex
+    max = 2**53
+    min = -2**53
     _equiv_float = "PythonFloatType"
-
-    def __init__(self):
-        type_def = complex
-        self.min = type_def(-2**53)
-        self.max = type_def(2**53)
-        super().__init__(
-            type_def=type_def,
-            dtype=np.dtype("O"),
-            na_value=type_def("nan+nanj"),
-            itemsize=16
-        )
 
 
 #######################

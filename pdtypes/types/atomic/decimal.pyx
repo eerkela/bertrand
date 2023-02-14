@@ -1,6 +1,4 @@
 import decimal
-from functools import partial
-from typing import Union, Sequence
 
 import numpy as np
 cimport numpy as np
@@ -16,9 +14,7 @@ import pdtypes.types.resolve as resolve
 from pdtypes.util.round cimport Tolerance
 from pdtypes.util.round import round_decimal
 from pdtypes.util.time cimport Epoch
-from pdtypes.util.time import (
-    as_ns, convert_unit, round_months_to_ns, round_years_to_ns
-)
+from pdtypes.util.time import as_ns, round_months_to_ns, round_years_to_ns
 
 from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic
@@ -328,14 +324,7 @@ class DecimalType(DecimalMixin, AtomicType):
     conversion_func = cast.to_decimal  # all subtypes/backends inherit this
     name = "decimal"
     aliases = {"decimal"}
-
-    def __init__(self):
-        super().__init__(
-            type_def=decimal.Decimal,
-            dtype=np.dtype(np.object_),
-            na_value=pd.NA,
-            itemsize=None
-        )
+    type_def = decimal.Decimal
 
 
 ##############################
@@ -347,11 +336,4 @@ class DecimalType(DecimalMixin, AtomicType):
 class PythonDecimalType(DecimalMixin, AtomicType):
 
     aliases = {decimal.Decimal}
-
-    def __init__(self):
-        super().__init__(
-            type_def=decimal.Decimal,
-            dtype=np.dtype(np.object_),
-            na_value=pd.NA,
-            itemsize=None
-        )
+    type_def = decimal.Decimal
