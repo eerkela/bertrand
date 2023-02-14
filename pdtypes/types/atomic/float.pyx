@@ -112,6 +112,7 @@ class FloatMixin:
         """Round a floating point series to the given number of decimal places
         using the specified rounding rule.
         """
+        print("hello world")
         rule = cast.validate_rounding(rule)
         return cast.SeriesWrapper(
             round_float(series.rectify().series, rule=rule, decimals=decimals),

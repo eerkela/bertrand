@@ -88,23 +88,24 @@ def attach(data: pd.Series, name: str, submap: dict) -> Callable:
     """
     def wrapper(*args, **kwargs) -> pd.Series:
         with SeriesWrapper(data) as series:
-            result = series.dispatch(name, *args, **kwargs)
+            result = series.dispatch(name, submap, *args, **kwargs)
             series.series = result.series
             series.hasnans = result.hasnans
             series.element_type = result.element_type
         return series.series
 
-    submap = {str(k.type_def): v.__qualname__ for k, v in submap.items()}
-    submap = dict(sorted(submap.items()))
-    submap["..."] = "Series.round"
+    docmap = {str(k.type_def): v.__qualname__ for k, v in submap.items()}
+    docmap = dict(sorted(docmap.items()))
+    docmap["..."] = "Series.round"
     wrapper.__doc__ = (
         f"A wrapper for `pd.Series.{name}()` that applies custom logic for\n"
-        f"one or more data types:\n{json.dumps(submap, indent=4)}"
+        f"one or more data types:\n{json.dumps(docmap, indent=4)}"
     )
     return wrapper
 
 
 class Namespace:
+    """"""
 
     def __init__(self, namespace: str, data: pd.Series, submap: dict):
         self.namespace = namespace

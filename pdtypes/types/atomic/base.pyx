@@ -158,18 +158,42 @@ cdef class AtomicTypeRegistry:
     @property
     def dispatch_map(self) -> dict[str, dict[AtomicType, Callable]]:
         """Return an up-to-date dictionary of all methods that are currently
-        being dispatched to SeriesWrapper objects based on their type.
+        being dispatched to Series objects based on their type.
 
-        The returned dictionary maps method names to dictionaries of their own,
-        which track the AtomicType instances for which that method is defined.
-        The values of these nested dictionaries are the methods in question.
+        The structure of this dictionary reflects the calling signature of
+        the methods it contains.  It goes as follows:
+
+        {
+            namespace1 (str): {
+                method1_name (str): {
+                    atomic_type1 (type): method1 (Callable),
+                    atomic_type2 (type): method1 (Callable),
+                    ...
+                },
+                method2_name (str): {
+                    atomic_type1 (type): method2 (Callable),
+                    atomic_type2 (type): method2 (Callable),
+                    ...
+                },
+                ...
+            },
+            ...
+            None: {
+                method3_name (str): {
+                    atomic_type1 (type): method3 (Callable),
+                    atomic_type2 (type): method3 (Callable),
+                    ...
+                },
+                ...
+            }
+        }
         """
         # check if cache is out of date
         if self.needs_updating(self._dispatch_map):
             # building a dispatch map consists of 4 steps:
             # 1) For each type held in registry, check for @dispatch methods.
             # 2) For each @dispatch method, setdefault(namespace, {}).
-            # 3) namespace.setdefault(method_name, {})
+            # 3) namespace.setdefault(method_name, {}).
             # 4) method_name |= {atomic_type: method_def}.
             result = {}
             for atomic_type in self.atomic_types:

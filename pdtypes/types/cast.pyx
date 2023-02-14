@@ -1149,19 +1149,25 @@ cdef class SeriesWrapper:
 
         return series, dtype
 
-    def dispatch(self, endpoint: str, *args, **kwargs) -> SeriesWrapper:
+    def dispatch(
+        self,
+        endpoint: str,
+        submap: dict,
+        *args,
+        **kwargs
+    ) -> SeriesWrapper:
         """For every type that is present in the series, invoke the named
         endpoint.
         """
         # series is homogenous
         if isinstance(self.element_type, atomic.AtomicType):
             # check for corresponding AtomicType method
-            call = getattr(self.element_type, endpoint, None)
+            call = submap.get(type(self.element_type), None)
             if call is not None:
-                return call(self, *args, **kwargs)
+                return call(self.element_type, self, *args, **kwargs)
 
             # fall back to pandas implementation
-            call = getattr(pd.Series, endpoint)
+            call = getattr(pd.Series, endpoint)  # get from class def
             pars = inspect.signature(call).parameters
             kwargs = {k: v for k, v in kwargs.items() if k in pars}
             result = call(self.series, *args, **kwargs)
@@ -1177,9 +1183,10 @@ cdef class SeriesWrapper:
 
         def transform(grp):
             # check for corresponding AtomicType method
-            call = getattr(grp.name, endpoint, None)
+            call = submap.get(type(grp.name), None)
             if call is not None:
                 result = call(
+                    grp.name,
                     SeriesWrapper(grp, hasnans=self._hasnans),
                     *args,
                     **kwargs
@@ -1218,20 +1225,6 @@ cdef class SeriesWrapper:
             return self == other
         return ~((self - other).abs() > tol)
 
-    #################################
-    ####   DISPATCHED METHODS    ####
-    #################################
-
-    # TODO: this is superseded by new @dispatch behavior.  Dispatched methods
-    # will not appear here.
-
-    # NOTE: SeriesWrapper dynamically inherits every @dispatch method that is
-    # defined by its element_type.  In the case of a composite series, these
-    # dispatched methods are applied independently to each type that is present
-    # in the series.  If a dispatched method is not defined for a given
-    # element_type, then SeriesWrapper automatically defaults to the pandas
-    # implementation if one exists.  See __getattr__() for more details on how
-    # this is done.
 
     ##########################
     ####    ARITHMETIC    ####
@@ -1548,9 +1541,22 @@ def do_conversion(
     errors: str,
     **kwargs
 ) -> pd.Series:
+    # calculate submap
+    submap = {
+        k: getattr(k, endpoint) for k in atomic.AtomicType.registry
+        if hasattr(k, endpoint)
+    }
+
     try:
+        # NOTE: passing dispatch(endpoint="") will never fall back to pandas
         with SeriesWrapper(as_series(data)) as series:
-            result = series.dispatch(endpoint, *args, errors=errors, **kwargs)
+            result = series.dispatch(
+                "",
+                submap,
+                *args,
+                errors=errors,
+                **kwargs
+            )
             series.series = result.series
             series.hasnans = result.hasnans
             series.element_type = result.element_type
