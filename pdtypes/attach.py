@@ -1,4 +1,5 @@
 from __future__ import annotations
+from functools import partial
 import json
 from typing import Any, Callable
 
@@ -9,6 +10,15 @@ from pdtypes.types import (
 )
 from pdtypes.types.cast import SeriesWrapper
 from pdtypes.types.cast import cast as cast_standalone
+
+
+# TODO: need to bind data to original
+# -> for naked methods, can get original method definition from pd.Series
+# and then just pass in a series as the first argument.
+# -> for methods hidden behind accessors, data needs to be bound to the
+# accessor itself.  This presents a problem, since I can't bind from within
+# SeriesWrapper.dispatch without constructing a lambda to bridge the gap.
+# -> original = lambda x: getattr(self.original(self.data), name, None)
 
 
 ########################
@@ -65,6 +75,8 @@ def new_getattribute(self, name: str):
     dispatch_map = dispatch_map.get(None, {})
     if name in dispatch_map:
         original = getattr(pd.Series, name, None)
+        if original is not None:
+            original = partial(original, self)
         return attach(self, name, dispatch_map[name], original)
 
     # attribute is not being managed by `pdtypes` - fall back to pandas
@@ -101,7 +113,7 @@ def attach(
     """
     def dispatch_method(*args, **kwargs) -> pd.Series:
         with SeriesWrapper(data) as series:
-            result = series.dispatch(name, submap, *args, **kwargs)
+            result = series.dispatch(name, submap, original, *args, **kwargs)
             series.series = result.series
             series.hasnans = result.hasnans
             series.element_type = result.element_type
@@ -115,7 +127,10 @@ def attach(
     docmap["..."] = "Series.round"
     dispatch_method.__doc__ = (
         f"A wrapper that applies custom logic for one or more data types:\n"
-        f"{json.dumps(docmap, indent=4)}"
+        f"{json.dumps(docmap, indent=4)}\n\n"
+        f"The above map is available under this method's `.dispatched`\n"
+        f"attribute, and the original pandas implementation (if one exists)\n"
+        f"can be recovered under its `.original` attribute."
     )
     return dispatch_method
 
@@ -146,6 +161,13 @@ class Namespace:
 
         # check if attribute name is being dispatched from this namespace
         if name in dispatched:
-            original = getattr(original, name, None)
-            return attach(data, name, dispatched[name], original)
+            def bind_original(*args, **kwargs):
+                return getattr(original(data), name, None)(*args, **kwargs)
+            return attach(data, name, dispatched[name], bind_original)
+
+        # if namespace masks a built-in pandas namespace, delegate to it
+        if original is not None:
+            return getattr(original(data), name)
+
+        # delegate back to pd.Series
         return getattr(data, name)

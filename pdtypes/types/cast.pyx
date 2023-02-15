@@ -1153,6 +1153,7 @@ cdef class SeriesWrapper:
         self,
         endpoint: str,
         submap: dict,
+        original: Callable,
         *args,
         **kwargs
     ) -> SeriesWrapper:
@@ -1167,19 +1168,17 @@ cdef class SeriesWrapper:
                 return call(self.element_type, self, *args, **kwargs)
 
             # fall back to pandas implementation
-            call = getattr(pd.Series, endpoint)  # get from class def
-            pars = inspect.signature(call).parameters
+            pars = inspect.signature(original).parameters
             kwargs = {k: v for k, v in kwargs.items() if k in pars}
-            result = call(self.series, *args, **kwargs)
+            result = original(*args, **kwargs)
             if isinstance(result, pd.Series):
                 return SeriesWrapper(result, hasnans=self._hasnans)
             return result
 
         # series is composite
         groups = self.series.groupby(self.element_type.index, sort=False)
-        pars = getattr(pd.Series, endpoint, None)
-        if pars is not None:  # introspect before grouping
-            pars = inspect.signature(pars).parameters
+        if original is not None:  # introspect before grouping
+            pars = inspect.signature(original).parameters
 
         def transform(grp):
             # check for corresponding AtomicType method
@@ -1196,9 +1195,8 @@ cdef class SeriesWrapper:
 
             # fall back to pandas implementation
             else:
-                call = getattr(pd.Series, endpoint)
                 kw = {k: v for k, v in kwargs.items() if k in pars}
-                result = call(grp, *args, **kw)
+                result = original(*args, **kw)
 
             return result
 
@@ -1553,6 +1551,7 @@ def do_conversion(
             result = series.dispatch(
                 "",
                 submap,
+                None,
                 *args,
                 errors=errors,
                 **kwargs

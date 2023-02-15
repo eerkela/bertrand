@@ -100,7 +100,7 @@ class FloatMixin:
     ####    SERIES METHODS    ####
     ##############################
 
-    @dispatch(namespace="float")
+    @dispatch
     def round(
         self,
         series: cast.SeriesWrapper,
