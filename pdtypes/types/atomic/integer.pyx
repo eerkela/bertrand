@@ -18,6 +18,7 @@ from functools import partial
 import numpy as np
 cimport numpy as np
 import pandas as pd
+import pytz
 
 from pdtypes.error import shorten_list
 
@@ -33,6 +34,10 @@ from pdtypes.util.round cimport Tolerance
 from pdtypes.util.round import round_div
 from pdtypes.util.time cimport Epoch
 from pdtypes.util.time import convert_unit
+
+
+# TODO: int -> datetime should account for tz.  This is propagated to bool,
+# datetime -> datetime
 
 
 ######################
@@ -284,6 +289,7 @@ class IntegerMixin:
         step_size: int,
         rounding: str,
         epoch: Epoch,
+        tz: pytz.BaseTzInfo,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -314,6 +320,7 @@ class IntegerMixin:
             step_size=step_size,
             rounding=rounding,
             epoch=epoch,
+            tz=tz,
             errors=errors,
             **unused
         )

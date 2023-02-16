@@ -533,7 +533,6 @@ def to_integer(
     unit: str = None,
     step_size: int = None,
     epoch: str | datetime_like = None,
-    tz: str | tzinfo = None,
     base: int = None,
     call: Callable = None,
     downcast: bool | resolve.resolvable = None,
@@ -548,7 +547,6 @@ def to_integer(
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
     epoch = validate_epoch(epoch)
-    tz = validate_timezone(tz)
     base = validate_base(base)
     call = validate_call(call)
     downcast = validate_downcast(downcast)
@@ -580,7 +578,6 @@ def to_float(
     unit: str = None,
     step_size: int = None,
     epoch: str | datetime_like = None,
-    tz: str | tzinfo = None,
     call: Callable = None,
     downcast: bool | resolve.resolvable = None,
     errors: str = None,
@@ -594,7 +591,6 @@ def to_float(
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
     epoch = validate_epoch(epoch)
-    tz = validate_timezone(tz)
     call = validate_call(call)
     downcast = validate_downcast(downcast)
     errors = validate_errors(errors)
@@ -609,7 +605,6 @@ def to_float(
         unit=unit,
         step_size=step_size,
         epoch=epoch,
-        tz=tz,
         call=call,
         downcast=downcast,
         errors=errors,
@@ -624,6 +619,7 @@ def to_complex(
     rounding: str = None,
     unit: str = None,
     step_size: int = None,
+    epoch: str | datetime_like = None,
     call: Callable = None,
     downcast: bool | resolve.resolvable = None,
     errors: str = None,
@@ -636,6 +632,7 @@ def to_complex(
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
+    epoch = validate_epoch(epoch)
     call = validate_call(call)
     downcast = validate_downcast(downcast)
     errors = validate_errors(errors)
@@ -649,6 +646,7 @@ def to_complex(
         rounding=rounding,
         unit=unit,
         step_size=step_size,
+        epoch=epoch,
         downcast=downcast,
         errors=errors,
         **kwargs
@@ -663,7 +661,6 @@ def to_decimal(
     unit: str = None,
     step_size: int = None,
     epoch: str | datetime_like = None,
-    tz: str | tzinfo = None,
     call: Callable = None,
     errors: str = None,
     **kwargs
@@ -676,7 +673,6 @@ def to_decimal(
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
     epoch = validate_epoch(epoch)
-    tz = validate_timezone(tz)
     call = validate_call(call)
     errors = validate_errors(errors)
 
@@ -690,7 +686,6 @@ def to_decimal(
         unit=unit,
         step_size=step_size,
         epoch=epoch,
-        tz=tz,
         call=call,
         errors=errors,
         **kwargs
@@ -702,14 +697,14 @@ def to_datetime(
     dtype: resolve.resolvable = "datetime",
     unit: str = None,
     step_size: int = None,
-    epoch: str | datetime_like = None,
-    tz: str | tzinfo = None,
-    format: str = None,
-    utc: bool = None,
-    day_first: bool = None,
-    year_first: bool = None,
     tol: numeric = None,
     rounding: str = None,
+    epoch: str | datetime_like = None,
+    tz: str | tzinfo = None,
+    utc: bool = None,
+    format: str = None,
+    day_first: bool = None,
+    year_first: bool = None,
     call: Callable = None,
     errors: str = None,
     **kwargs
@@ -717,14 +712,14 @@ def to_datetime(
     """Convert arbitrary data to datetime representation."""
     # validate args
     dtype = validate_dtype(dtype, atomic.DatetimeType)
-    tol = validate_tol(tol)
-    rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
+    tol = validate_tol(tol)
+    rounding = validate_rounding(rounding)
     epoch = validate_epoch(epoch)
     tz = validate_timezone(tz)
-    format = validate_format(format)
     utc = validate_utc(utc)
+    format = validate_format(format)
     day_first = validate_day_first(day_first)
     year_first = validate_year_first(year_first)
     call = validate_call(call)
@@ -735,14 +730,14 @@ def to_datetime(
         series,
         "to_datetime",
         dtype=dtype,
-        tol=tol,
-        rounding=rounding,
         unit=unit,
         step_size=step_size,
-        tz=tz,
+        tol=tol,
+        rounding=rounding,
         epoch=epoch,
-        format=format,
+        tz=tz,
         utc=utc,
+        format=format,
         day_first=day_first,
         year_first=year_first,
         call=call,
@@ -754,12 +749,11 @@ def to_datetime(
 def to_timedelta(
     series: Iterable,
     dtype: resolve.resolvable = "timedelta",
-    tol: numeric = None,
-    rounding: str = None,
     unit: str = None,
     step_size: int = None,
+    tol: numeric = None,
+    rounding: str = None,
     epoch: str | datetime_like = None,
-    tz: str | tzinfo = None,
     as_hours: bool = None,
     call: Callable = None,
     errors: str = None,
@@ -768,12 +762,11 @@ def to_timedelta(
     """Convert arbitrary data to timedelta representation."""
     # validate args
     dtype = validate_dtype(dtype, atomic.TimedeltaType)
-    tol = validate_tol(tol)
-    rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
+    tol = validate_tol(tol)
+    rounding = validate_rounding(rounding)
     epoch = validate_epoch(epoch)
-    tz = validate_timezone(tz)
     as_hours = validate_as_hours(as_hours)
     call = validate_call(call)
     errors = validate_errors(errors)
@@ -783,12 +776,11 @@ def to_timedelta(
         series,
         "to_timedelta",
         dtype=dtype,
-        tol=tol,
-        rounding=rounding,
         unit=unit,
         step_size=step_size,
+        tol=tol,
+        rounding=rounding,
         epoch=epoch,
-        tz=tz,
         as_hours=as_hours,
         call=call,
         errors=errors,
@@ -799,8 +791,8 @@ def to_timedelta(
 def to_string(
     series: Iterable,
     dtype: resolve.resolvable = str,
-    base: int = None,
     format: str = None,
+    base: int = None,
     call: Callable = None,
     errors: str = None,
     **kwargs
@@ -1198,6 +1190,12 @@ cdef class SeriesWrapper:
                 kw = {k: v for k, v in kwargs.items() if k in pars}
                 result = original(*args, **kw)
 
+            # ensure final index is a subset of original index
+            if not result.index.difference(grp.index).empty:
+                raise RuntimeError(
+                    f"index mismatch: output index must be a subset of input "
+                    f"index for group {repr(str(grp.name))}"
+                )
             return result
 
         result = groups.transform(transform)

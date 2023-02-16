@@ -3,6 +3,7 @@ import decimal
 import numpy as np
 cimport numpy as np
 import pandas as pd
+import pytz
 
 from pdtypes.error import shorten_list
 from pdtypes.type_hints import numeric
@@ -18,6 +19,10 @@ from pdtypes.util.time import as_ns, round_months_to_ns, round_years_to_ns
 
 from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic
+
+
+# TODO: decimal -> datetime should account for tz.  This is propagated to float
+# -> results are localized to tz
 
 
 ######################
@@ -235,6 +240,7 @@ class DecimalMixin:
         unit: str,
         step_size: int,
         epoch: Epoch,
+        tz: pytz.BaseTzInfo,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -268,6 +274,7 @@ class DecimalMixin:
             unit=unit,
             step_size=step_size,
             epoch=epoch,
+            tz=tz,
             errors=errors,
             **unused
         )

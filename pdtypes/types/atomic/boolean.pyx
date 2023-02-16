@@ -3,6 +3,7 @@ import decimal
 import numpy as np
 cimport numpy as np
 import pandas as pd
+import pytz
 
 from .base cimport AtomicType
 from .base import generic
@@ -75,6 +76,7 @@ class BooleanMixin:
         step_size: int,
         rounding: str,
         epoch: Epoch,
+        tz: pytz.BaseTzInfo,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -94,6 +96,7 @@ class BooleanMixin:
             step_size=step_size,
             rounding=rounding,
             epoch=epoch,
+            tz=tz,
             errors=errors,
             **unused
         )

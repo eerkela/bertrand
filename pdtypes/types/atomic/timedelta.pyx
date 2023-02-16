@@ -5,6 +5,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 import regex as re  # using alternate python regex engine
+import pytz
 
 from .base cimport AtomicType, CompositeType
 from .base import generic, lru_cache
@@ -214,37 +215,78 @@ class TimedeltaMixin:
 
         return series
 
-
-    # TODO: to_datetime
-
-
-    def to_timedelta(
+    def to_datetime(
         self,
         series: cast.SeriesWrapper,
         dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        rounding: str,
+        epoch: Epoch,
+        tz: pytz.BaseTzInfo,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
-        """Convert timedelta data to another timedelta data type."""
-        # trivial case: no conversion necessary
-        if dtype == series.element_type:
-            return series.rectify()
-
-        # 2-step conversion: timedelta -> int, int -> timedelta
+        """Convert datetime data to another datetime representation."""
+        # 2-step conversion: datetime -> ns, ns -> datetime
         transfer_type = resolve.resolve_type(int)
         series = self.to_integer(
             series,
             dtype=transfer_type,
             unit="ns",
             step_size=1,
-            epoch=Epoch("utc"),
-            rounding=None,
+            rounding=rounding,
+            epoch=epoch,
+            downcast=None,
+            errors=errors
+        )
+        return transfer_type.to_datetime(
+            series,
+            dtype=dtype,
+            unit="ns",
+            step_size=1,
+            rounding=rounding,
+            epoch=epoch,
+            tz=tz,
+            errors=errors,
+            **unused
+        )
+
+    def to_timedelta(
+        self,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        rounding: str,
+        epoch: Epoch,
+        errors: str,
+        **unused
+    ) -> cast.SeriesWrapper:
+        """Convert timedelta data to a timedelta representation."""
+        # trivial case: no conversion necessary
+        if dtype == series.element_type:
+            return series.rectify()
+
+        # 2-step conversion: datetime -> ns, ns -> timedelta
+        transfer_type = resolve.resolve_type(int)
+        series = self.to_integer(
+            series,
+            dtype=transfer_type,
+            unit="ns",
+            step_size=1,
+            rounding=rounding,
+            epoch=epoch,
             downcast=None,
             errors=errors
         )
         return transfer_type.to_timedelta(
             series,
             dtype=dtype,
+            unit="ns",
+            step_size=1,
+            rounding=rounding,
+            epoch=epoch,
             errors=errors,
             **unused
         )
