@@ -5,9 +5,9 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from pdtypes.types import (
-    AtomicType, CompositeType, detect_type, resolvable, resolve_type
-)
+from pdtypes.type_hints import type_specifier
+
+from pdtypes.types import AtomicType, CompositeType, detect_type, resolve_type
 from pdtypes.types.cast import SeriesWrapper
 from pdtypes.types.cast import cast as cast_standalone
 
@@ -26,12 +26,12 @@ from pdtypes.types.cast import cast as cast_standalone
 ########################
 
 
-def cast(self, dtype: resolvable, **kwargs) -> pd.Series:
+def cast(self, dtype: type_specifier = None, **kwargs) -> pd.Series:
     """Convert a pd.Series object to another data type."""
     return cast_standalone(self, dtype=dtype, **kwargs)
 
 
-def check_type(self, dtype: resolvable, exact: bool = False) -> bool:
+def check_type(self, dtype: type_specifier, exact: bool = False) -> bool:
     """Check the type of a pd.Series object."""
     series_type = detect_type(self.dropna())
     target_type = resolve_type(dtype)
@@ -51,7 +51,7 @@ def check_type(self, dtype: resolvable, exact: bool = False) -> bool:
     return series_type in target_type
 
 
-def get_type(self) -> AtomicType | CompositeType:
+def element_type(self) -> AtomicType | CompositeType:
     """Retrieve the element type of a pd.Series object."""
     return detect_type(self.dropna())
 
@@ -88,7 +88,7 @@ pd.Series.__getattribute__ = new_getattribute
 
 pd.Series.check_type = check_type
 pd.Series.cast = cast
-pd.Series.get_type = get_type
+pd.Series.element_type = property(element_type)
 
 
 #######################

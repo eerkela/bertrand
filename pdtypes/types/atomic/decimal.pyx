@@ -239,7 +239,7 @@ class DecimalMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
@@ -247,16 +247,16 @@ class DecimalMixin:
         """Convert integer data to a datetime data type."""
         # round fractional inputs to the nearest nanosecond
         if unit == "Y":
-            ns = round_years_to_ns(series.series * step_size, since=epoch)
+            ns = round_years_to_ns(series.series * step_size, since=since)
         elif unit == "M":
-            ns = round_months_to_ns(series.series * step_size, since=epoch)
+            ns = round_months_to_ns(series.series * step_size, since=since)
         else:
             cast_to_int = np.frompyfunc(int, 1, 1)
             ns = cast_to_int(series.series * step_size * as_ns[unit])
 
         # account for non-utc epoch
-        if epoch:
-            ns += epoch.offset
+        if since:
+            ns += since.offset
 
         series = cast.SeriesWrapper(
             ns,
@@ -273,7 +273,7 @@ class DecimalMixin:
             dtype=dtype,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             tz=tz,
             errors=errors,
             **unused
@@ -285,16 +285,16 @@ class DecimalMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
         # round fractional inputs to the nearest nanosecond
         if unit == "Y":  # account for leap days
-            ns = round_years_to_ns(series.series * step_size, since=epoch)
+            ns = round_years_to_ns(series.series * step_size, since=since)
         elif unit == "M":  # account for irregular lengths
-            ns = round_months_to_ns(series.series * step_size, since=epoch)
+            ns = round_months_to_ns(series.series * step_size, since=since)
         else:
             cast_to_int = np.frompyfunc(int, 1, 1)
             ns = cast_to_int(series.series * step_size * as_ns[unit])
@@ -314,7 +314,7 @@ class DecimalMixin:
             dtype=dtype,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             errors=errors,
             **unused,
         )

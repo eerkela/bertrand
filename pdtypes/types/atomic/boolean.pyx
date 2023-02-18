@@ -75,7 +75,7 @@ class BooleanMixin:
         unit: str,
         step_size: int,
         rounding: str,
-        epoch: Epoch,
+        since: Epoch,
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
@@ -95,7 +95,7 @@ class BooleanMixin:
             unit=unit,
             step_size=step_size,
             rounding=rounding,
-            epoch=epoch,
+            since=since,
             tz=tz,
             errors=errors,
             **unused
@@ -108,7 +108,7 @@ class BooleanMixin:
         unit: str,
         step_size: int,
         rounding: str,
-        epoch: Epoch,
+        since: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -126,7 +126,7 @@ class BooleanMixin:
             unit=unit,
             step_size=step_size,
             rounding=rounding,
-            epoch=epoch,
+            since=since,
             errors=errors,
             **unused
         )

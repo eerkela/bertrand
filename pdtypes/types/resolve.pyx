@@ -19,6 +19,8 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
+from pdtypes.type_hints import type_specifier
+
 import pdtypes.types.atomic as atomic
 cimport pdtypes.types.atomic as atomic
 
@@ -29,20 +31,13 @@ cimport pdtypes.types.atomic as atomic
 # TODO: check for fixed-length string type specifier?  "U32", "U64", etc.
 
 
-# type hint for all the various specifiers that are accepted by resolve_type()
-resolvable = Union[
-    str, type, np.dtype, pd.api.extensions.ExtensionDtype, atomic.AtomicType,
-    atomic.CompositeType
-]
-
-
 #####################
 ####   PUBLIC    ####
 #####################
 
 
 def resolve_type(
-    typespec: resolvable | Iterable[resolvable],
+    typespec: type_specifier | Iterable[type_specifier],
     sparse: bool = False,
     categorical: bool = False
 ) -> atomic.AtomicType | atomic.CompositeType:

@@ -193,7 +193,7 @@ class StringMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         as_hours: bool,
         errors: str,
         **unused
@@ -202,7 +202,7 @@ class StringMixin:
         # 2-step conversion: str -> int, int -> timedelta
         transfer_type = resolve.resolve_type(int)
         series = series.apply_with_errors(
-            partial(timedelta_string_to_ns, as_hours=as_hours, since=epoch),
+            partial(timedelta_string_to_ns, as_hours=as_hours, since=since),
             errors=errors
         )
         series.element_type = transfer_type
@@ -211,7 +211,7 @@ class StringMixin:
             dtype=dtype,
             unit="ns",
             step_size=1,
-            epoch=epoch,
+            since=since,
             errors=errors,
             **unused
         )

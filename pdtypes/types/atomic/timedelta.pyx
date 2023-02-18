@@ -47,7 +47,7 @@ class TimedeltaMixin:
         rounding: str,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -61,7 +61,7 @@ class TimedeltaMixin:
             rounding=rounding,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             errors=errors
         )
         return transfer_type.to_boolean(
@@ -71,7 +71,7 @@ class TimedeltaMixin:
             rounding=rounding,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             errors=errors,
             **unused
         )
@@ -82,7 +82,7 @@ class TimedeltaMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         tol: Tolerance,
         rounding: str,
         downcast: CompositeType,
@@ -97,7 +97,7 @@ class TimedeltaMixin:
             dtype=transfer_type,
             unit="ns",
             step_size=1,
-            epoch=epoch,
+            since=since,
             rounding=None,
             downcast=None,
             errors=errors
@@ -108,7 +108,7 @@ class TimedeltaMixin:
                 "ns",
                 unit,
                 rounding=rounding,
-                since=epoch
+                since=since
             )
             if step_size != 1:
                 series.series /= step_size
@@ -119,7 +119,7 @@ class TimedeltaMixin:
             dtype=dtype,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             tol=tol,
             rounding=rounding,
             downcast=downcast,
@@ -133,7 +133,7 @@ class TimedeltaMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         tol: Tolerance,
         rounding: str,
         downcast: CompositeType,
@@ -148,7 +148,7 @@ class TimedeltaMixin:
             dtype=transfer_type,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             rounding=rounding,
             downcast=None,
             errors=errors
@@ -158,7 +158,7 @@ class TimedeltaMixin:
             dtype=dtype,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             tol=tol,
             rounding=rounding,
             downcast=downcast,
@@ -172,7 +172,7 @@ class TimedeltaMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         tol: Tolerance,
         rounding: str,
         errors: str,
@@ -186,7 +186,7 @@ class TimedeltaMixin:
             dtype=transfer_type,
             unit="ns",
             step_size=1,
-            epoch=epoch,
+            since=since,
             rounding=None,
             downcast=None,
             errors=errors
@@ -196,7 +196,7 @@ class TimedeltaMixin:
             dtype=dtype,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             tol=tol,
             rounding=rounding,
             errors=errors,
@@ -208,7 +208,7 @@ class TimedeltaMixin:
                 "ns",
                 unit,
                 rounding=rounding,
-                since=epoch
+                since=since
             )
             if step_size != 1:
                 series.series /= step_size
@@ -222,7 +222,7 @@ class TimedeltaMixin:
         unit: str,
         step_size: int,
         rounding: str,
-        epoch: Epoch,
+        since: Epoch,
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
@@ -236,7 +236,7 @@ class TimedeltaMixin:
             unit="ns",
             step_size=1,
             rounding=rounding,
-            epoch=epoch,
+            since=since,
             downcast=None,
             errors=errors
         )
@@ -246,7 +246,7 @@ class TimedeltaMixin:
             unit="ns",
             step_size=1,
             rounding=rounding,
-            epoch=epoch,
+            since=since,
             tz=tz,
             errors=errors,
             **unused
@@ -259,7 +259,7 @@ class TimedeltaMixin:
         unit: str,
         step_size: int,
         rounding: str,
-        epoch: Epoch,
+        since: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -276,7 +276,7 @@ class TimedeltaMixin:
             unit="ns",
             step_size=1,
             rounding=rounding,
-            epoch=epoch,
+            since=since,
             downcast=None,
             errors=errors
         )
@@ -286,7 +286,7 @@ class TimedeltaMixin:
             unit="ns",
             step_size=1,
             rounding=rounding,
-            epoch=epoch,
+            since=since,
             errors=errors,
             **unused
         )
@@ -391,12 +391,13 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
 
     @classmethod
     def slugify(cls, unit: str = None, step_size: int = 1) -> str:
-        slug = cls.name
+        cdef list options = cls.options
         if unit is not None:
-            slug += f"[{cls.backend}, {step_size}{unit}]"
-        else:
-            slug += f"[{cls.backend}]"
-        return slug
+            if step_size == 1:
+                options = options + [unit]
+            else:
+                options = options + [f"{step_size}{unit}"]
+        return f"{cls.name}[{', '.join(options)}]"
 
     def contains(self, other: Any) -> bool:
         other = resolve.resolve_type(other)
@@ -440,7 +441,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
         self,
         series: cast.SeriesWrapper,
         rounding: str,
-        epoch: Epoch,
+        since: Epoch,
         **unused
     ) -> cast.SeriesWrapper:
         """Convert nanosecond offsets from the given epoch into numpy
@@ -452,7 +453,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
             "ns",
             self.unit,
             rounding=rounding or "down",
-            since=epoch
+            since=since
         )
         if self.step_size != 1:
             series.series = round_div(
@@ -477,7 +478,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         rounding: str,
         downcast: CompositeType,
         errors: str,
@@ -493,7 +494,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
             self.unit,
             unit,
             rounding=rounding or "down",
-            since=epoch
+            since=since
         )
         series = cast.SeriesWrapper(
             pd.Series(arr, index=series.series.index),
@@ -550,7 +551,7 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         rounding: str,
         downcast: CompositeType,
         errors: str,
@@ -564,7 +565,7 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
                 unit=unit,
                 step_size=step_size,
                 rounding=rounding,
-                epoch=epoch
+                since=since
             )
 
         series, dtype = series.boundscheck(dtype, errors=errors)
@@ -622,7 +623,7 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         rounding: str,
         downcast: CompositeType,
         errors: str,
@@ -638,7 +639,7 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
                 unit=unit,
                 step_size=step_size,
                 rounding=rounding,
-                epoch=epoch
+                since=since
             )
 
         series, dtype = series.boundscheck(dtype, errors=errors)
@@ -665,14 +666,14 @@ def convert_ns_to_unit(
     unit: str,
     step_size: int,
     rounding: str,
-    epoch: Epoch
+    since: Epoch
 ) -> None:
     """Helper for converting between integer time units."""
     series.series = convert_unit(
         series.series,
         "ns",
         unit,
-        since=epoch,
+        since=since,
         rounding=rounding or "down",
     )
     if step_size != 1:

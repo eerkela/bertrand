@@ -18,6 +18,9 @@ import pdtypes.types.resolve as resolve
 from pdtypes.util.round import Tolerance
 
 
+# TODO: insert type_specifier hints where applicable
+
+
 # conversions
 # +------------------------------------------------
 # |           | b | i | f | c | d | d | t | s | o |
@@ -618,8 +621,7 @@ cdef class AtomicType(BaseType):
         * `to_object(...)`:
     """
 
-    # Internal fields.  These are managed via decorators and should never be
-    # overridden.
+    # Internal fields.  These should never be overridden.
     registry: TypeRegistry = TypeRegistry()
     flyweights: dict[int, AtomicType] = {}
 

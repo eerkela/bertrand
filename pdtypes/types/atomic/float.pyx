@@ -228,7 +228,7 @@ class FloatMixin:
         step_size: int,
         rounding: str,
         tz: pytz.BaseTzInfo,
-        epoch: Epoch,
+        since: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -247,7 +247,7 @@ class FloatMixin:
             step_size=step_size,
             rounding=rounding,
             tz=tz,
-            epoch=epoch,
+            since=since,
             errors=errors,
             **unused
         )
@@ -259,7 +259,7 @@ class FloatMixin:
         unit: str,
         step_size: int,
         rounding: str,
-        epoch: Epoch,
+        since: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -277,7 +277,7 @@ class FloatMixin:
             unit=unit,
             step_size=step_size,
             rounding=rounding,
-            epoch=epoch,
+            since=since,
             errors=errors,
             **unused
         )

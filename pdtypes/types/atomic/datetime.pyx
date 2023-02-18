@@ -56,7 +56,7 @@ class DatetimeMixin:
         rounding: str,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -70,7 +70,7 @@ class DatetimeMixin:
             rounding=rounding,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             errors=errors
         )
         return transfer_type.to_boolean(
@@ -80,7 +80,7 @@ class DatetimeMixin:
             rounding=rounding,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             errors=errors,
             **unused
         )
@@ -91,7 +91,7 @@ class DatetimeMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         tol: Tolerance,
         rounding: str,
         downcast: CompositeType,
@@ -106,7 +106,7 @@ class DatetimeMixin:
             dtype=transfer_type,
             unit="ns",
             step_size=1,
-            epoch=epoch,
+            since=since,
             rounding=None,
             downcast=None,
             errors=errors
@@ -117,7 +117,7 @@ class DatetimeMixin:
                 "ns",
                 unit,
                 rounding=rounding,
-                since=epoch
+                since=since
             )
             if step_size != 1:
                 series.series /= step_size
@@ -128,7 +128,7 @@ class DatetimeMixin:
             dtype=dtype,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             tol=tol,
             rounding=rounding,
             downcast=downcast,
@@ -142,7 +142,7 @@ class DatetimeMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         tol: Tolerance,
         rounding: str,
         downcast: CompositeType,
@@ -157,7 +157,7 @@ class DatetimeMixin:
             dtype=transfer_type,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             rounding=rounding,
             downcast=None,
             errors=errors
@@ -167,7 +167,7 @@ class DatetimeMixin:
             dtype=dtype,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             tol=tol,
             rounding=rounding,
             downcast=downcast,
@@ -181,7 +181,7 @@ class DatetimeMixin:
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         tol: Tolerance,
         rounding: str,
         errors: str,
@@ -195,7 +195,7 @@ class DatetimeMixin:
             dtype=transfer_type,
             unit="ns",
             step_size=1,
-            epoch=epoch,
+            since=since,
             rounding=None,
             downcast=None,
             errors=errors
@@ -205,7 +205,7 @@ class DatetimeMixin:
             dtype=dtype,
             unit=unit,
             step_size=step_size,
-            epoch=epoch,
+            since=since,
             tol=tol,
             rounding=rounding,
             errors=errors,
@@ -217,7 +217,7 @@ class DatetimeMixin:
                 "ns",
                 unit,
                 rounding=rounding,
-                since=epoch
+                since=since
             )
             if step_size != 1:
                 series.series /= step_size
@@ -231,7 +231,7 @@ class DatetimeMixin:
         unit: str,
         step_size: int,
         rounding: str,
-        epoch: Epoch,
+        since: Epoch,
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
@@ -245,7 +245,7 @@ class DatetimeMixin:
             unit="ns",
             step_size=1,
             rounding=rounding,
-            epoch=Epoch("utc"),
+            since=Epoch("utc"),
             downcast=None,
             errors=errors
         )
@@ -255,7 +255,7 @@ class DatetimeMixin:
             unit="ns",
             step_size=1,
             rounding=rounding,
-            epoch=Epoch("utc"),
+            since=Epoch("utc"),
             tz=tz,
             errors=errors,
             **unused
@@ -268,7 +268,7 @@ class DatetimeMixin:
         unit: str,
         step_size: int,
         rounding: str,
-        epoch: Epoch,
+        since: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -281,7 +281,7 @@ class DatetimeMixin:
             unit="ns",
             step_size=1,
             rounding=rounding,
-            epoch=epoch,
+            since=since,
             downcast=None,
             errors=errors
         )
@@ -291,7 +291,7 @@ class DatetimeMixin:
             unit="ns",
             step_size=1,
             rounding=rounding,
-            epoch=epoch,
+            since=since,
             errors=errors,
             **unused
         )
@@ -418,12 +418,13 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
 
     @classmethod
     def slugify(cls, unit: str = None, step_size: int = 1) -> str:
-        slug = cls.name
+        cdef list options = cls.options
         if unit is not None:
-            slug += f"[{cls.backend}, {step_size}{unit}]"
-        else:
-            slug += f"[{cls.backend}]"
-        return slug
+            if step_size == 1:
+                options = options + [unit]
+            else:
+                options = options + [f"{step_size}{unit}"]
+        return f"{cls.name}[{', '.join(options)}]"
 
     def contains(self, other: Any) -> bool:
         other = resolve.resolve_type(other)
@@ -542,7 +543,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         rounding: str,
         downcast: CompositeType,
         errors: str,
@@ -553,13 +554,13 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
         M8_str = f"M8[{self.step_size}{self.unit}]"
         arr = series.series.to_numpy(M8_str).view(np.int64).astype("O")
         arr *= self.step_size
-        if epoch:  # apply epoch offset if not utc
+        if since:  # apply epoch offset if not utc
             arr = convert_unit(
                 arr,
                 self.unit,
                 "ns"
             )
-            arr -= epoch.offset  # retains full ns precision from epoch
+            arr -= since.offset  # retains full ns precision from epoch
             arr = convert_unit(
                 arr,
                 "ns",
@@ -783,7 +784,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         unit: str,
         step_size: int,
         rounding: str,
-        epoch: Epoch,
+        since: Epoch,
         downcast: CompositeType,
         errors: str,
         **kwargs
@@ -791,9 +792,9 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         """Convert pandas Timestamps into an integer data type."""
         # convert to ns
         series = series.rectify().astype(np.int64)
-        if epoch:
+        if since:
             series.series = series.series.astype("O")  # overflow-safe
-            series.series -= epoch.offset
+            series.series -= since.offset
 
         # convert ns to final unit
         if unit != "ns" or step_size != 1:
@@ -980,7 +981,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
         dtype: AtomicType,
         unit: str,
         step_size: int,
-        epoch: Epoch,
+        since: Epoch,
         rounding: str,
         downcast: CompositeType,
         errors: str,
@@ -989,8 +990,8 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
         """Convert python datetimes into an integer data type."""
         series = series.apply_with_errors(pydatetime_to_ns)
         series.element_type = int
-        if epoch:
-            series.series -= epoch.offset
+        if since:
+            series.series -= since.offset
 
         if unit != "ns" or step_size != 1:
             convert_ns_to_unit(

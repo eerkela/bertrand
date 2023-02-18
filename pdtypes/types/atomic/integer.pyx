@@ -282,7 +282,7 @@ class IntegerMixin:
         unit: str,
         step_size: int,
         rounding: str,
-        epoch: Epoch,
+        since: Epoch,
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
@@ -298,11 +298,11 @@ class IntegerMixin:
         # convert to ns
         if step_size != 1:
             series.series *= step_size
-        series.series = convert_unit(series.series, unit, "ns", since=epoch)
+        series.series = convert_unit(series.series, unit, "ns", since=since)
 
         # account for non-utc epoch
-        if epoch:
-            series.series += epoch.offset
+        if since:
+            series.series += since.offset
 
         # check for overflow and upcast if applicable
         series, dtype = series.boundscheck(dtype, errors=errors)
@@ -313,7 +313,7 @@ class IntegerMixin:
             unit=unit,
             step_size=step_size,
             rounding=rounding,
-            epoch=epoch,
+            since=since,
             tz=tz,
             errors=errors,
             **unused
@@ -326,7 +326,7 @@ class IntegerMixin:
         unit: str,
         step_size: int,
         rounding: str,
-        epoch: Epoch,
+        since: Epoch,
         errors: str,
         **unused
     ) -> cast.SeriesWrapper:
@@ -341,7 +341,7 @@ class IntegerMixin:
         # convert to ns
         if step_size != 1:
             series.series *= step_size
-        series.series = convert_unit(series.series, unit, "ns", since=epoch)
+        series.series = convert_unit(series.series, unit, "ns", since=since)
 
         # check for overflow and upcast if necessary
         series, dtype = series.boundscheck(dtype, errors=errors)
@@ -352,7 +352,7 @@ class IntegerMixin:
             unit=unit,
             step_size=step_size,
             rounding=rounding,
-            epoch=epoch,
+            since=since,
             errors=errors,
             **unused
         )

@@ -19,7 +19,9 @@ import pdtypes.types.detect as detect
 import pdtypes.types.resolve as resolve
 
 from pdtypes.error import shorten_list
-from pdtypes.type_hints import array_like, datetime_like, numeric
+from pdtypes.type_hints import (
+    array_like, datetime_like, numeric, type_specifier
+)
 from pdtypes.util.round cimport Tolerance
 from pdtypes.util.time cimport Epoch
 
@@ -46,7 +48,7 @@ cdef class CastDefaults:
         bint _categorical
         bint _day_first
         atomic.CompositeType _downcast
-        object _epoch
+        object _since
         str _errors
         set _false
         str _format
@@ -66,7 +68,7 @@ cdef class CastDefaults:
         self._base = 0
         self._categorical = False
         self._downcast = None
-        self._epoch = Epoch("utc")
+        self._since = Epoch("utc")
         self._errors = "raise"
         self._false = {"false", "f", "no", "n", "off", "0"}
         self._ignore_case = True
@@ -123,20 +125,20 @@ cdef class CastDefaults:
         return self._downcast
 
     @downcast.setter
-    def downcast(self, val: bool | resolve.resolvable) -> None:
+    def downcast(self, val: bool | type_specifier) -> None:
         if val is None:
             raise ValueError(f"default `downcast` cannot be None")
         self._downcast = validate_downcast(val)
 
     @property
-    def epoch(self) -> np.datetime64:
-        return self._epoch
+    def since(self) -> np.datetime64:
+        return self._since
 
-    @epoch.setter
-    def epoch(self, val: str | datetime_like) -> None:
+    @since.setter
+    def since(self, val: str | datetime_like) -> None:
         if val is None:
-            raise ValueError(f"default `epoch` cannot be None")
-        self._epoch = validate_epoch(val)
+            raise ValueError(f"default `since` cannot be None")
+        self._since = validate_since(val)
 
     @property
     def errors(self) -> str:
@@ -301,7 +303,7 @@ def validate_day_first(val: bool) -> bool:
 
 
 def validate_downcast(
-    val: bool | resolve.resolvable
+    val: bool | type_specifier
 ) -> atomic.CompositeType:
     if val is None:
         return defaults.downcast
@@ -314,8 +316,8 @@ def validate_downcast(
 
 
 def validate_dtype(
-    dtype: resolve.resolvable,
-    supertype: resolve.resolvable = None
+    dtype: type_specifier,
+    supertype: type_specifier = None
 ) -> atomic.AtomicType:
     """Resolve a type specifier and reject it if it is composite or not a
     subtype of the given supertype.
@@ -332,9 +334,9 @@ def validate_dtype(
     return dtype
 
 
-def validate_epoch(val: str | datetime_like) -> Epoch:
+def validate_since(val: str | datetime_like) -> Epoch:
     if val is None:
-        return defaults.epoch
+        return defaults.since
     return Epoch(val)
 
 
@@ -449,25 +451,30 @@ def validate_year_first(val: bool) -> bool:
 
 def cast(
     series: Iterable,
-    dtype: resolve.resolvable = None,
+    dtype: type_specifier = None,
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to the given data type."""
-    # validate args
+    # if no target is given, default to series type
+    if dtype is None:
+        series = as_series(series)
+        dtype = detect.detect_type(series.dropna())
+
+    # validate dtype
     dtype = validate_dtype(dtype)
 
     # delegate to appropriate to_x function below
-    return dtype.conversion_func(series, validate_dtype(dtype), **kwargs)
+    return dtype.conversion_func(series, dtype, **kwargs)
 
 
 def to_boolean(
     series: Iterable,
-    dtype: resolve.resolvable = bool,
+    dtype: type_specifier = bool,
     tol: numeric = None,
     rounding: str = None,
     unit: str = None,
     step_size: int = None,
-    epoch: str | datetime_like = None,
+    since: str | datetime_like = None,
     true: str | Iterable[str] = None,
     false: str | Iterable[str] = None,
     ignore_case: bool = None,
@@ -482,7 +489,7 @@ def to_boolean(
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
-    epoch = validate_epoch(epoch)
+    since = validate_since(since)
     true = validate_true(true)
     false = validate_false(false)
     call = validate_call(call)
@@ -509,7 +516,7 @@ def to_boolean(
         rounding=rounding,
         unit=unit,
         step_size=step_size,
-        epoch=epoch,
+        since=since,
         true=true,
         false=false,
         ignore_case=ignore_case,
@@ -520,15 +527,15 @@ def to_boolean(
 
 def to_integer(
     series: Iterable,
-    dtype: resolve.resolvable = int,
+    dtype: type_specifier = int,
     tol: numeric = None,
     rounding: str = None,
     unit: str = None,
     step_size: int = None,
-    epoch: str | datetime_like = None,
+    since: str | datetime_like = None,
     base: int = None,
     call: Callable = None,
-    downcast: bool | resolve.resolvable = None,
+    downcast: bool | type_specifier = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -539,7 +546,7 @@ def to_integer(
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
-    epoch = validate_epoch(epoch)
+    since = validate_since(since)
     base = validate_base(base)
     call = validate_call(call)
     downcast = validate_downcast(downcast)
@@ -554,7 +561,7 @@ def to_integer(
         rounding=rounding,
         unit=unit,
         step_size=step_size,
-        epoch=epoch,
+        since=since,
         base=base,
         call=call,
         downcast=downcast,
@@ -565,14 +572,14 @@ def to_integer(
 
 def to_float(
     series: Iterable,
-    dtype: resolve.resolvable = float,
+    dtype: type_specifier = float,
     tol: numeric = None,
     rounding: str = None,
     unit: str = None,
     step_size: int = None,
-    epoch: str | datetime_like = None,
+    since: str | datetime_like = None,
     call: Callable = None,
-    downcast: bool | resolve.resolvable = None,
+    downcast: bool | type_specifier = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -583,7 +590,7 @@ def to_float(
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
-    epoch = validate_epoch(epoch)
+    since = validate_since(since)
     call = validate_call(call)
     downcast = validate_downcast(downcast)
     errors = validate_errors(errors)
@@ -597,7 +604,7 @@ def to_float(
         rounding=rounding,
         unit=unit,
         step_size=step_size,
-        epoch=epoch,
+        since=since,
         call=call,
         downcast=downcast,
         errors=errors,
@@ -607,14 +614,14 @@ def to_float(
 
 def to_complex(
     series: Iterable,
-    dtype: resolve.resolvable = complex,
+    dtype: type_specifier = complex,
     tol: numeric = None,
     rounding: str = None,
     unit: str = None,
     step_size: int = None,
-    epoch: str | datetime_like = None,
+    since: str | datetime_like = None,
     call: Callable = None,
-    downcast: bool | resolve.resolvable = None,
+    downcast: bool | type_specifier = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -625,7 +632,7 @@ def to_complex(
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
-    epoch = validate_epoch(epoch)
+    since = validate_since(since)
     call = validate_call(call)
     downcast = validate_downcast(downcast)
     errors = validate_errors(errors)
@@ -639,7 +646,7 @@ def to_complex(
         rounding=rounding,
         unit=unit,
         step_size=step_size,
-        epoch=epoch,
+        since=since,
         downcast=downcast,
         errors=errors,
         **kwargs
@@ -648,12 +655,12 @@ def to_complex(
 
 def to_decimal(
     series: Iterable,
-    dtype: resolve.resolvable = decimal.Decimal,
+    dtype: type_specifier = decimal.Decimal,
     tol: numeric = None,
     rounding: str = None,
     unit: str = None,
     step_size: int = None,
-    epoch: str | datetime_like = None,
+    since: str | datetime_like = None,
     call: Callable = None,
     errors: str = None,
     **kwargs
@@ -665,7 +672,7 @@ def to_decimal(
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
-    epoch = validate_epoch(epoch)
+    since = validate_since(since)
     call = validate_call(call)
     errors = validate_errors(errors)
 
@@ -678,7 +685,7 @@ def to_decimal(
         rounding=rounding,
         unit=unit,
         step_size=step_size,
-        epoch=epoch,
+        since=since,
         call=call,
         errors=errors,
         **kwargs
@@ -687,12 +694,12 @@ def to_decimal(
 
 def to_datetime(
     series: Iterable,
-    dtype: resolve.resolvable = "datetime",
+    dtype: type_specifier = "datetime",
     unit: str = None,
     step_size: int = None,
     tol: numeric = None,
     rounding: str = None,
-    epoch: str | datetime_like = None,
+    since: str | datetime_like = None,
     tz: str | tzinfo = None,
     utc: bool = None,
     format: str = None,
@@ -709,7 +716,7 @@ def to_datetime(
     step_size = validate_step_size(step_size)
     tol = validate_tol(tol)
     rounding = validate_rounding(rounding)
-    epoch = validate_epoch(epoch)
+    since = validate_since(since)
     tz = validate_timezone(tz)
     utc = validate_utc(utc)
     format = validate_format(format)
@@ -727,7 +734,7 @@ def to_datetime(
         step_size=step_size,
         tol=tol,
         rounding=rounding,
-        epoch=epoch,
+        since=since,
         tz=tz,
         utc=utc,
         format=format,
@@ -741,12 +748,12 @@ def to_datetime(
 
 def to_timedelta(
     series: Iterable,
-    dtype: resolve.resolvable = "timedelta",
+    dtype: type_specifier = "timedelta",
     unit: str = None,
     step_size: int = None,
     tol: numeric = None,
     rounding: str = None,
-    epoch: str | datetime_like = None,
+    since: str | datetime_like = None,
     as_hours: bool = None,
     call: Callable = None,
     errors: str = None,
@@ -759,7 +766,7 @@ def to_timedelta(
     step_size = validate_step_size(step_size)
     tol = validate_tol(tol)
     rounding = validate_rounding(rounding)
-    epoch = validate_epoch(epoch)
+    since = validate_since(since)
     as_hours = validate_as_hours(as_hours)
     call = validate_call(call)
     errors = validate_errors(errors)
@@ -773,7 +780,7 @@ def to_timedelta(
         step_size=step_size,
         tol=tol,
         rounding=rounding,
-        epoch=epoch,
+        since=since,
         as_hours=as_hours,
         call=call,
         errors=errors,
@@ -783,7 +790,7 @@ def to_timedelta(
 
 def to_string(
     series: Iterable,
-    dtype: resolve.resolvable = str,
+    dtype: type_specifier = str,
     format: str = None,
     base: int = None,
     call: Callable = None,
@@ -813,7 +820,7 @@ def to_string(
 
 def to_object(
     series: Iterable,
-    dtype: resolve.resolvable = object,
+    dtype: type_specifier = object,
     call: Callable = None,
     errors: str = None,
     **kwargs
@@ -868,7 +875,7 @@ cdef class SeriesWrapper:
         return self._element_type
 
     @element_type.setter
-    def element_type(self, val: resolve.resolvable) -> None:
+    def element_type(self, val: type_specifier) -> None:
         if val is not None:
             val = resolve.resolve_type(val)
             if (
@@ -962,7 +969,7 @@ cdef class SeriesWrapper:
 
     def astype(
         self,
-        dtype: resolve.resolvable,
+        dtype: type_specifier,
         errors: str = "raise"
     ) -> SeriesWrapper:
         """`astype()` equivalent for SeriesWrapper instances that works for
