@@ -33,10 +33,6 @@ from pdtypes.util.time cimport Epoch
 # TODO: have to account for empty series in each conversion.
 
 
-# TODO: @dispatch should match the signatures of whatever method it is attached
-# to.
-
-
 #######################
 ####   DEFAULTS    ####
 #######################
@@ -472,7 +468,6 @@ def to_boolean(
     unit: str = None,
     step_size: int = None,
     epoch: str | datetime_like = None,
-    tz: str | tzinfo = None,
     true: str | Iterable[str] = None,
     false: str | Iterable[str] = None,
     ignore_case: bool = None,
@@ -488,7 +483,6 @@ def to_boolean(
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
     epoch = validate_epoch(epoch)
-    tz = validate_timezone(tz)
     true = validate_true(true)
     false = validate_false(false)
     call = validate_call(call)
@@ -516,7 +510,6 @@ def to_boolean(
         unit=unit,
         step_size=step_size,
         epoch=epoch,
-        tz=tz,
         true=true,
         false=false,
         ignore_case=ignore_case,

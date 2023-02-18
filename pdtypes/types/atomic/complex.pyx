@@ -13,7 +13,7 @@ from pdtypes.util.round cimport Tolerance
 from pdtypes.util.time cimport Epoch
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, generic, subtype
+from .base import dispatch, generic, register, subtype
 import pdtypes.types.atomic.float as float_types
 
 
@@ -306,6 +306,7 @@ class ComplexMixin:
 #######################
 
 
+@register
 @generic
 class ComplexType(ComplexMixin, AtomicType):
 
@@ -323,6 +324,7 @@ class ComplexType(ComplexMixin, AtomicType):
     _equiv_float = "FloatType"
 
 
+@register
 @generic
 @subtype(ComplexType)
 class Complex64Type(ComplexMixin, AtomicType):
@@ -340,6 +342,7 @@ class Complex64Type(ComplexMixin, AtomicType):
     _equiv_float = "Float32Type"
 
 
+@register
 @generic
 @subtype(ComplexType)
 class Complex128Type(ComplexMixin, AtomicType):
@@ -357,9 +360,10 @@ class Complex128Type(ComplexMixin, AtomicType):
     _equiv_float = "Float64Type"
 
 
+@register
 @generic
 @subtype(ComplexType)
-class Complex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
+class Complex160Type(ComplexMixin, AtomicType):
 
     name = "complex160"
     aliases = {
@@ -381,6 +385,7 @@ class Complex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
 #####################
 
 
+@register
 @ComplexType.register_backend("numpy")
 class NumpyComplexType(ComplexMixin, AtomicType):
 
@@ -394,6 +399,7 @@ class NumpyComplexType(ComplexMixin, AtomicType):
     _equiv_float = "NumpyFloatType"
 
 
+@register
 @subtype(NumpyComplexType)
 @Complex64Type.register_backend("numpy")
 class NumpyComplex64Type(ComplexMixin, AtomicType):
@@ -408,6 +414,7 @@ class NumpyComplex64Type(ComplexMixin, AtomicType):
     _equiv_float = "NumpyFloat32Type"
 
 
+@register
 @subtype(NumpyComplexType)
 @Complex128Type.register_backend("numpy")
 class NumpyComplex128Type(ComplexMixin, AtomicType):
@@ -422,9 +429,10 @@ class NumpyComplex128Type(ComplexMixin, AtomicType):
     _equiv_float = "NumpyFloat64Type"
 
 
+@register
 @subtype(NumpyComplexType)
 @Complex160Type.register_backend("numpy")
-class NumpyComplex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
+class NumpyComplex160Type(ComplexMixin, AtomicType):
 
     aliases = {np.clongdouble, np.dtype(np.clongdouble)}
     dtype = np.dtype(np.clongdouble)
@@ -441,6 +449,7 @@ class NumpyComplex160Type(ComplexMixin, AtomicType, ignore=no_clongdouble):
 ######################
 
 
+@register
 @ComplexType.register_backend("python")
 @Complex128Type.register_backend("python")
 class PythonComplexType(ComplexMixin, AtomicType):
@@ -457,6 +466,10 @@ class PythonComplexType(ComplexMixin, AtomicType):
 #######################
 ####    PRIVATE    ####
 #######################
+
+
+def test():
+    print("hello world")
 
 
 cdef cast.SeriesWrapper combine_real_imag(

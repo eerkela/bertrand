@@ -32,79 +32,14 @@ from pdtypes.util.round import Tolerance
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | decimal   | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | datetime  | x | x | x | x | x |   |   | x | x |
+# | datetime  | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-# | timedelta | x | x | x | x | x |   |   | x | x |
+# | timedelta | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | string    | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | object    | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-
-
-# implement boolean flags for every AtomicType:
-# - is_boolean (in bool)
-# - is_integer (in int)
-# - is_signed (in signed)
-# - is_unsigned (in unsigned)
-# - is_float (in float)
-# - is_complex (in complex)
-# - is_decimal (in decimal)
-# - is_datetime (in datetime)
-# - is_timedelta (in timedelta)
-# - is_string (in string)
-# - is_object (in object)
-# - is_nullable (if isinstance(self.dtype, np.dtype): in bool/int)
-# - is_sparse (wrapped in SparseType)
-# - is_categorical (wrapped in CategoricalType)
-# - is_root (NOT decorated with @subtype)
-# - is_generic (decorated with @generic)
-
-# These can all be initialized as AtomicType class variables and then
-# overridden in Mixins.
-# -> this probably breaks AdapterTypes, which would have to implement a
-# separate wrapper for each flag (return self.is_x or self.atomic_type.is_x).
-# -> is this such a bad idea?  Fields where the expected value is True rather
-# than false have to be handled in special cases.
-
-# probably better if the is_type flags are runtime @properties.  Then they'd
-# always reflect their decorator configuration, similar to conversion_func.
-# In fact, could maybe boil this down to an inherit_flags() helper function.
-
-# There could be a synthesis of the two, where decorators manage the state of
-# each flag.  Maybe they replace any flag where the value differs from
-# AtomicType?
-
-# Under this paradigm, is_nullable defaults to False for all boolean, integer
-# types.  It must be manually set True to bypass this.
-
-# Actually, this sucks because the whole point of the program is to replace
-# the is_... checks entirely.
-
-
-
-# @classmethod
-# AtomicType._inherit_flags(cls, parent: type) -> None
-#     for attr in atomic.flag_names:
-#         # do a 3-way comparison between parent, child, and base
-#         base_attr = getattr(AtomicType, attr)
-#         parent_attr = getattr(parent, attr)
-#         child_attr = getattr(cls, attr)
-#         if parent_attr != base_attr and child_attr == base_attr:
-#             setattr(cls, attr, parent_attr)
-
-# alternatively: call dir(parent) and 
-
-
-# AtomicType:
-#     is_integer = False
-#     is_nullable = True
-
-# IntegerType:
-#     is_integer = True
-
-# NumpyIntegerType:
-#     is_nullable = False
 
 
 ##########################
@@ -133,9 +68,6 @@ cdef class BaseType:
 ##########################
 
 
-cdef tuple generic_methods = ("_generate_subtypes", "instance", "resolve")
-
-
 def dispatch(_method=None, *, namespace: str = None):
     """Dispatch an AtomicType method to pandas series' of the given type, so
     that it is discovered during attribute lookup.
@@ -161,7 +93,7 @@ def dispatch(_method=None, *, namespace: str = None):
     return dispatch_decorator
 
 
-def generic(class_def: type):
+def generic(_class: type):
     """Class decorator to mark generic AtomicType definitions.
 
     Generic types are backend-agnostic and act as wildcard containers for
@@ -169,63 +101,33 @@ def generic(class_def: type):
     the backend-specific "int[numpy]", "int[pandas]", and "int[python]"
     subtypes, which can be resolved as shown. 
     """
-    if not issubclass(class_def, AtomicType):
+    # NOTE: something like this would normally be handled using a decorating
+    # class rather than a function.  Doing it this way (patching) has the
+    # advantage of preserving the original type for issubclass() checks
+    if not issubclass(_class, AtomicType):
         raise TypeError(f"`@generic` can only be applied to AtomicTypes")
+
+    # verify init is empty.  NOTE: cython __init__ is not introspectable.
     if (
-        class_def.__init__ != AtomicType.__init__ and
-        len(inspect.signature(class_def).parameters)
+        _class.__init__ != AtomicType.__init__ and
+        inspect.signature(_class).parameters
     ):
         raise TypeError(
-            f"To be generic, {class_def.__name__}.__init__() cannot "
+            f"To be generic, {_class.__name__}.__init__() cannot "
             f"have arguments other than self"
         )
 
-    @classmethod
-    def register_backend(cls, backend: str):
-        def decorator(wrapped: type):
-            if not issubclass(wrapped, AtomicType):
-                raise TypeError(
-                    f"`generic.register_backend()` can only be applied to "
-                    f"AtomicType definitions"
-                )
-            if wrapped._ignored or cls._ignored:
-                return wrapped
-
-            # check backend is unique
-            if backend in cls.backends:
-                raise TypeError(
-                    f"`backend` must be unique, not one of {set(cls.backends)}"
-                )
-
-            # assign attributes
-            wrapped.conversion_func = cls.conversion_func
-            # wrapped._inherit_flags(cls)
-            # wrapped.is_generic = False
-            wrapped._generic = cls
-            wrapped.name = cls.name
-            wrapped.backend = backend
-            cls.backends[backend] = wrapped
-            wrapped.registry.flush()
-            return wrapped
-
-        return decorator
-
-    # register_backend is needed to compile type definitions
-    class_def.register_backend = register_backend
-    if class_def._ignored:
-        return class_def
-
-    # overwrite class attributes
-    class_def.is_generic = True
-    class_def.backend = None
-    class_def.backends = {None: class_def}
-
-    cdef dict orig = {k: getattr(class_def, k) for k in generic_methods}
+    # remember original equivalents
+    cdef dict orig = {
+        k: getattr(_class, k) for k in (
+            "_generate_subtypes", "instance", "resolve"
+        )
+    }
 
     def _generate_subtypes(self, types: set) -> frozenset:
         result = orig["_generate_subtypes"](self, types)
         for k, v in self.backends.items():
-            if k is not None:
+            if k is not None and v in self.registry:
                 result |= v.instance().subtypes.atomic_types
         return result
 
@@ -244,33 +146,82 @@ def generic(class_def: type):
     def resolve(cls, backend: str = None, *args: str) -> AtomicType:
         if backend is None:
             return orig["resolve"](*args)
-        if backend not in cls.backends:
+
+        # if a specific backend is given, resolve from its perspective
+        specific = cls.backends.get(backend, None)
+        if specific is not None and specific not in cls.registry:
+            specific = None
+        if specific is None:
             raise TypeError(
-                f"{cls.name} backend not recognzied: {repr(backend)}"
+                f"{cls.name} backend not recognized: {repr(backend)}"
             )
-        return cls.backends[backend].resolve(*args)
+        return specific.resolve(*args)
+
+    @classmethod
+    def register_backend(cls, backend: str):
+        # NOTE: in this context, cls is an alias for _class
+        def decorator(specific: type):
+            if not issubclass(specific, AtomicType):
+                raise TypeError(
+                    f"`generic.register_backend()` can only be applied to "
+                    f"AtomicType definitions"
+                )
+
+            # ensure backend is unique
+            if backend in cls.backends:
+                raise TypeError(
+                    f"`backend` must be unique, not one of {set(cls.backends)}"
+                )
+
+            # ensure backend is self-consistent
+            if specific.backend is None:
+                specific.backend = backend
+                specific.options = [backend] + specific.options
+            elif backend != specific.backend:
+                raise TypeError(
+                    f"backends must match ({repr(backend)} != "
+                    f"{repr(specific.backend)})"
+                )
+
+            # inherit generic attributes
+            specific.is_generic = False
+            specific.conversion_func = cls.conversion_func
+            specific.name = cls.name
+            specific._generic = cls
+            cls.backends[backend] = specific
+            specific.registry.flush()
+            return specific
+
+        return decorator
+
+    # overwrite class attributes
+    _class.is_generic = True
+    _class.backend = None
+    _class.backends = {None: _class}
 
     # patch in new methods
     loc = locals()
     for k in orig:
-        setattr(class_def, k, loc[k])
-    return class_def
+        setattr(_class, k, loc[k])
+    _class.register_backend = register_backend
+    return _class
 
 
-def lru_cache(maxsize: int):
-    """Class decorator to use a fixed-length LRU dictionary to store flyweight
-    instances of an AtomicType definition.
+def register(_class=None, *, ignore=False):
+    """Validate an AtomicType definition and add it to the registry.
+
+    Note: Any decorators above this one will be ignored during validation.
     """
+    def register_decorator(_class_):
+        if not issubclass(_class_, AtomicType):
+            raise TypeError(f"`@register` can only be applied to AtomicTypes")
+        if not ignore:
+            AtomicType.registry.add(_class_)
+        return _class_
 
-    def decorator(class_def: type):
-        if not issubclass(class_def, AtomicType):
-            raise TypeError(
-                f"`@lru_cache()` can only be applied to AtomicType definitions"
-            )
-        class_def.flyweights = LRUDict(maxsize=maxsize)
-        return class_def
-
-    return decorator
+    if _class is None:
+        return register_decorator
+    return register_decorator(_class)
 
 
 def subtype(supertype: type):
@@ -283,8 +234,6 @@ def subtype(supertype: type):
             raise TypeError(
                 f"`@subtype()` can only be applied to AtomicType definitions"
             )
-        if class_def._ignored or supertype._ignored:
-            return class_def
 
         # break circular references
         ref = supertype
@@ -303,10 +252,11 @@ def subtype(supertype: type):
                 f"`{class_def._parent.__name__}`)"
             )
 
-        # assign attributes
+        # inherit supertype attributes
         class_def.conversion_func = supertype.conversion_func
-        # class_def._inherit_flags(supertype)
-        # class_def.is_root = False
+
+        # overwrite class attributes
+        class_def.is_root = False
         class_def._parent = supertype
         supertype._children.add(class_def)
         AtomicType.registry.flush()
@@ -320,7 +270,7 @@ def subtype(supertype: type):
 ########################
 
 
-cdef class AtomicTypeRegistry:
+cdef class TypeRegistry:
     """A registry containing all of the AtomicType subclasses that are
     currently recognized by `resolve_type()` and related infrastructure.
     This is a global object attached to the base AtomicType class definition.
@@ -471,21 +421,14 @@ cdef class AtomicTypeRegistry:
 
     def add(self, new_type: type) -> None:
         """Add an AtomicType subclass to the registry."""
-        if not issubclass(new_type, AtomicType):
-            raise TypeError(
-                f"`new_type` must be a subclass of AtomicType, not "
-                f"{type(new_type)}"
-            )
-
-        # validate AtomicType properties
-        if hasattr(new_type, "name"):
-            self.validate_name(new_type)
+        # validate subclass has required fields
+        self.validate_name(new_type)
         self.validate_aliases(new_type)
+        self.validate_slugify(new_type)
+        self.validate_type_def(new_type)
         self.validate_dtype(new_type)
         self.validate_itemsize(new_type)
-        self.validate_slugify(new_type)
         self.validate_na_value(new_type)
-        self.validate_type_def(new_type)
 
         # add type to registry and update hash
         self.atomic_types.append(new_type)
@@ -571,13 +514,17 @@ cdef class AtomicTypeRegistry:
         """
         validate(subclass, "name", expected_type=str)
 
-        # ensure subclass.name is unique
-        observed_names = {x.name for x in self.atomic_types}
-        if subclass.name in observed_names:
-            raise TypeError(
-                f"{subclass.__name__}.name ({repr(subclass.name)}) must be "
-                f"unique (not one of {observed_names})"
-            )
+        # ensure subclass.name is unique or inherited from generic type
+        if (
+            subclass.is_generic != False or
+            subclass.name != subclass._generic.name
+        ):
+            observed_names = {x.name for x in self.atomic_types}
+            if subclass.name in observed_names:
+                raise TypeError(
+                    f"{subclass.__name__}.name ({repr(subclass.name)}) must be "
+                    f"unique (not one of {observed_names})"
+                )
 
     cdef int validate_na_value(self, type subclass) except -1:
         """Ensure that if a subclass of AtomicType defines an `na_value`
@@ -659,7 +606,6 @@ cdef class AtomicType(BaseType):
         * `_generate_supertype(self, type_def: type) -> AtomicType`:
         * `contains(self, other) -> bool`:
         * `resolve(cls, *args) -> AtomicType`:
-        * `parse(cls, *args) -> Any`:
         * `detect(cls, example: Any) -> AtomicType`:
         * `to_boolean(...)`:
         * `to_integer(...)`:
@@ -672,59 +618,35 @@ cdef class AtomicType(BaseType):
         * `to_object(...)`:
     """
 
-    # Internal fields.  These are managed via decorators and should not be
+    # Internal fields.  These are managed via decorators and should never be
     # overridden.
-    registry: TypeRegistry = AtomicTypeRegistry()
+    registry: TypeRegistry = TypeRegistry()
     flyweights: dict[int, AtomicType] = {}
 
     # Default fields.  These can be overridden in AtomicType definitions to
-    # customize their behavior
+    # customize behavior.
     conversion_func = cast.to_object
+    type_def = None
     dtype = np.dtype("O")
     itemsize = None
     na_value = pd.NA
-    type_def = None
-
-    # is_boolean = False
-    # is_integer = False
-    # is_signed = False
-    # is_unsigned = False
-    # is_float = False
-    # is_complex = False
-    # is_decimal = False
-    # is_datetime = False
-    # is_timedelta = False
-    # is_string = False
-    # is_object = True
-    # is_nullable = True
-    # is_sparse = False
-    # is_categorical = False
-    # is_generic = True  # set False in @register_backend
-    # is_root = True  # set False in @subtype
+    is_nullable = True  # must be explicitly set False where applicable
 
     def __init__(self, **kwargs):
         self.kwargs = MappingProxyType(kwargs)
         self.slug = self.slugify(**kwargs)
         self.hash = hash(self.slug)
-        self._is_frozen = True  # no new attributes after this point
+        self._is_frozen = True  # no new attributes beyond this point
 
     #############################
     ####    CLASS METHODS    ####
     #############################
 
     @classmethod
-    def _inherit_flags(cls, other: type) -> None:
-        for k, base in AtomicType.__dict__.items():
-            if k.startswith("is_") and isinstance(base, bool):
-                new = getattr(other, k, base)
-                if new != base:
-                    setattr(cls, k, new)
-
-    @classmethod
     def clear_aliases(cls) -> None:
         """Remove every alias that is registered to this AtomicType."""
         cls.aliases.clear()
-        cls.registry.flush()  # rebuild regex patterns
+        cls.registry.flush()
 
     @classmethod
     def detect(cls, example: Any) -> AtomicType:
@@ -742,7 +664,7 @@ cdef class AtomicType(BaseType):
         """Base flyweight constructor.
 
         This factory method is the preferred constructor for AtomicType
-        objects.  It inherits the same interface as a subclass's `__init__()`
+        objects.  It inherits the same signature as a subclass's `__init__()`
         method, and consults its `.flyweights` table to ensure the uniqueness
         of the result.
 
@@ -759,10 +681,6 @@ cdef class AtomicType(BaseType):
 
         # return flyweight
         return result
-
-    @property
-    def is_root(self) -> bool:
-        return self._parent is None
 
     @classmethod
     def register_alias(cls, alias: Any, overwrite: bool = False) -> None:
@@ -800,10 +718,10 @@ cdef class AtomicType(BaseType):
 
     @classmethod
     def slugify(cls) -> str:
-        slug = cls.name
-        if getattr(cls, "backend", None) is not None:
-            slug += f"[{cls.backend}]"
-        return slug
+        cdef list options = cls.options
+        if not options:
+            return cls.name
+        return f"{cls.name}[{', '.join(options)}]"
 
     ##########################
     ####    PROPERTIES    ####
@@ -825,7 +743,7 @@ cdef class AtomicType(BaseType):
     @property
     def root(self) -> AtomicType:
         """Return the root node of this AtomicType's subtype hierarchy."""
-        if self.supertype is None:
+        if self.is_root:
             return self
         return self.supertype.root
 
@@ -908,7 +826,9 @@ cdef class AtomicType(BaseType):
         Override this if your AtomicType implements custom logic to generate
         supertype instances (due to an interface mismatch or similar obstacle).
         """
-        return None if type_def is None else type_def.instance()
+        if type_def is None or type_def not in self.registry:
+            return None
+        return type_def.instance()
 
     def contains(self, other: Any) -> bool:
         """Test whether `other` is a subtype of the given AtomicType.
@@ -935,27 +855,6 @@ cdef class AtomicType(BaseType):
         applies automatic type resolution + `.contains()` logic to `other`.
         """
         return self in resolve.resolve_type(other)
-
-    def parse(self, input_str: str) -> Any:
-        """Convert an input string into an object of the corresponding type.
-
-        This is invoked to detect literal values from arguments given in the
-        type specification mini-language.
-
-        Override this if your AtomicType implements custom logic to parse
-        string equivalents of the given type outside its normal constructor.
-        """
-        if input_str in resolve.na_strings:
-            return resolve.na_strings[input_str]
-
-        # return cast.cast(input_str, self)[0]
-
-        if self.type_def is None:
-            raise ValueError(
-                f"{repr(str(self))} types have no associated type_def"
-            )
-
-        return self.type_def(input_str)
 
     def replace(self, **kwargs) -> AtomicType:
         """Return a modified copy of the given AtomicType with the values
@@ -1154,7 +1053,7 @@ cdef class AtomicType(BaseType):
             raise AttributeError(err_msg) from err
 
     @classmethod
-    def __init_subclass__(cls, ignore: bool = False, **kwargs):
+    def __init_subclass__(cls, cache_size: int = None, **kwargs):
         valid = AtomicType.__subclasses__() + AdapterType.__subclasses__()
         if cls not in valid:
             raise TypeError(
@@ -1162,23 +1061,22 @@ cdef class AtomicType(BaseType):
                 f"definition"
             )
 
-        # initialize required fields
-        cls._children = set()
+        # required fields
+        cls.options = []  # holds options for slugify()
+        cls.aliases.add(cls)  # cls always aliases itself
+        if cache_size is not None:
+            cls.flyweights = LRUDict(maxsize=cache_size)
+
+        # required fields for @generic
         cls._generic = None
-        cls._ignored = ignore
-        cls._parent = None
         cls.backend = None
         cls.backends = {}
-        cls.is_generic = False
-        if not issubclass(cls, AdapterType):
-            cls.is_categorical = getattr(cls, "is_categorical", False)
-            cls.is_nullable = getattr(cls, "is_nullable", True)
-            cls.is_sparse = getattr(cls, "is_sparse", False)
+        cls.is_generic = None  # True if @generic, False if @register_backend
 
-        # add to registry
-        if not cls._ignored:
-            cls.aliases.add(cls)  # cls always aliases itself
-            cls.registry.add(cls)
+        # required fields for @subtype
+        cls._children = set()
+        cls._parent = None
+        cls.is_root = True
 
         # allow cooperative inheritance
         super(AtomicType, cls).__init_subclass__(**kwargs)
@@ -1679,7 +1577,8 @@ cdef void _traverse_subtypes(type atomic_type, set result):
     """Recursive helper for traverse_subtypes()"""
     result.add(atomic_type)
     for subtype in atomic_type._children:
-        _traverse_subtypes(subtype, result=result)
+        if subtype in atomic_type.registry:
+            _traverse_subtypes(subtype, result=result)
 
 
 cdef set traverse_subtypes(type atomic_type):

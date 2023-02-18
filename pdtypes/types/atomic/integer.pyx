@@ -23,7 +23,7 @@ import pytz
 from pdtypes.error import shorten_list
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, generic, subtype
+from .base import dispatch, generic, register, subtype
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -89,12 +89,6 @@ class IntegerMixin:
         if self.is_nullable:
             return self
         return self.generic.instance(backend="pandas")
-
-    @property
-    def is_nullable(self) -> bool:
-        if isinstance(self.dtype, np.dtype):
-            return np.issubdtype(self.dtype, "O")
-        return True
 
     @property
     def is_signed(self) -> bool:
@@ -396,6 +390,7 @@ class IntegerMixin:
 #######################
 
 
+@register
 @generic
 class IntegerType(IntegerMixin, AtomicType):
     """Generic integer supertype."""
@@ -406,10 +401,12 @@ class IntegerType(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = int
+    is_nullable = False
     max = 2**63 - 1
     min = -2**63
 
 
+@register
 @generic
 @subtype(IntegerType)
 class SignedIntegerType(IntegerMixin, AtomicType):
@@ -420,10 +417,12 @@ class SignedIntegerType(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = int
+    is_nullable = False
     max = 2**63 - 1
     min = -2**63
 
 
+@register
 @generic
 @subtype(IntegerType)
 class UnsignedIntegerType(IntegerMixin, AtomicType):
@@ -434,10 +433,12 @@ class UnsignedIntegerType(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint64)
     itemsize = 8
     type_def = np.uint64
+    is_nullable = False
     max = 2**64 - 1
     min = 0
 
 
+@register
 @generic
 @subtype(SignedIntegerType)
 class Int8Type(IntegerMixin, AtomicType):
@@ -448,10 +449,12 @@ class Int8Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int8)
     itemsize = 1
     type_def = np.uint8
+    is_nullable = False
     max = 2**7 - 1
     min = -2**7
 
 
+@register
 @generic
 @subtype(SignedIntegerType)
 class Int16Type(IntegerMixin, AtomicType):
@@ -462,10 +465,12 @@ class Int16Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int16)
     itemsize = 2
     type_def = np.uint16
+    is_nullable = False
     max = 2**15 - 1
     min = -2**15
 
 
+@register
 @generic
 @subtype(SignedIntegerType)
 class Int32Type(IntegerMixin, AtomicType):
@@ -476,10 +481,12 @@ class Int32Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int32)
     itemsize = 4
     type_def = np.uint32
+    is_nullable = False
     max = 2**31 - 1
     min = -2**31
 
 
+@register
 @generic
 @subtype(SignedIntegerType)
 class Int64Type(IntegerMixin, AtomicType):
@@ -490,10 +497,12 @@ class Int64Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = np.uint64
+    is_nullable = False
     max = 2**63 - 1
     min = -2**63
 
 
+@register
 @generic
 @subtype(UnsignedIntegerType)
 class UInt8Type(IntegerMixin, AtomicType):
@@ -504,10 +513,12 @@ class UInt8Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint8)
     itemsize = 1
     type_def = np.uint8
+    is_nullable = False
     max = 2**8 - 1
     min = 0
 
 
+@register
 @generic
 @subtype(UnsignedIntegerType)
 class UInt16Type(IntegerMixin, AtomicType):
@@ -518,10 +529,12 @@ class UInt16Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint16)
     itemsize = 2
     type_def = np.uint16
+    is_nullable = False
     max = 2**16 - 1
     min = 0
 
 
+@register
 @generic
 @subtype(UnsignedIntegerType)
 class UInt32Type(IntegerMixin, AtomicType):
@@ -532,10 +545,12 @@ class UInt32Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint32)
     itemsize = 4
     type_def = np.uint32
+    is_nullable = False
     max = 2**32 - 1
     min = 0
 
 
+@register
 @generic
 @subtype(UnsignedIntegerType)
 class UInt64Type(IntegerMixin, AtomicType):
@@ -546,6 +561,7 @@ class UInt64Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint64)
     itemsize = 8
     type_def = np.uint64
+    is_nullable = False
     max = 2**64 - 1
     min = 0
 
@@ -555,6 +571,7 @@ class UInt64Type(IntegerMixin, AtomicType):
 #####################
 
 
+@register
 @IntegerType.register_backend("numpy")
 class NumpyIntegerType(IntegerMixin, AtomicType):
     """Numpy integer type."""
@@ -563,10 +580,12 @@ class NumpyIntegerType(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = np.int64
+    is_nullable = False
     max = 2**63 - 1
     min = -2**63
 
 
+@register
 @subtype(NumpyIntegerType)
 @SignedIntegerType.register_backend("numpy")
 class NumpySignedIntegerType(IntegerMixin, AtomicType):
@@ -576,10 +595,12 @@ class NumpySignedIntegerType(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = np.int64
+    is_nullable = False
     max = 2**63 - 1
     min = -2**63
 
 
+@register
 @subtype(NumpyIntegerType)
 @UnsignedIntegerType.register_backend("numpy")
 class NumpyUnsignedIntegerType(IntegerMixin, AtomicType):
@@ -589,10 +610,12 @@ class NumpyUnsignedIntegerType(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint64)
     itemsize = 8
     type_def = np.uint64
+    is_nullable = False
     max = 2**64 - 1
     min = 0
 
 
+@register
 @subtype(NumpySignedIntegerType)
 @Int8Type.register_backend("numpy")
 class NumpyInt8Type(IntegerMixin, AtomicType):
@@ -602,10 +625,12 @@ class NumpyInt8Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int8)
     itemsize = 1
     type_def = np.int8
+    is_nullable = False
     max = 2**7 - 1
     min = -2**7
 
 
+@register
 @subtype(NumpySignedIntegerType)
 @Int16Type.register_backend("numpy")
 class NumpyInt16Type(IntegerMixin, AtomicType):
@@ -615,10 +640,12 @@ class NumpyInt16Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int16)
     itemsize = 2
     type_def = np.int16
+    is_nullable = False
     max = 2**15 - 1
     min = -2**15
 
 
+@register
 @subtype(NumpySignedIntegerType)
 @Int32Type.register_backend("numpy")
 class NumpyInt32Type(IntegerMixin, AtomicType):
@@ -628,10 +655,12 @@ class NumpyInt32Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int32)
     itemsize = 4
     type_def = np.int32
+    is_nullable = False
     max = 2**31 - 1
     min = -2**31
 
 
+@register
 @subtype(NumpySignedIntegerType)
 @Int64Type.register_backend("numpy")
 class NumpyInt64Type(IntegerMixin, AtomicType):
@@ -641,10 +670,12 @@ class NumpyInt64Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = np.int64
+    is_nullable = False
     max = 2**63 - 1
     min = -2**63
 
 
+@register
 @subtype(NumpyUnsignedIntegerType)
 @UInt8Type.register_backend("numpy")
 class NumpyUInt8Type(IntegerMixin, AtomicType):
@@ -654,10 +685,12 @@ class NumpyUInt8Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint8)
     itemsize = 1
     type_def = np.uint8
+    is_nullable = False
     max = 2**8 - 1
     min = 0
 
 
+@register
 @subtype(NumpyUnsignedIntegerType)
 @UInt16Type.register_backend("numpy")
 class NumpyUInt16Type(IntegerMixin, AtomicType):
@@ -667,10 +700,12 @@ class NumpyUInt16Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint16)
     itemsize = 2
     type_def = np.uint16
+    is_nullable = False
     max = 2**16 - 1
     min = 0
 
 
+@register
 @subtype(NumpyUnsignedIntegerType)
 @UInt32Type.register_backend("numpy")
 class NumpyUInt32Type(IntegerMixin, AtomicType):
@@ -680,10 +715,12 @@ class NumpyUInt32Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint32)
     itemsize = 4
     type_def = np.uint32
+    is_nullable = False
     max = 2**32 - 1
     min = 0
 
 
+@register
 @subtype(NumpyUnsignedIntegerType)
 @UInt64Type.register_backend("numpy")
 class NumpyUInt64Type(IntegerMixin, AtomicType):
@@ -693,6 +730,7 @@ class NumpyUInt64Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint64)
     itemsize = 8
     type_def = np.uint64
+    is_nullable = False
     max = 2**64 - 1
     min = 0
 
@@ -702,6 +740,7 @@ class NumpyUInt64Type(IntegerMixin, AtomicType):
 ######################
 
 
+@register
 @IntegerType.register_backend("pandas")
 class PandasIntegerType(IntegerMixin, AtomicType):
     """Pandas integer supertype."""
@@ -714,6 +753,7 @@ class PandasIntegerType(IntegerMixin, AtomicType):
     min = -2**63
 
 
+@register
 @subtype(PandasIntegerType)
 @SignedIntegerType.register_backend("pandas")
 class PandasSignedIntegerType(IntegerMixin, AtomicType):
@@ -727,6 +767,7 @@ class PandasSignedIntegerType(IntegerMixin, AtomicType):
     min = -2**63
 
 
+@register
 @subtype(PandasIntegerType)
 @UnsignedIntegerType.register_backend("pandas")
 class PandasUnsignedIntegerType(IntegerMixin, AtomicType):
@@ -740,6 +781,7 @@ class PandasUnsignedIntegerType(IntegerMixin, AtomicType):
     min = 0
 
 
+@register
 @subtype(PandasSignedIntegerType)
 @Int8Type.register_backend("pandas")
 class PandasInt8Type(IntegerMixin, AtomicType):
@@ -753,6 +795,7 @@ class PandasInt8Type(IntegerMixin, AtomicType):
     min = -2**7
 
 
+@register
 @subtype(PandasSignedIntegerType)
 @Int16Type.register_backend("pandas")
 class PandasInt16Type(IntegerMixin, AtomicType):
@@ -766,6 +809,7 @@ class PandasInt16Type(IntegerMixin, AtomicType):
     min = -2**15
 
 
+@register
 @subtype(PandasSignedIntegerType)
 @Int32Type.register_backend("pandas")
 class PandasInt32Type(IntegerMixin, AtomicType):
@@ -779,6 +823,7 @@ class PandasInt32Type(IntegerMixin, AtomicType):
     min = -2**31
 
 
+@register
 @subtype(PandasSignedIntegerType)
 @Int64Type.register_backend("pandas")
 class PandasInt64Type(IntegerMixin, AtomicType):
@@ -792,6 +837,7 @@ class PandasInt64Type(IntegerMixin, AtomicType):
     min = -2**63
 
 
+@register
 @subtype(PandasUnsignedIntegerType)
 @UInt8Type.register_backend("pandas")
 class PandasUInt8Type(IntegerMixin, AtomicType):
@@ -805,6 +851,7 @@ class PandasUInt8Type(IntegerMixin, AtomicType):
     min = 0
 
 
+@register
 @subtype(PandasUnsignedIntegerType)
 @UInt16Type.register_backend("pandas")
 class PandasUInt16Type(IntegerMixin, AtomicType):
@@ -818,6 +865,7 @@ class PandasUInt16Type(IntegerMixin, AtomicType):
     min = 0
 
 
+@register
 @subtype(PandasUnsignedIntegerType)
 @UInt32Type.register_backend("pandas")
 class PandasUInt32Type(IntegerMixin, AtomicType):
@@ -831,6 +879,7 @@ class PandasUInt32Type(IntegerMixin, AtomicType):
     min = 0
 
 
+@register
 @subtype(PandasUnsignedIntegerType)
 @UInt64Type.register_backend("pandas")
 class PandasUInt64Type(IntegerMixin, AtomicType):
@@ -849,6 +898,7 @@ class PandasUInt64Type(IntegerMixin, AtomicType):
 ######################
 
 
+@register
 @IntegerType.register_backend("python")
 @SignedIntegerType.register_backend("python")
 class PythonIntegerType(IntegerMixin, AtomicType):

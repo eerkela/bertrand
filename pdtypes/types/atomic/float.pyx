@@ -6,7 +6,7 @@ import pandas as pd
 import pytz
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, generic, subtype
+from .base import dispatch, generic, register, subtype
 import pdtypes.types.atomic.complex as complex_types
 
 from pdtypes.error import shorten_list
@@ -311,6 +311,7 @@ class LongDoubleSpecialCase:
 #######################
 
 
+@register
 @generic
 class FloatType(FloatMixin, AtomicType):
 
@@ -326,6 +327,7 @@ class FloatType(FloatMixin, AtomicType):
     _equiv_complex = "ComplexType"
 
 
+@register
 @generic
 @subtype(FloatType)
 class Float16Type(FloatMixin, AtomicType):
@@ -341,6 +343,7 @@ class Float16Type(FloatMixin, AtomicType):
     _equiv_complex = "Complex64Type"
 
 
+@register
 @generic
 @subtype(FloatType)
 class Float32Type(FloatMixin, AtomicType):
@@ -356,6 +359,7 @@ class Float32Type(FloatMixin, AtomicType):
     _equiv_complex = "Complex64Type"
 
 
+@register
 @generic
 @subtype(FloatType)
 class Float64Type(FloatMixin, AtomicType):
@@ -371,9 +375,10 @@ class Float64Type(FloatMixin, AtomicType):
     _equiv_complex = "Complex128Type"
 
 
+@register
 @generic
 @subtype(FloatType)
-class Float80Type(LongDoubleSpecialCase, AtomicType, ignore=no_longdouble):
+class Float80Type(LongDoubleSpecialCase, AtomicType):
 
     name = "float80"
     aliases = {
@@ -394,6 +399,7 @@ class Float80Type(LongDoubleSpecialCase, AtomicType, ignore=no_longdouble):
 #####################
 
 
+@register
 @FloatType.register_backend("numpy")
 class NumpyFloatType(FloatMixin, AtomicType):
 
@@ -407,6 +413,7 @@ class NumpyFloatType(FloatMixin, AtomicType):
     _equiv_complex = "NumpyComplexType"
 
 
+@register
 @subtype(NumpyFloatType)
 @Float16Type.register_backend("numpy")
 class NumpyFloat16Type(FloatMixin, AtomicType):
@@ -421,6 +428,7 @@ class NumpyFloat16Type(FloatMixin, AtomicType):
     _equiv_complex = "NumpyComplex64Type"
 
 
+@register
 @subtype(NumpyFloatType)
 @Float32Type.register_backend("numpy")
 class NumpyFloat32Type(FloatMixin, AtomicType):
@@ -435,6 +443,7 @@ class NumpyFloat32Type(FloatMixin, AtomicType):
     _equiv_complex = "NumpyComplex64Type"
 
 
+@register
 @subtype(NumpyFloatType)
 @Float64Type.register_backend("numpy")
 class NumpyFloat64Type(FloatMixin, AtomicType):
@@ -449,9 +458,10 @@ class NumpyFloat64Type(FloatMixin, AtomicType):
     _equiv_complex = "NumpyComplex128Type"
 
 
+@register
 @subtype(NumpyFloatType)
 @Float80Type.register_backend("numpy")
-class NumpyFloat80Type(LongDoubleSpecialCase, AtomicType, ignore=no_longdouble):
+class NumpyFloat80Type(LongDoubleSpecialCase, AtomicType):
 
     aliases = {np.longdouble, np.dtype(np.longdouble)}
     dtype = np.dtype(np.longdouble)
@@ -468,6 +478,7 @@ class NumpyFloat80Type(LongDoubleSpecialCase, AtomicType, ignore=no_longdouble):
 ######################
 
 
+@register
 @FloatType.register_backend("python")
 @Float64Type.register_backend("python")
 class PythonFloatType(FloatMixin, AtomicType):

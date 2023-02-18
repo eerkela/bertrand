@@ -6,7 +6,7 @@ import pandas as pd
 import pytz
 
 from .base cimport AtomicType
-from .base import generic
+from .base import generic, register
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -137,6 +137,7 @@ class BooleanMixin:
 #######################
 
 
+@register
 @generic
 class BooleanType(BooleanMixin, AtomicType):
     """Boolean supertype."""
@@ -155,6 +156,7 @@ class BooleanType(BooleanMixin, AtomicType):
 #####################
 
 
+@register
 @BooleanType.register_backend("numpy")
 class NumpyBooleanType(BooleanMixin, AtomicType):
 
@@ -170,6 +172,7 @@ class NumpyBooleanType(BooleanMixin, AtomicType):
 ######################
 
 
+@register
 @BooleanType.register_backend("pandas")
 class PandasBooleanType(BooleanMixin, AtomicType):
 
@@ -184,6 +187,7 @@ class PandasBooleanType(BooleanMixin, AtomicType):
 ######################
 
 
+@register
 @BooleanType.register_backend("python")
 class PythonBooleanType(BooleanMixin, AtomicType):
 

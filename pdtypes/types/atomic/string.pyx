@@ -7,7 +7,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AtomicType, BaseType
-from .base import generic
+from .base import generic, register
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -222,6 +222,7 @@ class StringMixin:
 #######################
 
 
+@register
 @generic
 class StringType(StringMixin, AtomicType):
     """String supertype."""
@@ -249,6 +250,7 @@ class StringType(StringMixin, AtomicType):
 #####################
 
 
+@register
 @StringType.register_backend("python")
 class PythonStringType(StringMixin, AtomicType):
 
@@ -262,9 +264,12 @@ class PythonStringType(StringMixin, AtomicType):
 #######################
 
 
+# TODO: wrap in if statement and then conditionally import it in __init__.py
+
+
+@register
 @StringType.register_backend("pyarrow")
-@StringType.register_backend("arrow")
-class PyArrowStringType(StringMixin, AtomicType, ignore=not pyarrow_installed):
+class PyArrowStringType(StringMixin, AtomicType):
 
     aliases = {"arrowstr"}
     dtype = pd.StringDtype("pyarrow") if pyarrow_installed else None

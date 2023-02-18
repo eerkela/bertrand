@@ -8,7 +8,7 @@ import regex as re  # using alternate python regex engine
 import pytz
 
 from .base cimport AtomicType, CompositeType
-from .base import generic, lru_cache
+from .base import generic, register
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -297,6 +297,7 @@ class TimedeltaMixin:
 #######################
 
 
+@register
 @generic
 class TimedeltaType(TimedeltaMixin, AtomicType):
 
@@ -342,9 +343,9 @@ class TimedeltaType(TimedeltaMixin, AtomicType):
 #####################
 
 
-@lru_cache(64)
+@register
 @TimedeltaType.register_backend("numpy")
-class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
+class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
 
     aliases = {
         np.timedelta64,
@@ -514,6 +515,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType):
 ######################
 
 
+@register
 @TimedeltaType.register_backend("pandas")
 class PandasTimedeltaType(TimedeltaMixin, AtomicType):
 
@@ -579,6 +581,7 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
 ######################
 
 
+@register
 @TimedeltaType.register_backend("python")
 class PythonTimedeltaType(TimedeltaMixin, AtomicType):
 

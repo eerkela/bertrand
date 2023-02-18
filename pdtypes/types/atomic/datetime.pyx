@@ -12,7 +12,7 @@ import regex as re  # using alternate python regex engine
 import tzlocal
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, generic, lru_cache
+from .base import dispatch, generic, register
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -30,28 +30,11 @@ from pdtypes.util.time import (
 )
 
 
-# TODO: `tz` is only relevant for to_datetime
-
+# TODO: to_datetime should have fastpaths for the specified datetime type.
+# Timestamp/pydatetime need to account for tz.  M8 is just straight equality.
 
 
 # TODO: parse() should account for self.tz/unit/step_size
-
-
-
-# PandasTimestampType.to_datetime
-#     # fastpath for pd.Timestamp
-#     if dtype.is_subtype(pd.Timestamp):
-#         return series.rectify()
-
-
-# NumpyDatetime64Type.to_datetime
-#     # fastpath for np.datetime64
-#     if dtype == self:
-#         return self.rectify()
-
-
-
-# to_integer(pd.Timestamp.now(), unit="h", tz="local")
 
 
 ######################
@@ -318,6 +301,7 @@ class DatetimeMixin:
 #######################
 
 
+@register
 @generic
 class DatetimeType(DatetimeMixin, AtomicType):
 
@@ -386,9 +370,9 @@ class DatetimeType(DatetimeMixin, AtomicType):
 #####################
 
 
-@lru_cache(64)
+@register
 @DatetimeType.register_backend("numpy")
-class NumpyDatetime64Type(DatetimeMixin, AtomicType):
+class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
 
     aliases = {
         np.datetime64,
@@ -609,9 +593,9 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType):
 ######################
 
 
-@lru_cache(64)
+@register
 @DatetimeType.register_backend("pandas")
-class PandasTimestampType(DatetimeMixin, AtomicType):
+class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
 
     aliases = {
         pd.Timestamp,
@@ -643,12 +627,12 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
 
     @classmethod
     def slugify(cls, tz: datetime.tzinfo = None):
-        slug = cls.name
+        cdef list options = cls.options
         if tz is not None:
-            slug += f"[{cls.backend}, {tz}]"
-        else:
-            slug += f"[{cls.backend}]"
-        return slug
+            options = options + [str(tz)]
+        if not options:
+            return cls.name
+        return f"{cls.name}[{', '.join(options)}]"
 
     def contains(self, other: Any) -> bool:
         other = resolve.resolve_type(other)
@@ -879,9 +863,9 @@ class PandasTimestampType(DatetimeMixin, AtomicType):
 ######################
 
 
-@lru_cache(64)
+@register
 @DatetimeType.register_backend("python")
-class PythonDatetimeType(DatetimeMixin, AtomicType):
+class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
 
     aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
     na_value = pd.NaT
@@ -898,12 +882,12 @@ class PythonDatetimeType(DatetimeMixin, AtomicType):
 
     @classmethod
     def slugify(cls, tz: datetime.tzinfo = None):
-        slug = cls.name
+        cdef list options = cls.options
         if tz is not None:
-            slug += f"[{cls.backend}, {tz}]"
-        else:
-            slug += f"[{cls.backend}]"
-        return slug
+            options = options + [str(tz)]
+        if not options:
+            return cls.name
+        return f"{cls.name}[{', '.join(options)}]"
 
     def contains(self, other: Any) -> bool:
         other = resolve.resolve_type(other)

@@ -18,7 +18,7 @@ from pdtypes.util.time cimport Epoch
 from pdtypes.util.time import as_ns, round_months_to_ns, round_years_to_ns
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, generic
+from .base import dispatch, generic, register
 
 
 # TODO: decimal -> datetime should account for tz.  This is propagated to float
@@ -325,6 +325,7 @@ class DecimalMixin:
 #######################
 
 
+@register
 @generic
 class DecimalType(DecimalMixin, AtomicType):
 
@@ -339,6 +340,7 @@ class DecimalType(DecimalMixin, AtomicType):
 ##############################
 
 
+@register
 @DecimalType.register_backend("python")
 class PythonDecimalType(DecimalMixin, AtomicType):
 

@@ -1,4 +1,7 @@
-from .base import AdapterType, AtomicType, CompositeType
+from .base import (
+    AdapterType, AtomicType, CompositeType, dispatch, generic, register,
+    subtype
+)
 from .boolean import (
     BooleanType, NumpyBooleanType, PandasBooleanType, PythonBooleanType
 )

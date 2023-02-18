@@ -6,7 +6,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AtomicType, CompositeType
-from .base import lru_cache
+from .base import register
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
@@ -24,8 +24,8 @@ import pdtypes.types.resolve as resolve
 #######################
 
 
-@lru_cache(64)
-class ObjectType(AtomicType):
+@register
+class ObjectType(AtomicType, cache_size=64):
 
     conversion_func = cast.to_object  # all subtypes/backends inherit this
     name = "object"

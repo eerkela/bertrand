@@ -181,7 +181,7 @@ cdef atomic.AtomicType resolve_typespec_dtype(object input_dtype):
     """Resolve a numpy/pandas dtype object, returning a corresponding
     AtomicType.
     """
-    cdef atomic.AtomicTypeRegistry registry = atomic.AtomicType.registry
+    cdef atomic.TypeRegistry registry = atomic.AtomicType.registry
     cdef dict sparse = None
     cdef dict categorical = None
     cdef str unit

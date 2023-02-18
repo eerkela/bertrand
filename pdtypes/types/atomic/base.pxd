@@ -21,7 +21,7 @@ cdef class BaseType:
 ###########################
 
 
-cdef class AtomicTypeRegistry:
+cdef class TypeRegistry:
     cdef:
         CacheValue _aliases
         CacheValue _dispatch_map
