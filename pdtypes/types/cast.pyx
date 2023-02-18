@@ -23,7 +23,7 @@ from pdtypes.type_hints import (
     array_like, datetime_like, numeric, type_specifier
 )
 from pdtypes.util.round cimport Tolerance
-from pdtypes.util.time cimport Epoch
+from pdtypes.util.time cimport Epoch, epoch_aliases
 
 
 # TODO: sparse types currently broken.
@@ -48,12 +48,12 @@ cdef class CastDefaults:
         bint _categorical
         bint _day_first
         atomic.CompositeType _downcast
-        object _since
         str _errors
         set _false
         str _format
         bint _ignore_case
         str _rounding
+        object _since
         bint _sparse
         unsigned int _step_size
         Tolerance _tol
@@ -68,11 +68,11 @@ cdef class CastDefaults:
         self._base = 0
         self._categorical = False
         self._downcast = None
-        self._since = Epoch("utc")
         self._errors = "raise"
         self._false = {"false", "f", "no", "n", "off", "0"}
         self._ignore_case = True
         self._rounding = None
+        self._since = Epoch("utc")
         self._sparse = False
         self._step_size = 1
         self._tol = Tolerance(1e-6)
@@ -131,16 +131,6 @@ cdef class CastDefaults:
         self._downcast = validate_downcast(val)
 
     @property
-    def since(self) -> np.datetime64:
-        return self._since
-
-    @since.setter
-    def since(self, val: str | datetime_like) -> None:
-        if val is None:
-            raise ValueError(f"default `since` cannot be None")
-        self._since = validate_since(val)
-
-    @property
     def errors(self) -> str:
         return self._errors
 
@@ -187,6 +177,16 @@ cdef class CastDefaults:
     @rounding.setter
     def rounding(self, val: str) -> None:
         self._rounding = validate_rounding(val)
+
+    @property
+    def since(self) -> np.datetime64:
+        return self._since
+
+    @since.setter
+    def since(self, val: str | datetime_like) -> None:
+        if val is None:
+            raise ValueError(f"default `since` cannot be None")
+        self._since = validate_since(val)
 
     @property
     def sparse(self) -> bool:
@@ -337,6 +337,13 @@ def validate_dtype(
 def validate_since(val: str | datetime_like) -> Epoch:
     if val is None:
         return defaults.since
+
+    if isinstance(val, str) and val not in epoch_aliases:
+        val = cast(val, "datetime")
+        if len(val) != 1:
+            raise ValueError(f"`since` must be scalar")
+        val = val[0]
+
     return Epoch(val)
 
 
