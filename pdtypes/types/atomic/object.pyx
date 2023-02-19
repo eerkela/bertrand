@@ -41,10 +41,9 @@ class ObjectType(AtomicType, cache_size=64):
 
     @classmethod
     def slugify(cls, type_def: type = object) -> str:
-        slug = cls.name
-        if type_def is not object:
-            slug += f"[{type_def.__module__}.{type_def.__name__}]"
-        return slug
+        if type_def is object:
+            return cls.name
+        return f"{cls.name}[{type_def.__module__}.{type_def.__name__}]"
 
     @classmethod
     def resolve(cls, type_def: str = None) -> AtomicType:

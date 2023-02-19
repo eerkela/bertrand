@@ -5,69 +5,35 @@ import numpy as np
 import pandas as pd
 
 from .base cimport AtomicType, AdapterType
+from .base import register
 
+cimport pdtypes.types.cast as cast
+import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 
 # TODO: if SparseType is called on a SparseType, just replace that type's
 # na_value and return as-is.
-# That way you can explicitly pass a type to SparseType to ensure it is sparse
-
-# Any AtomicType method that returns an AtomicType must be wrapped in
-# self.replace().
-# -> maybe implement a ._patch(self) method that dynamically adds wrapper
-# methods for whitelisted AtomicType methods?  This would allow the sparse/
-# categorical interface to match the underlying AtomicType.  It would just
-# have to be applied before super().__init__()
 
 
-cdef class Null:
-    pass
-
-
-# a null value other than None (allows fill_value to match literal Nones)
-null = Null()
-
-
-class SparseType(AdapterType, cache_size=256):
+@register
+class SparseType(AdapterType):
 
     name = "sparse"
-    aliases = {
-        "sparse": {}
-    }
-    is_sparse = True
+    aliases = {"sparse"}
 
-    def __init__(
-        self,
-        atomic_type: AtomicType,
-        fill_value: Any = null
-    ):
-        if atomic_type.is_sparse:
-            raise TypeError(f"`atomic_type` must not be another SparseType")
-
-        if fill_value is null:
-            self.fill_value = atomic_type.na_value
-        else:
-            self.fill_value = fill_value
+    def __init__(self, atomic_type: AtomicType, fill_value: Any = None):
+        # if atomic_type.is_sparse:
+        #     raise TypeError(f"`atomic_type` must not be another SparseType")
 
         # wrap dtype
-        dtype = atomic_type.dtype
-        if dtype is not None:
-            dtype = pd.SparseDtype(dtype, self.fill_value)
+        if fill_value is None:
+            fill_value = atomic_type.na_value
+        self.dtype = pd.SparseDtype(atomic_type.dtype, fill_value)
 
-        # call AtomicType.__init__()
-        super().__init__(
-            atomic_type=atomic_type,
-            type_def=atomic_type.type_def,
-            dtype=dtype,
-            na_value=atomic_type.na_value,
-            itemsize=atomic_type.itemsize,
-            slug=self.slugify(
-                atomic_type=atomic_type,
-                fill_value=fill_value
-            )
-        )
+        # call AdapterType.__init__()
+        super().__init__(atomic_type=atomic_type, fill_value=fill_value)
 
     ########################
     ####    REQUIRED    ####
@@ -77,31 +43,25 @@ class SparseType(AdapterType, cache_size=256):
     def slugify(
         cls,
         atomic_type: AtomicType,
-        fill_value: Any = null
+        fill_value: Any = None
     ) -> str:
-        if fill_value is null:
-            fill_value = atomic_type.na_value
+        if fill_value is None:
+            return f"{cls.name}[{atomic_type}]"
         return f"{cls.name}[{atomic_type}, {fill_value}]"
-
-    @property
-    def kwargs(self) -> MappingProxyType:
-        return MappingProxyType({
-            "atomic_type": self.atomic_type,
-            "fill_value": self.fill_value
-        })
 
     ##############################
     ####    CUSTOMIZATIONS    ####
     ##############################
 
     @classmethod
-    def resolve(cls, atomic_type: str = None, fill_value: str = None):
-        cdef AtomicType instance = None
-        cdef object parsed = null
+    def resolve(cls, atomic_type: str, fill_value: str = None):
+        cdef AtomicType instance = resolve.resolve_type(atomic_type)
+        cdef object parsed = None
 
-        if atomic_type is not None:
-            instance = resolve.resolve_typespec_string(atomic_type)
         if fill_value is not None:
-            parsed = instance.parse(fill_value)
+            if fill_value in resolve.na_strings:
+                parsed = resolve.na_strings[fill_value]
+            else:
+                parsed = cast.cast(fill_value, atomic_type)[0]
 
-        return cls.instance(atomic_type=instance, fill_value=parsed)
+        return cls(atomic_type=instance, fill_value=parsed)

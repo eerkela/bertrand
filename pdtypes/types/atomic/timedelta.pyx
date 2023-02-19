@@ -391,13 +391,11 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
 
     @classmethod
     def slugify(cls, unit: str = None, step_size: int = 1) -> str:
-        cdef list options = cls.options
-        if unit is not None:
-            if step_size == 1:
-                options = options + [unit]
-            else:
-                options = options + [f"{step_size}{unit}"]
-        return f"{cls.name}[{', '.join(options)}]"
+        if unit is None:
+            return f"{cls.name}[{cls.backend}]"
+        if step_size == 1:
+            return f"{cls.name}[{cls.backend}, {unit}]"
+        return f"{cls.name}[{cls.backend}, {step_size}{unit}]"
 
     def contains(self, other: Any) -> bool:
         other = resolve.resolve_type(other)

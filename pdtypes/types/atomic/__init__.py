@@ -36,3 +36,4 @@ from .timedelta import (
 )
 from .string import StringType, PythonStringType, PyArrowStringType
 from .object import ObjectType
+from .sparse import SparseType

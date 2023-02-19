@@ -53,9 +53,20 @@ cdef class AtomicType(BaseType):
         long long hash
 
 
-cdef class AdapterType(AtomicType):
+############################
+####    ADAPTER TYPE    ####
+############################
+
+
+cdef class AdapterType(BaseType):
     cdef readonly:
-        AtomicType atomic_type
+        BaseType atomic_type
+        bint _is_frozen
+
+    cdef readonly:
+        object kwargs
+        str slug
+        long long hash
 
 
 ##############################

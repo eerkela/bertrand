@@ -45,6 +45,14 @@ from pdtypes.util.round import Tolerance
 # +-----------+---+---+---+---+---+---+---+---+---+
 
 
+# AdapterTypes do not need to be flyweights, but they do need appropriate
+# resolve() methods similar to AtomicType.  This means they need aliases, a
+# name, and access to the shared registry.  They do NOT need .instance(),
+# .detect() or .slugify() methods, since they will never be observed directly.
+# Otherwise, __getattr__ automatically wraps any methods that may return
+# AtomicType or CompositeType objects.
+
+
 ##########################
 ####    PRIMITIVES    ####
 ##########################
@@ -58,11 +66,14 @@ cdef class CacheValue:
 
 
 cdef class BaseType:
-    """Base type for AtomicType and CompositeType objects.  This has no
-    interface of its own and merely serves to anchor the inheritance of the
-    aforementioned objects.  Since Cython does not support true Union types,
-    this is the simplest way of coupling them reliably in the Cython layer.
+    """Base type for all type objects.  This has no interface of its own and
+    merely serves to anchor inheritance.  Since Cython does not support true
+    Union types, this is the simplest way of coupling them reliably in the
+    Cython layer.
     """
+
+    # TODO: put registry here?  would make it available from CompositeTypes
+
     pass
 
 
@@ -179,7 +190,6 @@ def generic(_class: type):
             # ensure backend is self-consistent
             if specific.backend is None:
                 specific.backend = backend
-                specific.options = [backend] + specific.options
             elif backend != specific.backend:
                 raise TypeError(
                     f"backends must match ({repr(backend)} != "
@@ -216,7 +226,7 @@ def register(_class=None, *, ignore=False):
     Note: Any decorators above this one will be ignored during validation.
     """
     def register_decorator(_class_):
-        if not issubclass(_class_, AtomicType):
+        if not issubclass(_class_, (AtomicType, AdapterType)):
             raise TypeError(f"`@register` can only be applied to AtomicTypes")
         if not ignore:
             AtomicType.registry.add(_class_)
@@ -423,15 +433,16 @@ cdef class TypeRegistry:
     #######################
 
     def add(self, new_type: type) -> None:
-        """Add an AtomicType subclass to the registry."""
+        """Add an AtomicType/AdapterType subclass to the registry."""
         # validate subclass has required fields
         self.validate_name(new_type)
         self.validate_aliases(new_type)
         self.validate_slugify(new_type)
-        self.validate_type_def(new_type)
-        self.validate_dtype(new_type)
-        self.validate_itemsize(new_type)
-        self.validate_na_value(new_type)
+        if issubclass(new_type, AtomicType):
+            self.validate_type_def(new_type)
+            self.validate_dtype(new_type)
+            self.validate_itemsize(new_type)
+            self.validate_na_value(new_type)
 
         # add type to registry and update hash
         self.atomic_types.append(new_type)
@@ -518,10 +529,10 @@ cdef class TypeRegistry:
         validate(subclass, "name", expected_type=str)
 
         # ensure subclass.name is unique or inherited from generic type
-        if (
+        if (issubclass(subclass, AtomicType) and (
             subclass.is_generic != False or
             subclass.name != subclass._generic.name
-        ):
+        )):
             observed_names = {x.name for x in self.atomic_types}
             if subclass.name in observed_names:
                 raise TypeError(
@@ -623,7 +634,7 @@ cdef class AtomicType(BaseType):
 
     # Internal fields.  These should never be overridden.
     registry: TypeRegistry = TypeRegistry()
-    flyweights: dict[int, AtomicType] = {}
+    flyweights: dict[str, AtomicType] = {}
 
     # Default fields.  These can be overridden in AtomicType definitions to
     # customize behavior.
@@ -672,14 +683,14 @@ cdef class AtomicType(BaseType):
 
         This should never be overriden.
         """
-        # generate slug and compute hash
-        cdef long long _hash = hash(cls.slugify(*args, **kwargs))
+        # generate slug
+        cdef str slug = cls.slugify(*args, **kwargs)
 
-        # get previous flyweight, if one exists
-        cdef AtomicType result = cls.flyweights.get(_hash, None)
+        # get previous flyweight if one exists
+        cdef AtomicType result = cls.flyweights.get(slug, None)
         if result is None:  # create new flyweight
             result = cls(*args, **kwargs)
-            cls.flyweights[_hash] = result
+            cls.flyweights[slug] = result
 
         # return flyweight
         return result
@@ -720,10 +731,9 @@ cdef class AtomicType(BaseType):
 
     @classmethod
     def slugify(cls) -> str:
-        cdef list options = cls.options
-        if not options:
-            return cls.name
-        return f"{cls.name}[{', '.join(options)}]"
+        if cls.is_generic == False:
+            return f"{cls.name}[{cls.backend}]"
+        return cls.name
 
     ##########################
     ####    PROPERTIES    ####
@@ -1056,7 +1066,7 @@ cdef class AtomicType(BaseType):
 
     @classmethod
     def __init_subclass__(cls, cache_size: int = None, **kwargs):
-        valid = AtomicType.__subclasses__() + AdapterType.__subclasses__()
+        valid = AtomicType.__subclasses__()
         if cls not in valid:
             raise TypeError(
                 f"{cls.__name__} cannot inherit from another AtomicType "
@@ -1064,7 +1074,6 @@ cdef class AtomicType(BaseType):
             )
 
         # required fields
-        cls.options = []  # holds options for slugify()
         cls.aliases.add(cls)  # cls always aliases itself
         if cache_size is not None:
             cls.flyweights = LRUDict(maxsize=cache_size)
@@ -1106,77 +1115,90 @@ cdef class AtomicType(BaseType):
 #######################
 
 
-cdef class AdapterType(AtomicType):
+cdef class AdapterType(BaseType):
     """Special case for AtomicTypes that modify other AtomicTypes."""
 
-    def __init__(
-        self,
-        atomic_type: AtomicType,
-        *args,
-        **kwargs
-    ):
+    def __init__(self, atomic_type: AtomicType, **kwargs):
         self.atomic_type = atomic_type
-        super(AdapterType, self).__init__(*args, **kwargs)
+        self.kwargs = MappingProxyType({"atomic_type": atomic_type} | kwargs)
+        self.slug = self.slugify(atomic_type, **kwargs)
+        self.hash = hash(self.slug)
+        self._is_frozen = True  # no new attributes beyond this point
 
     #############################
     ####    CLASS METHODS    ####
     #############################
 
     @classmethod
-    def register_supertype(
-        cls,
-        supertype: type,
-        overwrite: bool = False
-    ) -> None:
-        raise TypeError(f"AdapterTypes cannot have supertypes")
+    def clear_aliases(cls) -> None:
+        """Remove every alias that is registered to this AdapterType."""
+        cls.aliases.clear()
+        cls.registry.flush()
 
     @classmethod
-    def register_subtype(
-        cls,
-        subtype: type,
-        overwrite: bool = False
-    ) -> None:
-        raise TypeError(f"AdapterTypes cannot have subtypes")
+    def register_alias(cls, alias: Any, overwrite: bool = False) -> None:
+        """Register a new alias for this AdapterType."""
+        if alias in cls.registry.aliases:
+            other = cls.registry.aliases[alias]
+            if other is cls:
+                return None
+            if overwrite:
+                del other.aliases[alias]
+            else:
+                raise ValueError(
+                    f"alias {repr(alias)} is already registered to {other}"
+                )
+        cls.aliases.add(alias)
+        cls.registry.flush()  # rebuild regex patterns
 
-    ##########################
-    ####    PROPERTIES    ####
-    ##########################
+    @classmethod
+    def remove_alias(cls, alias: Any) -> None:
+        """Remove an alias from this AdapterType."""
+        del cls.aliases[alias]
+        cls.registry.flush()  # rebuild regex patterns
 
-    @property
-    def root(self) -> AtomicType:
-        return self.replace(atomic_type=self.atomic_type.root)
+    @classmethod
+    def resolve(cls, atomic_type: str, *args: str) -> AdapterType:
+        """An alternate constructor used to parse input in the type
+        specification mini-language.
+
+        Override this if your AdapterType implements custom parsing rules for
+        any arguments that are supplied to this type.
+
+        .. Note: The inputs to each argument will always be strings.
+        """
+        instance = resolve.resolve_type(atomic_type)
+        if isinstance(instance, CompositeType):
+            raise TypeError(f"wrapped type must be atomic, not {instance}")
+        return cls(instance, *args)
+
+    @classmethod
+    def slugify(cls, atomic_type: AtomicType) -> str:
+        return f"{cls.name}[{str(atomic_type)}]"
 
     #######################
     ####    METHODS    ####
     #######################
 
-    def _generate_subtypes(self, types: set) -> frozenset:
-        return frozenset(
-            self.replace(atomic_type=t)
-            for t in self.atomic_type.subtypes
-        )
-
-    def _generate_supertype(self, type_def: type) -> AtomicType:
-        result = self.atomic_type.supertype
-        if result is None:
-            return None
-        return self.replace(atomic_type=result)
-
-    def replace(self, **kwargs) -> AtomicType:
+    def replace(self, **kwargs) -> AdapterType:
         # extract kwargs pertaining to AdapterType
-        adapter_kwargs = {k: v for k, v in kwargs.items() if k in self.kwargs}
-        kwargs = {k: v for k, v in kwargs.items() if k not in self.kwargs}
+        adapter_kwargs = {}
+        atomic_kwargs = {}
+        for k, v in kwargs.items():
+            if k in self.kwargs:
+                adapter_kwargs[k] = v
+            else:
+                atomic_kwargs[k] = v
 
         # merge adapter_kwargs with self.kwargs and get atomic_type
         adapter_kwargs = {**self.kwargs, **adapter_kwargs}
-        atomic_type = adapter_kwargs["atomic_type"]
-        del adapter_kwargs["atomic_type"]
+        atomic_type = adapter_kwargs.pop("atomic_type")
 
         # pass non-sparse kwargs to atomic_type.replace()
-        atomic_type = atomic_type.replace(**kwargs)
+        atomic_type = atomic_type.replace(**atomic_kwargs)
 
         # construct new AdapterType
-        return self.instance(atomic_type=atomic_type, **adapter_kwargs)
+        return type(self)(atomic_type=atomic_type, **adapter_kwargs)
 
     def unwrap(self) -> AtomicType:
         """Strip any AdapterTypes that have been attached to this AtomicType.
@@ -1197,10 +1219,48 @@ cdef class AdapterType(AtomicType):
         return result
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self.atomic_type, name)
+        try:
+            return self.kwargs[name]
+        except KeyError as err:
+            val = getattr(self.atomic_type, name)
 
+        # decorate callables to return AdapterTypes
+        if callable(val):
+            def sticky_wrapper(*args, **kwargs):
+                result = val(*args, **kwargs)
+                if isinstance(result, AtomicType):
+                    result = self.replace(atomic_type=result)
+                elif isinstance(result, CompositeType):
+                    result = CompositeType(
+                        {self.replace(atomic_type=t) for t in result}
+                    )
+                return result
 
+            return sticky_wrapper
 
+        # wrap properties as AdapterTypes
+        if isinstance(val, AtomicType):
+            val = self.replace(atomic_type=val)
+        elif isinstance(val, CompositeType):
+            val = CompositeType({self.replace(atomic_type=t) for t in val})
+
+        return val
+
+    def __repr__(self) -> str:
+        sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())
+        return f"{type(self).__name__}({sig})"
+
+    @classmethod
+    def __init_subclass__(cls, cache_size: int = None, **kwargs):
+        valid = AdapterType.__subclasses__()
+        if cls not in valid:
+            raise TypeError(
+                f"{cls.__name__} cannot inherit from another AdapterType "
+                f"definition"
+            )
+
+    def __str__(self) -> str:
+        return self.slug
 
 
 ##############################
@@ -1223,7 +1283,7 @@ cdef class CompositeType(BaseType):
         # parse argument
         if atomic_types is None:  # empty
             self.atomic_types = set()
-        elif isinstance(atomic_types, AtomicType):  # wrap
+        elif isinstance(atomic_types, (AtomicType, AdapterType)):  # wrap
             self.atomic_types = {atomic_types}
         elif isinstance(atomic_types, CompositeType):  # copy
             self.atomic_types = atomic_types.atomic_types.copy()
@@ -1235,7 +1295,7 @@ cdef class CompositeType(BaseType):
         ):  # build
             self.atomic_types = set()
             for val in atomic_types:
-                if isinstance(val, AtomicType):
+                if isinstance(val, (AtomicType, AdapterType)):
                     self.atomic_types.add(val)
                 elif isinstance(val, CompositeType):
                     self.atomic_types.update(x for x in val)
