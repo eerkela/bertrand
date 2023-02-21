@@ -40,9 +40,8 @@ def resolve_type(
     typespec: type_specifier | Iterable[type_specifier],
     sparse: bool = False,
     categorical: bool = False
-) -> atomic.AtomicType | atomic.CompositeType:
-    """Interpret a type specifier, returning a corresponding AtomicType
-    instance.
+) -> atomic.BaseType:
+    """Interpret a type specifier, returning a corresponding type object.
 
     .. note: the instances returned by this function are *flyweights*, meaning
     that repeated input will simply yield a reference to the first object
@@ -53,7 +52,7 @@ def resolve_type(
     but the behavior should be noted nonetheless.
     """
     # resolve base type specifier
-    if isinstance(typespec, (atomic.AtomicType, atomic.CompositeType)):
+    if isinstance(typespec, atomic.BaseType):
         result = typespec
     elif isinstance(typespec, str):
         result = resolve_typespec_string(typespec)

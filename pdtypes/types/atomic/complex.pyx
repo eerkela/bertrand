@@ -468,10 +468,6 @@ class PythonComplexType(ComplexMixin, AtomicType):
 #######################
 
 
-def test():
-    print("hello world")
-
-
 cdef cast.SeriesWrapper combine_real_imag(
     cast.SeriesWrapper real,
     cast.SeriesWrapper imag

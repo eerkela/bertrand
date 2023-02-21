@@ -8,14 +8,15 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from pdtypes.util.structs cimport LRUDict
+from pdtypes.type_hints import type_specifier
 
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
-from pdtypes.util.round import Tolerance
+from pdtypes.util.round cimport Tolerance
+from pdtypes.util.structs cimport LRUDict
 
 
 # TODO: insert type_specifier hints where applicable
@@ -75,6 +76,39 @@ cdef class BaseType:
     # TODO: put registry here?  would make it available from CompositeTypes
 
     pass
+
+
+
+cdef class ScalarType(BaseType):
+    """Base type for AtomicType and AdapterType objects."""
+
+    @classmethod
+    def clear_aliases(cls) -> None:
+        """Remove every alias that is registered to this AdapterType."""
+        cls.aliases.clear()
+        cls.registry.flush()
+
+    @classmethod
+    def register_alias(cls, alias: Any, overwrite: bool = False) -> None:
+        """Register a new alias for this AdapterType."""
+        if alias in cls.registry.aliases:
+            other = cls.registry.aliases[alias]
+            if other is cls:
+                return None
+            if overwrite:
+                del other.aliases[alias]
+            else:
+                raise ValueError(
+                    f"alias {repr(alias)} is already registered to {other}"
+                )
+        cls.aliases.add(alias)
+        cls.registry.flush()  # rebuild regex patterns
+
+    @classmethod
+    def remove_alias(cls, alias: Any) -> None:
+        """Remove an alias from this AdapterType."""
+        del cls.aliases[alias]
+        cls.registry.flush()  # rebuild regex patterns
 
 
 ##########################
@@ -435,10 +469,10 @@ cdef class TypeRegistry:
     def add(self, new_type: type) -> None:
         """Add an AtomicType/AdapterType subclass to the registry."""
         # validate subclass has required fields
-        self.validate_name(new_type)
         self.validate_aliases(new_type)
         self.validate_slugify(new_type)
         if issubclass(new_type, AtomicType):
+            self.validate_name(new_type)
             self.validate_type_def(new_type)
             self.validate_dtype(new_type)
             self.validate_itemsize(new_type)
@@ -584,7 +618,7 @@ cdef class TypeRegistry:
 ######################
 
 
-cdef class AtomicType(BaseType):
+cdef class AtomicType(ScalarType):
     """Base type for all user-defined atomic types.
 
     Notes
@@ -649,17 +683,12 @@ cdef class AtomicType(BaseType):
         self.kwargs = MappingProxyType(kwargs)
         self.slug = self.slugify(**kwargs)
         self.hash = hash(self.slug)
+        self.adapters = ()
         self._is_frozen = True  # no new attributes beyond this point
 
     #############################
     ####    CLASS METHODS    ####
     #############################
-
-    @classmethod
-    def clear_aliases(cls) -> None:
-        """Remove every alias that is registered to this AtomicType."""
-        cls.aliases.clear()
-        cls.registry.flush()
 
     @classmethod
     def detect(cls, example: Any) -> AtomicType:
@@ -694,28 +723,6 @@ cdef class AtomicType(BaseType):
 
         # return flyweight
         return result
-
-    @classmethod
-    def register_alias(cls, alias: Any, overwrite: bool = False) -> None:
-        """Register a new alias for this AtomicType."""
-        if alias in cls.registry.aliases:
-            other = cls.registry.aliases[alias]
-            if other is cls:
-                return None
-            if overwrite:
-                del other.aliases[alias]
-            else:
-                raise ValueError(
-                    f"alias {repr(alias)} is already registered to {other}"
-                )
-        cls.aliases.add(alias)
-        cls.registry.flush()  # rebuild regex patterns
-
-    @classmethod
-    def remove_alias(cls, alias: Any) -> None:
-        """Remove an alias from this AtomicType."""
-        del cls.aliases[alias]
-        cls.registry.flush()  # rebuild regex patterns
 
     @classmethod
     def resolve(cls, *args: str) -> AtomicType:
@@ -842,7 +849,7 @@ cdef class AtomicType(BaseType):
             return None
         return type_def.instance()
 
-    def contains(self, other: Any) -> bool:
+    def contains(self, other: type_specifier) -> bool:
         """Test whether `other` is a subtype of the given AtomicType.
         This is functionally equivalent to `other in self`, except that it
         applies automatic type resolution to `other`.
@@ -860,7 +867,7 @@ cdef class AtomicType(BaseType):
             )
         return other == self or any(other in a for a in subtypes)
 
-    def is_subtype(self, other) -> bool:
+    def is_subtype(self, other: type_specifier) -> bool:
         """Reverse of `AtomicType.contains()`.
 
         This is functionally equivalent to `self in other`, except that it
@@ -876,8 +883,7 @@ cdef class AtomicType(BaseType):
         return self.instance(**merged)
 
     def unwrap(self) -> AtomicType:
-        """Strip any AdapterTypes that have been attached to this AtomicType.
-        """
+        """Strip any adapters that have been attached to this AtomicType."""
         return self
 
     def upcast(self, series: cast.SeriesWrapper) -> AtomicType:
@@ -1047,10 +1053,10 @@ cdef class AtomicType(BaseType):
     ####    MAGIC METHODS    ####
     #############################
 
-    def __contains__(self, other) -> bool:
+    def __contains__(self, other: type_specifier) -> bool:
         return self.contains(other)
 
-    def __eq__(self, other) -> bool:
+    def __eq__(self, other: type_specifier) -> bool:
         other = resolve.resolve_type(other)
         return isinstance(other, AtomicType) and self.hash == other.hash
 
@@ -1115,7 +1121,7 @@ cdef class AtomicType(BaseType):
 #######################
 
 
-cdef class AdapterType(BaseType):
+cdef class AdapterType(ScalarType):
     """Special case for AtomicTypes that modify other AtomicTypes."""
 
     def __init__(self, atomic_type: AtomicType, **kwargs):
@@ -1123,39 +1129,12 @@ cdef class AdapterType(BaseType):
         self.kwargs = MappingProxyType({"atomic_type": atomic_type} | kwargs)
         self.slug = self.slugify(atomic_type, **kwargs)
         self.hash = hash(self.slug)
+        self.adapters = (self.adapter_name,) + atomic_type.adapters
         self._is_frozen = True  # no new attributes beyond this point
 
     #############################
     ####    CLASS METHODS    ####
     #############################
-
-    @classmethod
-    def clear_aliases(cls) -> None:
-        """Remove every alias that is registered to this AdapterType."""
-        cls.aliases.clear()
-        cls.registry.flush()
-
-    @classmethod
-    def register_alias(cls, alias: Any, overwrite: bool = False) -> None:
-        """Register a new alias for this AdapterType."""
-        if alias in cls.registry.aliases:
-            other = cls.registry.aliases[alias]
-            if other is cls:
-                return None
-            if overwrite:
-                del other.aliases[alias]
-            else:
-                raise ValueError(
-                    f"alias {repr(alias)} is already registered to {other}"
-                )
-        cls.aliases.add(alias)
-        cls.registry.flush()  # rebuild regex patterns
-
-    @classmethod
-    def remove_alias(cls, alias: Any) -> None:
-        """Remove an alias from this AdapterType."""
-        del cls.aliases[alias]
-        cls.registry.flush()  # rebuild regex patterns
 
     @classmethod
     def resolve(cls, atomic_type: str, *args: str) -> AdapterType:
@@ -1174,11 +1153,26 @@ cdef class AdapterType(BaseType):
 
     @classmethod
     def slugify(cls, atomic_type: AtomicType) -> str:
-        return f"{cls.name}[{str(atomic_type)}]"
+        return f"{cls.adapter_name}[{str(atomic_type)}]"
 
     #######################
     ####    METHODS    ####
     #######################
+
+    def contains(self, other: type_specifier) -> bool:
+        """Test whether `other` is a subtype of the given AtomicType.
+        This is functionally equivalent to `other in self`, except that it
+        applies automatic type resolution to `other`.
+
+        For AdapterTypes, this merely delegates to AtomicType.contains().
+        """
+        other = resolve.resolve_type(other)
+        if isinstance(other, CompositeType):
+            raise NotImplementedError()
+        return (
+            self.unwrap().contains(other.unwrap()) and
+            self.adapters == other.adapters
+        )
 
     def replace(self, **kwargs) -> AdapterType:
         # extract kwargs pertaining to AdapterType
@@ -1212,11 +1206,18 @@ cdef class AdapterType(BaseType):
     ####    MAGIC METHODS    ####
     #############################
 
+    def __contains__(self, other: type_specifier) -> bool:
+        return self.contains(other)
+
     def __dir__(self) -> list:
         result = dir(type(self))
         result += list(self.__dict__.keys())
         result += [x for x in dir(self.atomic_type) if x not in result]
         return result
+
+    def __eq__(self, other: type_specifier) -> bool:
+        other = resolve.resolve_type(other)
+        return isinstance(other, AdapterType) and self.hash == other.hash
 
     def __getattr__(self, name: str) -> Any:
         try:
@@ -1246,9 +1247,8 @@ cdef class AdapterType(BaseType):
 
         return val
 
-    def __repr__(self) -> str:
-        sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())
-        return f"{type(self).__name__}({sig})"
+    def __hash__(self) -> int:
+        return self.hash
 
     @classmethod
     def __init_subclass__(cls, cache_size: int = None, **kwargs):
@@ -1259,9 +1259,18 @@ cdef class AdapterType(BaseType):
                 f"definition"
             )
 
+    def __repr__(self) -> str:
+        sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())
+        return f"{type(self).__name__}({sig})"
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if self._is_frozen:
+            raise AttributeError("AdapterType objects are read-only")
+        else:
+            self.__dict__[name] = value
+
     def __str__(self) -> str:
         return self.slug
-
 
 ##############################
 ####    COMPOSITE TYPE    ####

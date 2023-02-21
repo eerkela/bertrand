@@ -17,7 +17,7 @@ cdef class BaseType:
 
 
 ###########################
-####    ATOMIC TYPE    ####
+####    SCALAR TYPE    ####
 ###########################
 
 
@@ -40,33 +40,27 @@ cdef class TypeRegistry:
     cdef void update_hash(self)
 
 
-cdef class AtomicType(BaseType):
+cdef class ScalarType(BaseType):
+    cdef:
+        bint _is_frozen
+
+    cdef readonly:
+        object kwargs  # MappingProxyType
+        str slug
+        long long hash
+        tuple adapters
+
+
+cdef class AtomicType(ScalarType):
     cdef:
         CacheValue _generic_cache
         CacheValue _subtype_cache
         CacheValue _supertype_cache
-        bint _is_frozen
 
+
+cdef class AdapterType(ScalarType):
     cdef readonly:
-        object kwargs
-        str slug
-        long long hash
-
-
-############################
-####    ADAPTER TYPE    ####
-############################
-
-
-cdef class AdapterType(BaseType):
-    cdef readonly:
-        BaseType atomic_type
-        bint _is_frozen
-
-    cdef readonly:
-        object kwargs
-        str slug
-        long long hash
+        ScalarType atomic_type
 
 
 ##############################

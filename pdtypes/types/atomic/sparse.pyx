@@ -4,7 +4,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .base cimport AtomicType, AdapterType
+from .base cimport AtomicType, AdapterType, ScalarType
 from .base import register
 
 cimport pdtypes.types.cast as cast
@@ -20,8 +20,8 @@ import pdtypes.types.resolve as resolve
 @register
 class SparseType(AdapterType):
 
-    name = "sparse"
-    aliases = {"sparse"}
+    adapter_name = "sparse"
+    aliases = {"sparse", "Sparse"}
 
     def __init__(self, atomic_type: AtomicType, fill_value: Any = None):
         # if atomic_type.is_sparse:
@@ -46,8 +46,8 @@ class SparseType(AdapterType):
         fill_value: Any = None
     ) -> str:
         if fill_value is None:
-            return f"{cls.name}[{atomic_type}]"
-        return f"{cls.name}[{atomic_type}, {fill_value}]"
+            return f"{cls.adapter_name}[{atomic_type}]"
+        return f"{cls.adapter_name}[{atomic_type}, {fill_value}]"
 
     ##############################
     ####    CUSTOMIZATIONS    ####
@@ -55,13 +55,21 @@ class SparseType(AdapterType):
 
     @classmethod
     def resolve(cls, atomic_type: str, fill_value: str = None):
-        cdef AtomicType instance = resolve.resolve_type(atomic_type)
+        cdef ScalarType instance = resolve.resolve_type(atomic_type)
         cdef object parsed = None
 
+        # resolve fill_value
         if fill_value is not None:
             if fill_value in resolve.na_strings:
                 parsed = resolve.na_strings[fill_value]
             else:
-                parsed = cast.cast(fill_value, atomic_type)[0]
+                parsed = cast.cast(fill_value, instance)[0]
+
+        # if instance is already sparse, just replace fill_value
+        if cls.adapter_name in instance.adapters:
+            if parsed is None:
+                return instance
+            else:
+                return instance.replace(fill_value=parsed)
 
         return cls(atomic_type=instance, fill_value=parsed)

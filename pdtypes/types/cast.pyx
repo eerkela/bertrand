@@ -26,10 +26,12 @@ from pdtypes.util.round cimport Tolerance
 from pdtypes.util.time cimport Epoch, epoch_aliases
 
 
-# TODO: sparse types currently broken.
-# -> maybe account for these outside of the conversions themselves, and just
-# unwrap() it to do the conversion.  It's possible they'll just work out of
-# the box though.
+# TODO: SparseType works, but not in all cases.
+# -> pd.NA disallows non-missing fill values
+# -> Timestamps must be sparsified manually by converting to object and then
+# to sparse
+# -> Timedeltas just don't work at all.  astype() rejects pd.SparseDtype("m8")
+# entirely.
 
 
 # TODO: have to account for empty series in each conversion.
@@ -45,7 +47,6 @@ cdef class CastDefaults:
     cdef:
         bint _as_hours
         unsigned char _base
-        bint _categorical
         bint _day_first
         atomic.CompositeType _downcast
         str _errors
@@ -54,7 +55,6 @@ cdef class CastDefaults:
         bint _ignore_case
         str _rounding
         object _since
-        bint _sparse
         unsigned int _step_size
         Tolerance _tol
         object _tz
@@ -66,14 +66,12 @@ cdef class CastDefaults:
     def __init__(self):
         self._as_hours = False
         self._base = 0
-        self._categorical = False
         self._downcast = None
         self._errors = "raise"
         self._false = {"false", "f", "no", "n", "off", "0"}
         self._ignore_case = True
         self._rounding = None
         self._since = Epoch("utc")
-        self._sparse = False
         self._step_size = 1
         self._tol = Tolerance(1e-6)
         self._tz = None
@@ -99,16 +97,6 @@ cdef class CastDefaults:
         if val is None:
             raise ValueError(f"default `base` cannot be None")
         self._base = validate_base(val)
-
-    @property
-    def categorical(self) -> bool:
-        return self._categorical
-
-    @categorical.setter
-    def categorical(self, val: bool) -> None:
-        if val is None:
-            raise ValueError(f"default `categorical` cannot be None")
-        self._categorical = validate_categorical(val)
 
     @property
     def day_first(self) -> bool:
@@ -187,16 +175,6 @@ cdef class CastDefaults:
         if val is None:
             raise ValueError(f"default `since` cannot be None")
         self._since = validate_since(val)
-
-    @property
-    def sparse(self) -> bool:
-        return self._sparse
-
-    @sparse.setter
-    def sparse(self, val: bool) -> None:
-        if val is None:
-            raise ValueError(f"default `sparse` cannot be None")
-        self._sparse = validate_sparse(val)
 
     @property
     def step_size(self) -> int:
@@ -290,12 +268,6 @@ def validate_call(val: Callable) -> Callable:
         raise ValueError(f"`call` must be callable, not {val}")
 
 
-def validate_categorical(val: bool) -> bool:
-    if val is None:
-        return defaults.categorical
-    return val
-
-
 def validate_day_first(val: bool) -> bool:
     if val is None:
         return defaults.day_first
@@ -318,12 +290,12 @@ def validate_downcast(
 def validate_dtype(
     dtype: type_specifier,
     supertype: type_specifier = None
-) -> atomic.AtomicType:
+) -> atomic.ScalarType:
     """Resolve a type specifier and reject it if it is composite or not a
     subtype of the given supertype.
     """
     dtype = resolve.resolve_type(dtype)
-    if not isinstance(dtype, atomic.AtomicType):
+    if isinstance(dtype, atomic.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
 
     if supertype is not None:
@@ -389,12 +361,6 @@ def validate_rounding(val: str) -> str:
     )
     if val is not None and val not in valid:
         raise ValueError(f"`rounding` must be one of {valid}, not {repr(val)}")
-    return val
-
-
-def validate_sparse(val: bool) -> bool:
-    if val is None:
-        return defaults.sparse
     return val
 
 
@@ -486,6 +452,8 @@ def to_boolean(
     false: str | Iterable[str] = None,
     ignore_case: bool = None,
     call: Callable = None,
+    sparse: Any = None,
+    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -527,6 +495,8 @@ def to_boolean(
         true=true,
         false=false,
         ignore_case=ignore_case,
+        sparse=sparse,
+        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -543,6 +513,8 @@ def to_integer(
     base: int = None,
     call: Callable = None,
     downcast: bool | type_specifier = None,
+    sparse: Any = None,
+    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -572,6 +544,8 @@ def to_integer(
         base=base,
         call=call,
         downcast=downcast,
+        sparse=sparse,
+        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -587,6 +561,8 @@ def to_float(
     since: str | datetime_like = None,
     call: Callable = None,
     downcast: bool | type_specifier = None,
+    sparse: Any = None,
+    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -614,6 +590,8 @@ def to_float(
         since=since,
         call=call,
         downcast=downcast,
+        sparse=sparse,
+        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -629,6 +607,8 @@ def to_complex(
     since: str | datetime_like = None,
     call: Callable = None,
     downcast: bool | type_specifier = None,
+    sparse: Any = None,
+    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -655,6 +635,8 @@ def to_complex(
         step_size=step_size,
         since=since,
         downcast=downcast,
+        sparse=sparse,
+        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -669,6 +651,8 @@ def to_decimal(
     step_size: int = None,
     since: str | datetime_like = None,
     call: Callable = None,
+    sparse: Any = None,
+    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -694,6 +678,8 @@ def to_decimal(
         step_size=step_size,
         since=since,
         call=call,
+        sparse=sparse,
+        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -713,6 +699,8 @@ def to_datetime(
     day_first: bool = None,
     year_first: bool = None,
     call: Callable = None,
+    sparse: Any = None,
+    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -748,6 +736,8 @@ def to_datetime(
         day_first=day_first,
         year_first=year_first,
         call=call,
+        sparse=sparse,
+        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -763,6 +753,8 @@ def to_timedelta(
     since: str | datetime_like = None,
     as_hours: bool = None,
     call: Callable = None,
+    sparse: Any = None,
+    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -790,6 +782,8 @@ def to_timedelta(
         since=since,
         as_hours=as_hours,
         call=call,
+        sparse=sparse,
+        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -801,6 +795,8 @@ def to_string(
     format: str = None,
     base: int = None,
     call: Callable = None,
+    sparse: Any = None,
+    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -820,6 +816,8 @@ def to_string(
         base=base,
         format=format,
         call=call,
+        sparse=sparse,
+        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -829,6 +827,8 @@ def to_object(
     series: Iterable,
     dtype: type_specifier = object,
     call: Callable = None,
+    sparse: Any = None,
+    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -844,6 +844,8 @@ def to_object(
         "to_object",
         dtype=dtype,
         call=call,
+        sparse=sparse,
+        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -1540,8 +1542,11 @@ def as_series(data) -> pd.Series:
 def do_conversion(
     data,
     endpoint: str,
-    *args,
+    dtype: atomic.ScalarType,
+    sparse: Any,
+    categorical: bool,
     errors: str,
+    *args,
     **kwargs
 ) -> pd.Series:
     # calculate submap
@@ -1549,6 +1554,15 @@ def do_conversion(
         k: getattr(k, endpoint) for k in atomic.AtomicType.registry
         if hasattr(k, endpoint)
     }
+
+    # wrap according to adapter settings
+    if categorical and "categorical" not in dtype.adapters:
+        dtype = atomic.CategoricalType(dtype)
+    if sparse is not None:
+        if "sparse" not in dtype.adapters:
+            dtype = atomic.SparseType(dtype, fill_value=sparse)
+        else:
+            dtype = dtype.replace(fill_value=sparse)
 
     try:
         # NOTE: passing dispatch(endpoint="") will never fall back to pandas
@@ -1558,12 +1572,21 @@ def do_conversion(
                 submap,
                 None,
                 *args,
+                dtype=dtype.unwrap(),
                 errors=errors,
                 **kwargs
             )
             series.series = result.series
             series.hasnans = result.hasnans
             series.element_type = result.element_type
+
+        if dtype.adapters:
+            # TODO: replace(atomic_type) should replace the wrapped type
+            # rather than the wrapper.  The wrapper itself should be available
+            # under a wrapped attribute instead.
+            dtype = dtype.replace(atomic_type=series.element_type)
+            return series.series.astype(dtype.dtype)
+
         return series.series
     except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
         raise  # never ignore these errors

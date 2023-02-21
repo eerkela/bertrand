@@ -333,6 +333,7 @@ class DecimalType(DecimalMixin, AtomicType):
     name = "decimal"
     aliases = {"decimal"}
     type_def = decimal.Decimal
+    na_value = decimal.Decimal("nan")
 
 
 ##############################
@@ -346,3 +347,4 @@ class PythonDecimalType(DecimalMixin, AtomicType):
 
     aliases = {decimal.Decimal}
     type_def = decimal.Decimal
+    na_value = decimal.Decimal("nan")

@@ -613,6 +613,9 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
     max = pd.Timestamp.max.value - 12 * as_ns["h"]  # UTC+12 is furthest behind
 
     def __init__(self, tz: datetime.tzinfo = None):
+        if isinstance(tz, str):
+            tz = pytz.timezone(tz)
+
         if tz is None:
             self.dtype = np.dtype("M8[ns]")
         else:
@@ -682,7 +685,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         return cast.SeriesWrapper(
             result,
             hasnans=series.hasnans,
-            element_type=series.element_type
+            element_type=dtype
         )
 
     def from_string(
@@ -870,6 +873,8 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
     min = pydatetime_to_ns(datetime.datetime.min)
 
     def __init__(self, tz: datetime.tzinfo = None):
+        if isinstance(tz, str):
+            tz = pytz.timezone(tz)
         super().__init__(tz=tz)
 
     ############################
