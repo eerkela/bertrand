@@ -41,14 +41,10 @@ cdef class TypeRegistry:
 
 
 cdef class ScalarType(BaseType):
-    cdef:
-        bint _is_frozen
-
     cdef readonly:
         object kwargs  # MappingProxyType
         str slug
         long long hash
-        tuple adapters
 
 
 cdef class AtomicType(ScalarType):
@@ -56,11 +52,12 @@ cdef class AtomicType(ScalarType):
         CacheValue _generic_cache
         CacheValue _subtype_cache
         CacheValue _supertype_cache
+        bint _is_frozen
 
 
 cdef class AdapterType(ScalarType):
-    cdef public:
-        ScalarType wrapped
+    cdef:
+        ScalarType _wrapped
 
 
 ##############################

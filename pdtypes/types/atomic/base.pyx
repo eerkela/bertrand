@@ -2,7 +2,7 @@ import inspect
 from functools import wraps
 import regex as re  # using alternate regex
 from types import MappingProxyType
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 cimport numpy as np
 import numpy as np
@@ -683,7 +683,6 @@ cdef class AtomicType(ScalarType):
         self.kwargs = MappingProxyType(kwargs)
         self.slug = self.slugify(**kwargs)
         self.hash = hash(self.slug)
-        self.adapters = ()
         self._is_frozen = True  # no new attributes beyond this point
 
     #############################
@@ -745,6 +744,14 @@ cdef class AtomicType(ScalarType):
     ##########################
     ####    PROPERTIES    ####
     ##########################
+
+    @property
+    def adapters(self) -> Iterator[AdapterType]:
+        """Iterate through each AdapterType that is attached to this instance.
+
+        For AtomicTypes, this is always an empty iterator.
+        """
+        yield from ()
 
     @property
     def generic(self) -> AtomicType:
@@ -914,6 +921,26 @@ cdef class AtomicType(ScalarType):
     ####    SERIES METHODS    ####
     ##############################
 
+    def make_categorical(
+        self,
+        series: cast.SeriesWrapper,
+        levels: list
+    ) -> cast.SeriesWrapper:
+        """Convert a SeriesWrapper of the associated type into a categorical
+        format, with the given levels.
+
+        This is invoked whenever a categorical conversion is performed that
+        targets this type.
+        """
+        if levels is not None:
+            levels = pd.Index(levels, dtype=self.dtype)
+        categorical_type = pd.CategoricalDtype(levels)
+        return cast.SeriesWrapper(
+            series.series.astype(categorical_type),
+            hasnans=series.hasnans
+            # element_type is set in AdapterType.apply_adapters()
+            )
+
     def make_sparse(
         self,
         series: cast.SeriesWrapper,
@@ -927,7 +954,7 @@ cdef class AtomicType(ScalarType):
         """
         if fill_value is None:
             fill_value = self.na_value
-        sparse_type = pd.SparseDtype(self.dtype, fill_value)
+        sparse_type = pd.SparseDtype(series.dtype, fill_value)
         return cast.SeriesWrapper(
             series.series.astype(sparse_type),
             hasnans=series.hasnans
@@ -1141,6 +1168,12 @@ cdef class AtomicType(ScalarType):
 #######################
 
 
+# TODO: modifying AdapterType.wrapped should update kwargs, slug, hash
+# -> must be a managed @property.
+# -> it works as intended as-is, but repr(), str(), and hash() are broken
+# afterwards
+
+
 cdef class AdapterType(ScalarType):
     """Special case for AtomicTypes that modify other AtomicTypes.
 
@@ -1151,11 +1184,10 @@ cdef class AdapterType(ScalarType):
     """
 
     def __init__(self, wrapped: ScalarType, **kwargs):
-        self.wrapped = wrapped
+        self._wrapped = wrapped
         self.kwargs = MappingProxyType({"wrapped": wrapped} | kwargs)
         self.slug = self.slugify(wrapped, **kwargs)
         self.hash = hash(self.slug)
-        self.adapters = (self.name,) + wrapped.adapters
 
     #############################
     ####    CLASS METHODS    ####
@@ -1185,6 +1217,16 @@ cdef class AdapterType(ScalarType):
     ##########################
 
     @property
+    def adapters(self) -> Iterator[AdapterType]:
+        """Iterate through every AdapterType that is between this adapter
+        and the wrapped AtomicType.
+        """
+        frame = self
+        while isinstance(frame, AdapterType):
+            yield frame
+            frame = frame.wrapped
+
+    @property
     def atomic_type(self) -> AtomicType:
         """Access the underlying AtomicType instance with every adapter removed
         from it.
@@ -1201,6 +1243,19 @@ cdef class AdapterType(ScalarType):
             lowest = lowest.wrapped
         lowest.wrapped = val
 
+    @property
+    def wrapped(self) -> ScalarType:
+        """Access the type object that this AdapterType modifies."""
+        return self._wrapped
+
+    @wrapped.setter
+    def wrapped(self, val: ScalarType) -> None:
+        """Change the type object that this AdapterType modifies."""
+        self._wrapped = val
+        self.kwargs = self.kwargs | {"wrapped": val}
+        self.slug = self.slugify(**self.kwargs)
+        self.hash = hash(self.slug)
+
     #######################
     ####    METHODS    ####
     #######################
@@ -1212,19 +1267,21 @@ cdef class AdapterType(ScalarType):
         """Given an unwrapped conversion result, apply all the necessary logic
         to bring it into alignment with this AdapterType and all its children.
 
-        This is a recursive method that works from the bottom up.  Once an
-        AtomicType has been reached, the first adapter that modifies it will
-        have its own `apply_adapters()` method invoked with the original
-        conversion result.  That method must return a properly-wrapped copy
-        of the original, which is then passed to the next adapter and so on.
-        Thus, if an AdapterType seeks to change any aspect of the series it
-        adapts (as is the case with sparse/categorical types), then it must
-        override this method and invoke it *before* applying its own logic,
-        like so:
+        This is a recursive method that traverses the `adapters` linked list
+        in reverse order (from the inside out).  At the first level, the
+        unwrapped series is passed as input to that adapter's
+        `apply_adapters()` method, which may be overridden as needed.  That
+        method must return a properly-wrapped copy of the original, which is
+        passed to the next adapter and so on.  Thus, if an AdapterType seeks to
+        change any aspect of the series it adapts (as is the case with
+        sparse/categorical types), then it must override this method and invoke
+        it *before* applying its own logic, like so:
 
         ```
         series = super().apply_adapters(series)
         ```
+
+        This pattern maintains the inside-out resolution order of this method.
         """
         if isinstance(self.wrapped, AdapterType):
             return self.wrapped.apply_adapters(series)
@@ -1237,12 +1294,13 @@ cdef class AdapterType(ScalarType):
 
         For AdapterTypes, this merely delegates to AtomicType.contains().
         """
+        # TODO: figure out a better way to do this
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            raise NotImplementedError()
+            raise NotImplementedError()  # TODO
         return (
             self.unwrap().contains(other.unwrap()) and
-            self.adapters == other.adapters
+            list(self.adapters) == list(other.adapters)
         )
 
     def replace(self, **kwargs) -> AdapterType:

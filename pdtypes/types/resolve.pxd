@@ -15,5 +15,5 @@ cdef object tokenize_regex
 cdef str nested(str opener, str closer, str name)
 cdef list tokenize(str input_str)
 cdef atomic.BaseType resolve_typespec_string(str input_str)
-cdef atomic.AtomicType resolve_typespec_dtype(object input_dtype)
+cdef atomic.ScalarType resolve_typespec_dtype(object input_dtype)
 cdef atomic.AtomicType resolve_typespec_type(type input_type)

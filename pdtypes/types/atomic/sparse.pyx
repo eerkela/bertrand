@@ -20,6 +20,20 @@ class SparseType(AdapterType):
     aliases = {"sparse", "Sparse"}
 
     def __init__(self, wrapped: ScalarType, fill_value: Any = None):
+        # do not re-wrap SparseTypes
+        if isinstance(wrapped, SparseType):  # 1st order
+            if fill_value is None:
+                fill_value = wrapped.fill_value
+            wrapped = wrapped.wrapped
+        else:  # 2nd order
+            for x in wrapped.adapters:
+                if isinstance(x.wrapped, SparseType):
+                    if fill_value is None:
+                        fill_value = x.fill_value
+                    wrapped = x.wrapped.wrapped
+                    x.wrapped = self
+                    break
+
         # wrap dtype
         if fill_value is None:
             fill_value = wrapped.na_value
@@ -73,12 +87,5 @@ class SparseType(AdapterType):
                 parsed = resolve.na_strings[fill_value]
             else:
                 parsed = cast.cast(fill_value, instance)[0]
-
-        # if instance is already sparse, just replace fill_value
-        if cls.name in instance.adapters:
-            if parsed is None:
-                return instance
-            else:
-                return instance.replace(fill_value=parsed)
 
         return cls(wrapped=instance, fill_value=parsed)

@@ -1,7 +1,6 @@
-from contextlib import contextmanager
 from datetime import tzinfo
 import decimal
-from functools import partial, wraps
+from functools import wraps
 import inspect
 from typing import Any, Callable, Iterable, Iterator
 
@@ -12,10 +11,10 @@ import pytz
 import tzlocal
 
 cimport pdtypes.types.atomic as atomic
-cimport pdtypes.types.detect as detect
-cimport pdtypes.types.resolve as resolve
 import pdtypes.types.atomic as atomic
+cimport pdtypes.types.detect as detect
 import pdtypes.types.detect as detect
+cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 from pdtypes.error import shorten_list
@@ -467,6 +466,7 @@ def to_boolean(
     since = validate_since(since)
     true = validate_true(true)
     false = validate_false(false)
+    ignore_case = validate_ignore_case(ignore_case)
     call = validate_call(call)
     errors = validate_errors(errors)
 
@@ -1164,7 +1164,7 @@ cdef class SeriesWrapper:
         # series is homogenous
         if isinstance(self.element_type, atomic.AtomicType):
             # check for corresponding AtomicType method
-            call = submap.get(type(self.element_type), None)
+            call = submap.get(type(self.element_type.unwrap()), None)
             if call is not None:
                 return call(self.element_type, self, *args, **kwargs)
 
@@ -1183,7 +1183,7 @@ cdef class SeriesWrapper:
 
         def transform(grp):
             # check for corresponding AtomicType method
-            call = submap.get(type(grp.name), None)
+            call = submap.get(type(grp.name.unwrap()), None)
             if call is not None:
                 result = call(
                     grp.name,
@@ -1556,13 +1556,10 @@ def do_conversion(
     }
 
     # wrap according to adapter settings
-    if categorical and "categorical" not in dtype.adapters:
+    if categorical:
         dtype = atomic.CategoricalType(dtype)
     if sparse is not None:
-        if "sparse" not in dtype.adapters:
-            dtype = atomic.SparseType(dtype, fill_value=sparse)
-        else:
-            dtype = dtype.replace(fill_value=sparse)
+        dtype = atomic.SparseType(dtype, fill_value=sparse)
 
     try:
         # NOTE: passing dispatch(endpoint="") will never fall back to pandas

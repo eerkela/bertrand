@@ -149,7 +149,7 @@ cdef atomic.BaseType resolve_typespec_string(str input_str):
     return atomic.CompositeType(result)
 
 
-cdef atomic.AtomicType resolve_typespec_dtype(object input_dtype):
+cdef atomic.ScalarType resolve_typespec_dtype(object input_dtype):
     """Resolve a numpy/pandas dtype object, returning a corresponding
     AtomicType.
     """
@@ -158,7 +158,7 @@ cdef atomic.AtomicType resolve_typespec_dtype(object input_dtype):
     cdef dict categorical = None
     cdef str unit
     cdef int step_size
-    cdef atomic.ScalarType result
+    cdef atomic.ScalarType result = None
 
     # pandas special cases (sparse/categorical/DatetimeTZ)
     if isinstance(input_dtype, pd.api.extensions.ExtensionDtype):
@@ -166,7 +166,7 @@ cdef atomic.AtomicType resolve_typespec_dtype(object input_dtype):
             sparse = {"fill_value": input_dtype.fill_value}
             input_dtype = input_dtype.subtype
         if isinstance(input_dtype, pd.CategoricalDtype):
-            categorical = {"levels": frozenset(input_dtype.categories)}
+            categorical = {"levels": input_dtype.categories.tolist()}
             input_dtype = input_dtype.categories.dtype
         if isinstance(input_dtype, pd.DatetimeTZDtype):
             result = atomic.PandasTimestampType.instance(tz=input_dtype.tz)

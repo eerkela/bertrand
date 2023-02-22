@@ -27,35 +27,59 @@ class CategoricalType(AdapterType):
     name = "categorical"
     aliases = {"categorical", "Categorical"}
 
-    def __init__(self, atomic_type: AtomicType, levels: list = None):
-        if "sparse" in atomic_type.adapters:
-            # TODO: insert categorical underneath sparse
-            raise NotImplementedError()
+    def __init__(self, wrapped: ScalarType, levels: list = None):
+        # do not re-wrap CategoricalTypes
+        if isinstance(wrapped, CategoricalType):  # 1st order
+            if levels is None:
+                levels = wrapped.levels
+            wrapped = wrapped.wrapped
+        else:  # 2nd order
+            for x in wrapped.adapters:
+                if isinstance(x.wrapped, CategoricalType):
+                    if levels is None:
+                        levels = x.levels
+                    wrapped = x.wrapped.wrapped
+                    x.wrapped = self
+                    break
 
         # call AdapterType.__init__()
-        super().__init__(atomic_type=atomic_type, levels=levels)
+        super().__init__(wrapped=wrapped, levels=levels)
 
-    ########################
-    ####    REQUIRED    ####
-    ########################
+    ############################
+    ####    TYPE METHODS    ####
+    ############################
 
     @classmethod
     def slugify(
         cls,
-        atomic_type: AtomicType,
+        wrapped: ScalarType,
         levels: list = None
     ) -> str:
         if levels is None:
-            return f"{cls.name}[{atomic_type}]"
-        return f"{cls.name}[{atomic_type}, {levels}]"
+            return f"{cls.name}[{str(wrapped)}]"
+        return f"{cls.name}[{str(wrapped)}, {levels}]"
 
     ##############################
-    ####    CUSTOMIZATIONS    ####
+    ####    SERIES METHODS    ####
     ##############################
+
+    def apply_adapters(
+        self,
+        series: cast.SeriesWrapper
+    ) -> cast.SeriesWrapper:
+        """Convert an unwrapped series into a categorical representation."""
+        # evaluate adapters from the inside out
+        series = super().apply_adapters(series)
+
+        # discover levels automatically
+        series = self.atomic_type.make_categorical(series, self.levels)
+        self.levels = series.series.dtype.categories.tolist()
+        series.element_type = self
+        return series
 
     @classmethod
-    def resolve(cls, atomic_type: str, levels: str = None):
-        cdef ScalarType instance = resolve.resolve_type(atomic_type)
+    def resolve(cls, wrapped: str, levels: str = None) -> AdapterType:
+        cdef ScalarType instance = resolve.resolve_type(wrapped)
         cdef list parsed = None
 
         # resolve levels
@@ -66,11 +90,11 @@ class CategoricalType(AdapterType):
             tokens = resolve.tokenize(match.group("content"))
             parsed = cast.cast(tokens, instance).tolist()
 
-        # if instance is already sparse, just replace levels
-        if cls.name in instance.adapters:
-            if parsed is None:
+        # place CategoricalType beneath SparseType if it is present
+        for x in instance.adapters:
+            if x.name == "sparse":
+                result = cls(wrapped=x.wrapped, levels=parsed)
+                x.wrapped = result
                 return instance
-            else:
-                return instance.replace(levels=parsed)
 
-        return cls(atomic_type=instance, levels=parsed)
+        return cls(wrapped=instance, levels=parsed)
