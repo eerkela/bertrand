@@ -1580,14 +1580,12 @@ def do_conversion(
             series.hasnans = result.hasnans
             series.element_type = result.element_type
 
-        if dtype.adapters:
-            # TODO: replace(atomic_type) should replace the wrapped type
-            # rather than the wrapper.  The wrapper itself should be available
-            # under a wrapped attribute instead.
-            dtype = dtype.replace(atomic_type=series.element_type)
-            return series.series.astype(dtype.dtype)
+        if isinstance(dtype, atomic.AdapterType):
+            dtype.atomic_type = series.element_type
+            return dtype.apply_adapters(series).series
 
         return series.series
+
     except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
         raise  # never ignore these errors
     except Exception as err:

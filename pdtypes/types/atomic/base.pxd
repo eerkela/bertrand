@@ -59,8 +59,8 @@ cdef class AtomicType(ScalarType):
 
 
 cdef class AdapterType(ScalarType):
-    cdef readonly:
-        ScalarType atomic_type
+    cdef public:
+        ScalarType wrapped
 
 
 ##############################

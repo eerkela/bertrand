@@ -469,10 +469,10 @@ cdef class TypeRegistry:
     def add(self, new_type: type) -> None:
         """Add an AtomicType/AdapterType subclass to the registry."""
         # validate subclass has required fields
+        self.validate_name(new_type)
         self.validate_aliases(new_type)
         self.validate_slugify(new_type)
         if issubclass(new_type, AtomicType):
-            self.validate_name(new_type)
             self.validate_type_def(new_type)
             self.validate_dtype(new_type)
             self.validate_itemsize(new_type)
@@ -914,6 +914,26 @@ cdef class AtomicType(ScalarType):
     ####    SERIES METHODS    ####
     ##############################
 
+    def make_sparse(
+        self,
+        series: cast.SeriesWrapper,
+        fill_value: Any
+    ) -> cast.SeriesWrapper:
+        """Convert a SeriesWrapper of the associated type into a sparse format,
+        with the given fill value.
+
+        This is invoked whenever a sparse conversion is performed that targets
+        this type.
+        """
+        if fill_value is None:
+            fill_value = self.na_value
+        sparse_type = pd.SparseDtype(self.dtype, fill_value)
+        return cast.SeriesWrapper(
+            series.series.astype(sparse_type),
+            hasnans=series.hasnans
+            # element_type is set in AdapterType.apply_adapters()
+        )
+
     def to_boolean(
         self,
         series: cast.SeriesWrapper,
@@ -1122,22 +1142,27 @@ cdef class AtomicType(ScalarType):
 
 
 cdef class AdapterType(ScalarType):
-    """Special case for AtomicTypes that modify other AtomicTypes."""
+    """Special case for AtomicTypes that modify other AtomicTypes.
 
-    def __init__(self, atomic_type: AtomicType, **kwargs):
-        self.atomic_type = atomic_type
-        self.kwargs = MappingProxyType({"atomic_type": atomic_type} | kwargs)
-        self.slug = self.slugify(atomic_type, **kwargs)
+    These can be nested to form a singly-linked list that can be used to apply
+    multiple transformations at once, provided they are supported by pandas
+    (which is not a guarantee).  Sparse types and categorical types may be
+    well-supported individually, but may not work in combination, for instance.
+    """
+
+    def __init__(self, wrapped: ScalarType, **kwargs):
+        self.wrapped = wrapped
+        self.kwargs = MappingProxyType({"wrapped": wrapped} | kwargs)
+        self.slug = self.slugify(wrapped, **kwargs)
         self.hash = hash(self.slug)
-        self.adapters = (self.adapter_name,) + atomic_type.adapters
-        self._is_frozen = True  # no new attributes beyond this point
+        self.adapters = (self.name,) + wrapped.adapters
 
     #############################
     ####    CLASS METHODS    ####
     #############################
 
     @classmethod
-    def resolve(cls, atomic_type: str, *args: str) -> AdapterType:
+    def resolve(cls, wrapped: str, *args: str) -> AdapterType:
         """An alternate constructor used to parse input in the type
         specification mini-language.
 
@@ -1146,18 +1171,64 @@ cdef class AdapterType(ScalarType):
 
         .. Note: The inputs to each argument will always be strings.
         """
-        instance = resolve.resolve_type(atomic_type)
+        instance = resolve.resolve_type(wrapped)
         if isinstance(instance, CompositeType):
             raise TypeError(f"wrapped type must be atomic, not {instance}")
         return cls(instance, *args)
 
     @classmethod
-    def slugify(cls, atomic_type: AtomicType) -> str:
-        return f"{cls.adapter_name}[{str(atomic_type)}]"
+    def slugify(cls, wrapped: ScalarType) -> str:
+        return f"{cls.name}[{str(wrapped)}]"
+
+    ##########################
+    ####    PROPERTIES    ####
+    ##########################
+
+    @property
+    def atomic_type(self) -> AtomicType:
+        """Access the underlying AtomicType instance with every adapter removed
+        from it.
+        """
+        result = self.wrapped
+        while isinstance(result, AdapterType):
+            result = result.wrapped
+        return result
+
+    @atomic_type.setter
+    def atomic_type(self, val: ScalarType) -> None:
+        lowest = self
+        while isinstance(lowest.wrapped, AdapterType):
+            lowest = lowest.wrapped
+        lowest.wrapped = val
 
     #######################
     ####    METHODS    ####
     #######################
+
+    def apply_adapters(
+        self,
+        series: cast.SeriesWrapper
+    ) -> cast.SeriesWrapper:
+        """Given an unwrapped conversion result, apply all the necessary logic
+        to bring it into alignment with this AdapterType and all its children.
+
+        This is a recursive method that works from the bottom up.  Once an
+        AtomicType has been reached, the first adapter that modifies it will
+        have its own `apply_adapters()` method invoked with the original
+        conversion result.  That method must return a properly-wrapped copy
+        of the original, which is then passed to the next adapter and so on.
+        Thus, if an AdapterType seeks to change any aspect of the series it
+        adapts (as is the case with sparse/categorical types), then it must
+        override this method and invoke it *before* applying its own logic,
+        like so:
+
+        ```
+        series = super().apply_adapters(series)
+        ```
+        """
+        if isinstance(self.wrapped, AdapterType):
+            return self.wrapped.apply_adapters(series)
+        return series
 
     def contains(self, other: type_specifier) -> bool:
         """Test whether `other` is a subtype of the given AtomicType.
@@ -1184,23 +1255,20 @@ cdef class AdapterType(ScalarType):
             else:
                 atomic_kwargs[k] = v
 
-        # merge adapter_kwargs with self.kwargs and get atomic_type
+        # merge adapter_kwargs with self.kwargs and get wrapped type
         adapter_kwargs = {**self.kwargs, **adapter_kwargs}
-        atomic_type = adapter_kwargs.pop("atomic_type")
+        wrapped = adapter_kwargs.pop("wrapped")
 
-        # pass non-sparse kwargs to atomic_type.replace()
-        atomic_type = atomic_type.replace(**atomic_kwargs)
+        # pass non-adapter kwargs down to wrapped.replace()
+        wrapped = wrapped.replace(**atomic_kwargs)
 
         # construct new AdapterType
-        return type(self)(atomic_type=atomic_type, **adapter_kwargs)
+        return type(self)(wrapped=wrapped, **adapter_kwargs)
 
     def unwrap(self) -> AtomicType:
         """Strip any AdapterTypes that have been attached to this AtomicType.
         """
-        result = self.atomic_type
-        while isinstance(result, AdapterType):
-            result = result.atomic_type
-        return result
+        return self.atomic_type
 
     #############################
     ####    MAGIC METHODS    ####
@@ -1212,7 +1280,7 @@ cdef class AdapterType(ScalarType):
     def __dir__(self) -> list:
         result = dir(type(self))
         result += list(self.__dict__.keys())
-        result += [x for x in dir(self.atomic_type) if x not in result]
+        result += [x for x in dir(self.wrapped) if x not in result]
         return result
 
     def __eq__(self, other: type_specifier) -> bool:
@@ -1223,27 +1291,27 @@ cdef class AdapterType(ScalarType):
         try:
             return self.kwargs[name]
         except KeyError as err:
-            val = getattr(self.atomic_type, name)
+            val = getattr(self.wrapped, name)
 
         # decorate callables to return AdapterTypes
         if callable(val):
             def sticky_wrapper(*args, **kwargs):
                 result = val(*args, **kwargs)
-                if isinstance(result, AtomicType):
-                    result = self.replace(atomic_type=result)
+                if isinstance(result, ScalarType):
+                    result = self.replace(wrapped=result)
                 elif isinstance(result, CompositeType):
                     result = CompositeType(
-                        {self.replace(atomic_type=t) for t in result}
+                        {self.replace(wrapped=t) for t in result}
                     )
                 return result
 
             return sticky_wrapper
 
         # wrap properties as AdapterTypes
-        if isinstance(val, AtomicType):
-            val = self.replace(atomic_type=val)
+        if isinstance(val, ScalarType):
+            val = self.replace(wrapped=val)
         elif isinstance(val, CompositeType):
-            val = CompositeType({self.replace(atomic_type=t) for t in val})
+            val = CompositeType({self.replace(wrapped=t) for t in val})
 
         return val
 
@@ -1262,12 +1330,6 @@ cdef class AdapterType(ScalarType):
     def __repr__(self) -> str:
         sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())
         return f"{type(self).__name__}({sig})"
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if self._is_frozen:
-            raise AttributeError("AdapterType objects are read-only")
-        else:
-            self.__dict__[name] = value
 
     def __str__(self) -> str:
         return self.slug

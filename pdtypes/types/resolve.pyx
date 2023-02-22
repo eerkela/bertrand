@@ -37,9 +37,7 @@ cimport pdtypes.types.atomic as atomic
 
 
 def resolve_type(
-    typespec: type_specifier | Iterable[type_specifier],
-    sparse: bool = False,
-    categorical: bool = False
+    typespec: type_specifier | Iterable[type_specifier]
 ) -> atomic.BaseType:
     """Interpret a type specifier, returning a corresponding type object.
 
@@ -51,7 +49,6 @@ def resolve_type(
     referenced.  Such objects are designed to be immutable for this reason,
     but the behavior should be noted nonetheless.
     """
-    # resolve base type specifier
     if isinstance(typespec, atomic.BaseType):
         result = typespec
     elif isinstance(typespec, str):
@@ -66,24 +63,6 @@ def resolve_type(
         raise ValueError(
             f"could not resolve specifier of type {type(typespec)}"
         )
-
-    # wrap with sparse/categorical as directed
-    if isinstance(result, atomic.CompositeType):
-        if categorical:
-            result = atomic.CompositeType(
-                atomic.CategoricalType.instance(x) for x in result
-            )
-        if sparse:
-            result = atomic.CompositeType(
-                atomic.SparseType.instance(x) for x in result
-            )
-    else:
-        if categorical:
-            result = atomic.CategoricalType.instance(result)
-        if sparse:
-            result = atomic.SparseType.instance(result)
-
-    # return
     return result
 
 
@@ -117,7 +96,7 @@ cdef str nested(str opener, str closer, str name):
 
 cdef str parens = nested("(", ")", "parens")
 cdef str brackets = nested("[", "]", "brackets")
-cdef str curlies = nested("{", "}", "curlies")  # broken
+cdef str curlies = nested("{", "}", "curlies")  # TODO: broken
 cdef str call = rf"(?P<name>[^,]*)({parens}|{brackets}|{curlies})"
 cdef object tokenize_regex = re.compile(rf"{call}|[^,]+")
 
@@ -179,6 +158,7 @@ cdef atomic.AtomicType resolve_typespec_dtype(object input_dtype):
     cdef dict categorical = None
     cdef str unit
     cdef int step_size
+    cdef atomic.ScalarType result
 
     # pandas special cases (sparse/categorical/DatetimeTZ)
     if isinstance(input_dtype, pd.api.extensions.ExtensionDtype):
@@ -189,28 +169,30 @@ cdef atomic.AtomicType resolve_typespec_dtype(object input_dtype):
             categorical = {"levels": frozenset(input_dtype.categories)}
             input_dtype = input_dtype.categories.dtype
         if isinstance(input_dtype, pd.DatetimeTZDtype):
-            return atomic.PandasTimestampType.instance(tz=input_dtype.tz)
+            result = atomic.PandasTimestampType.instance(tz=input_dtype.tz)
 
     # numpy special cases (M8/m8/U)
-    if isinstance(input_dtype, np.dtype):
+    if result is None and isinstance(input_dtype, np.dtype):
         if np.issubdtype(input_dtype, "M8"):
             unit, step_size = np.datetime_data(input_dtype)
-            return atomic.NumpyDatetime64Type.instance(
+            result = atomic.NumpyDatetime64Type.instance(
                 unit=None if unit == "generic" else unit,
                 step_size=step_size
             )
-        if np.issubdtype(input_dtype, "m8"):
+        elif np.issubdtype(input_dtype, "m8"):
             unit, step_size = np.datetime_data(input_dtype)
-            return atomic.NumpyTimedelta64Type.instance(
+            result = atomic.NumpyTimedelta64Type.instance(
                 unit=None if unit == "generic" else unit,
                 step_size=step_size
             )
-        if np.issubdtype(input_dtype, "U"):
-            return atomic.StringType.instance()
+        elif np.issubdtype(input_dtype, "U"):
+            result = atomic.StringType.instance()
 
-    # look up alias and re-wrap with sparse/categorical
-    cdef atomic.AtomicType result = registry.aliases[input_dtype].instance()
+    # general case
+    if result is None:
+        result = registry.aliases[input_dtype].instance()
 
+    # re-wrap with sparse/categorical
     if categorical:
         result = atomic.CategoricalType(result, **categorical)
     if sparse:
