@@ -146,7 +146,7 @@ import cython
 import numpy as np
 cimport numpy as np
 
-from pdtypes.type_hints import array_like, numeric
+from pdtypes.util.type_hints import array_like, numeric
 
 
 #########################

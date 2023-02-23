@@ -8,11 +8,12 @@ import pandas as pd
 from .base cimport AtomicType, CompositeType
 from .base import register
 
-from pdtypes.type_hints import type_specifier
-cimport pdtypes.types.cast as cast
-import pdtypes.types.cast as cast
-cimport pdtypes.types.resolve as resolve
-import pdtypes.types.resolve as resolve
+cimport pdtypes.cast as cast
+import pdtypes.cast as cast
+cimport pdtypes.resolve as resolve
+import pdtypes.resolve as resolve
+
+from pdtypes.util.type_hints import type_specifier
 
 
 # TODO: datetime/timedelta conversions must account for datetime/timedelta
@@ -30,7 +31,6 @@ class ObjectType(AtomicType, cache_size=64):
     conversion_func = cast.to_object  # all subtypes/backends inherit this
     name = "object"
     aliases = {"object", "obj", "O", "pyobject", "object_", "object0"}
-
 
     def __init__(self, type_def: type = object):
         super().__init__(type_def=type_def)

@@ -7,8 +7,8 @@ setup(
     name="pdtypes",
     ext_modules=cythonize(
         [
+            "pdtypes/*.pyx",
             "pdtypes/types/*.pyx",
-            "pdtypes/types/atomic/*.pyx",
             "pdtypes/util/*.pyx",
             "pdtypes/util/round/*.pyx",
             "pdtypes/util/time/*.pyx",

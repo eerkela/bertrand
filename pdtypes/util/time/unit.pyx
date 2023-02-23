@@ -91,16 +91,14 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdtypes.type_hints import array_like, datetime_like, numeric
-
-from ..round import round_div
-
 from .calendar import (
     date_to_days, days_in_month, days_to_date, is_leap_year
 )
 
 cimport pdtypes.util.time.epoch as epoch
 import pdtypes.util.time.epoch as epoch
+from pdtypes.util.round import round_div
+from pdtypes.util.type_hints import array_like, datetime_like, numeric
 
 
 #########################

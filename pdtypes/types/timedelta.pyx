@@ -10,10 +10,10 @@ import pytz
 from .base cimport AtomicType, CompositeType
 from .base import generic, register
 
-cimport pdtypes.types.cast as cast
-import pdtypes.types.cast as cast
-cimport pdtypes.types.resolve as resolve
-import pdtypes.types.resolve as resolve
+cimport pdtypes.cast as cast
+import pdtypes.cast as cast
+cimport pdtypes.resolve as resolve
+import pdtypes.resolve as resolve
 
 from pdtypes.util.round cimport Tolerance
 from pdtypes.util.round import round_div

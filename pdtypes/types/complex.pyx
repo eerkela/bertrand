@@ -4,17 +4,17 @@ import pandas as pd
 
 import pytz
 
-from pdtypes.error import shorten_list
-from pdtypes.type_hints import numeric
-cimport pdtypes.types.cast as cast
-import pdtypes.types.cast as cast
+cimport pdtypes.cast as cast
+import pdtypes.cast as cast
 
+from pdtypes.util.error import shorten_list
 from pdtypes.util.round cimport Tolerance
 from pdtypes.util.time cimport Epoch
+from pdtypes.util.type_hints import numeric
 
 from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, register, subtype
-import pdtypes.types.atomic.float as float_types
+import pdtypes.types.float as float_types
 
 
 ##################################

@@ -1,21 +1,47 @@
-from .atomic import *
-from .cast import (
-    cast, defaults, to_boolean, to_integer, to_float, to_complex, to_decimal,
-    to_datetime, to_timedelta, to_string, to_object
+from .base import (
+    AdapterType, AtomicType, CompositeType, dispatch, generic, register,
+    subtype
 )
-from .detect import detect_type
-from .resolve import resolve_type
+from .boolean import (
+    BooleanType, NumpyBooleanType, PandasBooleanType, PythonBooleanType
+)
+from .integer import (
+    IntegerType, SignedIntegerType, UnsignedIntegerType, Int8Type, Int16Type,
+    Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+    NumpyIntegerType, NumpySignedIntegerType, NumpyUnsignedIntegerType,
+    NumpyInt8Type, NumpyInt16Type, NumpyInt32Type, NumpyInt64Type,
+    NumpyUInt8Type, NumpyUInt16Type, NumpyUInt32Type, NumpyUInt64Type,
+    PandasIntegerType, PandasSignedIntegerType, PandasUnsignedIntegerType,
+    PandasInt8Type, PandasInt16Type, PandasInt32Type, PandasInt64Type,
+    PandasUInt8Type, PandasUInt16Type, PandasUInt32Type, PandasUInt64Type,
+    PythonIntegerType
+)
+from .float import (
+    FloatType, Float16Type, Float32Type, Float64Type, Float80Type,
+    NumpyFloatType, NumpyFloat16Type, NumpyFloat32Type, NumpyFloat64Type,
+    NumpyFloat80Type, PythonFloatType
+)
+from .complex import (
+    ComplexType, Complex64Type, Complex128Type, Complex160Type,
+    NumpyComplexType, NumpyComplex64Type, NumpyComplex128Type,
+    NumpyComplex160Type, PythonComplexType
+)
+from .decimal import DecimalType, PythonDecimalType
+from .datetime import (
+    DatetimeType, NumpyDatetime64Type, PandasTimestampType, PythonDatetimeType
+)
+from .timedelta import (
+    TimedeltaType, NumpyTimedelta64Type, PandasTimedeltaType,
+    PythonTimedeltaType
+)
+from .string import StringType, PythonStringType
+from .object import ObjectType
+from .sparse import SparseType
+from .categorical import CategoricalType
 
 
-# importing * from atomic also masks module names, which can be troublesome
-del base
-del boolean
-del complex
-del datetime
-del decimal
-del float
-del integer
-del object
-# del sparse
-del string
-del timedelta
+# conditional imports
+try:
+    from .string import PyArrowStringType
+except ImportError:
+    pass

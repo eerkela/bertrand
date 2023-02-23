@@ -1,6 +1,6 @@
 cimport numpy as np
 
-cimport pdtypes.types.atomic as atomic
+cimport pdtypes.types as types
 
 
 cdef class SeriesWrapper:
@@ -12,5 +12,5 @@ cdef class SeriesWrapper:
         object _series
 
     cdef readonly:
-        atomic.BaseType _element_type
+        types.BaseType _element_type
         object _hasnans  # bint can't store None

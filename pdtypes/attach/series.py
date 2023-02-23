@@ -5,20 +5,13 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from pdtypes.type_hints import type_specifier
+from pdtypes.types import AtomicType, CompositeType
+from pdtypes.cast import SeriesWrapper
+from pdtypes.cast import cast as cast_standalone
+from pdtypes.detect import detect_type
+from pdtypes.resolve import resolve_type
 
-from pdtypes.types import AtomicType, CompositeType, detect_type, resolve_type
-from pdtypes.types.cast import SeriesWrapper
-from pdtypes.types.cast import cast as cast_standalone
-
-
-# TODO: need to bind data to original
-# -> for naked methods, can get original method definition from pd.Series
-# and then just pass in a series as the first argument.
-# -> for methods hidden behind accessors, data needs to be bound to the
-# accessor itself.  This presents a problem, since I can't bind from within
-# SeriesWrapper.dispatch without constructing a lambda to bridge the gap.
-# -> original = lambda x: getattr(self.original(self.data), name, None)
+from pdtypes.util.type_hints import type_specifier
 
 
 ########################

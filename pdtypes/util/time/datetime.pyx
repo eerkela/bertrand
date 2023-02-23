@@ -7,11 +7,11 @@ cimport numpy as np
 import pandas as pd
 import pytz
 
-from pdtypes.type_hints import datetime_like
-
 from .calendar import date_to_days, days_in_month
 from .timedelta import pytimedelta_to_ns
 from .unit cimport as_ns
+
+from pdtypes.util.type_hints import datetime_like
 
 
 #########################

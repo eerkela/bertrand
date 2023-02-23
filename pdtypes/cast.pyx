@@ -10,20 +10,21 @@ import pandas as pd
 import pytz
 import tzlocal
 
-cimport pdtypes.types.atomic as atomic
-import pdtypes.types.atomic as atomic
-cimport pdtypes.types.detect as detect
-import pdtypes.types.detect as detect
-cimport pdtypes.types.resolve as resolve
-import pdtypes.types.resolve as resolve
+cimport pdtypes.types as types
+import pdtypes.types as types
+cimport pdtypes.detect as detect
+import pdtypes.detect as detect
+cimport pdtypes.resolve as resolve
+import pdtypes.resolve as resolve
 
-from pdtypes.error import shorten_list
-from pdtypes.type_hints import (
-    array_like, datetime_like, numeric, type_specifier
-)
+from pdtypes.util.error import shorten_list
 from pdtypes.util.round cimport Tolerance
 from pdtypes.util.round import valid_rules
 from pdtypes.util.time cimport Epoch, epoch_aliases, valid_units
+from pdtypes.util.type_hints import (
+    array_like, datetime_like, numeric, type_specifier
+)
+
 
 
 # TODO: SparseType works, but not in all cases.
@@ -48,7 +49,7 @@ cdef class CastDefaults:
         bint _as_hours
         unsigned char _base
         bint _day_first
-        atomic.CompositeType _downcast
+        types.CompositeType _downcast
         str _errors
         set _false
         str _format
@@ -109,7 +110,7 @@ cdef class CastDefaults:
         self._day_first = validate_day_first(val)
 
     @property
-    def downcast(self) -> atomic.CompositeType:
+    def downcast(self) -> types.CompositeType:
         return self._downcast
 
     @downcast.setter
@@ -276,13 +277,13 @@ def validate_day_first(val: bool) -> bool:
 
 def validate_downcast(
     val: bool | type_specifier
-) -> atomic.CompositeType:
+) -> types.CompositeType:
     if val is None:
         return defaults.downcast
 
     # convert booleans into CompositeTypes: empty set is truthy, None is false
     if isinstance(val, bool):
-        return atomic.CompositeType() if val else None
+        return types.CompositeType() if val else None
 
     return resolve.resolve_type({val})
 
@@ -290,12 +291,12 @@ def validate_downcast(
 def validate_dtype(
     dtype: type_specifier,
     supertype: type_specifier = None
-) -> atomic.ScalarType:
+) -> types.ScalarType:
     """Resolve a type specifier and reject it if it is composite or not a
     subtype of the given supertype.
     """
     dtype = resolve.resolve_type(dtype)
-    if isinstance(dtype, atomic.CompositeType):
+    if isinstance(dtype, types.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
 
     if supertype is not None:
@@ -454,7 +455,7 @@ def to_boolean(
 ) -> pd.Series:
     """Convert arbitrary data to boolean representation."""
     # validate args
-    dtype = validate_dtype(dtype, atomic.BooleanType)
+    dtype = validate_dtype(dtype, types.BooleanType)
     tol = validate_tol(tol)
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
@@ -516,7 +517,7 @@ def to_integer(
 ) -> pd.Series:
     """Convert arbitrary data to integer representation."""
     # validate args
-    dtype = validate_dtype(dtype, atomic.IntegerType)
+    dtype = validate_dtype(dtype, types.IntegerType)
     tol = validate_tol(tol)
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
@@ -564,7 +565,7 @@ def to_float(
 ) -> pd.Series:
     """Convert arbitrary data to float representation."""
     # validate args
-    dtype = validate_dtype(dtype, atomic.FloatType)
+    dtype = validate_dtype(dtype, types.FloatType)
     tol = validate_tol(tol)
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
@@ -610,7 +611,7 @@ def to_complex(
 ) -> pd.Series:
     """Convert arbitrary data to complex representation."""
     # validate args
-    dtype = validate_dtype(dtype, atomic.ComplexType)
+    dtype = validate_dtype(dtype, types.ComplexType)
     tol = validate_tol(tol)
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
@@ -654,7 +655,7 @@ def to_decimal(
 ) -> pd.Series:
     """Convert arbitrary data to decimal representation."""
     # validate args
-    dtype = validate_dtype(dtype, atomic.DecimalType)
+    dtype = validate_dtype(dtype, types.DecimalType)
     tol = validate_tol(tol)
     rounding = validate_rounding(rounding)
     unit = validate_unit(unit)
@@ -702,7 +703,7 @@ def to_datetime(
 ) -> pd.Series:
     """Convert arbitrary data to datetime representation."""
     # validate args
-    dtype = validate_dtype(dtype, atomic.DatetimeType)
+    dtype = validate_dtype(dtype, types.DatetimeType)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
     tol = validate_tol(tol)
@@ -756,7 +757,7 @@ def to_timedelta(
 ) -> pd.Series:
     """Convert arbitrary data to timedelta representation."""
     # validate args
-    dtype = validate_dtype(dtype, atomic.TimedeltaType)
+    dtype = validate_dtype(dtype, types.TimedeltaType)
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
     tol = validate_tol(tol)
@@ -798,7 +799,7 @@ def to_string(
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
     # validate args
-    dtype = validate_dtype(dtype, atomic.StringType)
+    dtype = validate_dtype(dtype, types.StringType)
     base = validate_base(base)
     format = validate_format(format)
     call = validate_call(call)
@@ -830,7 +831,7 @@ def to_object(
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
     # validate args
-    dtype = validate_dtype(dtype, atomic.ObjectType)
+    dtype = validate_dtype(dtype, types.ObjectType)
     call = validate_call(call)
     errors = validate_errors(errors)
 
@@ -863,7 +864,7 @@ cdef class SeriesWrapper:
         self,
         series: pd.Series,
         hasnans: bool = None,
-        element_type: atomic.BaseType = None
+        element_type: types.BaseType = None
     ):
         self.series = series
         self.hasnans = hasnans
@@ -874,7 +875,7 @@ cdef class SeriesWrapper:
     ##########################
 
     @property
-    def element_type(self) -> atomic.BaseType:
+    def element_type(self) -> types.BaseType:
         if self._element_type is None:
             self._element_type = detect.detect_type(self.series)
         return self._element_type
@@ -884,7 +885,7 @@ cdef class SeriesWrapper:
         if val is not None:
             val = resolve.resolve_type(val)
             if (
-                isinstance(val, atomic.CompositeType) and
+                isinstance(val, types.CompositeType) and
                 getattr(val.index, "shape", None) != self.shape
             ):
                 raise ValueError(
@@ -981,7 +982,7 @@ cdef class SeriesWrapper:
         object-based type specifiers.
         """
         dtype = resolve.resolve_type(dtype)
-        if isinstance(dtype, atomic.CompositeType):
+        if isinstance(dtype, types.CompositeType):
             raise ValueError(f"`dtype` must be atomic, not {repr(dtype)}")
 
         # apply dtype.type_def elementwise if not astype-compliant
@@ -1116,9 +1117,9 @@ cdef class SeriesWrapper:
 
     def boundscheck(
         self,
-        dtype: atomic.AtomicType,
+        dtype: types.AtomicType,
         errors: str
-    ) -> tuple[SeriesWrapper, atomic.AtomicType]:
+    ) -> tuple[SeriesWrapper, types.AtomicType]:
         """Ensure that a series does not overflow past the allowable range of the
         given AtomicType.  If overflow is detected, attempt to upcast the
         AtomicType to fit or coerce the series if directed.
@@ -1158,7 +1159,7 @@ cdef class SeriesWrapper:
         endpoint.
         """
         # series is homogenous
-        if isinstance(self.element_type, atomic.AtomicType):
+        if isinstance(self.element_type, types.AtomicType):
             # check for corresponding AtomicType method
             call = submap.get(type(self.element_type.unwrap()), None)
             if call is not None:
@@ -1434,7 +1435,7 @@ cdef class SeriesWrapper:
         result += [x for x in dir(self.series) if x not in result]
 
         # dispatched attributes
-        result += [x for x in atomic.AtomicType.registry.dispatch_map]
+        result += [x for x in types.AtomicType.registry.dispatch_map]
 
         return result
 
@@ -1447,7 +1448,7 @@ cdef class SeriesWrapper:
         # slicing: re-wrap result
         if isinstance(result, pd.Series):
             # slicing can change element_type of result, but only if composite
-            if isinstance(self._element_type, atomic.CompositeType):
+            if isinstance(self._element_type, types.CompositeType):
                 element_type = None
             else:
                 element_type = self._element_type
@@ -1540,7 +1541,7 @@ def as_series(data) -> pd.Series:
 def do_conversion(
     data,
     endpoint: str,
-    dtype: atomic.ScalarType,
+    dtype: types.ScalarType,
     sparse: Any,
     categorical: bool,
     errors: str,
@@ -1549,15 +1550,15 @@ def do_conversion(
 ) -> pd.Series:
     # calculate submap
     submap = {
-        k: getattr(k, endpoint) for k in atomic.AtomicType.registry
+        k: getattr(k, endpoint) for k in types.AtomicType.registry
         if hasattr(k, endpoint)
     }
 
     # wrap according to adapter settings
     if categorical:
-        dtype = atomic.CategoricalType(dtype)
+        dtype = types.CategoricalType(dtype)
     if sparse is not None:
-        dtype = atomic.SparseType(dtype, fill_value=sparse)
+        dtype = types.SparseType(dtype, fill_value=sparse)
 
     try:
         # NOTE: passing dispatch(endpoint="") will never fall back to pandas
@@ -1575,7 +1576,7 @@ def do_conversion(
             series.hasnans = result.hasnans
             series.element_type = result.element_type
 
-        if isinstance(dtype, atomic.AdapterType):
+        if isinstance(dtype, types.AdapterType):
             dtype.atomic_type = series.element_type
             return dtype.apply_adapters(series).series
 

@@ -90,13 +90,12 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdtypes.type_hints import datetime_like
-
 cimport pdtypes.util.time.calendar as calendar
 import pdtypes.util.time.calendar as calendar
 import pdtypes.util.time.datetime as datetime_util
 cimport pdtypes.util.time.unit as unit
 import pdtypes.util.time.unit as unit
+from pdtypes.util.type_hints import datetime_like
 
 
 #########################

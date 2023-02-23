@@ -8,15 +8,14 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from pdtypes.type_hints import type_specifier
-
-cimport pdtypes.types.cast as cast
-import pdtypes.types.cast as cast
-cimport pdtypes.types.resolve as resolve
-import pdtypes.types.resolve as resolve
+cimport pdtypes.cast as cast
+import pdtypes.cast as cast
+cimport pdtypes.resolve as resolve
+import pdtypes.resolve as resolve
 
 from pdtypes.util.round cimport Tolerance
 from pdtypes.util.structs cimport LRUDict
+from pdtypes.util.type_hints import type_specifier
 
 
 # conversions
@@ -919,9 +918,12 @@ cdef class AtomicType(ScalarType):
         This is invoked whenever a categorical conversion is performed that
         targets this type.
         """
-        if levels is not None:
-            levels = pd.Index(levels, dtype=self.dtype)
-        categorical_type = pd.CategoricalDtype(levels)
+        if levels is None:
+            categorical_type = pd.CategoricalDtype()
+        else:
+            categorical_type = pd.CategoricalDtype(
+                pd.Index(levels, dtype=self.dtype)
+            )
         return cast.SeriesWrapper(
             series.series.astype(categorical_type),
             hasnans=series.hasnans

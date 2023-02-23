@@ -19,10 +19,10 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from pdtypes.type_hints import type_specifier
+import pdtypes.types as types
+cimport pdtypes.types as types
 
-import pdtypes.types.atomic as atomic
-cimport pdtypes.types.atomic as atomic
+from pdtypes.util.type_hints import type_specifier
 
 
 #####################
@@ -32,7 +32,7 @@ cimport pdtypes.types.atomic as atomic
 
 def resolve_type(
     typespec: type_specifier | Iterable[type_specifier]
-) -> atomic.BaseType:
+) -> types.BaseType:
     """Interpret a type specifier, returning a corresponding type object.
 
     .. note: the instances returned by this function are *flyweights*, meaning
@@ -43,7 +43,7 @@ def resolve_type(
     referenced.  Such objects are designed to be immutable for this reason,
     but the behavior should be noted nonetheless.
     """
-    if isinstance(typespec, atomic.BaseType):
+    if isinstance(typespec, types.BaseType):
         result = typespec
     elif isinstance(typespec, str):
         result = resolve_typespec_string(typespec)
@@ -52,7 +52,7 @@ def resolve_type(
     elif isinstance(typespec, (np.dtype, pd.api.extensions.ExtensionDtype)):
         result = resolve_typespec_dtype(typespec)
     elif hasattr(typespec, "__iter__"):
-        result = atomic.CompositeType(resolve_type(x) for x in typespec)
+        result = types.CompositeType(resolve_type(x) for x in typespec)
     else:
         raise ValueError(
             f"could not resolve specifier of type {type(typespec)}"
@@ -111,7 +111,7 @@ cdef list tokenize(str input_str):
     return [x.group().strip() for x in token.finditer(input_str)]
 
 
-cdef atomic.BaseType resolve_typespec_string(str input_str):
+cdef types.BaseType resolve_typespec_string(str input_str):
     """Resolve a string-based type specifier, returning a corresponding
     AtomicType.
     """
@@ -119,7 +119,7 @@ cdef atomic.BaseType resolve_typespec_string(str input_str):
     input_str = input_str.strip()
 
     # retrieve alias/regex registry
-    registry = atomic.AtomicType.registry
+    registry = types.AtomicType.registry
 
     # ensure input consists only of resolvable type specifiers
     valid = registry.resolvable.fullmatch(input_str)
@@ -149,19 +149,19 @@ cdef atomic.BaseType resolve_typespec_string(str input_str):
     # return either as single AtomicType or as CompositeType with 2+ types
     if len(result) == 1:
         return result.pop()
-    return atomic.CompositeType(result)
+    return types.CompositeType(result)
 
 
-cdef atomic.ScalarType resolve_typespec_dtype(object input_dtype):
+cdef types.ScalarType resolve_typespec_dtype(object input_dtype):
     """Resolve a numpy/pandas dtype object, returning a corresponding
     AtomicType.
     """
-    cdef atomic.TypeRegistry registry = atomic.AtomicType.registry
+    cdef types.TypeRegistry registry = types.AtomicType.registry
     cdef dict sparse = None
     cdef dict categorical = None
     cdef str unit
     cdef int step_size
-    cdef atomic.ScalarType result = None
+    cdef types.ScalarType result = None
 
     # pandas special cases (sparse/categorical/DatetimeTZ)
     if isinstance(input_dtype, pd.api.extensions.ExtensionDtype):
@@ -172,24 +172,24 @@ cdef atomic.ScalarType resolve_typespec_dtype(object input_dtype):
             categorical = {"levels": input_dtype.categories.tolist()}
             input_dtype = input_dtype.categories.dtype
         if isinstance(input_dtype, pd.DatetimeTZDtype):
-            result = atomic.PandasTimestampType.instance(tz=input_dtype.tz)
+            result = types.PandasTimestampType.instance(tz=input_dtype.tz)
 
     # numpy special cases (M8/m8/U)
     if result is None and isinstance(input_dtype, np.dtype):
         if np.issubdtype(input_dtype, "M8"):
             unit, step_size = np.datetime_data(input_dtype)
-            result = atomic.NumpyDatetime64Type.instance(
+            result = types.NumpyDatetime64Type.instance(
                 unit=None if unit == "generic" else unit,
                 step_size=step_size
             )
         elif np.issubdtype(input_dtype, "m8"):
             unit, step_size = np.datetime_data(input_dtype)
-            result = atomic.NumpyTimedelta64Type.instance(
+            result = types.NumpyTimedelta64Type.instance(
                 unit=None if unit == "generic" else unit,
                 step_size=step_size
             )
         elif np.issubdtype(input_dtype, "U"):
-            result = atomic.StringType.instance()
+            result = types.StringType.instance()
 
     # general case
     if result is None:
@@ -197,18 +197,18 @@ cdef atomic.ScalarType resolve_typespec_dtype(object input_dtype):
 
     # re-wrap with sparse/categorical
     if categorical:
-        result = atomic.CategoricalType(result, **categorical)
+        result = types.CategoricalType(result, **categorical)
     if sparse:
-        result = atomic.SparseType(result, **sparse)
+        result = types.SparseType(result, **sparse)
     return result
 
 
-cdef atomic.AtomicType resolve_typespec_type(type input_type):
+cdef types.AtomicType resolve_typespec_type(type input_type):
     """Resolve a runtime type definition, returning a corresponding AtomicType.
     """
-    cdef dict aliases = atomic.AtomicType.registry.aliases
-    cdef type result = aliases.get(input_type, atomic.ObjectType)
+    cdef dict aliases = types.AtomicType.registry.aliases
+    cdef type result = aliases.get(input_type, types.ObjectType)
 
-    if result is atomic.ObjectType:
+    if result is types.ObjectType:
         return result.instance(type_def=input_type)
     return result.instance()

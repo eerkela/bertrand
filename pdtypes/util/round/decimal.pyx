@@ -8,7 +8,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdtypes.type_hints import array_like
+from pdtypes.util.type_hints import array_like
 
 
 ######################
