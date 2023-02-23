@@ -5,7 +5,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from pdtypes.types import AtomicType, CompositeType
+from pdtypes.types import AdapterType, AtomicType, CompositeType
 from pdtypes.cast import SeriesWrapper
 from pdtypes.cast import cast as cast_standalone
 from pdtypes.detect import detect_type
@@ -25,7 +25,7 @@ def cast(self, dtype: type_specifier = None, **kwargs) -> pd.Series:
 
 
 def check_type(self, dtype: type_specifier, exact: bool = False) -> bool:
-    """Check the type of a pd.Series object."""
+    """Do a schema validation check on a pandas Series object."""
     series_type = detect_type(self.dropna())
     target_type = resolve_type(dtype)
 
@@ -44,7 +44,7 @@ def check_type(self, dtype: type_specifier, exact: bool = False) -> bool:
     return series_type in target_type
 
 
-def element_type(self) -> AtomicType | CompositeType:
+def element_type(self) -> AdapterType | AtomicType | CompositeType:
     """Retrieve the element type of a pd.Series object."""
     return detect_type(self.dropna())
 
