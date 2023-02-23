@@ -13,7 +13,7 @@ function through the `register_alias()`, `remove_alias()`, and
 definition.
 """
 import regex as re  # alternate python regex engine
-from typing import Iterable, Iterator, Union
+from typing import Iterable
 
 cimport numpy as np
 import numpy as np
@@ -25,10 +25,9 @@ import pdtypes.types.atomic as atomic
 cimport pdtypes.types.atomic as atomic
 
 
-# TODO: resolve_type currently can't interpret strings of the form:
-# "sparse[sparse[bool[numpy]]]"
-
 # TODO: check for fixed-length string type specifier?  "U32", "U64", etc.
+# -> this is a problem because these aliases can be variable length and do
+# not appear in any .aliases lookup dictionary.
 
 
 #####################
@@ -87,25 +86,37 @@ cdef str nested(str opener, str closer, str name):
     """
     opener = re.escape(opener)
     closer = re.escape(closer)
-    return (
-        rf"(?P<{name}>{opener}"
-        rf"(?P<content>([^{opener}{closer}]|(?&{name}))*)"
-        rf"{closer})"
-    )
+    body = rf"(?P<content>([^{opener}{closer}]|(?&{name}))*)"
+    return rf"(?P<{name}>{opener}{body}{closer})"
 
 
-cdef str parens = nested("(", ")", "parens")
-cdef str brackets = nested("[", "]", "brackets")
-cdef str curlies = nested("{", "}", "curlies")  # TODO: broken
-cdef str call = rf"(?P<name>[^,]*)({parens}|{brackets}|{curlies})"
-cdef object tokenize_regex = re.compile(rf"{call}|[^,]+")
+cdef object call = re.compile(
+    rf"(?P<call>[^\(\)\[\],]+)"
+    rf"({nested('(', ')', 'signature')}|{nested('[', ']', 'options')})"
+)
+
+
+cdef object sequence = re.compile(
+    rf"(?P<sequence>"
+    rf"{nested('(', ')', 'parens')}|"
+    rf"{nested('[', ']', 'brackets')}|"
+    rf"{nested('{', '}', 'curlies')})"
+)
+
+
+cdef object literal = re.compile(rf"[^,]+")
+
+
+cdef object token = re.compile(
+    rf"{call.pattern}|{sequence.pattern}|{literal.pattern}"
+)
 
 
 cdef list tokenize(str input_str):
     """Split a comma-separated input string into individual tokens, respecting
     nested sequences and callable invocations.
     """
-    return [x.group().strip() for x in tokenize_regex.finditer(input_str)]
+    return [x.group().strip() for x in token.finditer(input_str)]
 
 
 cdef atomic.BaseType resolve_typespec_string(str input_str):

@@ -4,9 +4,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .base cimport AtomicType, AdapterType, ScalarType
+from .base cimport AtomicType, AdapterType, CompositeType, ScalarType
 from .base import register
 
+from pdtypes.type_hints import type_specifier
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
@@ -42,12 +43,31 @@ class CategoricalType(AdapterType):
                     x.wrapped = self
                     break
 
+        # wrap dtype
+        if levels is None:
+            lvl = []
+        self.dtype = pd.CategoricalDtype(pd.Index(lvl, dtype=wrapped.dtype))
+
         # call AdapterType.__init__()
         super().__init__(wrapped=wrapped, levels=levels)
 
     ############################
     ####    TYPE METHODS    ####
     ############################
+
+    def contains(self, other: type_specifier) -> bool:
+        """Test whether a given type is contained within this type's subtype
+        hierarchy.
+        """
+        other = resolve.resolve_type(other)
+        if isinstance(other, CompositeType):
+            raise NotImplementedError()  # TODO
+
+        return (
+            isinstance(other, type(self)) and
+            (self.levels is None or self.levels == other.levels) and
+            self.wrapped.contains(other.wrapped)
+        )
 
     @classmethod
     def slugify(
@@ -93,8 +113,7 @@ class CategoricalType(AdapterType):
         # place CategoricalType beneath SparseType if it is present
         for x in instance.adapters:
             if x.name == "sparse":
-                result = cls(wrapped=x.wrapped, levels=parsed)
-                x.wrapped = result
+                x.wrapped = cls(wrapped=x.wrapped, levels=parsed)
                 return instance
 
         return cls(wrapped=instance, levels=parsed)

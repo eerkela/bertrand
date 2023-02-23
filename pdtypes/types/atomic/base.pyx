@@ -1168,10 +1168,15 @@ cdef class AtomicType(ScalarType):
 #######################
 
 
-# TODO: modifying AdapterType.wrapped should update kwargs, slug, hash
-# -> must be a managed @property.
-# -> it works as intended as-is, but repr(), str(), and hash() are broken
-# afterwards
+# TODO: AdapterType.contains() needs some work
+# -> resolve_type("sparse[int]").contains("sparse[int16]") == False
+# This is because of the difference in `wrapped` within .adapters
+# -> A quick fix is to only compare the names of each adapter, but that
+# disregards differences in fill_value, levels, which should have their own
+# wildcard logic.
+
+
+# TODO: CategoricalType needs to be able to resolve levels in string form.
 
 
 cdef class AdapterType(ScalarType):
@@ -1294,13 +1299,13 @@ cdef class AdapterType(ScalarType):
 
         For AdapterTypes, this merely delegates to AtomicType.contains().
         """
-        # TODO: figure out a better way to do this
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
             raise NotImplementedError()  # TODO
+
         return (
-            self.unwrap().contains(other.unwrap()) and
-            list(self.adapters) == list(other.adapters)
+            isinstance(other, type(self)) and
+            self.wrapped.contains(other.wrapped)
         )
 
     def replace(self, **kwargs) -> AdapterType:

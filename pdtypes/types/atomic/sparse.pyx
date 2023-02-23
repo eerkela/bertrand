@@ -4,9 +4,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .base cimport AtomicType, AdapterType, ScalarType
+from .base cimport AtomicType, AdapterType, CompositeType, ScalarType
 from .base import register
 
+from pdtypes.type_hints import type_specifier
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
@@ -42,9 +43,27 @@ class SparseType(AdapterType):
         # call AdapterType.__init__()
         super().__init__(wrapped=wrapped, fill_value=fill_value)
 
-    ########################
-    ####    REQUIRED    ####
-    ########################
+    ############################
+    ####    TYPE METHODS    ####
+    ############################
+
+    def contains(self, other: type_specifier) -> bool:
+        """Check whether the given type is contained within this type's
+        subtype hierarchy.
+        """
+        other = resolve.resolve_type(other)
+        if isinstance(other, CompositeType):
+            raise NotImplementedError()
+
+        if isinstance(other, type(self)):
+            na_1 = pd.isna(self.fill_value)
+            na_2 = pd.isna(other.fill_value)
+            if na_1 or na_2:
+                result = na_1 & na_2
+            else:
+                result = self.fill_value == other.fill_value
+            return result and self.wrapped.contains(other.wrapped)
+        return False
 
     @classmethod
     def slugify(
@@ -57,7 +76,7 @@ class SparseType(AdapterType):
         return f"{cls.name}[{str(wrapped)}, {fill_value}]"
 
     ##############################
-    ####    CUSTOMIZATIONS    ####
+    ####    SERIES METHODS    ####
     ##############################
 
     def apply_adapters(

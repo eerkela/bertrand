@@ -4,11 +4,15 @@ cimport pdtypes.types.atomic as atomic
 
 # constants
 cdef dict na_strings
-cdef str parens
-cdef str brackets
-cdef str curlies
-cdef str call
-cdef object tokenize_regex
+# cdef str parens
+# cdef str brackets
+# cdef str curlies
+# cdef str call
+# cdef object tokenize_regex
+cdef object call
+cdef object sequence
+cdef object literal
+cdef object token
 
 
 # helpers
