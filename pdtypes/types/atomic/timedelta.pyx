@@ -399,13 +399,12 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
 
     def contains(self, other: Any) -> bool:
         other = resolve.resolve_type(other)
+        if isinstance(other, CompositeType):
+            return all(self.contains(o) for o in other)
 
         # treat unit=None as wildcard
         if self.unit is None:
-            if isinstance(other, CompositeType):
-                return all(isinstance(o, type(self)) for o in other)
             return isinstance(other, type(self))
-
         return super().contains(other)
 
     @classmethod

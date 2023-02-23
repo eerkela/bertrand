@@ -87,16 +87,13 @@ And for integers:
 import datetime
 import decimal
 
-cimport cython
 import numpy as np
 cimport numpy as np
 import pandas as pd
-import pytz
 
 from pdtypes.type_hints import array_like, datetime_like, numeric
 
 from ..round import round_div
-from ..round import round_float as round_generic  # TODO: unpatch this
 
 from .calendar import (
     date_to_days, days_in_month, days_to_date, is_leap_year
@@ -104,15 +101,6 @@ from .calendar import (
 
 cimport pdtypes.util.time.epoch as epoch
 import pdtypes.util.time.epoch as epoch
-
-
-# TODO: ensure unit length definitions are correct for all values/offsets
-
-
-# TODO: convert_unit doesn't retain nanosecond precision for decimal inputs
-# with unit 'M'.  Also, negative years have different behavior compared to
-# floats/ints.
-# -> return to a convert_unit_fraction approach?
 
 
 #########################
@@ -410,8 +398,6 @@ def _convert_unit_regular_to_irregular(
     """Helper to convert integer numbers of regular units ('ns', 'us', 'ms',
     's', 'm', 'h', 'D', 'W') to irregular units ('M', 'Y').
     """
-    # TODO: since -> start
-
     # convert val to whole days + residual ns
     val = val * as_ns[from_unit]
     diff = round_div(val, as_ns["D"], rule="down")

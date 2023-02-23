@@ -22,7 +22,8 @@ from pdtypes.type_hints import (
     array_like, datetime_like, numeric, type_specifier
 )
 from pdtypes.util.round cimport Tolerance
-from pdtypes.util.time cimport Epoch, epoch_aliases
+from pdtypes.util.round import valid_rules
+from pdtypes.util.time cimport Epoch, epoch_aliases, valid_units
 
 
 # TODO: SparseType works, but not in all cases.
@@ -352,14 +353,10 @@ def validate_ignore_case(val: bool) -> bool:
 def validate_rounding(val: str) -> str:
     if val is None:
         return defaults.rounding
-
-    # TODO: get valid from rounding module itself
-    valid = (
-        "floor", "ceiling", "down", "up", "half_floor", "half_ceiling",
-        "half_down", "half_up", "half_even"
-    )
-    if val is not None and val not in valid:
-        raise ValueError(f"`rounding` must be one of {valid}, not {repr(val)}")
+    if val not in valid_rules:
+        raise ValueError(
+            f"`rounding` must be one of {valid_rules}, not {repr(val)}"
+        )
     return val
 
 
@@ -396,11 +393,10 @@ def validate_true(val: str | set[str]) -> set[str]:
 def validate_unit(val: str) -> str:
     if val is None:
         return defaults.unit
-
-    # TODO: get valid from time module itself
-    valid = ("ns", "ms", "us", "s", "m", "h", "D", "W", "M", "Y")
-    if val not in valid:
-        raise ValueError(f"`unit` must be one of {valid}, not {repr(val)}")
+    if val not in valid_units:
+        raise ValueError(
+            f"`unit` must be one of {valid_units}, not {repr(val)}"
+        )
     return val
 
 
@@ -1211,7 +1207,9 @@ cdef class SeriesWrapper:
         return SeriesWrapper(result, hasnans=self._hasnans)
 
     def isinf(self) -> SeriesWrapper:
-        """TODO"""
+        """Return a boolean mask indicating the position of infinities in the
+        series.
+        """
         return self.isin([np.inf, -np.inf])
 
     def rectify(self) -> SeriesWrapper:

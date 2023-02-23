@@ -34,7 +34,14 @@ from .timedelta import (
     TimedeltaType, NumpyTimedelta64Type, PandasTimedeltaType,
     PythonTimedeltaType
 )
-from .string import StringType, PythonStringType, PyArrowStringType
+from .string import StringType, PythonStringType
 from .object import ObjectType
 from .sparse import SparseType
 from .categorical import CategoricalType
+
+
+# conditional imports
+try:
+    from .string import PyArrowStringType
+except ImportError:
+    pass

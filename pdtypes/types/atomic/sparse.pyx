@@ -53,7 +53,7 @@ class SparseType(AdapterType):
         """
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            raise NotImplementedError()
+            return all(self.contains(o) for o in other)
 
         if isinstance(other, type(self)):
             na_1 = pd.isna(self.fill_value)

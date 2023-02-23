@@ -23,9 +23,8 @@ from pdtypes.util.time cimport Epoch
 
 class BooleanMixin:
 
-    # is_boolean = True
-    min = 0
     max = 1
+    min = 0
 
     ############################
     ####    TYPE METHODS    ####

@@ -19,10 +19,6 @@ from pdtypes.util.time cimport Epoch
 from pdtypes.util.time import timedelta_string_to_ns
 
 
-# TODO: add fixed-length numpy string backend?
-# -> These would be a numpy-only feature if implemented
-
-
 ##################################
 ####    MIXINS & CONSTANTS    ####
 ##################################
@@ -264,16 +260,16 @@ class PythonStringType(StringMixin, AtomicType):
 #######################
 
 
-# TODO: wrap in if statement and then conditionally import it in __init__.py
+if pyarrow_installed:
 
 
-@register
-@StringType.register_backend("pyarrow")
-class PyArrowStringType(StringMixin, AtomicType):
+    @register
+    @StringType.register_backend("pyarrow")
+    class PyArrowStringType(StringMixin, AtomicType):
 
-    aliases = {"arrowstr"}
-    dtype = pd.StringDtype("pyarrow") if pyarrow_installed else None
-    type_def = str
+        aliases = {"arrowstr", pd.StringDtype("pyarrow")}
+        dtype = pd.StringDtype("pyarrow")
+        type_def = str
 
 
 #######################
@@ -297,9 +293,3 @@ cdef char boolean_apply(
     if fill == -1:
         return lookup[val]
     return lookup.get(val, fill)
-
-
-# add pyarrow string extension type to PyArrowStringType aliases
-if pyarrow_installed:
-    # NOTE: if pyarrow isn't installed, StringDtype("pyarrow") throws an error
-    PyArrowStringType.register_alias(pd.StringDtype("pyarrow"))

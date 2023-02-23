@@ -14,14 +14,6 @@ cimport pdtypes.types.resolve as resolve
 import pdtypes.types.resolve as resolve
 
 
-# TODO: does it even make sense to have manual categories in resolve?  They
-# should only be allowed in detected types.
-
-
-# when constructing categorical dtypes, the `categories` field should store
-# an empty 
-
-
 @register
 class CategoricalType(AdapterType):
 
@@ -44,9 +36,12 @@ class CategoricalType(AdapterType):
                     break
 
         # wrap dtype
-        if levels is None:
-            lvl = []
-        self.dtype = pd.CategoricalDtype(pd.Index(lvl, dtype=wrapped.dtype))
+        self.dtype = pd.CategoricalDtype(
+            pd.Index(
+                [] if levels is None else levels,
+                dtype=wrapped.dtype
+            )
+        )
 
         # call AdapterType.__init__()
         super().__init__(wrapped=wrapped, levels=levels)
@@ -61,7 +56,7 @@ class CategoricalType(AdapterType):
         """
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            raise NotImplementedError()  # TODO
+            return all(self.contains(o) for o in other)
 
         return (
             isinstance(other, type(self)) and
@@ -104,10 +99,10 @@ class CategoricalType(AdapterType):
 
         # resolve levels
         if levels is not None:
-            match = resolve.brackets.match(levels)
+            match = resolve.sequence.match(levels)
             if not match:
                 raise TypeError(f"levels must be list-like: {levels}")
-            tokens = resolve.tokenize(match.group("content"))
+            tokens = resolve.tokenize(match.group("body"))
             parsed = cast.cast(tokens, instance).tolist()
 
         # place CategoricalType beneath SparseType if it is present

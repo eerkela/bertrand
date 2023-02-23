@@ -36,10 +36,6 @@ from pdtypes.util.time cimport Epoch
 from pdtypes.util.time import convert_unit
 
 
-# TODO: int -> datetime should account for tz.  This is propagated to bool,
-# datetime -> datetime
-
-
 ######################
 ####    MIXINS    ####
 ######################

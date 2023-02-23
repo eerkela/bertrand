@@ -19,9 +19,6 @@ from pdtypes.util.round cimport Tolerance
 from pdtypes.util.structs cimport LRUDict
 
 
-# TODO: insert type_specifier hints where applicable
-
-
 # conversions
 # +------------------------------------------------
 # |           | b | i | f | c | d | d | t | s | o |
@@ -44,14 +41,6 @@ from pdtypes.util.structs cimport LRUDict
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | object    | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
-
-
-# AdapterTypes do not need to be flyweights, but they do need appropriate
-# resolve() methods similar to AtomicType.  This means they need aliases, a
-# name, and access to the shared registry.  They do NOT need .instance(),
-# .detect() or .slugify() methods, since they will never be observed directly.
-# Otherwise, __getattr__ automatically wraps any methods that may return
-# AtomicType or CompositeType objects.
 
 
 ##########################
@@ -865,13 +854,11 @@ cdef class AtomicType(ScalarType):
         custom logic for membership tests of the given type.
         """
         other = resolve.resolve_type(other)
+        if isinstance(other, CompositeType):
+            return all(self.contains(o) for o in other)
 
         # respect wildcard rules in subtypes
         subtypes = self.subtypes.atomic_types - {self}
-        if isinstance(other, CompositeType):
-            return all(
-                o == self or any(o in a for a in subtypes) for o in other
-            )
         return other == self or any(other in a for a in subtypes)
 
     def is_subtype(self, other: type_specifier) -> bool:
@@ -1168,17 +1155,6 @@ cdef class AtomicType(ScalarType):
 #######################
 
 
-# TODO: AdapterType.contains() needs some work
-# -> resolve_type("sparse[int]").contains("sparse[int16]") == False
-# This is because of the difference in `wrapped` within .adapters
-# -> A quick fix is to only compare the names of each adapter, but that
-# disregards differences in fill_value, levels, which should have their own
-# wildcard logic.
-
-
-# TODO: CategoricalType needs to be able to resolve levels in string form.
-
-
 cdef class AdapterType(ScalarType):
     """Special case for AtomicTypes that modify other AtomicTypes.
 
@@ -1301,7 +1277,7 @@ cdef class AdapterType(ScalarType):
         """
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            raise NotImplementedError()  # TODO
+            return all(self.contains(o) for o in other)
 
         return (
             isinstance(other, type(self)) and

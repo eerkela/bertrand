@@ -12,7 +12,7 @@ function through the `register_alias()`, `remove_alias()`, and
 `clear_aliases()` classmethods attached to each respective AtomicType
 definition.
 """
-import regex as re  # alternate python regex engine
+import regex as re  # alternate (PCRE-style) python regex engine
 from typing import Iterable
 
 cimport numpy as np
@@ -23,11 +23,6 @@ from pdtypes.type_hints import type_specifier
 
 import pdtypes.types.atomic as atomic
 cimport pdtypes.types.atomic as atomic
-
-
-# TODO: check for fixed-length string type specifier?  "U32", "U64", etc.
-# -> this is a problem because these aliases can be variable length and do
-# not appear in any .aliases lookup dictionary.
 
 
 #####################
@@ -70,7 +65,6 @@ def resolve_type(
 #######################
 
 
-# strings associated with every possible missing value (for scalar parsing)
 cdef dict na_strings = {
     str(pd.NA): pd.NA,
     str(pd.NaT): pd.NaT,
@@ -80,13 +74,12 @@ cdef dict na_strings = {
 
 cdef str nested(str opener, str closer, str name):
     """Produce a regex pattern to match nested sequences with the specified
-    opening and closing characters.  Relies on recursive expressions, which 
-    are enabled by the alternate python `regex` package in the same syntax as
-    the PCRE engine used in many C applications.
+    opening and closing characters.  Relies on PCRE-style recursive
+    expressions, which are enabled by the alternate python `regex` package.
     """
     opener = re.escape(opener)
     closer = re.escape(closer)
-    body = rf"(?P<content>([^{opener}{closer}]|(?&{name}))*)"
+    body = rf"(?P<body>([^{opener}{closer}]|(?&{name}))*)"
     return rf"(?P<{name}>{opener}{body}{closer})"
 
 
@@ -99,8 +92,7 @@ cdef object call = re.compile(
 cdef object sequence = re.compile(
     rf"(?P<sequence>"
     rf"{nested('(', ')', 'parens')}|"
-    rf"{nested('[', ']', 'brackets')}|"
-    rf"{nested('{', '}', 'curlies')})"
+    rf"{nested('[', ']', 'brackets')})"
 )
 
 
@@ -215,8 +207,8 @@ cdef atomic.AtomicType resolve_typespec_type(type input_type):
     """Resolve a runtime type definition, returning a corresponding AtomicType.
     """
     cdef dict aliases = atomic.AtomicType.registry.aliases
+    cdef type result = aliases.get(input_type, atomic.ObjectType)
 
-    if input_type in aliases:
-        return aliases[input_type].instance()
-
-    return atomic.ObjectType.instance(base=input_type)
+    if result is atomic.ObjectType:
+        return result.instance(type_def=input_type)
+    return result.instance()

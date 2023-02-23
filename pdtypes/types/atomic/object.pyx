@@ -8,6 +8,7 @@ import pandas as pd
 from .base cimport AtomicType, CompositeType
 from .base import register
 
+from pdtypes.type_hints import type_specifier
 cimport pdtypes.types.cast as cast
 import pdtypes.types.cast as cast
 cimport pdtypes.types.resolve as resolve
@@ -16,7 +17,6 @@ import pdtypes.types.resolve as resolve
 
 # TODO: datetime/timedelta conversions must account for datetime/timedelta
 # supertype type_def=None
-
 
 
 #######################
@@ -35,9 +35,22 @@ class ObjectType(AtomicType, cache_size=64):
     def __init__(self, type_def: type = object):
         super().__init__(type_def=type_def)
 
-    #############################
-    ####    CLASS METHODS    ####
-    #############################
+    ############################
+    ####    TYPE METHODS    ####
+    ############################
+
+    def contains(self, other: type_specifier) -> bool:
+        """Test whether a type is contained within this type's subtype
+        hierarchy.
+        """
+        other = resolve.resolve_type(other)
+        if isinstance(other, CompositeType):
+            return all(self.contains(o) for o in other)
+
+        # treat `object` type_def as wildcard
+        if self.type_def is object:
+            return isinstance(other, type(self))
+        return super().contains(other)
 
     @classmethod
     def slugify(cls, type_def: type = object) -> str:

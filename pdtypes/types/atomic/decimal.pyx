@@ -21,10 +21,6 @@ from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, register
 
 
-# TODO: decimal -> datetime should account for tz.  This is propagated to float
-# -> results are localized to tz
-
-
 ######################
 ####    MIXINS    ####
 ######################
