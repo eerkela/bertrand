@@ -3,7 +3,7 @@ from types import MappingProxyType
 import numpy as np
 import pandas as pd
 
-from pdtypes import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
+from pdcast import DEFAULT_STRING_DTYPE, PYARROW_INSTALLED
 
 
 EXTENSION_TYPES = {
