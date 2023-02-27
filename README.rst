@@ -1,83 +1,97 @@
 pdcast - flexible type extensions for numpy/pandas
 ==================================================
 
-``pdcast`` extends the existing numpy/pandas typing infrastructure, adding
-support for customizable type hierarchies, inference, schema validation,
-automatic method dispatching, and a comprehensive suite of overflow and
-precision loss-safe conversions.
+.. ``pdcast`` extends and enhances the existing numpy/pandas typing
+..  infrastructure, making it easier to clean and manipulate tabular data.
+
+``pdcast`` modifies the existing numpy/pandas typing infrastructure, making it
+easier to work with tabular data in a wide variety of representations.
+
+
+Features
+--------
+``pdcast`` adds support for:
+
+*  **Extendable type hierarchies** for numpy/pandas ``dtype`` objects.  These
+   form the backbone of the package and can be used to add arbitrary object
+   types to the pandas ecosystem in as little as 10 lines of code.  Integration
+   is seamless and automatic, and every aspect of a type's behavior can be
+   customized as needed.
+*  **A generalized mini-language** for building and resolving types, with
+   user-definable aliases and semantics.  This allows types to be unambiguously
+   specified while maintaining fine control over their construction and
+   behavior.
+*  Tools for **easy inference** and **schema validation**.  Types can be
+   readily detected from example data, even if those data are non-homogenous
+   or not supported by existing numpy/pandas functionality.  This can be
+   customized in the same way as the type specification mini-language, and is
+   more robust than simply checking an array's ``dtype`` field.  Users can even
+   work with ``dtype=object`` arrays without losing confidence in their
+   results.
+*  **A suite of conversions** covering 9 of the most commonly-encountered data
+   types: *boolean*, *integer*, *floating point*, *complex*, *decimal*
+   (arbitrary precision), *datetime*, *timedelta*, *string*, and *raw python
+   objects*.  Each conversion is fully reversible, protected against overflow
+   and precision loss, and can be customized on a per-type basis similar to the
+   resolution and inferencing tools outlined above.
+*  **Automatic method dispatching** based on observed data.  This functions in
+   a manner similar to ``@functools.singledispatch``, allowing series methods
+   to dispatch to multiple implementations based on the type of their
+   underlying data.  This mechanism is fully general-purpose, and can be used
+   to dynamically repair existing numpy/pandas functionality in cases where it
+   is broken, or to extend it arbitrarily without interference.  In either
+   case, ``pdcast`` handles all the necessary type checks and inferencing,
+   dispatching to the appropriate implementation if one exists and falling back
+   to pandas if it does not.  Original functionality can be easily recovered if
+   necessary, and dispatched methods can be hidden behind temporary namespaces
+   to avoid conflicts, similar to ``pd.Series.dt``, ``pd.Series.str``, etc.
+
+
+Advantages over Pandas
+----------------------
+Compared to the existing ``astype()`` framework, ``pdcast`` is:
+
+*  **Robust**. ``pdcast`` can handle almost any input data, even if they are
+   mislabeled, malformed, imprecise, or ambiguous.  They can even be of mixed
+   type and still be processed intelligibly.
+*  **Flexible**.  Every aspect of ``pdcast``'s functionality can be modified or
+   extended to meet one's needs, no matter how complex.
+*  **Comprehensive**.  ``pdcast`` comes prepackaged with support for several
+   different backends for each data type, including numpy, pandas, python, and
+   pyarrow where applicable.
+*  **Intuitive**.  ``pdcast`` avoids many common gotchas and edge cases that
+   can crop up during type manipulations, including (but not limited to):
+   missing values, overflow, timezones, epochs, imprecise representations,
+   string parsing, and error-handling.
+*  **Efficient**.  By giving users more control over the types that are present
+   within their series and dataframe objects, substantial memory savings and
+   performance improvements can be achieved.  Sparse data structures and
+   lossless downcasting make it possible to shrink data by up to a factor of
+   10 in some cases while simultaneously accelerating downstream analysis and
+   increasing access to big data.
 
 
 Installation
-============
+------------
 Wheels are available for most platforms via the Python Package Index (PyPI).
 
 .. code-block:: console
 
    (.venv) $ pip install pdcast
 
-``pdcast`` can also be built from source, though doing so requires an
+``pdcast`` can also be built from source, although doing so requires an
 additional ``cython`` dependency.
 
+.. NOTE: this is done through pip via the same endpoint.
 
-Advantages
-==========
-Compared to the existing ``astype()`` infrastructure, ``pdcast`` is:
-
-*  **Powerful**. ``pdcast`` can handle almost any input data, even if they are
-   mislabeled, malformed, imprecise, or ambiguous.  They can contain missing
-   values, have duplicate indices, and even be of mixed type and still be
-   processed intelligibly by ``pdcast`` internals.  This robustness is thanks
-   to a powerful dispatch mechanism that allows series methods to be fully
-   type-aware, dispatching to a number of different implementations based on
-   observed data.  These dispatched methods are exceedingly easy to write, and
-   are fully general-purpose.  In principle, they could be extended to
-   integrate arbitrary object types into the pandas ecosystem, dynamically
-   patching methods on an as-needed basis to replicate existing functionality
-   or add new logic specific to that type.
-*  **Flexible**.  Every aspect of ``pdcast``'s functionality can be modified or
-   extended to meet one's needs, no matter how complex.  New types can be
-   declared in as little as 10 lines of code, can describe arbitrary objects,
-   and are not restricted to the existing numpy/pandas ``dtype``
-   infrastructure.  In fact, ``pdcast`` makes using these types completely
-   optional, more a matter of performance than anything else.  The package
-   internals work equally well for these as for generic python objects
-   (``dtype="O"`` or unlabeled lists, tuples, etc.) with no modifications.  As
-   such, it doesn't even rely on custom ``pd.ExtensionDtype`` definitions,
-   though it will happily integrate them if available.
-*  **Comprehensive**.  ``pdcast`` comes prepackaged with high-level support for
-   9 categories of commonly-encountered data: boolean, integer, floating point,
-   complex, decimal (arbitrary precision), datetime, timedelta, string, and
-   quick python objects.  Each of these are organized into separate hierarchy
-   trees, with support for multiple backends including numpy, pandas, python,
-   and pyarrow where applicable.
-*  **Safe**.  Conversions between types are fully reversible, with no precision
-   loss in either direction.  Overflow is explicitly forbidden, and tolerances
-   can be set to allow fuzzy-matching.  Rounding can be done in any
-   direction on any numeric type, not limited to ``np.floor``, ``np.ceil``,
-   or ``np.round``.  Arbitrary units, timezones, and epochs are allowed for
-   datetime manipulations, with calendar-accurate unit conversions and enhanced
-   range above and below the min/max of ``pd.Timestamp`` objects.
-   Commonly-encountered problems, such as missing values and non-unique indices
-   are abstracted away, and all the normal error-handling rules (``"raise"``,
-   ``"coerce"``, ``"ignore"``) function identically to their pandas
-   counterparts.  ``pdcast`` will not modify your data unless you explicitly
-   tell it to.
-*  **Efficient**.  ``pdcast`` is built on top of the existing numpy/pandas
-   typing infrastructure, meaning that in most cases, it is as fast/efficient
-   as they would be in an equivalent situation, with minor overhead.  Wherever
-   custom code is necessary, it is written in cython, a superset of Python that
-   can achieve C-like performance through static typing and transpilation.
-   Additionally, the package includes functionality to make existing pandas
-   structures more efficient by enhancing support for lossless downcasting and
-   sparse data structures.  Together, these can reduce the size in memory of
-   naive pandas series/dataframes by a factor of ~10 in some cases while
-   simultaneously accelerating downstream analysis.
+.. NOTE: if you want to run the test suite, install the package using the
+.. optional ``pdcast[dev]`` dependencies.
 
 
 Demonstration
-=============
+-------------
 ``pdcast`` can be used to easily verify the types that are present within
-pandas data structures:
+tabular data:
 
 .. doctest::
 
@@ -87,8 +101,8 @@ pandas data structures:
    >>> df.check_types({"a": "int", "b": "float", "c": "string")
    True
 
-It also comes prepackaged with a robust suite of type conversions.  Here is a
-short walk around the various type categories that are recognized by
+It can also be used to convert data from one representation to another.  Here
+is a short walk around the various type categories that are recognized by
 ``pdcast``.
 
 .. doctest::
@@ -122,7 +136,8 @@ short walk around the various type categories that are recognized by
    >>> data = data.cast(bool, true="*", false="CustomObj(0:00:00)")
    >>> data
 
-It can also be used to repair broken pandas methods:
+And finally, dispatching allows users to add or modify series methods on a
+per-type basis.
 
 .. doctest::
 
@@ -135,5 +150,7 @@ It can also be used to repair broken pandas methods:
 
 
 Documentation
-=============
+-------------
 Detailed documentation is hosted on readthedocs.
+
+.. NOTE: add hyperlink once documentation goes live
