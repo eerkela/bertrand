@@ -58,6 +58,10 @@ Limitations of Numpy/Pandas
 
 Consider a pandas Series containing the integers 1 through 3:
 
+.. testsetup::
+
+    import pandas as pd
+
 .. doctest::
 
     >>> pd.Series([1, 2, 3])

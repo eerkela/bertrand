@@ -1,6 +1,7 @@
 from __future__ import annotations
 from functools import partial
 import json
+import sys
 from typing import Any, Callable
 
 import pandas as pd
@@ -26,7 +27,7 @@ def cast(self, dtype: type_specifier = None, **kwargs) -> pd.Series:
 
 def check_type(self, dtype: type_specifier, exact: bool = False) -> bool:
     """Do a schema validation check on a pandas Series object."""
-    series_type = detect_type(self.dropna())
+    series_type = detect_type(self)
     target_type = resolve_type(dtype)
 
     # enforce strict match
@@ -46,7 +47,7 @@ def check_type(self, dtype: type_specifier, exact: bool = False) -> bool:
 
 def element_type(self) -> AdapterType | AtomicType | CompositeType:
     """Retrieve the element type of a pd.Series object."""
-    return detect_type(self.dropna())
+    return detect_type(self)
 
 
 ############################
@@ -79,9 +80,27 @@ def new_getattribute(self, name: str):
 pd.Series.__getattribute__ = new_getattribute
 
 
-pd.Series.check_type = check_type
 pd.Series.cast = cast
+pd.Series.check_type = check_type
 pd.Series.element_type = property(element_type)
+
+
+#######################
+####    UNPATCH    ####
+#######################
+
+
+def detach() -> None:
+    """Return `pd.Series` objects back to their original state, before the
+    patch was applied.
+    """
+    pd.Series.__getattribute__ = orig_getattribute
+    del pd.Series.cast
+    del pd.Series.check_type
+    del pd.Series.element_type
+
+    # prepare to reimport
+    sys.modules.pop("pdcast.attach.series")
 
 
 #######################

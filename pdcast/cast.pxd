@@ -7,8 +7,9 @@ cdef class SeriesWrapper:
     cdef:
         object _max
         object _min
-        object _original_index
-        tuple _original_shape
+        object _orig_index
+        tuple _orig_shape
+        types.AdapterType _orig_type
         object _series
 
     cdef readonly:

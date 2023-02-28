@@ -91,14 +91,15 @@ additional ``cython`` dependency.
 Demonstration
 -------------
 ``pdcast`` can be used to easily verify the types that are present within
-tabular data:
+a pandas object:
 
 .. doctest::
 
    >>> import pandas as pd
    >>> import pdcast.attach
+
    >>> df = pd.DataFrame({"a": [1, 2], "b": [1., 2.], "c": ["a", "b"]})
-   >>> df.check_types({"a": "int", "b": "float", "c": "string")
+   >>> df.check_type({"a": "int", "b": "float", "c": "string"})
    True
 
 It can also be used to convert data from one representation to another.  Here
@@ -109,44 +110,104 @@ is a short walk around the various type categories that are recognized by
 
    >>> import numpy as np
    >>> import pdcast
-   >>> data = [1+0j, "False", None]
-   >>> data = pdcast.to_boolean(data)
+   >>> import pdcast.attach
+
+   >>> data = pdcast.to_boolean([1+0j, "False", None])  # non-homogenous
    >>> data
-   >>> data = data.cast(np.int8)
+   0     True
+   1    False
+   2     <NA>
+   dtype: boolean
+   >>> data = data.cast(np.dtype(np.int8))
    >>> data
-   >>> data = data.cast("float64", downcast=True)
+   0       1
+   1       0
+   2    <NA>
+   dtype: Int8
+   >>> data = data.cast("double")
    >>> data
-   >>> data = data.cast(complex, sparse=True)
+   0    1.0
+   1    0.0
+   2    NaN
+   dtype: float64
+   >>> data = data.cast(np.complex128, downcast=True)
    >>> data
-   >>> data = data.cast("decimal[python]")
+   0    1.0+0.0j
+   1    0.0+0.0j
+   2   N000a000N
+   dtype: complex64
+   >>> data = data.cast("sparse[decimal, 1]")
    >>> data
-   >>> data = data.cast("datetime[pandas]", unit="Y", tz="US/Pacific")
+   0      1
+   1      0
+   2    NaN
+   dtype: Sparse[object, Decimal('1')]
+   >>> data = data.cast("datetime", unit="Y", since="utc")
    >>> data
-   >>> data = data.cast("timedelta[python]" epoch="utc")
+   0   1971-01-01
+   1   1970-01-01
+   2          NaT
+   dtype: datetime64[ns]
+   >>> data = data.cast("timedelta[python]", since="utc")
    >>> data
+   0    365 days, 0:00:00
+   1              0:00:00
+   2                  NaT
+   dtype: object
    >>> class CustomObj:
-   >>>     def __init__(self, x: datetime.timedelta):
-   >>>         self.x = x
-   >>>     def __str__(self) -> str:
-   >>>         return f"CustomObj({self.x})"
+   ...     def __init__(self, x):  self.x = x
+   ...     def __str__(self):  return f"CustomObj({self.x})"
    >>> data = data.cast(CustomObj)
    >>> data
+   0    CustomObj(365 days, 0:00:00)
+   1              CustomObj(0:00:00)
+   2                            <NA>
+   dtype: object
    >>> data = data.cast("categorical[str[pyarrow]]")
    >>> data
+   0    CustomObj(365 days, 0:00:00)
+   1              CustomObj(0:00:00)
+   2                            <NA>
+   dtype: category
+   Categories (2, string): [CustomObj(0:00:00), CustomObj(365 days, 0:00:00)]
    >>> data = data.cast(bool, true="*", false="CustomObj(0:00:00)")
-   >>> data
+   >>> data  # our original data
+   0     True
+   1    False
+   2     <NA>
+   dtype: boolean
 
 And finally, dispatching allows users to add or modify series methods on a
 per-type basis.
 
-.. doctest::
+.. testsetup:: dispatch
+
+   # detach from pandas to give correct errors
+   import pdcast.attach
+   pdcast.attach.detach()
+
+.. doctest:: dispatch
 
    >>> import pandas as pd
+
    >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round()
+   Traceback (most recent call last):
+      ...
+   TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
+
+   # `pdcast` defines a dispatched round() function that is type-agnostic
    >>> import pdcast.attach
-   >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round()
-   >>> # original functionality can be easily recovered
+   >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round(rule="half_even")
+   0    1.0
+   1   -2.0
+   2    4.0
+   dtype: float64
+
+   # original functionality can be easily recovered
    >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round.original()
+   Traceback (most recent call last):
+      ...
+   TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
 
 
 Documentation

@@ -19,10 +19,19 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
+cimport pdcast.detect as detect
+import pdcast.detect as detect
 import pdcast.types as types
 cimport pdcast.types as types
 
 from pdcast.util.type_hints import type_specifier
+
+
+# TODO: resolution wrt to Sparse/Categorical dtype objects
+# -> If sparse, get subtype and continue
+# -> If categorical, get result via detect_type on categories
+# -> if NOT categorical, resolve dtype directly
+# -> re-wrap if input was originally sparse
 
 
 #####################
@@ -163,41 +172,43 @@ cdef types.ScalarType resolve_typespec_dtype(object input_dtype):
     cdef int step_size
     cdef types.ScalarType result = None
 
-    # pandas special cases (sparse/categorical/DatetimeTZ)
-    if isinstance(input_dtype, pd.api.extensions.ExtensionDtype):
-        if isinstance(input_dtype, pd.SparseDtype):
-            sparse = {"fill_value": input_dtype.fill_value}
-            input_dtype = input_dtype.subtype
-        if isinstance(input_dtype, pd.CategoricalDtype):
-            categorical = {"levels": input_dtype.categories.tolist()}
-            input_dtype = input_dtype.categories.dtype
+    # sparse
+    if isinstance(input_dtype, pd.SparseDtype):
+        sparse = {"fill_value": input_dtype.fill_value}
+        input_dtype = input_dtype.subtype
+
+    # categorical
+    if isinstance(input_dtype, pd.CategoricalDtype):
+        categories = input_dtype.categories
+        result = types.CategoricalType(
+            detect.detect_type(categories),
+            levels=categories.tolist()
+        )
+    else:
+        # special cases for M8/m8/U/DatetimeTZDtype
         if isinstance(input_dtype, pd.DatetimeTZDtype):
             result = types.PandasTimestampType.instance(tz=input_dtype.tz)
+        elif isinstance(input_dtype, np.dtype):
+            if np.issubdtype(input_dtype, "M8"):
+                unit, step_size = np.datetime_data(input_dtype)
+                result = types.NumpyDatetime64Type.instance(
+                    unit=None if unit == "generic" else unit,
+                    step_size=step_size
+                )
+            elif np.issubdtype(input_dtype, "m8"):
+                unit, step_size = np.datetime_data(input_dtype)
+                result = types.NumpyTimedelta64Type.instance(
+                    unit=None if unit == "generic" else unit,
+                    step_size=step_size
+                )
+            elif np.issubdtype(input_dtype, "U"):
+                result = types.StringType.instance()
 
-    # numpy special cases (M8/m8/U)
-    if result is None and isinstance(input_dtype, np.dtype):
-        if np.issubdtype(input_dtype, "M8"):
-            unit, step_size = np.datetime_data(input_dtype)
-            result = types.NumpyDatetime64Type.instance(
-                unit=None if unit == "generic" else unit,
-                step_size=step_size
-            )
-        elif np.issubdtype(input_dtype, "m8"):
-            unit, step_size = np.datetime_data(input_dtype)
-            result = types.NumpyTimedelta64Type.instance(
-                unit=None if unit == "generic" else unit,
-                step_size=step_size
-            )
-        elif np.issubdtype(input_dtype, "U"):
-            result = types.StringType.instance()
+        # base case
+        if result is None:
+            result = registry.aliases[input_dtype].instance()
 
-    # general case
-    if result is None:
-        result = registry.aliases[input_dtype].instance()
-
-    # re-wrap with sparse/categorical
-    if categorical:
-        result = types.CategoricalType(result, **categorical)
+    # re-wrap with sparse if applicable
     if sparse:
         result = types.SparseType(result, **sparse)
     return result
@@ -207,8 +218,8 @@ cdef types.AtomicType resolve_typespec_type(type input_type):
     """Resolve a runtime type definition, returning a corresponding AtomicType.
     """
     cdef dict aliases = types.AtomicType.registry.aliases
-    cdef type result = aliases.get(input_type, types.ObjectType)
+    cdef type result = aliases.get(input_type, None)
 
-    if result is types.ObjectType:
-        return result.instance(type_def=input_type)
+    if result is None:
+        return types.ObjectType.instance(type_def=input_type)
     return result.instance()

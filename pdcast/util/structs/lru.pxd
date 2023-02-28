@@ -1,3 +1,4 @@
+
 cdef class LRUDict(dict):
     cdef readonly:
         unsigned short maxsize

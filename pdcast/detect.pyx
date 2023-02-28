@@ -10,36 +10,56 @@ import pdcast.resolve as resolve
 cimport pdcast.types as types
 import pdcast.types as types
 
+from pdcast.util.structs import as_series
+
+
+# TODO: detect .dtype interaction:
+# -> 
+
 
 ######################
 ####    PUBLIC    ####
 ######################
 
 
-def detect_type(example: Any) -> types.AtomicType | types.CompositeType:
-    """Detect AtomicTypes from live data."""
-    # ignore AtomicType/CompositeType objects
-    if isinstance(example, (types.AtomicType, types.CompositeType)):
+def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
+    """Detect types from example data."""
+    # trivial case: example is already a type object
+    if isinstance(example, types.BaseType):
         return example
+
+    cdef object fill_value = None
+    cdef types.BaseType result = None
 
     # check if example is iterable
     if hasattr(example, "__iter__") and not isinstance(example, type):
-        # if example type has been registered, interpret as scalar
+        # if example type has been explicitly registered, interpret as scalar
         if type(example) in types.AtomicType.registry.aliases:
             return detect_scalar_type(example)
 
-        # fastpath: use .dtype field if it is present
+        # use .dtype field if available
         dtype = getattr(example, "dtype", None)
-        if dtype is not None and dtype != np.dtype("O"):
-            return resolve.resolve_typespec_dtype(dtype)
+        if dtype is not None:
+            # unwrap sparse types
+            if isinstance(dtype, pd.SparseDtype):
+                fill_value = dtype.fill_value
+                dtype = dtype.subtype
+            if dtype != np.dtype("O"):
+                result = resolve.resolve_type({dtype})
 
         # no dtype or dtype=object, loop through and interpret
-        if isinstance(example, (set, frozenset)):
-            example = [x for x in example]
-        result = detect_vector_type(np.array(example, dtype="O"))
+        if result is None:
+            example = as_series(example)
+            if skip_na:
+                example = example.dropna()
+            result = detect_vector_type(example.to_numpy(dtype="O"))
+
+        # parse resulting CompositeType
         if not result:  # empty set
             return None
         if len(result) == 1:  # homogenous
+            if fill_value is not None:  # reapply sparse wrapper
+                return types.SparseType(result.pop(), fill_value)
             return result.pop()
         return result  # non-homogenous
 
@@ -49,7 +69,7 @@ def detect_type(example: Any) -> types.AtomicType | types.CompositeType:
 
 #######################
 ####    PRIVATE    ####
-#######################
+#######################  
 
 
 cdef types.AtomicType detect_scalar_type(object example):

@@ -21,6 +21,7 @@ import pdcast.types as types
 from pdcast.util.error import shorten_list
 from pdcast.util.round cimport Tolerance
 from pdcast.util.round import valid_rules
+from pdcast.util.structs import as_series
 from pdcast.util.time cimport Epoch, epoch_aliases, valid_units
 from pdcast.util.type_hints import (
     array_like, datetime_like, numeric, type_specifier
@@ -33,6 +34,7 @@ from pdcast.util.type_hints import (
 # to sparse
 # -> Timedeltas just don't work at all.  astype() rejects pd.SparseDtype("m8")
 # entirely.
+# -> SeriesWrappers should unwrap sparse/categorical series during dispatch.
 
 
 # TODO: have to account for empty series in each conversion.
@@ -427,7 +429,7 @@ def cast(
     # if no target is given, default to series type
     if dtype is None:
         series = as_series(series)
-        dtype = detect.detect_type(series.dropna())
+        dtype = detect.detect_type(series)
 
     # validate dtype
     dtype = validate_dtype(dtype)
@@ -479,6 +481,11 @@ def to_boolean(
             err_msg += f"({intersection} are present in both sets)"
         raise ValueError(err_msg)
 
+    # apply ignore_case logic to true, false
+    if ignore_case:
+        true = {x.lower() for x in true}
+        false = {x.lower() for x in false}
+
     # delegate to SeriesWrapper.to_boolean
     return do_conversion(
         series,
@@ -492,6 +499,7 @@ def to_boolean(
         true=true,
         false=false,
         ignore_case=ignore_case,
+        call=call,
         sparse=sparse,
         categorical=categorical,
         errors=errors,
@@ -1038,12 +1046,13 @@ cdef class SeriesWrapper:
     ###########################
 
     def __enter__(self) -> SeriesWrapper:
-        self._original_shape = self.series.shape
+        # record shape
+        self._orig_shape = self.series.shape
 
         # normalize index
         if not isinstance(self.series.index, pd.RangeIndex):
-            self._original_index = self.series.index
-            self.series.index = pd.RangeIndex(0, self._original_shape[0])
+            self._orig_index = self.series.index
+            self.series.index = pd.RangeIndex(0, self._orig_shape[0])
 
         # drop missing values
         is_na = self.isna()
@@ -1053,9 +1062,23 @@ cdef class SeriesWrapper:
 
         # detect element type if not set manually
         if self._element_type is None:
-            self.element_type = detect.detect_type(self.series)
+            self.element_type = detect.detect_type(self.series, skip_na=False)
 
-        # enter context block
+        # unwrap sparse/categorical series
+        if isinstance(self.element_type, types.AdapterType):
+            self._orig_type = self.element_type
+            self.element_type = self.element_type.unwrap()
+
+            # NOTE: this is a pending deprecation shim.  In a future version
+            # of pandas, astype() from a sparse to non-sparse dtype will return
+            # a non-sparse series.  Currently, it returns a sparse equivalent.
+            # When this behavior changes, delete this block.
+            if isinstance(self._orig_type, types.SparseType):
+                self.series = self.series.sparse.to_dense()
+
+            self.series = self.rectify().series
+
+        # rectify and enter context block
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -1063,7 +1086,7 @@ cdef class SeriesWrapper:
         if self.hasnans:
             result = pd.Series(
                 np.full(
-                    self._original_shape,
+                    self._orig_shape,
                     getattr(self.element_type, "na_value", pd.NA),
                     dtype="O"
                 ),
@@ -1073,8 +1096,20 @@ cdef class SeriesWrapper:
             self.series = result
 
         # replace original index
-        if self._original_index is not None:
-            self.series.index = self._original_index
+        if self._orig_index is not None:
+            self.series.index = self._orig_index
+            self._orig_index = None
+
+        # replace adapters if element_type is unchanged
+        if (
+            self._orig_type is not None and
+            self._orig_type.unwrap() == self.element_type
+        ):
+            if hasattr(self._orig_type, "levels"):  # update levels
+                self._orig_type = self._orig_type.replace(levels=None)
+            result = self._orig_type.apply_adapters(self)
+            self.series = result.series
+            self.element_type = result.element_type
 
     def __getattr__(self, name: str) -> Any:
         # dynamically re-wrap series outputs
@@ -1228,7 +1263,6 @@ cdef class SeriesWrapper:
         if not tol:  # fastpath if tolerance=0
             return self == other
         return ~((self - other).abs() > tol)
-
 
     ##########################
     ####    ARITHMETIC    ####
@@ -1527,17 +1561,6 @@ cdef tuple _apply_with_errors(np.ndarray[object] arr, object call, str errors):
             raise err
 
     return result, has_errors, index
-
-
-def as_series(data) -> pd.Series:
-    """Convert the given data into a corresponding pd.Series object."""
-    if isinstance(data, pd.Series):
-        return data.copy()
-
-    if isinstance(data, np.ndarray):
-        return pd.Series(np.atleast_1d(data))
-
-    return pd.Series(data, dtype="O")
 
 
 def do_conversion(

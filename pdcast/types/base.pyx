@@ -1381,10 +1381,12 @@ cdef class AdapterType(ScalarType):
 
 
 cdef class CompositeType(BaseType):
-    """Set-like container for AtomicType objects.
+    """Set-like container for type objects.
+
     Implements the same interface as the built-in set type, but is restricted
-    to contain only AtomicType objects.  Also extends subset/superset/membership
-    checks to include subtypes for each of the contained AtomicTypes.
+    to contain only AtomicType and AdapterType objects.  Also extends
+    subset/superset/membership checks to include subtypes for each of the
+    contained scalar types.
     """
 
     def __init__(
@@ -1395,7 +1397,7 @@ cdef class CompositeType(BaseType):
         # parse argument
         if atomic_types is None:  # empty
             self.atomic_types = set()
-        elif isinstance(atomic_types, (AtomicType, AdapterType)):  # wrap
+        elif isinstance(atomic_types, ScalarType):  # wrap
             self.atomic_types = {atomic_types}
         elif isinstance(atomic_types, CompositeType):  # copy
             self.atomic_types = atomic_types.atomic_types.copy()
@@ -1407,18 +1409,18 @@ cdef class CompositeType(BaseType):
         ):  # build
             self.atomic_types = set()
             for val in atomic_types:
-                if isinstance(val, (AtomicType, AdapterType)):
+                if isinstance(val, ScalarType):
                     self.atomic_types.add(val)
                 elif isinstance(val, CompositeType):
                     self.atomic_types.update(x for x in val)
                 else:
                     raise TypeError(
-                        f"CompositeType objects can only contain AtomicTypes, "
-                        f"not {type(val)}"
+                        f"CompositeType objects can only contain scalar "
+                        f"types, not {type(val)}"
                     )
         else:
             raise TypeError(
-                f"CompositeType objects can only contain AtomicTypes, "
+                f"CompositeType objects can only contain scalar types, "
                 f"not {type(atomic_types)}"
             )
 
@@ -1434,20 +1436,19 @@ cdef class CompositeType(BaseType):
         redundant if it is fully encapsulated within the other members of the
         CompositeType.
         """
-        cdef AtomicType atomic_type
-        cdef AtomicType t
+        cdef ScalarType atomic_type
+        cdef ScalarType t
 
-        # for every AtomicType a, check if there is another AtomicType t such
-        # that a != t and a in t.  If this is true, then the type is redundant.
+        # for every type a, check if there is another type b such that a != b
+        # and a in b.  If this is true, then the type is redundant.
         return CompositeType(
             a for a in self
-            if not any(a != t and a in t for t in self.atomic_types)
+            if not any(a != b and a in b for b in self.atomic_types)
         )
 
     def expand(self) -> CompositeType:
-        """Expand the contained AtomicTypes to include each of their subtypes.
-        """
-        cdef AtomicType atomic_type
+        """Expand the contained types to include each of their subtypes."""
+        cdef ScalarType atomic_type
 
         # simple union of subtypes
         return self.union(atomic_type.subtypes for atomic_type in self)
@@ -1470,7 +1471,7 @@ cdef class CompositeType(BaseType):
         resolved = resolve.resolve_type(typespec)
 
         # update self.atomic_types
-        if isinstance(resolved, AtomicType):
+        if isinstance(resolved, ScalarType):
             self.atomic_types.add(resolved)
         else:
             self.atomic_types.update(t for t in resolved)
@@ -1479,7 +1480,7 @@ cdef class CompositeType(BaseType):
         self.forget_index()
 
     def clear(self) -> None:
-        """Remove all AtomicTypes from the CompositeType."""
+        """Remove all types from the CompositeType."""
         self.atomic_types.clear()
         self.forget_index()
 
@@ -1488,11 +1489,11 @@ cdef class CompositeType(BaseType):
         return CompositeType(self)
 
     def difference(self, *others) -> CompositeType:
-        """Return a new CompositeType with AtomicTypes that are not in any of
-        the others.
+        """Return a new CompositeType with types that are not in any of the
+        others.
         """
-        cdef AtomicType x
-        cdef AtomicType y
+        cdef ScalarType x
+        cdef ScalarType y
         cdef CompositeType other
         cdef CompositeType result = self.expand()
 
@@ -1507,8 +1508,8 @@ cdef class CompositeType(BaseType):
         return result.collapse()
 
     def difference_update(self, *others) -> None:
-        """Update a CompositeType in-place, removing AtomicTypes that can be
-        found in others.
+        """Update a CompositeType in-place, removing types that can be found in
+        others.
         """
         self.atomic_types = self.difference(*others).atomic_types
         self.forget_index()
@@ -1521,7 +1522,7 @@ cdef class CompositeType(BaseType):
         resolved = resolve.resolve_type(typespec)
 
         # update self.atomic_types
-        if isinstance(resolved, AtomicType):
+        if isinstance(resolved, ScalarType):
             self.atomic_types.discard(resolved)
         else:
             for t in resolved:
@@ -1531,14 +1532,14 @@ cdef class CompositeType(BaseType):
         self.forget_index()
 
     def intersection(self, *others) -> CompositeType:
-        """Return a new CompositeType with AtomicTypes in common to this
+        """Return a new CompositeType with types in common to this
         CompositeType and all others.
         """
         cdef CompositeType other
         cdef CompositeType result = self.copy()
 
-        # include any AtomicType in self iff it is contained in other.  Do the
-        # same in reverse.
+        # include any type in self iff it is contained in other.  Do the same
+        # in reverse.
         for item in others:
             other = CompositeType(resolve.resolve_type(other))
             result = CompositeType(
@@ -1550,15 +1551,15 @@ cdef class CompositeType(BaseType):
         return result
 
     def intersection_update(self, *others) -> None:
-        """Update a CompositeType in-place, keeping only the AtomicTypes found
-        in it and all others.
+        """Update a CompositeType in-place, keeping only the types found in it
+        and all others.
         """
         self.atomic_types = self.intersection(*others).atomic_types
         self.forget_index()
 
     def isdisjoint(self, other) -> bool:
-        """Return `True` if the CompositeType has no AtomicTypes in common
-        with `other`.
+        """Return `True` if the CompositeType has no types in common with
+        `other`.
 
         CompositeTypes are disjoint if and only if their intersection is the
         empty set.
@@ -1566,20 +1567,18 @@ cdef class CompositeType(BaseType):
         return not self.intersection(other)
 
     def issubset(self, other) -> bool:
-        """Test whether every AtomicType in the CompositeType is also in
-        `other`.
-        """
+        """Test whether every type in the CompositeType is also in `other`."""
         return self in resolve.resolve_type(other)
 
     def issuperset(self, other) -> bool:
-        """Test whether every AtomicType in `other` is contained within the
+        """Test whether every type in `other` is contained within the
         CompositeType.
         """
         return resolve.resolve_type(other) in self
 
-    def pop(self) -> AtomicType:
-        """Remove and return an arbitrary AtomicType from the CompositeType.
-        Raises a KeyError if the CompositeType is empty.
+    def pop(self) -> ScalarType:
+        """Remove and return an arbitrary type from the CompositeType. Raises a
+        KeyError if the CompositeType is empty.
         """
         self.forget_index()
         return self.atomic_types.pop()
@@ -1592,7 +1591,7 @@ cdef class CompositeType(BaseType):
         resolved = resolve.resolve_type(typespec)
 
         # update self.atomic_types
-        if isinstance(resolved, AtomicType):
+        if isinstance(resolved, ScalarType):
             self.atomic_types.remove(resolved)
         else:
             for t in resolved:
@@ -1602,21 +1601,21 @@ cdef class CompositeType(BaseType):
         self.forget_index()
 
     def symmetric_difference(self, other) -> CompositeType:
-        """Return a new CompositeType with AtomicTypes that are in either the
+        """Return a new CompositeType with types that are in either the
         original CompositeType or `other`, but not both.
         """
         resolved = CompositeType(resolve.resolve_type(other))
         return (self.difference(resolved)) | (resolved.difference(self))
 
     def symmetric_difference_update(self, other) -> None:
-        """Update a CompositeType in-place, keeping only AtomicTypes that
-        are found in either `self` or `other`, but not both.
+        """Update a CompositeType in-place, keeping only types that are found
+        in either `self` or `other`, but not both.
         """
         self.atomic_types = self.symmetric_difference(other).atomic_types
         self.forget_index()
 
     def union(self, *others) -> CompositeType:
-        """Return a new CompositeType with all the AtomicTypes from this
+        """Return a new CompositeType with all the types from this
         CompositeType and all others.
         """
         return CompositeType(
@@ -1627,9 +1626,7 @@ cdef class CompositeType(BaseType):
         )
 
     def update(self, *others) -> None:
-        """Update the CompositeType in-place, adding AtomicTypes from all
-        others.
-        """
+        """Update the CompositeType in-place, adding types from all others."""
         self.atomic_types = self.union(*others).atomic_types
         self.forget_index()
 
@@ -1638,8 +1635,8 @@ cdef class CompositeType(BaseType):
     #############################
 
     def __and__(self, other) -> CompositeType:
-        """Return a new CompositeType containing the AtomicTypes common to
-        `self` and all others.
+        """Return a new CompositeType containing the types common to `self` and
+        all others.
         """
         return self.intersection(other)
 
@@ -1648,12 +1645,12 @@ cdef class CompositeType(BaseType):
         its subtypes.
         """
         resolved = resolve.resolve_type(other)
-        if isinstance(resolved, AtomicType):
+        if isinstance(resolved, ScalarType):
             return any(other in t for t in self)
         return all(any(o in t for t in self) for o in resolved)
 
     def __eq__(self, other) -> bool:
-        """Test whether `self` and `other` contain identical AtomicTypes."""
+        """Test whether `self` and `other` contain identical types."""
         resolved = CompositeType(resolve.resolve_type(other))
         return self.atomic_types == resolved.atomic_types
 
@@ -1669,34 +1666,31 @@ cdef class CompositeType(BaseType):
         return self != other and self >= other
 
     def __iand__(self, other) -> CompositeType:
-        """Update a CompositeType in-place, keeping only the AtomicTypes found
-        in it and all others.
+        """Update a CompositeType in-place, keeping only the types found in it
+        and all others.
         """
         self.intersection_update(other)
         return self
 
     def __ior__(self, other) -> CompositeType:
-        """Update a CompositeType in-place, adding AtomicTypes from all
-        others.
-        """
+        """Update a CompositeType in-place, adding types from all others."""
         self.update(other)
         return self
 
     def __isub__(self, other) -> CompositeType:
-        """Update a CompositeType in-place, removing AtomicTypes that can be
-        found in others.
+        """Update a CompositeType in-place, removing types that can be found in
+        others.
         """
         self.difference_update(other)
         return self
 
     def __iter__(self):
-        """Iterate through the AtomicTypes contained within a CompositeType.
-        """
+        """Iterate through the types contained within a CompositeType."""
         return iter(self.atomic_types)
 
     def __ixor__(self, other) -> CompositeType:
-        """Update a CompositeType in-place, keeping only AtomicTypes that
-        are found in either `self` or `other`, but not both.
+        """Update a CompositeType in-place, keeping only types that are found
+        in either `self` or `other`, but not both.
         """
         self.symmetric_difference_update(other)
         return self
@@ -1712,12 +1706,12 @@ cdef class CompositeType(BaseType):
         return self != other and self <= other
 
     def __len__(self):
-        """Return the number of AtomicTypes in the CompositeType."""
+        """Return the number of types in the CompositeType."""
         return len(self.atomic_types)
 
     def __or__(self, other) -> CompositeType:
-        """Return a new CompositeType containing the AtomicTypes of `self`
-        and all others.
+        """Return a new CompositeType containing the types of `self` and all
+        others.
         """
         return self.union(other)
 
@@ -1730,14 +1724,12 @@ cdef class CompositeType(BaseType):
         return f"{{{slugs}}}"
 
     def __sub__(self, other) -> CompositeType:
-        """Return a new CompositeType with AtomicTypes that are not in the
-        others.
-        """
+        """Return a new CompositeType with types that are not in the others."""
         return self.difference(other)
 
     def __xor__(self, other) -> CompositeType:
-        """Return a new CompositeType with AtomicTypes that are in either
-        `self` or `other` but not both.
+        """Return a new CompositeType with types that are in either `self` or
+        `other` but not both.
         """
         return self.symmetric_difference(other)
 

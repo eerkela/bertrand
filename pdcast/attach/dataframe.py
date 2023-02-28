@@ -1,11 +1,13 @@
 from __future__ import annotations
-from . import series  # attaches pd.Series.cast/pd.Series.check_type
+import sys
 
 import pandas as pd
 
 from pdcast.types import AdapterType, AtomicType, CompositeType
 
 from pdcast.util.type_hints import type_specifier
+
+from . import series  # attaches pd.Series.cast/pd.Series.check_type
 
 
 ########################
@@ -69,6 +71,23 @@ def element_type(self) -> dict[str, AdapterType | AtomicType | CompositeType]:
 pd.DataFrame.cast = cast
 pd.DataFrame.check_type = check_type
 pd.DataFrame.element_type = property(element_type)
+
+
+#######################
+####    UNPATCH    ####
+#######################
+
+
+def detach() -> None:
+    """Return `pd.DataFrame` objects back to their original state, before the
+    patch was applied.
+    """
+    del pd.DataFrame.cast
+    del pd.DataFrame.check_type
+    del pd.DataFrame.element_type
+
+    # prepare to reimport
+    sys.modules.pop("pdcast.attach.dataframe")
 
 
 #######################

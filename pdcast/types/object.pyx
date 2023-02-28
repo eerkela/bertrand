@@ -15,6 +15,7 @@ from pdcast.util.type_hints import type_specifier
 from .base cimport AtomicType, CompositeType
 from .base import register
 
+
 # TODO: datetime/timedelta conversions must account for datetime/timedelta
 # supertype type_def=None
 
@@ -29,9 +30,12 @@ class ObjectType(AtomicType, cache_size=64):
 
     conversion_func = cast.to_object  # all subtypes/backends inherit this
     name = "object"
-    aliases = {"object", "obj", "O", "pyobject", "object_", "object0"}
+    aliases = {
+        "object", "obj", "O", "pyobject", "object_", "object0", np.dtype("O")
+    }
 
     def __init__(self, type_def: type = object):
+        self.type_def = type_def
         super().__init__(type_def=type_def)
 
     ############################
