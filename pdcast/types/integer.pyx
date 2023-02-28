@@ -79,12 +79,6 @@ class IntegerMixin:
             )
         return series
 
-    def force_nullable(self) -> AtomicType:
-        """Create an equivalent integer type that can accept missing values."""
-        if self.is_nullable:
-            return self
-        return self.generic.instance(backend="pandas")
-
     @property
     def is_signed(self) -> bool:
         return not self.is_subtype(UnsignedIntegerType)

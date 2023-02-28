@@ -1,9 +1,6 @@
 pdcast - flexible type extensions for numpy/pandas
 ==================================================
 
-.. ``pdcast`` extends and enhances the existing numpy/pandas typing
-..  infrastructure, making it easier to clean and manipulate tabular data.
-
 ``pdcast`` modifies the existing numpy/pandas typing infrastructure, making it
 easier to work with tabular data in a wide variety of representations.
 
@@ -61,8 +58,8 @@ Compared to the existing ``astype()`` framework, ``pdcast`` is:
    pyarrow where applicable.
 *  **Intuitive**.  ``pdcast`` avoids many common gotchas and edge cases that
    can crop up during type manipulations, including (but not limited to):
-   missing values, overflow, timezones, epochs, imprecise representations,
-   string parsing, and error-handling.
+   missing values, overflow, timezones, imprecise representations, string
+   parsing, and sparse/categorical data.
 *  **Efficient**.  By giving users more control over the types that are present
    within their series and dataframe objects, substantial memory savings and
    performance improvements can be achieved.  Sparse data structures and
@@ -75,17 +72,22 @@ Installation
 ------------
 Wheels are available for most platforms via the Python Package Index (PyPI).
 
+.. TODO: add hyperlink to PyPI page.
+
 .. code-block:: console
 
    (.venv) $ pip install pdcast
 
-``pdcast`` can also be built from source, although doing so requires an
-additional ``cython`` dependency.
+If a wheel is not available for your system, ``pdcast`` also provides an sdist
+to allow pip to install from source, although doing so requires an additional
+``cython`` dependency.
 
-.. NOTE: this is done through pip via the same endpoint.
+If you want to run the built-in test suite, install the package using the
+optional ``pdcast[dev]`` dependencies.
 
-.. NOTE: if you want to run the test suite, install the package using the
-.. optional ``pdcast[dev]`` dependencies.
+.. note::
+   
+   Tests are still incomplete at this stage and are constantly being updated.
 
 
 Demonstration
@@ -208,17 +210,17 @@ Documentation
 -------------
 Detailed documentation is hosted on readthedocs.
 
-.. NOTE: add hyperlink once documentation goes live
+.. TODO: add hyperlink once documentation goes live
 
 
 Contact
 -------
-The package maintainer can be contacted via the GitHub issue tracker, or
-directly at eerkela42@gmail.com.
-
-.. NOTE: hyperlink?
+The package maintainer can be contacted via the
+`GitHub issue tracker <https://github.com/eerkela/pdcast/issues>`_, or directly
+at eerkela42@gmail.com.
 
 
 License
 -------
-``pdcast`` is available under an MIT license.
+``pdcast`` is available under an
+`MIT license <https://github.com/eerkela/pdcast/blob/main/LICENSE>`_.

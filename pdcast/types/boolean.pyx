@@ -1,5 +1,3 @@
-import decimal
-
 import numpy as np
 cimport numpy as np
 import pandas as pd
@@ -25,32 +23,6 @@ class BooleanMixin:
 
     max = 1
     min = 0
-
-    ############################
-    ####    TYPE METHODS    ####
-    ############################
-
-    def force_nullable(self) -> AtomicType:
-        """Create an equivalent boolean type that can accept missing values."""
-        if self.is_nullable:
-            return self
-        return self.generic.instance(backend="pandas")
-
-    @property
-    def is_nullable(self) -> bool:
-        """Check if a boolean type supports missing values."""
-        if isinstance(self.dtype, np.dtype):
-            return np.issubdtype(self.dtype, "O")
-        return True
-
-    def parse(self, input_str: str):
-        if input_str in resolve.na_strings:
-            return resolve.na_strings[input_str]
-        if input_str not in ("True", "False"):
-            raise TypeError(
-                f"could not interpret boolean string: {input_str}"
-            )
-        return self.type_def(input_str == "True")
 
     ##############################
     ####    SERIES METHODS    ####

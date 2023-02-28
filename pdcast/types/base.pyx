@@ -868,6 +868,12 @@ cdef class AtomicType(ScalarType):
         """
         return self in resolve.resolve_type(other)
 
+    def make_nullable(self) -> AtomicType:
+        """Create an equivalent AtomicType that can accept missing values."""
+        if self.is_nullable:
+            return self
+        return self.generic.instance(backend="pandas")
+
     def replace(self, **kwargs) -> AtomicType:
         """Return a modified copy of the given AtomicType with the values
         specified in `**kwargs`.
@@ -967,7 +973,7 @@ cdef class AtomicType(ScalarType):
         functions when they are called on objects of the given type.
         """
         if series.hasnans:
-            dtype = dtype.force_nullable()
+            dtype = dtype.make_nullable()
         return series.astype(dtype, errors=errors)
 
     def to_integer(
@@ -988,7 +994,7 @@ cdef class AtomicType(ScalarType):
         functions when they are called on objects of the given type.
         """
         if series.hasnans:
-            dtype = dtype.force_nullable()
+            dtype = dtype.make_nullable()
 
         series = series.astype(dtype, errors=errors)
         if downcast is not None:
@@ -1446,6 +1452,15 @@ cdef class CompositeType(BaseType):
             if not any(a != b and a in b for b in self.atomic_types)
         )
 
+    def contains(self, other: type_specifier) -> bool:
+        """Test whether a given type specifier is fully contained within `self`
+        or any combination of its elements.
+        """
+        other = resolve.resolve_type(other)
+        if isinstance(other, CompositeType):
+            return all(self.contains(o) for o in other)
+        return any(other in x for x in self)
+
     def expand(self) -> CompositeType:
         """Expand the contained types to include each of their subtypes."""
         cdef ScalarType atomic_type
@@ -1465,7 +1480,7 @@ cdef class CompositeType(BaseType):
     ####    STATIC WRAPPER (SET)    ####
     ####################################
 
-    def add(self, typespec) -> None:
+    def add(self, typespec: type_specifier) -> None:
         """Add a type specifier to the CompositeType."""
         # resolve input
         resolved = resolve.resolve_type(typespec)
@@ -1514,7 +1529,7 @@ cdef class CompositeType(BaseType):
         self.atomic_types = self.difference(*others).atomic_types
         self.forget_index()
 
-    def discard(self, typespec) -> None:
+    def discard(self, typespec: type_specifier) -> None:
         """Remove the given type specifier from the CompositeType if it is
         present.
         """
@@ -1557,7 +1572,7 @@ cdef class CompositeType(BaseType):
         self.atomic_types = self.intersection(*others).atomic_types
         self.forget_index()
 
-    def isdisjoint(self, other) -> bool:
+    def isdisjoint(self, other: type_specifier) -> bool:
         """Return `True` if the CompositeType has no types in common with
         `other`.
 
@@ -1566,15 +1581,15 @@ cdef class CompositeType(BaseType):
         """
         return not self.intersection(other)
 
-    def issubset(self, other) -> bool:
+    def issubset(self, other: type_specifier) -> bool:
         """Test whether every type in the CompositeType is also in `other`."""
         return self in resolve.resolve_type(other)
 
-    def issuperset(self, other) -> bool:
+    def issuperset(self, other: type_specifier) -> bool:
         """Test whether every type in `other` is contained within the
         CompositeType.
         """
-        return resolve.resolve_type(other) in self
+        return self.contains(other)
 
     def pop(self) -> ScalarType:
         """Remove and return an arbitrary type from the CompositeType. Raises a
@@ -1583,7 +1598,7 @@ cdef class CompositeType(BaseType):
         self.forget_index()
         return self.atomic_types.pop()
 
-    def remove(self, typespec) -> None:
+    def remove(self, typespec: type_specifier) -> None:
         """Remove the given type specifier from the CompositeType.  Raises a
         KeyError if `typespec` is not contained in the set.
         """
@@ -1600,14 +1615,14 @@ cdef class CompositeType(BaseType):
         # throw out index
         self.forget_index()
 
-    def symmetric_difference(self, other) -> CompositeType:
+    def symmetric_difference(self, other: type_specifier) -> CompositeType:
         """Return a new CompositeType with types that are in either the
         original CompositeType or `other`, but not both.
         """
         resolved = CompositeType(resolve.resolve_type(other))
         return (self.difference(resolved)) | (resolved.difference(self))
 
-    def symmetric_difference_update(self, other) -> None:
+    def symmetric_difference_update(self, other: type_specifier) -> None:
         """Update a CompositeType in-place, keeping only types that are found
         in either `self` or `other`, but not both.
         """
@@ -1634,50 +1649,44 @@ cdef class CompositeType(BaseType):
     ####    MAGIC METHODS    ####
     #############################
 
-    def __and__(self, other) -> CompositeType:
+    def __and__(self, other: type_specifier) -> CompositeType:
         """Return a new CompositeType containing the types common to `self` and
         all others.
         """
         return self.intersection(other)
 
-    def __contains__(self, other) -> bool:
-        """Test whether a given type specifier is a member of `self` or any of
-        its subtypes.
-        """
-        resolved = resolve.resolve_type(other)
-        if isinstance(resolved, ScalarType):
-            return any(other in t for t in self)
-        return all(any(o in t for t in self) for o in resolved)
+    def __contains__(self, other: type_specifier) -> bool:
+        return self.contains(other)
 
-    def __eq__(self, other) -> bool:
+    def __eq__(self, other: type_specifier) -> bool:
         """Test whether `self` and `other` contain identical types."""
         resolved = CompositeType(resolve.resolve_type(other))
         return self.atomic_types == resolved.atomic_types
 
-    def __ge__(self, other) -> bool:
+    def __ge__(self, other: type_specifier) -> bool:
         """Test whether every element in `other` is contained within `self`.
         """
         return self.issuperset(other)
 
-    def __gt__(self, other) -> bool:
+    def __gt__(self, other: type_specifier) -> bool:
         """Test whether `self` is a proper superset of `other`
         (``self >= other and self != other``).
         """
         return self != other and self >= other
 
-    def __iand__(self, other) -> CompositeType:
+    def __iand__(self, other: type_specifier) -> CompositeType:
         """Update a CompositeType in-place, keeping only the types found in it
         and all others.
         """
         self.intersection_update(other)
         return self
 
-    def __ior__(self, other) -> CompositeType:
+    def __ior__(self, other: type_specifier) -> CompositeType:
         """Update a CompositeType in-place, adding types from all others."""
         self.update(other)
         return self
 
-    def __isub__(self, other) -> CompositeType:
+    def __isub__(self, other: type_specifier) -> CompositeType:
         """Update a CompositeType in-place, removing types that can be found in
         others.
         """
@@ -1688,18 +1697,18 @@ cdef class CompositeType(BaseType):
         """Iterate through the types contained within a CompositeType."""
         return iter(self.atomic_types)
 
-    def __ixor__(self, other) -> CompositeType:
+    def __ixor__(self, other: type_specifier) -> CompositeType:
         """Update a CompositeType in-place, keeping only types that are found
         in either `self` or `other`, but not both.
         """
         self.symmetric_difference_update(other)
         return self
 
-    def __le__(self, other) -> bool:
+    def __le__(self, other: type_specifier) -> bool:
         """Test whether every element in `self` is contained within `other`."""
         return self.issubset(other)
 
-    def __lt__(self, other) -> bool:
+    def __lt__(self, other: type_specifier) -> bool:
         """Test whether `self` is a proper subset of `other`
         (``self <= other and self != other``).
         """
@@ -1709,7 +1718,7 @@ cdef class CompositeType(BaseType):
         """Return the number of types in the CompositeType."""
         return len(self.atomic_types)
 
-    def __or__(self, other) -> CompositeType:
+    def __or__(self, other: type_specifier) -> CompositeType:
         """Return a new CompositeType containing the types of `self` and all
         others.
         """
@@ -1723,11 +1732,11 @@ cdef class CompositeType(BaseType):
         slugs = ", ".join(str(x) for x in self.atomic_types)
         return f"{{{slugs}}}"
 
-    def __sub__(self, other) -> CompositeType:
+    def __sub__(self, other: type_specifier) -> CompositeType:
         """Return a new CompositeType with types that are not in the others."""
         return self.difference(other)
 
-    def __xor__(self, other) -> CompositeType:
+    def __xor__(self, other: type_specifier) -> CompositeType:
         """Return a new CompositeType with types that are in either `self` or
         `other` but not both.
         """
