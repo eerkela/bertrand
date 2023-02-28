@@ -4,6 +4,19 @@
    contain the root `toctree` directive.
 
 .. include:: ../../README.rst
+   :end-line: 181
+
+.. have to manually detach pdcast before running dispatch tests to give
+.. correct errors.
+
+.. testsetup:: dispatch
+
+   # detach from pandas to give correct errors
+   import pdcast.attach
+   pdcast.attach.detach()
+
+.. include:: ../../README.rst
+   :start-line: 182
 
 
 Contents

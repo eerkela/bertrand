@@ -177,14 +177,8 @@ is a short walk around the various type categories that are recognized by
    2     <NA>
    dtype: boolean
 
-And finally, dispatching allows users to add or modify series methods on a
-per-type basis.
-
-.. testsetup:: dispatch
-
-   # detach from pandas to give correct errors
-   import pdcast.attach
-   pdcast.attach.detach()
+And finally, dispatch methods allows users to add or modify series behavior on
+a per-type basis.
 
 .. doctest:: dispatch
 
@@ -195,9 +189,9 @@ per-type basis.
       ...
    TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
 
-   # `pdcast` defines a dispatched round() function that is type-agnostic
+   # `pdcast` defines a round() function that is type-agnostic
    >>> import pdcast.attach
-   >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round(rule="half_even")
+   >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round()
    0    1.0
    1   -2.0
    2    4.0
@@ -215,3 +209,16 @@ Documentation
 Detailed documentation is hosted on readthedocs.
 
 .. NOTE: add hyperlink once documentation goes live
+
+
+Contact
+-------
+The package maintainer can be contacted via the GitHub issue tracker, or
+directly at eerkela42@gmail.com.
+
+.. NOTE: hyperlink?
+
+
+License
+-------
+``pdcast`` is available under an MIT license.
