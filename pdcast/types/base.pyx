@@ -872,7 +872,7 @@ cdef class AtomicType(ScalarType):
         """Create an equivalent AtomicType that can accept missing values."""
         if self.is_nullable:
             return self
-        return self.generic.instance(backend="pandas")
+        return self.generic.instance(backend="pandas", **self.kwargs)
 
     def replace(self, **kwargs) -> AtomicType:
         """Return a modified copy of the given AtomicType with the values
