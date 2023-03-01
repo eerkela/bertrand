@@ -6,29 +6,26 @@
 .. include:: ../../README.rst
    :end-line: 181
 
-.. have to manually detach pdcast before running dispatch tests to give
-.. correct errors.
-
 .. testsetup:: dispatch
 
-   # detach from pandas to give correct errors
+   # detach from pandas to give correct errors during make doctest
    import pdcast.attach
    pdcast.attach.detach()
 
 .. include:: ../../README.rst
    :start-line: 182
 
-
-Contents
-========
-
 .. toctree::
+   :hidden:
+   :caption: Contents
    :maxdepth: 1
 
    Overview <self>
 
 .. toctree::
+   :hidden:
    :maxdepth: 2
 
    Motivation <motivation>
+   Tutorial: bfloat16 <tutorial>
    Implementation <implementation>

@@ -12,9 +12,10 @@ AtomicType
 ----------
 AtomicTypes hold all the necessary implementation logic for dispatched methods,
 conversions, and type-related functionality.  They can be linked together into
-tree structures to represent subtypes, and can be registered to generic types
-as individual backends.  If you're looking to extend ``pdcast``, it will most
-likely boil down to writing a new AtomicType.  Luckily, this is easy to do.
+tree structures to represent subtypes, and can be marked as generic to hold
+different implementations.  If you're looking to extend ``pdcast``, it will
+most likely boil down to writing a new AtomicType.  Luckily, this is
+:ref:`easy to do <tutorial>`.
 
 The base ``AtomicType`` definition itself is a metaclass with substantial
 default behavior.  Whenever a class inherits from it, AtomicType can introspect
