@@ -248,8 +248,11 @@ def register(_class=None, *, ignore=False):
     Note: Any decorators above this one will be ignored during validation.
     """
     def register_decorator(_class_):
-        if not issubclass(_class_, (AtomicType, AdapterType)):
-            raise TypeError(f"`@register` can only be applied to AtomicTypes")
+        if not issubclass(_class_, ScalarType):
+            raise TypeError(
+                f"`@register` can only be applied to AtomicType and "
+                f"AdapterType definitions"
+            )
         if not ignore:
             AtomicType.registry.add(_class_)
         return _class_

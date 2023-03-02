@@ -29,3 +29,5 @@
    Motivation <motivation>
    Tutorial: bfloat16 <tutorial>
    Implementation <implementation>
+   Type Index <types>
+   API <api>

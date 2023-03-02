@@ -3,9 +3,7 @@ Motivation
 
 Static vs Dynamic Typing
 ------------------------
-
-In its default configuration, Python is a dynamically-typed language.  This
-design is a core component of the Python Zen, and comes with a number of
+Python is a dynamically-typed language.  This design comes with a number of
 noteworthy benefits, many of which have spurred the growth of Python as an
 easy to use, general purpose programming language.  Simultaneously, it is also
 the basis for most of the major complaints against Python as just such a
@@ -52,10 +50,8 @@ problems that arise when converting from dynamic to static typing; they merely
 bury them beneath an extra layer of abstraction.  Occasionally, they still rear
 their ugly heads.
 
-
 Limitations of Numpy/Pandas
 ---------------------------
-
 Consider a pandas Series containing the integers 1 through 3:
 
 .. testsetup::
@@ -180,16 +176,8 @@ Once more, if we weren't aware of this going in to our analysis, we
 may have just unwittingly introduced systematic error by accident.  This is
 not ideal!
 
-
-Existing Pandas Infrastructure
-------------------------------
-
-Pandas does expose several utilities to help address these problems.  We
-already saw how ``Int64Dtype()`` was able to represent integers with missing
-values.
-
-Advantages of ``pdcast``
-------------------------
+``pdcast``: a safer alternative
+-------------------------------
 
 
 

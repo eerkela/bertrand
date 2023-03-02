@@ -156,11 +156,11 @@ added to the ``FloatType`` hierarchy.
 If we were to visualize this, the ``@subtype`` decorator would take us from
 this:
 
-.. image:: bfloat16_tutorial_before_subtyping.svg
+.. image:: images/bfloat16_tutorial_before_subtyping.svg
 
 To this:
 
-.. image:: bfloat16_tutorial_after_subtyping.svg
+.. image:: images/bfloat16_tutorial_after_subtyping.svg
 
 Allowing multiple backends
 --------------------------
@@ -267,7 +267,7 @@ implementations.
 
 This updates our type hierarchy as follows:
 
-.. image:: bfloat16_tutorial_backends.svg
+.. image:: images/bfloat16_tutorial_backends.svg
 
 Conditional types
 -----------------
@@ -607,7 +607,7 @@ first is to manually append it to our ``BFloat16Mixin``, like so:
     class BFloat16Mixin:
         ...
 
-        @dispatch
+        @pdcast.dispatch
         def round(
             self,
             series: pdcast.cast.SeriesWrapper,
@@ -631,11 +631,12 @@ first is to manually append it to our ``BFloat16Mixin``, like so:
         ...
 
 The second is to define it as a standalone function and then dynamically patch
-the appropriate types in the ``@dispatch`` decorator itself.
+it into the appropriate types.  This can be done using the ``types`` keyword
+argument in ``@dispatch``
 
 .. doctest::
 
-    >>> @dispatch(types="bfloat16, bfloat16[tensorflow], bfloat16[pytorch]")
+    >>> @pdcast.dispatch(types="bfloat16, bfloat16[tensorflow], bfloat16[pytorch]")
     ... def round(
     ...     self,
     ...     series: pdcast.cast.SeriesWrapper,
@@ -682,17 +683,106 @@ as a result.
             ...
         TypeError: loop of ufunc does not support argument 0 of type bfloat16 which has no callable rint method
 
-
 If we wanted to, we could also hide our new ``round()`` method behind a custom
 namespace to avoid confusion with the default ``pd.Series.round()``
-implementation.
+implementation.  This mirrors the pandas convention, where datetime-related
+functionality is contained in a separate ``.dt`` namespace (or ``.str`` for
+string-related operations, ``.sparse`` for sparse, etc.).
 
-.. TODO
+We can accomplish this by using the optional ``namespace`` keyword argument
+in ``@dispatch``, like so:
 
+.. doctest::
+
+    >>> @pdcast.dispatch(
+    ...     namespace="bfloat16",
+    ...     types="bfloat16, bfloat16[tensorflow], bfloat16[pytorch]"
+    ... )
+    ... def round(
+    ...     self,
+    ...     series: pdcast.cast.SeriesWrapper,
+    ...     decimals: int = 0,
+    ...     rule: str = "half_even"
+    ... ) -> cast.SeriesWrapper:
+    ...     """Round a bfloat16 series to the given number of decimal places using
+    ...     the specified rounding rule.
+    ...     """
+    ...     rule = pdcast.cast.validate_rounding(rule)
+    ...     return pdcast.cast.SeriesWrapper(
+    ...        pdcast.util.round.round_float(
+    ...             series.series,
+    ...             rule=rule,
+    ...             decimals=decimals
+    ...         ),
+    ...         hasnans=series.hasnans,
+    ...         element_type=series.element_type
+    ...     )
+
+Our dispatched implementation can then only be accessed through the
+newly-defined ``.bfloat16`` accessor.
+
+.. doctest::
+
+    >>> pdcast.cast([1.2, 2.8], "bfloat16").round()
+    Traceback:
+        ...
+    TypeError: loop of ufunc does not support argument 0 of type bfloat16 which has no callable rint method
+    >>> pdcast.cast([1.2, 2.8], "bfloat16").bfloat16.round()
+
+This pattern is recommended if your dispatched method overloads an existing
+``pd.Series`` method that you want to retain in its original form, or you want
+to make the dispatching explicit rather than implicit.  By not cluttering the
+base ``pd.Series`` namespace, methods are free to use whatever names you'd
+like without risk of collision.
+
+.. note::
+
+    Technically, the ``round()`` implementation we created in this tutorial
+    ought to be hidden behind some kind of ``.numeric`` namespace, but it turns
+    out to be unnecessary here.  This is because our ``round()`` implementation
+    is actually more generic than the default. All it adds is an extra ``rule``
+    argument and a special case for ``dtype=object`` arrays.
+
+.. danger::
+
+    In general, extra care should be taken whenever dispatching to an existing
+    pandas method, since the dispatched method is attached directly to the
+    ``pd.Series`` class itself.  This means that it will also be called in
+    pandas internals, which can alter existing behavior in unexpected ways.
+    To address this, care must be taken to ensure that core functionality
+    (including the argument signature) is retained.  In fact, this is why we
+    placed the ``decimals`` argument *before* ``rule`` in our ``round()``
+    signature, to mirror the `pandas implementation <https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.Series.round.html>`_.
+
+.. caution::
+
+    Methods that are already hidden behind a ``pd.Series`` accessor (like
+    ``.dt.tz_localize()``) can also be overloaded in the same way as any other
+    method.  In this case, the ``.original`` extension can be used to recover
+    the original implementation, and all the same risks with name collisions
+    apply as above.
 
 Appendix: modifying existing types
 ----------------------------------
+In the previous section, we saw how new dispatch methods can be dynamically
+added to existing types.  But previously, we specified that ``AtomicType``
+objects are strictly read-only.  What gives?
 
+It's still the case that ``AtomicType``\s are read-only, but only *after* they
+are constructed.  The base class can still be modified at will, with any
+changes being patched in to existing objects.  This can be used to reassign
+type attributes like ``name``, ``type``, ``dtype``, ``na_value``, etc.
+
+.. note::
+
+    If you change the ``name`` or ``aliases`` fields of an ``AtomicType``
+    definition, you'll have to manually refresh the registry to rebuild
+    regular expressions and integrate the new values.  This can be done by
+    calling:
+
+    .. code::
+
+        pdcast.AtomicType.registry.flush()
 
 Appendix: integrating with custom ExtensionDtypes
 -------------------------------------------------
