@@ -250,6 +250,8 @@ data.
 This can be used during ``pd.Series.groupby()`` operations to apply functions
 by type, rather than all at once.
 
+.. _SeriesWrapper_description:
+
 SeriesWrapper
 -------------
 ``SeriesWrapper``\s are `Decorator Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_

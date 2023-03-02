@@ -20,7 +20,7 @@ compared to equivalent ``float16`` objects.  This tradeoff is desirable in the
 case of machine learning cost computations, where precision is relatively
 unimportant compared to speed and memory efficiency.
 
-`Tensorflow <https://www.tensorflow.org/>`_, one of the primary frameworks for
+`TensorFlow <https://www.tensorflow.org/>`_, one of the primary frameworks for
 deep learning, allows us to implement these bfloat16 types in normal python.
 
 .. doctest::
@@ -49,7 +49,7 @@ We'll start from the beginning and work our way up.
     >>> import pdcast
     >>> class BFloat16Type(pdcast.AtomicType):
     ...    name = "bfloat16"
-    ...    aliases = {"bfloat16", "brain float", tf_bfloat16, tf.bfloat16}
+    ...    aliases = {"bfloat16", "bf16", "brain float", tf_bfloat16, tf.bfloat16}
     ...    type = tf_bfloat16
     ...    itemsize = 2
     ...    na_value = np.nan
@@ -86,7 +86,7 @@ linking its aliases to the aforementioned functions.
     >>> @pdcast.register
     ... class BFloat16Type(pdcast.AtomicType):
     ...    name = "bfloat16"
-    ...    aliases = {"bfloat16", "brain float", tf_bfloat16, tf.bfloat16}
+    ...    aliases = {"bfloat16", "bf16", "brain float", tf_bfloat16, tf.bfloat16}
     ...    type = tf_bfloat16
     ...    itemsize = 2
     ...    na_value = np.nan
@@ -138,7 +138,7 @@ definition, which specifies it as a member of the ``FloatType`` family.
     ... @pdcast.subtype(pdcast.FloatType)
     ... class BFloat16Type(pdcast.AtomicType):
     ...    name = "bfloat16"
-    ...    aliases = {"bfloat16", "brain float", tf_bfloat16, tf.bfloat16}
+    ...    aliases = {"bfloat16", "bf16", "brain float", tf_bfloat16, tf.bfloat16}
     ...    type = tf_bfloat16
     ...    itemsize = 2
     ...    na_value = np.nan
@@ -166,16 +166,16 @@ Allowing multiple backends
 --------------------------
 So far, we have a perfectly usable ``BFloat16Type`` for the purposes of
 ``check_type()`` tests, provided that ``tf.bfloat16`` objects are the only ones
-we will encounter.  What if that's not the case?
+we ever encounter.  What if that's not the case?
 
-Tensorflow isn't the only framework that defines this type.
+TensorFlow isn't the only framework that defines this type.
 `PyTorch <https://pytorch.org/>`_, for instance, defines its own ``bfloat16``
 implementation that may or may not share the same functionality as its
-Tensorflow equivalent.  To account for this and maintain our existing
+TensorFlow equivalent.  To account for this and maintain our existing
 ``BFloat16Type`` functionality, we can introduce it as a generic type.
 
 This can be done by adding an ``@generic`` decorator to our class definition
-and creating a new *implementation type* to refer to the Tensorflow version
+and creating a new *implementation type* to refer to the TensorFlow version
 explicitly.
 
 .. testsetup::
@@ -192,19 +192,19 @@ explicitly.
     ... @pdcast.subtype(pdcast.FloatType)
     ... class BFloat16Type(pdcast.AtomicType):
     ...    name = "bfloat16"
-    ...    aliases = {"bfloat16", "brain float"}
+    ...    aliases = {"bfloat16", "bf16", "brain float"}
     ...    type = tf_bfloat16
     ...    itemsize = 2
-    ...    na_value = tf_bfloat16(np.nan)
+    ...    na_value = np.nan
 
     # tensorflow implementation
     >>> @pdcast.register
     ... @BFloat16Type.register_backend("tensorflow")
-    ... class TensorflowBFloat16Type(pdcast.AtomicType):
+    ... class TensorFlowBFloat16Type(pdcast.AtomicType):
     ...    aliases = {tf_bfloat16}
     ...    type = tf_bfloat16
     ...    itemsize = 2
-    ...    na_value = tf_bfloat16(np.nan)
+    ...    na_value = np.nan
 
 This gives us two separate types that are linked together via the "tensorflow"
 backend.  This deserves some explanation.
@@ -221,14 +221,17 @@ generic type to the implementation type.  This subtly changes the behavior of
     >>> pdcast.resolve_type("bfloat16")
     BFloat16Type()
     >>> pdcast.resolve_type("bfloat16[tensorflow]")
-    TensorflowBFloat16Type()
+    TensorFlowBFloat16Type()
     >>> pdcast.resolve_type(tf_bfloat16)
-    TensorflowBFloat16Type()
+    TensorFlowBFloat16Type()
     >>> pdcast.detect_type(tf_bfloat16(1.2))
-    TensorflowBFloat16Type()
+    TensorFlowBFloat16Type()
 
 The real differences come when we introduce a third type,
 ``PyTorchBFloat16Type``.
+
+.. TODO: PyTorch doesn't give scalar definitions for bfloat16 objects like
+.. TensorFlow does
 
 .. doctest::
 
@@ -239,68 +242,452 @@ The real differences come when we introduce a third type,
     ... @BFloat16Type.register_backend("pytorch")
     ... class PytorchBFloat16Type(pdcast.AtomicType):
     ...    aliases = {torch.bfloat16}
-    ...    type = torch.bfloat16
+    ...    type = tf_bfloat16  # PyTorch doesn't allow bfloat16 scalars atm
     ...    itemsize = 2
     ...    na_value = np.nan
 
-This allows us to distinguish between the Tensorflow and PyTorch
-implementations, and to detect both of them independently from example data.
+This allows us to distinguish between the TensorFlow and PyTorch
+implementations.
 
 .. doctest::
 
     >>> pdcast.resolve_type("bfloat16")
     BFloat16Type()
     >>> pdcast.resolve_type("bfloat16[tensorflow]")
-    TensorflowBFloat16Type()
+    TensorFlowBFloat16Type()
     >>> pdcast.resolve_type("bfloat16[pytorch]")
     PyTorchBFloat16Type()
-    >>> pdcast.detect_type(tf_bfloat16(1.2))
-    TensorflowBFloat16Type()
-    >>> pdcast.detect_type(torch.bfloat16(2.3))
-    PyTorchBFloat16Type()
 
-And both implementations are automatically included in ``check_type()`` tests.
+.. note::
 
-.. doctest::
+    The ``[tensorflow]``\/``[pytorch]`` extensions can be applied to any string
+    backend that is registered to the generic container.
+    ``"bfloat16[tensorflow]"`` is thus equivalent to
+    ``"brain float[tensorflow]"``, ``"bf16[tensorflow]"``, etc.
 
-    >>> 
+This updates our type hierarchy as follows:
+
+.. image:: bfloat16_tutorial_backends.svg
 
 Conditional types
 -----------------
+Our current ``BFloat16Type`` definitions assume that both TensorFlow and
+PyTorch are always going to be present on our target system.  What if this
+isn't the case?  What if we don't know ahead of time?
 
+To handle this, we can use the optional ``cond`` argument of the ``@register``
+decorator.  If this evaluates to ``False``, then the type definition will never
+be executed at all.  We can combine this with a conditional import to only
+include our ``BFloat16Type``\s on systems that support them.
+
+.. testsetup::
+
+    # first we have to remove the previous definitions.  Usually this isn't
+    # necessary, since types are only defined once.
+    pdcast.AtomicType.registry.remove(BFloat16Type)
+    pdcast.AtomicType.registry.remove(TensorFlowBFloat16Type)
+    pdcast.AtomicType.registry.remove(PyTorchBFloat16Type)
+
+.. doctest::
+
+    # check if tensorflow is installed on the target system
+    >>> try:
+    ...     import tensorflow as tf
+    ...     tensorflow_installed = True
+    ... except ImportError:
+    ...     tensorflow_installed = False
+
+    # check if pytorch is installed on the target system
+    >>> try:
+    ...     import torch
+    ...     pytorch_installed = True
+    ... except ImportError:
+    ...     pytorch_installed = False
+
+    # generic interface
+    >>> @pdcast.register(cond=tensorflow_installed)
+    ... @pdcast.generic
+    ... @pdcast.subtype(pdcast.FloatType)
+    ... class BFloat16Type(pdcast.AtomicType):
+    ...    name = "bfloat16"
+    ...    aliases = {"bfloat16", "bf16", "brain float"}
+    ...    type = tf_bfloat16
+    ...    itemsize = 2
+    ...    na_value = np.nan
+
+    # tensorflow implementation
+    >>> @pdcast.register(cond=tensorflow_installed)
+    ... @BFloat16Type.register_backend("tensorflow")
+    ... class TensorFlowBFloat16Type(pdcast.AtomicType):
+    ...    aliases = {tf_bfloat16}
+    ...    type = tf_bfloat16
+    ...    itemsize = 2
+    ...    na_value = np.nan
+
+    # pytorch implementation
+    >>> @pdcast.register(cond=tensorflow_installed and pytorch_installed)
+    ... @BFloat16Type.register_backend("pytorch")
+    ... class PytorchBFloat16Type(pdcast.AtomicType):
+    ...    aliases = {torch.bfloat16}
+    ...    type = tf_bfloat16  # currently, torch doesn't allow naked bf16 scalars
+    ...    itemsize = 2
+    ...    na_value = np.nan
+
+Note that whenever you define a conditional type, each of its *subtypes* and
+*implementation types* must inherit the same condition.  If this is not
+observed, then the subsequent definitions will raise a ``TypeError`` indicating
+that the parent type could not be found.
 
 Adding conversions
 ------------------
 So far, we've set up a small family of bfloat16 types, including two separate
-implementations for different Tensorflow and PyTorch backends.  We've also
+implementations for different TensorFlow and PyTorch backends.  We've also
 seen how these types can be automatically integrated into schema validation
-and inference operations.
+and inference operations, and be ignored if the required dependency(s) do not
+exist.
 
-In addition to these, we can tell ``pdcast`` how to convert data to and from
-our various bfloat16 types.  This consists of defining the special
-``.to_boolean()``, ``.to_integer()``, ``.to_float()``, ``.to_complex()``,
-``.to_decimal()``, ``.to_datetime()``, and ``to_string()`` methods.
-``AtomicType`` provides some minimal support for these in its base definition,
-but they can be altered or redefined as needed.
+In addition, we can tell ``pdcast`` how to convert data to and from our various
+bfloat16 types.  This consists of defining the special ``.to_boolean()``,
+``.to_integer()``, ``.to_float()``, ``.to_complex()``, ``.to_decimal()``,
+``.to_datetime()``, and ``to_string()`` methods.  ``AtomicType`` provides some
+minimal support for these in its base definition, but they can be altered or
+redefined as needed to give the correct behavior.
 
-Below is an example ``.to_integer()`` method for our bfloat16 objects.
+Here is an example ``.to_integer()`` method for our bfloat16 objects.
 
 .. code:: python
 
     def to_integer(
         self,
-        series: pdcast.SeriesWrapper,
+        series: cast.SeriesWrapper,
+        dtype: AtomicType,
+        downcast: CompositeType,
+        errors: str,
         **unused
-    ) -> pdcast.SeriesWrapper:
+    ) -> cast.SeriesWrapper:
         """Convert bfloat16 objects to an equivalent integer representation."""
-        TODO
+        print("Hello, World!")
+        series, dtype = series.boundscheck(dtype, errors=errors)
+        return super().to_integer(
+            series,
+            dtype=dtype,
+            downcast=downcast,
+            errors=errors
+        )
 
 There are a couple things to note about this example.
 
+First, it accepts a :ref:`SeriesWrapper <SeriesWrapper_description>` object
+as its first argument, and returns a corresponding ``SeriesWrapper`` with the
+appropriate transformation applied.  This is a standard pattern for dispatched
+methods, which ``to_integer()`` implicitly is.
 
-Adding dispatch methods
------------------------
+Second, it must take variable-length keyword arguments (``**unused``), which
+allow it to be used cooperatively with other ``to_integer()`` methods from
+different data types.
 
+Third, it uses an internal ``SeriesWrapper.boundscheck()`` utility method,
+which ensures that the data contained in ``series`` do not exceed the min/max
+values of the target ``dtype``, and adjusts either the series data or the
+``dtype`` to fit in the event of overflow.  Above this, we've added a simple
+print statement to indicate that we are actually executing our type-specific
+implementation method.
+
+Fourth, the actual conversion itself is delegated to
+``AtomicType.to_integer()`` in the final line.  This is the same method that
+would be called if we omitted our custom method entirely.  Its logic is very
+basic, consisting only of a naive ``astype()`` operation followed by optional
+downcasting.  By adding the previous ``boundscheck`` step, we are ensuring that
+this process occurs without error, and that the correct error-handling rules
+are applied beforehand in the event of overflow.
+
+Additionally, it is worth noting the types of each of the input arguments.
+The standalone ``pdcast.to_integer()`` function preprocesses each of these
+before passing them to our type-specific implementation, ensuring that they are
+always provided in a standardized format.  As such, our type-specific
+conversions should never need to implement any custom argparsing themselves,
+unless they accept a keyword argument that is not found in the base
+``pdcast.to_integer()`` signature.
+
+
+Before we distribute our conversion method to our ``BFloat16Type``\s, we can
+try doing a naive conversion just to see what happens.
+
+.. doctest::
+
+    >>> pdcast.to_integer([tf_bfloat16(1.2), tf_bfloat16(2.8)])
+
+Note that the conversion works, but no ``Hello, World!`` output is generated.
+This is because we are effectively bypassing the first two lines of our
+``to_integer()`` method.
+
+Now, We can distribute our custom conversion method by packaging it into a
+`Mixin <https://dev.to/bikramjeetsingh/write-composable-reusable-python-classes-using-mixins-6lj>`_
+class.
+
+.. doctest::
+
+    >>> class BFloat16Mixin:
+    ...     def to_integer(
+    ...         self,
+    ...         series: pdcast.cast.SeriesWrapper,
+    ...         dtype: pdcast.AtomicType,
+    ...         downcast: pdcast.CompositeType,
+    ...         errors: str,
+    ...         **unused
+    ...     ) -> cast.SeriesWrapper:
+    ...         """Convert bfloat16 objects to an equivalent integer representation."""
+    ...         print("Hello, World!")
+    ...         series, dtype = series.boundscheck(dtype, errors=errors)
+    ...         return super().to_integer(
+    ...             series,
+    ...             dtype=dtype,
+    ...             downcast=downcast,
+    ...             errors=errors
+    ...         )
+
+Which we then distribute to our ``BFloat16Type``\s using multiple inheritance.
+
+.. testsetup::
+
+    # first we have to remove the previous definitions.  Usually this isn't
+    # necessary, since types are only defined once.
+    pdcast.AtomicType.registry.remove(BFloat16Type)
+    pdcast.AtomicType.registry.remove(TensorFlowBFloat16Type)
+    pdcast.AtomicType.registry.remove(PyTorchBFloat16Type)
+
+.. doctest::
+
+    # check if tensorflow is installed on the target system
+    >>> try:
+    ...     import tensorflow as tf
+    ...     tensorflow_installed = True
+    ... except ImportError:
+    ...     tensorflow_installed = False
+
+    # check if pytorch is installed on the target system
+    >>> try:
+    ...     import torch
+    ...     pytorch_installed = True
+    ... except ImportError:
+    ...     pytorch_installed = False
+
+    # generic interface
+    >>> @pdcast.register(cond=tensorflow_installed)
+    ... @pdcast.generic
+    ... @pdcast.subtype(pdcast.FloatType)
+    ... class BFloat16Type(BFloat16Mixin, pdcast.AtomicType):
+    ...    name = "bfloat16"
+    ...    aliases = {"bfloat16", "bf16", "brain float"}
+    ...    type = tf_bfloat16
+    ...    itemsize = 2
+    ...    na_value = tf_bfloat16(np.nan)
+
+    # tensorflow implementation
+    >>> @pdcast.register(cond=tensorflow_installed)
+    ... @BFloat16Type.register_backend("tensorflow")
+    ... class TensorFlowBFloat16Type(BFloat16Mixin, pdcast.AtomicType):
+    ...    aliases = {tf_bfloat16}
+    ...    type = tf_bfloat16
+    ...    itemsize = 2
+    ...    na_value = tf_bfloat16(np.nan)
+
+    # pytorch implementation
+    >>> @pdcast.register(cond=tensorflow_installed and pytorch_installed)
+    ... @BFloat16Type.register_backend("pytorch")
+    ... class PytorchBFloat16Type(BFloat16Mixin, pdcast.AtomicType):
+    ...    aliases = {torch.bfloat16}
+    ...    type = tf_bfloat16  # PyTorch doesn't allow bfloat16 scalars atm
+    ...    itemsize = 2
+    ...    na_value = np.nan
+
+.. note::
+
+    ``BFloat16Mixin`` comes **before** ``pdcast.AtomicType`` to ensure correct
+    `Method Resolution Order (MRO) <https://en.wikipedia.org/wiki/C3_linearization>`_.
+    If we were to reverse this, then our custom ``to_integer()`` method would
+    not be called at all, and we would instead default to
+    ``AtomicType.to_integer()``.
+
+This ensures that our new conversion method will be called any time we do a
+``pdcast.to_integer()`` or ``pdcast.cast()`` operation on objects that contain
+one or more of our ``BFloat16Type`` types.  If we re-run the previous test,
+we can see our ``hello world`` message being printed to the console.
+
+.. doctest::
+
+    >>> pdcast.to_integer([tf_bfloat16(1.2), tf_bfloat16(2.8)])
+    Hello, World!
+
+In reality, float types already have an extensive ``FloatMixin`` class that
+defines its own ``to_integer()`` method, which is more powerful than the one
+shown here, including rules for customizable rounding and tolerances.  In the
+majority of cases, one can fully integrate a new type by simply inheriting from
+one of these mixins, rather than writing your own.  If we wanted to apply this
+to our ``BFloat16Type`` objects, we would simply replace the ``BFloat16Mixin``
+class we just defined with ``pdcast.types.float.FloatMixin`` where applicable.
+
+Adding custom dispatch methods
+------------------------------
+Conversions might not be the only thing you want to dispatch in this way.
+Luckily, ``pdcast`` allows users to append arbitrary methods to ``pd.Series``
+objects, provided their elements match the attached type.  This can be done
+using the ``@dispatch`` decorator.
+
+Returning to our ``BFloat16Type``\s, we might want to be able to round these
+numbers as we would any other floating point representation.  If we try this
+in base pandas, however, we get an error indicating that our ``bfloat16``
+objects do not have an appropriate ``rint`` method:
+
+.. doctest::
+
+    >>> pdcast.cast([1.2, 2.8], "bfloat16").round()
+    Traceback:
+        ...
+    TypeError: loop of ufunc does not support argument 0 of type bfloat16 which has no callable rint method
+
+We can fix this by patching in a new ``round()`` function that works for
+``bfloat16`` objects.  Here's what that might look like
+
+.. code:: python
+
+    def round(
+        self,
+        series: pdcast.cast.SeriesWrapper,
+        decimals: int = 0,
+        rule: str = "half_even"
+    ) -> cast.SeriesWrapper:
+        """Round a bfloat16 series to the given number of decimal places using
+        the specified rounding rule.
+        """
+        print("Hello, World!")
+        rule = pdcast.cast.validate_rounding(rule)
+        return pdcast.cast.SeriesWrapper(
+            pdcast.util.round.round_float(
+                series.series,
+                rule=rule,
+                decimals=decimals
+            ),
+            hasnans=series.hasnans,
+            element_type=series.element_type
+        )
+
+.. note::
+    
+    Note that we have the same :ref:`SeriesWrapper <SeriesWrapper_description>`
+    inputs and outputs as we had for our example ``to_integer()`` conversion.
+
+This function works slightly differently from the ``to_integer()`` method we
+defined earlier.
+
+First, it has no equivalent ``super().round()`` method to call, so it must
+implement all of its logic from start to finish.
+
+Second, it has to validate all of its own inputs itself, since there is no
+standalone ``pdcast.round()`` function to do this automatically.
+
+Third, it delegates to a specialized ``pdcast.util.round.round_float()``
+function that does the actual rounding.  This operates only on raw
+``pd.Series`` objects, not ``SeriesWrapper``\s, and is type-agnostic, meaning
+that it can bypass the ``TypeError`` we got previously.  We can confirm this
+manually:
+
+.. doctest::
+
+    >>> pdcast.util.round.round_float(pdcast.cast([1.2, 2.8], "bfloat16"))
+
+So, all we need to do is to make this function available under
+``pd.Series.round()``.  This is where the ``@dispatch`` decorator comes in.
+
+We can add this function to our ``BFloat16Type``\s in one of two ways.  The
+first is to manually append it to our ``BFloat16Mixin``, like so:
+
+.. code:: python
+
+    class BFloat16Mixin:
+        ...
+
+        @dispatch
+        def round(
+            self,
+            series: pdcast.cast.SeriesWrapper,
+            decimals: int = 0,
+            rule: str = "half_even"
+        ) -> cast.SeriesWrapper:
+            """Round a bfloat16 series to the given number of decimal places using
+            the specified rounding rule.
+            """
+            rule = pdcast.cast.validate_rounding(rule)
+            return pdcast.cast.SeriesWrapper(
+                pdcast.util.round.round_float(
+                    series.series,
+                    rule=rule,
+                    decimals=decimals
+                ),
+                hasnans=series.hasnans,
+                element_type=series.element_type
+            )
+
+        ...
+
+The second is to define it as a standalone function and then dynamically patch
+the appropriate types in the ``@dispatch`` decorator itself.
+
+.. doctest::
+
+    >>> @dispatch(types="bfloat16, bfloat16[tensorflow], bfloat16[pytorch]")
+    ... def round(
+    ...     self,
+    ...     series: pdcast.cast.SeriesWrapper,
+    ...     decimals: int = 0,
+    ...     rule: str = "half_even"
+    ... ) -> cast.SeriesWrapper:
+    ...     """Round a bfloat16 series to the given number of decimal places using
+    ...     the specified rounding rule.
+    ...     """
+    ...     rule = pdcast.cast.validate_rounding(rule)
+    ...     return pdcast.cast.SeriesWrapper(
+    ...         pdcast.util.round.round_float(
+    ...             series.series,
+    ...             rule=rule,
+    ...             decimals=decimals
+    ...         ),
+    ...         hasnans=series.hasnans,
+    ...         element_type=series.element_type
+    ...     )
+
+The first option is more explicit, and is preferred if you have control over
+the type definition itself.  The second allows you to add new dispatch methods
+to existing types that are already defined.  We've chosen the second approach
+for demonstration purposes here.
+
+Now, if we run our ``pd.Series.round()`` test from before, we'll see that we
+are using our dispatched implementation, and that no ``TypeError`` is raised
+as a result.
+
+.. doctest::
+
+    >>> pdcast.cast([1.2, 2.8], "bfloat16").round()
+    Hello, World!
+
+.. note::
+
+    Original functionality can be recovered by appending ``.original`` to the
+    call invocation, like so:
+
+    .. doctest::
+
+        >>> pdcast.cast([1.2, 2.8], "bfloat16").round.original()
+        Traceback:
+            ...
+        TypeError: loop of ufunc does not support argument 0 of type bfloat16 which has no callable rint method
+
+
+If we wanted to, we could also hide our new ``round()`` method behind a custom
+namespace to avoid confusion with the default ``pd.Series.round()``
+implementation.
+
+.. TODO
 
 
 Appendix: modifying existing types
