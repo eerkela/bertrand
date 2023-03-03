@@ -895,7 +895,11 @@ cdef class AtomicType(ScalarType):
         # NOTE: this takes advantage of SeriesWrapper's min/max caching.
         min_val = series.min()
         max_val = series.max()
-        if min_val < self.min or max_val > self.max:
+
+        # NOTE: we convert to pyint to prevent inconsistent comparisons
+        min_int = int(min_val - bool(min_val % 1))  # round floor
+        max_int = int(max_val + bool(max_val % 1))  # round ceiling
+        if min_int < self.min or max_int > self.max:
             # recursively search for a larger alternative
             for t in self.larger:
                 try:

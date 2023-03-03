@@ -35,6 +35,10 @@ from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, register, subtype
 
 
+# TODO: converting from int -> float throws unexpected OverFlowErrors for
+# very large inputs
+
+
 ######################
 ####    MIXINS    ####
 ######################
@@ -184,47 +188,30 @@ class IntegerMixin:
         **unused
     ) -> cast.SeriesWrapper:
         """Convert integer data to a float data type."""
-        result = series.astype(dtype)
-
-        # backtrack to check for overflow/precision loss
         # NOTE: integers can always be exactly represented as long as their
-        # width in bits fits within the mantissa of the specified floating
+        # width in bits fits within the significand of the specified floating
         # point type with exponent 1 (listed in the IEEE 754 specification).
         if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
-            # overflow
-            infs = result.isinf()
-            if infs.any():
-                if errors == "coerce":
-                    result = result[~infs]
-                    result.hasnans = True
-                    series = series[~infs]  # mirror on original
-                else:
-                    raise OverflowError(
-                        f"values exceed {dtype} range at index "
-                        f"{shorten_list(series[infs].index.values)}"
-                    )
+            # 2-step conversion: int -> decimal, decimal -> float
+            transfer_type = resolve.resolve_type("decimal")
+            series = self.to_decimal(series, dtype=transfer_type, errors=errors)
+            return transfer_type.to_float(
+                series,
+                dtype=dtype,
+                tol=tol,
+                downcast=downcast,
+                errors=errors,
+                **unused
+            )
 
-            # precision loss
-            if errors != "coerce":  # coercion ignores precision loss
-                # NOTE: we can bypass overflow/precision loss checks by
-                # delegating straight to AtomicType
-                reverse = super().to_integer(
-                    result,
-                    dtype=self.upcast(result),
-                    downcast=None,
-                    errors="raise"
-                )
-                bad = ~series.within_tol(reverse, tol.real)
-                if bad.any():
-                    raise ValueError(
-                        f"precision loss exceeds tolerance "
-                        f"{float(tol.real):g} at index "
-                        f"{shorten_list(bad[bad].index.values)}"
-                    )
-
-        if downcast is not None:
-            return dtype.downcast(result, smallest=downcast, tol=tol)
-        return result
+        # do naive conversion
+        return super().to_float(
+            series,
+            dtype=dtype,
+            tol=tol,
+            downcast=downcast,
+            errors=errors
+        )
 
     def to_complex(
         self,

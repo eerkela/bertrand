@@ -31,3 +31,4 @@
    Implementation <implementation>
    Type Index <types>
    API <api>
+   Changelog <changelog>
