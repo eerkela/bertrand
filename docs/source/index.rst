@@ -8,7 +8,7 @@
 
 .. testsetup:: dispatch
 
-   # detach from pandas to give correct errors during make doctest
+   # detach from pandas to give correct errors during doctest
    import pdcast.attach
    pdcast.attach.detach()
 
@@ -27,7 +27,7 @@
    :maxdepth: 2
 
    Motivation <motivation>
-   Type Index <types>
+   Type Index <type_index>
    Implementation <implementation>
    Tutorial: bfloat16 <tutorial>
    API <api>

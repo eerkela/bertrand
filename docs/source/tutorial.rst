@@ -35,6 +35,8 @@ deep learning, allows us to implement these bfloat16 types in normal python.
 This tutorial will walk through the process of adding these objects to pandas
 via ``pdcast``.
 
+.. _new_type_defition:
+
 Creating a new type definition
 ------------------------------
 The first order of business when defining a new type is to create a subclass of
@@ -47,6 +49,7 @@ We'll start from the beginning and work our way up.
 
     >>> import numpy as np
     >>> import pdcast
+
     >>> class BFloat16Type(pdcast.AtomicType):
     ...    name = "bfloat16"
     ...    aliases = {"bfloat16", "bf16", "brain float", tf_bfloat16, tf.bfloat16}

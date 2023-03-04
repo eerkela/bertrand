@@ -13,7 +13,7 @@ memory?  Blame dynamic typing (and reference counting).  Python is buggy?
 
 In order to avoid these problems, production code is often lifted out of python
 entirely, implemented in some other statically-typed language (usually C), and
-then reintroduced to python by way of the CPython interface or an interface
+then reintroduced to python by way of the CPython interface or an abstraction
 layer such as Cython, Jython, Numba, RustPython, or some other tool.  Now, this
 is all well and good, but in so doing, one must make certain assumptions about
 the data they are working with.  C integers, for instance, can be
@@ -25,14 +25,14 @@ is done regardless.
 
 However, this presents an entirely new problem: one of translation.  Given the
 fact that there is no direct C equivalent for the built-in python integer type,
-how can I be sure that my inputs will fit within the limits of my
-statically-typed functions?  If I'm working with scalar values, I could insert
-one or more isinstance() and/or range checks to work it out manually, but this
-adds overhead to every function call I make and counteracts the performance
-benefits I can expect to achieve. Of course I could just move forward with the
-function call and hope I don't encounter any problems, and 64 bits is generally
-enough for most applications, but what if it's not?  What if I can't trust the
-person who is handing me the data?
+how can we be sure that our inputs will fit within the limits of our
+statically-typed functions?  If we were working with scalar values, we could
+insert one or more ``isinstance()`` and/or range checks to work it out
+manually, but this adds overhead to every function call, counteracting the
+performance benefits we can expect to achieve. Of course we could just move
+forward with the call and hope we don't encounter any problems, and 64 bits is
+generally enough for most applications, but what if it's not?  What if we don't
+know ahead of time?
 
 This is a common problem in data science, where data cleaning and preprocessing
 take up a significant fraction of one's time.  In this process, missing and
@@ -72,8 +72,8 @@ represented by its corresponding ``dtype`` field, like so:
     >>> pd.Series([1, 2, 3]).dtype
     dtype('int64')
 
-If I request a value at a specific index of the series, it will be returned
-as an ``int64`` object, as expected:
+If we request a value at a specific index of the series, it will be returned
+as an ``int64`` object:
 
 .. doctest::
 
@@ -81,7 +81,7 @@ as an ``int64`` object, as expected:
     >>> print(type(val), val)
     <class <'numpy.int64'>> 1
 
-So far, so good.  But what if I add a missing value to the series?
+So far, so good.  But what if we add a missing value to the series?
 
 .. doctest::
 
@@ -179,8 +179,8 @@ integers are we actually storing?
     9223372036854775808
     9223372036854775808
 
-They're all the same!  This is an example of a floating point rounding error
-in action.  Each of these integers is above the integral range of ``float64``
+They're all the same!  This is an example of floating point rounding error in
+action.  Each of these integers is above the integral range of ``float64``
 objects, which is defined by the number of bits in their significand (53 in the
 case of ``float64`` objects).  Only integers within this range can be exactly
 represented with exponent 1, meaning that any integer outside the range
@@ -200,18 +200,22 @@ following:
     ...     i += 1
     >>> while val - j == val:  # count down
     ...     j += 1
-    >>> print(i + j)
-    1538
+    >>> print(f"up: {i}\ndown: {j}\ntotal: {i + j}")
+    up: 1025
+    down: 513
+    total: 1538
 
 So it turns out we have over 1500 different values within error of the observed
-result.  The discrepancy from our predicted value of 1024 comes from the fact
-that ``2**63 - 1`` is on the verge of overflowing.  Once we reach 2**63, we
-must expand our exponent to 11, giving us twice as many values above 2**63 as
-below it.
-
-Once more, if we weren't aware of this going in to our analysis, we
+result.  Once more, if we weren't aware of this going in to our analysis, we
 may have just unwittingly introduced systematic error by accident.  This is
 not ideal!
+
+.. note::
+
+    The discrepancy from our predicted value of 1024 comes from the fact
+    that ``2**63 - 1`` is on the verge of overflowing its exponent.  Once we
+    reach ``2**63``, we must increment our exponent to 11, giving us twice as
+    many values above ``2**63`` as below it.
 
 pdcast: a safer alternative
 -------------------------------
@@ -251,12 +255,6 @@ either, it also applies for booleans and all other integer data types.
     1     True
     2     <NA>
     dtype: boolean
-    >>> pdcast.to_integer([1, 2, 3, None], "int8")
-    0       1
-    1       2
-    2       3
-    3    <NA>
-    dtype: Int8
     >>> pdcast.to_integer([1, 2, 3, None], "uint32")
     0       1
     1       2
@@ -325,8 +323,8 @@ integers from before:
     dtype: float64
 
 As we can see, pandas doesn't even emit a warning about the precision loss we
-discussed earlier.  If we reverse the conversion, we can see why this could be
-a problem:
+demonstrated earlier.  If we reverse this conversion, we can see why that could
+be a problem:
 
 .. doctest::
 
@@ -339,8 +337,8 @@ a problem:
 Note that we don't get our original data back.  In fact we don't even end
 up on the same side of the number line, thanks to silent overflow.
 
-So, simply by converting our data, we have changed its value.  In contrast,
-``pdcast`` requires explicit approval to change data in this way.
+So, simply by converting our data, we have implicitly changed its value.  In
+contrast, ``pdcast`` requires explicit approval to change data in this way.
 
 .. doctest::
 
@@ -467,7 +465,7 @@ Inference & Validation
 Another area where pandas could be improved is in runtime type-checking.
 Baseline, it includes a number of utility functions under ``pd.api.types`` that
 are meant to do this, but each of them essentially boils down to a naive
-``.dtype`` check.  This leads to questionable (or even inaccurate) results,
+``.dtype`` check.  This leads to questionable (and even inaccurate) results,
 such as:
 
 .. doctest::
@@ -496,9 +494,9 @@ makes it practically impossible to distinguish between genuine object arrays
 and those containing only strings.
 
 Pandas does have a specialized ``pd.StringDtype()`` just to represent strings,
-but - like with ``pd.Int64Dtype()`` above - it must be set manually, and is
-usually ignored in practice.  With this dtype, we can unambiguously check for
-strings by doing:
+but - like with ``pd.Int64Dtype()`` - it must be set manually, and is often
+ignored in practice.  With this dtype, we can unambiguously check for strings
+by doing:
 
 .. doctest::
 
@@ -535,16 +533,16 @@ And it even works on ``dtype=object`` series:
     True
 
 This is accomplished by a combination of *inference* and *validation*.
-Inference is performed by vectorizing the built-in ``type()`` function and
-applying it elementwise over the input series via ``pdcast.detect_type()``.
+Inference is performed by ``pdcast.detect_type()``, which essentially
+vectorizes the built-in ``type()`` function and applies it elementwise over an
+iterable.
 
 .. doctest::
 
-    >>> series = pd.Series(["foo", "bar", "baz"])
     >>> pdcast.detect_type(series)
     StringType()
 
-Which yields an unambiguous ``StringType()`` representing the actual observed
+This yields an unambiguous ``StringType()`` representing the actual observed
 elements of ``series``.  Since we don't have to rely on a potentially
 inaccurate ``.dtype`` check to do this inferencing, it can be applied to
 arbitrary data.
@@ -606,7 +604,7 @@ passing it to ``pdcast.resolve_type()`` like so:
     >>> pdcast.resolve_type(complex)
     ComplexType()
 
-``pdcast.check_type()`` calls this implicitly on its first argument.
+``pdcast.check_type()`` implicitly calls this on its first argument.
 
 .. note::
 
@@ -628,6 +626,8 @@ resolved, validating them consists of a simple membership test.
     >>> resolved.contains(inferred)
     True
 
+
+
 By default, this also applies to any subtypes of the comparison type.
 
 .. doctest::
@@ -645,7 +645,10 @@ This returns ``True`` because ``int16[numpy]`` is a subtype of ``int``.  In
 this manner, ``pdcast.check_type()`` operates in a way similar to the built-in
 ``isinstance()`` function, extending it to vectorized data.
 
+.. TODO: talk about exact comparisons
 
 
-Repairing broken methods
-------------------------
+Expanded Support
+----------------
+.. decimal w/ dispatched round() method
+.. datetime w/ datetime[python], datetime[numpy], .dt.tz_localize/convert()

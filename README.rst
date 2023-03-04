@@ -4,20 +4,19 @@ pdcast - flexible type extensions for numpy/pandas
 ``pdcast`` modifies the existing numpy/pandas typing infrastructure, making it
 easier to work with tabular data in a wide variety of representations.
 
-
 Features
 --------
 ``pdcast`` adds support for:
 
-*  **Extendable type hierarchies** for numpy/pandas ``dtype`` objects.  These
-   form the backbone of the package and can be used to add arbitrary object
-   types to the pandas ecosystem in as little as 10 lines of code.  Integration
-   is seamless and automatic, and every aspect of a type's behavior can be
-   customized as needed.
-*  **A generalized mini-language** for building and resolving types, with
-   user-definable aliases and semantics.  This allows types to be unambiguously
-   specified while maintaining fine control over their construction and
-   behavior.
+*  :ref:`Extendable type hierarchies <type_index>` for numpy/pandas ``dtype``
+   objects.  These form the backbone of the package and can be used to add
+   arbitrary object types to the pandas ecosystem in as little as 10 lines of
+   code.  Integration is seamless and automatic, and every aspect of a type's
+   behavior can be customized as needed.
+*  :ref:`A generalized mini-language <type_specification>` for building and
+   resolving types, with user-definable aliases and semantics.  This allows
+   types to be unambiguously specified while maintaining fine control over
+   their construction and behavior.
 *  Tools for **easy inference** and **schema validation**.  Types can be
    readily detected from example data, even if those data are non-homogenous
    or not supported by existing numpy/pandas functionality.  This can be
@@ -43,7 +42,6 @@ Features
    necessary, and dispatched methods can be hidden behind temporary namespaces
    to avoid conflicts, similar to ``pd.Series.dt``, ``pd.Series.str``, etc.
 
-
 Advantages over Pandas
 ----------------------
 Compared to the existing ``astype()`` framework, ``pdcast`` is:
@@ -58,15 +56,14 @@ Compared to the existing ``astype()`` framework, ``pdcast`` is:
    pyarrow where applicable.
 *  **Intuitive**.  ``pdcast`` avoids many common gotchas and edge cases that
    can crop up during type manipulations, including (but not limited to):
-   missing values, overflow, timezones, imprecise representations, string
-   parsing, and sparse/categorical data.
+   missing values, precision loss, overflow, timezones, string parsing, and
+   sparse/categorical data.
 *  **Efficient**.  By giving users more control over the types that are present
    within their series and dataframe objects, substantial memory savings and
    performance improvements can be achieved.  Sparse data structures and
    lossless downcasting make it possible to shrink data by up to a factor of
    10 in some cases while simultaneously accelerating downstream analysis and
    increasing access to big data.
-
 
 Installation
 ------------
@@ -88,7 +85,6 @@ optional ``pdcast[dev]`` dependencies.
 .. note::
    
    Tests are still incomplete at this stage and are constantly being updated.
-
 
 Demonstration
 -------------
@@ -205,20 +201,17 @@ a per-type basis.
       ...
    TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
 
-
 Documentation
 -------------
 Detailed documentation is hosted on readthedocs.
 
 .. TODO: add hyperlink once documentation goes live
 
-
 Contact
 -------
 The package maintainer can be contacted via the
 `GitHub issue tracker <https://github.com/eerkela/pdcast/issues>`_, or directly
 at eerkela42@gmail.com.
-
 
 License
 -------

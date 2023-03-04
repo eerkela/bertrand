@@ -1,3 +1,5 @@
+.. _type_index:
+
 Type Index
 ==========
 Below is a complete list of all the types that come prepackaged with
