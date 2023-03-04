@@ -129,10 +129,11 @@ has no supertypes, and is not included in any other type's ``.subtypes`` tree.
 We can fix this by appending an ``@subtype`` decorator to our ``BFloat16Type``
 definition, which specifies it as a member of the ``FloatType`` family.
 
-.. testsetup::
+.. testcleanup::
 
     # first we have to remove the previous definition.  Usually this isn't
     # necessary, since types are only defined once.
+    import pdcast
     pdcast.AtomicType.registry.remove(BFloat16Type)
 
 .. doctest::
@@ -181,7 +182,7 @@ This can be done by adding an ``@generic`` decorator to our class definition
 and creating a new *implementation type* to refer to the TensorFlow version
 explicitly.
 
-.. testsetup::
+.. testcleanup::
 
     # first we have to remove the previous definition.  Usually this isn't
     # necessary, since types are only defined once.
@@ -283,7 +284,7 @@ decorator.  If this evaluates to ``False``, then the type definition will never
 be executed at all.  We can combine this with a conditional import to only
 include our ``BFloat16Type``\s on systems that support them.
 
-.. testsetup::
+.. testcleanup::
 
     # first we have to remove the previous definitions.  Usually this isn't
     # necessary, since types are only defined once.
@@ -451,7 +452,7 @@ class.
 
 Which we then distribute to our ``BFloat16Type``\s using multiple inheritance.
 
-.. testsetup::
+.. testcleanup::
 
     # first we have to remove the previous definitions.  Usually this isn't
     # necessary, since types are only defined once.

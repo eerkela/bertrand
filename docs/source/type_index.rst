@@ -1,4 +1,5 @@
-.. _type_index:
+.. TODO: add type specification mini-language section?
+
 
 Type Index
 ==========

@@ -13,8 +13,10 @@ memory?  Blame dynamic typing (and reference counting).  Python is buggy?
 
 In order to avoid these problems, production code is often lifted out of python
 entirely, implemented in some other statically-typed language (usually C), and
-then reintroduced to python by way of the CPython interface or an abstraction
-layer such as Cython, Jython, Numba, RustPython, or some other tool.  Now, this
+then reintroduced to python by way of the CPython interface or a compatibility
+layer such as `Cython <https://cython.org/>`_,
+`Jython <https://www.jython.org/>`_, `Numba <https://numba.pydata.org/>`_,
+`RustPython <https://rustpython.github.io/>`_, or some other tool.  Now, this
 is all well and good, but in so doing, one must make certain assumptions about
 the data they are working with.  C integers, for instance, can be
 platform-specific and may not fit arbitrary data without overflowing, like
@@ -79,7 +81,7 @@ as an ``int64`` object:
 
     >>> val = pd.Series([1, 2, 3])[0]
     >>> print(type(val), val)
-    <class <'numpy.int64'>> 1
+    <class 'numpy.int64'> 1
 
 So far, so good.  But what if we add a missing value to the series?
 
@@ -251,8 +253,8 @@ either, it also applies for booleans and all other integer data types.
 .. doctest::
 
     >>> pdcast.to_boolean([True, False, None])
-    0    False
-    1     True
+    0     True
+    1    False
     2     <NA>
     dtype: boolean
     >>> pdcast.to_integer([1, 2, 3, None], "uint32")
@@ -394,7 +396,7 @@ you might expect.
 .. doctest::
 
     >>> series.cast(np.int32)
-    Traceback
+    Traceback (most recent call last):
         ...
     OverflowError: values exceed int32[numpy] range at index [0, 1, 2]
 
@@ -558,7 +560,7 @@ arbitrary data.
     >>> pdcast.detect_type(pd.Series([1, 2, 3]))
     NumpyInt64Type()
     >>> pdcast.detect_type(pd.Series([CustomObj("python"), CustomObj("is"), CustomObj("awesome")]))
-    ObjectType(type_def=<class '__main__.CustomObj'>)
+    ObjectType(type_def=<class 'CustomObj'>)
 
 We can even infer types for non-homogenous data this way:
 

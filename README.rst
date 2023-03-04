@@ -1,6 +1,8 @@
+.. NOTE: whenever a change is made to this file, make sure to update the
+.. start and end lines of index.rst to allow doctests to run.
+
 pdcast - flexible type extensions for numpy/pandas
 ==================================================
-
 ``pdcast`` modifies the existing numpy/pandas typing infrastructure, making it
 easier to work with tabular data in a wide variety of representations.
 
@@ -8,15 +10,15 @@ Features
 --------
 ``pdcast`` adds support for:
 
-*  :ref:`Extendable type hierarchies <type_index>` for numpy/pandas ``dtype``
-   objects.  These form the backbone of the package and can be used to add
-   arbitrary object types to the pandas ecosystem in as little as 10 lines of
-   code.  Integration is seamless and automatic, and every aspect of a type's
-   behavior can be customized as needed.
-*  :ref:`A generalized mini-language <type_specification>` for building and
-   resolving types, with user-definable aliases and semantics.  This allows
-   types to be unambiguously specified while maintaining fine control over
-   their construction and behavior.
+*  **Extendable type hierarchies** for numpy/pandas ``dtype`` objects.  These
+   form the backbone of the package and can be used to add arbitrary object
+   types to the pandas ecosystem in as little as 10 lines of code.  Integration
+   is seamless and automatic, and every aspect of a type's behavior can be
+   customized as needed.
+*  **A generalized mini-language** for building and resolving types, with
+   user-definable aliases and semantics.  This allows types to be unambiguously
+   specified while maintaining fine control over their construction and
+   behavior.
 *  Tools for **easy inference** and **schema validation**.  Types can be
    readily detected from example data, even if those data are non-homogenous
    or not supported by existing numpy/pandas functionality.  This can be
@@ -67,20 +69,21 @@ Compared to the existing ``astype()`` framework, ``pdcast`` is:
 
 Installation
 ------------
-Wheels are available for most platforms via the Python Package Index (PyPI).
+Wheels are built using `cibuildwheel <https://cibuildwheel.readthedocs.io/en/stable/>`_
+and are available for most platforms via the Python Package Index (PyPI).
 
-.. TODO: add hyperlink to PyPI page.
+.. TODO: add hyperlink to PyPI page when it goes live
 
 .. code-block:: console
 
    (.venv) $ pip install pdcast
 
 If a wheel is not available for your system, ``pdcast`` also provides an sdist
-to allow pip to install from source, although doing so requires an additional
+to allow pip to build from source, although doing so requires an additional
 ``cython`` dependency.
 
-If you want to run the built-in test suite, install the package using the
-optional ``pdcast[dev]`` dependencies.
+If you want to run the test suite, install the package using the optional
+``pdcast[dev]`` dependencies.
 
 .. note::
    
@@ -91,7 +94,7 @@ Demonstration
 ``pdcast`` can be used to easily verify the types that are present within
 a pandas object:
 
-.. doctest::
+.. doctest:: typecheck
 
    >>> import pandas as pd
    >>> import pdcast.attach
@@ -102,81 +105,72 @@ a pandas object:
 
 It can also be used to convert data from one representation to another.  Here
 is a short walk around the various type categories that are recognized by
-``pdcast``.
+``pdcast`` (Note: _ refers to previous output).
 
-.. doctest::
+.. doctest:: conversion
 
    >>> import numpy as np
    >>> import pdcast
    >>> import pdcast.attach
 
-   >>> data = pdcast.to_boolean([1+0j, "False", None])  # non-homogenous
-   >>> data
+   >>> class CustomObj:
+   ...     def __init__(self, x): self.x = x
+   ...     def __str__(self): return f"CustomObj({self.x})"
+
+   >>> pdcast.to_boolean([1+0j, "False", None])  # non-homogenous
    0     True
    1    False
    2     <NA>
    dtype: boolean
-   >>> data = data.cast(np.dtype(np.int8))
-   >>> data
+   >>> _.cast(np.dtype(np.int8))
    0       1
    1       0
    2    <NA>
    dtype: Int8
-   >>> data = data.cast("double")
-   >>> data
+   >>> _.cast("double")
    0    1.0
    1    0.0
    2    NaN
    dtype: float64
-   >>> data = data.cast(np.complex128, downcast=True)
-   >>> data
+   >>> _.cast(np.complex128, downcast=True)
    0    1.0+0.0j
    1    0.0+0.0j
    2   N000a000N
    dtype: complex64
-   >>> data = data.cast("sparse[decimal, 1]")
-   >>> data
+   >>> _.cast("sparse[decimal, 1]")
    0      1
    1      0
    2    NaN
    dtype: Sparse[object, Decimal('1')]
-   >>> data = data.cast("datetime", unit="Y", since="utc")
-   >>> data
+   >>> _.cast("datetime", unit="Y", since="utc")
    0   1971-01-01
    1   1970-01-01
    2          NaT
    dtype: datetime64[ns]
-   >>> data = data.cast("timedelta[python]", since="utc")
-   >>> data
+   >>> _.cast("timedelta[python]", since="utc")
    0    365 days, 0:00:00
    1              0:00:00
    2                  NaT
    dtype: object
-   >>> class CustomObj:
-   ...     def __init__(self, x):  self.x = x
-   ...     def __str__(self):  return f"CustomObj({self.x})"
-   >>> data = data.cast(CustomObj)
-   >>> data
+   >>> _.cast(CustomObj)
    0    CustomObj(365 days, 0:00:00)
    1              CustomObj(0:00:00)
    2                            <NA>
    dtype: object
-   >>> data = data.cast("categorical[str[pyarrow]]")
-   >>> data
+   >>> _.cast("categorical[str[pyarrow]]")
    0    CustomObj(365 days, 0:00:00)
    1              CustomObj(0:00:00)
    2                            <NA>
    dtype: category
    Categories (2, string): [CustomObj(0:00:00), CustomObj(365 days, 0:00:00)]
-   >>> data = data.cast(bool, true="*", false="CustomObj(0:00:00)")
-   >>> data  # our original data
+   >>> _.cast(bool, true="*", false="CustomObj(0:00:00)")  # our original data
    0     True
    1    False
    2     <NA>
    dtype: boolean
 
-And finally, dispatch methods allows users to add or modify series behavior on
-a per-type basis.
+And finally, dispatch methods allows users to modify series behavior on a
+per-type basis.
 
 .. doctest:: dispatch
 
@@ -187,8 +181,9 @@ a per-type basis.
       ...
    TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
 
-   # `pdcast` defines a round() function that is type-agnostic
    >>> import pdcast.attach
+
+   # pdcast defines a round() function that is type-agnostic
    >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round()
    0    1.0
    1   -2.0
@@ -200,6 +195,10 @@ a per-type basis.
    Traceback (most recent call last):
       ...
    TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
+
+.. testcleanup:: dispatch
+
+   pdcast.attach.detach()
 
 Documentation
 -------------
