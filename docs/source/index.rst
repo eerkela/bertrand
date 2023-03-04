@@ -27,8 +27,8 @@
    :maxdepth: 2
 
    Motivation <motivation>
-   Tutorial: bfloat16 <tutorial>
-   Implementation <implementation>
    Type Index <types>
+   Implementation <implementation>
+   Tutorial: bfloat16 <tutorial>
    API <api>
    Changelog <changelog>

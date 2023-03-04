@@ -35,10 +35,6 @@ from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, register, subtype
 
 
-# TODO: converting from int -> float throws unexpected OverFlowErrors for
-# very large inputs
-
-
 ######################
 ####    MIXINS    ####
 ######################

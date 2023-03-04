@@ -59,6 +59,13 @@ orig_getattribute = pd.Series.__getattribute__
 
 
 def new_getattribute(self, name: str):
+    """An overloaded __getattribute__ method for pd.Series objects that
+    dynamically intercepts attribute lookups based on ``pdcast`` configuration
+    and dispatches to the inferred element_type in case of a match.
+
+    If no match is found, this simply passes through to the original pandas
+    implementation.
+    """
     # check if attribute is a mock accessor
     dispatch_map = AtomicType.registry.dispatch_map
     if name in dispatch_map:
@@ -66,12 +73,12 @@ def new_getattribute(self, name: str):
         return Namespace(self, dispatch_map[name], original)
 
     # check if attribute corresponds to a naked @dispatch method
-    dispatch_map = dispatch_map.get(None, {})
-    if name in dispatch_map:
+    submap = dispatch_map.get(None, {})
+    if name in submap:
         original = getattr(pd.Series, name, None)
         if original is not None:
             original = partial(original, self)
-        return attach(self, name, dispatch_map[name], original)
+        return attach(self, name, submap[name], original)
 
     # attribute is not being managed by `pdcast` - fall back to pandas
     return orig_getattribute(self, name)

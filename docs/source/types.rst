@@ -1,15 +1,21 @@
 Type Index
 ==========
 Below is a complete list of all the types that come prepackaged with
-``pdcast``, in hierarchical order.  Each type can be resolved as shown by
-providing an equivalent string to ``pdcast.resolve_type()``.
+``pdcast``, in hierarchical order.  Each type is shown in the 
+:ref:`type specification mini-language <type_specification>` and can be
+resolved as shown by providing an equivalent string to
+``pdcast.resolve_type()``.
 
+Boolean
+-------
 * ``bool``
 
     * ``bool[numpy]``
     * ``bool[pandas]``
     * ``bool[python]``
 
+Integer
+-------
 * ``int``
 
     * ``signed``
@@ -85,6 +91,8 @@ providing an equivalent string to ``pdcast.resolve_type()``.
             * ``uint64[numpy]``
             * ``uint64[pandas]``
 
+Float
+-----
 * ``float``
 
     * ``float[numpy]``
@@ -115,6 +123,8 @@ providing an equivalent string to ``pdcast.resolve_type()``.
 
         * ``float80[numpy]``\ :superscript:`1`\ 
 
+Complex
+-------
 * ``complex``
 
     * ``complex[numpy]``
@@ -140,31 +150,45 @@ providing an equivalent string to ``pdcast.resolve_type()``.
 
         * ``complex160[numpy]``\ :superscript:`2`\ 
 
+Decimal
+-------
 * ``decimal``
 
     * ``decimal[python]``
 
+Datetime
+--------
 * ``datetime``
 
     * ``datetime[numpy]``
     * ``datetime[pandas]``
     * ``datetime[python]``
 
+Timedelta
+---------
 * ``timedelta``
 
     * ``timedelta[numpy]``
     * ``timedelta[pandas]``
     * ``timedelta[python]``
 
+String
+------
 * ``string``
 
     * ``string[python]``
     * ``string[pyarrow]``\ :superscript:`3`\ 
 
+Object
+------
 * ``object``
 
-Footnotes
----------
+.. NOTE: using raw html so section header does not appear in TOC tree
+
+.. raw:: html
+
+    <h2>Footnotes</h2>
+
 1.  This is an alias for `x86 extended precision float (long double) <https://en.wikipedia.org/wiki/Extended_precision#x86_extended_precision_format>`_ 
     and may not be defined on every system.  Numpy defines this as either a
     ``float96`` or ``float128`` object, but neither is technically accurate

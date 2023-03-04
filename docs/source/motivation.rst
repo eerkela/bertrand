@@ -213,7 +213,7 @@ Once more, if we weren't aware of this going in to our analysis, we
 may have just unwittingly introduced systematic error by accident.  This is
 not ideal!
 
-``pdcast``: a safer alternative
+pdcast: a safer alternative
 -------------------------------
 Let's see how ``pdcast`` handles the above example:
 
@@ -265,7 +265,7 @@ either, it also applies for booleans and all other integer data types.
     dtype: UInt32
 
 By avoiding a floating point intermediary, we can ensure that no data is lost
-during these conversion, even if the values are very large:
+during these conversions, even if the values are very large:
 
 .. doctest::
 
@@ -306,34 +306,346 @@ Conversions
 The problems we discussed before are multiplied tenfold when converting from
 one representation to another.  This is where ``pdcast`` really shines.
 
-Let's try to convert our large integers to a floating point representation in
-base pandas:
+Before we dive into the differences, let's see how pandas handles conversions
+in cases of precision loss and/or overflow.  We'll start with our large
+integers from before:
 
 .. doctest::
 
-    >>> pd.Series([2**63 - 3, 2**63 - 2, 2**63 - 1]).astype(float)
+    >>> series = pd.Series([2**63 - 3, 2**63 - 2, 2**63 - 1])
+    >>> series
+    0    9223372036854775805
+    1    9223372036854775806
+    2    9223372036854775807
+    dtype: int64
+    >>> series.astype(float)
     0    9.223372e+18
     1    9.223372e+18
     2    9.223372e+18
     dtype: float64
 
 As we can see, pandas doesn't even emit a warning about the precision loss we
-discussed earlier.  In contrast, ``pdcast`` requires explicit approval to
-change data in this way.
+discussed earlier.  If we reverse the conversion, we can see why this could be
+a problem:
+
+.. doctest::
+
+    >>> series.astype(float).astype(int)
+    0   -9223372036854775808
+    1   -9223372036854775808
+    2   -9223372036854775808
+    dtype: int64
+
+Note that we don't get our original data back.  In fact we don't even end
+up on the same side of the number line, thanks to silent overflow.
+
+So, simply by converting our data, we have changed its value.  In contrast,
+``pdcast`` requires explicit approval to change data in this way.
 
 .. doctest::
 
     >>> import pdcast.attach
-    >>> pdcast.to_integer([2**63 - 3, 2**63 - 2, 2**63 - 1]).cast(float)
+    >>> series.cast(float)
+    Traceback (most recent call last):
+        ...
+    ValueError: precision loss exceeds tolerance 1e-06 at index [0, 1, 2]
+    >>> series.cast(float, errors="coerce")
+    0    9.223372e+18
+    1    9.223372e+18
+    2    9.223372e+18
+    dtype: float64
+
+And we can reverse our conversion without overflowing:
+
+.. doctest::
+
+    >>> series.cast(float, errors="coerce").cast(int)
+    0    9223372036854775808
+    1    9223372036854775808
+    2    9223372036854775808
+    dtype: uint64
+
+This preserves the actual value of the coerced floats.
+
+What if we wanted to represent our series as ``int32``?  Obviously the values
+won't fit, but what does pandas do in this situation?
+
+.. doctest::
+
+    >>> series.astype(np.int32)
+    0   -3
+    1   -2
+    2   -1
+    dtype: int32
+
+At this point, you might be tearing out your hair in frustration.  Not only
+does pandas *not emit a warning* in this situation, but it also gives results
+that are almost unintelligible and likely not what we were expecting.
+
+.. note::
+
+    The actual values we observe here are due to the same overflow wrapping
+    behavior as above, except that we're doing it with a smaller container
+    (``2**32`` vs ``2**64``).  This means that our nearly-overflowing 64-bit
+    values wrap around the number line not just once, but *32 times* to arrive
+    at their final result.
+
+In contrast, ``pdcast`` is aware of this and raises an ``OverflowError`` as
+you might expect.
+
+.. doctest::
+
+    >>> series.cast(np.int32)
+    Traceback
+        ...
+    OverflowError: values exceed int32[numpy] range at index [0, 1, 2]
+
+If we try to coerce the previous operation, then the overflowing values will be
+replaced with NAs to avoid biasing the result:
+
+.. doctest::
+
+    >>> series.cast(np.int32, errors="coerce")
+    0    <NA>
+    1    <NA>
+    2    <NA>
+    dtype: Int32
+
+If any of our values had fit into the available range for ``int32`` objects,
+they would have been preserved.
+
+.. doctest::
+
+    >>> pd.Series([1, 2, 3, 2**63 - 1]).cast(np.int32, errors="coerce")
+    0       1
+    1       2
+    2       3
+    3    <NA>
+    dtype: Int32
+
+Note that a nullable dtype is returned even though the original input had no
+missing values.  ``pdcast`` knows when a value is being coerced and can adjust
+accordingly.
+
+.. note::
+
+    Precision loss checks can be distinguished from overflow by providing
+    ``np.inf`` to the optional ``tol`` argument, rather than supplying
+    ``errors="coerce"``.  For instance:
+
+    .. doctest::
+
+        >>> series.cast(float, tol=np.inf)
+        0    9.223372e+18
+        1    9.223372e+18
+        2    9.223372e+18
+        dtype: float64
+
+    matches the original pandas output while simultaneously rejecting overflow.
+
+.. note::
+
+    ``pdcast`` doesn't just handle homogenous data, it can even process
+    mixed-type series inputs using a split-apply-combine strategy.  Elements
+    are grouped by their inferred type, converted independently, and then
+    stitched together along with missing values to achieve the final result.
+
+    .. doctest::
+
+        >>> import decimal
+        >>> pdcast.to_integer([2**63, "1", True, 4+0j, decimal.Decimal(18), None])
+        0    9223372036854775808
+        1                      1
+        2                      1
+        3                      4
+        4                     18
+        5                   <NA>
+        dtype: UInt64
+
+Inference & Validation
+----------------------
+Another area where pandas could be improved is in runtime type-checking.
+Baseline, it includes a number of utility functions under ``pd.api.types`` that
+are meant to do this, but each of them essentially boils down to a naive
+``.dtype`` check.  This leads to questionable (or even inaccurate) results,
+such as:
+
+.. doctest::
+
+    >>> series = pd.Series([decimal.Decimal(1), decimal.Decimal(2)], dtype="O")
+    >>> pd.api.types.is_string_dtype(series)
+    True
+
+This happens because pandas stores strings as generic python objects by
+default.  We can see this by creating a basic string series.
+
+.. doctest::
+
+    >>> pd.Series(["foo", "bar", "baz"])
+    0    foo
+    1    bar
+    2    baz
+    dtype: object
+
+Note that the series is returned with ``dtype=object``.  This ambiguity means
+that ``pd.api.types.is_string_dtype()``, which implies specificity to strings,
+has to include ``dtype=object`` in its comparison.  Because of this, **any
+series with** ``dtype=object`` **will be counted as a string series**, even
+if it *does not* contain strings.  This is confusing to say the least, and
+makes it practically impossible to distinguish between genuine object arrays
+and those containing only strings.
+
+Pandas does have a specialized ``pd.StringDtype()`` just to represent strings,
+but - like with ``pd.Int64Dtype()`` above - it must be set manually, and is
+usually ignored in practice.  With this dtype, we can unambiguously check for
+strings by doing:
+
+.. doctest::
+
+    >>> series1 = pd.Series(["foo", "bar", "baz"], dtype=pd.StringDtype())
+    >>> series2 = pd.Series([decimal.Decimal(1), decimal.Decimal(2)], dtype="O")
+    >>> pd.api.types.is_string_dtype(series1) and not pd.api.types.is_object_dtype(series1)
+    True
+    >>> pd.api.types.is_string_dtype(series2) and not pd.api.types.is_object_dtype(series2)
+    False
+
+But this is long and unwieldy, not to mention requiring a preprocessing step
+to work at all.
+
+``pdcast`` has a better solution:
+
+.. doctest::
+
+    >>> series1.check_type("string")
+    True
+    >>> series2.check_type("string")
+    False
+
+And it even works on ``dtype=object`` series:
+
+.. doctest::
+
+    >>> series = pd.Series(["foo", "bar", "baz"])
+    >>> series
+    0    foo
+    1    bar
+    2    baz
+    dtype: object
+    >>> series.check_type("string")
+    True
+
+This is accomplished by a combination of *inference* and *validation*.
+Inference is performed by vectorizing the built-in ``type()`` function and
+applying it elementwise over the input series via ``pdcast.detect_type()``.
+
+.. doctest::
+
+    >>> series = pd.Series(["foo", "bar", "baz"])
+    >>> pdcast.detect_type(series)
+    StringType()
+
+Which yields an unambiguous ``StringType()`` representing the actual observed
+elements of ``series``.  Since we don't have to rely on a potentially
+inaccurate ``.dtype`` check to do this inferencing, it can be applied to
+arbitrary data.
+
+.. doctest::
+
+    >>> class CustomObj:
+    ...     def __init__(self, x):
+    ...         self.x = x
+
+    >>> pdcast.detect_type(pd.Series([decimal.Decimal(1), decimal.Decimal(2)]))
+    PythonDecimalType()
+    >>> pdcast.detect_type(pd.Series([1, 2, 3]))
+    NumpyInt64Type()
+    >>> pdcast.detect_type(pd.Series([CustomObj("python"), CustomObj("is"), CustomObj("awesome")]))
+    ObjectType(type_def=<class '__main__.CustomObj'>)
+
+We can even infer types for non-homogenous data this way:
+
+.. doctest::
+
+    >>> series = pd.Series([decimal.Decimal(1), 2, CustomObj("awesome")])
+    >>> series   # doctest: +SKIP
+    0                                                1
+    1                                                2
+    2    <__main__.CustomObj object at 0x7fe8add30520>
+    dtype: object
+    >>> pdcast.detect_type(series)   # doctest: +SKIP
+    CompositeType({decimal[python], int, object[__main__.CustomObj]})
+
+.. note::
+
+    ``pdcast.detect_type()`` isn't picky about its inputs.  It can accept any
+    scalar or iterable, not just ``pd.Series`` objects.
+
+    If an input has an appropriate ``.dtype`` field, and that dtype is *not* an
+    ``object`` type, then ``pdcast.detect_type()`` will attempt to use it
+    directly. This is an O(1) operation regardless of how big the iterable is.
+
+Now that we know the element type of our input, we just need to resolve the
+comparison type and check whether one contains the other.  We can do this by
+leveraging the :ref:`type specification mini language <type_specification>`, or
+by using any `numpy <https://numpy.org/doc/stable/reference/arrays.dtypes.html>`_
+-compatible `dtype specifier <https://numpy.org/doc/stable/user/basics.types.html#data-types>`_,
+passing it to ``pdcast.resolve_type()`` like so:
+
+.. doctest::
+
+    >>> pdcast.resolve_type("int")
+    IntegerType()
+    >>> pdcast.resolve_type("signed[numpy]")
+    NumpySignedIntegerType()
+    >>> pdcast.resolve_type("?")
+    BooleanType()
+    >>> pdcast.resolve_type(np.dtype("f4"))
+    NumpyFloat32Type()
+    >>> pdcast.resolve_type(pd.Int64Dtype())
+    PandasInt64Type()
+    >>> pdcast.resolve_type(complex)
+    ComplexType()
+
+``pdcast.check_type()`` calls this implicitly on its first argument.
+
+.. note::
+
+    ``pdcast.resolve_type()`` accepts a superset of the existing ``np.dtype()``
+    syntax, meaning that any specifier that is accepted by numpy can also be
+    accepted by ``pdcast``.
+
+Once both the observed element type and the specified comparison type have been
+resolved, validating them consists of a simple membership test.
+
+.. doctest::
+
+    >>> resolved = pdcast.resolve_type("int")
+    >>> resolved
+    IntegerType()
+    >>> inferred = pdcast.detect_type(pd.Series([1, 2, 3]))
+    >>> inferred
+    NumpyInt64Type()
+    >>> resolved.contains(inferred)
+    True
+
+By default, this also applies to any subtypes of the comparison type.
+
+.. doctest::
+
+    >>> resolved = pdcast.resolve_type("int")
+    >>> resolved
+    IntegerType()
+    >>> inferred = pdcast.detect_type(pd.Series([1, 2, 3], dtype="i2"))
+    >>> inferred
+    NumpyInt16Type()
+    >>> resolved.contains(inferred)
+    True
+
+This returns ``True`` because ``int16[numpy]`` is a subtype of ``int``.  In
+this manner, ``pdcast.check_type()`` operates in a way similar to the built-in
+``isinstance()`` function, extending it to vectorized data.
 
 
 
-
-
-
-Suppose for a moment you are programming a object-oriented data science
-package.  Your objects take in data frames and provide a standard interface for
-manipulating them.  Perhaps you've added some fancy machine learning 
-
-You've written all your complicated implementation
-code 
+Repairing broken methods
+------------------------

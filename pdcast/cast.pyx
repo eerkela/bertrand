@@ -287,7 +287,7 @@ def validate_downcast(
     if isinstance(val, bool):
         return types.CompositeType() if val else None
 
-    return resolve.resolve_type({val})
+    return resolve.resolve_type([val])
 
 
 def validate_dtype(
@@ -1159,10 +1159,15 @@ cdef class SeriesWrapper:
         given AtomicType.  If overflow is detected, attempt to upcast the
         AtomicType to fit or coerce the series if directed.
         """
+        # NOTE: this takes advantage of SeriesWrapper's min/max caching.
         series = self
         min_val = series.min()
         max_val = series.max()
-        if min_val < dtype.min or max_val > dtype.max:
+
+        # NOTE: we convert to pyint to prevent inconsistent comparisons
+        min_int = int(min_val - bool(min_val % 1))  # round floor
+        max_int = int(max_val + bool(max_val % 1))  # round ceiling
+        if min_int < dtype.min or max_int > dtype.max:
             # attempt to upcast dtype to fit series
             try:
                 return series, dtype.upcast(series)
@@ -1193,54 +1198,26 @@ cdef class SeriesWrapper:
         """For every type that is present in the series, invoke the named
         endpoint.
         """
-        # series is homogenous
-        if isinstance(self.element_type, types.AtomicType):
-            # check for corresponding AtomicType method
-            call = submap.get(type(self.element_type.unwrap()), None)
-            if call is not None:
-                return call(self.element_type, self, *args, **kwargs)
-
-            # fall back to pandas implementation
-            pars = inspect.signature(original).parameters
-            kwargs = {k: v for k, v in kwargs.items() if k in pars}
-            result = original(*args, **kwargs)
-            if isinstance(result, pd.Series):
-                return SeriesWrapper(result, hasnans=self._hasnans)
-            return result
-
         # series is composite
-        groups = self.series.groupby(self.element_type.index, sort=False)
-        if original is not None:  # introspect before grouping
-            pars = inspect.signature(original).parameters
+        if isinstance(self.element_type, types.CompositeType):
+            return _dispatch_composite(
+                self,
+                endpoint,
+                submap,
+                original,
+                *args,
+                **kwargs
+            )
 
-        def transform(grp):
-            # check for corresponding AtomicType method
-            call = submap.get(type(grp.name.unwrap()), None)
-            if call is not None:
-                result = call(
-                    grp.name,
-                    SeriesWrapper(grp, hasnans=self._hasnans),
-                    *args,
-                    **kwargs
-                )
-                self.hasnans = self._hasnans or result._hasnans
-                result = result.series
-
-            # fall back to pandas implementation
-            else:
-                kw = {k: v for k, v in kwargs.items() if k in pars}
-                result = original(*args, **kw)
-
-            # ensure final index is a subset of original index
-            if not result.index.difference(grp.index).empty:
-                raise RuntimeError(
-                    f"index mismatch: output index must be a subset of input "
-                    f"index for group {repr(str(grp.name))}"
-                )
-            return result
-
-        result = groups.transform(transform)
-        return SeriesWrapper(result, hasnans=self._hasnans)
+        # series is homogenous
+        return _dispatch_homogenous(
+            self,
+            endpoint,
+            submap,
+            original,
+            *args,
+            **kwargs
+        )
 
     def isinf(self) -> SeriesWrapper:
         """Return a boolean mask indicating the position of infinities in the
@@ -1561,6 +1538,121 @@ cdef tuple _apply_with_errors(np.ndarray[object] arr, object call, str errors):
             raise err
 
     return result, has_errors, index
+
+
+def _dispatch_composite(
+    series: SeriesWrapper,
+    endpoint: str,
+    submap: dict,
+    original: Callable,
+    *args,
+    **kwargs
+) -> SeriesWrapper:
+    """Given an input series of mixed type, split into groups and dispatch to
+    the selected endpoint, falling back to pandas if not specified.
+    """
+    groups = series.series.groupby(series.element_type.index, sort=False)
+    if original is not None:  # introspect before grouping
+        pars = inspect.signature(original).parameters
+
+    # NOTE: SeriesGroupBy.transform() cannot reconcile mixed int64/uint64
+    # arrays, and will attempt to convert them to float.  To avoid this,
+    # keep track of result.dtype.  If int64/uint64-like and opposite has
+    # been observed, convert to dtype="O" and reconsider afterwards.
+    observed = []
+    check_uint = [False]  # transform doesn't recognize this if scalar
+
+    def transform(grp):
+        # check for corresponding AtomicType method
+        call = submap.get(type(grp.name.unwrap()), None)
+        if call is not None:
+            result = call(
+                grp.name,
+                SeriesWrapper(grp, hasnans=series._hasnans),
+                *args,
+                **kwargs
+            )
+            series.hasnans = series._hasnans or result._hasnans
+            result = result.series
+
+        # fall back to pandas implementation
+        else:
+            kw = {k: v for k, v in kwargs.items() if k in pars}
+            result = original(*args, **kw)
+
+        # ensure final index is a subset of original index
+        if not result.index.difference(grp.index).empty:
+            raise RuntimeError(
+                f"index mismatch: output index must be a subset of input "
+                f"index for group {repr(str(grp.name))}"
+            )
+
+        # check for int64/uint64 conflict
+        obs = resolve.resolve_type(result.dtype)
+        signed = types.SignedIntegerType
+        unsigned = types.UnsignedIntegerType
+        if obs.is_subtype(signed):
+            if any(x.is_subtype(unsigned) for x in observed):
+                obs = resolve.resolve_type(types.ObjectType)
+                result = result.astype("O")
+                check_uint[0] = None if check_uint[0] is None else True
+        elif obs.is_subtype(unsigned):
+            if any(x.is_subtype(signed) for x in observed):
+                obs = resolve.resolve_type(types.ObjectType)
+                result = result.astype("O")
+                check_uint[0] = None if check_uint[0] is None else True
+        else:
+            check_uint[0] = None
+        observed.append(obs)
+
+        return result
+
+    result = groups.transform(transform)
+    if check_uint[0]:
+        if series.hasnans:
+            target = resolve.resolve_type(types.PandasUnsignedIntegerType)
+        else:
+            target = resolve.resolve_type(types.UnsignedIntegerType)
+        try:
+            result = to_integer(
+                result,
+                dtype=target,
+                downcast=kwargs.get("downcast", None),
+                errors="raise"
+            )
+        except OverflowError:
+            pass
+    return SeriesWrapper(result, hasnans=series._hasnans)
+
+
+def _dispatch_homogenous(
+    series: SeriesWrapper,
+    endpoint: str,
+    submap: dict,
+    original: Callable,
+    *args,
+    **kwargs
+) -> SeriesWrapper:
+    """Given a homogenously-typed input series, dispatch to the selected
+    endpoint, falling back to pandas if not specified.
+    """
+    # check for corresponding AtomicType method
+    call = submap.get(type(series.element_type.unwrap()), None)
+    if call is not None:
+        return call(
+            series.element_type,
+            series,
+            *args,
+            **kwargs
+        )
+
+    # fall back to pandas implementation
+    pars = inspect.signature(original).parameters
+    kwargs = {k: v for k, v in kwargs.items() if k in pars}
+    result = original(*args, **kwargs)
+    if isinstance(result, pd.Series):
+        return SeriesWrapper(result, hasnans=series._hasnans)
+    return result
 
 
 def do_conversion(
