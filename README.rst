@@ -74,7 +74,7 @@ and are available for most platforms via the Python Package Index (PyPI).
 
 .. TODO: add hyperlink to PyPI page when it goes live
 
-.. code-block:: console
+.. code:: console
 
    (.venv) $ pip install pdcast
 
@@ -197,10 +197,6 @@ per-type basis.
    Traceback (most recent call last):
       ...
    TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
-
-.. testcleanup:: dispatch
-
-   pdcast.attach.detach()
 
 Documentation
 -------------
