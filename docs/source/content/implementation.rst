@@ -1,3 +1,5 @@
+.. TODO: move this entirely into API docs
+
 Implementation
 ==============
 
