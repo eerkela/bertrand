@@ -28,10 +28,11 @@ Features
    results.
 *  **A suite of conversions** covering 9 of the most commonly-encountered data
    types: *boolean*, *integer*, *floating point*, *complex*, *decimal*
-   (arbitrary precision), *datetime*, *timedelta*, *string*, and *raw python
-   objects*.  Each conversion is fully reversible, protected against overflow
-   and precision loss, and can be customized on a per-type basis similar to the
-   resolution and inferencing tools outlined above.
+   (arbitrary precision), *datetime*, *timedelta*, *string*, *raw python
+   objects*, or any combination of the above.  Each conversion is fully
+   reversible, protected against overflow and precision loss, and can be
+   customized on a per-type basis similar to the resolution and inferencing
+   tools outlined above.
 *  **Automatic method dispatching** based on observed data.  This functions in
    a manner similar to ``@functools.singledispatch``, allowing series methods
    to dispatch to multiple implementations based on the type of their
@@ -64,8 +65,7 @@ Compared to the existing ``astype()`` framework, ``pdcast`` is:
    within their series and dataframe objects, substantial memory savings and
    performance improvements can be achieved.  Sparse data structures and
    lossless downcasting make it possible to shrink data by up to a factor of
-   10 in some cases while simultaneously accelerating downstream analysis and
-   increasing access to big data.
+   10 in some cases, increasing access to big data.
 
 Installation
 ------------
@@ -142,12 +142,12 @@ is a short walk around the various type categories that are recognized by
    1      0
    2    NaN
    dtype: Sparse[object, Decimal('1')]
-   >>> _.cast("datetime", unit="Y", since="utc")
+   >>> _.cast("datetime", unit="Y", since="j2000")
    0   1971-01-01
    1   1970-01-01
    2          NaT
    dtype: datetime64[ns]
-   >>> _.cast("timedelta[python]", since="utc")
+   >>> _.cast("timedelta[python]", since="Jan 1st, 2000 at 12:00 PM")
    0    365 days, 0:00:00
    1              0:00:00
    2                  NaT
@@ -169,8 +169,8 @@ is a short walk around the various type categories that are recognized by
    2     <NA>
    dtype: boolean
 
-And finally, dispatch methods allows users to modify series behavior on a
-per-type basis.
+And finally, dispatching allows users to modify series behavior on a per-type
+basis.
 
 .. NOTE: BREAK HERE IN INDEX.RST
 
@@ -204,13 +204,13 @@ Detailed documentation is hosted on readthedocs.
 
 .. TODO: add hyperlink once documentation goes live
 
+License
+-------
+``pdcast`` is available under an
+`MIT license <https://github.com/eerkela/pdcast/blob/main/LICENSE>`_.
+
 Contact
 -------
 The package maintainer can be contacted via the
 `GitHub issue tracker <https://github.com/eerkela/pdcast/issues>`_, or directly
 at eerkela42@gmail.com.
-
-License
--------
-``pdcast`` is available under an
-`MIT license <https://github.com/eerkela/pdcast/blob/main/LICENSE>`_.
