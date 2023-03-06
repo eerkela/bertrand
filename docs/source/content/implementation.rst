@@ -298,9 +298,3 @@ conversions and dispatch methods easier.  These include:
 
 In every other respect, they are identical to normal ``pd.Series`` objects,
 and can be used as such.
-
-.. _type_specification:
-
-Type specification mini-language
---------------------------------
-

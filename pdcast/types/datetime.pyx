@@ -155,6 +155,7 @@ class DatetimeMixin:
             unit=unit,
             step_size=step_size,
             since=since,
+            tol=tol,
             rounding=rounding,
             downcast=None,
             errors=errors

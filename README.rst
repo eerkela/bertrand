@@ -4,7 +4,7 @@
 pdcast - flexible type extensions for numpy/pandas
 ==================================================
 ``pdcast`` modifies the existing numpy/pandas typing infrastructure, making it
-easier to work with tabular data in a wide variety of representations.
+easier to work with tabular data in a variety of formats.
 
 Features
 --------
@@ -171,6 +171,8 @@ is a short walk around the various type categories that are recognized by
 
 And finally, dispatch methods allows users to modify series behavior on a
 per-type basis.
+
+.. NOTE: BREAK HERE IN INDEX.RST
 
 .. doctest:: dispatch
 

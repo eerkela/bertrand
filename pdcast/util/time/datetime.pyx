@@ -222,6 +222,11 @@ def string_to_pydatetime(
 ) -> datetime.datetime:
     """Convert a string to a python datetime object."""
     input_string = input_string.strip().lower()
+    if input_string.startswith("-"):
+        raise OverflowError(
+            f"datetime.datetime objects cannot represent negative years"
+        )
+
     result = None
 
     # attempt to use format string if given
