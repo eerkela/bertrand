@@ -1,0 +1,7 @@
+.. currentmodule:: pdcast
+
+TypeRegistry
+============
+
+
+

@@ -19,8 +19,11 @@ extensions = [
     "sphinx.ext.doctest",
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
+    "sphinx.ext.viewcode",
     "sphinx_rtd_theme",
 ]
+
+# TODO: check out sphinx.ext.inheritance_diagram, sphinx.ext.intersphinx
 
 templates_path = ['_templates']
 exclude_patterns = []

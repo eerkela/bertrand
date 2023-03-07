@@ -13,6 +13,10 @@ def typecheck(
 ) -> bool:
     """Check whether example data contains elements of the given type.
 
+    This function is an analogue for ``isinstance()`` checks, but extended to
+    vectorized data.  Just like ``isinstance()``, it can accept multiple type
+    specifiers in its ``dtype`` field (as a CompositeType)
+
     Parameters
     ----------
     :param data: The example data whose type will be checked.

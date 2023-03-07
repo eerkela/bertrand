@@ -1,5 +1,7 @@
 .. currentmodule:: pdcast
 
+.. _api.atomic:
+
 AtomicType
 ==========
 AtomicTypes hold all the necessary implementation logic for dispatched methods,
@@ -79,6 +81,8 @@ Misc
     AtomicType.upcast
     AtomicType.larger
 
+.. _api.atomic.notes:
+
 Notes
 -----
 The base ``AtomicType`` definition is a `metaclass <https://peps.python.org/pep-0487/>`_
@@ -86,7 +90,7 @@ that is aware of its own subtypes.  Whenever a class inherits from it,
 ``AtomicType`` introspects various attributes of that class, bringing it into
 a safe state, ready for integration with the rest of the package.  This allows
 users to define new ``AtomicType``\s on the fly simply by inheriting from it.
-There are a few caveats to this process, which are described below.
+There are, however, a few caveats to this process, which are described below.
 
 Inheritance
 ^^^^^^^^^^^
@@ -246,36 +250,6 @@ they can be integrated with the rest of the package.  These are as follows:
         are identified, so care must be taken to ensure that each output is
         unique.  If a type does not implement a custom ``__init__()`` method,
         this can be safely omitted.
-
-Backends
-^^^^^^^^
-AtomicTypes can also be marked as being generic, allowing them to serve as
-containers for individual backends.  This can be done by appending an
-``@generic`` decorator to its class definition, like so:
-
-.. code:: python
-
-    @pdcast.generic
-    class Type1(pdcast.AtomicType):
-        ...
-
-In order to qualify as a generic type, an ``AtomicType`` must not implement a
-custom ``__init__()`` method.  Once marked, backends can be added to a generic
-type by calling its ``@register_backend()`` decorator, as shown:
-
-.. code:: python
-
-    @Type1.register_backend("<backend name>")
-    class Type2(pdcast.AtomicType):
-        ...
-
-This allows ``Type2`` to be resolved from ``Type1`` by passing the specified
-backend string during ``resolve_type()`` calls.  It also adds ``Type2`` to
-``Type1.subtypes``, and automatically includes it in membership checks.
-
-.. note::
-
-    The backend string provided to ``@register_backend()`` must be unique.
 
 Registration
 ^^^^^^^^^^^^

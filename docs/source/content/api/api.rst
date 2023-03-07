@@ -18,7 +18,7 @@ considered public.
     AdapterType <adapter>
     CompositeType <composite>
     SeriesWrapper <series>
-
+    TypeRegistry <registry>
 
 
 
