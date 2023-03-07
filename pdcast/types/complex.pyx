@@ -4,8 +4,8 @@ import pandas as pd
 
 import pytz
 
-cimport pdcast.cast as cast
-import pdcast.cast as cast
+cimport pdcast.convert as convert
+import pdcast.convert as convert
 
 from pdcast.util.error import shorten_list
 from pdcast.util.round cimport Tolerance
@@ -17,9 +17,13 @@ from .base import dispatch, generic, register, subtype
 import pdcast.types.float as float_types
 
 
+# TODO: complex160 needs to be conditional using @register syntax
+
+
 ##################################
 ####    MIXINS & CONSTANTS    ####
 ##################################
+
 
 # NOTE: x86 extended precision float type (long double) is platform-specific
 # and may not be exposed depending on hardware configuration.
@@ -34,10 +38,10 @@ class ComplexMixin:
 
     def downcast(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tol: Tolerance,
         smallest: CompositeType = None
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Reduce the itemsize of a complex type to fit the observed range."""
         equiv_float = self.equiv_float
         real = equiv_float.downcast(
@@ -84,10 +88,10 @@ class ComplexMixin:
     @dispatch
     def round(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         decimals: int = 0,
         rule: str = "half_even"
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Round a complex series to the given number of decimal places using
         the specified rounding rule.
         """
@@ -99,9 +103,9 @@ class ComplexMixin:
     @dispatch
     def snap(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tol: numeric = 1e-6
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Snap each element of the series to the nearest integer if it is
         within the specified tolerance.
         """
@@ -116,13 +120,13 @@ class ComplexMixin:
 
     def to_boolean(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert complex data to a boolean data type."""
         # 2-step conversion: complex -> float, float -> bool
         transfer_type = self.equiv_float
@@ -144,14 +148,14 @@ class ComplexMixin:
 
     def to_integer(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert complex data to an integer data type."""
         # 2-step conversion: complex -> float, float -> int
         transfer_type = self.equiv_float
@@ -174,13 +178,13 @@ class ComplexMixin:
 
     def to_float(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert complex data to a float data type."""
         transfer_type = self.equiv_float
         real = series.real
@@ -206,12 +210,12 @@ class ComplexMixin:
 
     def to_decimal(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert complex data to a decimal data type."""
         # 2-step conversion: complex -> float, float -> decimal
         transfer_type = self.equiv_float
@@ -232,7 +236,7 @@ class ComplexMixin:
 
     def to_datetime(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         unit: str,
@@ -242,7 +246,7 @@ class ComplexMixin:
         since: Epoch,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert complex data to a datetime data type."""
         # 2-step conversion: complex -> float, float -> datetime
         transfer_type = self.equiv_float
@@ -268,7 +272,7 @@ class ComplexMixin:
 
     def to_timedelta(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         unit: str,
@@ -277,7 +281,7 @@ class ComplexMixin:
         since: Epoch,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert complex data to a timedelta data type."""
         # 2-step conversion: complex -> float, float -> timedelta
         transfer_type = self.equiv_float
@@ -310,7 +314,7 @@ class ComplexMixin:
 @generic
 class ComplexType(ComplexMixin, AtomicType):
 
-    conversion_func = cast.to_complex  # all subtypes/backends inherit this
+    conversion_func = convert.to_complex  # all subtypes/backends inherit this
     name = "complex"
     aliases = {
         complex, "complex", "cfloat", "complex float", "complex floating", "c"
@@ -468,9 +472,9 @@ class PythonComplexType(ComplexMixin, AtomicType):
 #######################
 
 
-cdef cast.SeriesWrapper combine_real_imag(
-    cast.SeriesWrapper real,
-    cast.SeriesWrapper imag
+cdef convert.SeriesWrapper combine_real_imag(
+    convert.SeriesWrapper real,
+    convert.SeriesWrapper imag
 ):
     """Merge separate real, imaginary components into a complex series."""
     largest = max(

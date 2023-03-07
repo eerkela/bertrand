@@ -7,7 +7,7 @@ from pdcast.types import AdapterType, AtomicType, CompositeType
 
 from pdcast.util.type_hints import type_specifier
 
-from . import series  # attaches pd.Series.cast/pd.Series.check_type
+from . import series  # attaches pd.Series.cast/pd.Series.typecheck
 
 
 ########################
@@ -35,7 +35,7 @@ def cast(
     return result
 
 
-def check_type(
+def typecheck(
     self,
     dtype: type_specifier | dict[str, type_specifier] = None,
     *args,
@@ -50,7 +50,7 @@ def check_type(
 
     # check selected columns
     return all(
-        self[k].check_type(v, *args, **kwargs)
+        self[k].typecheck(v, *args, **kwargs)
         for k, v in dtype.items()
     )
 
@@ -69,7 +69,7 @@ def element_type(self) -> dict[str, AdapterType | AtomicType | CompositeType]:
 
 
 pd.DataFrame.cast = cast
-pd.DataFrame.check_type = check_type
+pd.DataFrame.typecheck = typecheck
 pd.DataFrame.element_type = property(element_type)
 
 
@@ -83,7 +83,7 @@ def detach() -> None:
     patch was applied.
     """
     del pd.DataFrame.cast
-    del pd.DataFrame.check_type
+    del pd.DataFrame.typecheck
     del pd.DataFrame.element_type
 
     # prepare to reimport

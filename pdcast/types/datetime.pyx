@@ -11,8 +11,8 @@ import pytz
 import regex as re  # using alternate python regex engine
 import tzlocal
 
-cimport pdcast.cast as cast
-import pdcast.cast as cast
+cimport pdcast.convert as convert
+import pdcast.convert as convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -47,7 +47,7 @@ class DatetimeMixin:
 
     def to_boolean(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         rounding: str,
@@ -56,7 +56,7 @@ class DatetimeMixin:
         since: Epoch,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert timedelta data to a boolean data type."""
         # 2-step conversion: timedelta -> decimal, decimal -> bool
         transfer_type = resolve.resolve_type("decimal")
@@ -84,7 +84,7 @@ class DatetimeMixin:
 
     def to_float(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -94,7 +94,7 @@ class DatetimeMixin:
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert timedelta data to a floating point data type."""
         # convert to nanoseconds, then from nanoseconds to final unit
         transfer_type = resolve.resolve_type(int)
@@ -135,7 +135,7 @@ class DatetimeMixin:
 
     def to_complex(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -145,7 +145,7 @@ class DatetimeMixin:
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert timedelta data to a complex data type."""
         # 2-step conversion: timedelta -> float, float -> complex
         transfer_type = dtype.equiv_float
@@ -175,7 +175,7 @@ class DatetimeMixin:
 
     def to_decimal(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -184,7 +184,7 @@ class DatetimeMixin:
         rounding: str,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert timedelta data to a decimal data type."""
         # 2-step conversion: datetime -> ns, ns -> decimal
         transfer_type = resolve.resolve_type(int)
@@ -224,7 +224,7 @@ class DatetimeMixin:
 
     def to_datetime(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -233,7 +233,7 @@ class DatetimeMixin:
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert datetime data to another datetime representation."""
         # 2-step conversion: datetime -> ns, ns -> datetime
         transfer_type = resolve.resolve_type(int)
@@ -261,7 +261,7 @@ class DatetimeMixin:
 
     def to_timedelta(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -269,7 +269,7 @@ class DatetimeMixin:
         since: Epoch,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert datetime data to a timedelta representation."""
         # 2-step conversion: datetime -> ns, ns -> timedelta
         transfer_type = resolve.resolve_type(int)
@@ -303,7 +303,7 @@ class DatetimeMixin:
 @generic
 class DatetimeType(DatetimeMixin, AtomicType):
 
-    conversion_func = cast.to_datetime  # all subtypes/backends inherit this
+    conversion_func = convert.to_datetime  # all subtypes/backends inherit this
     name = "datetime"
     aliases = {"datetime"}
     na_value = pd.NaT
@@ -341,10 +341,10 @@ class DatetimeType(DatetimeMixin, AtomicType):
 
     def from_string(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert string data into an arbitrary datetime data type."""
         last_err = None
         for l in self.larger:
@@ -461,11 +461,11 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
 
     def from_ns(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         rounding: str,
         tz: pytz.BaseTzInfo,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert nanosecond offsets from the given epoch into numpy
         timedelta64s with this type's unit and step size.
         """
@@ -489,7 +489,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
                 rule=rounding or "down"
             )
         M8_str = f"M8[{self.step_size}{self.unit}]"
-        return cast.SeriesWrapper(
+        return convert.SeriesWrapper(
             pd.Series(
                 list(series.series.to_numpy(M8_str)),
                 index=series.series.index,
@@ -501,12 +501,12 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
 
     def from_string(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         format: str,
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert ISO 8601 strings to a numpy datetime64 data type."""
         # 2-step conversion: string -> ns, ns -> datetime64
         if format and not is_iso_8601_format_string(format):
@@ -534,7 +534,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
 
     def to_integer(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -543,7 +543,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert numpy datetime64s into an integer data type."""
         # NOTE: using numpy M8 array is ~2x faster than looping through series
         M8_str = f"M8[{self.step_size}{self.unit}]"
@@ -569,7 +569,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
                 unit,
                 rounding=rounding or "down"
             )
-        series = cast.SeriesWrapper(
+        series = convert.SeriesWrapper(
             pd.Series(arr, index=series.series.index),
             hasnans=series.hasnans,
             element_type=resolve.resolve_type(int)
@@ -658,10 +658,10 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
 
     def from_ns(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tz: pytz.BaseTzInfo,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert nanosecond offsets from the UTC epoch into pandas
         Timestamps.
         """
@@ -678,7 +678,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
             if dtype.tz != pytz.utc:
                 result = result.dt.tz_convert(dtype.tz)
 
-        return cast.SeriesWrapper(
+        return convert.SeriesWrapper(
             result,
             hasnans=series.hasnans,
             element_type=dtype
@@ -686,7 +686,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
 
     def from_string(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tz: pytz.BaseTzInfo,
         format: str,
         utc: bool,
@@ -694,7 +694,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         year_first: bool,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert datetime strings into pandas Timestamps."""
         # reconcile `tz` argument with timezone attached to dtype, if given
         dtype = self
@@ -765,7 +765,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime as err:
             raise OverflowError(str(err)) from None
 
-        return cast.SeriesWrapper(
+        return convert.SeriesWrapper(
             result,
             hasnans=hasnans,
             element_type=dtype
@@ -773,7 +773,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
 
     def to_integer(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -782,7 +782,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         downcast: CompositeType,
         errors: str,
         **kwargs
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert pandas Timestamps into an integer data type."""
         # convert to ns
         series = series.rectify().astype(np.int64)
@@ -811,11 +811,11 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
     @dispatch(namespace="dt")
     def tz_convert(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tz: str | datetime.tzinfo,
         *args,
         **kwargs
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert python datetime objects to the specified timezone."""
         # rectify object series
         series = series.rectify()
@@ -825,7 +825,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
             tz = tzlocal.get_localzone_name()
 
         # pass to original .dt.tz_convert() implementation
-        return cast.SeriesWrapper(
+        return convert.SeriesWrapper(
             series.dt.tz_convert.original(tz, *args, **kwargs),
             hasnans=series.hasnans
         )
@@ -833,11 +833,11 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
     @dispatch(namespace="dt")
     def tz_localize(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tz: str | datetime.tzinfo,
         *args,
         **kwargs
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Localize python datetime objects to the specified timezone."""
         # rectify object series
         series = series.rectify()
@@ -847,7 +847,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
             tz = tzlocal.get_localzone_name()
 
         # pass to original .dt.tz_localize() implementation
-        return cast.SeriesWrapper(
+        return convert.SeriesWrapper(
             series.series.dt.tz_localize.original(tz, *args, **kwargs),
             hasnans=series.hasnans
         )
@@ -911,10 +911,10 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
 
     def from_ns(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tz: pytz.BaseTzInfo,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert nanosecond offsets from the UTC epoch into python
         datetimes.
         """
@@ -931,7 +931,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
 
     def from_string(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tz: pytz.BaseTzInfo,
         format: str,
         utc: bool,
@@ -939,7 +939,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
         year_first: bool,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert strings into datetime objects."""
         # reconcile `tz` argument with timezone attached to dtype, if given
         dtype = self
@@ -969,7 +969,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
 
     def to_integer(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -978,7 +978,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert python datetimes into an integer data type."""
         series = series.apply_with_errors(pydatetime_to_ns)
         series.element_type = int
@@ -1004,9 +1004,9 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
     @dispatch(namespace="dt")
     def tz_convert(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tz: str | pytz.BaseTzInfo
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert python datetime objects to the specified timezone."""
         if not self.tz:
             # NOTE: matches error thrown by pandas
@@ -1027,10 +1027,10 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
     @dispatch(namespace="dt")
     def tz_localize(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tz: str | pytz.BaseTzInfo,
         utc: bool = False
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Localize python datetime objects to the specified timezone."""
         if isinstance(tz, str):
             if tz.lower() == "local":
@@ -1053,7 +1053,7 @@ cdef object M8_pattern = re.compile(
 
 
 def convert_ns_to_unit(
-    series: cast.SeriesWrapper,
+    series: convert.SeriesWrapper,
     unit: str,
     step_size: int,
     rounding: str

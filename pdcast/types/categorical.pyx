@@ -4,8 +4,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-cimport pdcast.cast as cast
-import pdcast.cast as cast
+cimport pdcast.convert as convert
+import pdcast.convert as convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 from pdcast.util.type_hints import type_specifier
@@ -80,8 +80,8 @@ class CategoricalType(AdapterType):
 
     def apply_adapters(
         self,
-        series: cast.SeriesWrapper
-    ) -> cast.SeriesWrapper:
+        series: convert.SeriesWrapper
+    ) -> convert.SeriesWrapper:
         """Convert an unwrapped series into a categorical representation."""
         # evaluate adapters from the inside out
         series = super().apply_adapters(series)
@@ -103,7 +103,7 @@ class CategoricalType(AdapterType):
             if not match:
                 raise TypeError(f"levels must be list-like: {levels}")
             tokens = resolve.tokenize(match.group("body"))
-            parsed = cast.cast(tokens, instance).tolist()
+            parsed = convert.cast(tokens, instance).tolist()
 
         # place CategoricalType beneath SparseType if it is present
         for x in instance.adapters:

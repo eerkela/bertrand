@@ -20,8 +20,8 @@ cimport numpy as np
 import pandas as pd
 import pytz
 
-cimport pdcast.cast as cast
-import pdcast.cast as cast
+cimport pdcast.convert as convert
+import pdcast.convert as convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -48,9 +48,9 @@ class IntegerMixin:
 
     def downcast(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         smallest: CompositeType = None
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Reduce the itemsize of an integer type to fit the observed range."""
         # get downcast candidates
         smaller = self.smaller
@@ -117,20 +117,20 @@ class IntegerMixin:
     @dispatch
     def round(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         decimals: int = 0,
         rule: str = "half_even"
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Round an integer series to the given number of decimal places using
         the specified rounding rule.
 
         NOTE: this function does not do anything unless the input to `decimals`
         is negative.
         """
-        rule = cast.validate_rounding(rule)
+        rule = convert.validate_rounding(rule)
         if decimals < 0:
             scale = 10**(-1 * decimals)
-            return cast.SeriesWrapper(
+            return convert.SeriesWrapper(
                 round_div(series.series, scale, rule=rule) * scale,
                 hasnans=series.hasnans,
                 element_type=series.element_type
@@ -138,7 +138,7 @@ class IntegerMixin:
         return series
 
     @dispatch
-    def snap(self, series: cast.SeriesWrapper) -> cast.SeriesWrapper:
+    def snap(self, series: convert.SeriesWrapper) -> convert.SeriesWrapper:
         """Snap each element of the series to the nearest integer if it is
         within the specified tolerance.
 
@@ -148,23 +148,23 @@ class IntegerMixin:
 
     def to_boolean(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to a boolean data type."""
         series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_boolean(series, dtype, errors=errors)
 
     def to_integer(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to another integer data type."""
         series, dtype = series.boundscheck(dtype, errors=errors)
         return super().to_integer(
@@ -176,13 +176,13 @@ class IntegerMixin:
 
     def to_float(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to a float data type."""
         # NOTE: integers can always be exactly represented as long as their
         # width in bits fits within the significand of the specified floating
@@ -211,13 +211,13 @@ class IntegerMixin:
 
     def to_complex(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to a complex data type."""
         transfer_type = dtype.equiv_float
         series = self.to_float(
@@ -238,10 +238,10 @@ class IntegerMixin:
 
     def to_decimal(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to a decimal data type."""
         result = series + dtype.type_def(0)  # ~2x faster than apply loop
         result.element_type = dtype
@@ -249,7 +249,7 @@ class IntegerMixin:
 
     def to_datetime(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -258,10 +258,10 @@ class IntegerMixin:
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to a datetime data type."""
         # convert to python integer to avoid overflow
-        series = cast.SeriesWrapper(
+        series = convert.SeriesWrapper(
             series.series.astype("O"),
             hasnans=series.hasnans,
             element_type=resolve.resolve_type(PythonIntegerType)
@@ -293,7 +293,7 @@ class IntegerMixin:
 
     def to_timedelta(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -301,10 +301,10 @@ class IntegerMixin:
         since: Epoch,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
         # convert to python integer to avoid overflow
-        series = cast.SeriesWrapper(
+        series = convert.SeriesWrapper(
             series.series.astype("O"),
             hasnans=series.hasnans,
             element_type=resolve.resolve_type(PythonIntegerType)
@@ -331,13 +331,13 @@ class IntegerMixin:
 
     def to_string(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         base: int,
         format: str,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to a string data type in any base."""
         # use non-decimal base, in conjunction with format
         if base and base != 10:
@@ -367,7 +367,7 @@ class IntegerMixin:
 class IntegerType(IntegerMixin, AtomicType):
     """Generic integer supertype."""
 
-    conversion_func = cast.to_integer  # all subtypes/backends inherit this
+    conversion_func = convert.to_integer  # all subtypes/backends inherit this
     name = "int"
     aliases = {int, "int", "integer"}
     dtype = np.dtype(np.int64)

@@ -5,8 +5,8 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-cimport pdcast.cast as cast
-import pdcast.cast as cast
+cimport pdcast.convert as convert
+import pdcast.convert as convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -28,7 +28,7 @@ from .base import register
 @register
 class ObjectType(AtomicType, cache_size=64):
 
-    conversion_func = cast.to_object  # all subtypes/backends inherit this
+    conversion_func = convert.to_object  # all subtypes/backends inherit this
     name = "object"
     aliases = {
         "object", "obj", "O", "pyobject", "object_", "object0", np.dtype("O")
@@ -84,7 +84,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_boolean(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -102,7 +102,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_integer(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -120,7 +120,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_float(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -132,13 +132,13 @@ class ObjectType(AtomicType, cache_size=64):
             dtype=dtype,
             call=dtype.type_def if call is None else call,
             errors=errors,
-            conv_func=cast.to_float,
+            conv_func=convert.to_float,
             **unused
         )
 
     def to_complex(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -156,7 +156,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_decimal(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -174,7 +174,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_datetime(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -192,7 +192,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_timedelta(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -210,7 +210,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_string(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -283,7 +283,7 @@ class Test2:
 
 
 def two_step_conversion(
-    series: cast.SeriesWrapper,
+    series: convert.SeriesWrapper,
     dtype: AtomicType,
     call: Callable,
     errors: str,

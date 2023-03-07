@@ -1,10 +1,11 @@
-from .types import *
-from .cast import (
+from .check import typecheck
+from .convert import (
     cast, defaults, SeriesWrapper, to_boolean, to_integer, to_float,
     to_complex, to_decimal, to_datetime, to_timedelta, to_string, to_object
 )
 from .detect import detect_type
 from .resolve import resolve_type
+from .types import *
 
 
 # importing * from types also masks module names, which can be troublesome

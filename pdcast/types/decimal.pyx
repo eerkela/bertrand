@@ -5,8 +5,8 @@ cimport numpy as np
 import pandas as pd
 import pytz
 
-cimport pdcast.cast as cast
-import pdcast.cast as cast
+cimport pdcast.convert as convert
+import pdcast.convert as convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -35,15 +35,15 @@ class DecimalMixin:
     @dispatch
     def round(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         decimals: int = 0,
         rule: str = "half_even"
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Round a decimal series to the given number of decimal places using
         the specified rounding rule.
         """
-        rule = cast.validate_rounding(rule)
-        return cast.SeriesWrapper(
+        rule = convert.validate_rounding(rule)
+        return convert.SeriesWrapper(
             round_decimal(series.series, rule=rule, decimals=decimals),
             hasnans=series.hasnans,
             element_type=series.element_type
@@ -52,9 +52,9 @@ class DecimalMixin:
     @dispatch
     def snap(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tol: numeric = 1e-6
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Snap each element of the series to the nearest integer if it is
         within the specified tolerance.
         """
@@ -63,7 +63,7 @@ class DecimalMixin:
             return series.copy()
 
         rounded = self.round(series, rule="half_even")
-        return cast.SeriesWrapper(
+        return convert.SeriesWrapper(
             series.series.where((
                 (series.series - rounded).abs() > tol.real),
                 rounded.series
@@ -74,11 +74,11 @@ class DecimalMixin:
 
     def snap_round(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tol: numeric,
         rule: str,
         errors: str
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Snap a series to the nearest integer within `tol`, and then round
         any remaining results according to the given rule.  Rejects any outputs
         that are not integer-like by the end of this process.
@@ -110,13 +110,13 @@ class DecimalMixin:
 
     def to_boolean(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert decimal data to a boolean data type."""
         series = self.snap_round(
             series,
@@ -129,14 +129,14 @@ class DecimalMixin:
 
     def to_integer(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert decimal data to an integer data type."""
         series = self.snap_round(
             series,
@@ -154,13 +154,13 @@ class DecimalMixin:
 
     def to_float(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert decimal data to a floating point data type."""
         # do naive conversion
         if dtype.itemsize > 8:
@@ -203,13 +203,13 @@ class DecimalMixin:
 
     def to_complex(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: numeric,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert decimal data to a complex data type."""
         # 2-step conversion: decimal -> float, float -> complex
         transfer_type = dtype.equiv_float
@@ -231,7 +231,7 @@ class DecimalMixin:
 
     def to_datetime(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -239,7 +239,7 @@ class DecimalMixin:
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to a datetime data type."""
         # round fractional inputs to the nearest nanosecond
         if unit == "Y":
@@ -254,7 +254,7 @@ class DecimalMixin:
         if since:
             ns += since.offset
 
-        series = cast.SeriesWrapper(
+        series = convert.SeriesWrapper(
             ns,
             hasnans=series.hasnans,
             element_type=resolve.resolve_type(int)
@@ -277,14 +277,14 @@ class DecimalMixin:
 
     def to_timedelta(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
         since: Epoch,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
         # round fractional inputs to the nearest nanosecond
         if unit == "Y":  # account for leap days
@@ -295,7 +295,7 @@ class DecimalMixin:
             cast_to_int = np.frompyfunc(int, 1, 1)
             ns = cast_to_int(series.series * step_size * as_ns[unit])
 
-        series = cast.SeriesWrapper(
+        series = convert.SeriesWrapper(
             ns,
             hasnans=series.hasnans,
             element_type=resolve.resolve_type(int)
@@ -325,7 +325,7 @@ class DecimalMixin:
 @generic
 class DecimalType(DecimalMixin, AtomicType):
 
-    conversion_func = cast.to_decimal  # all subtypes/backends inherit this
+    conversion_func = convert.to_decimal  # all subtypes/backends inherit this
     name = "decimal"
     aliases = {"decimal"}
     type_def = decimal.Decimal

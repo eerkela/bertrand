@@ -5,8 +5,8 @@ cimport numpy as np
 import pandas as pd
 import pytz
 
-cimport pdcast.cast as cast
-import pdcast.cast as cast
+cimport pdcast.convert as convert
+import pdcast.convert as convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -19,6 +19,9 @@ from pdcast.util.type_hints import numeric
 from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, register, subtype
 import pdcast.types.complex as complex_types
+
+
+# TODO: long double types need to be conditional using @register syntax
 
 
 ##################################
@@ -39,10 +42,10 @@ class FloatMixin:
 
     def downcast(
         self,
-        series: cast.SeriesWrapper,
-        tol: Tolerance = cast.defaults.tol,
+        series: convert.SeriesWrapper,
+        tol: Tolerance,
         smallest: CompositeType = None
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Reduce the itemsize of a float type to fit the observed range."""
         # get downcast candidates
         smaller = self.smaller
@@ -103,15 +106,15 @@ class FloatMixin:
     @dispatch
     def round(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         decimals: int = 0,
         rule: str = "half_even"
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Round a floating point series to the given number of decimal places
         using the specified rounding rule.
         """
-        rule = cast.validate_rounding(rule)
-        return cast.SeriesWrapper(
+        rule = convert.validate_rounding(rule)
+        return convert.SeriesWrapper(
             round_float(series.rectify().series, rule=rule, decimals=decimals),
             hasnans=series.hasnans,
             element_type=series.element_type
@@ -120,9 +123,9 @@ class FloatMixin:
     @dispatch
     def snap(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tol: numeric = 1e-6
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Snap each element of the series to the nearest integer if it is
         within the specified tolerance.
         """
@@ -131,7 +134,7 @@ class FloatMixin:
             return series.copy()
 
         rounded = self.round(series, rule="half_even")
-        return cast.SeriesWrapper(
+        return convert.SeriesWrapper(
             series.series.where((
                 (series.series - rounded).abs() > tol.real),
                 rounded.series
@@ -142,11 +145,11 @@ class FloatMixin:
 
     def snap_round(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         tol: numeric,
         rule: str,
         errors: str
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Snap a series to the nearest integer within `tol`, and then round
         any remaining results according to the given rule.  Rejects any outputs
         that are not integer-like by the end of this process.
@@ -178,13 +181,13 @@ class FloatMixin:
 
     def to_boolean(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert floating point data to a boolean data type."""
         series = self.snap_round(
             series,
@@ -197,14 +200,14 @@ class FloatMixin:
 
     def to_integer(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert floating point data to an integer data type."""
         series = self.snap_round(
             series,
@@ -222,7 +225,7 @@ class FloatMixin:
 
     def to_datetime(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -231,7 +234,7 @@ class FloatMixin:
         since: Epoch,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
         # 2-step conversion: float -> decimal, decimal -> datetime
         transfer_type = resolve.resolve_type(decimal.Decimal)
@@ -254,7 +257,7 @@ class FloatMixin:
 
     def to_timedelta(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -262,7 +265,7 @@ class FloatMixin:
         since: Epoch,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
         # 2-step conversion: float -> decimal, decimal -> timedelta
         transfer_type = resolve.resolve_type(decimal.Decimal)
@@ -288,11 +291,11 @@ class LongDoubleSpecialCase:
 
     def to_decimal(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """A special case of FloatMixin.to_decimal() that bypasses `TypeError:
         conversion from numpy.float128 to Decimal is not supported`.
         """
@@ -315,7 +318,7 @@ class LongDoubleSpecialCase:
 @generic
 class FloatType(FloatMixin, AtomicType):
 
-    conversion_func = cast.to_float  # all subtypes/backend inherit this
+    conversion_func = convert.to_float  # all subtypes/backend inherit this
     name = "float"
     aliases = {float, "float", "floating", "f"}
     dtype = np.dtype(np.float64)

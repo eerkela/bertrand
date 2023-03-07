@@ -10,6 +10,7 @@ In ``pdcast``, types can be specified in one of three ways:
 #.  by providing an appropriate string in the
     :ref:`type specification mini-language <mini_language>`.
 
+Any specifier that is valid in numpy or pandas is also valid in ``pdcast``.
 Here are some examples of valid type specifiers:
 
 .. doctest:: type_resolution
@@ -53,69 +54,104 @@ Here are some examples of valid type specifiers:
     >>> pdcast.resolve_type("sparse[categorical[int]]")
     SparseType(wrapped=CategoricalType(wrapped=IntegerType(), levels=None), fill_value=<NA>)
 
-Aliases
--------
-A complete mapping from every alias that is currently recognized by
-``resolve_type()`` to the corresponding type definition can be obtained by
-calling ``pdcast.AtomicType.registry.aliases``
-
-.. note::
-
-    This includes aliases of every type, from strings to ``dtype`` objects and
-    raw python classes.  It is guaranteed to be up-to-date.
-
 Type Index
 ----------
 Below is a complete list of all the types that come prepackaged with
-``pdcast``, in hierarchical order.  Each type is listed along with all of its
-potential backends in square brackets, separated by slashes.  Any one of these
-can be supplied to ``pdcast.resolve_type()`` via the
+``pdcast``.  Each can be supplied to ``pdcast.resolve_type()`` via the
 :ref:`type specification mini-language <mini_language>` to retrieve the type in
 question.
 
-* ``bool[numpy/pandas/python]``
-* ``int[numpy/pandas/python]``
+.. list-table::
+    :header-rows: 1
+    :align: center
 
-    * ``signed[numpy/pandas/python]``
-
-        * ``int8[numpy/pandas]``
-        * ``int16[numpy/pandas]``
-        * ``int32[numpy/pandas]```
-        * ``int64[numpy/pandas]``
-
-    * ``unsigned[numpy/pandas]``
-
-        * ``uint8[numpy/pandas]``
-        * ``uint16[numpy/pandas]``
-        * ``uint32[numpy/pandas]``
-        * ``uint64[numpy/pandas]``
-
-* ``float[numpy/python]``
-
-    * ``float16[numpy]``
-    * ``float32[numpy]``
-    * ``float64[numpy/python]``
-    * ``float80[numpy]``\ [#longdouble]_
-
-* ``complex[numpy/python]``
-
-    * ``complex64[numpy]``
-    * ``complex128[numpy/python]``
-    * ``complex160[numpy]``\ [#complex_longdouble]_
-
-* ``decimal[python]``
-* ``datetime[numpy/pandas/python]``
-* ``timedelta[numpy/pandas/python]``
-* ``string[pyarrow/python]``\ [#pyarrow]_
-* ``object``
-* ``sparse``
-* ``categorical``
-
-.. NOTE: raw html section header does not appear in TOC tree
-
-.. raw:: html
-
-    <h2>Footnotes</h2>
+    * - Type
+      - Backends
+      - Subtypes
+    * - ``bool``
+      - numpy, pandas, python
+      - 
+    * - ``int``
+      - numpy, pandas, python
+      - ``signed``, ``unsigned``
+    * - ``signed``
+      - numpy, pandas, python
+      - ``int8``, ``int16``, ``int32``, ``int64``
+    * - ``unsigned``
+      - numpy, pandas
+      - ``uint8``, ``uint16``, ``uint32``, ``uint64``
+    * - ``int8``
+      - numpy, pandas
+      - 
+    * - ``int16``
+      - numpy, pandas
+      - 
+    * - ``int32``
+      - numpy, pandas
+      - 
+    * - ``int64``
+      - numpy, pandas
+      - 
+    * - ``uint8``
+      - numpy, pandas
+      - 
+    * - ``uint16``
+      - numpy, pandas
+      - 
+    * - ``uint32``
+      - numpy, pandas
+      - 
+    * - ``uint64``
+      - numpy, pandas
+      - 
+    * - ``float``
+      - numpy, python
+      - ``float16``, ``float32``, ``float64``, ``float80``\ [#longdouble]_
+    * - ``float16``
+      - numpy
+      - 
+    * - ``float32``
+      - numpy
+      - 
+    * - ``float64``
+      - numpy, python
+      - 
+    * - ``float80``\ [#longdouble]_
+      - numpy
+      - 
+    * - ``complex``
+      - numpy, python
+      - ``complex64``, ``complex128``, ``complex160``\ [#complex_longdouble]_
+    * - ``complex64``
+      - numpy
+      - 
+    * - ``complex128``
+      - numpy, python
+      - 
+    * - ``complex160``\ [#complex_longdouble]_
+      - numpy
+      - 
+    * - ``decimal``
+      - python
+      - 
+    * - ``datetime``
+      - numpy, pandas, python
+      - 
+    * - ``timedelta``
+      - numpy, pandas, python
+      - 
+    * - ``string``
+      - python, pyarrow [#pyarrow]_
+      - 
+    * - ``object``
+      - [#object]_
+      - 
+    * - ``sparse``
+      - [#adapter]_
+      - 
+    * - ``categorical``
+      - [#adapter]_
+      - 
 
 .. [#longdouble] This is an alias for an `x86 extended precision float (long double) <https://en.wikipedia.org/wiki/Extended_precision#x86_extended_precision_format>`_ 
     and may not be exposed on every system.  Numpy defines this as either a
@@ -127,3 +163,49 @@ question.
     from this, and is always accurate for the system in question.
 .. [#complex_longdouble] Complex equivalent of [1]
 .. [#pyarrow] "pyarrow" backend requires PyArrow>=1.0.0.
+.. [#object] by default, object types describe *any* raw python type.  See
+    the API docs for more information.
+.. [#adapter] These are types that modify other types.  They must be provided
+    with another type as their first argument.  See the API docs for more
+    information.
+
+Aliases
+-------
+A complete mapping from every alias that is currently recognized by
+``resolve_type()`` to the corresponding type definition can be obtained by
+calling ``pdcast.AtomicType.registry.aliases``.  This is guaranteed to be
+up-to-date at the time it is invoked.
+
+.. note::
+
+    This includes aliases of every type, from strings and ``dtype`` objects to
+    raw python classes.
+
+Some aliases (such as ``"char"``, ``"short"``, ``"long"``, etc.) may be
+platform-specific.  These are interpreted as if they were literal C types,
+which always map to their
+`numpy counterparts <https://numpy.org/doc/stable/user/basics.types.html#data-types>`_.
+They can be used interchangeably with their fixed-width alternatives to reflect
+current system configuration.
+
+For example, on a 64-bit x86-64 platform:
+
+.. doctest:: type_resolution
+
+    >>> pdcast.resolve_type("char")  # C char
+    Int8Type()
+    >>> pdcast.resolve_type("short int")  # C short
+    Int16Type()
+    >>> pdcast.resolve_type("signed intc")  # C int
+    Int32Type()
+    >>> pdcast.resolve_type("unsigned long integer")  # C unsigned long
+    UInt64Type()
+    >>> pdcast.resolve_type("longlong")  # C long long
+    Int64Type()
+    >>> pdcast.resolve_type("ssize_t")  # C pointer size
+    Int64Type()
+
+These might be different on 32-bit platforms, or on those that do not use the
+x86-64 instruction set (such as ARM, RISC-V, etc.).
+
+When in doubt, always prefer the platform-independent alternatives.

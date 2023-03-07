@@ -4,8 +4,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-cimport pdcast.cast as cast
-import pdcast.cast as cast
+cimport pdcast.convert as convert
+import pdcast.convert as convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -82,8 +82,8 @@ class SparseType(AdapterType):
 
     def apply_adapters(
         self,
-        series: cast.SeriesWrapper
-    ) -> cast.SeriesWrapper:
+        series: convert.SeriesWrapper
+    ) -> convert.SeriesWrapper:
         """Convert a series into a sparse format with the given fill_value."""
         # evaluate adapters from the inside out
         series = super().apply_adapters(series)
@@ -106,6 +106,6 @@ class SparseType(AdapterType):
             if fill_value in resolve.na_strings:
                 parsed = resolve.na_strings[fill_value]
             else:
-                parsed = cast.cast(fill_value, instance)[0]
+                parsed = convert.cast(fill_value, instance)[0]
 
         return cls(wrapped=instance, fill_value=parsed)

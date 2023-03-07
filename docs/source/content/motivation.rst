@@ -748,9 +748,9 @@ to work at all.
 
     >>> import pdcast.attach
 
-    >>> series1.check_type("string")
+    >>> series1.typecheck("string")
     True
-    >>> series2.check_type("string")
+    >>> series2.typecheck("string")
     False
 
 And it even works on ``dtype=object`` series:
@@ -763,7 +763,7 @@ And it even works on ``dtype=object`` series:
     1    bar
     2    baz
     dtype: object
-    >>> series.check_type("string")
+    >>> series.typecheck("string")
     True
 
 This is accomplished by a combination of *inference* and *validation*.
@@ -838,7 +838,7 @@ passing it to ``pdcast.resolve_type()`` like so:
     >>> pdcast.resolve_type(complex)
     ComplexType()
 
-``pdcast.check_type()`` implicitly calls this on its first argument.
+``pdcast.typecheck()`` implicitly calls this on its first argument.
 
 .. note::
 
@@ -874,7 +874,7 @@ By default, this also applies to any subtypes of the comparison type.
     True
 
 This returns ``True`` because ``int16[numpy]`` is a subtype of ``int``.  In
-this manner, ``pdcast.check_type()`` operates in a way similar to the built-in
+this manner, ``pdcast.typecheck()`` operates in a way similar to the built-in
 ``isinstance()`` function, extending it to vectorized data.
 
 .. TODO: talk about exact comparisons and the use of composite types

@@ -8,8 +8,8 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-cimport pdcast.cast as cast
-import pdcast.cast as cast
+cimport pdcast.convert as convert
+import pdcast.convert as convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -663,7 +663,7 @@ cdef class AtomicType(ScalarType):
 
     # Default fields.  These can be overridden in AtomicType definitions to
     # customize behavior.
-    conversion_func = cast.to_object
+    conversion_func = convert.to_object
     type_def = None
     dtype = np.dtype("O")
     itemsize = None
@@ -888,7 +888,7 @@ cdef class AtomicType(ScalarType):
         """Strip any adapters that have been attached to this AtomicType."""
         return self
 
-    def upcast(self, series: cast.SeriesWrapper) -> AtomicType:
+    def upcast(self, series: convert.SeriesWrapper) -> AtomicType:
         """Attempt to upcast an AtomicType to fit the observed range of a
         series.
         """
@@ -922,9 +922,9 @@ cdef class AtomicType(ScalarType):
 
     def make_categorical(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         levels: list
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert a SeriesWrapper of the associated type into a categorical
         format, with the given levels.
 
@@ -937,7 +937,7 @@ cdef class AtomicType(ScalarType):
             categorical_type = pd.CategoricalDtype(
                 pd.Index(levels, dtype=self.dtype)
             )
-        return cast.SeriesWrapper(
+        return convert.SeriesWrapper(
             series.series.astype(categorical_type),
             hasnans=series.hasnans
             # element_type is set in AdapterType.apply_adapters()
@@ -945,9 +945,9 @@ cdef class AtomicType(ScalarType):
 
     def make_sparse(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         fill_value: Any
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert a SeriesWrapper of the associated type into a sparse format,
         with the given fill value.
 
@@ -957,7 +957,7 @@ cdef class AtomicType(ScalarType):
         if fill_value is None:
             fill_value = self.na_value
         sparse_type = pd.SparseDtype(series.dtype, fill_value)
-        return cast.SeriesWrapper(
+        return convert.SeriesWrapper(
             series.series.astype(sparse_type),
             hasnans=series.hasnans
             # element_type is set in AdapterType.apply_adapters()
@@ -965,11 +965,11 @@ cdef class AtomicType(ScalarType):
 
     def to_boolean(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert generic data to a boolean data type.
 
         Note: this method does not do any cleaning/pre-processing of the
@@ -985,12 +985,12 @@ cdef class AtomicType(ScalarType):
 
     def to_integer(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert generic data to an integer data type.
 
         Note: this method does not do any cleaning/pre-processing of the
@@ -1010,13 +1010,13 @@ cdef class AtomicType(ScalarType):
 
     def to_float(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert boolean data to a floating point data type."""
         series = series.astype(dtype, errors=errors)
         if downcast is not None:
@@ -1025,13 +1025,13 @@ cdef class AtomicType(ScalarType):
 
     def to_complex(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert boolean data to a complex data type."""
         series = series.astype(dtype, errors=errors)
         if downcast is not None:
@@ -1040,22 +1040,22 @@ cdef class AtomicType(ScalarType):
 
     def to_decimal(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert boolean data to a decimal data type."""
         return series.astype(dtype, errors=errors)
 
     def to_string(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         format: str,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert arbitrary data to a string data type.
 
         Override this to change the behavior of the generic `to_string()` and
@@ -1071,12 +1071,12 @@ cdef class AtomicType(ScalarType):
 
     def to_object(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert arbitrary data to an object data type."""
         direct = call is None
         if direct:
@@ -1258,8 +1258,8 @@ cdef class AdapterType(ScalarType):
 
     def apply_adapters(
         self,
-        series: cast.SeriesWrapper
-    ) -> cast.SeriesWrapper:
+        series: convert.SeriesWrapper
+    ) -> convert.SeriesWrapper:
         """Given an unwrapped conversion result, apply all the necessary logic
         to bring it into alignment with this AdapterType and all its children.
 
@@ -1836,7 +1836,7 @@ cdef int validate_dispatch_signature(object call) except -1:
     cdef object sig = inspect.signature(call)
     cdef object first_type = list(sig.parameters.values())[1].annotation
     cdef object return_type = sig.return_annotation
-    cdef set valid_annotations = {"SeriesWrapper", cast.SeriesWrapper}
+    cdef set valid_annotations = {"SeriesWrapper", convert.SeriesWrapper}
 
     # NOTE: methods defined in .pyx files will store their SeriesWrapper
     # annotations as strings, while those defined in .py files store them as

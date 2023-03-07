@@ -3,8 +3,8 @@ cimport numpy as np
 import pandas as pd
 import pytz
 
-cimport pdcast.cast as cast
-import pdcast.cast as cast
+cimport pdcast.convert as convert
+import pdcast.convert as convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -30,10 +30,10 @@ class BooleanMixin:
 
     def to_decimal(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert boolean data into an equivalent decimal representation."""
         series = series + dtype.type_def(0)  # ~2x faster than loop
         series.element_type = dtype
@@ -41,7 +41,7 @@ class BooleanMixin:
 
     def to_datetime(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -50,7 +50,7 @@ class BooleanMixin:
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert boolean data into an equivalent datetime representation."""
         # 2-step conversion: bool -> int, int -> datetime
         transfer_type = resolve.resolve_type(int)
@@ -74,7 +74,7 @@ class BooleanMixin:
 
     def to_timedelta(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -82,7 +82,7 @@ class BooleanMixin:
         since: Epoch,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
         transfer_type = resolve.resolve_type(int)
         series = self.to_integer(
@@ -113,7 +113,7 @@ class BooleanMixin:
 class BooleanType(BooleanMixin, AtomicType):
     """Boolean supertype."""
 
-    conversion_func = cast.to_boolean  # all subtypes/backends inherit this
+    conversion_func = convert.to_boolean  # all subtypes/backends inherit this
     name = "bool"
     aliases = {bool, "bool", "boolean", "bool_", "bool8", "b1", "?"}
     dtype = np.dtype(np.bool_)

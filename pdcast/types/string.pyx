@@ -6,8 +6,8 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-cimport pdcast.cast as cast
-import pdcast.cast as cast
+cimport pdcast.convert as convert
+import pdcast.convert as convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -39,7 +39,7 @@ except ImportError:
 
 class StringMixin:
 
-    conversion_func = cast.to_string
+    conversion_func = convert.to_string
 
     #############################
     ####    SERIES METHODS   ####
@@ -47,14 +47,14 @@ class StringMixin:
 
     def to_boolean(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         true: set,
         false: set,
         errors: str,
         ignore_case: bool,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert string data to a boolean data type."""
         # configure lookup dict
         cdef dict lookup = dict.fromkeys(true, 1) | dict.fromkeys(false, 0)
@@ -80,12 +80,12 @@ class StringMixin:
 
     def to_integer(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         base: int,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert string data to an integer data type with the given base."""
         transfer_type = resolve.resolve_type(int)
         series = series.apply_with_errors(
@@ -103,12 +103,12 @@ class StringMixin:
 
     def to_float(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert string data to a floating point data type."""
         transfer_type = resolve.resolve_type("decimal")
         series = self.to_decimal(series, transfer_type, errors=errors)
@@ -122,13 +122,13 @@ class StringMixin:
 
     def to_complex(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         downcast: bool | BaseType,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert string data to a complex data type."""
         # NOTE: this is technically a 3-step conversion: (1) str -> str,
         # (2) str -> float, (3) float -> complex.  This allows for full
@@ -136,12 +136,12 @@ class StringMixin:
 
         # (1) separate real, imaginary components via regex
         components = series.str.extract(complex_pattern)
-        real = cast.SeriesWrapper(
+        real = convert.SeriesWrapper(
             components["real"],
             hasnans=series.hasnans,
             element_type=self
         )
-        imag = cast.SeriesWrapper(
+        imag = convert.SeriesWrapper(
             components["imag"],
             hasnans=series.hasnans,
             element_type=self
@@ -176,16 +176,16 @@ class StringMixin:
 
     def to_datetime(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert string data into a datetime data type."""
         return dtype.from_string(series, dtype=dtype, **unused)
 
     def to_timedelta(
         self,
-        series: cast.SeriesWrapper,
+        series: convert.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -193,7 +193,7 @@ class StringMixin:
         as_hours: bool,
         errors: str,
         **unused
-    ) -> cast.SeriesWrapper:
+    ) -> convert.SeriesWrapper:
         """Convert string data into a timedelta representation."""
         # 2-step conversion: str -> int, int -> timedelta
         transfer_type = resolve.resolve_type(int)
@@ -223,7 +223,7 @@ class StringMixin:
 class StringType(StringMixin, AtomicType):
     """String supertype."""
 
-    conversion_func = cast.to_string  # all subtypes/backends inherit this
+    conversion_func = convert.to_string  # all subtypes/backends inherit this
     name = "string"
     aliases = {
         str,

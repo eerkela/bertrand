@@ -100,7 +100,7 @@ a pandas object:
    >>> import pdcast.attach
 
    >>> df = pd.DataFrame({"a": [1, 2], "b": [1., 2.], "c": ["a", "b"]})
-   >>> df.check_type({"a": "int", "b": "float", "c": "string"})
+   >>> df.typecheck({"a": "int", "b": "float", "c": "string"})
    True
 
 It can also be used to convert data from one representation to another.  Here

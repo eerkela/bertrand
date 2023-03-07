@@ -6,11 +6,12 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from pdcast.types import AdapterType, AtomicType, CompositeType
-from pdcast.cast import SeriesWrapper
-from pdcast.cast import cast as cast_standalone
+from pdcast.check import typecheck as typecheck_standalone
+from pdcast.convert import SeriesWrapper
+from pdcast.convert import cast as cast_standalone
 from pdcast.detect import detect_type
 from pdcast.resolve import resolve_type
+from pdcast.types import AdapterType, AtomicType, CompositeType
 
 from pdcast.util.type_hints import type_specifier
 
@@ -25,24 +26,9 @@ def cast(self, dtype: type_specifier = None, **kwargs) -> pd.Series:
     return cast_standalone(self, dtype=dtype, **kwargs)
 
 
-def check_type(self, dtype: type_specifier, exact: bool = False) -> bool:
+def typecheck(self, dtype: type_specifier, exact: bool = False) -> bool:
     """Do a schema validation check on a pandas Series object."""
-    series_type = detect_type(self)
-    target_type = resolve_type(dtype)
-
-    # enforce strict match
-    if exact:
-        if isinstance(target_type, CompositeType):
-            target_type = set(target_type)
-        else:
-            target_type = {target_type}
-
-        if isinstance(series_type, CompositeType):
-            return all(t in target_type for t in series_type)
-        return series_type in target_type
-
-    # include subtypes
-    return series_type in target_type
+    return typecheck_standalone(self, dtype, exact=exact)
 
 
 def element_type(self) -> AdapterType | AtomicType | CompositeType:
@@ -88,7 +74,7 @@ pd.Series.__getattribute__ = new_getattribute
 
 
 pd.Series.cast = cast
-pd.Series.check_type = check_type
+pd.Series.typecheck = typecheck
 pd.Series.element_type = property(element_type)
 
 
@@ -103,7 +89,7 @@ def detach() -> None:
     """
     pd.Series.__getattribute__ = orig_getattribute
     del pd.Series.cast
-    del pd.Series.check_type
+    del pd.Series.typecheck
     del pd.Series.element_type
 
     # prepare to reimport

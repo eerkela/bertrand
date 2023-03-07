@@ -4,7 +4,7 @@ Tutorial: bfloat16
 ==================
 This tutorial will walk through the necessary steps to define and integrate a
 new type into the ``pdcast`` ecosystem.  By the end of it, you should be able
-to build arbitrary object types to use with ``cast()``, ``check_type()``, and
+to build arbitrary object types to use with ``cast()``, ``typecheck()``, and
 other dispatched methods as you see fit.
 
 "Brain" floats
@@ -169,7 +169,7 @@ To this:
 Allowing multiple backends
 --------------------------
 So far, we have a perfectly usable ``BFloat16Type`` for the purposes of
-``check_type()`` tests, provided that ``tf.bfloat16`` objects are the only ones
+``typecheck()`` tests, provided that ``tf.bfloat16`` objects are the only ones
 we ever encounter.  What if that's not the case?
 
 TensorFlow isn't the only framework that defines this type.
