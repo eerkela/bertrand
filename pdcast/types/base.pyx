@@ -612,49 +612,12 @@ cdef class TypeRegistry:
 cdef class AtomicType(ScalarType):
     """Base type for all user-defined atomic types.
 
-    Notes
-    ----
-    This is a metaclass.  Any time another class inherits from it, that class
-    must conform to the standard AtomicType interface unless `ignore` is
-    explicitly set to `True`, like so:
-
-        ```
-        UnregisteredType(AtomicType, ignore=True)
-        ```
-
-    If `ignore=False` (the default behavior), then the inheriting class
-    must define certain required fields, as follows:
-        * `name: str`: a class property specifying a unique name to use when
-            generating string representations of the given type.
-        * `aliases: dict`: a dictionary whose keys represent aliases that can be
-            resolved by the `resolve_type()` factory function.  Each key must
-            be unique, and must map to another dictionary containing keyword
-            arguments to that type's `__init__()` method.
-        * `slugify(cls, ...) -> str`: a classmethod with the same argument
-            signature as `__init__()`.  This must return a unique string
-            representation for the given type, incorporating both its `name`
-            and any arguments passed to it.  The uniqueness of this string must
-            be emphasized, since it is directly hashed to identify flyweights
-            of the given type.
-        * `kwargs: dict`: a runtime `@property` that returns the same **kwargs
-            dict that was supplied to create the AtomicType instance it is
-            called from.
-    A subclass can also override the following methods to customize its
-    behavior:
-        * `_generate_subtypes(self, types: set) -> frozenset`:
-        * `_generate_supertype(self, type_def: type) -> AtomicType`:
-        * `contains(self, other) -> bool`:
-        * `resolve(cls, *args) -> AtomicType`:
-        * `detect(cls, example: Any) -> AtomicType`:
-        * `to_boolean(...)`:
-        * `to_integer(...)`:
-        * `to_float(...)`:
-        * `to_complex(...)`:
-        * `to_decimal(...)`:
-        * `to_datetime(...)`:
-        * `to_timedelta(...)`:
-        * `to_string(...)`:
-        * `to_object(...)`:
+    AtomicTypes hold all the necessary implementation logic for dispatched
+    methods, conversions, and type-related functionality.  They can be linked
+    together into tree structures to represent subtypes, and can be marked as
+    generic to hold different implementations.  If you're looking to extend
+    ``pdcast``, it will most likely boil down to writing a new AtomicType.
+    Luckily, this is :ref:`easy to do <tutorial>`.
     """
 
     # Internal fields.  These should never be overridden.

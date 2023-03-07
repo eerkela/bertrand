@@ -24,11 +24,11 @@
 
 .. toctree::
    :hidden:
-   :maxdepth: 2
+   :maxdepth: 3
 
    Motivation <content/motivation>
    Types <content/types>
    Implementation <content/implementation>
    Tutorial: bfloat16 <content/tutorial>
-   API <content/api>
+   API <content/api/api>
    Changelog <content/changelog>

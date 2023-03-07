@@ -12,15 +12,31 @@ def typecheck(
     exact: bool = False
 ) -> bool:
     """Check whether example data contains elements of the given type.
-    
+
+    Parameters
+    ----------
+    :param data: The example data whose type will be checked.
+
+    Attached
+    --------
     If ``pdcast.attach`` is imported, this function is directly attached to
     ``pd.Series`` objects, allowing users to omit the ``data`` argument.
 
-    .. doctest::
+    .. testsetup:: typecheck_test
+
+        import decimal
+
+    .. doctest:: typecheck_test
 
         >>> import pandas as pd
         >>> import pdcast.attach
         >>> pd.Series([1, 2, 3]).typecheck(int)
+        True
+        >>> pd.Series([1, 2, 3]).typecheck(float)
+        False
+        >>> pd.Series([1, 2, 3]).typecheck(int, exact=True)
+        False
+        >>> pd.Series([1, 2, 3]).typecheck("int64[numpy]", exact=True)
         True
     """
     cdef BaseType data_type = detect_type(data)

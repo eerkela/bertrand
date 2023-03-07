@@ -1,35 +1,25 @@
-API Reference
-=============
-
 .. currentmodule:: pdcast
 
+API Reference
+=============
+This page gives an overfiew of all public ``pdcast`` objects, functions, and
+methods.  All class and functions exposed in the base ``pdcast`` namespace are
+considered public.
 
-Detect & Infer
---------------
 
-.. autosummary::
-    :toctree: ../generated/
+.. toctree::
+    :maxdepth: 1
 
-    typecheck
-    detect_type
-    resolve_type
+    Detect & Resolve <check>
+    Cast <cast>
+    Types <types>
+    Attach <attach>
+    AtomicType <atomic>
+    AdapterType <adapter>
+    CompositeType <composite>
+    SeriesWrapper <series>
 
-Cast
-----
 
-.. autosummary::
-    :toctree: ../generated/
-
-    cast
-    to_boolean
-    to_integer
-    to_float
-    to_complex
-    to_decimal
-    to_datetime
-    to_timedelta
-    to_string
-    to_object
 
 
 
