@@ -1,58 +1,6 @@
 Types
 =====
-In ``pdcast``, types can be specified in one of three ways:
 
-#.  by providing an ``np.dtype`` or ``pd.api.extensions.ExtensionDtype``
-    object.
-#.  by providing a raw python type.  If the type has not been registered as an
-    AtomicType alias, a new ``ObjectType`` will be built around the class
-    definition.
-#.  by providing an appropriate string in the
-    :ref:`type specification mini-language <mini_language>`.
-
-Any specifier that is valid in numpy or pandas is also valid in ``pdcast``.
-Here are some examples of valid type specifiers:
-
-.. doctest:: type_resolution
-
-    >>> import numpy as np
-    >>> import pandas as pd
-    >>> import pdcast
-
-    >>> class CustomObj:
-    ...     pass
-
-    # raw classes
-    >>> pdcast.resolve_type(int)
-    IntegerType()
-    >>> pdcast.resolve_type(np.float32)
-    NumpyFloat32Type()
-    >>> pdcast.resolve_type(CustomObj)
-    ObjectType(type_def=<class 'CustomObj'>)
-
-    # dtype objects
-    >>> pdcast.resolve_type(np.dtype("?"))
-    NumpyBooleanType()
-    >>> pdcast.resolve_type(np.dtype("M8[30s]"))
-    NumpyDatetime64Type(unit='s', step_size=30)
-    >>> pdcast.resolve_type(pd.UInt8Dtype())
-    PandasUInt8Type()
-
-    # type specification mini language
-    >>> pdcast.resolve_type("string")
-    StringType()
-    >>> pdcast.resolve_type("timedelta[python]")
-    PythonTimedeltaType()
-    >>> pdcast.resolve_type("datetime[pandas, US/Pacific]")
-    PandasTimestampType(tz=<DstTzInfo 'US/Pacific' LMT-1 day, 16:07:00 STD>)
-    >>> pdcast.resolve_type("sparse[decimal]")
-    SparseType(wrapped=DecimalType(), fill_value=Decimal('NaN'))
-    >>> pdcast.resolve_type("sparse[bool, False]")
-    SparseType(wrapped=BooleanType(), fill_value=False)
-    >>> pdcast.resolve_type("categorical[str[pyarrow]]")
-    CategoricalType(wrapped=PyArrowStringType(), levels=None)
-    >>> pdcast.resolve_type("sparse[categorical[int]]")
-    SparseType(wrapped=CategoricalType(wrapped=IntegerType(), levels=None), fill_value=<NA>)
 
 Type Index
 ----------
@@ -69,79 +17,103 @@ question.
       - Backends
       - Subtypes
     * - ``bool``
-      - numpy, pandas, python
+      - :doc:`numpy <../generated/pdcast.NumpyBooleanType>`,
+        :doc:`pandas <../generated/pdcast.PandasBooleanType>`,
+        :doc:`python <../generated/pdcast.PythonBooleanType>`
       - 
     * - ``int``
-      - numpy, pandas, python
+      - :doc:`numpy <../generated/pdcast.NumpyIntegerType>`,
+        :doc:`pandas <../generated/pdcast.PandasIntegerType>`,
+        :doc:`python <../generated/pdcast.PythonIntegerType>`
       - ``signed``, ``unsigned``
     * - ``signed``
-      - numpy, pandas, python
+      - :doc:`numpy <../generated/pdcast.NumpySignedIntegerType>`,
+        :doc:`pandas <../generated/pdcast.PandasSignedIntegerType>`,
+        :doc:`python <../generated/pdcast.PythonIntegerType>`
       - ``int8``, ``int16``, ``int32``, ``int64``
     * - ``unsigned``
-      - numpy, pandas
+      - :doc:`numpy <../generated/pdcast.NumpyUnsignedIntegerType>`,
+        :doc:`pandas <../generated/pdcast.PandasUnsignedIntegerType>`
       - ``uint8``, ``uint16``, ``uint32``, ``uint64``
     * - ``int8``
-      - numpy, pandas
+      - :doc:`numpy <../generated/pdcast.NumpyInt8Type>`,
+        :doc:`pandas <../generated/pdcast.PandasInt8Type>`
       - 
     * - ``int16``
-      - numpy, pandas
+      - :doc:`numpy <../generated/pdcast.NumpyInt16Type>`,
+        :doc:`pandas <../generated/pdcast.PandasInt16Type>`
       - 
     * - ``int32``
-      - numpy, pandas
+      - :doc:`numpy <../generated/pdcast.NumpyInt32Type>`,
+        :doc:`pandas <../generated/pdcast.PandasInt32Type>`
       - 
     * - ``int64``
-      - numpy, pandas
+      - :doc:`numpy <../generated/pdcast.NumpyInt64Type>`,
+        :doc:`pandas <../generated/pdcast.PandasInt64Type>`
       - 
     * - ``uint8``
-      - numpy, pandas
+      - :doc:`numpy <../generated/pdcast.NumpyUInt8Type>`,
+        :doc:`pandas <../generated/pdcast.PandasUInt8Type>`
       - 
     * - ``uint16``
-      - numpy, pandas
+      - :doc:`numpy <../generated/pdcast.NumpyUInt16Type>`,
+        :doc:`pandas <../generated/pdcast.PandasUInt16Type>`
       - 
     * - ``uint32``
-      - numpy, pandas
+      - :doc:`numpy <../generated/pdcast.NumpyUInt32Type>`,
+        :doc:`pandas <../generated/pdcast.PandasUInt32Type>`
       - 
     * - ``uint64``
-      - numpy, pandas
+      - :doc:`numpy <../generated/pdcast.NumpyUInt64Type>`,
+        :doc:`pandas <../generated/pdcast.PandasUInt64Type>`
       - 
     * - ``float``
-      - numpy, python
+      - :doc:`numpy <../generated/pdcast.NumpyFloatType>`,
+        :doc:`python <../generated/pdcast.PythonFloatType>`
       - ``float16``, ``float32``, ``float64``, ``float80``\ [#longdouble]_
     * - ``float16``
-      - numpy
+      - :doc:`numpy <../generated/pdcast.NumpyFloat16Type>`
       - 
     * - ``float32``
-      - numpy
+      - :doc:`numpy <../generated/pdcast.NumpyFloat32Type>`
       - 
     * - ``float64``
-      - numpy, python
+      - :doc:`numpy <../generated/pdcast.NumpyFloat64Type>`,
+        :doc:`python <../generated/pdcast.PythonFloatType>`
       - 
     * - ``float80``\ [#longdouble]_
-      - numpy
+      - :doc:`numpy <../generated/pdcast.NumpyFloat80Type>`
       - 
     * - ``complex``
-      - numpy, python
+      - :doc:`numpy <../generated/pdcast.NumpyComplexType>`,
+        :doc:`python <../generated/pdcast.PythonComplexType>`
       - ``complex64``, ``complex128``, ``complex160``\ [#complex_longdouble]_
     * - ``complex64``
-      - numpy
+      - :doc:`numpy <../generated/pdcast.NumpyComplex64Type>`
       - 
     * - ``complex128``
-      - numpy, python
+      - :doc:`numpy <../generated/pdcast.NumpyComplex128Type>`,
+        :doc:`python <../generated/pdcast.PythonComplexType>`
       - 
     * - ``complex160``\ [#complex_longdouble]_
-      - numpy
+      - :doc:`numpy <../generated/pdcast.NumpyComplex160Type>`
       - 
     * - ``decimal``
-      - python
+      - :doc:`python <../generated/pdcast.PythonDecimalType>`
       - 
     * - ``datetime``
-      - numpy, pandas, python
+      - :doc:`numpy <../generated/pdcast.NumpyDatetime64Type>`,
+        :doc:`pandas <../generated/pdcast.PandasTimestampType>`,
+        :doc:`python <../generated/pdcast.PythonDatetimeType>`
       - 
     * - ``timedelta``
-      - numpy, pandas, python
+      - :doc:`numpy <../generated/pdcast.NumpyTimedelta64Type>`,
+        :doc:`pandas <../generated/pdcast.PandasTimedeltaType>`,
+        :doc:`python <../generated/pdcast.PythonTimedeltaType>`
       - 
     * - ``string``
-      - python, pyarrow [#pyarrow]_
+      - :doc:`python <../generated/pdcast.PythonStringType>`,
+        :doc:`pyarrow <../generated/pdcast.PyArrowStringType>` [#pyarrow]_
       - 
     * - ``object``
       - [#object]_
@@ -171,6 +143,9 @@ question.
 
 Aliases
 -------
+.. TODO: move most of this into TypeRegistry.aliases.  Just include a link and
+    an example here.
+
 A complete mapping from every alias that is currently recognized by
 ``resolve_type()`` to the corresponding type definition can be obtained by
 calling ``pdcast.AtomicType.registry.aliases``.  This is guaranteed to be

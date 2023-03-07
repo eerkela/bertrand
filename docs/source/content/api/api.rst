@@ -12,33 +12,10 @@ considered public.
 
     Detect & Resolve <check>
     Cast <cast>
-    Types <types>
     Attach <attach>
+    Types <types>
     AtomicType <atomic>
     AdapterType <adapter>
     CompositeType <composite>
     SeriesWrapper <series>
     TypeRegistry <registry>
-
-
-
-
-
-
-.. note::
-
-    .. TODO: move this into API docs
-
-    Precision loss checks can be distinguished from overflow by providing
-    ``np.inf`` to the optional ``tol`` argument, rather than supplying
-    ``errors="coerce"``.  For instance:
-
-    .. doctest::
-
-        >>> series.cast(float, tol=np.inf)
-        0    9.223372e+18
-        1    9.223372e+18
-        2    9.223372e+18
-        dtype: float64
-
-    matches the original pandas output while simultaneously rejecting overflow.

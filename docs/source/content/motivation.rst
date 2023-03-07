@@ -766,6 +766,10 @@ And it even works on ``dtype=object`` series:
     >>> series.typecheck("string")
     True
 
+
+.. TODO: Cut this down and move it to the typecheck() API docs
+
+
 This is accomplished by a combination of *inference* and *validation*.
 Inference is performed by ``pdcast.detect_type()``, which essentially
 vectorizes the built-in ``type()`` function and applies it elementwise over an
@@ -886,5 +890,15 @@ this manner, ``pdcast.typecheck()`` operates in a way similar to the built-in
 
 Expanded Support
 ----------------
-.. decimal w/ dispatched round() method
-.. datetime w/ datetime[python], datetime[numpy], .dt.tz_localize/convert()
+
+Case Study: decimals
+^^^^^^^^^^^^^^^^^^^^
+
+.. TODO: arbitrary precision arithmetic, round() method
+
+
+Case Study: datetimes
+^^^^^^^^^^^^^^^^^^^^^
+
+.. TODO: overflow limits, .dt.tz_localize/convert()
+

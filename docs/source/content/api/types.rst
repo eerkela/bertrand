@@ -3,17 +3,140 @@
 Types
 =====
 
+Boolean
+-------
+
 .. autosummary::
     :toctree: ../../generated/
 
     BooleanType
+    NumpyBooleanType
+    PandasBooleanType
+    PythonBooleanType
+
+Integer
+-------
+
+.. autosummary::
+    :toctree: ../../generated/
+
     IntegerType
+    NumpyIntegerType
+    PandasIntegerType
+    PythonIntegerType
+    SignedIntegerType
+    NumpySignedIntegerType
+    PandasSignedIntegerType
+    UnsignedIntegerType
+    NumpyUnsignedIntegerType
+    PandasUnsignedIntegerType
+    Int8Type
+    NumpyInt8Type
+    PandasInt8Type
+    Int16Type
+    NumpyInt16Type
+    PandasInt16Type
+    Int32Type
+    NumpyInt32Type
+    PandasInt32Type
+    Int64Type
+    NumpyInt64Type
+    PandasInt64Type
+    UInt8Type
+    NumpyUInt8Type
+    PandasUInt8Type
+    UInt16Type
+    NumpyUInt16Type
+    PandasUInt16Type
+    UInt32Type
+    NumpyUInt32Type
+    PandasUInt32Type
+    UInt64Type
+    NumpyUInt64Type
+    PandasUInt64Type
+
+Float
+-----
+
+.. autosummary::
+    :toctree: ../../generated/
+
     FloatType
+    NumpyFloatType
+    PythonFloatType
+    Float16Type
+    NumpyFloat16Type
+    Float32Type
+    NumpyFloat32Type
+    Float64Type
+    NumpyFloat64Type
+    Float80Type
+    NumpyFloat80Type
+    Float80Type
+
+Complex
+-------
+
+.. autosummary::
+    :toctree: ../../generated/
+
     ComplexType
+    NumpyComplexType
+    PythonComplexType
+    Complex64Type
+    NumpyComplex64Type
+    Complex128Type
+    NumpyComplex128Type
+    Complex160Type
+    NumpyComplex160Type
+
+Decimal
+-------
+
+.. autosummary::
+    :toctree: ../../generated/
+
     DecimalType
+    PythonDecimalType
+
+Datetime
+--------
+
+.. autosummary::
+    :toctree: ../../generated/
+
     DatetimeType
+    PandasTimestampType
+    PythonDatetimeType
+    NumpyDatetime64Type
+
+Timedelta
+---------
+
+.. autosummary::
+    :toctree: ../../generated/
+
     TimedeltaType
+    PandasTimedeltaType
+    PythonTimedeltaType
+    NumpyTimedelta64Type
+
+String
+------
+
+.. autosummary::
+    :toctree: ../../generated/
+
     StringType
+    PythonStringType
+    PyArrowStringType
+
+Object
+------
+
+.. autosummary::
+    :toctree: ../../generated/
+
     ObjectType
 
 .. _mini_language:
@@ -51,7 +174,7 @@ as generic.
 
 Datetime & timedelta types
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
-For datetimes and timedeltas, this is used to specify units, step
+For datetimes and timedeltas, this mechanism is used to specify units, step
 sizes, and/or timezones, enabling the following forms:
 
 .. doctest:: type_resolution
@@ -206,6 +329,7 @@ Or by providing an iterable to ``pdcast.resolve_type()``.
 
 Backends
 ^^^^^^^^
+.. TODO: this goes in actual @generic stub
 AtomicTypes can also be marked as being generic, allowing them to serve as
 containers for individual backends.  This can be done by appending an
 ``@generic`` decorator to its class definition, like so:

@@ -55,10 +55,11 @@ cdef class CacheValue:
 
 
 cdef class BaseType:
-    """Base type for all type objects.  This has no interface of its own and
-    merely serves to anchor inheritance.  Since Cython does not support true
-    Union types, this is the simplest way of coupling them reliably in the
-    Cython layer.
+    """Base type for all type objects.
+    
+    This has no interface of its own and merely serves to anchor inheritance.
+    Since Cython does not support python-style union types, this is the
+    simplest way of coupling them reliably in the Cython layer.
     """
 
     # TODO: put registry here?  would make it available from CompositeTypes
@@ -617,7 +618,6 @@ cdef class AtomicType(ScalarType):
     together into tree structures to represent subtypes, and can be marked as
     generic to hold different implementations.  If you're looking to extend
     ``pdcast``, it will most likely boil down to writing a new AtomicType.
-    Luckily, this is :ref:`easy to do <tutorial>`.
     """
 
     # Internal fields.  These should never be overridden.
