@@ -317,6 +317,7 @@ class LongDoubleSpecialCase:
 @register
 @generic
 class FloatType(FloatMixin, AtomicType):
+    """Generic float supertype"""
 
     conversion_func = convert.to_float  # all subtypes/backend inherit this
     name = "float"

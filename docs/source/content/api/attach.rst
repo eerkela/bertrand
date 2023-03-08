@@ -3,5 +3,6 @@
 Attach
 ======
 
+.. _dispatch:
 
 .. autodecorator:: dispatch

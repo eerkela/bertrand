@@ -362,8 +362,8 @@ Note that we don't get our original data back.  In fact we don't even end
 up on the same side of the number line, thanks to silent overflow.
 
 So, simply by converting our data, we have implicitly changed its value.  In
-contrast, ``pdcast`` requires explicit approval to
-:doc:`change data <../generated/pdcast.cast>` in this way.
+contrast, ``pdcast`` requires explicit approval to :ref:`change data <cast>` in
+this way.
 
 .. doctest:: conversions
 
@@ -723,7 +723,7 @@ by doing:
 But this is long and unwieldy, not to mention requiring a preprocessing step
 to work at all.
 
-``pdcast`` has a :doc:`better solution <../generated/pdcast.typecheck>`:
+``pdcast`` has a :ref:`better solution <typecheck>`:
 
 .. doctest:: validation
 
@@ -747,9 +747,8 @@ And it even works on ``dtype: object`` series:
     >>> series.typecheck("string")
     True
 
-This is accomplished by a combination of
-:doc:`inference <../generated/pdcast.detect_type>` and
-:doc:`validation <../generated/pdcast.CompositeType.contains>`, which can
+This is accomplished by a combination of :ref:`inference <detect_type>` and
+:doc:`validation <../generated/pdcast.AtomicType.contains>`, which can
 be customized on a per-type basis.  Since these functions do not rely on a
 potentially inaccurate ``.dtype`` field, we can apply this to arbitrary data:
 

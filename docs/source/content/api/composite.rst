@@ -15,6 +15,16 @@ Add/Remove
     CompositeType.pop
     CompositeType.discard
 
+Subtypes/Supertypes
+-------------------
+
+.. autosummary::
+    :toctree: ../../generated/
+
+    CompositeType.expand
+    CompositeType.collapse
+    CompositeType.subtypes
+
 Comparisons
 -----------
 
@@ -36,16 +46,6 @@ Membership
     CompositeType.issubset
     CompositeType.issuperset
     CompositeType.isdisjoint
-
-Subtypes/Supertypes
--------------------
-
-.. autosummary::
-    :toctree: ../../generated/
-
-    CompositeType.expand
-    CompositeType.collapse
-    CompositeType.subtypes
 
 In-place Updates
 ----------------

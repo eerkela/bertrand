@@ -1,3 +1,5 @@
+.. currentmodule:: pdcast
+
 Types
 =====
 
@@ -16,112 +18,124 @@ question.
     * - Type
       - Backends
       - Subtypes
-    * - ``bool``
-      - :doc:`numpy <../generated/pdcast.NumpyBooleanType>`,
-        :doc:`pandas <../generated/pdcast.PandasBooleanType>`,
-        :doc:`python <../generated/pdcast.PythonBooleanType>`
+    * - :class:`bool <BooleanType>`
+      - :ref:`numpy <numpy_boolean_type>`,
+        :ref:`pandas <pandas_boolean_type>`,
+        :ref:`python <python_boolean_type>`
       - 
-    * - ``int``
-      - :doc:`numpy <../generated/pdcast.NumpyIntegerType>`,
-        :doc:`pandas <../generated/pdcast.PandasIntegerType>`,
-        :doc:`python <../generated/pdcast.PythonIntegerType>`
-      - ``signed``, ``unsigned``
-    * - ``signed``
-      - :doc:`numpy <../generated/pdcast.NumpySignedIntegerType>`,
-        :doc:`pandas <../generated/pdcast.PandasSignedIntegerType>`,
-        :doc:`python <../generated/pdcast.PythonIntegerType>`
-      - ``int8``, ``int16``, ``int32``, ``int64``
-    * - ``unsigned``
-      - :doc:`numpy <../generated/pdcast.NumpyUnsignedIntegerType>`,
-        :doc:`pandas <../generated/pdcast.PandasUnsignedIntegerType>`
-      - ``uint8``, ``uint16``, ``uint32``, ``uint64``
-    * - ``int8``
-      - :doc:`numpy <../generated/pdcast.NumpyInt8Type>`,
-        :doc:`pandas <../generated/pdcast.PandasInt8Type>`
+    * - :class:`int <IntegerType>`
+      - :ref:`numpy <numpy_integer_type>`,
+        :ref:`pandas <pandas_integer_type>`,
+        :ref:`python <python_integer_type>`
+      - :class:`signed <SignedIntegerType>`,
+        :class:`unsigned <UnsignedIntegerType>`
+    * - :class:`signed <SignedIntegerType>`
+      - :ref:`numpy <numpy_signed_integer_type>`,
+        :ref:`pandas <pandas_signed_integer_type>`,
+        :ref:`python <python_integer_type>`
+      - :class:`int8 <Int8Type>`,
+        :class:`int16 <Int16Type>`,
+        :class:`int32 <Int32Type>`,
+        :class:`int64 <Int64Type>`
+    * - :class:`unsigned <UnsignedIntegerType>`
+      - :ref:`numpy <numpy_unsigned_integer_type>`,
+        :ref:`pandas <pandas_unsigned_integer_type>`
+      - :class:`uint8 <UInt8Type>`,
+        :class:`uint16 <UInt16Type>`,
+        :class:`uint32 <UInt32Type>`,
+        :class:`uint64 <UInt64Type>`
+    * - :class:`int8 <Int8Type>`
+      - :ref:`numpy <numpy_int8_type>`,
+        :ref:`pandas <pandas_int8_type>`
       - 
-    * - ``int16``
-      - :doc:`numpy <../generated/pdcast.NumpyInt16Type>`,
-        :doc:`pandas <../generated/pdcast.PandasInt16Type>`
+    * - :class:`int16 <Int16Type>`
+      - :ref:`numpy <numpy_int16_type>`,
+        :ref:`pandas <pandas_int16_type>`
       - 
-    * - ``int32``
-      - :doc:`numpy <../generated/pdcast.NumpyInt32Type>`,
-        :doc:`pandas <../generated/pdcast.PandasInt32Type>`
+    * - :class:`int32 <Int32Type>`
+      - :ref:`numpy <numpy_int32_type>`,
+        :ref:`pandas <pandas_int32_type>`
       - 
-    * - ``int64``
-      - :doc:`numpy <../generated/pdcast.NumpyInt64Type>`,
-        :doc:`pandas <../generated/pdcast.PandasInt64Type>`
+    * - :class:`int64 <Int64Type>`
+      - :ref:`numpy <numpy_int64_type>`,
+        :ref:`pandas <pandas_int64_type>`
       - 
-    * - ``uint8``
-      - :doc:`numpy <../generated/pdcast.NumpyUInt8Type>`,
-        :doc:`pandas <../generated/pdcast.PandasUInt8Type>`
+    * - :class:`uint8 <UInt8Type>`
+      - :ref:`numpy <numpy_uint8_type>`,
+        :ref:`pandas <pandas_uint8_type>`
       - 
-    * - ``uint16``
-      - :doc:`numpy <../generated/pdcast.NumpyUInt16Type>`,
-        :doc:`pandas <../generated/pdcast.PandasUInt16Type>`
+    * - :class:`uint16 <UInt16Type>`
+      - :ref:`numpy <numpy_uint16_type>`,
+        :ref:`pandas <pandas_uint16_type>`
       - 
-    * - ``uint32``
-      - :doc:`numpy <../generated/pdcast.NumpyUInt32Type>`,
-        :doc:`pandas <../generated/pdcast.PandasUInt32Type>`
+    * - :class:`uint32 <UInt32Type>`
+      - :ref:`numpy <numpy_uint32_type>`,
+        :ref:`pandas <pandas_uint32_type>`
       - 
-    * - ``uint64``
-      - :doc:`numpy <../generated/pdcast.NumpyUInt64Type>`,
-        :doc:`pandas <../generated/pdcast.PandasUInt64Type>`
+    * - :class:`uint64 <UInt64Type>`
+      - :ref:`numpy <numpy_uint64_type>`,
+        :ref:`pandas <pandas_uint64_type>`
       - 
-    * - ``float``
-      - :doc:`numpy <../generated/pdcast.NumpyFloatType>`,
-        :doc:`python <../generated/pdcast.PythonFloatType>`
-      - ``float16``, ``float32``, ``float64``, ``float80``\ [#longdouble]_
-    * - ``float16``
-      - :doc:`numpy <../generated/pdcast.NumpyFloat16Type>`
+    * - :class:`float <FloatType>`
+      - :ref:`numpy <numpy_float_type>`,
+        :ref:`python <python_float_type>`
+      - :class:`float16 <Float16Type>`,
+        :class:`float32 <Float32Type>`,
+        :class:`float64 <Float64Type>`,
+        :class:`float80 <Float80Type>`\ [#longdouble]_
+    * - :class:`float16 <Float16Type>`
+      - :ref:`numpy <numpy_float16_type>`
       - 
-    * - ``float32``
-      - :doc:`numpy <../generated/pdcast.NumpyFloat32Type>`
+    * - :class:`float32 <Float32Type>`
+      - :ref:`numpy <numpy_float32_type>`
       - 
-    * - ``float64``
-      - :doc:`numpy <../generated/pdcast.NumpyFloat64Type>`,
-        :doc:`python <../generated/pdcast.PythonFloatType>`
+    * - :class:`float64 <Float64Type>`
+      - :ref:`numpy <numpy_float64_type>`,
+        :ref:`python <python_float_type>`
       - 
-    * - ``float80``\ [#longdouble]_
-      - :doc:`numpy <../generated/pdcast.NumpyFloat80Type>`
+    * - :class:`float80 <Float80Type>`\ [#longdouble]_
+      - :ref:`numpy <numpy_float80_type>`
       - 
-    * - ``complex``
-      - :doc:`numpy <../generated/pdcast.NumpyComplexType>`,
-        :doc:`python <../generated/pdcast.PythonComplexType>`
-      - ``complex64``, ``complex128``, ``complex160``\ [#complex_longdouble]_
-    * - ``complex64``
-      - :doc:`numpy <../generated/pdcast.NumpyComplex64Type>`
+    * - :class:`complex <ComplexType>`
+      - :ref:`numpy <numpy_complex_type>`,
+        :ref:`python <python_complex_type>`
+      - :class:`complex64 <Complex64Type>`,
+        :class:`complex128 <Complex128Type>`,
+        :class:`complex160 <Complex160Type>`\ [#complex_longdouble]_
+    * - :class:`complex64 <Complex64Type>`
+      - :ref:`numpy <numpy_complex64_type>`
       - 
-    * - ``complex128``
-      - :doc:`numpy <../generated/pdcast.NumpyComplex128Type>`,
-        :doc:`python <../generated/pdcast.PythonComplexType>`
+    * - :class:`complex128 <Complex128Type>`
+      - :ref:`numpy <numpy_complex128_type>`,
+        :ref:`python <python_complex_type>`
       - 
-    * - ``complex160``\ [#complex_longdouble]_
-      - :doc:`numpy <../generated/pdcast.NumpyComplex160Type>`
+    * - :class:`complex160 <Complex160Type>`\ [#complex_longdouble]_
+      - :ref:`numpy <numpy_complex160_type>`
       - 
-    * - ``decimal``
-      - :doc:`python <../generated/pdcast.PythonDecimalType>`
+    * - :class:`decimal <DecimalType>`
+      - :ref:`python <python_decimal_type>`
       - 
-    * - ``datetime``
-      - :doc:`numpy <../generated/pdcast.NumpyDatetime64Type>`,
-        :doc:`pandas <../generated/pdcast.PandasTimestampType>`,
-        :doc:`python <../generated/pdcast.PythonDatetimeType>`
+    * - :class:`datetime <DatetimeType>`
+      - :ref:`numpy <numpy_datetime64_type>`,
+        :ref:`pandas <pandas_timestamp_type>`,
+        :ref:`python <python_datetime_type>`
       - 
-    * - ``timedelta``
-      - :doc:`numpy <../generated/pdcast.NumpyTimedelta64Type>`,
-        :doc:`pandas <../generated/pdcast.PandasTimedeltaType>`,
-        :doc:`python <../generated/pdcast.PythonTimedeltaType>`
+    * - :class:`timedelta <TimedeltaType>`
+      - :ref:`numpy <numpy_timedelta64_type>`,
+        :ref:`pandas <pandas_timedelta_type>`,
+        :ref:`python <python_timedelta_type>`
       - 
-    * - ``string``
-      - :doc:`python <../generated/pdcast.PythonStringType>`,
-        :doc:`pyarrow <../generated/pdcast.PyArrowStringType>` [#pyarrow]_
+    * - :class:`string StringType`
+      - :ref:`python <python_string_type>`,
+        :ref:`pyarrow <pyarrow_string_type>` [#pyarrow]_
       - 
-    * - ``object``
+    * - :class:`object <ObjectType>`
       - [#object]_
       - 
-    * - ``sparse``
+    * - :class:`sparse <SparseType>`
       - [#adapter]_
       - 
-    * - ``categorical``
+    * - :class:`categorical <CategoricalType>`
       - [#adapter]_
       - 
 

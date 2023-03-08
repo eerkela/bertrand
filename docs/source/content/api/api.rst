@@ -13,7 +13,7 @@ considered public.
     Check <check>
     Cast <cast>
     Attach <attach>
-    Types <types>
+    Types <types/types>
     AtomicType <atomic>
     AdapterType <adapter>
     CompositeType <composite>
