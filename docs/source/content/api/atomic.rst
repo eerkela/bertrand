@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-.. _api.atomic:
+.. _atomic_type:
 
 AtomicType
 ==========
@@ -81,7 +81,7 @@ Misc
     AtomicType.upcast
     AtomicType.larger
 
-.. _api.atomic.notes:
+.. _atomic_type.notes:
 
 Notes
 -----
@@ -153,6 +153,8 @@ like so:
     inheritance signature.  This ensures correct
     `Method Resolution Order (MRO) <https://en.wikipedia.org/wiki/C3_linearization>`_.
 
+.. _flyweight:
+
 Memory Allocation
 ^^^^^^^^^^^^^^^^^
 The second caveat is that ``AtomicType`` instances are
@@ -167,11 +169,11 @@ introduced at runtime would corrupt the flyweight cache and lead to collisions.
 As a result, all AtomicTypes are strictly **read-only** after they are
 constructed.
 
-.. testsetup:: api.atomic
+.. testsetup:: allocation
 
     import pdcast
 
-.. doctest:: api.atomic
+.. doctest:: allocation
 
     >>> pdcast.resolve_type("int") is pdcast.resolve_type("int")
     True
@@ -277,8 +279,8 @@ All in all, a typical AtomicType definition could look something like this:
         na_value = pd.NA
 
         def __init__(self, x, y):
-            # custom arg processing goes here
-            super().__init__(x=x, y=y)
+            # custom arg processing goes here, along with any new attributes
+            super().__init__(x=x, y=y)  # no new attributes after this point
 
         @classmethod
         def slugify(cls, x, y) -> str:

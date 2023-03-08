@@ -67,7 +67,6 @@ cdef class BaseType:
     pass
 
 
-
 cdef class ScalarType(BaseType):
     """Base type for AtomicType and AdapterType objects."""
 

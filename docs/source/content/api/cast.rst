@@ -20,6 +20,23 @@ Cast
     to_string
     to_object
 
+Arguments
+---------
+
+tol
+^^^
+This argument represents the maximum amount of precision loss that can occur
+before a ``ValueError`` is thrown.
+
+rounding
+^^^^^^^^
+
+
+
+
+
+
+
 
 .. TODO: insert an Options section here with headings for every argument to
     the various to_x functions.  In the docstrings of each function, just

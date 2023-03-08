@@ -745,7 +745,7 @@ like without risk of collision.
     ought to be hidden behind some kind of ``.numeric`` namespace, but it turns
     out to be unnecessary here.  This is because our ``round()`` implementation
     is actually more generic than the default. All it adds is an extra ``rule``
-    argument and a special case for ``dtype=object`` arrays.
+    argument and a special case for ``dtype: object`` arrays.
 
 .. danger::
 
@@ -791,7 +791,7 @@ type attributes like ``name``, ``type``, ``dtype``, ``na_value``, etc.
 Appendix: integrating with custom ExtensionDtypes
 -------------------------------------------------
 Notice how whenever we convert to one of our custom ``BFloat16Type``\s, the
-result always has ``dtype=object``?  This is because we failed to assign an
+result always has ``dtype: object``?  This is because we failed to assign an
 appropriate ``.dtype`` field for our AtomicTypes.  This is fine in the default
 case, but it effectively eliminates any advantage we would get from static
 typing in the first place.  In essence, these are nothing more than standard
@@ -822,4 +822,4 @@ Or dynamically for existing types by overriding their ``.dtype`` attribute:
 
 If everything is configured correctly then performance should be dramatically
 improved, and conversion results should be automatically labeled with your new
-``ExtensionType`` rather than ``dtype=object``.
+``ExtensionType`` rather than ``dtype: object``.

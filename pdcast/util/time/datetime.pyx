@@ -250,7 +250,7 @@ def string_to_pydatetime(
             period = pd.Period(input_string, freq="Q") - 1
             days = date_to_days(period.year, 1, 1 + period.day_of_year)
             result = ns_to_pydatetime(days * as_ns["D"])
-        except pd._libs.tslibls.parsing.DateParseError:
+        except pd._libs.tslibs.parsing.DateParseError:
             pass
 
     # parse using dateutil

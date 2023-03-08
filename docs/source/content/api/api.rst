@@ -10,10 +10,11 @@ considered public.
 .. toctree::
     :maxdepth: 1
 
-    Detect & Resolve <check>
+    Check <check>
     Cast <cast>
-    Attach <attach>
     Types <types>
+    Attach <attach>
+    Type Specification Mini Language <mini_language>
     AtomicType <atomic>
     AdapterType <adapter>
     CompositeType <composite>

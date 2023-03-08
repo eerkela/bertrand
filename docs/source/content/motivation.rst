@@ -1,3 +1,14 @@
+.. currentmodule:: pdcast
+
+.. TODO: maybe this needs to be separated into individual pages?  Each page
+    can be a bit longer.
+    - Limitations of Numpy/Pandas
+    - Inference, Resolution, and Type Checks
+    - Conversions
+    - Expanded Support
+    - Dispatching
+
+
 Motivation
 ==========
 
@@ -306,12 +317,11 @@ objects by dynamically upcasting.
 
 Conversions
 -----------
-The problems we discussed earlier are multiplied tenfold when converting from
-one representation to another.  This is where ``pdcast`` really shines.
+The problems discussed above are multiplied tenfold when converting from one
+representation to another.  This is where ``pdcast`` really shines.
 
 Case study: integers & floats
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
 Before we dive into the differences, let's see how pandas handles conversions
 in cases of precision loss and/or overflow.  We'll start with our large
 integers from before:
@@ -352,7 +362,8 @@ Note that we don't get our original data back.  In fact we don't even end
 up on the same side of the number line, thanks to silent overflow.
 
 So, simply by converting our data, we have implicitly changed its value.  In
-contrast, ``pdcast`` requires explicit approval to change data in this way.
+contrast, ``pdcast`` requires explicit approval to
+:doc:`change data <../generated/pdcast.cast>` in this way.
 
 .. doctest:: conversions
 
@@ -404,9 +415,9 @@ that are almost unintelligible and very likely not what we were expecting.
 
     The actual values we observe here are due to the same overflow wrapping
     behavior as above, except that we're doing it with a smaller container
-    (``2**32`` possible values vs ``2**64``).  This means that our
-    nearly-overflowing 64-bit values wrap around the number line not just once,
-    but *32 times* to arrive at their final result.
+    (2**32 possible values vs 2**64).  This means that our nearly-overflowing
+    64-bit values wrap around the number line not just once, but *32 times* to
+    arrive at their final result.
 
 In contrast, ``pdcast`` is aware of this and raises an ``OverflowError`` as
 you might expect.
@@ -461,8 +472,8 @@ Or you could let ``pdcast`` work out all the details for you:
 
 .. doctest:: conversions
 
-    >>> series = pd.Series([1, 2, 3])
-    >>> series.cast("datetime", unit="s")
+    >>> integers = pd.Series([1, 2, 3])
+    >>> integers.cast("datetime", unit="s")
     0   1970-01-01 00:00:01
     1   1970-01-01 00:00:02
     2   1970-01-01 00:00:03
@@ -472,13 +483,13 @@ With expanded support for different epochs and timezones:
 
 .. doctest:: conversions
 
-    >>> series.cast("datetime", unit="ns", since="j2000", tz="US/Pacific")
+    >>> integers.cast("datetime", unit="ns", since="j2000", tz="US/Pacific")
     0   2000-01-01 04:00:00.000000001-08:00
     1   2000-01-01 04:00:00.000000002-08:00
     2   2000-01-01 04:00:00.000000003-08:00
     dtype: datetime64[ns, US/Pacific]
     >>> epoch = pd.Timestamp("2022-03-27 08:47:32.0123456789+0100")
-    >>> series.cast("datetime", unit="h", since=epoch, tz="utc")
+    >>> integers.cast("datetime", unit="h", since=epoch, tz="utc")
     0   2022-03-27 08:47:32.012345678+00:00
     1   2022-03-27 09:47:32.012345678+00:00
     2   2022-03-27 10:47:32.012345678+00:00
@@ -488,162 +499,134 @@ And calendar-accurate unit conversions:
 
 .. doctest:: conversions
 
-    >>> series.cast("datetime", unit="Y")  # 1972 was a leap year
+    >>> integers.cast("datetime", unit="Y")  # 1972 was a leap year
     0   1971-01-01
     1   1972-01-01
     2   1973-01-01
     dtype: datetime64[ns]
-    >>> series.cast("datetime", unit="M", since="utc")
+    >>> integers.cast("datetime", unit="M", since="utc")
     0   1970-02-01
     1   1970-03-01
     2   1970-04-01
     dtype: datetime64[ns]
-    >>> series.cast("datetime", unit="M", since=pd.Timestamp("1972-01-01"))
+    >>> integers.cast("datetime", unit="M", since=pd.Timestamp("1972-01-01"))
     0   1972-02-01
     1   1972-03-01
     2   1972-04-01
     dtype: datetime64[ns]
 
-Reversibly:
+Completely reversibly:
 
 .. doctest:: conversions
 
-    >>> series.cast("datetime", unit="h").cast(int, unit="h")
+    >>> integers.cast("datetime", unit="h").cast(int, unit="h")
     0    1
     1    2
     2    3
     dtype: int64
 
-From many representations:
+To and from any representation:
 
 .. doctest:: conversions
 
-    >>> import decimal
+    >>> from decimal import Decimal
 
-    >>> bools = pd.Series([True, False])
-    >>> floats = pd.Series([1.3, -4.8])
-    >>> complex_numbers = pd.Series([1.3+0j, -4.8+0j])
-    >>> decimals = pd.Series([decimal.Decimal(1.3), decimal.Decimal(-4.8)])
-    >>> timedeltas = pd.Series([pd.Timedelta(days=1.3), pd.Timedelta(days=-4.8)])
-
-    >>> bools
-    0     True
-    1    False
-    dtype: bool
-    >>> floats
+    # floats
+    >>> pd.Series([1.3, -4.8])
     0    1.3
     1   -4.8
     dtype: float64
-    >>> complex_numbers
-    0    1.3+0.0j
-    1   -4.8+0.0j
-    dtype: complex128
-    >>> decimals
+    >>> _.cast("datetime", unit="D")
+    0   1970-01-02 07:12:00.000000000
+    1   1969-12-27 04:48:00.000000001
+    dtype: datetime64[ns]
+    >>> _.cast("float", unit="D")
+    0    1.3
+    1   -4.8
+    dtype: float64
+
+    # decimals
+    >>> pd.Series([Decimal(1.3), Decimal(-4.8)])
     0    1.30000000000000004440892098500626161694526672...
     1    -4.7999999999999998223643160599749535322189331...
     dtype: object
-    >>> timedeltas
-    0               1 days 07:12:00
-    1   -5 days +04:48:00.000000001
-    dtype: timedelta64[ns]
-
-    >>> bools.cast("datetime", unit="D")
-    0   1970-01-02
-    1   1970-01-01
-    dtype: datetime64[ns]
-    >>> floats.cast("datetime", unit="D")
+    >>> _.cast("datetime", unit="D")
     0   1970-01-02 07:12:00.000000000
     1   1969-12-27 04:48:00.000000001
     dtype: datetime64[ns]
-    >>> complex_numbers.cast("datetime", unit="D")
-    0   1970-01-02 07:12:00.000000000
-    1   1969-12-27 04:48:00.000000001
-    dtype: datetime64[ns]
-    >>> decimals.cast("datetime", unit="D")
-    0   1970-01-02 07:12:00.000000000
-    1   1969-12-27 04:48:00.000000001
-    dtype: datetime64[ns]
-    >>> timedeltas.cast("datetime")
-    0   1970-01-02 07:12:00.000000000
-    1   1969-12-27 04:48:00.000000001
-    dtype: datetime64[ns]
-
-To many representations:
-
-.. doctest:: conversions
-
-    >>> boolean_datetimes = pd.to_datetime(pd.Series([1, 0]), unit="D")
-    >>> numeric_datetimes = pd.to_datetime(pd.Series([1.3, -4.8]), unit="D")
-
-    >>> boolean_datetimes
-    0   1970-01-02
-    1   1970-01-01
-    dtype: datetime64[ns]
-    >>> numeric_datetimes
-    0   1970-01-02 07:12:00
-    1   1969-12-27 04:48:00
-    dtype: datetime64[ns]
-
-    >>> boolean_datetimes.cast(bool, unit="D")
-    0     True
-    1    False
-    dtype: bool
-    >>> numeric_datetimes.cast(float, unit="D")
-    0    1.3
-    1   -4.8
-    dtype: float64
-    >>> numeric_datetimes.cast(complex, unit="D")
-    0    1.3+0.0j
-    1   -4.8+0.0j
-    dtype: complex128
-    >>> numeric_datetimes.cast(decimal.Decimal, unit="D")
+    >>> _.cast("decimal", unit="D")  # rounded to nearest nanosecond
     0     1.3
     1    -4.8
     dtype: object
-    >>> numeric_datetimes.cast("timedelta", unit="D")
+
+    # timedeltas
+    >>> pd.Series([pd.Timedelta(days=1.3), pd.Timedelta(days=-4.8)])
+    0               1 days 07:12:00
+    1   -5 days +04:48:00.000000001
+    dtype: timedelta64[ns]
+    >>> _.cast("datetime")
+    0   1970-01-02 07:12:00.000000000
+    1   1969-12-27 04:48:00.000000001
+    dtype: datetime64[ns]
+    >>> _.cast("timedelta", unit="D")
     0     1 days 07:12:00
     1   -5 days +04:48:00
     dtype: timedelta64[ns]
 
 With arbitrary string parsing:
 
+.. doctest:: conversions
 
-
+    >>> pd.Series(["2022-01-12", "2022-01-30 07:30", "2022-03-27 12:00:00-0800"]).cast("datetime")
+    0   2022-01-12 00:00:00
+    1   2022-01-30 07:30:00
+    2   2022-03-27 20:00:00
+    dtype: datetime64[ns]
+    >>> pd.Series(["Jan 12 2022", "January 30th, 2022 at 7:30", "27 mar 22"]).cast("datetime")
+    0   2022-01-12 00:00:00
+    1   2022-01-30 07:30:00
+    2   2022-03-27 00:00:00
+    dtype: datetime64[ns]
+    >>> pd.Series([1, 2, 3]).cast("datetime", unit="s", since="03/27/22")
+    0   2022-03-27 00:00:01
+    1   2022-03-27 00:00:02
+    2   2022-03-27 00:00:03
+    dtype: datetime64[ns]
 
 And support for several different datetime representations:
 
 .. doctest:: conversions
 
-    >>> series.cast("datetime[pandas]", unit="s", since="jan 30 2022 at 7 AM")
+    >>> integers.cast("datetime[pandas]", unit="s", since="jan 30 2022 at 7 AM")
     0   2022-01-30 07:00:01
     1   2022-01-30 07:00:02
     2   2022-01-30 07:00:03
     dtype: datetime64[ns]
-    >>> series.cast("datetime[python]", unit="D", since="modified julian", tz="Asia/Hong_Kong")
-    0    1858-11-17 07:37:00+07:37
-    1    1858-11-18 07:37:00+07:37
-    2    1858-11-19 07:37:00+07:37
+    >>> integers.cast("datetime[python]", unit="D", since="cocoa", tz="Asia/Hong_Kong")
+    0    2001-01-02 08:00:00+08:00
+    1    2001-01-03 08:00:00+08:00
+    2    2001-01-04 08:00:00+08:00
     dtype: object
-    >>> series.cast("datetime[numpy]", unit="Y", since="-4713-11-24 12:00:00")
+    >>> integers.cast("datetime[numpy]", unit="Y", since="-4713-11-24 12:00:00")
     0    -4712-11-24T12:00:00.000000
     1    -4711-11-24T12:00:00.000000
     2    -4710-11-24T12:00:00.000000
     dtype: object
 
-Without worrying about overflow:
+Without overflowing:
 
 .. doctest:: conversions
 
     >>> import datetime
 
-    >>> series.cast("datetime", unit="us", since=pd.Timestamp.max)
+    >>> integers.cast("datetime", unit="us", since=pd.Timestamp.max)
     0    2262-04-11 23:47:16.854776
     1    2262-04-11 23:47:16.854777
     2    2262-04-11 23:47:16.854778
     dtype: object
     >>> _[0]
     datetime.datetime(2262, 4, 11, 23, 47, 16, 854776)
-    >>> series.cast("datetime", unit="s", since=datetime.datetime.max)
+    >>> integers.cast("datetime", unit="s", since=datetime.datetime.max)
     0    10000-01-01T00:00:00.999999
     1    10000-01-01T00:00:01.999999
     2    10000-01-01T00:00:02.999999
@@ -661,7 +644,7 @@ Without worrying about overflow:
 
     .. doctest:: conversions
 
-        >>> mixed_data = [2**63, "1979", True, 4+0j, decimal.Decimal(18), None]
+        >>> mixed_data = [2**63, "1979", True, 4+0j, Decimal(18), None]
         >>> pdcast.to_integer(mixed_data)
         0    9223372036854775808
         1                   1979
@@ -684,32 +667,30 @@ Without worrying about overflow:
     # detach pdcast for next section
     pdcast.attach.detach()
 
-
-Inference & Validation
-----------------------
-Another area where pandas could be improved is in runtime type-checking.
+Type Checks
+-----------
+Another area where pandas could be improved is in runtime type checking.
 Baseline, it includes a number of utility functions under ``pd.api.types`` that
 are meant to do this, but each of them essentially boils down to a naive
 ``.dtype`` check.  This leads to questionable (and even inaccurate) results,
 such as:
 
-.. testsetup:: inference
+.. testsetup:: validation
 
-    import decimal
     import numpy as np
     import pandas as pd
     import pdcast
 
-.. doctest:: inference
+.. doctest:: validation
 
-    >>> series = pd.Series([decimal.Decimal(1), decimal.Decimal(2)], dtype="O")
+    >>> series = pd.Series([1, 2, 3], dtype="O")
     >>> pd.api.types.is_string_dtype(series)
     True
 
 This happens because pandas stores strings as generic python objects by
-default.  We can see this by creating a basic string series.
+default.  We can observe this by creating a basic string series.
 
-.. doctest:: inference
+.. doctest:: validation
 
     >>> pd.Series(["foo", "bar", "baz"])
     0    foo
@@ -717,10 +698,10 @@ default.  We can see this by creating a basic string series.
     2    baz
     dtype: object
 
-Note that the series is returned with ``dtype=object``.  This ambiguity means
-that ``pd.api.types.is_string_dtype()``, which implies specificity to strings,
-has to include ``dtype=object`` in its comparison.  Because of this, **any
-series with** ``dtype=object`` **will be counted as a string series**, even
+Note that the series is returned with ``dtype: object``.  This ambiguity means
+that ``pd.api.types.is_string_dtype()`` (which implies specificity to strings)
+has to include ``dtype: object`` in its comparison.  Because of this, **any
+series with** ``dtype: object`` **will be counted as a string series**, even
 if it *does not* contain strings.  This is confusing to say the least, and
 makes it practically impossible to distinguish between genuine object arrays
 and those containing only strings.
@@ -730,10 +711,10 @@ but - like with ``pd.Int64Dtype()`` - it must be set manually, and is often
 ignored in practice.  With this dtype, we can unambiguously check for strings
 by doing:
 
-.. doctest:: inference
+.. doctest:: validation
 
     >>> series1 = pd.Series(["foo", "bar", "baz"], dtype=pd.StringDtype())
-    >>> series2 = pd.Series([decimal.Decimal(1), decimal.Decimal(2)], dtype="O")
+    >>> series2 = pd.Series([1, 2, 3], dtype="O")
     >>> pd.api.types.is_string_dtype(series1) and not pd.api.types.is_object_dtype(series1)
     True
     >>> pd.api.types.is_string_dtype(series2) and not pd.api.types.is_object_dtype(series2)
@@ -742,9 +723,9 @@ by doing:
 But this is long and unwieldy, not to mention requiring a preprocessing step
 to work at all.
 
-``pdcast`` has a better solution:
+``pdcast`` has a :doc:`better solution <../generated/pdcast.typecheck>`:
 
-.. doctest:: inference
+.. doctest:: validation
 
     >>> import pdcast.attach
 
@@ -753,9 +734,9 @@ to work at all.
     >>> series2.typecheck("string")
     False
 
-And it even works on ``dtype=object`` series:
+And it even works on ``dtype: object`` series:
 
-.. doctest:: inference
+.. doctest:: validation
 
     >>> series = pd.Series(["foo", "bar", "baz"])
     >>> series
@@ -766,127 +747,44 @@ And it even works on ``dtype=object`` series:
     >>> series.typecheck("string")
     True
 
+This is accomplished by a combination of
+:doc:`inference <../generated/pdcast.detect_type>` and
+:doc:`validation <../generated/pdcast.CompositeType.contains>`, which can
+be customized on a per-type basis.  Since these functions do not rely on a
+potentially inaccurate ``.dtype`` field, we can apply this to arbitrary data:
 
-.. TODO: Cut this down and move it to the typecheck() API docs
+.. doctest:: validation
 
-
-This is accomplished by a combination of *inference* and *validation*.
-Inference is performed by ``pdcast.detect_type()``, which essentially
-vectorizes the built-in ``type()`` function and applies it elementwise over an
-iterable.
-
-.. doctest:: inference
-
-    >>> pdcast.detect_type(series)
-    StringType()
-
-This yields an unambiguous ``StringType()`` representing the actual observed
-elements of ``series``.  Since we don't have to rely on a potentially
-inaccurate ``.dtype`` check to do this inferencing, it can be applied to
-arbitrary data.
-
-.. doctest:: inference
-
+    >>> from decimal import Decimal
     >>> class CustomObj:
     ...     def __init__(self, x):
     ...         self.x = x
 
-    >>> pdcast.detect_type(pd.Series([decimal.Decimal(1), decimal.Decimal(2)]))
-    PythonDecimalType()
-    >>> pdcast.detect_type(pd.Series([1, 2, 3]))
-    NumpyInt64Type()
-    >>> pdcast.detect_type(pd.Series([CustomObj("python"), CustomObj("is"), CustomObj("awesome")]))
-    ObjectType(type_def=<class 'CustomObj'>)
+    >>> pd.Series([1, 2, 3], dtype="O").typecheck("int")
+    True
+    >>> pd.Series([Decimal(1), Decimal(2), Decimal(3)]).typecheck("decimal")
+    True
+    >>> pd.Series([CustomObj("python"), CustomObj("is"), CustomObj("awesome")]).typecheck(CustomObj)
+    True
 
-We can even infer types for non-homogenous data this way:
+And even to non-homogenous data:
 
-.. doctest:: inference
+.. doctest:: validation
 
-    >>> series = pd.Series([decimal.Decimal(1), 2, CustomObj("awesome")])
-    >>> series   # doctest: +SKIP
-    0                                                1
-    1                                                2
-    2    <__main__.CustomObj object at 0x7fe8add30520>
-    dtype: object
-    >>> pdcast.detect_type(series)   # doctest: +SKIP
-    CompositeType({decimal[python], int, object[__main__.CustomObj]})
+    >>> series = pd.Series([1, Decimal(2), CustomObj("awesome")])
+    >>> series.typecheck("int, decimal, object[CustomObj]")
+    True
 
 .. note::
 
-    ``pdcast.detect_type()`` isn't picky about its inputs.  It can accept any
-    scalar or iterable, not just ``pd.Series`` objects.
+    :func:`typecheck` works almost identically to the built-in ``isinstance()``
+    function.  If multiple types are provided to compare against, it will
+    return ``True`` if and only if the inferred types form a **subset** of the
+    comparison type(s).
 
-    If an input has an appropriate ``.dtype`` field, and that dtype is *not* an
-    ``object`` type, then ``pdcast.detect_type()`` will attempt to use it
-    directly. This is an O(1) operation regardless of how big the iterable is.
-
-Now that we know the element type of our input, we just need to resolve the
-comparison type and check whether one contains the other.  We can do this by
-leveraging the :ref:`type specification mini language <mini_language>` or
-by using any `numpy <https://numpy.org/doc/stable/reference/arrays.dtypes.html>`_
--compatible `dtype specifier <https://numpy.org/doc/stable/user/basics.types.html#data-types>`_,
-passing it to ``pdcast.resolve_type()`` like so:
-
-.. doctest:: inference
-
-    >>> pdcast.resolve_type("int")
-    IntegerType()
-    >>> pdcast.resolve_type("signed[numpy]")
-    NumpySignedIntegerType()
-    >>> pdcast.resolve_type("?")
-    BooleanType()
-    >>> pdcast.resolve_type(np.dtype("f4"))
-    NumpyFloat32Type()
-    >>> pdcast.resolve_type(pd.Int64Dtype())
-    PandasInt64Type()
-    >>> pdcast.resolve_type(complex)
-    ComplexType()
-
-``pdcast.typecheck()`` implicitly calls this on its first argument.
-
-.. note::
-
-    ``pdcast.resolve_type()`` accepts a superset of the existing ``np.dtype()``
-    syntax, meaning that any specifier that is accepted by numpy can also be
-    accepted by ``pdcast``.
-
-Once both the observed element type and the specified comparison type have been
-resolved, validating them consists of a simple membership test.
-
-.. doctest:: inference
-
-    >>> resolved = pdcast.resolve_type("int")
-    >>> resolved
-    IntegerType()
-    >>> inferred = pdcast.detect_type(pd.Series([1, 2, 3]))
-    >>> inferred
-    NumpyInt64Type()
-    >>> resolved.contains(inferred)
-    True
-
-By default, this also applies to any subtypes of the comparison type.
-
-.. doctest:: inference
-
-    >>> resolved = pdcast.resolve_type("int")
-    >>> resolved
-    IntegerType()
-    >>> inferred = pdcast.detect_type(pd.Series([1, 2, 3], dtype="i2"))
-    >>> inferred
-    NumpyInt16Type()
-    >>> resolved.contains(inferred)
-    True
-
-This returns ``True`` because ``int16[numpy]`` is a subtype of ``int``.  In
-this manner, ``pdcast.typecheck()`` operates in a way similar to the built-in
-``isinstance()`` function, extending it to vectorized data.
-
-.. TODO: talk about exact comparisons and the use of composite types
-
-.. testcleanup:: inference
+.. testcleanup:: validation
 
     pdcast.attach.detach()
-
 
 Expanded Support
 ----------------

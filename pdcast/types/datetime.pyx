@@ -33,6 +33,8 @@ from .base import dispatch, generic, register
 # TODO: to_datetime should have fastpaths for the specified datetime type.
 # Timestamp/pydatetime need to account for tz.  M8 is just straight equality.
 
+# TODO: PandasTimestampType.from_string cannot convert quarterly dates
+
 
 ######################
 ####    MIXINS    ####

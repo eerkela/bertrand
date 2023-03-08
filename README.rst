@@ -24,7 +24,7 @@ Features
    or not supported by existing numpy/pandas functionality.  This can be
    customized in the same way as the type specification mini-language, and is
    more robust than simply checking an array's ``dtype`` field.  Users can even
-   work with ``dtype=object`` arrays without losing confidence in their
+   work with ``dtype: object`` arrays without losing confidence in their
    results.
 *  **A suite of conversions** covering 9 of the most commonly-encountered data
    types: *boolean*, *integer*, *floating point*, *complex*, *decimal*
