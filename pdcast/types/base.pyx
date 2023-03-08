@@ -42,29 +42,364 @@ from pdcast.util.type_hints import type_specifier
 # +-----------+---+---+---+---+---+---+---+---+---+
 
 
-##########################
-####    PRIMITIVES    ####
-##########################
+########################
+####    REGISTRY    ####
+########################
 
 
 cdef class CacheValue:
+    """A simple struct to hold cached values in TypeRegistry.
+
+    Note: this can't be an *actual* struct because it stores a python object
+    in its ``value`` field.
+    """
 
     def __init__(self, object value, long long hash):
         self.value = value
         self.hash = hash
 
 
+cdef class TypeRegistry:
+    """A registry representing the current state of ``pdcast``'s typing
+    infrastructure.
+
+    This is a `global object <https://python-patterns.guide/python/module-globals/>`_
+    that is attached to every ``pdcast`` data type.  It is responsible for
+    validating and managing every type that has been registered through the
+    :func:`@register() <register>` decorator, as well as updating their
+    attributes as new types are added.
+
+    Attributes
+    ----------
+    aliases
+
+    Notes
+    -----
+
+    , recording their aliases,
+    dispatched methods, subtypes, supertype, backends, root type, and generic
+    equivalent.
+
+
+
+    Whenever a new type definition is registered through the
+    :func:`@register() <register>` decorator, it is added to this registry
+    
+    
+    containing every validated type object recognized by ``pdcast`` features.
+
+    This is a global object attached to the base AtomicType class definition.
+    It can be accessed through any of its instances, and it is updated
+    automatically whenever a class inherits from AtomicType.  The registry
+    itself contains methods to validate and synchronize subclass behavior,
+    including the maintenance of a set of regular expressions that account for
+    every known AtomicType alias, along with their default arguments.  These
+    lists are updated dynamically each time a new alias and/or type is added
+    to the pool.
+    """
+
+    def __init__(self):
+        self.atomic_types = []
+        self.update_hash()
+
+    ##########################
+    ####    PROPERTIES    ####
+    ##########################
+
+    @property
+    def aliases(self) -> dict:
+        """An up-to-date dictionary mapping every alias to its corresponding
+        type.
+
+        
+
+        Notes
+        -----
+        This is a cached property that is tied to the current state of the
+        registry.  Whenever a new type is added, removed, or has one of its
+        aliases changed, it will be regenerated to reflect that change.
+        """
+        # check if cache is out of date
+        if self.needs_updating(self._aliases):
+            result = {k: c for c in self.atomic_types for k in c.aliases}
+            self._aliases = self.remember(result)
+
+        # return cached value
+        return self._aliases.value
+
+    @property
+    def dispatch_map(self) -> dict[str, dict[AtomicType, Callable]]:
+        """Return an up-to-date dictionary of all methods that are currently
+        being dispatched to Series objects based on their type.
+
+        The structure of this dictionary reflects the calling signature of
+        the methods it contains.  It goes as follows:
+
+        {
+            namespace1 (str): {
+                method1_name (str): {
+                    atomic_type1 (type): method1 (Callable),
+                    atomic_type2 (type): method1 (Callable),
+                    ...
+                },
+                method2_name (str): {
+                    atomic_type1 (type): method2 (Callable),
+                    atomic_type2 (type): method2 (Callable),
+                    ...
+                },
+                ...
+            },
+            ...
+            None: {
+                method3_name (str): {
+                    atomic_type1 (type): method3 (Callable),
+                    atomic_type2 (type): method3 (Callable),
+                    ...
+                },
+                ...
+            }
+        }
+
+        """
+        # check if cache is out of date
+        if self.needs_updating(self._dispatch_map):
+            # building a dispatch map consists of 4 steps:
+            # 1) For each type held in registry, check for @dispatch methods.
+            # 2) For each @dispatch method, setdefault(namespace, {}).
+            # 3) namespace.setdefault(method_name, {}).
+            # 4) method_name |= {atomic_type: method_def}.
+            result = {}
+            for atomic_type in self.atomic_types:
+                for method_name in dir(atomic_type):
+                    method_def = getattr(atomic_type, method_name)
+                    if hasattr(method_def, "_dispatch"):
+                        namespace = method_def._namespace
+                        submap = result.setdefault(namespace, {})
+                        submap = submap.setdefault(method_name, {})
+                        submap[atomic_type] = method_def
+
+            self._dispatch_map = self.remember(result)
+
+        # return cached value
+        return self._dispatch_map.value
+
+    @property
+    def regex(self) -> re.Pattern:
+        """Compile a regular expression to match any registered AtomicType
+        name or alias, as well as any arguments that may be passed to its
+        `resolve()` constructor.
+        """
+        # check if cache is out of date
+        if self.needs_updating(self._regex):
+            # fastfail: empty case
+            if not self.atomic_types:
+                result = re.compile(".^")  # matches nothing
+
+            # update using string aliases from every registered subtype
+            else:
+                # automatically escape reserved regex characters
+                string_aliases = [
+                    re.escape(k) for k in self.aliases if isinstance(k, str)
+                ]
+
+                # sort into reverse order based on length
+                string_aliases.sort(key=len, reverse=True)
+
+                # join with regex OR and compile regex
+                result = re.compile(
+                    rf"(?P<type>{'|'.join(string_aliases)})"
+                    rf"(?P<nested>\[(?P<args>([^\[\]]|(?&nested))*)\])?"
+                )
+
+            # remember result
+            self._regex = self.remember(result)
+
+        # return cached value
+        return self._regex.value
+
+    @property
+    def resolvable(self) -> re.Pattern:
+        # check if cache is out of date
+        if self.needs_updating(self._resolvable):
+            # wrap self.regex in ^$ to match the entire string and allow for
+            # comma-separated repetition of AtomicType patterns.
+            pattern = rf"(?P<atomic>{self.regex.pattern})(,\s*(?&atomic))*"
+            lead = r"((CompositeType\(\{)|\{)?"
+            follow = r"((\}\))|\})?"
+
+            # compile regex
+            result = re.compile(rf"{lead}(?P<body>{pattern}){follow}")
+
+            # remember result
+            self._resolvable = self.remember(result)
+
+        # return cached value
+        return self._resolvable.value
+
+    #######################
+    ####    METHODS    ####
+    #######################
+
+    def add(self, new_type: type) -> None:
+        """Add an AtomicType/AdapterType subclass to the registry."""
+        # validate subclass has required fields
+        self.validate_name(new_type)
+        self.validate_aliases(new_type)
+        self.validate_slugify(new_type)
+        if issubclass(new_type, AtomicType):
+            self.validate_type_def(new_type)
+            self.validate_dtype(new_type)
+            self.validate_itemsize(new_type)
+            self.validate_na_value(new_type)
+
+        # add type to registry and update hash
+        self.atomic_types.append(new_type)
+        self.update_hash()
+
+    def clear(self):
+        """Clear the AtomicType registry of all AtomicType subclasses."""
+        self.atomic_types.clear()
+        self.update_hash()
+
+    def flush(self):
+        """Reset the registry's internal state, forcing every property to be
+        recomputed.
+        """
+        self.hash += 1  # this is overflow-safe
+
+    def needs_updating(self, prop) -> bool:
+        """Check if a `remember()`-ed registry property is out of date."""
+        return prop is None or prop.hash != self.hash
+
+    def remember(self, val) -> CacheValue:
+        return CacheValue(value=val, hash=self.hash)
+
+    def remove(self, old_type: type) -> None:
+        """Remove an AtomicType subclass from the registry."""
+        self.atomic_types.remove(old_type)
+        self.update_hash()
+
+    #######################
+    ####    PRIVATE    ####
+    #######################
+
+    cdef void update_hash(self):
+        """Hash the registry's internal state, for use in cached properties."""
+        self.hash = hash(tuple(self.atomic_types))
+
+    cdef int validate_aliases(self, type subclass) except -1:
+        """Ensure that a subclass of AtomicType has an `aliases` dictionary
+        and that none of its aliases overlap with another registered
+        AtomicType.
+        """
+        validate(subclass, "aliases", expected_type=set)
+
+        # ensure that no aliases are already registered to another AtomicType
+        for k in subclass.aliases:
+            if k in self.aliases:
+                raise TypeError(
+                    f"{subclass.__name__} alias {repr(k)} is already "
+                    f"registered to {self.aliases[k].__name__}"
+                )
+
+    cdef int validate_dtype(self, type subclass) except -1:
+        """Ensure that if a subclass of AtomicType defines a `dtype`
+        attribute, that it is a valid numpy dtype or pandas extension type.
+        """
+        valid_dtypes = (np.dtype, pd.api.extensions.ExtensionDtype)
+        if subclass.dtype is not None:
+            validate(subclass, "dtype", expected_type=valid_dtypes)
+
+    cdef int validate_itemsize(self, type subclass) except -1:
+        """Ensure that if a subclass of AtomicType defines an `itemsize`
+        attribute, that it is a positive integer.
+        """
+        if subclass.itemsize is not None:
+            validate(subclass, "itemsize", expected_type=int)
+            if subclass.itemsize < 1:
+                raise TypeError(f"`{subclass.__name__}.itemsize` must be >= 1")
+
+    cdef int validate_slugify(self, type subclass) except -1:
+        """Ensure that a subclass of AtomicType has a `slugify()`
+        classmethod and that its signature matches __init__.
+        """
+        validate(
+            subclass,
+            "slugify",
+            expected_type="classmethod",
+            signature=subclass
+        )
+
+    cdef int validate_name(self, type subclass) except -1:
+        """Ensure that a subclass of AtomicType has a unique `name` attribute
+        associated with it.
+        """
+        validate(subclass, "name", expected_type=str)
+
+        # ensure subclass.name is unique or inherited from generic type
+        if (issubclass(subclass, AtomicType) and (
+            subclass.is_generic != False or
+            subclass.name != subclass._generic.name
+        )):
+            observed_names = {x.name for x in self.atomic_types}
+            if subclass.name in observed_names:
+                raise TypeError(
+                    f"{subclass.__name__}.name ({repr(subclass.name)}) must be "
+                    f"unique (not one of {observed_names})"
+                )
+
+    cdef int validate_na_value(self, type subclass) except -1:
+        """Ensure that if a subclass of AtomicType defines an `na_value`
+        attribute, that it is accepted by `pd.isna()`.
+        """
+        if not pd.isna(subclass.na_value):
+            raise TypeError(
+                f"`{subclass.__name__}.na_value` must pass pd.isna()"
+            )
+
+    cdef int validate_type_def(self, type subclass) except -1:
+        """Ensure that if a subclass of AtomicType defines a `type_def`
+        attribute, that it is a valid type definition.
+        """
+        if subclass.type_def is not None:
+            validate(subclass, "type_def", expected_type=type)
+
+    #############################
+    ####    MAGIC METHODS    ####
+    #############################
+
+    def __contains__(self, val) -> bool:
+        return val in self.atomic_types
+
+    def __hash__(self) -> int:
+        return self.hash
+
+    def __iter__(self):
+        return iter(self.atomic_types)
+
+    def __len__(self) -> int:
+        return len(self.atomic_types)
+
+    def __str__(self) -> str:
+        return str(self.atomic_types)
+
+    def __repr__(self) -> str:
+        return repr(self.atomic_types)
+
+##########################
+####    PRIMITIVES    ####
+##########################
+
+
 cdef class BaseType:
     """Base type for all type objects.
-    
+
     This has no interface of its own and merely serves to anchor inheritance.
-    Since Cython does not support python-style union types, this is the
-    simplest way of coupling them reliably in the Cython layer.
     """
 
     # TODO: put registry here?  would make it available from CompositeTypes
 
-    pass
+    registry: TypeRegistry = TypeRegistry()
 
 
 cdef class ScalarType(BaseType):
@@ -303,307 +638,6 @@ def subtype(supertype: type):
     return decorator
 
 
-########################
-####    REGISTRY    ####
-########################
-
-
-cdef class TypeRegistry:
-    """A registry containing all of the AtomicType subclasses that are
-    currently recognized by `resolve_type()` and related infrastructure.
-    This is a global object attached to the base AtomicType class definition.
-    It can be accessed through any of its instances, and it is updated
-    automatically whenever a class inherits from AtomicType.  The registry
-    itself contains methods to validate and synchronize subclass behavior,
-    including the maintenance of a set of regular expressions that account for
-    every known AtomicType alias, along with their default arguments.  These
-    lists are updated dynamically each time a new alias and/or type is added
-    to the pool.
-    """
-
-    def __init__(self):
-        self.atomic_types = []
-        self.update_hash()
-
-    ##########################
-    ####    PROPERTIES    ####
-    ##########################
-
-    @property
-    def aliases(self) -> dict[Any, type]:
-        """Return an up-to-date dictionary of all of the AtomicType aliases
-        that are currently recognized by `resolve_type()`.
-
-        The returned dictionary maps aliases (of any kind) to their AtomicType
-        definitions.
-        """
-        # check if cache is out of date
-        if self.needs_updating(self._aliases):
-            result = {k: c for c in self.atomic_types for k in c.aliases}
-            self._aliases = self.remember(result)
-
-        # return cached value
-        return self._aliases.value
-
-    @property
-    def dispatch_map(self) -> dict[str, dict[AtomicType, Callable]]:
-        """Return an up-to-date dictionary of all methods that are currently
-        being dispatched to Series objects based on their type.
-
-        The structure of this dictionary reflects the calling signature of
-        the methods it contains.  It goes as follows:
-
-        {
-            namespace1 (str): {
-                method1_name (str): {
-                    atomic_type1 (type): method1 (Callable),
-                    atomic_type2 (type): method1 (Callable),
-                    ...
-                },
-                method2_name (str): {
-                    atomic_type1 (type): method2 (Callable),
-                    atomic_type2 (type): method2 (Callable),
-                    ...
-                },
-                ...
-            },
-            ...
-            None: {
-                method3_name (str): {
-                    atomic_type1 (type): method3 (Callable),
-                    atomic_type2 (type): method3 (Callable),
-                    ...
-                },
-                ...
-            }
-        }
-        """
-        # check if cache is out of date
-        if self.needs_updating(self._dispatch_map):
-            # building a dispatch map consists of 4 steps:
-            # 1) For each type held in registry, check for @dispatch methods.
-            # 2) For each @dispatch method, setdefault(namespace, {}).
-            # 3) namespace.setdefault(method_name, {}).
-            # 4) method_name |= {atomic_type: method_def}.
-            result = {}
-            for atomic_type in self.atomic_types:
-                for method_name in dir(atomic_type):
-                    method_def = getattr(atomic_type, method_name)
-                    if hasattr(method_def, "_dispatch"):
-                        namespace = method_def._namespace
-                        submap = result.setdefault(namespace, {})
-                        submap = submap.setdefault(method_name, {})
-                        submap[atomic_type] = method_def
-
-            self._dispatch_map = self.remember(result)
-
-        # return cached value
-        return self._dispatch_map.value
-
-    @property
-    def regex(self) -> re.Pattern:
-        """Compile a regular expression to match any registered AtomicType
-        name or alias, as well as any arguments that may be passed to its
-        `resolve()` constructor.
-        """
-        # check if cache is out of date
-        if self.needs_updating(self._regex):
-            # fastfail: empty case
-            if not self.atomic_types:
-                result = re.compile(".^")  # matches nothing
-
-            # update using string aliases from every registered subtype
-            else:
-                # automatically escape reserved regex characters
-                string_aliases = [
-                    re.escape(k) for k in self.aliases if isinstance(k, str)
-                ]
-
-                # sort into reverse order based on length
-                string_aliases.sort(key=len, reverse=True)
-
-                # join with regex OR and compile regex
-                result = re.compile(
-                    rf"(?P<type>{'|'.join(string_aliases)})"
-                    rf"(?P<nested>\[(?P<args>([^\[\]]|(?&nested))*)\])?"
-                )
-
-            # remember result
-            self._regex = self.remember(result)
-
-        # return cached value
-        return self._regex.value
-
-    @property
-    def resolvable(self) -> re.Pattern:
-        # check if cache is out of date
-        if self.needs_updating(self._resolvable):
-            # wrap self.regex in ^$ to match the entire string and allow for
-            # comma-separated repetition of AtomicType patterns.
-            pattern = rf"(?P<atomic>{self.regex.pattern})(,\s*(?&atomic))*"
-            lead = r"((CompositeType\(\{)|\{)?"
-            follow = r"((\}\))|\})?"
-
-            # compile regex
-            result = re.compile(rf"{lead}(?P<body>{pattern}){follow}")
-
-            # remember result
-            self._resolvable = self.remember(result)
-
-        # return cached value
-        return self._resolvable.value
-
-    #######################
-    ####    METHODS    ####
-    #######################
-
-    def add(self, new_type: type) -> None:
-        """Add an AtomicType/AdapterType subclass to the registry."""
-        # validate subclass has required fields
-        self.validate_name(new_type)
-        self.validate_aliases(new_type)
-        self.validate_slugify(new_type)
-        if issubclass(new_type, AtomicType):
-            self.validate_type_def(new_type)
-            self.validate_dtype(new_type)
-            self.validate_itemsize(new_type)
-            self.validate_na_value(new_type)
-
-        # add type to registry and update hash
-        self.atomic_types.append(new_type)
-        self.update_hash()
-
-    def clear(self):
-        """Clear the AtomicType registry of all AtomicType subclasses."""
-        self.atomic_types.clear()
-        self.update_hash()
-
-    def flush(self):
-        """Reset the registry's internal state, forcing every property to be
-        recomputed.
-        """
-        self.hash += 1  # this is overflow-safe
-
-    def needs_updating(self, prop) -> bool:
-        """Check if a `remember()`-ed registry property is out of date."""
-        return prop is None or prop.hash != self.hash
-
-    def remember(self, val) -> CacheValue:
-        return CacheValue(value=val, hash=self.hash)
-
-    def remove(self, old_type: type) -> None:
-        """Remove an AtomicType subclass from the registry."""
-        self.atomic_types.remove(old_type)
-        self.update_hash()
-
-    #######################
-    ####    PRIVATE    ####
-    #######################
-
-    cdef void update_hash(self):
-        """Hash the registry's internal state, for use in cached properties."""
-        self.hash = hash(tuple(self.atomic_types))
-
-    cdef int validate_aliases(self, type subclass) except -1:
-        """Ensure that a subclass of AtomicType has an `aliases` dictionary
-        and that none of its aliases overlap with another registered
-        AtomicType.
-        """
-        validate(subclass, "aliases", expected_type=set)
-
-        # ensure that no aliases are already registered to another AtomicType
-        for k in subclass.aliases:
-            if k in self.aliases:
-                raise TypeError(
-                    f"{subclass.__name__} alias {repr(k)} is already "
-                    f"registered to {self.aliases[k].__name__}"
-                )
-
-    cdef int validate_dtype(self, type subclass) except -1:
-        """Ensure that if a subclass of AtomicType defines a `dtype`
-        attribute, that it is a valid numpy dtype or pandas extension type.
-        """
-        valid_dtypes = (np.dtype, pd.api.extensions.ExtensionDtype)
-        if subclass.dtype is not None:
-            validate(subclass, "dtype", expected_type=valid_dtypes)
-
-    cdef int validate_itemsize(self, type subclass) except -1:
-        """Ensure that if a subclass of AtomicType defines an `itemsize`
-        attribute, that it is a positive integer.
-        """
-        if subclass.itemsize is not None:
-            validate(subclass, "itemsize", expected_type=int)
-            if subclass.itemsize < 1:
-                raise TypeError(f"`{subclass.__name__}.itemsize` must be >= 1")
-
-    cdef int validate_slugify(self, type subclass) except -1:
-        """Ensure that a subclass of AtomicType has a `slugify()`
-        classmethod and that its signature matches __init__.
-        """
-        validate(
-            subclass,
-            "slugify",
-            expected_type="classmethod",
-            signature=subclass
-        )
-
-    cdef int validate_name(self, type subclass) except -1:
-        """Ensure that a subclass of AtomicType has a unique `name` attribute
-        associated with it.
-        """
-        validate(subclass, "name", expected_type=str)
-
-        # ensure subclass.name is unique or inherited from generic type
-        if (issubclass(subclass, AtomicType) and (
-            subclass.is_generic != False or
-            subclass.name != subclass._generic.name
-        )):
-            observed_names = {x.name for x in self.atomic_types}
-            if subclass.name in observed_names:
-                raise TypeError(
-                    f"{subclass.__name__}.name ({repr(subclass.name)}) must be "
-                    f"unique (not one of {observed_names})"
-                )
-
-    cdef int validate_na_value(self, type subclass) except -1:
-        """Ensure that if a subclass of AtomicType defines an `na_value`
-        attribute, that it is accepted by `pd.isna()`.
-        """
-        if not pd.isna(subclass.na_value):
-            raise TypeError(
-                f"`{subclass.__name__}.na_value` must pass pd.isna()"
-            )
-
-    cdef int validate_type_def(self, type subclass) except -1:
-        """Ensure that if a subclass of AtomicType defines a `type_def`
-        attribute, that it is a valid type definition.
-        """
-        if subclass.type_def is not None:
-            validate(subclass, "type_def", expected_type=type)
-
-    #############################
-    ####    MAGIC METHODS    ####
-    #############################
-
-    def __contains__(self, val) -> bool:
-        return val in self.atomic_types
-
-    def __hash__(self) -> int:
-        return self.hash
-
-    def __iter__(self):
-        return iter(self.atomic_types)
-
-    def __len__(self) -> int:
-        return len(self.atomic_types)
-
-    def __str__(self) -> str:
-        return str(self.atomic_types)
-
-    def __repr__(self) -> str:
-        return repr(self.atomic_types)
-
-
 ######################
 ####    ATOMIC    ####
 ######################
@@ -620,7 +654,6 @@ cdef class AtomicType(ScalarType):
     """
 
     # Internal fields.  These should never be overridden.
-    registry: TypeRegistry = TypeRegistry()
     flyweights: dict[str, AtomicType] = {}
 
     # Default fields.  These can be overridden in AtomicType definitions to

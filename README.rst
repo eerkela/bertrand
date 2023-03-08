@@ -92,7 +92,7 @@ If you want to run the test suite, install the package using the optional
 Demonstration
 -------------
 ``pdcast`` can be used to easily verify the types that are present within
-a pandas object:
+a pandas data str:
 
 .. doctest:: typecheck
 

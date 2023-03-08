@@ -27,45 +27,34 @@ cimport pdcast.types as types
 from pdcast.util.type_hints import type_specifier
 
 
-# TODO: resolution wrt to Sparse/Categorical dtype objects
-# -> If sparse, get subtype and continue
-# -> If categorical, get result via detect_type on categories
-# -> if NOT categorical, resolve dtype directly
-# -> re-wrap if input was originally sparse
-
-
 #####################
 ####   PUBLIC    ####
 #####################
 
 
-def resolve_type(
-    typespec: type_specifier | Iterable[type_specifier]
-) -> types.BaseType:
-    """Interpret types from appropriate specifiers.
+def resolve_type(typespec: type_specifier) -> types.BaseType:
+    """Interpret types from manual specifiers.
 
-    In ``pdcast``, types can be specified in one of three ways:
+    A type specifier can be any of the following:
 
-    #.  by providing an ``np.dtype`` or ``pd.api.extensions.ExtensionDtype``
-        object.
-    #.  by providing a raw python type.  If the type has not been registered as
-        an AtomicType alias, a new ``ObjectType`` will be built around its
-        class definition.
-    #.  by providing an appropriate string in the
-        :ref:`type specification mini-language <mini_language>`.
-    #.  by providing an iterable containing any combination of the above.
+        #.  A ``dtype`` or ``ExtensionDtype`` object.
+        #.  A raw python type.  If the type has not been registered as an
+            AtomicType alias, a new ``ObjectType`` will be built around its
+            class definition.
+        #.  An appropriate string in the
+            :ref:`type specification mini-language <mini_language>`.
+        #.  An iterable containing any combination of the above.
 
     Arguments
     ---------
-    typespec : type_specifier | iterable[type_specifier]
+    typespec : type specifier
         The type specifier to resolve.
 
     Returns
     -------
-    types.BaseType
-        A ``pdcast`` type object corresponding to the given specifier.  If the
-        specifier is an iterable, this will always be a :class:`CompositeType`
-        object.
+    BaseType
+        A type object corresponding to the given specifier.  If the specifier
+        is an iterable, this will always be a :class:`CompositeType` object.
 
     Raises
     ------
@@ -74,20 +63,17 @@ def resolve_type(
 
     See Also
     --------
-    typecheck : vectorized type checking.
-    detect_type : Vectorized type inference.
     AtomicType.resolve : Delegated method for resolve operations.
     AdapterType.resolve : Delegated method for resolve operations.
     TypeRegistry.aliases : Up-to-date map of all aliases recognized by this function.
 
     Notes
     -----
-    This function is one of the preferred constructors for type objects, along
-    with :func:`detect_type`.  Its behavior can be customized by overriding
-    :func:`AtomicType.resolve` or :func:`AdapterType.resolve` in individual
+    This function's behavior can be customized by overriding
+    :meth:`AtomicType.resolve` or :meth:`AdapterType.resolve` in individual
     type definitions.  See those functions for a guide on how to do this.
 
-    :func:`TypeRegistry.aliases` provides an up-to-date mapping of all the
+    :attr:`TypeRegistry.aliases` provides an up-to-date mapping of all the
     aliases that are recognized by this function to their corresponding type
     definitions.
 
@@ -96,22 +82,25 @@ def resolve_type(
 
     Examples
     --------
-    >>> import numpy as np
-    >>> import pandas as pd
-    >>> import pdcast
+    .. testsetup::
 
-    >>> class CustomObj:
-    ...     pass
+        import numpy as np
+        import pandas as pd
+        import pdcast
 
-    # raw classes
+    Raw classes:
+
     >>> pdcast.resolve_type(int)
     IntegerType()
+    >>> class CustomObj:
+    ...     pass
     >>> pdcast.resolve_type(np.float32)
     NumpyFloat32Type()
     >>> pdcast.resolve_type(CustomObj)
     ObjectType(type_def=<class 'CustomObj'>)
 
-    # dtype objects
+    dtype objects:
+
     >>> pdcast.resolve_type(np.dtype("?"))
     NumpyBooleanType()
     >>> pdcast.resolve_type(np.dtype("M8[30s]"))
@@ -119,7 +108,8 @@ def resolve_type(
     >>> pdcast.resolve_type(pd.UInt8Dtype())
     PandasUInt8Type()
 
-    # type specification mini language
+    Strings:
+
     >>> pdcast.resolve_type("string")
     StringType()
     >>> pdcast.resolve_type("timedelta[pandas], timedelta[python]")   # doctest: +SKIP
@@ -136,7 +126,8 @@ def resolve_type(
     SparseType(wrapped=CategoricalType(wrapped=IntegerType(), levels=None), fill_value=<NA>)
     >>> pdcast.resolve_type()
 
-    # iterables
+    Iterables:
+
     >>> pdcast.resolve_type(["int"])
     CompositeType({int})
     >>> pdcast.resolve_type((float, complex))   # doctest: +SKIP

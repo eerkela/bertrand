@@ -1,11 +1,10 @@
 .. currentmodule:: pdcast
 
-Detect & Infer
---------------
+Type Checks, Inference, and Resolution
+--------------------------------------
 
-.. autosummary::
-    :toctree: ../../generated/
+.. autofunction:: typecheck
 
-    typecheck
-    detect_type
-    resolve_type
+.. autofunction:: detect_type
+
+.. autofunction:: resolve_type
