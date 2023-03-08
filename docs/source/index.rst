@@ -28,7 +28,7 @@
 
    Motivation <content/motivation>
    Types <content/types>
-   Implementation <content/implementation>
    Tutorial: bfloat16 <content/tutorial>
+   Implementation <content/implementation/implementation>
    API <content/api/api>
    Changelog <content/changelog>

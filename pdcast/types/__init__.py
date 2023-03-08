@@ -1,6 +1,6 @@
 from .base import (
-    AdapterType, AtomicType, CompositeType, dispatch, generic, register,
-    subtype, TypeRegistry
+    AdapterType, AtomicType, BaseType, CompositeType, dispatch, generic,
+    register, ScalarType, subtype, TypeRegistry
 )
 from .boolean import (
     BooleanType, NumpyBooleanType, PandasBooleanType, PythonBooleanType

@@ -1,10 +1,8 @@
-.. currentmodule:: pdcast
-
 Type Checks, Inference, and Resolution
 --------------------------------------
 
-.. autofunction:: typecheck
+.. autofunction:: pdcast.typecheck
 
-.. autofunction:: detect_type
+.. autofunction:: pdcast.detect_type
 
-.. autofunction:: resolve_type
+.. autofunction:: pdcast.resolve_type

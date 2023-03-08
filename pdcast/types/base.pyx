@@ -69,10 +69,6 @@ cdef class TypeRegistry:
     :func:`@register() <register>` decorator, as well as updating their
     attributes as new types are added.
 
-    Attributes
-    ----------
-    aliases
-
     Notes
     -----
 
@@ -396,8 +392,6 @@ cdef class BaseType:
 
     This has no interface of its own and merely serves to anchor inheritance.
     """
-
-    # TODO: put registry here?  would make it available from CompositeTypes
 
     registry: TypeRegistry = TypeRegistry()
 

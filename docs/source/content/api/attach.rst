@@ -3,7 +3,5 @@
 Attach
 ======
 
-.. autosummary::
-    :toctree: ../../generated/
 
-    dispatch
+.. autodecorator:: dispatch

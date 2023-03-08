@@ -12,9 +12,8 @@ considered public.
 
     Check <check>
     Cast <cast>
-    Types <types>
     Attach <attach>
-    Type Specification Mini Language <mini_language>
+    Types <types>
     AtomicType <atomic>
     AdapterType <adapter>
     CompositeType <composite>

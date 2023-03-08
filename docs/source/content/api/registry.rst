@@ -3,12 +3,8 @@
 TypeRegistry
 ============
 
-.. autoclass:: TypeRegistry
-
-
-.. raw:: html
-
-    <h2>Resolution</h2>
+Resolution
+----------
 
 .. autosummary::
     :toctree: ../../generated/
@@ -17,18 +13,16 @@ TypeRegistry
     TypeRegistry.regex
     TypeRegistry.resolvable
 
-.. raw:: html
-
-    <h2>Dispatching</h2>
+Dispatching
+-----------
 
 .. autosummary::
     :toctree: ../../generated/
 
     TypeRegistry.dispatch_map
 
-.. raw:: html
-
-    <h2>Registration</h2>
+Registration
+------------
 
 .. autosummary::
     :toctree: ../../generated/
@@ -37,9 +31,8 @@ TypeRegistry
     TypeRegistry.remove
     TypeRegistry.clear
 
-.. raw:: html
-
-    <h2>Synchronization</h2>
+Synchronization
+---------------
 
 .. autosummary::
     :toctree: ../../generated/
