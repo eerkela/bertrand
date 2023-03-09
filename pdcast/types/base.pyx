@@ -7,12 +7,14 @@ from typing import Any, Callable, Iterator
 cimport numpy as np
 import numpy as np
 import pandas as pd
+from pandas.api.extensions import register_extension_dtype
 
 cimport pdcast.convert as convert
 import pdcast.convert as convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
+import pdcast.util.array as array
 from pdcast.util.round cimport Tolerance
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import type_specifier
@@ -107,8 +109,6 @@ cdef class TypeRegistry:
         """An up-to-date dictionary mapping every alias to its corresponding
         type.
 
-        
-
         Notes
         -----
         This is a cached property that is tied to the current state of the
@@ -131,30 +131,31 @@ cdef class TypeRegistry:
         The structure of this dictionary reflects the calling signature of
         the methods it contains.  It goes as follows:
 
-        {
-            namespace1 (str): {
-                method1_name (str): {
-                    atomic_type1 (type): method1 (Callable),
-                    atomic_type2 (type): method1 (Callable),
-                    ...
-                },
-                method2_name (str): {
-                    atomic_type1 (type): method2 (Callable),
-                    atomic_type2 (type): method2 (Callable),
-                    ...
-                },
-                ...
-            },
-            ...
-            None: {
-                method3_name (str): {
-                    atomic_type1 (type): method3 (Callable),
-                    atomic_type2 (type): method3 (Callable),
+        .. code::
+            {
+                namespace1 (str): {
+                    method1_name (str): {
+                        atomic_type1 (type): method1 (Callable),
+                        atomic_type2 (type): method1 (Callable),
+                        ...
+                    },
+                    method2_name (str): {
+                        atomic_type1 (type): method2 (Callable),
+                        atomic_type2 (type): method2 (Callable),
+                        ...
+                    },
                     ...
                 },
                 ...
+                None: {
+                    method3_name (str): {
+                        atomic_type1 (type): method3 (Callable),
+                        atomic_type2 (type): method3 (Callable),
+                        ...
+                    },
+                    ...
+                }
             }
-        }
 
         """
         # check if cache is out of date
@@ -654,12 +655,15 @@ cdef class AtomicType(ScalarType):
     # customize behavior.
     conversion_func = convert.to_object
     type_def = None
-    dtype = np.dtype("O")
+    dtype = np.dtype("O")  # if using abstract extension types, make this None
     itemsize = None
     na_value = pd.NA
     is_nullable = True  # must be explicitly set False where applicable
 
     def __init__(self, **kwargs):
+        # if using abstract extension types, uncomment this
+        # if self.dtype is None:
+        #     self.dtype = self._construct_extension_dtype(self)
         self.kwargs = MappingProxyType(kwargs)
         self.slug = self.slugify(**kwargs)
         self.hash = hash(self.slug)
@@ -835,6 +839,49 @@ cdef class AtomicType(ScalarType):
         if type_def is None or type_def not in self.registry:
             return None
         return type_def.instance()
+
+    def _construct_extension_dtype(
+        self,
+        is_boolean: bool = False,
+        is_numeric: bool = False,
+        add_comparison_ops: bool = False,
+        add_arithmetic_ops: bool = False
+    ) -> pd.api.extensions.ExtensionDtype:
+        """Construct a new pandas ``ExtensionDtype`` to refer to elements
+        of this type.
+
+        This method is only invoked if no explicit ``dtype`` is assigned to
+        this ``AtomicType``.
+        """
+        class_doc = (
+            f"An abstract data type, automatically generated to store\n "
+            f"{self.type_def} objects."
+        )
+
+        @register_extension_dtype
+        class StubDtype(array.AbstractDtype):
+            name = self.name
+            type = self.type_def
+            na_value = self.na_value
+
+            @classmethod
+            def construct_array_type(cls):
+                return array.construct_array_type(
+                    self,
+                    add_arithmetic_ops=add_arithmetic_ops,
+                    add_comparison_ops=add_comparison_ops
+                )
+
+            @property
+            def _is_boolean(self):
+                return is_boolean
+
+            @property
+            def _is_numeric(self):
+                return is_numeric
+
+        StubDtype.__doc__ = class_doc
+        return StubDtype()
 
     def contains(self, other: type_specifier) -> bool:
         """Test whether `other` is a subtype of the given AtomicType.

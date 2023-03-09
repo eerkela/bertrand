@@ -479,6 +479,8 @@ Or you could let ``pdcast`` work out all the details for you:
     2   1970-01-01 00:00:03
     dtype: datetime64[ns]
 
+.. TODO: could break here and shorten motivation
+
 With expanded support for different epochs and timezones:
 
 .. doctest:: conversions
