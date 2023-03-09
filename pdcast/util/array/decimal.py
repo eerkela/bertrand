@@ -10,6 +10,7 @@ from pandas.core.arrays import ExtensionArray, ExtensionScalarOpsMixin
 from pandas.core.dtypes.base import ExtensionDtype
 
 
+# minimal working example: https://github.com/tomharvey/pandas-extension-dtype
 # taken from: https://github.com/pandas-dev/pandas/blob/e246c3b05924ac1fe083565a765ce847fcad3d91/pandas/tests/extension/decimal/array.py
 
 
@@ -129,7 +130,12 @@ class DecimalArray(ExtensionArray, ExtensionScalarOpsMixin):
         if allow_fill and fill_value is None:
             fill_value = self.dtype.na_value
 
-        result = take(data, indexer, fill_value=fill_value, allow_fill=allow_fill)
+        result = take(
+            data,
+            indexer,
+            fill_value=fill_value,
+            allow_fill=allow_fill
+        )
         return self._from_sequence(result)
 
     def copy(self):

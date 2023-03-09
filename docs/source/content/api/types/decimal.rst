@@ -1,5 +1,7 @@
 .. currentmodule:: pdcast
 
+.. _decimal_types:
+
 Decimal
 =======
 

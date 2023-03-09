@@ -2,7 +2,7 @@ import inspect
 from functools import wraps
 import regex as re  # using alternate regex
 from types import MappingProxyType
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 cimport numpy as np
 import numpy as np
@@ -132,6 +132,7 @@ cdef class TypeRegistry:
         the methods it contains.  It goes as follows:
 
         .. code::
+
             {
                 namespace1 (str): {
                     method1_name (str): {
@@ -434,9 +435,109 @@ cdef class ScalarType(BaseType):
 ##########################
 
 
-def dispatch(_method=None, *, namespace: str = None):
-    """Dispatch an AtomicType method to pandas series' of the given type, so
-    that it is discovered during attribute lookup.
+# TODO: implement the types argument
+# -> If types is not None, check to make sure that the wrapped object is not
+# bound.  If it is, throw a ValueError.  Else, if it does not have a self
+# argument, insert one before broadcasting to each type definition. This
+# requires an extra decorator.
+
+
+def dispatch(
+    _method=None,
+    *,
+    namespace: str = None,
+    types: type_specifier | Iterable[type_specifier] = None
+):
+    """Dispatch a method to ``pandas.Series`` objects of the associated type.
+
+    Parameters
+    ----------
+    namespace : str, default None
+        Hide the dispatched method behind a virtual namespace, similar to
+        ``pandas.Series.dt``, ``pandas.Series.str``, etc.  The attribute will
+        only be accessible from this extended namespace.  This is useful for
+        preventing conflicts with existing pandas functionality.
+    types : type specifier | Iterable[type specifier], default None
+        The existing types to broadcast this method to.  These can be given
+        in any format recognized by :func:`resolve_type`, and any number of
+        types can be specified.
+
+        .. note::
+
+            If a type accepts parametrized arguments, the method will be
+            attached to its *class definition*.  This means that it will be
+            accessible regardless of the specified parameter settings. If the
+            method only applies when certain settings are selected, then it
+            must do the filtering itself.
+
+    Raises
+    ------
+    ValueError
+        If ``types`` is given and could not be resolved.
+    TypeError
+        If the decorated method does not conform to the dispatch criteria.
+
+    Warnings
+    --------
+    If a dispatched method's name conflicts with a core pandas method, then it
+    will be called in any internals that utilize that method.  Care should be
+    taken not to break existing functionality in this case.  Using the
+    ``namespace`` argument helps to prevent this.
+
+    See Also
+    --------
+    pandas.Series.round : Customizable rounding for numeric series.
+    pandas.Series.dt.tz_localize : Abstract timezone localization for datetime series.
+    pandas.Series.dt.tz_convert : Abstract timezone conversion for datetime series.
+
+    Notes
+    -----
+    This function can be used in one of two ways.  The first is to decorate a
+    method of a type definition in-place:
+
+    .. code::
+
+        @pdcast.register
+        class CustomType(pdcast.AtomicType):
+            ...
+
+            @dispatch
+            def method(
+                self,
+                series: pdcast.SeriesWrapper,
+                ...
+            ) -> pdcast.SeriesWrapper:
+                ...
+
+        ...
+
+    The second is to define a function at the module level and use the
+    ``types`` argument to broadcast it to a selection of types.
+
+    .. code::
+
+        @dispatch(types="CustomType1, CustomType2, ...")
+        def method(series: pdcast.SeriesWrapper, ...) -> pdcast.SeriesWrapper:
+            ...
+
+    The first option is preferred if you control the type definition.  The
+    second can be used to add new dispatch methods to existing types.
+
+    Regardless of which style is chosen, the method must meet certain criteria:
+
+        #.  It must accept a :class:`SeriesWrapper` as its first non-self
+            argument.
+        #.  It must return a :class:`SeriesWrapper`.
+
+    Both of these conditions are validated by the decorator when it is applied.
+
+    On an implementation level, this function works by intercepting attribute
+    access to ``pandas.Series`` objects.  When an attribute is requested, its
+    name is first compared against a table of all the methods that have been
+    decorated by this function.  If a match is found, then the type of the
+    series is inferred, and if the inferred type implements the named method,
+    then it will be chosen instead of the default implementation.  Otherwise,
+    the attribute access is treated normally.
     """
     has_options = _method is not None
     if has_options:

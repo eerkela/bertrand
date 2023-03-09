@@ -21,14 +21,14 @@ from pdcast.util.type_hints import type_specifier
 ########################
 
 
-def cast(self, dtype: type_specifier = None, **kwargs) -> pd.Series:
-    """Convert a pd.Series object to another data type."""
-    return cast_standalone(self, dtype=dtype, **kwargs)
+def cast(self, *args, **kwargs) -> pd.Series:
+    """An attached version of :func:`cast` """
+    return cast_standalone(self, *args, **kwargs)
 
 
-def typecheck(self, dtype: type_specifier, exact: bool = False) -> bool:
+def typecheck(self, *args, **kwargs) -> bool:
     """Do a schema validation check on a pandas Series object."""
-    return typecheck_standalone(self, dtype, exact=exact)
+    return typecheck_standalone(self, *args, **kwargs)
 
 
 def element_type(self) -> AdapterType | AtomicType | CompositeType:

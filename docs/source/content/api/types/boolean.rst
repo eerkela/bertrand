@@ -1,5 +1,7 @@
 .. currentmodule:: pdcast
 
+.. _boolean_types:
+
 Boolean
 =======
 

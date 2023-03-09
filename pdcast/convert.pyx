@@ -425,7 +425,16 @@ def cast(
     dtype: type_specifier = None,
     **kwargs
 ) -> pd.Series:
-    """Convert arbitrary data to the given data type."""
+    """Convert data to an arbitrary data type.
+
+    This function dispatches to one of the standalone conversion functions
+    listed below based on the value of its ``dtype`` argument.
+
+    Parameters
+    ----------
+    
+
+    """
     # if no target is given, default to series type
     if dtype is None:
         series = as_series(series)
@@ -455,7 +464,7 @@ def to_boolean(
     errors: str = None,
     **kwargs
 ) -> pd.Series:
-    """Convert arbitrary data to boolean representation."""
+    """Convert a to boolean representation."""
     # validate args
     dtype = validate_dtype(dtype, types.BooleanType)
     tol = validate_tol(tol)

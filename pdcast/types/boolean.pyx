@@ -111,7 +111,7 @@ class BooleanMixin:
 @register
 @generic
 class BooleanType(BooleanMixin, AtomicType):
-    """Root boolean data type."""
+    """Generic boolean supertype."""
 
     conversion_func = convert.to_boolean  # all subtypes/backends inherit this
     name = "bool"
@@ -130,7 +130,10 @@ class BooleanType(BooleanMixin, AtomicType):
 @register
 @BooleanType.register_backend("numpy")
 class NumpyBooleanType(BooleanMixin, AtomicType):
-    """Numpy-backed boolean type."""
+    """Numpy boolean type.
+
+    This data type does not support missing values.
+    """
 
     aliases = {np.bool_, np.dtype(np.bool_)}
     dtype = np.dtype(np.bool_)
@@ -147,7 +150,7 @@ class NumpyBooleanType(BooleanMixin, AtomicType):
 @register
 @BooleanType.register_backend("pandas")
 class PandasBooleanType(BooleanMixin, AtomicType):
-    """Pandas-backed boolean type."""
+    """Pandas boolean type."""
 
     aliases = {pd.BooleanDtype(), "Boolean"}
     dtype = pd.BooleanDtype()
@@ -163,7 +166,7 @@ class PandasBooleanType(BooleanMixin, AtomicType):
 @register
 @BooleanType.register_backend("python")
 class PythonBooleanType(BooleanMixin, AtomicType):
-    """Python-backed boolean type."""
+    """Python boolean type."""
 
     aliases = set()
     dtype = np.dtype("O")

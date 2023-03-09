@@ -8,6 +8,10 @@ from pandas.core.arrays import ExtensionArray, ExtensionScalarOpsMixin
 from pandas.core.dtypes.base import ExtensionDtype
 
 
+# TODO: consider merging this functionality into base AtomicType definition
+# to make AtomicTypes directly usable as ExtensionDtypes
+
+
 class AbstractDtype(ExtensionDtype):
     pass
 

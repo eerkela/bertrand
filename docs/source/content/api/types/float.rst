@@ -1,5 +1,7 @@
 .. currentmodule:: pdcast
 
+.. _float_types:
+
 Float
 =====
 

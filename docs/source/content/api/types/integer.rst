@@ -1,5 +1,7 @@
 .. currentmodule:: pdcast
 
+.. _integer_types:
+
 Integer
 =======
 

@@ -21,6 +21,7 @@ Types
     sparse
     categorical
 
+
 .. TODO: RELEVANT LINKS
     numpy:
     https://numpy.org/doc/stable/reference/arrays.scalars.html#sized-aliases
@@ -30,3 +31,7 @@ Types
     pandas
     https://pandas.pydata.org/pandas-docs/stable/reference/arrays.html
     https://pandas.pydata.org/pandas-docs/stable/development/extending.html
+
+
+.. TODO: each type needs to list its attributes and dispatched methods, if
+    it has any.

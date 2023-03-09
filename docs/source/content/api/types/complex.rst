@@ -1,5 +1,7 @@
 .. currentmodule:: pdcast
 
+.. _complex_types:
+
 Complex
 =======
 

@@ -16,6 +16,11 @@ from .base import register
 
 @register
 class CategoricalType(AdapterType):
+    """Categorical adapter for :class:`AtomicType` objects.
+
+    This adapter keeps track of categorical levels for series objects of the
+    wrapped type.
+    """
 
     name = "categorical"
     aliases = {"categorical", "Categorical"}

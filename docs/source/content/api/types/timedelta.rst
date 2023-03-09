@@ -1,5 +1,7 @@
 .. currentmodule:: pdcast
 
+.. _timedelta_types:
+
 Timedelta
 =========
 

@@ -1,5 +1,7 @@
 .. currentmodule:: pdcast
 
+.. _string_types:
+
 String
 ======
 

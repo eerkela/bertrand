@@ -1,5 +1,7 @@
 .. currentmodule:: pdcast
 
+.. _datetime_types:
+
 Datetime
 ========
 
