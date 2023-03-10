@@ -67,27 +67,29 @@ Compared to the existing ``astype()`` framework, ``pdcast`` is:
    lossless downcasting make it possible to shrink data by up to a factor of
    10 in some cases, increasing access to big data.
 
-Installation
-------------
-Wheels are built using `cibuildwheel <https://cibuildwheel.readthedocs.io/en/stable/>`_
-and are available for most platforms via the Python Package Index (PyPI).
+.. TODO: uncomment this once the package is pushed to PyPI
 
-.. TODO: add hyperlink to PyPI page when it goes live
+   Installation
+   ------------
+   Wheels are built using `cibuildwheel <https://cibuildwheel.readthedocs.io/en/stable/>`_
+   and are available for most platforms via the Python Package Index (PyPI).
 
-.. code:: console
+   .. TODO: add hyperlink to PyPI page when it goes live
 
-   (.venv) $ pip install pdcast
+   .. code:: console
 
-If a wheel is not available for your system, ``pdcast`` also provides an sdist
-to allow pip to build from source, although doing so requires an additional
-``cython`` dependency.
+      (.venv) $ pip install pdcast
 
-If you want to run the test suite, install the package using the optional
-``pdcast[dev]`` dependencies.
+   If a wheel is not available for your system, ``pdcast`` also provides an sdist
+   to allow pip to build from source, although doing so requires an additional
+   ``cython`` dependency.
 
-.. note::
-   
-   Tests are still incomplete at this stage and are constantly being updated.
+   If you want to run the test suite, install the package using the optional
+   ``pdcast[dev]`` dependencies.
+
+   .. note::
+      
+      Tests are still incomplete at this stage and are constantly being updated.
 
 Demonstration
 -------------

@@ -29,9 +29,9 @@ Aliases
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.clear_aliases <ScalarType.clear_aliases>
     AtomicType.register_alias <ScalarType.register_alias>
     AtomicType.remove_alias <ScalarType.remove_alias>
+    AtomicType.clear_aliases <ScalarType.clear_aliases>
 
 Subtypes/Supertypes
 -------------------
@@ -54,8 +54,8 @@ Adapters
 
     AtomicType.adapters
     AtomicType.unwrap
-    AtomicType.make_categorical
     AtomicType.make_sparse
+    AtomicType.make_categorical
 
 Conversions
 -----------
