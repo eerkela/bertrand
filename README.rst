@@ -200,11 +200,13 @@ basis.
       ...
    TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
 
-Documentation
--------------
-Detailed documentation is hosted on readthedocs.
+.. uncomment this when documentation goes live
 
-.. TODO: add hyperlink once documentation goes live
+   Documentation
+   -------------
+   Detailed documentation is hosted on readthedocs.
+
+   .. TODO: add hyperlink once documentation goes live
 
 License
 -------
