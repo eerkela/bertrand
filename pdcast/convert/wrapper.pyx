@@ -1,8 +1,6 @@
-from datetime import tzinfo
-import decimal
 from functools import wraps
 import inspect
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterator
 
 cimport cython
 cimport numpy as np
@@ -20,11 +18,7 @@ import pdcast.convert.default as default
 import pdcast.convert.standalone as standalone
 
 from pdcast.util.error import shorten_list
-from pdcast.util.structs import as_series
-from pdcast.util.time cimport Epoch, epoch_aliases
-from pdcast.util.type_hints import (
-    array_like, datetime_like, numeric, type_specifier
-)
+from pdcast.util.type_hints import array_like, numeric, type_specifier
 
 
 # TODO: SparseType works, but not in all cases.

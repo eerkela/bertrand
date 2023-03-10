@@ -1,31 +1,20 @@
 
 from datetime import tzinfo
 import decimal
-from functools import wraps
-import inspect
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterable
 
-cimport cython
-cimport numpy as np
-import numpy as np
 import pandas as pd
 
 cimport pdcast.detect as detect
 import pdcast.detect as detect
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
 cimport pdcast.types as types
 import pdcast.types as types
 
 import pdcast.convert.default as default
 import pdcast.convert.wrapper as wrapper
 
-from pdcast.util.error import shorten_list
 from pdcast.util.structs import as_series
-from pdcast.util.time cimport Epoch, epoch_aliases
-from pdcast.util.type_hints import (
-    array_like, datetime_like, numeric, type_specifier
-)
+from pdcast.util.type_hints import datetime_like, numeric, type_specifier
 
 
 def cast(
