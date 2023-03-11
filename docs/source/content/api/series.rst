@@ -3,16 +3,22 @@
 SeriesWrapper
 =============
 
+Constructor
+-----------
+
+.. autoclass:: SeriesWrapper
+
 Properties
 ----------
 
 .. autosummary::
     :toctree: ../../generated/
 
+    SeriesWrapper.series
+    SeriesWrapper.hasnans
     SeriesWrapper.element_type
     SeriesWrapper.real
     SeriesWrapper.imag
-    SeriesWrapper.series
 
 Wrapped Methods
 ---------------
@@ -23,9 +29,6 @@ These methods are overridden by :class:`SeriesWrapper`.
 
     SeriesWrapper.astype
     SeriesWrapper.copy
-    SeriesWrapper.hasnans
-    SeriesWrapper.argmax
-    SeriesWrapper.argmin
     SeriesWrapper.max
     SeriesWrapper.min
 

@@ -21,6 +21,10 @@ from pdcast.util.error import shorten_list
 from pdcast.util.type_hints import array_like, numeric, type_specifier
 
 
+# TODO: max/min should be properties to indicate that they are cached and
+# therefore not callable.
+
+
 # TODO: SparseType works, but not in all cases.
 # -> pd.NA disallows non-missing fill values
 # -> Timestamps must be sparsified manually by converting to object and then
@@ -39,10 +43,72 @@ from pdcast.util.type_hints import array_like, numeric, type_specifier
 
 
 cdef class SeriesWrapper:
-    """Wrapper for type-aware pd.Series objects.
+    """A type-aware wrapper for ``pandas.Series`` objects.
 
-    Implements a dynamic wrapper according to the Gang of Four's Decorator
-    Pattern (not to be confused with python decorators).
+    This is a context manager.  When used in a corresponding ``with``
+    statement, it offers a view into a ``pandas.Series`` object that strips
+    certain problematic information from it.  Operations can then be performed
+    on the wrapped series without considering these special cases, which are
+    automatically handled when the wrapper leaves its context.
+
+    Parameters
+    ----------
+    series : pd.Series
+        The series to be wrapped.
+    hasnans : bool, default None
+        Indicates whether missing values are present in the series.  This
+        defaults to ``None``, meaning that missing values will be automatically
+        detected when entering this object's ``with`` statement.  Explicitly
+        setting this to ``False`` will skip this step, which may improve
+        performance slightly.  If it is set to ``True``, then the indices of
+        each missing value will still be detected, but operations will proceed
+        as if some were found even if this is not the case.
+    element_type : BaseType
+        Specifies the element type of the series.  Only use this if you know
+        in advance what elements are stored in the series.  Providing it does
+        not change functionality, but may avoid a call to :func:`detect_type`
+        in the context block's ``__enter__`` clause.
+
+    Notes
+    -----
+    The information that is stripped by this object includes missing values,
+    non-unique indices, and sparse/categorical extensions.  When a
+    ``SeriesWrapper`` is invoked in a corresponding ``with`` statement, its
+    index is replaced with a default ``RangeIndex`` and the old index is
+    remembered.  Then, if ``hasnans`` is set to ``True`` or ``None``, missing
+    values will be detected by running ``pd.isna()`` on the series.  If any
+    are found, they are dropped from the series automatically, leaving the
+    index unchanged.
+
+    When the context block is exited, a new series is constructed with the
+    same size as the original, but filled with missing values.  The wrapped
+    series - along with any transformations that may have been applied to it -
+    are then laid into this NA series, aligning on index.  The index is then
+    replaced with the original, and if its ``element_type`` is unchanged, any
+    sparse/categorical extensions are dynamically reapplied.  The result is a
+    series that is identical to the original, accounting for any
+    transformations that are applied in the body of the context block.
+
+    One thing to note about this approach is that if a transformation **removes
+    values** from the wrapped series while within the context block, then those
+    values will be automatically replaced with **missing values** according to
+    its ``element_type.na_value`` field.  This is useful if the wrapped logic
+    coerces some of the series into missing values, as is the case when using
+    the ``errors="coerce"`` argument of the various
+    :ref:`conversion functions <conversions>`.  This behavior allows the
+    wrapped logic to proceed *without accounting for missing values*, which
+    will never be introduced unexpectedly.
+
+    This object is an example of the Gang of Four's
+    `Decorator Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_,
+    which is not to be confused with python language decorators.  The wrapper
+    itself "sticky", meaning that any method that produces a ``pandas.Series``
+    from this wrapper will be wrapped in turn, allowing users to manipulate
+    them as if they were ``pandas.Series`` objects directly without worrying
+    about re-wrapping the results whenever a method is applied.
+
+    Lastly, this object implements several convenience methods that automate
+    common tasks in wrapped logic.  See each method for details.
     """
 
     def __init__(
@@ -61,6 +127,25 @@ cdef class SeriesWrapper:
 
     @property
     def element_type(self) -> types.BaseType:
+        """The inferred type of the series.
+
+        Parameters
+        ----------
+        val : type specifier
+            A new element type to assign to the series.  Note that this does
+            not perform any conversions, it merely re-labels the
+            ``SeriesWrapper``'s ``element_type`` field.  This can be in any
+            format recognized by :func:`resolve_type`
+
+        Returns
+        -------
+        BaseType
+            The inferred type of the series.
+
+        See Also
+        --------
+        detect_type : type inference from example data.
+        """
         if self._element_type is None:
             self._element_type = detect.detect_type(self.series)
         return self._element_type
@@ -81,7 +166,21 @@ cdef class SeriesWrapper:
 
     @property
     def hasnans(self) -> bool:
-        """Check whether a wrapped series contains missing values."""
+        """Indicates whether missing values were detected in the series.
+
+        Parameters
+        ----------
+        val : bool
+            Allows users to override this setting during wrapped logic.  This
+            may be useful if a transformation drops values from the series or
+            otherwise injects missing values into it.
+
+        Returns
+        -------
+        bool
+            ``True`` if missing values were detected in the wrapped series.
+            ``False`` otherwise.
+        """
         if self._hasnans is None:
             self._hasnans = self.isna().any()
         return self._hasnans
@@ -92,7 +191,21 @@ cdef class SeriesWrapper:
 
     @property
     def imag(self) -> SeriesWrapper:
-        """Get the imaginary component of a wrapped series."""
+        """Get the imaginary component of the wrapped series.
+
+        This is a convenience attribute that mimics the behavior of
+        ``numpy.imag()``, but wraps the output as a new ``SeriesWrapper``
+        instance.
+
+        Returns
+        -------
+        SeriesWrapper
+            The imaginary component of the series.
+
+        See Also
+        --------
+        SeriesWrapper.real : real equivalent.
+        """
         # NOTE: np.imag() fails when applied over object arrays that may
         # contain complex values.  In this case, we reduce it to a loop.
         if pd.api.types.is_object_dtype(self.series):
@@ -100,11 +213,7 @@ cdef class SeriesWrapper:
         else:
             result = pd.Series(np.imag(self.series), index=self.index)
 
-        target = getattr(
-            self.element_type,
-            "equiv_float",
-            self.element_type
-        )
+        target = getattr(self.element_type, "equiv_float", self.element_type)
         return SeriesWrapper(
             result,
             hasnans=self._hasnans,
@@ -113,7 +222,21 @@ cdef class SeriesWrapper:
 
     @property
     def real(self) -> SeriesWrapper:
-        """Get the real component of a wrapped series."""
+        """Get the real component of the wrapped series.
+
+        This is a convenience attribute that mimics the behavior of
+        ``numpy.real()``, but wraps the output as a new ``SeriesWrapper``
+        instance.
+
+        Returns
+        -------
+        SeriesWrapper
+            The real component of the series.
+
+        See Also
+        --------
+        SeriesWrapper.imag : imaginary equivalent.
+        """
         # NOTE: np.real() fails when applied over object arrays that may
         # contain complex values.  In this case, we reduce it to a loop.
         if pd.api.types.is_object_dtype(self.series):
@@ -134,6 +257,21 @@ cdef class SeriesWrapper:
 
     @property
     def series(self) -> pd.Series:
+        """Retrieve the wrapped ``pandas.Series`` object.
+
+        Every attribute/method that is not explicitly listed in the
+        :class:`SeriesWrapper` documentation is delegated to this object.
+
+        Parameters
+        ----------
+        val : pandas.Series
+            Reassign the wrapped series.
+
+        Returns
+        -------
+        pandas.Series
+            The series being wrapped.
+        """
         return self._series
 
     @series.setter
@@ -150,21 +288,35 @@ cdef class SeriesWrapper:
     ####    WRAPPED METHODS    ####
     ###############################
 
-    def argmax(self, *args, **kwargs):
-        """Alias for IntegerSeries.max()."""
-        return self.max(*args, **kwargs)
-
-    def argmin(self, *args, **kwargs):
-        """Alias for IntegerSeries.min()."""
-        return self.min(*args, **kwargs)
-
     def astype(
         self,
         dtype: type_specifier,
         errors: str = "raise"
     ) -> SeriesWrapper:
-        """`astype()` equivalent for SeriesWrapper instances that works for
+        """``astype()`` equivalent for SeriesWrapper instances that works for
         object-based type specifiers.
+
+        Parameters
+        ----------
+        dtype : type specifier
+            The type to convert to.  This can be in any format recognized by
+            :func:`resolve_type`.
+        errors : str, default "raise"
+            The error-handling rule to use if errors are encountered during
+            the conversion.  Must be one of "raise", "ignore", or "coerce".
+
+        Returns
+        -------
+        SeriesWrapper
+            The result of the conversion.
+
+        Notes
+        -----
+        ``errors="raise"`` and ``errors="ignore"`` both indicate that any
+        errors should be propagated up the call stack.  In the case of
+        ``"ignore"``, it is the caller's job to handle the raised error.
+        ``errors="coerce"`` indicates that any offending values should be
+        removed from the series (and therefore replaced with missing values).
         """
         dtype = resolve.resolve_type(dtype)
         if isinstance(dtype, types.CompositeType):
@@ -223,6 +375,11 @@ cdef class SeriesWrapper:
     ###########################
 
     def __enter__(self) -> SeriesWrapper:
+        """Enter a :class:`SeriesWrapper`'s context block.
+
+        This strips problematic information from the series.  See the
+        :class:`SeriesWrapper` documentation for details.
+        """
         # record shape
         self._orig_shape = self.series.shape
 
@@ -259,6 +416,12 @@ cdef class SeriesWrapper:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit a :class:`SeriesWrapper`'s context block.
+
+        This replaces the information that was stripped in
+        :meth:`SeriesWrapper.__enter__`.  See the :class:`SeriesWrapper`
+        documentation for more details.
+        """
         # replace missing values, aligning on index
         if self.hasnans:
             result = pd.Series(
@@ -289,14 +452,20 @@ cdef class SeriesWrapper:
             self.element_type = result.element_type
 
     def __getattr__(self, name: str) -> Any:
-        # dynamically re-wrap series outputs
+        """`Decorator Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`
+        dynamic wrapper for attribute lookups.
+
+        This delegates all attribute lookups to the wrapped series and
+        re-wraps the results if they are returned as ``pandas.Series`` objects.
+        """
         attr = getattr(self.series, name)
 
-        # method - return a decorator
+        # method
         if callable(attr):
 
             @wraps(attr)
             def wrapper(*args, **kwargs):
+                """A decorator (lowercase D) that re-wraps series outputs."""
                 result = attr(*args, **kwargs)
                 if isinstance(result, pd.Series):
                     return SeriesWrapper(result, hasnans=self._hasnans)
@@ -314,8 +483,29 @@ cdef class SeriesWrapper:
         call: Callable,
         errors: str = "raise"
     ) -> SeriesWrapper:
-        """Apply `call` over the series, applying the specified error handling
+        """Apply a callable over the series using the specified error handling
         rule at each index.
+
+        Parameters
+        ----------
+        call : Callable
+            The callable to apply.
+        errors : str, default "raise"
+            The error-handling rule to use if errors are encountered during
+            the conversion.  Must be one of "raise", "ignore", or "coerce".
+
+        Returns
+        -------
+        SeriesWrapper
+            The result of applying ``call`` at each index.
+
+        Notes
+        -----
+        ``errors="raise"`` and ``errors="ignore"`` both indicate that any
+        errors should be propagated up the call stack.  In the case of
+        ``errors="ignore"``, it is the caller's job to handle the raised error.
+        ``errors="coerce"`` indicates that any offending values should be
+        removed from the series (and therefore replaced with missing values).
         """
         result, has_errors, index = _apply_with_errors(
             self.series.to_numpy(dtype="O"),
@@ -329,19 +519,59 @@ cdef class SeriesWrapper:
 
     def boundscheck(
         self,
-        dtype: types.AtomicType,
-        errors: str
-    ) -> tuple[SeriesWrapper, types.AtomicType]:
-        """Ensure that a series does not overflow past the allowable range of the
-        given AtomicType.  If overflow is detected, attempt to upcast the
-        AtomicType to fit or coerce the series if directed.
+        dtype: types.ScalarType,
+        errors: str = "raise"
+    ) -> tuple[SeriesWrapper, types.ScalarType]:
+        """Ensure that the series fits within the allowable range of a given
+        type.
+
+        If overflow is detected, this function will attempt to
+        :meth:`upcast <AtomicType.upcast>` the data type to fit the series.  If
+        this fails and ``errors="coerce"``, then it will drop overflowing
+        values from the series to fit the data type instead.
+
+        Parameters
+        ----------
+        dtype : ScalarType
+            An :class:`AtomicType` or :class:`AdapterType` whose range will be
+            used for the check.  May be upcasted.
+        errors : str, default "raise"
+            The error-handling rule to apply to the range check.  Must be one
+            of "raise", "ignore", or "coerce".
+
+        Returns
+        -------
+        series : SeriesWrapper
+            A series whose elements fit within the range of the specified type.
+            In most cases, this will be the original series, but if overflow is
+            detected and ``errors="coerce"``, then it may be a subset of the
+            original.
+        dtype : ScalarType
+            A type that fits the observed range of the series.  In most cases,
+            this will be the original data type, but if overflow is detected
+            and the type is upcastable, then it may be larger.
+
+        Raises
+        ------
+        OverflowError
+            If ``dtype`` cannot fit the observed range of the series, cannot
+            be upcasted to fit, and ``errors != "coerce"``
+
+        See Also
+        --------
+        AtomicType.upcast : upcast a data type to fit a series.
+
+        Notes
+        -----
+        In most cases, this is a simple identity function.  It only changes the
+        inputs in the event that overflow is detected.
         """
         # NOTE: this takes advantage of SeriesWrapper's min/max caching.
         series = self
         min_val = series.min()
         max_val = series.max()
 
-        # NOTE: we convert to pyint to prevent inconsistent comparisons
+        # NOTE: convert to python int to prevent inconsistent comparisons
         min_int = int(min_val - bool(min_val % 1))  # round floor
         max_int = int(max_val + bool(max_val % 1))  # round ceiling
         if min_int < dtype.min or max_int > dtype.max:
@@ -364,6 +594,10 @@ cdef class SeriesWrapper:
 
         return series, dtype
 
+    # TODO: dispatch() can probably be made a lot cleaner.  Do we need the
+    # ``original`` argument?  Also, we should try to support dispatched methods
+    # on AdapterTypes if possible.
+
     def dispatch(
         self,
         endpoint: str,
@@ -373,7 +607,41 @@ cdef class SeriesWrapper:
         **kwargs
     ) -> SeriesWrapper:
         """For every type that is present in the series, invoke the named
-        endpoint.
+        endpoint, defaulting to the pandas implementation if it does not exist.
+
+        This method is used in conjunction with the
+        :func:`@dispatch() <dispatch>` decorator.  In most cases, users will
+        never need to invoke it manually.
+
+        Parameters
+        ----------
+        endpoint : str
+            The name of the dispatched attribute that is to be invoked.
+        submap : dict
+            A dictionary mapping :class:`AtomicType`s to their dispatched
+            ``endpoint`` implementations.  If ``self.element_type.unwrap()``
+            is found within this dictionary, then the dispatched implementation
+            will be chosen.  Otherwise, we default to pandas.
+        original : Callable
+            The original pandas implementation of the named ``endpoint``.
+
+        Returns
+        -------
+        SeriesWrapper
+            The result of invoking the named endpoint for each type in the
+            series.
+
+        Notes
+        -----
+        For homogenous data, this method is equivalent to calling
+        ``self.element_type.<endpoint>`` with the series as the first argument.
+        If ``self.element_type`` does not define ``endpoint``, then it defaults
+        to the pandas implementation, if one exists.
+
+        For non-homogenous data, this method employs a split-apply-combine
+        strategy.  The series is split by type and the selected endpoint is
+        applied for each group individually, with the results being stitched
+        together afterwards.
         """
         # series is composite
         if isinstance(self.element_type, types.CompositeType):
@@ -399,20 +667,44 @@ cdef class SeriesWrapper:
     def isinf(self) -> SeriesWrapper:
         """Return a boolean mask indicating the position of infinities in the
         series.
+
+        This works exactly like ``SeriesWrapper.isna()``, but checks for infs
+        rather than NAs.
         """
         return self.isin([np.inf, -np.inf])
 
     def rectify(self) -> SeriesWrapper:
-        """Convert an improperly-formatted object series to a standardized
+        """If a :class:`SeriesWrapper`'s ``.dtype`` field does not match
+        ``self.element_type.dtype``, then
+        :meth:`astype() <SeriesWrapper.astype>` it to match.
+
+        This method is used to convert a ``dtype: object`` series to a standard
         numpy/pandas data type.
         """
         if self.series.dtype != self.element_type.dtype:
             return self.astype(self.element_type)
         return self
 
-    def within_tol(self, other, tol: numeric) -> array_like:
-        """Check if every element of a series is within tolerance of another
-        series.
+    def within_tol(self, other, tol: numeric) -> SeriesWrapper:
+        """Check if every element of a series is within tolerance of a given
+        value or other series.
+
+        This is used to detect precision loss during :ref:`conversions`.
+
+        Parameters
+        ----------
+        other : numeric, np.array, pd.Series, or SeriesWrapper
+            The value to compare against.
+        tol : numeric
+            The available tolerance.  If any elements of the series differ from
+            ``other`` by more than this amount, then the corresponding index in
+            the result will be set to ``False``.
+
+        Returns
+        -------
+        SeriesWrapper
+            A boolean mask indicating which elements of ``self`` are within
+            tolerance of ``other``.
         """
         if not tol:  # fastpath if tolerance=0
             return self == other
