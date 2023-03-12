@@ -42,8 +42,9 @@ Features
    case, ``pdcast`` handles all the necessary type checks and inferencing,
    dispatching to the appropriate implementation if one exists and falling back
    to pandas if it does not.  Original functionality can be easily recovered if
-   necessary, and dispatched methods can be hidden behind temporary namespaces
-   to avoid conflicts, similar to ``pd.Series.dt``, ``pd.Series.str``, etc.
+   necessary, and dispatched methods can be hidden behind virtual namespaces to
+   avoid conflicts, similar to ``pandas.Series.dt``, ``pandas.Series.str``,
+   etc.
 
 Advantages over Pandas
 ----------------------
@@ -99,7 +100,7 @@ a pandas data str:
 .. doctest:: typecheck
 
    >>> import pandas as pd
-   >>> import pdcast.attach
+   >>> import pdcast; pdcast.attach()
 
    >>> df = pd.DataFrame({"a": [1, 2], "b": [1., 2.], "c": ["a", "b"]})
    >>> df.typecheck({"a": "int", "b": "float", "c": "string"})
@@ -112,8 +113,7 @@ is a short walk around the various type categories that are recognized by
 .. doctest:: conversion
 
    >>> import numpy as np
-   >>> import pdcast
-   >>> import pdcast.attach
+   >>> import pdcast; pdcast.attach()
 
    >>> class CustomObj:
    ...     def __init__(self, x): self.x = x
@@ -185,9 +185,9 @@ basis.
       ...
    TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
 
-   >>> import pdcast.attach
+   >>> import pdcast; pdcast.attach()
 
-   # pdcast defines a round() function that is type-agnostic
+   # pdcast attaches a round() function that is type-agnostic
    >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round()
    0    1.0
    1   -2.0

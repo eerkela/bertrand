@@ -27,6 +27,10 @@ cimport pdcast.types as types
 from pdcast.util.type_hints import type_specifier
 
 
+# TODO: pdcast.resolve_type(pd.CategoricalDtype([False, 1, 2.]))
+# -> CategoricalType must be able to wrap CompositeTypes
+
+
 #####################
 ####   PUBLIC    ####
 #####################
@@ -263,10 +267,10 @@ cdef types.ScalarType resolve_typespec_dtype(object input_dtype):
     # categorical
     if isinstance(input_dtype, pd.CategoricalDtype):
         categories = input_dtype.categories
-        result = types.CategoricalType(
-            detect.detect_type(categories),
-            levels=categories.tolist()
-        )
+        detected = detect.detect_type(categories)
+        # if isinstance(detected, types.CompositeType):
+        #     result = types.
+        result = types.CategoricalType(detected, levels=categories.tolist())
     else:
         # special cases for M8/m8/U/DatetimeTZDtype
         if isinstance(input_dtype, pd.DatetimeTZDtype):

@@ -4,16 +4,16 @@
    contain the root `toctree` directive.
 
 .. include:: ../../README.rst
-   :end-line: 175
+   :end-line: 176
 
 .. testsetup:: dispatch
 
    # detach from pandas to give correct errors during dispatch doctest
-   import pdcast.attach
-   pdcast.attach.detach()
+   import pdcast
+   pdcast.detach()
 
 .. include:: ../../README.rst
-   :start-line: 176
+   :start-line: 177
 
 .. toctree::
    :hidden:

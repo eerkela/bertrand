@@ -17,6 +17,8 @@ Properties
     SeriesWrapper.series
     SeriesWrapper.hasnans
     SeriesWrapper.element_type
+    SeriesWrapper.max
+    SeriesWrapper.min
     SeriesWrapper.real
     SeriesWrapper.imag
 
@@ -29,8 +31,6 @@ These methods are overridden by :class:`SeriesWrapper`.
 
     SeriesWrapper.astype
     SeriesWrapper.copy
-    SeriesWrapper.max
-    SeriesWrapper.min
 
 Additional Methods
 ------------------

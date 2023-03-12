@@ -38,9 +38,10 @@ Adapters
     :toctree: ../../generated/
 
     AdapterType.adapters
-    AdapterType.apply_adapters
     AdapterType.atomic_type
+    AdapterType.strip
     AdapterType.unwrap
+    AdapterType.wrap
     AdapterType.wrapped
 
 Special Methods

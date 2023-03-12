@@ -248,7 +248,6 @@ Let's see how ``pdcast`` handles the above example:
 .. doctest:: pdcast_intro
 
     >>> import pdcast
-
     >>> pdcast.to_integer([1, 2, 3])
     0    1
     1    2
@@ -376,7 +375,7 @@ this way.
 
 .. doctest:: conversions
 
-    >>> import pdcast.attach
+    >>> import pdcast; pdcast.attach()
     >>> series.cast(float)
     Traceback (most recent call last):
         ...
@@ -672,7 +671,7 @@ And automatic upcasting, similar to ``int`` above:
 .. testcleanup:: conversions
 
     # detach pdcast for next section
-    pdcast.attach.detach()
+    pdcast.detach()
 
 Type Checks
 -----------
@@ -734,7 +733,7 @@ preprocessing step to work at all.
 
 .. doctest:: validation
 
-    >>> import pdcast.attach
+    >>> import pdcast; pdcast.attach()
     >>> series1.typecheck("string")
     True
     >>> series2.typecheck("string")
@@ -789,7 +788,7 @@ And even to non-homogenous data:
 
 .. testcleanup:: validation
 
-    pdcast.attach.detach()
+    pdcast.detach()
 
 Expanded Support
 ----------------
@@ -924,7 +923,7 @@ In contrast, ``pdcast`` handles these objects gracefully:
 
 Which lets users represent dates all the way back to the age of the universe.
 
-.. doctest::
+.. doctest:: datetime_support
 
     >>> pdcast.to_datetime([-13.8e9], unit="Y")
     0    -13799998030-01-01T00:00:00
@@ -935,9 +934,9 @@ Which lets users represent dates all the way back to the age of the universe.
 And, using :func:`dispatch`, you can even make use of the ``.dt`` namespace
 just like you would for ``pandas.Timestamp`` objects.
 
-.. doctest::
+.. doctest:: datetime_support
 
-    >>> import pdcast.attach
+    >>> pdcast.attach()
     >>> pdcast.to_datetime("1500-01-01")
     0    1500-01-01 00:00:00
     dtype: object
