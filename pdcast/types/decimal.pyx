@@ -175,7 +175,7 @@ class DecimalMixin:
             result = series.astype(dtype)
 
         # check for overflow
-        if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
+        if int(series.min) < dtype.min or int(series.max) > dtype.max:
             infs = result.isinf() ^ series.isinf()
             if infs.any():
                 if errors == "coerce":

@@ -7,7 +7,7 @@ from pdcast.convert import cast as cast_standalone
 from pdcast.detect import detect_type
 from pdcast.types import AdapterType, AtomicType, CompositeType
 
-from .patch import Namespace, DispatchMethod
+from .virtual import Namespace, DispatchMethod
 
 
 ######################

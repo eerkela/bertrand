@@ -1,6 +1,6 @@
 from . import series
 from . import dataframe
-from .patch import DispatchMethod, Namespace
+from .virtual import DispatchMethod, Namespace
 
 
 def attach() -> None:

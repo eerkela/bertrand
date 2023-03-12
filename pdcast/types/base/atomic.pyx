@@ -379,7 +379,7 @@ cdef class AtomicType(ScalarType):
         cdef dict merged = {**self.kwargs, **kwargs}
         return self.instance(**merged)
 
-    def unwrap(self) -> AtomicType:
+    def strip(self) -> AtomicType:
         """Strip any adapters that have been attached to this AtomicType."""
         return self
 
@@ -387,14 +387,10 @@ cdef class AtomicType(ScalarType):
         """Attempt to upcast an AtomicType to fit the observed range of a
         series.
         """
-        # NOTE: this takes advantage of SeriesWrapper's min/max caching.
-        min_val = series.min()
-        max_val = series.max()
-
         # NOTE: we convert to pyint to prevent inconsistent comparisons
-        min_int = int(min_val - bool(min_val % 1))  # round floor
-        max_int = int(max_val + bool(max_val % 1))  # round ceiling
-        if min_int < self.min or max_int > self.max:
+        min_val = int(series.min - bool(series.min % 1))  # round floor
+        max_val = int(series.max + bool(series.max % 1))  # round ceiling
+        if min_val < self.min or max_val > self.max:
             # recursively search for a larger alternative
             for t in self.larger:
                 try:
@@ -404,8 +400,8 @@ cdef class AtomicType(ScalarType):
 
             # no matching type could be found
             raise OverflowError(
-                f"could not upcast {self} to fit observed range ({min_val}, "
-                f"{max_val})"
+                f"could not upcast {self} to fit observed range "
+                f"({series.min}, {series.max})"
             )
 
         # series fits type
@@ -435,7 +431,7 @@ cdef class AtomicType(ScalarType):
         return convert.SeriesWrapper(
             series.series.astype(categorical_type),
             hasnans=series.hasnans
-            # element_type is set in AdapterType.apply_adapters()
+            # element_type is set in AdapterType.wrap()
             )
 
     def make_sparse(
@@ -455,7 +451,7 @@ cdef class AtomicType(ScalarType):
         return convert.SeriesWrapper(
             series.series.astype(sparse_type),
             hasnans=series.hasnans
-            # element_type is set in AdapterType.apply_adapters()
+            # element_type is set in AdapterType.wrap()
         )
 
     def to_boolean(

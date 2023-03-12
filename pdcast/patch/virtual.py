@@ -21,8 +21,19 @@ from pdcast.util.type_hints import type_specifier
 # -> recursively remove adapters, calling _dispatch_scalar at each level.
 
 # both dispatching *from* AdapterTypes and dispatching *to* AdapterTypes
-# -> *from* requires changes in AdapterType definitions (.strip(), .wrap())
+# -> *from* requires changes in AdapterType definitions (.unwrap(), .wrap())
 # -> *to* requires changes in standalone.do_conversion
+
+
+# When dispatching to an AdapterType:
+# -> check for dispatched implementation at top level.
+# -> if none is found, strip adapter and try again.  Continue until an
+# AtomicType is encountered.
+# -> if no dispatched implementation is found for AtomicType, check for default
+# implementation.
+# -> if default implementation is found, use it and re-wrap the results in
+# reverse order.  Otherwise, .default will raise an error and interrupt the
+# stack.
 
 
 class Namespace:
@@ -72,12 +83,14 @@ class DispatchMethod:
         data: pd.Series,
         name: str,
         submap: dict,
-        namespace: Namespace = None
+        namespace: Namespace = None,
+        wrap_adapters: bool = True
     ):
         self.data = data
         self.name = name
         self.dispatched = submap
         self.namespace = namespace
+        self.wrap_adapters = wrap_adapters
 
         # create appropriate docstring
         docmap = {str(k): v.__qualname__ for k, v in submap.items()}
@@ -120,6 +133,15 @@ class DispatchMethod:
         dispatched = self.dispatched.get(type(series.element_type), None)
         if dispatched is not None:
             return dispatched(series.element_type, series, *args, **kwargs)
+
+        # unwrap adapters and retry.  NOTE: this is recursive
+        for _ in series.element_type.adapters:
+            orig_type = series.element_type
+            series = orig_type.unwrap(series)
+            series = self._dispatch_scalar(series, *args, **kwargs)
+            if self.wrap_adapters and orig_type.wrapped == series.element_type:
+                series = orig_type.wrap(series)
+            return series
 
         # fall back to pandas
         pars = inspect.signature(self.original).parameters

@@ -115,7 +115,7 @@ def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
         # use .dtype field if available
         dtype = getattr(example, "dtype", None)
         if dtype is not None:
-            # unwrap sparse types
+            # strip sparse types
             if isinstance(dtype, pd.SparseDtype):
                 fill_value = dtype.fill_value
                 dtype = dtype.subtype

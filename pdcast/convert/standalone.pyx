@@ -5,9 +5,9 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 
-import pdcast._attach as attach
 cimport pdcast.detect as detect
 import pdcast.detect as detect
+import pdcast.patch as patch
 cimport pdcast.types as types
 import pdcast.types as types
 
@@ -472,13 +472,13 @@ def do_conversion(
     data,
     endpoint: str,
     dtype: types.ScalarType,
-    sparse: Any,
+    sparse: Any,  # TODO: make this a tuple?
     categorical: bool,
     errors: str,
     *args,
     **kwargs
 ) -> pd.Series:
-    # calculate submap -> this should be done in TypeRegistry
+    # calculate submap -> TODO: this should be done in TypeRegistry
     submap = {
         k: getattr(k, endpoint) for k in types.AtomicType.registry
         if hasattr(k, endpoint)
@@ -491,25 +491,23 @@ def do_conversion(
         dtype = types.SparseType(dtype, fill_value=sparse)
 
     # create manual dispatch method
-    dispatch = attach.DispatchMethod(
+    dispatch = patch.DispatchMethod(
         as_series(data),
         name=endpoint,
         submap=submap,
-        namespace=None
+        namespace=None,
+        wrap_adapters=False
     )
 
     try:
         result = dispatch(
             *args,
-            dtype=dtype,
-            # dtype=dtype.unwrap(),
+            dtype=dtype.strip(),
             errors=errors,
             **kwargs
         )
-
-        # if isinstance(dtype, types.AdapterType):
-        #     dtype.atomic_type = result.element_type
-        #     return dtype.apply_adapters(result).series
+        for adapter in reversed(list(dtype.adapters)):
+            result = adapter.wrap(wrapper.SeriesWrapper(result)).series
         return result
 
     except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):

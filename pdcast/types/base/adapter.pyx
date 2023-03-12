@@ -98,33 +98,6 @@ cdef class AdapterType(atomic.ScalarType):
     ####    METHODS    ####
     #######################
 
-    def apply_adapters(
-        self,
-        series: convert.SeriesWrapper
-    ) -> convert.SeriesWrapper:
-        """Given an unwrapped conversion result, apply all the necessary logic
-        to bring it into alignment with this AdapterType and all its children.
-
-        This is a recursive method that traverses the `adapters` linked list
-        in reverse order (from the inside out).  At the first level, the
-        unwrapped series is passed as input to that adapter's
-        `apply_adapters()` method, which may be overridden as needed.  That
-        method must return a properly-wrapped copy of the original, which is
-        passed to the next adapter and so on.  Thus, if an AdapterType seeks to
-        change any aspect of the series it adapts (as is the case with
-        sparse/categorical types), then it must override this method and invoke
-        it *before* applying its own logic, like so:
-
-        ```
-        series = super().apply_adapters(series)
-        ```
-
-        This pattern maintains the inside-out resolution order of this method.
-        """
-        if isinstance(self.wrapped, AdapterType):
-            return self.wrapped.apply_adapters(series)
-        return series
-
     def contains(self, other: type_specifier) -> bool:
         """Test whether `other` is a subtype of the given AtomicType.
         This is functionally equivalent to `other in self`, except that it
@@ -161,10 +134,70 @@ cdef class AdapterType(atomic.ScalarType):
         # construct new AdapterType
         return type(self)(wrapped=wrapped, **adapter_kwargs)
 
-    def unwrap(self) -> atomic.AtomicType:
+    def strip(self) -> atomic.AtomicType:
         """Strip any AdapterTypes that have been attached to this AtomicType.
         """
         return self.atomic_type
+
+    def to_boolean(self, *args, **kwargs):
+        return self.atomic_type.to_boolean(*args, **kwargs)
+
+    def to_integer(self, *args, **kwargs):
+        return self.atomic_type.to_integer(*args, **kwargs)
+
+    def to_float(self, *args, **kwargs):
+        return self.atomic_type.to_float(*args, **kwargs)
+
+    def to_complex(self, *args, **kwargs):
+        return self.atomic_type.to_complex(*args, **kwargs)
+
+    def to_decimal(self, *args, **kwargs):
+        return self.atomic_type.to_decimal(*args, **kwargs)
+
+    def to_datetime(self, *args, **kwargs):
+        return self.atomic_type.to_datetime(*args, **kwargs)
+
+    def to_timedelta(self, *args, **kwargs):
+        return self.atomic_type.to_timedelta(*args, **kwargs)
+
+    def to_string(self, *args, **kwargs):
+        return self.atomic_type.to_string(*args, **kwargs)
+
+    def to_object(self, *args, **kwargs):
+        return self.atomic_type.to_object(*args, **kwargs)
+
+    def unwrap(
+        self,
+        series: convert.SeriesWrapper
+    ) -> convert.SeriesWrapper:
+        """Remove an adapter from an example series."""
+        series.element_type = self.wrapped
+        return series.rectify()
+
+    def wrap(
+        self,
+        series: convert.SeriesWrapper
+    ) -> convert.SeriesWrapper:
+        """Given an unwrapped conversion result, apply all the necessary logic
+        to bring it into alignment with this AdapterType and all its children.
+
+        This is a recursive method that traverses the `adapters` linked list
+        in reverse order (from the inside out).  At the first level, the
+        unwrapped series is passed as input to that adapter's
+        `wrap()` method, which may be overridden as needed.  That
+        method must return a properly-wrapped copy of the original, which is
+        passed to the next adapter and so on.  Thus, if an AdapterType seeks to
+        change any aspect of the series it adapts (as is the case with
+        sparse/categorical types), then it must override this method and invoke
+        it *before* applying its own logic, like so:
+
+        ```
+        series = super().apply_adapters(series)
+        ```
+
+        This pattern maintains the inside-out resolution order of this method.
+        """
+        return series
 
     #############################
     ####    MAGIC METHODS    ####

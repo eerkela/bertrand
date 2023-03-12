@@ -66,8 +66,8 @@ class IntegerMixin:
                 smaller = reversed(filtered)
 
         # return smallest type that fits observed range
-        min_val = int(series.min())
-        max_val = int(series.max())
+        min_val = int(series.min)
+        max_val = int(series.max)
         for t in smaller:
             if min_val < t.min or max_val > t.max:
                 continue
@@ -187,7 +187,7 @@ class IntegerMixin:
         # NOTE: integers can always be exactly represented as long as their
         # width in bits fits within the significand of the specified floating
         # point type with exponent 1 (listed in the IEEE 754 specification).
-        if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
+        if int(series.min) < dtype.min or int(series.max) > dtype.max:
             # 2-step conversion: int -> decimal, decimal -> float
             transfer_type = resolve.resolve_type("decimal")
             series = self.to_decimal(series, dtype=transfer_type, errors=errors)

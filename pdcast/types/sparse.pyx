@@ -12,7 +12,7 @@ import pdcast.resolve as resolve
 from pdcast.util.type_hints import type_specifier
 
 from .base cimport AtomicType, AdapterType, CompositeType, ScalarType
-from .base import register
+from .base import register, dispatch
 
 
 @register
@@ -80,22 +80,6 @@ class SparseType(AdapterType):
     ####    SERIES METHODS    ####
     ##############################
 
-    def apply_adapters(
-        self,
-        series: convert.SeriesWrapper
-    ) -> convert.SeriesWrapper:
-        """Convert a series into a sparse format with the given fill_value."""
-        # evaluate adapters from the inside out
-        series = super().apply_adapters(series)
-
-        # apply custom logic for each AtomicType
-        series = self.atomic_type.make_sparse(
-            series,
-            fill_value=self.fill_value
-        )
-        series.element_type = self
-        return series
-
     @classmethod
     def resolve(cls, wrapped: str, fill_value: str = None):
         cdef ScalarType instance = resolve.resolve_type(wrapped)
@@ -109,3 +93,31 @@ class SparseType(AdapterType):
                 parsed = convert.cast(fill_value, instance)[0]
 
         return cls(wrapped=instance, fill_value=parsed)
+
+    def unwrap(
+        self,
+        series: convert.SeriesWrapper
+    ) -> convert.SeriesWrapper:
+        """Convert a sparse series into a dense format"""
+        # NOTE: this is a pending deprecation shim.  In a future version of
+        # pandas, astype() from a sparse to non-sparse dtype will return a
+        # non-sparse series.  Currently, it returns a sparse equivalent. When
+        # this behavior changes, this method can be deleted.
+        return convert.SeriesWrapper(
+            series.sparse.to_dense(),
+            hasnans=series._hasnans,
+            element_type=self.wrapped
+        )
+
+    def wrap(
+        self,
+        series: convert.SeriesWrapper
+    ) -> convert.SeriesWrapper:
+        """Convert a series into a sparse format with the given fill_value."""
+        # apply custom logic for each AtomicType
+        series = self.atomic_type.make_sparse(
+            series,
+            fill_value=self.fill_value
+        )
+        series.element_type = self
+        return series

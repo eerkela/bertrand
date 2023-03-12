@@ -221,6 +221,20 @@ cdef class SeriesWrapper:
         )
 
     @property
+    def max(self) -> Any:
+        """A cached version of pd.Series.max()."""
+        if self._max is None:
+            self._max = self.series.max()
+        return self._max
+
+    @property
+    def min(self) -> Any:
+        """A cached version of pd.Series.min()."""
+        if self._min is None:
+            self._min = self.series.min()
+        return self._min
+
+    @property
     def real(self) -> SeriesWrapper:
         """Get the real component of the wrapped series.
 
@@ -323,7 +337,7 @@ cdef class SeriesWrapper:
             raise ValueError(f"`dtype` must be atomic, not {repr(dtype)}")
 
         # apply dtype.type_def elementwise if not astype-compliant
-        if dtype.unwrap().dtype == np.dtype("O"):
+        if dtype.strip().dtype == np.dtype("O"):
             result = self.apply_with_errors(
                 call=dtype.type_def,
                 errors=errors
@@ -358,18 +372,6 @@ cdef class SeriesWrapper:
             element_type=self._element_type
         )
 
-    def max(self, *args, **kwargs):
-        """A cached version of pd.Series.max()."""
-        if self._max is None:
-            self._max = self.series.max(*args, **kwargs)
-        return self._max
-
-    def min(self, *args, **kwargs):
-        """A cached version of pd.Series.min()."""
-        if self._min is None:
-            self._min = self.series.min(*args, **kwargs)
-        return self._min
-
     ###########################
     ####    NEW METHODS    ####
     ###########################
@@ -398,21 +400,7 @@ cdef class SeriesWrapper:
         if self._element_type is None:
             self.element_type = detect.detect_type(self.series, skip_na=False)
 
-        # unwrap sparse/categorical series
-        if isinstance(self.element_type, types.AdapterType):
-            self._orig_type = self.element_type
-            self.element_type = self.element_type.unwrap()
-
-            # NOTE: this is a pending deprecation shim.  In a future version
-            # of pandas, astype() from a sparse to non-sparse dtype will return
-            # a non-sparse series.  Currently, it returns a sparse equivalent.
-            # When this behavior changes, delete this block.
-            if isinstance(self._orig_type, types.SparseType):
-                self.series = self.series.sparse.to_dense()
-
-            self.series = self.rectify().series
-
-        # rectify and enter context block
+        # enter context block
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -439,17 +427,6 @@ cdef class SeriesWrapper:
         if self._orig_index is not None:
             self.series.index = self._orig_index
             self._orig_index = None
-
-        # replace adapters if element_type is unchanged
-        if (
-            self._orig_type is not None and
-            self._orig_type.unwrap() == self.element_type
-        ):
-            if hasattr(self._orig_type, "levels"):  # update levels
-                self._orig_type = self._orig_type.replace(levels=None)
-            result = self._orig_type.apply_adapters(self)
-            self.series = result.series
-            self.element_type = result.element_type
 
     def __getattr__(self, name: str) -> Any:
         """`Decorator Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`
@@ -568,13 +545,11 @@ cdef class SeriesWrapper:
         """
         # NOTE: this takes advantage of SeriesWrapper's min/max caching.
         series = self
-        min_val = series.min()
-        max_val = series.max()
 
         # NOTE: convert to python int to prevent inconsistent comparisons
-        min_int = int(min_val - bool(min_val % 1))  # round floor
-        max_int = int(max_val + bool(max_val % 1))  # round ceiling
-        if min_int < dtype.min or max_int > dtype.max:
+        min_val = int(series.min - bool(series.min % 1))  # round floor
+        max_val = int(series.max + bool(series.max % 1))  # round ceiling
+        if min_val < dtype.min or max_val > dtype.max:
             # attempt to upcast dtype to fit series
             try:
                 return series, dtype.upcast(series)
