@@ -119,7 +119,16 @@ def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
             if isinstance(dtype, pd.SparseDtype):
                 fill_value = dtype.fill_value
                 dtype = dtype.subtype
+
+            # interpret dtype
             if dtype != np.dtype("O"):
+                # special cases for pd.Timestamp/pd.Timedelta series
+                cases = (pd.Series, pd.Index, pd.api.extensions.ExtensionArray)
+                if isinstance(example, cases):
+                    if dtype == np.dtype("M8[ns]"):
+                        dtype = resolve.resolve_type(types.PandasTimestampType)
+                    elif dtype == np.dtype("m8[ns]"):
+                        dtype = resolve.resolve_type(types.PandasTimedeltaType)
                 result = resolve.resolve_type({dtype})
 
         # no dtype or dtype=object, loop through and interpret
