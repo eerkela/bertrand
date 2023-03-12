@@ -56,8 +56,8 @@ cdef class AdapterType(atomic.ScalarType):
 
     @property
     def adapters(self) -> Iterator[AdapterType]:
-        """Iterate through every AdapterType that is between this adapter
-        and the wrapped AtomicType.
+        """Iterate through every AdapterType that is attached to the wrapped
+        AtomicType.
         """
         frame = self
         while isinstance(frame, AdapterType):
@@ -138,33 +138,6 @@ cdef class AdapterType(atomic.ScalarType):
         """Strip any AdapterTypes that have been attached to this AtomicType.
         """
         return self.atomic_type
-
-    def to_boolean(self, *args, **kwargs):
-        return self.atomic_type.to_boolean(*args, **kwargs)
-
-    def to_integer(self, *args, **kwargs):
-        return self.atomic_type.to_integer(*args, **kwargs)
-
-    def to_float(self, *args, **kwargs):
-        return self.atomic_type.to_float(*args, **kwargs)
-
-    def to_complex(self, *args, **kwargs):
-        return self.atomic_type.to_complex(*args, **kwargs)
-
-    def to_decimal(self, *args, **kwargs):
-        return self.atomic_type.to_decimal(*args, **kwargs)
-
-    def to_datetime(self, *args, **kwargs):
-        return self.atomic_type.to_datetime(*args, **kwargs)
-
-    def to_timedelta(self, *args, **kwargs):
-        return self.atomic_type.to_timedelta(*args, **kwargs)
-
-    def to_string(self, *args, **kwargs):
-        return self.atomic_type.to_string(*args, **kwargs)
-
-    def to_object(self, *args, **kwargs):
-        return self.atomic_type.to_object(*args, **kwargs)
 
     def unwrap(
         self,

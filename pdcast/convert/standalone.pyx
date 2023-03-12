@@ -478,13 +478,13 @@ def do_conversion(
     *args,
     **kwargs
 ) -> pd.Series:
-    # calculate submap -> TODO: this should be done in TypeRegistry
+    # for every registered type, get selected conversion method if it exists
     submap = {
         k: getattr(k, endpoint) for k in types.AtomicType.registry
         if hasattr(k, endpoint)
     }
 
-    # wrap according to adapter settings
+    # wrap dtype according to adapter settings
     if categorical:
         dtype = types.CategoricalType(dtype)
     if sparse is not None:
@@ -496,20 +496,25 @@ def do_conversion(
         name=endpoint,
         submap=submap,
         namespace=None,
-        wrap_adapters=False
+        wrap_adapters=False  # do not automatically re-wrap adapters
     )
 
+    # dispatch to conversion method(s)
     try:
         result = dispatch(
             *args,
-            dtype=dtype.strip(),
+            dtype=dtype.strip(),  # disregard adapters in ``dtype``
             errors=errors,
             **kwargs
         )
+
+        # apply adapters from ``dtype``.  NOTE: this works from the inside out
         for adapter in reversed(list(dtype.adapters)):
             result = adapter.wrap(wrapper.SeriesWrapper(result)).series
+
         return result
 
+    # parse errors
     except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
         raise  # never ignore these errors
     except Exception as err:
