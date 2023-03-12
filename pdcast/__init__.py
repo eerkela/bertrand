@@ -1,3 +1,4 @@
+from ._attach import attach, detach, DispatchMethod, Namespace
 from .check import typecheck
 from .convert import (
     cast, CastDefaults, defaults, SeriesWrapper, to_boolean, to_integer,

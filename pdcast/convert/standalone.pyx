@@ -5,6 +5,7 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 
+import pdcast._attach as attach
 cimport pdcast.detect as detect
 import pdcast.detect as detect
 cimport pdcast.types as types
@@ -477,7 +478,7 @@ def do_conversion(
     *args,
     **kwargs
 ) -> pd.Series:
-    # calculate submap
+    # calculate submap -> this should be done in TypeRegistry
     submap = {
         k: getattr(k, endpoint) for k in types.AtomicType.registry
         if hasattr(k, endpoint)
@@ -489,27 +490,27 @@ def do_conversion(
     if sparse is not None:
         dtype = types.SparseType(dtype, fill_value=sparse)
 
+    # create manual dispatch method
+    dispatch = attach.DispatchMethod(
+        as_series(data),
+        name=endpoint,
+        submap=submap,
+        namespace=None
+    )
+
     try:
-        # NOTE: passing dispatch(endpoint="") will never fall back to pandas
-        with wrapper.SeriesWrapper(as_series(data)) as series:
-            result = series.dispatch(
-                "",
-                submap,
-                None,
-                *args,
-                dtype=dtype.unwrap(),
-                errors=errors,
-                **kwargs
-            )
-            series.series = result.series
-            series.hasnans = result.hasnans
-            series.element_type = result.element_type
+        result = dispatch(
+            *args,
+            dtype=dtype,
+            # dtype=dtype.unwrap(),
+            errors=errors,
+            **kwargs
+        )
 
-        if isinstance(dtype, types.AdapterType):
-            dtype.atomic_type = series.element_type
-            return dtype.apply_adapters(series).series
-
-        return series.series
+        # if isinstance(dtype, types.AdapterType):
+        #     dtype.atomic_type = result.element_type
+        #     return dtype.apply_adapters(result).series
+        return result
 
     except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
         raise  # never ignore these errors

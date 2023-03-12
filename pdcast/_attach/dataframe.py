@@ -1,13 +1,13 @@
 from __future__ import annotations
-import sys
 
 import pandas as pd
 
+from pdcast.check import typecheck as typecheck_standalone
+from pdcast.convert import cast as cast_standalone
+from pdcast.detect import detect_type
 from pdcast.types import AdapterType, AtomicType, CompositeType
 
 from pdcast.util.type_hints import type_specifier
-
-from . import series  # attaches pd.Series.cast/pd.Series.typecheck
 
 
 ########################
@@ -31,7 +31,7 @@ def cast(
     # cast selected columns
     result = self.copy()
     for k, v in dtype.items():
-        result[k] = result[k].cast(v, *args, **kwargs)
+        result[k] = cast_standalone(result[k], v, *args, **kwargs)
     return result
 
 
@@ -50,7 +50,7 @@ def typecheck(
 
     # check selected columns
     return all(
-        self[k].typecheck(v, *args, **kwargs)
+        typecheck_standalone(self[k], v, *args, **kwargs)
         for k, v in dtype.items()
     )
 
@@ -59,7 +59,7 @@ def element_type(self) -> dict[str, AdapterType | AtomicType | CompositeType]:
     """Retrieve the element type of every column in a pandas DataFrame."""
     result = {}
     for col_name in self.columns:
-        result[col_name] = self[col_name].element_type
+        result[col_name] = detect_type(self[col_name])
     return result
 
 
@@ -68,14 +68,10 @@ def element_type(self) -> dict[str, AdapterType | AtomicType | CompositeType]:
 ############################
 
 
-pd.DataFrame.cast = cast
-pd.DataFrame.typecheck = typecheck
-pd.DataFrame.element_type = property(element_type)
-
-
-#######################
-####    UNPATCH    ####
-#######################
+def attach() -> None:
+    pd.DataFrame.cast = cast
+    pd.DataFrame.typecheck = typecheck
+    pd.DataFrame.element_type = property(element_type)
 
 
 def detach() -> None:
@@ -85,9 +81,6 @@ def detach() -> None:
     del pd.DataFrame.cast
     del pd.DataFrame.typecheck
     del pd.DataFrame.element_type
-
-    # prepare to reimport
-    sys.modules.pop("pdcast.attach.dataframe")
 
 
 #######################

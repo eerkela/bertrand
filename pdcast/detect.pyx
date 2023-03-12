@@ -13,6 +13,13 @@ import pdcast.types as types
 from pdcast.util.structs import as_series
 
 
+# TODO: detect_type(pd.to_datetime(pd.Series([1, 2, 3]))) != PandasTimestampType
+# -> probably same with PandasTimedeltaType
+
+
+# TODO: pdcast.detect_type(pd.Series([True, 1, 2.], dtype="category"))
+
+
 ######################
 ####    PUBLIC    ####
 ######################
