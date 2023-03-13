@@ -223,12 +223,15 @@ class StringMixin:
 class StringType(StringMixin, AtomicType):
     """String supertype."""
 
-    conversion_func = convert.to_string  # all subtypes/backends inherit this
+    # internal root fields - all subtypes/backends inherit these
+    conversion_func = convert.to_string
+
     name = "string"
     aliases = {
         str,
         np.str_,
         # np.dtype("U") handled in resolve_typespec_dtype() special case
+        pd.StringDtype,
         "string",
         "str",
         "unicode",
@@ -239,6 +242,19 @@ class StringType(StringMixin, AtomicType):
     }
     dtype = default_string_dtype
     type_def = str
+
+    @classmethod
+    def from_dtype(
+        cls,
+        dtype: np.dtype | pd.api.extensions.ExtensionDtype
+    ) -> AtomicType:
+        # string extension type special case
+        if isinstance(dtype, pd.StringDtype):
+            if dtype.storage == "pyarrow":
+                return PyArrowStringType.instance()
+            return PythonStringType.instance()
+
+        return cls.instance()
 
 
 #####################

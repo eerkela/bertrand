@@ -1,8 +1,8 @@
 from __future__ import annotations
-from functools import partial, wraps
+from functools import partial
 import inspect
 import json
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -10,30 +10,9 @@ from pdcast.convert import SeriesWrapper
 import pdcast.convert.standalone as standalone
 from pdcast.resolve import resolve_type
 from pdcast.types import (
-    AdapterType, AtomicType, CompositeType, ObjectType,
-    PandasUnsignedIntegerType, SignedIntegerType, UnsignedIntegerType
+    CompositeType, ObjectType, PandasUnsignedIntegerType, SignedIntegerType,
+    UnsignedIntegerType
 )
-
-from pdcast.util.type_hints import type_specifier
-
-
-# TODO: _dispatch_scalar needs to support AdapterTypes.
-# -> recursively remove adapters, calling _dispatch_scalar at each level.
-
-# both dispatching *from* AdapterTypes and dispatching *to* AdapterTypes
-# -> *from* requires changes in AdapterType definitions (.unwrap(), .wrap())
-# -> *to* requires changes in standalone.do_conversion
-
-
-# When dispatching to an AdapterType:
-# -> check for dispatched implementation at top level.
-# -> if none is found, strip adapter and try again.  Continue until an
-# AtomicType is encountered.
-# -> if no dispatched implementation is found for AtomicType, check for default
-# implementation.
-# -> if default implementation is found, use it and re-wrap the results in
-# reverse order.  Otherwise, .default will raise an error and interrupt the
-# stack.
 
 
 class Namespace:
@@ -117,11 +96,8 @@ class DispatchMethod:
 
     def _dispatch(self, series: SeriesWrapper, *args, **kwargs):
         if isinstance(series.element_type, CompositeType):
-            helper = self._dispatch_composite
-        else:
-            helper = self._dispatch_scalar
-
-        return helper(series, *args, **kwargs)
+            return self._dispatch_composite(series, *args, **kwargs)
+        return self._dispatch_scalar(series, *args, **kwargs)
 
     def _dispatch_scalar(
         self,

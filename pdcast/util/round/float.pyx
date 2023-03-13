@@ -51,7 +51,7 @@ def round_float(
     # select rounding strategy
     try:
         # use numpy-accelerated rounding if available, else default to generic
-        if np.issubdtype(getattr(val, "dtype", np.dtype("O")), "O"):
+        if getattr(val, "dtype", np.dtype("O")).kind == "O":
             round_func = generic_rounding_rules[rule]
         else:
             round_func = specialized_rounding_rules[rule]

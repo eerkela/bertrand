@@ -114,18 +114,23 @@ cdef class AtomicType(ScalarType):
     # customize behavior.
     conversion_func = convert.to_object
     type_def = None
-    dtype = np.dtype("O")  # if using abstract extension types, make this None
+    dtype = NotImplemented  # if using abstract extensions, uncomment this
+    # dtype = np.dtype("O")  # if not using abstract extensions, uncomment this
     itemsize = None
     na_value = pd.NA
     is_nullable = True  # must be explicitly set False where applicable
+    _is_boolean = None
+    _is_numeric = None
 
     def __init__(self, **kwargs):
-        # if using abstract extension types, uncomment this
-        # if self.dtype is None:
-        #     self.dtype = self._construct_extension_dtype(self)
         self.kwargs = MappingProxyType(kwargs)
         self.slug = self.slugify(**kwargs)
         self.hash = hash(self.slug)
+
+        # auto-generate an ExtensionDtype for objects of this type
+        if self.dtype == NotImplemented:
+            self.dtype = self._construct_extension_dtype()
+
         self._is_frozen = True  # no new attributes beyond this point
 
     #############################
@@ -142,6 +147,16 @@ cdef class AtomicType(ScalarType):
         etc.)
         """
         return cls.instance()  # NOTE: most types disregard example data
+
+    @classmethod
+    def from_dtype(
+        cls,
+        dtype: np.dtype | pd.api.extensions.ExtensionDtype
+    ) -> AtomicType:
+        """Construct an AtomicType from a corresponding numpy/pandas ``dtype``
+        object.
+        """
+        return cls.instance()  # NOTE: most types disregard dtype fields
 
     @classmethod
     def instance(cls, *args, **kwargs) -> AtomicType:
@@ -299,48 +314,20 @@ cdef class AtomicType(ScalarType):
             return None
         return type_def.instance()
 
-    def _construct_extension_dtype(
-        self,
-        is_boolean: bool = False,
-        is_numeric: bool = False,
-        add_comparison_ops: bool = False,
-        add_arithmetic_ops: bool = False
-    ) -> pd.api.extensions.ExtensionDtype:
+    def _construct_extension_dtype(self) -> pd.api.extensions.ExtensionDtype:
         """Construct a new pandas ``ExtensionDtype`` to refer to elements
         of this type.
 
         This method is only invoked if no explicit ``dtype`` is assigned to
         this ``AtomicType``.
         """
-        class_doc = (
-            f"An abstract data type, automatically generated to store\n "
-            f"{self.type_def} objects."
+        return array.construct_extension_dtype(
+            self,
+            is_boolean=self._is_boolean,
+            is_numeric=self._is_numeric,
+            add_comparison_ops=True,
+            add_arithmetic_ops=True
         )
-
-        @register_extension_dtype
-        class StubDtype(array.AbstractDtype):
-            name = self.name
-            type = self.type_def
-            na_value = self.na_value
-
-            @classmethod
-            def construct_array_type(cls):
-                return array.construct_array_type(
-                    self,
-                    add_arithmetic_ops=add_arithmetic_ops,
-                    add_comparison_ops=add_comparison_ops
-                )
-
-            @property
-            def _is_boolean(self):
-                return is_boolean
-
-            @property
-            def _is_numeric(self):
-                return is_numeric
-
-        StubDtype.__doc__ = class_doc
-        return StubDtype()
 
     def contains(self, other: type_specifier) -> bool:
         """Test whether `other` is a subtype of the given AtomicType.
@@ -357,6 +344,13 @@ cdef class AtomicType(ScalarType):
         # respect wildcard rules in subtypes
         subtypes = self.subtypes.atomic_types - {self}
         return other == self or any(other in a for a in subtypes)
+
+    def is_na(self, val: Any) -> bool:
+        """Check if an arbitrary value is an NA value in this representation.
+
+        Override this if your type does something funky with missing values.
+        """
+        return val is pd.NA or val is None or val != val
 
     def is_subtype(self, other: type_specifier) -> bool:
         """Reverse of `AtomicType.contains()`.

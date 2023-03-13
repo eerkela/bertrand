@@ -113,7 +113,12 @@ class BooleanMixin:
 class BooleanType(BooleanMixin, AtomicType):
     """Generic boolean supertype."""
 
-    conversion_func = convert.to_boolean  # all subtypes/backends inherit this
+    # internal root fields - all subtypes/backends inherit these
+    conversion_func = convert.to_boolean
+    _is_boolean = True
+    _is_numeric = True
+
+    # standard type definition
     name = "bool"
     aliases = {bool, "bool", "boolean", "bool_", "bool8", "b1", "?"}
     dtype = np.dtype(np.bool_)
@@ -152,7 +157,7 @@ class NumpyBooleanType(BooleanMixin, AtomicType):
 class PandasBooleanType(BooleanMixin, AtomicType):
     """Pandas boolean type."""
 
-    aliases = {pd.BooleanDtype(), "Boolean"}
+    aliases = {pd.BooleanDtype, pd.BooleanDtype(), "Boolean"}
     dtype = pd.BooleanDtype()
     itemsize = 1
     type_def = np.bool_
@@ -169,6 +174,5 @@ class PythonBooleanType(BooleanMixin, AtomicType):
     """Python boolean type."""
 
     aliases = set()
-    dtype = np.dtype("O")
     itemsize = 1
     type_def = bool

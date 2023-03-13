@@ -24,6 +24,7 @@ import pdcast.detect as detect
 import pdcast.types as types
 cimport pdcast.types as types
 
+import pdcast.util.array as array 
 from pdcast.util.type_hints import type_specifier
 
 
@@ -252,53 +253,27 @@ cdef types.ScalarType resolve_typespec_dtype(object input_dtype):
     """Resolve a numpy/pandas dtype object, returning a corresponding
     AtomicType.
     """
+    # fastpath for AbstractDtypes
+    if isinstance(input_dtype, array.AbstractDtype):
+        return input_dtype._atomic_type
+
     cdef types.TypeRegistry registry = types.AtomicType.registry
-    cdef dict sparse = None
-    cdef dict categorical = None
-    cdef str unit
-    cdef int step_size
     cdef types.ScalarType result = None
 
-    # sparse
-    if isinstance(input_dtype, pd.SparseDtype):
-        sparse = {"fill_value": input_dtype.fill_value}
-        input_dtype = input_dtype.subtype
-
-    # categorical
-    if isinstance(input_dtype, pd.CategoricalDtype):
-        categories = input_dtype.categories
-        detected = detect.detect_type(categories)
-        # if isinstance(detected, types.CompositeType):
-        #     result = types.
-        result = types.CategoricalType(detected, levels=categories.tolist())
-    else:
-        # special cases for M8/m8/U/DatetimeTZDtype
-        if isinstance(input_dtype, pd.DatetimeTZDtype):
-            result = types.PandasTimestampType.instance(tz=input_dtype.tz)
-        elif isinstance(input_dtype, np.dtype):
-            if np.issubdtype(input_dtype, "M8"):
-                unit, step_size = np.datetime_data(input_dtype)
-                result = types.NumpyDatetime64Type.instance(
-                    unit=None if unit == "generic" else unit,
-                    step_size=step_size
-                )
-            elif np.issubdtype(input_dtype, "m8"):
-                unit, step_size = np.datetime_data(input_dtype)
-                result = types.NumpyTimedelta64Type.instance(
-                    unit=None if unit == "generic" else unit,
-                    step_size=step_size
-                )
-            elif np.issubdtype(input_dtype, "U"):
-                result = types.StringType.instance()
-
-        # base case
-        if result is None:
+    # special cases for numpy M8/m8/U, etc.
+    if isinstance(input_dtype, np.dtype):
+        if np.issubdtype(input_dtype, "M8"):
+            result = types.NumpyDatetime64Type.from_dtype(input_dtype)
+        elif np.issubdtype(input_dtype, "m8"):
+            result = types.NumpyTimedelta64Type.from_dtype(input_dtype)
+        elif np.issubdtype(input_dtype, "U"):
+            result = types.StringType.from_dtype(input_dtype)
+        else:
             result = registry.aliases[input_dtype].instance()
+        return result
 
-    # re-wrap with sparse if applicable
-    if sparse:
-        result = types.SparseType(result, **sparse)
-    return result
+    # look up ExtensionDtype and pass example
+    return registry.aliases[type(input_dtype)].from_dtype(input_dtype)
 
 
 cdef types.AtomicType resolve_typespec_type(type input_type):

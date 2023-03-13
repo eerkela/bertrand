@@ -10,6 +10,7 @@ setup(
             "pdcast/convert/*.pyx",
             "pdcast/types/base/*.pyx",
             "pdcast/types/*.pyx",
+            "pdcast/util/array/*.pyx",
             "pdcast/util/round/*.pyx",
             "pdcast/util/structs/*.pyx",
             "pdcast/util/time/*.pyx",

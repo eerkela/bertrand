@@ -235,6 +235,8 @@ def generic(_class: type):
             specific.name = cls.name
             specific._generic = cls
             cls.backends[backend] = specific
+            specific._is_boolean = specific._is_boolean or cls._is_boolean
+            specific._is_numeric = specific._is_numeric or cls._is_numeric
             specific.registry.flush()
             return specific
 

@@ -328,7 +328,10 @@ class DecimalMixin:
 @generic
 class DecimalType(DecimalMixin, AtomicType):
 
-    conversion_func = convert.to_decimal  # all subtypes/backends inherit this
+    # internal root fields - all subtypes/backends inherit these
+    conversion_func = convert.to_decimal
+    _is_numeric = True
+
     name = "decimal"
     aliases = {"decimal"}
     type_def = decimal.Decimal

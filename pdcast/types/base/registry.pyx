@@ -258,7 +258,11 @@ cdef class TypeRegistry:
         """Ensure that if a subclass of AtomicType defines a `dtype`
         attribute, that it is a valid numpy dtype or pandas extension type.
         """
-        valid_dtypes = (np.dtype, pd.api.extensions.ExtensionDtype)
+        valid_dtypes = (
+            np.dtype,
+            pd.api.extensions.ExtensionDtype,
+            type(NotImplemented)
+        )
         if subclass.dtype is not None:
             validate(subclass, "dtype", expected_type=valid_dtypes)
 

@@ -319,7 +319,10 @@ class LongDoubleSpecialCase:
 class FloatType(FloatMixin, AtomicType):
     """Generic float supertype"""
 
-    conversion_func = convert.to_float  # all subtypes/backend inherit this
+    # internal root fields - all subtypes/backends inherit these
+    conversion_func = convert.to_float
+    _is_numeric = True
+
     name = "float"
     aliases = {float, "float", "floating", "f"}
     dtype = np.dtype(np.float64)

@@ -1,6 +1,10 @@
 from types import MappingProxyType
 from typing import Any, Iterator
 
+cimport numpy as np
+import numpy as np
+import pandas as pd
+
 cimport pdcast.convert as convert
 import pdcast.convert as convert
 cimport pdcast.resolve as resolve
@@ -45,6 +49,13 @@ cdef class AdapterType(atomic.ScalarType):
         if isinstance(instance, composite.CompositeType):
             raise TypeError(f"wrapped type must be atomic, not {instance}")
         return cls(instance, *args)
+
+    @classmethod
+    def from_dtype(cls, dtype: pd.api.extension.ExtensionDtype) -> AdapterType:
+        """Construct an AtomicType from a corresponding numpy/pandas ``dtype``
+        object.
+        """
+        return cls.instance()  # NOTE: most types disregard dtype fields
 
     @classmethod
     def slugify(cls, wrapped: atomic.ScalarType) -> str:

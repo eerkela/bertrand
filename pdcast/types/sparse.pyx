@@ -19,7 +19,7 @@ from .base import register, dispatch
 class SparseType(AdapterType):
 
     name = "sparse"
-    aliases = {"sparse", "Sparse"}
+    aliases = {pd.SparseDtype, "sparse", "Sparse"}
 
     def __init__(self, wrapped: ScalarType, fill_value: Any = None):
         # do not re-wrap SparseTypes
@@ -65,6 +65,17 @@ class SparseType(AdapterType):
                 result = self.fill_value == other.fill_value
             return result and self.wrapped.contains(other.wrapped)
         return False
+
+    @classmethod
+    def from_dtype(cls, dtype: pd.api.extensions.ExtensionDtype) -> AdapterType:
+        # sparse
+        if isinstance(dtype, pd.SparseDtype):
+            return cls(
+                wrapped=resolve.resolve_type(dtype.subtype),
+                fill_value=dtype.fill_value
+            )
+
+        raise NotImplementedError()
 
     @classmethod
     def slugify(

@@ -6,12 +6,18 @@ import pandas as pd
 
 cimport pdcast.convert as convert
 import pdcast.convert as convert
+cimport pdcast.detect as detect
+import pdcast.detect as detect
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 from pdcast.util.type_hints import type_specifier
 
 from .base cimport AtomicType, AdapterType, CompositeType, ScalarType
 from .base import register
+
+
+# TODO: CategoricalType should be able to accept CompositeType?
+# NOTE: this is enabled in pandas, but probably shouldn't be here.
 
 
 @register
@@ -23,7 +29,7 @@ class CategoricalType(AdapterType):
     """
 
     name = "categorical"
-    aliases = {"categorical", "Categorical"}
+    aliases = {pd.CategoricalDtype, "categorical", "Categorical"}
 
     def __init__(self, wrapped: ScalarType, levels: list = None):
         # do not re-wrap CategoricalTypes
@@ -68,6 +74,16 @@ class CategoricalType(AdapterType):
             (self.levels is None or self.levels == other.levels) and
             self.wrapped.contains(other.wrapped)
         )
+
+    @classmethod
+    def from_dtype(cls, dtype: pd.api.extensions.ExtensionDtype) -> AdapterType:
+        if isinstance(dtype, pd.CategoricalDtype):
+            result = cls(
+                wrapped=detect.detect_type(dtype.categories),
+                levels=dtype.categories.tolist()
+            )
+
+        raise NotImplementedError()
 
     @classmethod
     def slugify(

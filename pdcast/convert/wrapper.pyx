@@ -17,6 +17,7 @@ import pdcast.types as types
 import pdcast.convert.default as default
 import pdcast.convert.standalone as standalone
 
+import pdcast.util.array as array
 from pdcast.util.error import shorten_list
 from pdcast.util.type_hints import array_like, numeric, type_specifier
 
@@ -35,6 +36,10 @@ from pdcast.util.type_hints import array_like, numeric, type_specifier
 
 
 # TODO: have to account for empty series in each conversion.
+
+# TODO: apply_with_errors breaks AbstractDtypes
+# -> pd.Series([1, 2, 3]).cast("decimal[python]").round() returns object array,
+# but not pd.Series([1, 2, 3]).cast("float[python]").round() for some reason.
 
 
 ######################
@@ -337,7 +342,8 @@ cdef class SeriesWrapper:
             raise ValueError(f"`dtype` must be atomic, not {repr(dtype)}")
 
         # apply dtype.type_def elementwise if not astype-compliant
-        if dtype.strip().dtype == np.dtype("O"):
+
+        if dtype.dtype.kind == "O":
             result = self.apply_with_errors(
                 call=dtype.type_def,
                 errors=errors
@@ -492,6 +498,8 @@ cdef class SeriesWrapper:
         result = pd.Series(result, index=self.index, dtype="O")
         if has_errors:
             result = result[~index]
+        if isinstance(self.element_type.dtype, array.AbstractDtype):
+            result = result.astype(self.element_type.dtype)
         return SeriesWrapper(result, hasnans=has_errors or self._hasnans)
 
     def boundscheck(

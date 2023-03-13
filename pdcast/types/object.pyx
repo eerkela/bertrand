@@ -28,11 +28,14 @@ from .base import register
 @register
 class ObjectType(AtomicType, cache_size=64):
 
-    conversion_func = convert.to_object  # all subtypes/backends inherit this
+    # internal root fields - all subtypes/backends inherit these
+    conversion_func = convert.to_object
+
     name = "object"
     aliases = {
         "object", "obj", "O", "pyobject", "object_", "object0", np.dtype("O")
     }
+    dtype = np.dtype("O")
 
     def __init__(self, type_def: type = object):
         self.type_def = type_def

@@ -14,8 +14,12 @@ import pdcast.types as types
 import pdcast.convert.default as default
 import pdcast.convert.wrapper as wrapper
 
+import pdcast.util.array as array
 from pdcast.util.structs import as_series
 from pdcast.util.type_hints import datetime_like, numeric, type_specifier
+
+
+# TODO: cast to object supertype fails.  Should return same as astype("O")
 
 
 def cast(
@@ -501,12 +505,16 @@ def do_conversion(
 
     # dispatch to conversion method(s)
     try:
+        base_type = dtype.strip()
         result = dispatch(
             *args,
-            dtype=dtype.strip(),  # disregard adapters in ``dtype``
+            dtype=base_type,  # disregard adapters in ``dtype``
             errors=errors,
             **kwargs
         )
+
+        if base_type.dtype and isinstance(base_type.dtype, array.AbstractDtype):
+            result = result.astype(base_type.dtype)
 
         # apply adapters from ``dtype``.  NOTE: this works from the inside out
         for adapter in reversed(list(dtype.adapters)):

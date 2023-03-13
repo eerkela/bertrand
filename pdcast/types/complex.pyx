@@ -314,7 +314,10 @@ class ComplexMixin:
 @generic
 class ComplexType(ComplexMixin, AtomicType):
 
-    conversion_func = convert.to_complex  # all subtypes/backends inherit this
+    # internal root fields - all subtypes/backends inherit these
+    conversion_func = convert.to_complex
+    _is_numeric = True
+
     name = "complex"
     aliases = {
         complex, "complex", "cfloat", "complex float", "complex floating", "c"

@@ -301,9 +301,12 @@ class TimedeltaMixin:
 @generic
 class TimedeltaType(TimedeltaMixin, AtomicType):
 
-    conversion_func = convert.to_timedelta  # all subtypes/backends inherit this
+    # internal root fields - all subtypes/backends inherit these
+    conversion_func = convert.to_timedelta
+
     name = "timedelta"
     aliases = {"timedelta"}
+    dtype = None
     na_value = pd.NaT
     max = 0
     min = 1  # these values always trip overflow/upcast check
@@ -411,6 +414,20 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
     def detect(cls, example: np.datetime64, **defaults) -> AtomicType:
         unit, step_size = np.datetime_data(example)
         return cls.instance(unit=unit, step_size=step_size, **defaults)
+
+    @classmethod
+    def from_dtype(
+        cls,
+        dtype: np.dtype | pd.api.extensions.ExtensionDtype
+    ) -> AtomicType:
+        if isinstance(dtype, np.dtype) and np.issubdtype(dtype, "m8"):
+            unit, step_size = np.datetime_data(dtype)
+            return cls.instance(
+                unit=None if unit == "generic" else unit,
+                step_size=step_size
+            )
+
+        raise NotImplementedError()
 
     @property
     def larger(self) -> list:

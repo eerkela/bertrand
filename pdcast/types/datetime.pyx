@@ -36,6 +36,15 @@ from .base import dispatch, generic, register
 # TODO: PandasTimestampType.from_string cannot convert quarterly dates
 
 
+# TODO: need to make a special case of ExtensionArray for
+# np.datetime64/timedelta64 that stores its values as a literal M8/m8 array.
+
+
+# AbstractDtype causes detect_type to misfire when timezones are included.
+# -> don't exactly know why.  Both are added to aliases just fine.  It appears
+# that resolve_type() itself is broken.
+
+
 ######################
 ####    MIXINS    ####
 ######################
@@ -305,9 +314,12 @@ class DatetimeMixin:
 @generic
 class DatetimeType(DatetimeMixin, AtomicType):
 
-    conversion_func = convert.to_datetime  # all subtypes/backends inherit this
+    # internal root fields - all subtypes/backends inherit these
+    conversion_func = convert.to_datetime
+
     name = "datetime"
     aliases = {"datetime"}
+    dtype = None
     na_value = pd.NaT
     max = 0
     min = 1  # NOTE: these values always trip overflow/upcast check
@@ -438,6 +450,22 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
     def detect(cls, example: np.datetime64, **defaults) -> AtomicType:
         unit, step_size = np.datetime_data(example)
         return cls.instance(unit=unit, step_size=step_size, **defaults)
+
+    @classmethod
+    def from_dtype(
+        cls,
+        dtype: np.dtype | pd.api.extensions.ExtensionDtype
+    ) -> AtomicType:
+        # np.dtype(M8)
+        if isinstance(dtype, np.dtype) and np.issubdtype(dtype, "M8"):
+            unit, step_size = np.datetime_data(dtype)
+            return cls.instance(
+                unit=None if unit == "generic" else unit,
+                step_size=step_size
+            )
+
+        raise NotImplementedError()
+
 
     @property
     def larger(self) -> list:
@@ -597,7 +625,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
 
     aliases = {
         pd.Timestamp,
-        # pd.DatetimeTZDtype() handled in resolve_typespec_dtype special case
+        pd.DatetimeTZDtype,
         "Timestamp",
         "pandas.Timestamp",
         "pd.Timestamp",
@@ -645,6 +673,13 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
     @classmethod
     def detect(cls, example: pd.Timestamp, **defaults) -> AtomicType:
         return cls.instance(tz=example.tzinfo, **defaults)
+
+    @classmethod
+    def from_dtype(
+        cls,
+        dtype: np.dtype | pd.api.extensions.ExtensionDtype
+    ) -> AtomicType:
+        return cls.instance(tz=getattr(dtype, "tz", None))
 
     @classmethod
     def resolve(cls, context: str = None) -> AtomicType:
