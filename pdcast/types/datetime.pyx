@@ -1069,6 +1069,10 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
         utc: bool = False
     ) -> convert.SeriesWrapper:
         """Localize python datetime objects to the specified timezone."""
+        if tz is not None and self.tz is not None:
+            # NOTE: matches error thrown by pandas
+            raise TypeError("Already tz-aware, use tz_convert to convert.")
+
         if isinstance(tz, str):
             if tz.lower() == "local":
                 tz = tzlocal.get_localzone_name()

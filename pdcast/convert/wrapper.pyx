@@ -342,10 +342,10 @@ cdef class SeriesWrapper:
         dtype = resolve.resolve_type(dtype)
         if isinstance(dtype, types.CompositeType):
             raise ValueError(f"`dtype` must be atomic, not {repr(dtype)}")
+        target = dtype.dtype
 
         # apply dtype.type_def elementwise if not astype-compliant
-
-        if dtype.dtype.kind == "O":
+        if target.kind == "O" and not pd.api.types.is_string_dtype(target):
             result = self.apply_with_errors(
                 call=dtype.type_def,
                 errors=errors
@@ -354,7 +354,6 @@ cdef class SeriesWrapper:
             return result
 
         # default to pd.Series.astype()
-        target = dtype.dtype
         if self.series.dtype.kind == "O" and hasattr(target, "numpy_dtype"):
             # NOTE: pandas doesn't like converting arbitrary objects to
             # nullable extension types.  Luckily, numpy has no such problem,

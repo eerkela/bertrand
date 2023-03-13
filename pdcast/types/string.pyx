@@ -19,6 +19,9 @@ from .base cimport AtomicType, BaseType
 from .base import generic, register
 
 
+# TODO: conversion to string type gives dtype: object
+
+
 ##################################
 ####    MIXINS & CONSTANTS    ####
 ##################################
