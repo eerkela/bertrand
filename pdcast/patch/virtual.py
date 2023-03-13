@@ -4,6 +4,7 @@ import inspect
 import json
 from typing import Any, Callable
 
+import numpy as np
 import pandas as pd
 
 from pdcast.convert import SeriesWrapper
@@ -13,6 +14,8 @@ from pdcast.types import (
     CompositeType, ObjectType, PandasUnsignedIntegerType, SignedIntegerType,
     UnsignedIntegerType
 )
+
+import pdcast.util.array as array
 
 
 class Namespace:
@@ -108,7 +111,14 @@ class DispatchMethod:
         # use dispatched implementation if it is defined
         dispatched = self.dispatched.get(type(series.element_type), None)
         if dispatched is not None:
-            return dispatched(series.element_type, series, *args, **kwargs)
+            result = dispatched(series.element_type, series, *args, **kwargs)
+            target = result.element_type.dtype
+            if (
+                result.dtype == np.dtype("O") and
+                isinstance(target, array.AbstractDtype)
+            ):
+                result.series = result.series.astype(target)
+            return result
 
         # unwrap adapters and retry.  NOTE: this is recursive
         for _ in series.element_type.adapters:
@@ -122,10 +132,17 @@ class DispatchMethod:
         # fall back to pandas
         pars = inspect.signature(self.original).parameters
         kwargs = {k: v for k, v in kwargs.items() if k in pars}
-        return SeriesWrapper(
+        result = SeriesWrapper(
             self.original(*args, **kwargs),
             hasnans=series._hasnans
         )
+        target = result.element_type.dtype
+        if (
+            result.dtype == np.dtype("O") and
+            isinstance(target, array.AbstractDtype)
+        ):
+            result.series = result.series.astype(target)
+        return result
 
     def _dispatch_composite(
         self,

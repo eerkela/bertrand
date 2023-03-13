@@ -211,14 +211,17 @@ cdef class SeriesWrapper:
         --------
         SeriesWrapper.real : real equivalent.
         """
+        target = getattr(self.element_type, "equiv_float", self.element_type)
+
         # NOTE: np.imag() fails when applied over object arrays that may
         # contain complex values.  In this case, we reduce it to a loop.
-        if pd.api.types.is_object_dtype(self.series):
+        if self.series.dtype.kind == "O":
             result = np.frompyfunc(np.imag, 1, 1)(self.series)
+            if isinstance(target.dtype, array.AbstractDtype):
+                result = result.astype(target.dtype)
         else:
             result = pd.Series(np.imag(self.series), index=self.index)
 
-        target = getattr(self.element_type, "equiv_float", self.element_type)
         return SeriesWrapper(
             result,
             hasnans=self._hasnans,
@@ -256,18 +259,17 @@ cdef class SeriesWrapper:
         --------
         SeriesWrapper.imag : imaginary equivalent.
         """
+        target = getattr(self.element_type, "equiv_float", self.element_type)
+
         # NOTE: np.real() fails when applied over object arrays that may
         # contain complex values.  In this case, we reduce it to a loop.
-        if pd.api.types.is_object_dtype(self.series):
+        if self.series.dtype.kind == "O":
             result = np.frompyfunc(np.real, 1, 1)(self.series)
+            if isinstance(target.dtype, array.AbstractDtype):
+                result = result.astype(target.dtype)
         else:
             result = pd.Series(np.real(self.series), index=self.index)
 
-        target = getattr(
-            self.element_type,
-            "equiv_float",
-            self.element_type
-        )
         return SeriesWrapper(
             result,
             hasnans=self._hasnans,
@@ -353,10 +355,7 @@ cdef class SeriesWrapper:
 
         # default to pd.Series.astype()
         target = dtype.dtype
-        if (
-            pd.api.types.is_object_dtype(self.series) and
-            hasattr(target, "numpy_dtype")
-        ):
+        if self.series.dtype.kind == "O" and hasattr(target, "numpy_dtype"):
             # NOTE: pandas doesn't like converting arbitrary objects to
             # nullable extension types.  Luckily, numpy has no such problem,
             # and SeriesWrapper automatically filters out NAs.
@@ -498,8 +497,7 @@ cdef class SeriesWrapper:
         result = pd.Series(result, index=self.index, dtype="O")
         if has_errors:
             result = result[~index]
-        if isinstance(self.element_type.dtype, array.AbstractDtype):
-            result = result.astype(self.element_type.dtype)
+
         return SeriesWrapper(result, hasnans=has_errors or self._hasnans)
 
     def boundscheck(

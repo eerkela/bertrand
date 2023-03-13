@@ -1,3 +1,4 @@
+from collections import Counter
 import numbers
 import sys
 from typing import Any, Iterator
@@ -6,9 +7,11 @@ cimport cython
 cimport numpy as np
 import numpy as np
 import pandas as pd
+import pandas.core.algorithms as algorithms
 from pandas.api.extensions import register_extension_dtype
 from pandas.core.arrays import ExtensionArray, ExtensionScalarOpsMixin
 from pandas.core.dtypes.base import ExtensionDtype
+from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
 
 import pdcast.convert as convert
 
@@ -114,9 +117,6 @@ class AbstractDtype(ExtensionDtype):
     but are explicitly labeled and have better integration with base pandas.
     They may also be slightly more performant in some cases.
     """
-
-    # this class has no implementation of its own, it merely roots inheritance
-    # checks.
 
     def __init__(self):
         # require use of construct_extension_dtype() factory
@@ -302,17 +302,14 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
         -------
         None
         """
-        # NOTE: we coerce values to the object type during assignment
-        item_type = self._atomic_type.type_def
-
         if pd.api.types.is_list_like(value):
             if pd.api.types.is_scalar(key):
                 raise ValueError(
                     "setting an array element with a sequence."
                 )
-            value = [item_type(v) for v in value]
+            value = np.asarray(convert.cast(value, self._atomic_type))
         else:
-            value = item_type(value)
+            value = convert.cast(value, self._atomic_type)[0]
         self._data[key] = value
 
     def __len__(self) -> int:
@@ -352,7 +349,7 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
             return n * sys.getsizeof(self[0])
         return 0
 
-    def astype(self, dtype, copy=True):
+    def astype(self, dtype, copy: bool = True):
         """Cast to a NumPy array or ExtensionArray with 'dtype'.
 
         Parameters
@@ -369,11 +366,7 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
             An ExtensionArray if dtype is ExtensionDtype, otherwise a NumPy
             ndarray with 'dtype' for its dtype.
         """
-        # if isinstance(dtype, type(self.dtype)):
-        #     return type(self)(self._data)
-        # return np.asarray(self, dtype=dtype)
-
-        dtype = pd.pandas_dtype(dtype)
+        dtype = pd.api.types.pandas_dtype(dtype)
         if pd.core.dtypes.common.is_dtype_equal(dtype, self.dtype):
             if not copy:
                 return self
@@ -382,7 +375,10 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
 
         if isinstance(dtype, ExtensionDtype):
             cls = dtype.construct_array_type()
-            result = convert.cast(self, dtype)
+            if isinstance(dtype, AbstractDtype):
+                result = self
+            else:
+                result = convert.cast(self, dtype)
             return cls._from_sequence(result, dtype=dtype, copy=copy)
 
         return self._data.astype(dtype=dtype, copy=copy)
@@ -594,6 +590,45 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
             )
         return op(axis=0)
 
+    def __array_ufunc__(self, ufunc: np.ufunc, method: str, *inputs, **kwargs):
+        """Allows AbstractArrays to utilize numpy ufuncs natively, without
+        being coerced to dtype: object.
+
+        This implementation is adapted from the example given by numpy.  It
+        might require further modifications.
+
+        https://numpy.org/doc/stable/reference/generated/numpy.lib.mixins.NDArrayOperatorsMixin.html
+        """
+        # pandas unboxes these so we don't need to implement them ourselves
+        if any(
+            isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame))
+            for other in inputs
+        ):
+            return NotImplemented
+
+        # get handled values
+        array_like = (np.ndarray, ExtensionArray)
+        scalar_like = (self._atomic_type.type_def,)
+        if self._atomic_type._is_numeric:
+            scalar_like += (numbers.Number,)
+
+        if not all(isinstance(t, array_like + scalar_like) for t in inputs):
+            return NotImplemented
+
+        inputs = tuple(
+            x._data if isinstance(x, ExtensionArray) else x for x in inputs
+        )
+        result = getattr(ufunc, method)(*inputs, **kwargs)
+
+        def reconstruct(x):
+            if isinstance(x, scalar_like):
+                return x
+            return type(self)._from_sequence(x)
+
+        if isinstance(result, tuple):
+            return tuple(reconstruct(x) for x in result)
+        return reconstruct(result)
+
     def __arrow_array__(self, type=None):
         """Convert the underlying array values into a pyarrow Array.
 
@@ -614,6 +649,101 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
         ExtensionArray for this dtype and the passed values
         """
         return self._from_sequence(array)
+
+    ###########################
+    ####    NEW METHODS    ####
+    ###########################
+
+    # NOTE: these are not defined in the base ExtensionArray class, but are
+    # called in several pandas operations.
+
+    def round(self, *args, **kwargs) -> ExtensionArray:
+        """Default round implementation.  This simply passes through to
+        np.round().
+        """
+        return self._from_sequence(self._data.round(*args, **kwargs))
+
+    def value_counts(self, dropna: bool = True) -> pd.Series:
+        """Returns a Series containing counts of each unique value.
+
+        Parameters
+        ----------
+        dropna : bool, default True
+            Don't include counts of missing values.
+
+        Returns
+        -------
+        counts : Series
+
+        See Also
+        --------
+        Series.value_counts
+        """
+        # compute counts without nans
+        mask = self.isna()
+        counts = Counter(self._data[~mask])
+        result = pd.Series(
+            counts.values(),
+            index=pd.Index(list(counts.keys()), dtype=self.dtype)
+        )
+        if dropna:
+            return result.astype("Int64")
+
+        # if we want to include nans, count mask
+        nans = pd.Series(
+            [mask.sum()],
+            index=pd.Index([self.dtype.na_value], dtype=self.dtype)
+        )
+        result = pd.concat([result, nans])
+        return result.astype("Int64")
+
+    ###############################
+    ####    UNARY OPERATORS    ####
+    ###############################
+
+    def __neg__(self):
+        # NOTE: shim allows unary negation (-)
+        if self._atomic_type._is_boolean:
+            return self.__invert__()
+        return self._from_sequence(-self._data)
+
+    def __pos__(self):
+        # NOTE: shim allows unary +
+        return self._from_sequence(+self._data)
+
+    def __invert__(self):
+        # NOTE: shim allows unary inversion (~)
+        if self._atomic_type._is_boolean:
+            return self.__xor__(True)
+        return self._from_sequence(~self._data)
+
+    ################################
+    ####    BINARY OPERATORS    ####
+    ################################
+
+    def __and__(self, other):
+        # NOTE: pandas recommends that we not handle these cases ourselves
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        # NOTE: shim allows binary and (&)
+        return self._from_sequence(self._data & other)
+
+    def __xor__(self, other):
+        # NOTE: pandas recommends that we not handle these cases ourselves
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        # NOTE: shim allows binary xor (^)
+        return self._from_sequence(self._data ^ other)
+
+    def __or__(self, other):
+        # NOTE: pandas recommends that we not handle these cases ourselves
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        # NOTE: shim allows binary or (|)
+        return self._from_sequence(self._data | other)
 
 
 @cython.boundscheck(False)

@@ -7,6 +7,7 @@ import pytz
 cimport pdcast.convert as convert
 import pdcast.convert as convert
 
+import pdcast.util.array as array
 from pdcast.util.error import shorten_list
 from pdcast.util.round cimport Tolerance
 from pdcast.util.time cimport Epoch
@@ -484,7 +485,9 @@ cdef convert.SeriesWrapper combine_real_imag(
         [real.element_type, imag.element_type],
         key=lambda x: x.itemsize or np.inf
     )
+    target = largest.equiv_complex
     result = real + imag * 1j
+    result.series = result.series.astype(target.dtype, copy=False)
+    result.element_type = target
     result.hasnans = real.hasnans or imag.hasnans
-    result.element_type = largest.equiv_complex
     return result

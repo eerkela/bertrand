@@ -14,7 +14,6 @@ import pdcast.types as types
 import pdcast.convert.default as default
 import pdcast.convert.wrapper as wrapper
 
-import pdcast.util.array as array
 from pdcast.util.structs import as_series
 from pdcast.util.type_hints import datetime_like, numeric, type_specifier
 
@@ -512,9 +511,6 @@ def do_conversion(
             errors=errors,
             **kwargs
         )
-
-        if base_type.dtype and isinstance(base_type.dtype, array.AbstractDtype):
-            result = result.astype(base_type.dtype)
 
         # apply adapters from ``dtype``.  NOTE: this works from the inside out
         for adapter in reversed(list(dtype.adapters)):
