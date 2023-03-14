@@ -31,6 +31,7 @@ from .datetime import (
     pandas_timestamp_to_ns, pydatetime_to_ns, string_to_pydatetime
 )
 from .epoch import Epoch
+from .epoch import epoch_aliases_public as epoch_aliases
 from .timedelta import (
     numpy_timedelta64_to_ns, pandas_timedelta_to_ns, pytimedelta_to_ns,
     timedelta_string_to_ns

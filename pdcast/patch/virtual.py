@@ -108,10 +108,15 @@ class DispatchMethod:
         *args,
         **kwargs
     ) -> SeriesWrapper:
+        series_type = series.element_type
+
         # use dispatched implementation if it is defined
-        dispatched = self.dispatched.get(type(series.element_type), None)
+        dispatched = self.dispatched.get(type(series_type), None)
         if dispatched is not None:
-            result = dispatched(series.element_type, series, *args, **kwargs)
+            if series_type is None:
+                result = dispatched(series, *args, **kwargs)
+            else:
+                result = dispatched(series_type, series, *args, **kwargs)
             target = result.element_type.dtype
             if (
                 result.dtype == np.dtype("O") and
@@ -121,11 +126,11 @@ class DispatchMethod:
             return result
 
         # unwrap adapters and retry.  NOTE: this is recursive
-        for _ in series.element_type.adapters:
-            orig_type = series.element_type
+        for _ in getattr(series_type, "adapters", ()):
+            orig_type = series_type
             series = orig_type.unwrap(series)
             series = self._dispatch_scalar(series, *args, **kwargs)
-            if self.wrap_adapters and orig_type.wrapped == series.element_type:
+            if self.wrap_adapters and orig_type.wrapped == series_type:
                 series = orig_type.wrap(series)
             return series
 

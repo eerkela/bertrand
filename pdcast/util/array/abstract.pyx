@@ -16,6 +16,9 @@ from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
 import pdcast.convert as convert
 
 
+# __setitem__ needs to account for nans.
+
+
 ######################
 ####    PUBLIC    ####
 ######################

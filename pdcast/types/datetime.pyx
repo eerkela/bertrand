@@ -40,11 +40,6 @@ from .base import dispatch, generic, register
 # np.datetime64/timedelta64 that stores its values as a literal M8/m8 array.
 
 
-# AbstractDtype causes detect_type to misfire when timezones are included.
-# -> don't exactly know why.  Both are added to aliases just fine.  It appears
-# that resolve_type() itself is broken.
-
-
 ######################
 ####    MIXINS    ####
 ######################

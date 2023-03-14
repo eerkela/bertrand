@@ -1,4 +1,5 @@
 from datetime import tzinfo
+import threading
 from typing import Callable
 
 cimport numpy as np
@@ -24,33 +25,16 @@ from pdcast.util.type_hints import datetime_like, numeric, type_specifier
 ######################
 
 
-cdef class CastDefaults:
-
-    cdef:
-        bint _as_hours
-        unsigned char _base
-        bint _day_first
-        types.CompositeType _downcast
-        str _errors
-        set _false
-        str _format
-        bint _ignore_case
-        str _rounding
-        object _since
-        unsigned int _step_size
-        Tolerance _tol
-        object _tz
-        set _true
-        str _unit
-        bint _utc
-        bint _year_first
+class CastDefaults(threading.local):
 
     def __init__(self):
         self._as_hours = False
         self._base = 0
+        self._day_first = False
         self._downcast = None
         self._errors = "raise"
         self._false = {"false", "f", "no", "n", "off", "0"}
+        self._format = None
         self._ignore_case = True
         self._rounding = None
         self._since = Epoch("utc")
@@ -59,6 +43,8 @@ cdef class CastDefaults:
         self._tz = None
         self._true = {"true", "t", "yes", "y", "on", "1"}
         self._unit = "ns"
+        self._utc = False
+        self._year_first = False
 
     @property
     def as_hours(self) -> bool:
@@ -115,7 +101,7 @@ cdef class CastDefaults:
         return self._false
 
     @false.setter
-    def false(self, val: str | set[str]) -> None:
+    def false(self, val: str | set) -> None:
         if val is None:
             raise ValueError(f"default `false` cannot be None")
         self._false = validate_false(val)
@@ -183,7 +169,7 @@ cdef class CastDefaults:
         return self._true
 
     @true.setter
-    def true(self, val: str | set[str]) -> None:
+    def true(self, val: str | set) -> None:
         if val is None:
             raise ValueError(f"default `true` cannot be None")
         self._true = validate_true(val)

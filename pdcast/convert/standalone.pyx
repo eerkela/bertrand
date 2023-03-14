@@ -18,9 +18,6 @@ from pdcast.util.structs import as_series
 from pdcast.util.type_hints import datetime_like, numeric, type_specifier
 
 
-# TODO: cast to object supertype fails.  Should return same as astype("O")
-
-
 def cast(
     series: Iterable,
     dtype: type_specifier = None,
@@ -486,6 +483,8 @@ def do_conversion(
         k: getattr(k, endpoint) for k in types.AtomicType.registry
         if hasattr(k, endpoint)
     }
+    # TODO: this unintentionally passes None in ``self`` position of conversion
+    submap[type(None)] = getattr(dtype, endpoint)
 
     # wrap dtype according to adapter settings
     if categorical:
@@ -496,10 +495,10 @@ def do_conversion(
     # create manual dispatch method
     dispatch = patch.DispatchMethod(
         as_series(data),
-        name=endpoint,
+        name="",  # passing empty string causes us to never fall back to pandas
         submap=submap,
         namespace=None,
-        wrap_adapters=False  # do not automatically re-wrap adapters
+        wrap_adapters=False  # do not automatically reapply adapters
     )
 
     # dispatch to conversion method(s)

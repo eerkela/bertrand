@@ -153,6 +153,10 @@ cdef types.AtomicType detect_scalar_type(object example):
     """Given a scalar example of a particular data type, return a corresponding
     AtomicType object.
     """
+    # check for scalar NA
+    if pd.isna(example):
+        return None
+
     # look up example type
     cdef type example_type = type(example)
     cdef dict lookup = types.AtomicType.registry.aliases

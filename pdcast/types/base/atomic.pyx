@@ -115,7 +115,7 @@ cdef class AtomicType(ScalarType):
     conversion_func = convert.to_object
     type_def = None
     dtype = NotImplemented  # if using abstract extensions, uncomment this
-    # dtype = np.dtype("O")  # if not using abstract extensions, uncomment this
+    # dtype = np.dtype("O")  # if NOT using abstract extensions, uncomment this
     itemsize = None
     na_value = pd.NA
     is_nullable = True  # must be explicitly set False where applicable
@@ -382,8 +382,12 @@ cdef class AtomicType(ScalarType):
         series.
         """
         # NOTE: we convert to pyint to prevent inconsistent comparisons
-        min_val = int(series.min - bool(series.min % 1))  # round floor
-        max_val = int(series.max + bool(series.max % 1))  # round ceiling
+        if pd.isna(series.min):
+            min_val = self.max  # NOTE: we swap these to maintain upcast()
+            max_val = self.min  # behavior for upcast-only types
+        else:
+            min_val = int(series.min - bool(series.min % 1))  # round floor
+            max_val = int(series.max + bool(series.max % 1))  # round ceiling
         if min_val < self.min or max_val > self.max:
             # recursively search for a larger alternative
             for t in self.larger:
@@ -567,6 +571,10 @@ cdef class AtomicType(ScalarType):
         if direct:
             call = dtype.type_def
 
+        # object root type
+        if call is object:
+            return series.astype("O")
+
         def wrapped_call(object val):
             cdef object result = call(val)
             if direct:
@@ -631,7 +639,6 @@ cdef class AtomicType(ScalarType):
 
         # allow cooperative inheritance
         super(AtomicType, cls).__init_subclass__(**kwargs)
-
 
     def __setattr__(self, name: str, value: Any) -> None:
         if self._is_frozen:

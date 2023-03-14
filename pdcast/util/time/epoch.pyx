@@ -125,6 +125,9 @@ cdef dict epoch_aliases = {  # earliest - latest
 }
 
 
+epoch_aliases_public = epoch_aliases
+
+
 ######################
 ####    PUBLIC    ####
 ######################

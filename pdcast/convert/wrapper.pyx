@@ -345,7 +345,7 @@ cdef class SeriesWrapper:
         target = dtype.dtype
 
         # apply dtype.type_def elementwise if not astype-compliant
-        if target.kind == "O" and not pd.api.types.is_string_dtype(target):
+        if target.kind == "O" and not isinstance(target, pd.StringDtype):
             result = self.apply_with_errors(
                 call=dtype.type_def,
                 errors=errors
@@ -552,8 +552,12 @@ cdef class SeriesWrapper:
         series = self
 
         # NOTE: convert to python int to prevent inconsistent comparisons
-        min_val = int(series.min - bool(series.min % 1))  # round floor
-        max_val = int(series.max + bool(series.max % 1))  # round ceiling
+        if pd.isna(series.min):
+            min_val = dtype.max  # NOTE: we swap these to maintain upcast()
+            max_val = dtype.min  # behavior for upcast-only types
+        else:
+            min_val = int(series.min - bool(series.min % 1))  # round floor
+            max_val = int(series.max + bool(series.max % 1))  # round ceiling
         if min_val < dtype.min or max_val > dtype.max:
             # attempt to upcast dtype to fit series
             try:
