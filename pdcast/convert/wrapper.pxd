@@ -15,3 +15,4 @@ cdef class SeriesWrapper:
     cdef readonly:
         types.BaseType _element_type
         object _hasnans  # bint can't store None
+        object encoder

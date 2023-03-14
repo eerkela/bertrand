@@ -331,6 +331,7 @@ class DecimalType(DecimalMixin, AtomicType):
     # internal root fields - all subtypes/backends inherit these
     conversion_func = convert.to_decimal
     _is_numeric = True
+    model_type = "Numerical"
 
     name = "decimal"
     aliases = {"decimal"}

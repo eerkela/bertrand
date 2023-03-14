@@ -17,13 +17,24 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-keywords = ["numpy", "pandas", "schema", "type", "conversion"]
+keywords = [
+    "pandas",
+    "extension",
+    "type",
+    "conversion",
+    "automl",
+    "regression",
+    "classification"
+]
 dependencies = [
+    "autosklearn",
     "numpy",
     "pandas",
+    "psutil",
     "python-dateutil",
     "pytz",
     "regex",
+    "sklearn",
     "tzlocal"
 ]
 requires-python = ">=3.7"

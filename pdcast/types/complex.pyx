@@ -318,6 +318,7 @@ class ComplexType(ComplexMixin, AtomicType):
     # internal root fields - all subtypes/backends inherit these
     conversion_func = convert.to_complex
     _is_numeric = True
+    model_type = "Numerical"
 
     name = "complex"
     aliases = {

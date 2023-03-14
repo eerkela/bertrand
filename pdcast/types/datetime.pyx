@@ -311,6 +311,7 @@ class DatetimeType(DatetimeMixin, AtomicType):
 
     # internal root fields - all subtypes/backends inherit these
     conversion_func = convert.to_datetime
+    model_type = "Numerical"
 
     name = "datetime"
     aliases = {"datetime"}
