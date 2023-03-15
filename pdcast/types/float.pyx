@@ -322,7 +322,6 @@ class FloatType(FloatMixin, AtomicType):
     # internal root fields - all subtypes/backends inherit these
     conversion_func = convert.to_float
     _is_numeric = True
-    model_type = "Numerical"
 
     name = "float"
     aliases = {float, "float", "floating", "f"}

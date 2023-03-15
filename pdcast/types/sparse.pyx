@@ -20,6 +20,7 @@ class SparseType(AdapterType):
 
     name = "sparse"
     aliases = {pd.SparseDtype, "sparse", "Sparse"}
+    is_sparse = True
 
     def __init__(self, wrapped: ScalarType, fill_value: Any = None):
         # do not re-wrap SparseTypes

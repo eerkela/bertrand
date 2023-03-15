@@ -113,7 +113,8 @@ cdef class AtomicType(ScalarType):
     conversion_func = convert.to_object
     _is_boolean = None
     _is_numeric = None
-    model_type = "Categorical"
+    is_sparse = False
+    is_categorical = False
 
     # Default fields.  These can be overridden in AtomicType definitions to
     # customize behavior.
@@ -360,7 +361,7 @@ cdef class AtomicType(ScalarType):
                 hasnans=series.hasnans
             )
 
-        
+
 
 
 

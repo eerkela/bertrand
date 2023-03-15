@@ -3,13 +3,14 @@ PYTHON = python3
 
 help:
 	@echo "-------------------------HELP---------------------------"
-	@echo "make clean   - remove compiled elements/autodoc stubs"
 	@echo "make install - compile binaries and build documentation"
+	@echo "make clean   - remove compiled elements/autodoc stubs"
 	@echo "--------------------------------------------------------"
 
 
-install: venv
-	@${PYTHON} -m setup build_ext --inplace
+install:
+	echo hello, world!
+	@${PYTHON} setup.py build_ext --inplace
 	@cd docs/ && $(MAKE) html
 
 

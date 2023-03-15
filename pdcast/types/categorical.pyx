@@ -30,7 +30,7 @@ class CategoricalType(AdapterType):
 
     name = "categorical"
     aliases = {pd.CategoricalDtype, "categorical", "Categorical"}
-    model_type = "Categorical"
+    is_categorical = True
 
     def __init__(self, wrapped: ScalarType, levels: list = None):
         # do not re-wrap CategoricalTypes
