@@ -23,10 +23,6 @@ from pdcast.util.error import shorten_list
 from pdcast.util.type_hints import array_like, numeric, type_specifier
 
 
-# TODO: max/min should be properties to indicate that they are cached and
-# therefore not callable.
-
-
 # TODO: SparseType works, but not in all cases.
 # -> pd.NA disallows non-missing fill values
 # -> Timestamps must be sparsified manually by converting to object and then
@@ -36,11 +32,8 @@ from pdcast.util.type_hints import array_like, numeric, type_specifier
 # -> SeriesWrappers should unwrap sparse/categorical series during dispatch.
 
 
-# TODO: have to account for empty series in each conversion.
-
-# TODO: apply_with_errors breaks AbstractDtypes
-# -> pd.Series([1, 2, 3]).cast("decimal[python]").round() returns object array,
-# but not pd.Series([1, 2, 3]).cast("float[python]").round() for some reason.
+# TODO: SeriesWrapper.__enter__ must keep track of the original series name
+# as well as its index
 
 
 ######################

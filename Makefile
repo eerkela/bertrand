@@ -9,7 +9,6 @@ help:
 
 
 install:
-	echo hello, world!
 	@${PYTHON} setup.py build_ext --inplace
 	@cd docs/ && $(MAKE) html
 

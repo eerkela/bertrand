@@ -9,7 +9,7 @@ import pdcast.detect as detect
 
 from pdcast.util.type_hints import datetime_like, timedelta_like
 
-from .encode import encode_features, cols_are_homogenous
+from .encode import FeatureEncoder, TargetEncoder
 from .extract import (
     column_specifier, extract_columns, parse_memory_limit, parse_n_jobs,
     parse_time_limit
@@ -27,7 +27,7 @@ class AutoClassifier(autosklearn.classification.AutoSklearnClassifier):
         data_preprocessors: list[str] = None,
         balancers: list[str] = None,
         feature_preprocessors: list[str] = None,
-        ensemble_size: int = 1,
+        ensemble_size: int = 10,
         resampling: str = "holdout",
         folds: int = 5,
         metric: autosklearn.metrics.Scorer = None,
@@ -39,9 +39,9 @@ class AutoClassifier(autosklearn.classification.AutoSklearnClassifier):
         smac_scenario_args: dict = None,
         logging_config: dict = None
     ):
-        # initialize classifier attributes
-        self.feature_encoders = {}
-        self.target_encoders = {}
+        # initialize encoders
+        self.feature_encoder = FeatureEncoder()
+        self.target_encoder = TargetEncoder(classify=True)
 
         # parse model settings
         time_limit = parse_time_limit(time_limit)
@@ -84,6 +84,10 @@ class AutoClassifier(autosklearn.classification.AutoSklearnClassifier):
             metric=metric
         )
 
+    ###########################
+    ####    FIT/PREDICT    ####
+    ###########################
+
     def fit(
         self,
         df: pd.DataFrame,
@@ -101,15 +105,11 @@ class AutoClassifier(autosklearn.classification.AutoSklearnClassifier):
                 f"{target.shape[0]} != {features.shape[0]}"
             )
 
-        # encode output features
-        # TODO: target = encode_target(target)
-        if not cols_are_homogenous(target):
-            raise TypeError(f"Output is of mixed type: {target}")
-
-        # encode input features
-        features, self.feature_encoders = encode_features(features)
+        # encode features + target
+        target = self.target_encoder.fit_transform(target)
+        features = self.feature_encoder.fit_transform(features)
     
-        # split train and test
+        # split train and test sets
         np.random.seed(seed)
         if not 0.0 < train_size < 1.0:
             raise ValueError(f"'train_size' must be between 0 and 1")
@@ -125,9 +125,37 @@ class AutoClassifier(autosklearn.classification.AutoSklearnClassifier):
             y=y_train,
             X_test=x_test,
             y_test=y_test,
-            # feat_type=feature_types,
             dataset_name=getattr(df, "name", None)
         )
+
+    def predict(
+        self,
+        X: pd.DataFrame,
+        batch_size: int = None,
+        n_jobs: int = None
+    ) -> pd.DataFrame:
+        """Predict target values based on new features."""
+        # encode features
+        features = self.feature_encoder.transform(X)
+
+        # generate prediction
+        result = pd.DataFrame(
+            super().predict(features, batch_size=batch_size, n_jobs=n_jobs),
+            index=features.index,
+            columns=list(self.target_encoder.encoders)
+        )
+
+        # decode predictions
+        return self.target_encoder.inverse_transform(result)
+
+    #############################
+    ####    MAGIC METHODS    ####
+    #############################
+
+    def __repr__(self) -> str:
+        targets = " + ".join(str(x) for x in self.target_encoder.encoders)
+        features = " + ".join(str(x) for x in self.feature_encoder.encoders)
+        return f"AutoClassifier({targets} ~ {features})"
 
 
 #######################
@@ -135,39 +163,38 @@ class AutoClassifier(autosklearn.classification.AutoSklearnClassifier):
 #######################
 
 
-def main():
+import sklearn.datasets
+import sklearn.metrics
+import sklearn.model_selection
 
-    import sklearn.datasets
-    import sklearn.metrics
-    import sklearn.model_selection
 
-    # load data
-    X, y = sklearn.datasets.load_digits(return_X_y=True)
+# load data
+X, y = sklearn.datasets.load_digits(return_X_y=True)
 
-    # split train, test
-    x_train, x_test, y_train, y_test = (
-        sklearn.model_selection.train_test_split(X, y, random_state=1)
-    )
 
-    # convert to dataframe
-    x_train = pd.DataFrame(x_train)
-    x_test = pd.DataFrame(x_test)
-    y_train = pd.DataFrame(y_train)
-    y_test = pd.DataFrame(y_test)
+# split train, test
+x_train, x_test, y_train, y_test = (
+    sklearn.model_selection.train_test_split(X, y, random_state=1)
+)
 
-    train = x_train.copy()
-    train.insert(64, 64, y_train.copy())
-    test = x_test.copy()
-    test.insert(64, 64, y_test.copy())
 
-    print(extract_columns(train, 64))
-    print(extract_columns(train, list(range(64))))
+# convert to dataframe
+x_train = pd.DataFrame(x_train)
+x_test = pd.DataFrame(x_test)
+y_train = pd.DataFrame(y_train)
+y_test = pd.DataFrame(y_test)
 
-    # train
-    model = AutoClassifier(time_limit=30)
-    model.fit(train, y_train, x_train)
+train = x_train.copy()
+train.insert(64, 64, y_train.copy())
+test = x_test.copy()
+test.insert(64, 64, y_test.copy())
 
-    # test
-    return pd.DataFrame(
-        {"predicted": model.predict(x_test), "observed": y_test.iloc[:, 0]}
-    )
+
+# train
+model = AutoClassifier(time_limit=30, ensemble_size=1)
+model.fit(train, y_train, x_train)
+
+
+# compare
+result = pd.DataFrame({"observed": y_test.iloc[:, 0]})
+result = result.join(model.predict(x_test))
