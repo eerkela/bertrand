@@ -420,14 +420,11 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
         cls,
         dtype: np.dtype | pd.api.extensions.ExtensionDtype
     ) -> AtomicType:
-        if isinstance(dtype, np.dtype) and np.issubdtype(dtype, "m8"):
-            unit, step_size = np.datetime_data(dtype)
-            return cls.instance(
-                unit=None if unit == "generic" else unit,
-                step_size=step_size
-            )
-
-        raise NotImplementedError()
+        unit, step_size = np.datetime_data(dtype)
+        return cls.instance(
+            unit=None if unit == "generic" else unit,
+            step_size=step_size
+        )
 
     @property
     def larger(self) -> list:

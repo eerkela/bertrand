@@ -126,6 +126,7 @@ class TargetEncoder(BaseEstimator, TransformerMixin):
     def __init__(self, classify: bool = False):
         self.classify = classify
         self.encoders = {}  # column name -> encoder
+        self.feature_names = {}  # column name -> feature name
 
     def fit(self, X: pd.DataFrame, y=None) -> FeatureEncoder:
         """Fit a TargetEncoder to test data."""
@@ -139,6 +140,7 @@ class TargetEncoder(BaseEstimator, TransformerMixin):
 
             # remember settings
             self.encoders[col_name] = enc.fit(col)
+            self.feature_names[col_name] = enc.get_feature_names()
 
         return self
 
@@ -158,6 +160,7 @@ class TargetEncoder(BaseEstimator, TransformerMixin):
             result = enc.fit_transform(col)
             target = result if target is None else target.join(result)
             self.encoders[col_name] = enc
+            self.feature_names[col_name] = enc.get_feature_names()
 
         return target
 
@@ -197,12 +200,19 @@ class TargetEncoder(BaseEstimator, TransformerMixin):
 
     def get_feature_names(self) -> np.array:
         """Get output feature names for transformation."""
-        return np.array([x for x in self.encoders], dtype=object)
+        names = []
+        for features in self.feature_names.values():
+            names.extend(features)
+        return np.array(names, dtype=object)
 
 
 #######################
 ####    PRIVATE    ####
 #######################
+
+
+# TODO: BooleanEncoder -> just translates booleans into equivalent int8s to
+# save space.
 
 
 class CategoricalEncoder(BaseEstimator, TransformerMixin):
@@ -311,7 +321,7 @@ class NumericEncoder(BaseEstimator, TransformerMixin):
         if X.shape[1] != 1:
             raise ValueError(f"Input data must have only one column:\n{X}")
 
-        result = convert.cast(X.iloc[:, 0], self.dtype)
+        result = convert.cast(X.iloc[:, 0], self.dtype, tol=np.inf)
         result.name = self.col_name
         return result
 
@@ -368,7 +378,10 @@ class ObjectEncoder(BaseEstimator, TransformerMixin):
 
     def get_feature_names(self) -> np.array:
         """Get output feature names for transformation."""
-        return np.array([self.col_name], dtype=object)
+        return np.array(
+            [f"{self.col_name}.{str(x)}" for x in self.labels.classes_],
+            dtype=object
+        )
 
 
 def reorder_columns(df: pd.DataFrame, order: list) -> pd.DataFrame:

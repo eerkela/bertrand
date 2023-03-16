@@ -1,6 +1,7 @@
 from __future__ import annotations
-from typing import Union
+from typing import Any, Union
 
+import numpy as np
 import pandas as pd
 import psutil
 import tzlocal
@@ -12,44 +13,42 @@ from pdcast.util.type_hints import datetime_like, timedelta_like
 
 
 column_specifier = Union[
-    str,
-    int,
     pd.Series,
-    list[str | int | pd.Series],
-    pd.DataFrame
+    pd.DataFrame,
+    list,
+    tuple,
+    pd.Index,
+    np.ndarray,
+    Any
 ]
 
 
 def extract_columns(df: pd.DataFrame, cols: column_specifier) -> pd.DataFrame:
     """Extract columns from a ``pandas.DataFrame`` for fitting."""
-    # column name
-    if isinstance(cols, str):
-        result = df[cols]
+    # DataFrame
+    if isinstance(cols, pd.DataFrame):
+        if not df[cols.columns].equals(cols):
+            raise ValueError(f"DataFrame columns do not match parent:\n{cols}")
 
-    # column index
-    elif isinstance(cols, int):
-        result = df.iloc[:, cols]
+    # Series
+    elif isinstance(cols, pd.Series):
+        if cols.name is None:
+           raise ValueError(
+               f"Series specifier must have a '.name' attribute:\n{cols}"
+            )
+        if not df[cols.name].equals(cols):
+            raise ValueError(f"Series does not match parent")
+        cols = pd.DataFrame(cols)
 
-    # multiple columns
-    elif isinstance(cols, list):
-        result = pd.DataFrame()
-        for x in cols:
-            if isinstance(x, str):
-                result[x] = df[x]
-            elif isinstance(x, int):
-                label = df.columns[x]
-                result[label] = df[label]
-            else:
-                result[x.name] = x
+    # sequence
+    elif isinstance(cols, (list, tuple, pd.Index, np.ndarray)):
+        cols = df[cols]
 
-    # pandas data structure
+    # scalar
     else:
-        result = cols
+        cols = df[[cols]]
 
-    # wrap as dataframe
-    if isinstance(result, pd.Series):
-        return pd.DataFrame(result)
-    return result
+    return cols
 
 
 def parse_memory_limit(memory_limit: int | float) -> int:

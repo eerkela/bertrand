@@ -78,13 +78,10 @@ class CategoricalType(AdapterType):
 
     @classmethod
     def from_dtype(cls, dtype: pd.api.extensions.ExtensionDtype) -> AdapterType:
-        if isinstance(dtype, pd.CategoricalDtype):
-            result = cls(
-                wrapped=detect.detect_type(dtype.categories),
-                levels=dtype.categories.tolist()
-            )
-
-        raise NotImplementedError()
+        return cls(
+            wrapped=detect.detect_type(dtype.categories),
+            levels=dtype.categories.tolist()
+        )
 
     @classmethod
     def slugify(

@@ -1,4 +1,4 @@
-from .patch import attach, detach, DispatchMethod, Namespace
+from .automl import fit, AutoModel, AutoClassifier, AutoRegressor
 from .check import typecheck
 from .convert import (
     cast, CastDefaults, defaults, SeriesWrapper, to_boolean, to_integer,
@@ -6,6 +6,7 @@ from .convert import (
     to_object
 )
 from .detect import detect_type
+from .patch import attach, detach, DispatchMethod, Namespace
 from .resolve import resolve_type
 from .types import *
 

@@ -69,14 +69,10 @@ class SparseType(AdapterType):
 
     @classmethod
     def from_dtype(cls, dtype: pd.api.extensions.ExtensionDtype) -> AdapterType:
-        # sparse
-        if isinstance(dtype, pd.SparseDtype):
-            return cls(
-                wrapped=resolve.resolve_type(dtype.subtype),
-                fill_value=dtype.fill_value
-            )
-
-        raise NotImplementedError()
+        return cls(
+            wrapped=resolve.resolve_type(dtype.subtype),
+            fill_value=dtype.fill_value
+        )
 
     @classmethod
     def slugify(

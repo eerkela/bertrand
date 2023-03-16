@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from pdcast.automl import AutoModel
+from pdcast.automl import fit as fit_standalone
 from pdcast.check import typecheck as typecheck_standalone
 from pdcast.convert import cast as cast_standalone
 from pdcast.detect import detect_type
@@ -63,6 +65,13 @@ def element_type(self) -> dict[str, AdapterType | AtomicType | CompositeType]:
     return result
 
 
+def fit(self, *args, **kwargs) -> AutoModel:
+    """An attached version of :func:`fit` that allows users to omit the ``df``
+    argument.
+    """
+    return fit_standalone(self, *args, **kwargs)
+
+
 ############################
 ####    MONKEY PATCH    ####
 ############################
@@ -72,6 +81,7 @@ def attach() -> None:
     pd.DataFrame.cast = cast
     pd.DataFrame.typecheck = typecheck
     pd.DataFrame.element_type = property(element_type)
+    pd.DataFrame.fit = fit
 
 
 def detach() -> None:
@@ -81,6 +91,7 @@ def detach() -> None:
     del pd.DataFrame.cast
     del pd.DataFrame.typecheck
     del pd.DataFrame.element_type
+    del pd.DataFrame.fit
 
 
 #######################
