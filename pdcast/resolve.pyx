@@ -230,7 +230,10 @@ cdef types.BaseType resolve_typespec_string(str input_str):
     input_str = valid.group("body")
     matches = [x.groupdict() for x in registry.regex.finditer(input_str)]
     for m in matches:
-        base = registry.aliases[m["type"]]
+        if m.get("sized_unicode"):
+            base = types.StringType
+        else:
+            base = registry.aliases[m["type"]]
 
         # if no args are provided, use the default kwargs
         if not m["args"]:  # empty string or None

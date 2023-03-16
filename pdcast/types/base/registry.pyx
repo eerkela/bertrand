@@ -153,6 +153,7 @@ cdef class TypeRegistry:
                 string_aliases = [
                     re.escape(k) for k in self.aliases if isinstance(k, str)
                 ]
+                string_aliases.append(r"(?P<sized_unicode>U(?P<size>[0-9]*))")
 
                 # sort into reverse order based on length
                 string_aliases.sort(key=len, reverse=True)
