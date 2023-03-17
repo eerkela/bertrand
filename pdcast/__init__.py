@@ -1,6 +1,5 @@
 from .patch import attach, detach, DispatchMethod, Namespace
 
-from .automl import fit, AutoModel, AutoClassifier, AutoRegressor
 from .check import typecheck
 from .convert import (
     cast, CastDefaults, defaults, SeriesWrapper, to_boolean, to_integer,

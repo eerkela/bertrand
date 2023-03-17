@@ -5,7 +5,6 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 from pandas.api.extensions import register_extension_dtype
-from sklearn.preprocessing import LabelEncoder
 
 cimport pdcast.convert as convert
 import pdcast.convert as convert
@@ -347,24 +346,6 @@ cdef class AtomicType(ScalarType):
         # respect wildcard rules in subtypes
         subtypes = self.subtypes.atomic_types - {self}
         return other == self or any(other in a for a in subtypes)
-
-    def encode(
-        self,
-        series: convert.SeriesWrapper,
-        categorical: bool = True
-    ) -> convert.SeriesWrapper:
-        """Encode a series for use in automl training."""
-        if categorical:
-            encoder = LabelEncoder().fit(series.series)
-            return convert.SeriesWrapper(
-                pd.Series(encoder.transform(series.series)),
-                hasnans=series.hasnans
-            )
-
-
-
-
-
 
     def is_na(self, val: Any) -> bool:
         """Check if an arbitrary value is an NA value in this representation.

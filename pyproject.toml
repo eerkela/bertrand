@@ -2,11 +2,12 @@
 requires = ["setuptools", "cython", "numpy"]
 build-backend = "setuptools.build_meta"
 
+
 [project]
 name = "pdcast"
 version = "0.0.1"
-description = "Flexible type extensions for numpy/pandas"
-readme = "README.md"
+description = "Flexible type extensions for pandas"
+readme = "README.rst"
 authors = [
     { name="Eric Erkela", email="eerkela42@gmail.com" }
 ]
@@ -22,19 +23,13 @@ keywords = [
     "extension",
     "type",
     "conversion",
-    "automl",
-    "regression",
-    "classification"
 ]
 dependencies = [
-    "autosklearn",
     "numpy",
     "pandas",
-    "psutil",
     "python-dateutil",
     "pytz",
     "regex",
-    "sklearn",
     "tzlocal"
 ]
 requires-python = ">=3.7"

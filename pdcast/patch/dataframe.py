@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-from pdcast.automl import AutoModel
-from pdcast.automl import fit as fit_standalone
 from pdcast.check import typecheck as typecheck_standalone
 from pdcast.convert import cast as cast_standalone
 from pdcast.detect import detect_type

@@ -6,7 +6,6 @@ cimport cython
 cimport numpy as np
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
 
 cimport pdcast.detect as detect
 import pdcast.detect as detect
@@ -115,12 +114,10 @@ cdef class SeriesWrapper:
         series: pd.Series,
         hasnans: bool = None,
         element_type: types.BaseType = None,
-        encoder: LabelEncoder = None,
     ):
         self.series = series
         self.hasnans = hasnans
         self.element_type = element_type
-        self.encoder = LabelEncoder()
 
     ##########################
     ####    PROPERTIES    ####
@@ -573,26 +570,6 @@ cdef class SeriesWrapper:
                 )
 
         return series, dtype
-
-    def decode(self) -> None:
-        """Decode categorical labels for the given series.
-
-        This method is used to decode labels for automl classification tasks.
-        The encoded values can be recovered by running
-        :meth:`SeriesWrapper.encode`.
-        """
-        self.series = pd.Series(self.encoder.inverse_transform(self.series))
-        self.element_type = None  # TODO: cast values?
-
-    def encode(self) -> None:
-        """Encode categorical labels for the given series.
-
-        This method is used to encode labels for automl classification tasks.
-        The original values can be recovered by running
-        :meth:`SeriesWrapper.decode`.
-        """
-        self.series = pd.Series(self.encoder.fit_transform(self.series))
-        self.element_type = None
 
     def isinf(self) -> SeriesWrapper:
         """Return a boolean mask indicating the position of infinities in the
