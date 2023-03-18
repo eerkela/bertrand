@@ -15,6 +15,12 @@ from .base cimport AtomicType, AdapterType, CompositeType, ScalarType
 from .base import register, dispatch
 
 
+# TODO: SparseDtype erases abstract extensions because of kind="O", resulting
+# in a TypeError: object() takes no arguments
+# https://github.com/pandas-dev/pandas/blob/main/pandas/core/arrays/sparse/dtype.py#L92
+# -> workaround may involve changing the order of operations.
+
+
 @register
 class SparseType(AdapterType):
 

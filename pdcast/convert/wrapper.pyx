@@ -338,13 +338,19 @@ cdef class SeriesWrapper:
         target = dtype.dtype
 
         # apply dtype.type_def elementwise if not astype-compliant
-        if target.kind == "O" and not isinstance(target, pd.StringDtype):
-            result = self.apply_with_errors(
-                call=dtype.type_def,
-                errors=errors
+        if (
+            target.kind == "O" and
+            dtype.type_def != object and
+            not isinstance(target, pd.StringDtype)
+        ):
+
+            return self.apply_with_errors(
+                call=lambda x: (
+                    x if isinstance(x, dtype.type_def) else dtype.type_def(x)
+                ),
+                errors=errors,
+                dtype=dtype
             )
-            result.element_type=dtype
-            return result
 
         # default to pd.Series.astype()
         if self.series.dtype.kind == "O" and hasattr(target, "numpy_dtype"):
@@ -415,10 +421,10 @@ cdef class SeriesWrapper:
                     getattr(self.element_type, "na_value", pd.NA),
                     dtype="O"
                 ),
-                dtype=self.dtype
+                dtype=object
             )
             result.update(self.series)
-            self.series = result
+            self.series = result.astype(self.dtype, copy=False)
 
         # replace original index
         if self._orig_index is not None:
@@ -455,7 +461,8 @@ cdef class SeriesWrapper:
     def apply_with_errors(
         self,
         call: Callable,
-        errors: str = "raise"
+        errors: str = "raise",
+        dtype: types.ScalarType = None
     ) -> SeriesWrapper:
         """Apply a callable over the series using the specified error handling
         rule at each index.
@@ -481,16 +488,31 @@ cdef class SeriesWrapper:
         ``errors="coerce"`` indicates that any offending values should be
         removed from the series (and therefore replaced with missing values).
         """
+        # loop over numpy array
         result, has_errors, index = _apply_with_errors(
             self.series.to_numpy(dtype="O"),
             call=call,
             errors=errors
         )
-        result = pd.Series(result, index=self.index, dtype="O")
+
+        # remove coerced NAs.  NOTE: has_errors=True only when errors="coerce"
+        series_index = self.index
         if has_errors:
             result = result[~index]
+            series_index = series_index[~index]
 
-        return SeriesWrapper(result, hasnans=has_errors or self._hasnans)
+        # apply final output type
+        if dtype is None:
+            result = pd.Series(result, index=series_index, dtype="O")
+        else:
+            result = pd.Series(result, index=series_index, dtype=dtype.dtype)
+
+        # return as SeriesWrapper
+        return SeriesWrapper(
+            result,
+            hasnans=has_errors or self._hasnans,
+            element_type=dtype
+        )
 
     def boundscheck(
         self,

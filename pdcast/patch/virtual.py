@@ -90,17 +90,36 @@ class DispatchMethod:
             f"exists)\n can be recovered under its `.original` attribute."
         )
 
+    def __call__(self, *args, **kwargs) -> pd.Series:
+        """Call the DispatchMethod, invoking the appropriate implementation for
+        the observed data.
+        """
+        # normalize index, remove NAs, and infer type via SeriesWrapper
+        with SeriesWrapper(self.data) as series:
+            if isinstance(series.element_type, CompositeType):
+                result = self._dispatch_composite(series, *args, **kwargs)
+            else:
+                result = self._dispatch_scalar(series, *args, **kwargs)
+
+            series.series = result.series
+            series.hasnans = result.hasnans
+            series.element_type = result.element_type
+
+        # return modified series with original index, NAs
+        return series.series
+
     @property
     def original(self) -> Callable:
-        """Retrieve the original pandas implementation."""
+        """Retrieve the original pandas implementation for this method, if one
+        exists.
+        """
+        # namespace holds data for us, so all we need to do is getattr
         if self.namespace:
             return getattr(self.namespace.original, self.name)
-        return partial(getattr(pd.Series, self.name), self.data)
 
-    def _dispatch(self, series: SeriesWrapper, *args, **kwargs):
-        if isinstance(series.element_type, CompositeType):
-            return self._dispatch_composite(series, *args, **kwargs)
-        return self._dispatch_scalar(series, *args, **kwargs)
+        # we can get original implementation off the pd.Series class itself,
+        # though this requires us to bind data manually.
+        return partial(getattr(pd.Series, self.name), self.data)
 
     def _dispatch_scalar(
         self,
@@ -108,15 +127,53 @@ class DispatchMethod:
         *args,
         **kwargs
     ) -> SeriesWrapper:
+        """Apply the dispatched method over a homogenous input series.
+
+        Parameters
+        ----------
+        series : SeriesWrapper
+            A homogenous input series, wrapped as a :class:`SeriesWrapper`.
+            This is required as the first argument of any method that is
+            decorated with :func:`@dispatch() <dispatch>`.
+        *args, **kwargs
+            Arbitrary arguments to be passed to the dispatched implementation.
+
+        Returns
+        -------
+        SeriesWrapper
+            The result of the dispatched method's specific implementation,
+            wrapped as a :class:`SeriesWrapper`.
+
+        Notes
+        -----
+        The way this works is somewhat complicated.  In general, there are 3
+        steps to a dispatching problem:
+
+            #)  Using the inferred type of the series, check for a
+                corresponding :func:`@dispatch() <dispatch>` implementation in
+                this method's ``submap``.  If one is found, use it and stop
+                here.
+            #)  If the inferred type has adapters, progressively strip them and
+                repeat the above check.  This is done recursively, down to the
+                base :class:`AtomicType` if necessary, stopping at the first
+                match.
+            #)  If no match is found for this type or any of its adapters,
+                default to the pandas implementation.
+
+        There is an optional 4th step if adapters were detected in step 2),
+        which is to progressively re-wrap the dispatched result with any
+        adapters that are above it in the stack.  This step is automatically
+        skipped if :attr:`DispatchMethod.wrap_adapters` is set to ``False``, or
+        if the resulting series has a different type than the starting one.
+        """
         series_type = series.element_type
 
-        # use dispatched implementation if it is defined
+        # 1) check for dispatched implementation.
         dispatched = self.dispatched.get(type(series_type), None)
         if dispatched is not None:
-            if series_type is None:
-                result = dispatched(series, *args, **kwargs)
-            else:
-                result = dispatched(series_type, series, *args, **kwargs)
+            result = dispatched(series_type, series, *args, **kwargs)
+            return result.rectify()
+
             target = result.element_type.dtype
             if (
                 result.dtype == np.dtype("O") and
@@ -125,29 +182,28 @@ class DispatchMethod:
                 result.series = result.series.astype(target)
             return result
 
-        # unwrap adapters and retry.  NOTE: this is recursive
+        # 2) recursively unwrap adapters and retry.  NOTE: This resembles a
+        # stack.  An adapter is popped off the stack in order before recurring,
+        # and then each adapter is pushed back onto the stack in the same order.
         for _ in getattr(series_type, "adapters", ()):
-            orig_type = series_type
-            series = orig_type.unwrap(series)
+            series = series_type.unwrap(series)
             series = self._dispatch_scalar(series, *args, **kwargs)
-            if self.wrap_adapters and orig_type.wrapped == series_type:
-                series = orig_type.wrap(series)
+            if (
+                self.wrap_adapters and
+                series.element_type == series_type.wrapped
+            ):
+                series = series_type.wrap(series)
             return series
 
-        # fall back to pandas
+        # 3) fall back to pandas.  NOTE: we filter off any keyword arguments
+        # that do not appear in the original implementation's signature/
         pars = inspect.signature(self.original).parameters
         kwargs = {k: v for k, v in kwargs.items() if k in pars}
         result = SeriesWrapper(
             self.original(*args, **kwargs),
             hasnans=series._hasnans
         )
-        target = result.element_type.dtype
-        if (
-            result.dtype == np.dtype("O") and
-            isinstance(target, array.AbstractDtype)
-        ):
-            result.series = result.series.astype(target)
-        return result
+        return result.rectify()
 
     def _dispatch_composite(
         self,
@@ -219,11 +275,3 @@ class DispatchMethod:
             except OverflowError:
                 pass
         return SeriesWrapper(result, hasnans=series._hasnans)
-
-    def __call__(self, *args, **kwargs) -> pd.Series:
-        with SeriesWrapper(self.data) as series:
-            result = self._dispatch(series, *args, **kwargs)
-            series.series = result.series
-            series.hasnans = result.hasnans
-            series.element_type = result.element_type
-        return series.series

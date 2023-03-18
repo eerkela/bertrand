@@ -23,8 +23,8 @@ Features
    readily detected from example data, even if those data are non-homogenous
    or not supported by existing numpy/pandas functionality.  This can be
    customized in the same way as the type specification mini-language, and is
-   more robust than simply checking an array's ``dtype`` field.  Users can even
-   work with ``dtype: object`` arrays without losing confidence in their
+   more robust than simply checking an array's ``.dtype`` field.  Users can
+   even work with ``dtype: object`` arrays without losing confidence in their
    results.
 *  **A suite of conversions** covering 9 of the most commonly-encountered data
    types: *boolean*, *integer*, *floating point*, *complex*, *decimal*
@@ -35,24 +35,23 @@ Features
    tools outlined above.
 *  **Automatic method dispatching** based on observed data.  This functions in
    a manner similar to ``@functools.singledispatch``, allowing series methods
-   to dispatch to multiple implementations based on the type of their
-   underlying data.  This mechanism is fully general-purpose, and can be used
-   to dynamically repair existing numpy/pandas functionality in cases where it
-   is broken, or to extend it arbitrarily without interference.  In either
-   case, ``pdcast`` handles all the necessary type checks and inferencing,
+   to dispatch to multiple different implementations based on the underlying
+   data type.  This mechanism is fully general-purpose, and can be used to
+   dynamically repair/modify existing pandas functionality in cases where it is
+   broken, or to extend it arbitrarily without interference.  In either case,
+   ``pdcast`` handles all the necessary type checks and inferencing,
    dispatching to the appropriate implementation if one exists and falling back
    to pandas if it does not.  Original functionality can be easily recovered if
    necessary, and dispatched methods can be hidden behind virtual namespaces to
-   avoid conflicts, similar to ``pandas.Series.dt``, ``pandas.Series.str``,
-   etc.
+   avoid conflicts, similar to ``Series.dt``, ``Series.str``, etc.
 
 Advantages over Pandas
 ----------------------
 Compared to the existing ``astype()`` framework, ``pdcast`` is:
 
 *  **Robust**. ``pdcast`` can handle almost any input data, even if they are
-   mislabeled, malformed, imprecise, or ambiguous.  They can even be of mixed
-   type and still be processed intelligibly.
+   missing, malformed, imprecise, or ambiguous.  They can even be of mixed type
+   and still be processed intelligibly.
 *  **Flexible**.  Every aspect of ``pdcast``'s functionality can be modified or
    extended to meet one's needs, no matter how complex.
 *  **Comprehensive**.  ``pdcast`` comes prepackaged with support for several
@@ -95,7 +94,7 @@ Compared to the existing ``astype()`` framework, ``pdcast`` is:
 Demonstration
 -------------
 ``pdcast`` can be used to easily verify the types that are present within
-a pandas data str:
+a pandas data structure:
 
 .. doctest:: typecheck
 
@@ -139,32 +138,32 @@ is a short walk around the various type categories that are recognized by
    1    0.0+0.0j
    2   N000a000N
    dtype: complex64
-   >>> _.cast("sparse[decimal, 1]")
+   >>> _.cast("sparse[decimal, 1]")  # TODO: broken
    0      1
    1      0
    2    NaN
    dtype: Sparse[object, Decimal('1')]
    >>> _.cast("datetime", unit="Y", since="j2000")
-   0   1971-01-01
-   1   1970-01-01
-   2          NaT
+   0   2001-01-01 12:00:00
+   1   2000-01-01 12:00:00
+   2                   NaT
    dtype: datetime64[ns]
    >>> _.cast("timedelta[python]", since="Jan 1st, 2000 at 12:00 PM")
-   0    365 days, 0:00:00
+   0    366 days, 0:00:00
    1              0:00:00
    2                  NaT
-   dtype: object
+   dtype: timedelta[python]
    >>> _.cast(CustomObj)
-   0    CustomObj(365 days, 0:00:00)
+   0    CustomObj(366 days, 0:00:00)
    1              CustomObj(0:00:00)
    2                            <NA>
    dtype: object
    >>> _.cast("categorical[str[pyarrow]]")
-   0    CustomObj(365 days, 0:00:00)
+   0    CustomObj(366 days, 0:00:00)
    1              CustomObj(0:00:00)
    2                            <NA>
    dtype: category
-   Categories (2, string): [CustomObj(0:00:00), CustomObj(365 days, 0:00:00)]
+   Categories (2, string): [CustomObj(0:00:00), CustomObj(366 days, 0:00:00)]
    >>> _.cast(bool, true="*", false="CustomObj(0:00:00)")  # our original data
    0     True
    1    False

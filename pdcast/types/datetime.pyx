@@ -538,12 +538,12 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
                 "np.datetime64 objects do not carry timezone information"
             )
 
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int[python]")
         series = series.apply_with_errors(
             iso_8601_to_ns,
-            errors=errors
+            errors=errors,
+            dtype=transfer_type
         )
-        series.element_type = transfer_type
         return transfer_type.to_datetime(
             series,
             format=format,
@@ -952,9 +952,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
 
         # convert elementwise
         call = partial(ns_to_pydatetime, tz=dtype.tz)
-        series = series.apply_with_errors(call)
-        series.element_type = dtype
-        return series
+        return series.apply_with_errors(call, dtype=dtype)
 
     def from_string(
         self,
@@ -980,7 +978,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
         )
 
         # apply elementwise
-        series = series.apply_with_errors(
+        return series.apply_with_errors(
             partial(
                 string_to_pydatetime,
                 format=format,
@@ -989,10 +987,9 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
                 utc=utc,
                 errors=errors
             ),
-            errors=errors
+            errors=errors,
+            dtype=dtype
         )
-        series.element_type = dtype
-        return series
 
     def to_integer(
         self,
@@ -1007,8 +1004,10 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
         **unused
     ) -> convert.SeriesWrapper:
         """Convert python datetimes into an integer data type."""
-        series = series.apply_with_errors(pydatetime_to_ns)
-        series.element_type = int
+        series = series.apply_with_errors(
+            pydatetime_to_ns,
+            dtype=resolve.resolve_type("int[python]")
+        )
         if since:
             series.series -= since.offset
 

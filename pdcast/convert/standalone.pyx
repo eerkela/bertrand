@@ -1,6 +1,7 @@
 
 from datetime import tzinfo
 import decimal
+from functools import wraps
 from typing import Any, Callable, Iterable
 
 import pandas as pd
@@ -468,6 +469,23 @@ def to_object(
 #######################
 
 
+def catch_trivial(call: Callable) -> Callable:
+    """Catch trivial cases like empty series, equal input/output types."""
+
+    @wraps(call)
+    def wrapper(
+        series_type: types.ScalarType,
+        series: wrapper.SeriesWrapper,
+        dtype: types.ScalarType,
+        *args,
+        **kwargs
+    ):
+        pass
+
+    pass
+
+
+
 def do_conversion(
     data,
     endpoint: str,
@@ -478,13 +496,14 @@ def do_conversion(
     *args,
     **kwargs
 ) -> pd.Series:
-    # for every registered type, get selected conversion method if it exists
+    # for every registered type, get selected conversion method if it exists.
     submap = {
         k: getattr(k, endpoint) for k in types.AtomicType.registry
         if hasattr(k, endpoint)
     }
-    # TODO: this unintentionally passes None in ``self`` position of conversion
-    submap[type(None)] = getattr(dtype, endpoint)
+    submap[type(None)] = lambda _, series, *args, **kwargs: (
+        getattr(dtype, endpoint)(series, *args, **kwargs)
+    )
 
     # wrap dtype according to adapter settings
     if categorical:

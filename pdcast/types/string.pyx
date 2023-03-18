@@ -73,9 +73,9 @@ class StringMixin:
                 ignore_case=ignore_case,
                 fill=fill
             ),
-            errors=errors
+            errors=errors,
+            dtype=resolve.resolve_type(bool)
         )
-        series.element_type = bool
         return super().to_boolean(series, dtype, errors=errors)
 
     def to_integer(
@@ -87,12 +87,12 @@ class StringMixin:
         **unused
     ) -> convert.SeriesWrapper:
         """Convert string data to an integer data type with the given base."""
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int[python]")
         series = series.apply_with_errors(
             partial(int, base=base),
-            errors=errors
+            errors=errors,
+            dtype=transfer_type
         )
-        series.element_type = transfer_type
         return transfer_type.to_integer(
             series,
             dtype=dtype,
@@ -196,12 +196,12 @@ class StringMixin:
     ) -> convert.SeriesWrapper:
         """Convert string data into a timedelta representation."""
         # 2-step conversion: str -> int, int -> timedelta
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int[python]")
         series = series.apply_with_errors(
             partial(timedelta_string_to_ns, as_hours=as_hours, since=since),
-            errors=errors
+            errors=errors,
+            dtype=transfer_type
         )
-        series.element_type = transfer_type
         return transfer_type.to_timedelta(
             series,
             dtype=dtype,

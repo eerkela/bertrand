@@ -294,7 +294,7 @@ def two_step_conversion(
     **unused
 ) -> pd.Series:
     """A conversion in two parts."""
-    def wrapped_call(object val):
+    def safe_call(object val):
         cdef object result = call(val)
         cdef type output_type = type(result)
 
@@ -304,9 +304,12 @@ def two_step_conversion(
             )
         return result
 
-    # apply `wrapped_call` over series and pass to delegated conversion
-    series = series.apply_with_errors(call=wrapped_call, errors=errors)
-    series.element_type = dtype
+    # apply `safe_call` over series and pass to delegated conversion
+    series = series.apply_with_errors(
+        call=safe_call,
+        errors=errors,
+        dtype=dtype
+    )
     return conv_func(series, dtype=dtype, errors=errors, **unused)
 
 

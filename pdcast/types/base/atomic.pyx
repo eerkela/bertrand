@@ -555,9 +555,9 @@ cdef class AtomicType(ScalarType):
         if format:
             series = series.apply_with_errors(
                 lambda x: f"{x:{format}}",
-                errors=errors
+                errors=errors,
+                dtype=resolve.resolve_type(str)
             )
-            series.element_type = str
         return series.astype(dtype, errors=errors)
 
     def to_object(
@@ -589,9 +589,11 @@ cdef class AtomicType(ScalarType):
                 )
             return result
 
-        series = series.apply_with_errors(call=dtype.type_def, errors=errors)
-        series.element_type = dtype
-        return series
+        return series.apply_with_errors(
+            call=dtype.type_def,
+            errors=errors,
+            dtype=dtype
+        )
 
     #############################
     ####    MAGIC METHODS    ####

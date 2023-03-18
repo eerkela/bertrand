@@ -66,8 +66,12 @@ class IntegerMixin:
                 smaller = reversed(filtered)
 
         # return smallest type that fits observed range
-        min_val = int(series.min)
-        max_val = int(series.max)
+        if pd.isna(series.min):
+            min_val = self.max  # NOTE: we swap these to maintain upcast()
+            max_val = self.min  # behavior for upcast-only types
+        else:
+            min_val = int(series.min)
+            max_val = int(series.max)
         for t in smaller:
             if min_val < t.min or max_val > t.max:
                 continue
@@ -345,9 +349,11 @@ class IntegerMixin:
                 call = lambda x: f"{int_to_base(x, base=base):{format}}"
             else:
                 call = partial(int_to_base, base=base)
-            series = series.apply_with_errors(call, errors="raise")
-            series.element_type = str
-            format = None
+            return series.apply_with_errors(
+                call,
+                errors=errors,
+                dtype=resolve.resolve_type(dtype)
+            )
 
         return super().to_string(
             series=series,

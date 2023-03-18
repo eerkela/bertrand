@@ -264,10 +264,6 @@ class TimedeltaMixin:
         **unused
     ) -> convert.SeriesWrapper:
         """Convert timedelta data to a timedelta representation."""
-        # trivial case: no conversion necessary
-        if dtype == series.element_type:
-            return series.rectify()
-
         # 2-step conversion: datetime -> ns, ns -> timedelta
         transfer_type = resolve.resolve_type(int)
         series = self.to_integer(
@@ -641,8 +637,10 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
         **unused
     ) -> convert.SeriesWrapper:
         """Convert python timedeltas to an integer data type."""
-        series = series.apply_with_errors(pytimedelta_to_ns)
-        series.element_type = int
+        series = series.apply_with_errors(
+            pytimedelta_to_ns,
+            dtype=resolve.resolve_type("int[python]")
+        )
 
         if unit != "ns" or step_size != 1:
             convert_ns_to_unit(

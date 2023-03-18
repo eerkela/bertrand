@@ -103,7 +103,7 @@ class CategoricalType(AdapterType):
     ) -> convert.SeriesWrapper:
         """Convert an unwrapped series into a categorical representation."""
         # discover levels automatically
-        series = self.atomic_type.make_categorical(series, self.levels)
+        series = self.atomic_type.make_categorical(series, levels=self.levels)
         self.levels = series.series.dtype.categories.tolist()
         series.element_type = self
         return series
