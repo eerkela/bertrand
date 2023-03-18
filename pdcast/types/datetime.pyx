@@ -543,7 +543,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
         series = series.apply_with_errors(
             iso_8601_to_ns,
             errors=errors,
-            dtype=transfer_type
+            element_type=transfer_type
         )
         return transfer_type.to_datetime(
             series,
@@ -974,7 +974,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
 
         # convert elementwise
         call = partial(ns_to_pydatetime, tz=dtype.tz)
-        return series.apply_with_errors(call, dtype=dtype)
+        return series.apply_with_errors(call, element_type=dtype)
 
     def from_string(
         self,
@@ -1010,7 +1010,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
                 errors=errors
             ),
             errors=errors,
-            dtype=dtype
+            element_type=dtype
         )
 
     def to_integer(
@@ -1028,7 +1028,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
         """Convert python datetimes into an integer data type."""
         series = series.apply_with_errors(
             pydatetime_to_ns,
-            dtype=resolve.resolve_type("int[python]")
+            element_type=resolve.resolve_type("int[python]")
         )
         if since:
             series.series -= since.offset
@@ -1092,7 +1092,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
         return series.apply_with_errors(
             localize,
             errors="raise",
-            dtype=self.replace(tz=tz)
+            element_type=self.replace(tz=tz)
         )
 
     @dispatch(namespace="dt")
@@ -1117,7 +1117,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
         return series.apply_with_errors(
             localize,
             errors="raise",
-            dtype=self.replace(tz=tz)
+            element_type=self.replace(tz=tz)
         )
 
 

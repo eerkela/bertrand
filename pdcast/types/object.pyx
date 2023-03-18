@@ -316,7 +316,7 @@ def two_step_conversion(
     series = series.apply_with_errors(
         call=safe_call,
         errors=errors,
-        dtype=dtype
+        element_type=dtype
     )
     return conv_func(series, dtype=dtype, errors=errors, **unused)
 

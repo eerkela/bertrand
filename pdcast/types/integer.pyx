@@ -343,7 +343,7 @@ class IntegerMixin:
         **unused
     ) -> convert.SeriesWrapper:
         """Convert integer data to a string data type in any base."""
-        # use non-decimal base, in conjunction with format
+        # use non-decimal base in conjunction with format
         if base and base != 10:
             if format:
                 call = lambda x: f"{int_to_base(x, base=base):{format}}"
@@ -352,7 +352,7 @@ class IntegerMixin:
             return series.apply_with_errors(
                 call,
                 errors=errors,
-                dtype=resolve.resolve_type(dtype)
+                element_type=dtype
             )
 
         return super().to_string(

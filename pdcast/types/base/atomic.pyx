@@ -556,7 +556,7 @@ cdef class AtomicType(ScalarType):
             series = series.apply_with_errors(
                 lambda x: f"{x:{format}}",
                 errors=errors,
-                dtype=resolve.resolve_type(str)
+                element_type=resolve.resolve_type(str)
             )
         return series.astype(dtype, errors=errors)
 
@@ -592,7 +592,7 @@ cdef class AtomicType(ScalarType):
         return series.apply_with_errors(
             call=dtype.type_def,
             errors=errors,
-            dtype=dtype
+            element_type=dtype
         )
 
     #############################

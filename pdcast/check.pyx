@@ -7,8 +7,6 @@ from pdcast.util.type_hints import type_specifier
 
 
 # TODO: typecheck(1, "int[python]", exact=True) == False !
-# -> maybe base python types should always be in their python backends.  Just
-# specify this in resolve_type() docs.
 
 # TODO: generic types should match any of their backends, even when exact=True
 
@@ -16,7 +14,8 @@ from pdcast.util.type_hints import type_specifier
 def typecheck(
     data: Any,
     dtype: type_specifier ,
-    exact: bool = False
+    exact: bool = False,
+    ignore_adapters: bool = False
 ) -> bool:
     """Check whether example data contains elements of a specified type.
 
@@ -38,6 +37,12 @@ def typecheck(
     exact : bool, default False
         Specifies whether to include subtypes in comparisons (False), or only
         check for exact matches (True).
+    ignore_adapters : bool, default False
+        Specifies whether to ignore adapters (sparse, categorical, etc.) that
+        are detected in example data.  By default, the comparison type must
+        match these exactly.  Setting this to ``True`` eliminates that
+        requirement, allowing specifiers like ``"int"`` to match sparse and
+        categorical alternatives.
 
     Returns
     -------
@@ -88,6 +93,14 @@ def typecheck(
     cdef BaseType data_type = detect_type(data)
     cdef CompositeType target_type = resolve_type([dtype])
     cdef set exact_target
+
+    # strip adapters if directed
+    if ignore_adapters:
+        target_type = CompositeType(x.strip() for x in target_type)
+        if isinstance(data_type, CompositeType):
+            data_type = CompositeType(x.strip() for x in data_type)
+        else:
+            data_type = data_type.strip()
 
     # enforce strict match
     if exact:

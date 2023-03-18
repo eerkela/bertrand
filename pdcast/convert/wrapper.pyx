@@ -349,7 +349,7 @@ cdef class SeriesWrapper:
                     x if isinstance(x, dtype.type_def) else dtype.type_def(x)
                 ),
                 errors=errors,
-                dtype=dtype
+                element_type=dtype
             )
 
         # default to pd.Series.astype()
@@ -462,7 +462,7 @@ cdef class SeriesWrapper:
         self,
         call: Callable,
         errors: str = "raise",
-        dtype: types.ScalarType = None
+        element_type: types.ScalarType = None
     ) -> SeriesWrapper:
         """Apply a callable over the series using the specified error handling
         rule at each index.
@@ -474,6 +474,9 @@ cdef class SeriesWrapper:
         errors : str, default "raise"
             The error-handling rule to use if errors are encountered during
             the conversion.  Must be one of "raise", "ignore", or "coerce".
+        element_type : ScalarType, default None   
+            The element type of the returned series.  Only use this argument if
+            the final type is known ahead of time.
 
         Returns
         -------
@@ -490,7 +493,7 @@ cdef class SeriesWrapper:
         """
         # loop over numpy array
         result, has_errors, index = _apply_with_errors(
-            self.series.to_numpy(dtype="O"),
+            self.series.to_numpy(dtype=object),
             call=call,
             errors=errors
         )
@@ -502,16 +505,24 @@ cdef class SeriesWrapper:
             series_index = series_index[~index]
 
         # apply final output type
-        if dtype is None:
-            result = pd.Series(result, index=series_index, dtype="O")
+        if element_type is None:
+            result = pd.Series(
+                result,
+                index=series_index,
+                dtype=object
+            )
         else:
-            result = pd.Series(result, index=series_index, dtype=dtype.dtype)
+            result = pd.Series(
+                result,
+                index=series_index,
+                dtype=element_type.dtype
+            )
 
         # return as SeriesWrapper
         return SeriesWrapper(
             result,
             hasnans=has_errors or self._hasnans,
-            element_type=dtype
+            element_type=element_type
         )
 
     def boundscheck(

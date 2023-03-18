@@ -74,7 +74,7 @@ class StringMixin:
                 fill=fill
             ),
             errors=errors,
-            dtype=resolve.resolve_type(bool)
+            element_type=resolve.resolve_type(bool)
         )
         return super().to_boolean(series, dtype, errors=errors)
 
@@ -91,7 +91,7 @@ class StringMixin:
         series = series.apply_with_errors(
             partial(int, base=base),
             errors=errors,
-            dtype=transfer_type
+            element_type=transfer_type
         )
         return transfer_type.to_integer(
             series,

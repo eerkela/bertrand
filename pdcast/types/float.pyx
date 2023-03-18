@@ -304,7 +304,11 @@ class LongDoubleSpecialCase:
             n, d = x.as_integer_ratio()
             return dtype.type_def(n) / d
 
-        return series.apply_with_errors(call=call, errors=errors, dtype=dtype)
+        return series.apply_with_errors(
+            call=call,
+            errors=errors,
+            element_type=dtype
+        )
 
 
 #######################

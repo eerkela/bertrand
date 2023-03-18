@@ -647,7 +647,7 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
         """Convert python timedeltas to an integer data type."""
         series = series.apply_with_errors(
             pytimedelta_to_ns,
-            dtype=resolve.resolve_type("int[python]")
+            element_type=resolve.resolve_type("int[python]")
         )
 
         if unit != "ns" or step_size != 1:
