@@ -16,10 +16,6 @@ from .base cimport AtomicType, CompositeType
 from .base import register
 
 
-# TODO: datetime/timedelta conversions must account for datetime/timedelta
-# supertype type_def=None
-
-
 #######################
 ####    GENERIC    ####
 #######################
@@ -228,6 +224,18 @@ class ObjectType(AtomicType, cache_size=64):
             conv_func=dtype.to_string,
             **unused
         )
+
+    def to_object(
+        self,
+        series: convert.SeriesWrapper,
+        dtype: AtomicType,
+        **unused
+    ) -> convert.SeriesWrapper:
+        """Convert arbitrary data to an object data type."""
+        # trivial case
+        if dtype == self:
+            return series.rectify()
+        return super().to_object(series, dtype=dtype, **unused)
 
 
 #######################

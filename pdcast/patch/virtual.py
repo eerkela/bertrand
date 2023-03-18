@@ -174,14 +174,6 @@ class DispatchMethod:
             result = dispatched(series_type, series, *args, **kwargs)
             return result.rectify()
 
-            target = result.element_type.dtype
-            if (
-                result.dtype == np.dtype("O") and
-                isinstance(target, array.AbstractDtype)
-            ):
-                result.series = result.series.astype(target)
-            return result
-
         # 2) recursively unwrap adapters and retry.  NOTE: This resembles a
         # stack.  An adapter is popped off the stack in order before recurring,
         # and then each adapter is pushed back onto the stack in the same order.

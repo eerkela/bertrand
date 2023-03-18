@@ -16,6 +16,10 @@ cimport pdcast.types.base.composite as composite
 from pdcast.util.type_hints import type_specifier
 
 
+# TODO: wrap()/unwrap() should apply only to types.  strip() -> unwrap()
+# To apply an adapter to a series, use transform() and strip()
+
+
 cdef class AdapterType(atomic.ScalarType):
     """Special case for AtomicTypes that modify other AtomicTypes.
 

@@ -276,6 +276,11 @@ class PythonStringType(StringMixin, AtomicType):
 #######################
 
 
+# NOTE: invoking pd.StringDtype("pyarrow") when pyarrow is not installed causes
+# an ImportError.  Since pyarrow support is optional, we have to guard this
+# type with an if statement rather than using the cond= argument of @register.
+
+
 if pyarrow_installed:
 
 

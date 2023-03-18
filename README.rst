@@ -11,21 +11,22 @@ Features
 ``pdcast`` adds support for:
 
 *  **Extendable type hierarchies** for numpy/pandas ``dtype`` objects.  These
-   form the backbone of the package and can be used to add arbitrary object
-   types to the pandas ecosystem in as little as 10 lines of code.  Integration
-   is seamless and automatic, and every aspect of a type's behavior can be
-   customized as needed.
-*  **A generalized mini-language** for building and resolving types, with
-   user-definable aliases and semantics.  This allows types to be unambiguously
-   specified while maintaining fine control over their construction and
-   behavior.
-*  Tools for **easy inference** and **schema validation**.  Types can be
-   readily detected from example data, even if those data are non-homogenous
-   or not supported by existing numpy/pandas functionality.  This can be
-   customized in the same way as the type specification mini-language, and is
-   more robust than simply checking an array's ``.dtype`` field.  Users can
-   even work with ``dtype: object`` arrays without losing confidence in their
-   results.
+   can be used to add arbitrary object types to the pandas ecosystem in as
+   little as 10 lines of code.  They can incorporate existing ``dtype``\ /
+   \ ``ExtensionDtype`` definitions or automatically generate their own via the
+   `pandas extension API <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.   
+   In either case, integration is seamless and automatic, and every aspect of a
+   type's behavior can be customized as needed.
+*  **A generalized mini-language** for resolving types, with user-definable
+   aliases and semantics similar to the existing pandas conventions.  This
+   allows types to be quickly and unambiguously specified while maintaining
+   fine control over their behavior and composition.
+*  Tools for **inference** and **type checking**.  Types can be easily
+   detected from example data, even if those data are non-homogenous or not
+   supported by existing numpy/pandas alternatives.  This can be customized in
+   the same way as the type specification mini-language, and is more robust
+   than simply checking an array's ``.dtype`` field.  Users can even work with
+   ``dtype: object`` arrays without losing confidence in their results.
 *  **A suite of conversions** covering 9 of the most commonly-encountered data
    types: *boolean*, *integer*, *floating point*, *complex*, *decimal*
    (arbitrary precision), *datetime*, *timedelta*, *string*, *raw python
@@ -138,7 +139,7 @@ is a short walk around the various type categories that are recognized by
    1    0.0+0.0j
    2   N000a000N
    dtype: complex64
-   >>> _.cast("sparse[decimal, 1]")  # TODO: broken
+   >>> _.cast("sparse[decimal, 1]")
    0      1
    1      0
    2    NaN

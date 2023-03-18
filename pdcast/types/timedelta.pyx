@@ -28,6 +28,10 @@ from .base import generic, register
 # probably unfixable.
 
 
+# TODO: need to make a special case of ExtensionArray for
+# np.datetime64/timedelta64 that stores its values as a literal M8/m8 array.
+
+
 ######################
 ####    MIXINS    ####
 ######################
@@ -264,6 +268,10 @@ class TimedeltaMixin:
         **unused
     ) -> convert.SeriesWrapper:
         """Convert timedelta data to a timedelta representation."""
+        # trivial case
+        if dtype == self:
+            return series.rectify()
+
         # 2-step conversion: datetime -> ns, ns -> timedelta
         transfer_type = resolve.resolve_type(int)
         series = self.to_integer(

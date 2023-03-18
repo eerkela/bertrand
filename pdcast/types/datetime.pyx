@@ -30,9 +30,6 @@ from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, register
 
 
-# TODO: to_datetime should have fastpaths for the specified datetime type.
-# Timestamp/pydatetime need to account for tz.  M8 is just straight equality.
-
 # TODO: PandasTimestampType.from_string cannot convert quarterly dates
 
 
@@ -241,6 +238,10 @@ class DatetimeMixin:
         **unused
     ) -> convert.SeriesWrapper:
         """Convert datetime data to another datetime representation."""
+        # trivial case
+        if dtype == self:
+            return series.rectify()
+
         # 2-step conversion: datetime -> ns, ns -> datetime
         transfer_type = resolve.resolve_type(int)
         series = self.to_integer(
@@ -835,6 +836,25 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
             errors=errors
         )
 
+    def to_datetime(
+        self,
+        series: convert.SeriesWrapper,
+        dtype: AtomicType,
+        tz: pytz.BaseTzInfo,
+        **unused
+    ) -> convert.SeriesWrapper:
+        """Specialized for same-type conversions."""
+        # fastpath for same-class datetime conversions
+        if type(dtype) == type(self):
+            if tz:
+                dtype = dtype.replace(tz=tz)
+            if dtype.tz != self.tz:
+                if not self.tz:
+                    series = self.tz_localize(series, "UTC")
+                return self.tz_convert(series, dtype.tz)
+
+        return super().to_datetime(series, dtype=dtype, tz=tz, **unused)
+
     @dispatch(namespace="dt")
     def tz_convert(
         self,
@@ -854,7 +874,8 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         # pass to original .dt.tz_convert() implementation
         return convert.SeriesWrapper(
             series.dt.tz_convert.original(tz, *args, **kwargs),
-            hasnans=series.hasnans
+            hasnans=series.hasnans,
+            element_type=self.replace(tz=tz)
         )
 
     @dispatch(namespace="dt")
@@ -876,7 +897,8 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         # pass to original .dt.tz_localize() implementation
         return convert.SeriesWrapper(
             series.series.dt.tz_localize.original(tz, *args, **kwargs),
-            hasnans=series.hasnans
+            hasnans=series.hasnans,
+            element_type=self.replace(tz=tz)
         )
 
 
@@ -1027,6 +1049,25 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
             errors=errors
         )
 
+    def to_datetime(
+        self,
+        series: convert.SeriesWrapper,
+        dtype: AtomicType,
+        tz: pytz.BaseTzInfo,
+        **unused
+    ) -> convert.SeriesWrapper:
+        """Specialized for same-type conversions."""
+        # fastpath for same-class datetime conversions
+        if type(dtype) == type(self):
+            if tz:
+                dtype = dtype.replace(tz=tz)
+            if dtype.tz != self.tz:
+                if not self.tz:
+                    series = self.tz_localize(series, "UTC")
+                return self.tz_convert(series, dtype.tz)
+
+        return super().to_datetime(series, dtype=dtype, tz=tz, **unused)
+
     @dispatch(namespace="dt")
     def tz_convert(
         self,
@@ -1048,7 +1089,11 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
 
         # iterate elementwise
         localize = partial(localize_pydatetime, tz=tz, utc=True)
-        return series.apply_with_errors(localize, errors="raise")
+        return series.apply_with_errors(
+            localize,
+            errors="raise",
+            dtype=self.replace(tz=tz)
+        )
 
     @dispatch(namespace="dt")
     def tz_localize(
@@ -1069,7 +1114,11 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
 
         # iterate elementwise
         localize = partial(localize_pydatetime, tz=tz, utc=utc)
-        return series.apply_with_errors(localize, errors="raise")
+        return series.apply_with_errors(
+            localize,
+            errors="raise",
+            dtype=self.replace(tz=tz)
+        )
 
 
 #######################

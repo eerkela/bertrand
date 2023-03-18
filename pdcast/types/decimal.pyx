@@ -232,6 +232,28 @@ class DecimalMixin:
             **unused
         )
 
+    def to_decimal(
+        self,
+        series: convert.SeriesWrapper,
+        dtype: AtomicType,
+        errors: str,
+        **unused
+    ) -> convert.SeriesWrapper:
+        """Convert boolean data to a decimal data type."""
+        return series.astype(dtype, errors=errors)
+
+    def to_decimal(
+        self,
+        series: convert.SeriesWrapper,
+        dtype: AtomicType,
+        **unused
+    ) -> convert.SeriesWrapper:
+        """Convert decimal data to another decimal type."""
+        # trivial case
+        if dtype == self:
+            return series.rectify()
+        return super().to_decimal(series, dtype=dtype, **unused)
+
     def to_datetime(
         self,
         series: convert.SeriesWrapper,
