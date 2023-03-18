@@ -1,4 +1,5 @@
 import decimal
+import sys
 
 import numpy as np
 cimport numpy as np
@@ -357,6 +358,7 @@ class DecimalType(DecimalMixin, AtomicType):
     name = "decimal"
     aliases = {"decimal"}
     type_def = decimal.Decimal
+    itemsize = sys.getsizeof(decimal.Decimal(0))
     na_value = decimal.Decimal("nan")
 
 
@@ -371,4 +373,5 @@ class PythonDecimalType(DecimalMixin, AtomicType):
 
     aliases = {decimal.Decimal}
     type_def = decimal.Decimal
+    itemsize = sys.getsizeof(decimal.Decimal(0))
     na_value = decimal.Decimal("nan")

@@ -472,7 +472,7 @@ def do_conversion(
     data,
     endpoint: str,
     dtype: types.ScalarType,
-    sparse: Any,  # TODO: make this a tuple?
+    sparse: Any,
     categorical: bool,
     errors: str,
     *args,

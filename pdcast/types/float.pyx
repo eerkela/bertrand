@@ -1,4 +1,5 @@
 import decimal
+import sys
 
 import numpy as np
 cimport numpy as np
@@ -493,7 +494,7 @@ class NumpyFloat80Type(LongDoubleSpecialCase, AtomicType):
 class PythonFloatType(FloatMixin, AtomicType):
 
     aliases = set()
-    itemsize = 8
+    itemsize = sys.getsizeof(0.0)
     na_value = np.nan
     type_def = float
     max = 2**53

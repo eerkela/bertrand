@@ -28,11 +28,6 @@ from pdcast.util.type_hints import array_like, numeric, type_specifier
 # to sparse
 # -> Timedeltas just don't work at all.  astype() rejects pd.SparseDtype("m8")
 # entirely.
-# -> SeriesWrappers should unwrap sparse/categorical series during dispatch.
-
-
-# TODO: SeriesWrapper.__enter__ must keep track of the original series name
-# as well as its index
 
 
 ######################
@@ -385,8 +380,9 @@ cdef class SeriesWrapper:
         This strips problematic information from the series.  See the
         :class:`SeriesWrapper` documentation for details.
         """
-        # record shape
+        # record shape, name
         self._orig_shape = self.series.shape
+        self._orig_name = self.series.name
 
         # normalize index
         if not isinstance(self.series.index, pd.RangeIndex):
@@ -430,6 +426,9 @@ cdef class SeriesWrapper:
         if self._orig_index is not None:
             self.series.index = self._orig_index
             self._orig_index = None
+
+        # replace original name
+        self.series.name = self._orig_name
 
     def __getattr__(self, name: str) -> Any:
         """`Decorator Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`

@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 cimport numpy as np
 import pandas as pd
@@ -174,5 +176,5 @@ class PythonBooleanType(BooleanMixin, AtomicType):
     """Python boolean type."""
 
     aliases = set()
-    itemsize = 1
+    itemsize = sys.getsizeof(True)
     type_def = bool

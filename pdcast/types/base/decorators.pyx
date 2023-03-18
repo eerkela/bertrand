@@ -16,6 +16,19 @@ from .atomic import ScalarType, AtomicType
 # argument, insert one before broadcasting to each type definition. This
 # requires an extra decorator.
 
+# @dispatch
+# def func(x, y, ...)
+
+# is not allowed.
+
+# @dispatch(types="int, float, ...")
+# def func(x, y, ...)
+
+# @dispatch(types="int, float, ...")
+# def func(self, x, y, ...)
+
+# are.
+
 
 ######################
 ####    PUBLIC    ####

@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 cimport numpy as np
 import pandas as pd
@@ -463,7 +465,7 @@ class NumpyComplex160Type(ComplexMixin, AtomicType):
 class PythonComplexType(ComplexMixin, AtomicType):
 
     aliases = set()
-    itemsize = 16
+    itemsize = sys.getsizeof(0+0j)
     na_value = complex("nan+nanj")
     type_def = complex
     max = 2**53

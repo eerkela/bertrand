@@ -9,6 +9,7 @@ cdef class SeriesWrapper:
         object _min
         object _orig_index
         tuple _orig_shape
+        str _orig_name
         types.AdapterType _orig_type
         object _series
 
