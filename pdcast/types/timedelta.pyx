@@ -91,7 +91,7 @@ class TimedeltaMixin:
     ) -> convert.SeriesWrapper:
         """Convert timedelta data to a floating point data type."""
         # convert to nanoseconds, then from nanoseconds to final unit
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
             series,
             dtype=transfer_type,
@@ -112,7 +112,7 @@ class TimedeltaMixin:
             )
             if step_size != 1:
                 series.series /= step_size
-            transfer_type = resolve.resolve_type(float)
+            transfer_type = resolve.resolve_type("float[python]")
 
         return transfer_type.to_float(
             series,
@@ -180,7 +180,7 @@ class TimedeltaMixin:
     ) -> convert.SeriesWrapper:
         """Convert timedelta data to a decimal data type."""
         # 2-step conversion: timedelta -> ns, ns -> decimal
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
             series,
             dtype=transfer_type,
@@ -229,7 +229,7 @@ class TimedeltaMixin:
     ) -> convert.SeriesWrapper:
         """Convert datetime data to another datetime representation."""
         # 2-step conversion: datetime -> ns, ns -> datetime
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
             series,
             dtype=transfer_type,
@@ -269,7 +269,7 @@ class TimedeltaMixin:
             return series.rectify()
 
         # 2-step conversion: datetime -> ns, ns -> timedelta
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
             series,
             dtype=transfer_type,
@@ -509,7 +509,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
         """Convert numpy timedelta64s into an integer data type."""
         # NOTE: using numpy m8 array is ~2x faster than looping through series
         m8_str = f"m8[{self.step_size}{self.unit}]"
-        arr = series.series.to_numpy(m8_str).view(np.int64).astype("O")
+        arr = series.series.to_numpy(m8_str).view(np.int64).astype(object)
         arr *= self.step_size
         arr = convert_unit(
             arr,
@@ -521,7 +521,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
         series = convert.SeriesWrapper(
             pd.Series(arr, index=series.series.index),
             hasnans=series.hasnans,
-            element_type=resolve.resolve_type(int)
+            element_type=resolve.resolve_type("int[python]")
         )
 
         series, dtype = series.boundscheck(dtype, errors=errors)

@@ -325,7 +325,7 @@ class ComplexType(ComplexMixin, AtomicType):
 
     name = "complex"
     aliases = {
-        complex, "complex", "cfloat", "complex float", "complex floating", "c"
+        "complex", "cfloat", "complex float", "complex floating", "c"
     }
     dtype = np.dtype(np.complex128)
     itemsize = 16
@@ -466,7 +466,7 @@ class NumpyComplex160Type(ComplexMixin, AtomicType):
 @Complex128Type.register_backend("python")
 class PythonComplexType(ComplexMixin, AtomicType):
 
-    aliases = set()
+    aliases = {complex}
     itemsize = sys.getsizeof(0+0j)
     na_value = complex("nan+nanj")
     type_def = complex

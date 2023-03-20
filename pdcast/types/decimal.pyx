@@ -283,7 +283,7 @@ class DecimalMixin:
         series = convert.SeriesWrapper(
             ns,
             hasnans=series.hasnans,
-            element_type=resolve.resolve_type(int)
+            element_type=resolve.resolve_type("int[python]")
         )
 
         # check for overflow and upcast if applicable
@@ -324,7 +324,7 @@ class DecimalMixin:
         series = convert.SeriesWrapper(
             ns,
             hasnans=series.hasnans,
-            element_type=resolve.resolve_type(int)
+            element_type=resolve.resolve_type("int[python]")
         )
 
         # check for overflow and upcast if necessary

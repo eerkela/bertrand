@@ -378,7 +378,7 @@ class IntegerType(IntegerMixin, AtomicType):
     _is_numeric = True
 
     name = "int"
-    aliases = {int, "int", "integer"}
+    aliases = {"int", "integer"}
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = int
@@ -885,7 +885,7 @@ class PandasUInt64Type(IntegerMixin, AtomicType):
 class PythonIntegerType(IntegerMixin, AtomicType):
     """Python integer supertype."""
 
-    aliases = set()
+    aliases = {int}
     type_def = int
     max = np.inf
     min = -np.inf

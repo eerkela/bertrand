@@ -74,7 +74,7 @@ class StringMixin:
                 fill=fill
             ),
             errors=errors,
-            element_type=resolve.resolve_type(bool)
+            element_type=resolve.resolve_type("bool")
         )
         return super().to_boolean(series, dtype, errors=errors)
 

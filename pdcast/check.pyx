@@ -6,9 +6,6 @@ from pdcast.types cimport BaseType, CompositeType
 from pdcast.util.type_hints import type_specifier
 
 
-# TODO: typecheck(1, "int[python]", exact=True) == False !
-
-
 def typecheck(
     data: Any,
     dtype: type_specifier ,

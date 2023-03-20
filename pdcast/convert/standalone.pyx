@@ -36,18 +36,22 @@ def cast(
     # if no target is given, default to series type
     if dtype is None:
         series = as_series(series)
-        dtype = detect.detect_type(series)
-
-    # validate dtype
-    dtype = default.validate_dtype(dtype)
+        series_type = detect.detect_type(series)
+        if series_type is None:
+            raise ValueError(
+                f"cannot interpret empty series without an explicit `dtype` "
+                f"argument: {dtype}"
+            )
+        return series_type.conversion_func(series, **kwargs)  # default dtype
 
     # delegate to appropriate to_x function below
-    return dtype.conversion_func(series, dtype, **kwargs)
+    conv_func = default.validate_dtype(dtype).conversion_func
+    return conv_func(series, dtype, **kwargs)
 
 
 def to_boolean(
     series: Iterable,
-    dtype: type_specifier = bool,
+    dtype: type_specifier = "bool",
     tol: numeric = None,
     rounding: str = None,
     unit: str = None,
@@ -116,7 +120,7 @@ def to_boolean(
 
 def to_integer(
     series: Iterable,
-    dtype: type_specifier = int,
+    dtype: type_specifier = "int",
     tol: numeric = None,
     rounding: str = None,
     unit: str = None,
@@ -165,7 +169,7 @@ def to_integer(
 
 def to_float(
     series: Iterable,
-    dtype: type_specifier = float,
+    dtype: type_specifier = "float",
     tol: numeric = None,
     rounding: str = None,
     unit: str = None,
@@ -211,7 +215,7 @@ def to_float(
 
 def to_complex(
     series: Iterable,
-    dtype: type_specifier = complex,
+    dtype: type_specifier = "complex",
     tol: numeric = None,
     rounding: str = None,
     unit: str = None,
@@ -256,7 +260,7 @@ def to_complex(
 
 def to_decimal(
     series: Iterable,
-    dtype: type_specifier = decimal.Decimal,
+    dtype: type_specifier = "decimal",
     tol: numeric = None,
     rounding: str = None,
     unit: str = None,
@@ -403,7 +407,7 @@ def to_timedelta(
 
 def to_string(
     series: Iterable,
-    dtype: type_specifier = str,
+    dtype: type_specifier = "string",
     format: str = None,
     base: int = None,
     call: Callable = None,
@@ -437,7 +441,7 @@ def to_string(
 
 def to_object(
     series: Iterable,
-    dtype: type_specifier = object,
+    dtype: type_specifier = "object",
     call: Callable = None,
     sparse: Any = None,
     categorical: bool = None,

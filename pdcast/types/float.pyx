@@ -329,7 +329,7 @@ class FloatType(FloatMixin, AtomicType):
     _is_numeric = True
 
     name = "float"
-    aliases = {float, "float", "floating", "f"}
+    aliases = {"float", "floating", "f"}
     dtype = np.dtype(np.float64)
     itemsize = 8
     na_value = np.nan
@@ -495,7 +495,7 @@ class NumpyFloat80Type(LongDoubleSpecialCase, AtomicType):
 @Float64Type.register_backend("python")
 class PythonFloatType(FloatMixin, AtomicType):
 
-    aliases = set()
+    aliases = {float}
     itemsize = sys.getsizeof(0.0)
     na_value = np.nan
     type_def = float

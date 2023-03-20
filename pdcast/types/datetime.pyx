@@ -96,7 +96,7 @@ class DatetimeMixin:
     ) -> convert.SeriesWrapper:
         """Convert timedelta data to a floating point data type."""
         # convert to nanoseconds, then from nanoseconds to final unit
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
             series,
             dtype=transfer_type,
@@ -109,7 +109,7 @@ class DatetimeMixin:
         )
         if unit != "ns" or step_size != 1:
             series.series = convert_unit(
-                series.series.astype("O"),
+                series.series.astype(object),
                 "ns",
                 unit,
                 rounding=rounding,
@@ -117,7 +117,7 @@ class DatetimeMixin:
             )
             if step_size != 1:
                 series.series /= step_size
-            transfer_type = resolve.resolve_type(float)
+            transfer_type = resolve.resolve_type("float[python]")
 
         return transfer_type.to_float(
             series,
@@ -186,7 +186,7 @@ class DatetimeMixin:
     ) -> convert.SeriesWrapper:
         """Convert timedelta data to a decimal data type."""
         # 2-step conversion: datetime -> ns, ns -> decimal
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
             series,
             dtype=transfer_type,
@@ -239,7 +239,7 @@ class DatetimeMixin:
             return series.rectify()
 
         # 2-step conversion: datetime -> ns, ns -> datetime
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
             series,
             dtype=transfer_type,
@@ -275,7 +275,7 @@ class DatetimeMixin:
     ) -> convert.SeriesWrapper:
         """Convert datetime data to a timedelta representation."""
         # 2-step conversion: datetime -> ns, ns -> timedelta
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
             series,
             dtype=transfer_type,
@@ -575,7 +575,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
         """Convert numpy datetime64s into an integer data type."""
         # NOTE: using numpy M8 array is ~2x faster than looping through series
         M8_str = f"M8[{self.step_size}{self.unit}]"
-        arr = series.series.to_numpy(M8_str).view(np.int64).astype("O")
+        arr = series.series.to_numpy(M8_str).view(np.int64).astype(object)
         arr *= self.step_size
         if since:  # apply epoch offset if not utc
             arr = convert_unit(
@@ -600,7 +600,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
         series = convert.SeriesWrapper(
             pd.Series(arr, index=series.series.index),
             hasnans=series.hasnans,
-            element_type=resolve.resolve_type(int)
+            element_type=resolve.resolve_type("int[python]")
         )
 
         series, dtype = series.boundscheck(dtype, errors=errors)

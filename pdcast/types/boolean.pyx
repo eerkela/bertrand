@@ -55,7 +55,7 @@ class BooleanMixin:
     ) -> convert.SeriesWrapper:
         """Convert boolean data into an equivalent datetime representation."""
         # 2-step conversion: bool -> int, int -> datetime
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
             series,
             dtype=transfer_type,
@@ -86,7 +86,7 @@ class BooleanMixin:
         **unused
     ) -> convert.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
-        transfer_type = resolve.resolve_type(int)
+        transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
             series,
             dtype=transfer_type,
@@ -122,7 +122,7 @@ class BooleanType(BooleanMixin, AtomicType):
 
     # standard type definition
     name = "bool"
-    aliases = {bool, "bool", "boolean", "bool_", "bool8", "b1", "?"}
+    aliases = {"bool", "boolean", "bool_", "bool8", "b1", "?"}
     dtype = np.dtype(np.bool_)
     itemsize = 1
     type_def = bool
@@ -175,6 +175,6 @@ class PandasBooleanType(BooleanMixin, AtomicType):
 class PythonBooleanType(BooleanMixin, AtomicType):
     """Python boolean type."""
 
-    aliases = set()
+    aliases = {bool}
     itemsize = sys.getsizeof(True)
     type_def = bool

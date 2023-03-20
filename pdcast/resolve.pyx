@@ -95,7 +95,7 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
 
     Raw classes:
 
-    >>> pdcast.resolve_type(int)
+    >>> pdcast.resolve_type("int")
     IntegerType()
     >>> class CustomObj:
     ...     pass
