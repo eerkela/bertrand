@@ -101,7 +101,7 @@ class CategoricalType(AdapterType):
     ####    SERIES METHODS    ####
     ##############################
 
-    def wrap(
+    def transform(
         self,
         series: convert.SeriesWrapper
     ) -> convert.SeriesWrapper:

@@ -273,7 +273,7 @@ def validate_dtype(
 
     if supertype is not None:
         supertype = resolve.resolve_type(supertype)
-        if not dtype.strip().is_subtype(supertype):
+        if not dtype.unwrap().is_subtype(supertype):
             raise ValueError(f"`dtype` must be {supertype}-like, not {dtype}")
 
     return dtype

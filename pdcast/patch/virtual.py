@@ -178,13 +178,13 @@ class DispatchMethod:
         # stack.  An adapter is popped off the stack in order before recurring,
         # and then each adapter is pushed back onto the stack in the same order.
         for _ in getattr(series_type, "adapters", ()):
-            series = series_type.unwrap(series)
+            series = series_type.inverse_transform(series)
             series = self._dispatch_scalar(series, *args, **kwargs)
             if (
                 self.wrap_adapters and
                 series.element_type == series_type.wrapped
             ):
-                series = series_type.wrap(series)
+                series = series_type.transform(series)
             return series
 
         # 3) fall back to pandas.  NOTE: we filter off any keyword arguments

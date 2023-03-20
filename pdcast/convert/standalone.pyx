@@ -508,7 +508,7 @@ def do_conversion(
 
     # dispatch to conversion method(s)
     try:
-        base_type = dtype.strip()
+        base_type = dtype.unwrap()
         result = dispatch(
             *args,
             dtype=base_type,  # disregard adapters in ``dtype``
@@ -518,7 +518,7 @@ def do_conversion(
 
         # apply adapters from ``dtype``.  NOTE: this works from the inside out
         for adapter in reversed(list(dtype.adapters)):
-            result = adapter.wrap(wrapper.SeriesWrapper(result)).series
+            result = adapter.transform(wrapper.SeriesWrapper(result)).series
 
         return result
 

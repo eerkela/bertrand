@@ -20,9 +20,6 @@ from .base import dispatch, generic, register, subtype
 import pdcast.types.float as float_types
 
 
-# TODO: complex160 needs to be conditional using @register syntax
-
-
 ##################################
 ####    MIXINS & CONSTANTS    ####
 ##################################
@@ -30,7 +27,7 @@ import pdcast.types.float as float_types
 
 # NOTE: x86 extended precision float type (long double) is platform-specific
 # and may not be exposed depending on hardware configuration.
-cdef bint no_clongdouble = (np.dtype(np.clongdouble).itemsize <= 16)
+cdef bint has_clongdouble = (np.dtype(np.clongdouble).itemsize > 16)
 
 
 class ComplexMixin:
@@ -372,7 +369,7 @@ class Complex128Type(ComplexMixin, AtomicType):
     _equiv_float = "Float64Type"
 
 
-@register
+@register(cond=has_clongdouble)
 @generic
 @subtype(ComplexType)
 class Complex160Type(ComplexMixin, AtomicType):
@@ -441,7 +438,7 @@ class NumpyComplex128Type(ComplexMixin, AtomicType):
     _equiv_float = "NumpyFloat64Type"
 
 
-@register
+@register(cond=has_clongdouble)
 @subtype(NumpyComplexType)
 @Complex160Type.register_backend("numpy")
 class NumpyComplex160Type(ComplexMixin, AtomicType):

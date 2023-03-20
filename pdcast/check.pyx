@@ -91,7 +91,7 @@ def typecheck(
 
     # strip adapters if directed
     if ignore_adapters:
-        target_type = CompositeType(x.strip() for x in target_type)
-        data_type = CompositeType(x.strip() for x in data_type)
+        target_type = CompositeType(x.unwrap() for x in target_type)
+        data_type = CompositeType(x.unwrap() for x in data_type)
 
     return target_type.contains(data_type, exact=exact)

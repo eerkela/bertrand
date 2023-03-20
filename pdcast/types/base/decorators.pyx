@@ -16,10 +16,6 @@ from .atomic import ScalarType, AtomicType
 # TODO: dispatch should have an option to allow length changes?
 
 
-# TODO: change behavior of exact argument to allow generics to match their
-# backends.
-
-
 ######################
 ####    PUBLIC    ####
 ######################
@@ -162,7 +158,7 @@ def dispatch(
         # add to selected types
         if types is not None:
             for typ in types:  # iterate through types argument
-                typ = typ.strip()
+                typ = typ.unwrap()
                 wrapped_name = dispatch_wrapper.__name__
                 for back in typ.backends.values():  # add to all backends
                     if exact:  # ignore subtypes
@@ -285,7 +281,7 @@ def generic(_class: type):
     return _class
 
 
-def register(_class=None, *, ignore=False):
+def register(_class=None, *, cond=True):
     """Validate an AtomicType definition and add it to the registry.
 
     Note: Any decorators above this one will be ignored during validation.
@@ -296,7 +292,7 @@ def register(_class=None, *, ignore=False):
                 f"`@register` can only be applied to AtomicType and "
                 f"AdapterType definitions"
             )
-        if not ignore:
+        if cond:
             AtomicType.registry.add(_class_)
         return _class_
 

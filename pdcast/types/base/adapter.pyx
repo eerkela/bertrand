@@ -16,10 +16,6 @@ cimport pdcast.types.base.composite as composite
 from pdcast.util.type_hints import type_specifier
 
 
-# TODO: wrap()/unwrap() should apply only to types.  strip() -> unwrap()
-# To apply an adapter to a series, use transform() and strip()
-
-
 cdef class AdapterType(atomic.ScalarType):
     """Special case for AtomicTypes that modify other AtomicTypes.
 
@@ -156,20 +152,7 @@ cdef class AdapterType(atomic.ScalarType):
         # construct new AdapterType
         return type(self)(wrapped=wrapped, **adapter_kwargs)
 
-    def strip(self) -> atomic.AtomicType:
-        """Strip any AdapterTypes that have been attached to this AtomicType.
-        """
-        return self.atomic_type
-
-    def unwrap(
-        self,
-        series: convert.SeriesWrapper
-    ) -> convert.SeriesWrapper:
-        """Remove an adapter from an example series."""
-        series.element_type = self.wrapped
-        return series.rectify()
-
-    def wrap(
+    def transform(
         self,
         series: convert.SeriesWrapper
     ) -> convert.SeriesWrapper:
@@ -179,7 +162,7 @@ cdef class AdapterType(atomic.ScalarType):
         This is a recursive method that traverses the `adapters` linked list
         in reverse order (from the inside out).  At the first level, the
         unwrapped series is passed as input to that adapter's
-        `wrap()` method, which may be overridden as needed.  That
+        `transform()` method, which may be overridden as needed.  That
         method must return a properly-wrapped copy of the original, which is
         passed to the next adapter and so on.  Thus, if an AdapterType seeks to
         change any aspect of the series it adapts (as is the case with
@@ -193,6 +176,11 @@ cdef class AdapterType(atomic.ScalarType):
         This pattern maintains the inside-out resolution order of this method.
         """
         return series
+
+    def unwrap(self) -> atomic.AtomicType:
+        """Strip any AdapterTypes that have been attached to this AtomicType.
+        """
+        return self.atomic_type
 
     #############################
     ####    MAGIC METHODS    ####

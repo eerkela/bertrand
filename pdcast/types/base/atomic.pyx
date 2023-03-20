@@ -398,7 +398,7 @@ cdef class AtomicType(ScalarType):
         cdef dict merged = {**self.kwargs, **kwargs}
         return self.instance(**merged)
 
-    def strip(self) -> AtomicType:
+    def unwrap(self) -> AtomicType:
         """Strip any adapters that have been attached to this AtomicType."""
         return self
 
@@ -454,7 +454,7 @@ cdef class AtomicType(ScalarType):
         return convert.SeriesWrapper(
             series.series.astype(categorical_type),
             hasnans=series.hasnans
-            # element_type is set in AdapterType.wrap()
+            # element_type is set in AdapterType.transform()
             )
 
     def make_sparse(
@@ -474,7 +474,7 @@ cdef class AtomicType(ScalarType):
         return convert.SeriesWrapper(
             series.series.astype(sparse_type),
             hasnans=series.hasnans
-            # element_type is set in AdapterType.wrap()
+            # element_type is set in AdapterType.transform()
         )
 
     def to_boolean(

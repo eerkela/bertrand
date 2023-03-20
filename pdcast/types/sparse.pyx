@@ -17,6 +17,7 @@ from .base import register, dispatch
 
 # TODO: allow naked SparseType to be resolved.  When it is encountered, it just
 # wraps the observed type of an input series.
+# -> requires changes to resolve(), init(), slugify(), and conversion functions
 
 
 @register
@@ -106,7 +107,7 @@ class SparseType(AdapterType):
 
         return cls(wrapped=instance, fill_value=parsed)
 
-    def unwrap(
+    def inverse_transform(
         self,
         series: convert.SeriesWrapper
     ) -> convert.SeriesWrapper:
@@ -121,7 +122,7 @@ class SparseType(AdapterType):
             element_type=self.wrapped
         )
 
-    def wrap(
+    def transform(
         self,
         series: convert.SeriesWrapper
     ) -> convert.SeriesWrapper:

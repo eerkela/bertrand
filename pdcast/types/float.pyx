@@ -22,9 +22,6 @@ from .base import dispatch, generic, register, subtype
 import pdcast.types.complex as complex_types
 
 
-# TODO: long double types need to be conditional using @register syntax
-
-
 ##################################
 ####    MIXINS & CONSTANTS    ####
 ##################################
@@ -32,7 +29,7 @@ import pdcast.types.complex as complex_types
 
 # NOTE: x86 extended precision floating point (long double) is
 # platform-specific and may not be exposed depending on hardware configuration.
-cdef bint no_longdouble = (np.dtype(np.longdouble).itemsize <= 8)
+cdef bint has_longdouble = (np.dtype(np.longdouble).itemsize > 8)
 
 
 class FloatMixin:
@@ -387,7 +384,7 @@ class Float64Type(FloatMixin, AtomicType):
     _equiv_complex = "Complex128Type"
 
 
-@register
+@register(cond=has_longdouble)
 @generic
 @subtype(FloatType)
 class Float80Type(LongDoubleSpecialCase, AtomicType):
@@ -470,7 +467,7 @@ class NumpyFloat64Type(FloatMixin, AtomicType):
     _equiv_complex = "NumpyComplex128Type"
 
 
-@register
+@register(cond=has_longdouble)
 @subtype(NumpyFloatType)
 @Float80Type.register_backend("numpy")
 class NumpyFloat80Type(LongDoubleSpecialCase, AtomicType):
