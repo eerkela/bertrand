@@ -109,7 +109,6 @@ class IntegerMixin:
         result = [
             x for x in self.root.subtypes if (
                 (x.itemsize or np.inf) < (self.itemsize or np.inf) and
-                x.backend == self.backend and
                 x.is_signed == self.is_signed
             )
         ]

@@ -8,8 +8,6 @@ from pdcast.util.type_hints import type_specifier
 
 # TODO: typecheck(1, "int[python]", exact=True) == False !
 
-# TODO: generic types should match any of their backends, even when exact=True
-
 
 def typecheck(
     data: Any,
@@ -90,24 +88,13 @@ def typecheck(
     >>> pdcast.typecheck(series, "int16", exact=True)
     True
     """
-    cdef BaseType data_type = detect_type(data)
+    cdef CompositeType data_type = CompositeType(detect_type(data))
     cdef CompositeType target_type = resolve_type([dtype])
     cdef set exact_target
 
     # strip adapters if directed
     if ignore_adapters:
         target_type = CompositeType(x.strip() for x in target_type)
-        if isinstance(data_type, CompositeType):
-            data_type = CompositeType(x.strip() for x in data_type)
-        else:
-            data_type = data_type.strip()
+        data_type = CompositeType(x.strip() for x in data_type)
 
-    # enforce strict match
-    if exact:
-        exact_target = set(target_type)
-        if isinstance(data_type, CompositeType):
-            return all(t in exact_target for t in data_type)
-        return data_type in exact_target
-
-    # include subtypes
-    return target_type.contains(data_type)
+    return target_type.contains(data_type, exact=exact)

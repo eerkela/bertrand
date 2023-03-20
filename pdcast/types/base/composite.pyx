@@ -79,29 +79,27 @@ cdef class CompositeType(BaseType):
             if not any(a != b and a in b for b in self.atomic_types)
         )
 
-    def contains(self, other: type_specifier) -> bool:
+    def contains(self, other: type_specifier, exact: bool = False) -> bool:
         """Test whether a given type specifier is fully contained within `self`
         or any combination of its elements.
         """
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(self.contains(o) for o in other)
-        return any(other in x for x in self)
+            return all(self.contains(o, exact=exact) for o in other)
+        return any(x.contains(other, exact=exact) for x in self)
 
     def expand(self) -> CompositeType:
         """Expand the contained types to include each of their subtypes."""
-        cdef atomic.ScalarType atomic_type
-
-        # simple union of subtypes
-        return self.union(atomic_type.subtypes for atomic_type in self)
+        gen = (z for x in self for y in x.backends.values() for z in y.subtypes)
+        return self.union(gen)
 
     cdef void forget_index(self):
         self.index = None
 
     @property
     def subtypes(self) -> CompositeType:
-        """An alias for `CompositeType.expand()`"""
-        return self.expand()
+        """An alias for `CompositeType.expand()` that excludes backends."""
+        return self.union(y for x in self for y in x.subtypes)
 
     ####################################
     ####    STATIC WRAPPER (SET)    ####

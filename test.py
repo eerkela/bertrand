@@ -7,8 +7,8 @@ pdcast.attach()
 
 @pdcast.dispatch(
     namespace="test",
-    types="int64[numpy], float32",
-    exact=False
+    types="int64[numpy], int32",
+    exact=True
 )
 def test(series: pdcast.SeriesWrapper) -> pdcast.SeriesWrapper:
     print("Hello, World!")

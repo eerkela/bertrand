@@ -53,13 +53,13 @@ class SparseType(AdapterType):
     ####    TYPE METHODS    ####
     ############################
 
-    def contains(self, other: type_specifier) -> bool:
+    def contains(self, other: type_specifier, exact: bool = False) -> bool:
         """Check whether the given type is contained within this type's
         subtype hierarchy.
         """
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(self.contains(o) for o in other)
+            return all(self.contains(o, exact=exact) for o in other)
 
         if isinstance(other, type(self)):
             na_1 = pd.isna(self.fill_value)
@@ -68,7 +68,7 @@ class SparseType(AdapterType):
                 result = na_1 & na_2
             else:
                 result = self.fill_value == other.fill_value
-            return result and self.wrapped.contains(other.wrapped)
+            return result and self.wrapped.contains(other.wrapped, exact=exact)
         return False
 
     @classmethod

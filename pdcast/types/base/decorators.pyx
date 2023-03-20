@@ -161,14 +161,17 @@ def dispatch(
 
         # add to selected types
         if types is not None:
-            for typ in types:
+            for typ in types:  # iterate through types argument
                 typ = typ.strip()
                 wrapped_name = dispatch_wrapper.__name__
-                if exact:
-                    setattr(type(typ), wrapped_name, dispatch_wrapper)
-                else:
-                    for t in typ.subtypes:
-                        setattr(type(t), wrapped_name, dispatch_wrapper)
+                for back in typ.backends.values():  # add to all backends
+                    if exact:  # ignore subtypes
+                        setattr(type(back), wrapped_name, dispatch_wrapper)
+                    else:  # repeat for all subtypes
+                        for t in back.subtypes:
+                            setattr(type(t), wrapped_name, dispatch_wrapper)
+
+            # flush registry to force rebuild of dispatch_map
             AtomicType.registry.flush()
 
         return dispatch_wrapper
@@ -203,24 +206,13 @@ def generic(_class: type):
         )
 
     # remember original equivalents
-    cdef dict orig = {
-        k: getattr(_class, k) for k in (
-            "_generate_subtypes", "instance", "resolve"
-        )
-    }
-
-    def _generate_subtypes(self, types: set) -> frozenset:
-        result = orig["_generate_subtypes"](self, types)
-        for k, v in self.backends.items():
-            if k is not None and v in self.registry:
-                result |= v.instance().subtypes.atomic_types
-        return result
+    cdef dict orig = {k: getattr(_class, k) for k in ("instance", "resolve")}
 
     @classmethod
     def instance(cls, backend: str = None, *args, **kwargs) -> AtomicType:
         if backend is None:
             return orig["instance"](*args, **kwargs)
-        extension = cls.backends.get(backend, None)
+        extension = cls._backends.get(backend, None)
         if extension is None:
             raise TypeError(
                 f"{cls.name} backend not recognized: {repr(backend)}"
@@ -233,7 +225,7 @@ def generic(_class: type):
             return orig["resolve"](*args)
 
         # if a specific backend is given, resolve from its perspective
-        specific = cls.backends.get(backend, None)
+        specific = cls._backends.get(backend, None)
         if specific is not None and specific not in cls.registry:
             specific = None
         if specific is None:
@@ -253,9 +245,10 @@ def generic(_class: type):
                 )
 
             # ensure backend is unique
-            if backend in cls.backends:
+            if backend in cls._backends:
                 raise TypeError(
-                    f"`backend` must be unique, not one of {set(cls.backends)}"
+                    f"`backend` must be unique, not one of "
+                    f"{set(cls._backends)}"
                 )
 
             # ensure backend is self-consistent
@@ -272,7 +265,7 @@ def generic(_class: type):
             specific.conversion_func = cls.conversion_func
             specific.name = cls.name
             specific._generic = cls
-            cls.backends[backend] = specific
+            cls._backends[backend] = specific
             specific._is_boolean = specific._is_boolean or cls._is_boolean
             specific._is_numeric = specific._is_numeric or cls._is_numeric
             specific.registry.flush()
@@ -283,7 +276,6 @@ def generic(_class: type):
     # overwrite class attributes
     _class.is_generic = True
     _class.backend = None
-    _class.backends = {None: _class}
 
     # patch in new methods
     loc = locals()

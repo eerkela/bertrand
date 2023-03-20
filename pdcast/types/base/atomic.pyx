@@ -214,6 +214,23 @@ cdef class AtomicType(ScalarType):
         yield from ()
 
     @property
+    def backends(self) -> MappingProxyType:
+        """A dictionary mapping backend names to their corresponding
+        implementation types.
+
+        This always contains the key/value pair ``{None: self}``.
+        """
+        if self.registry.needs_updating(self._backend_cache):
+            result = {None: self}
+            result |= {
+                k: v.instance(**self.kwargs) for k, v in self._backends.items()
+            }
+            result = MappingProxyType(result)
+            self._backend_cache = self.registry.remember(result)
+
+        return self._backend_cache.value
+
+    @property
     def generic(self) -> AtomicType:
         """Return the generic equivalent for this AtomicType."""
         if self.registry.needs_updating(self._generic_cache):
@@ -253,11 +270,12 @@ cdef class AtomicType(ScalarType):
         customized via the `_generate_subtypes()` helper method.
         """
         if self.registry.needs_updating(self._subtype_cache):
-            subtype_defs = traverse_subtypes(type(self))
-            result = self._generate_subtypes(subtype_defs)
+            result = composite.CompositeType(
+                self._generate_subtypes(traverse_subtypes(type(self)))
+            )
             self._subtype_cache = self.registry.remember(result)
 
-        return composite.CompositeType(self._subtype_cache.value)
+        return self._subtype_cache.value
 
     @property
     def supertype(self) -> AtomicType:
@@ -277,7 +295,7 @@ cdef class AtomicType(ScalarType):
     ####    TYPE METHODS    ####
     ############################
 
-    def _generate_subtypes(self, types: set) -> frozenset:
+    def _generate_subtypes(self, types: set) -> set:
         """Given a set of subtype definitions, map them to their corresponding
         instances.
 
@@ -289,16 +307,14 @@ cdef class AtomicType(ScalarType):
         Override this if your AtomicType implements custom logic to generate
         subtype instances (such as wildcard behavior or similar functionality).
         """
-        # build result, skipping invalid kwargs
+        # skip invalid kwargs
         result = set()
         for t in types:
             try:
                 result.add(t.instance(**self.kwargs))
             except TypeError:
                 continue
-
-        # return as frozenset
-        return frozenset(result)
+        return result
 
     def _generate_supertype(self, type_def: type) -> AtomicType:
         """Given a (possibly null) supertype definition, map it to its
@@ -331,7 +347,7 @@ cdef class AtomicType(ScalarType):
             add_arithmetic_ops=True
         )
 
-    def contains(self, other: type_specifier) -> bool:
+    def contains(self, other: type_specifier, exact: bool = False) -> bool:
         """Test whether `other` is a subtype of the given AtomicType.
         This is functionally equivalent to `other in self`, except that it
         applies automatic type resolution to `other`.
@@ -341,11 +357,18 @@ cdef class AtomicType(ScalarType):
         """
         other = resolve.resolve_type(other)
         if isinstance(other, composite.CompositeType):
-            return all(self.contains(o) for o in other)
+            return all(self.contains(o, exact=exact) for o in other)
 
-        # respect wildcard rules in subtypes
-        subtypes = self.subtypes.atomic_types - {self}
-        return other == self or any(other in a for a in subtypes)
+        # self.backends includes self
+        for backend in self.backends.values():
+            if other == backend:
+                return True
+            if not exact:
+                subtypes = backend.subtypes.atomic_types - {self}
+                if any(s.contains(other) for s in subtypes):
+                    return True
+
+        return False
 
     def is_na(self, val: Any) -> bool:
         """Check if an arbitrary value is an NA value in this representation.
@@ -360,7 +383,7 @@ cdef class AtomicType(ScalarType):
         This is functionally equivalent to `self in other`, except that it
         applies automatic type resolution + `.contains()` logic to `other`.
         """
-        return self in resolve.resolve_type(other)
+        return resolve.resolve_type(other).contains(self)
 
     def make_nullable(self) -> AtomicType:
         """Create an equivalent AtomicType that can accept missing values."""
@@ -618,6 +641,10 @@ cdef class AtomicType(ScalarType):
 
     @classmethod
     def __init_subclass__(cls, cache_size: int = None, **kwargs):
+        # allow cooperative inheritance
+        super(AtomicType, cls).__init_subclass__(**kwargs)
+
+        # limit to 1st order
         valid = AtomicType.__subclasses__()
         if cls not in valid:
             raise TypeError(
@@ -625,24 +652,21 @@ cdef class AtomicType(ScalarType):
                 f"definition"
             )
 
-        # required fields
+        # init required fields
         cls.aliases.add(cls)  # cls always aliases itself
         if cache_size is not None:
             cls.flyweights = LRUDict(maxsize=cache_size)
 
-        # required fields for @generic
-        cls._generic = None
-        cls.backend = None
-        cls.backends = {}
-        cls.is_generic = None  # True if @generic, False if @register_backend
-
-        # required fields for @subtype
+        # init fields for @subtype
         cls._children = set()
         cls._parent = None
         cls.is_root = True
 
-        # allow cooperative inheritance
-        super(AtomicType, cls).__init_subclass__(**kwargs)
+        # init fields for @generic
+        cls._generic = None
+        cls.backend = None
+        cls._backends = {}
+        cls.is_generic = None  # True if @generic, False if @register_backend
 
     def __setattr__(self, name: str, value: Any) -> None:
         if self._is_frozen:

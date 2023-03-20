@@ -97,6 +97,13 @@ cdef class AdapterType(atomic.ScalarType):
         lowest.wrapped = val
 
     @property
+    def backends(self) -> MappingProxyType:
+        return {
+            k: self.replace(wrapped=v)
+            for k, v in self.wrapped.backends.items()
+        }
+
+    @property
     def wrapped(self) -> atomic.ScalarType:
         """Access the type object that this AdapterType modifies."""
         return self._wrapped
@@ -113,7 +120,7 @@ cdef class AdapterType(atomic.ScalarType):
     ####    METHODS    ####
     #######################
 
-    def contains(self, other: type_specifier) -> bool:
+    def contains(self, other: type_specifier, exact: bool = False) -> bool:
         """Test whether `other` is a subtype of the given AtomicType.
         This is functionally equivalent to `other in self`, except that it
         applies automatic type resolution to `other`.
@@ -122,11 +129,11 @@ cdef class AdapterType(atomic.ScalarType):
         """
         other = resolve.resolve_type(other)
         if isinstance(other, composite.CompositeType):
-            return all(self.contains(o) for o in other)
+            return all(self.contains(o, exact=exact) for o in other)
 
         return (
             isinstance(other, type(self)) and
-            self.wrapped.contains(other.wrapped)
+            self.wrapped.contains(other.wrapped, exact=exact)
         )
 
     def replace(self, **kwargs) -> AdapterType:

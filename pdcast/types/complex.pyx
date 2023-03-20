@@ -61,7 +61,8 @@ class ComplexMixin:
 
     @property
     def equiv_float(self) -> AtomicType:
-        candidates = float_types.FloatType.instance().subtypes
+        f_root = float_types.FloatType.instance()
+        candidates = [x for y in f_root.backends.values() for x in y.subtypes]
         for x in candidates:
             if type(x).__name__ == self._equiv_float:
                 return x
@@ -69,18 +70,19 @@ class ComplexMixin:
 
     @property
     def smaller(self) -> list:
-        result = [
-            x for x in self.root.subtypes if (
-                x.backend == self.backend and
-                x not in ComplexType.backends.values()
-            )
-        ]
+        # get candidates
+        root = self.root
+        result = [x for x in root.subtypes if x not in root.backends.values()]
+
+        # filter off any that are larger than self
         if not self.is_root:
             result = [
                 x for x in result if (
                     (x.itemsize or np.inf) < (self.itemsize or np.inf)
                 )
             ]
+
+        # sort by itemsize
         result.sort(key=lambda x: x.itemsize)
         return result
 

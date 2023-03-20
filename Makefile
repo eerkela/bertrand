@@ -16,4 +16,5 @@ install:
 clean:
 	@find pdcast/ -name "*.c" -type f -delete
 	@find pdcast/ -name "*.so" -type f -delete
+	@rm -r build/
 	@rm -r docs/build

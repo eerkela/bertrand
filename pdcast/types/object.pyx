@@ -41,18 +41,18 @@ class ObjectType(AtomicType, cache_size=64):
     ####    TYPE METHODS    ####
     ############################
 
-    def contains(self, other: type_specifier) -> bool:
+    def contains(self, other: type_specifier, exact: bool = False) -> bool:
         """Test whether a type is contained within this type's subtype
         hierarchy.
         """
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(self.contains(o) for o in other)
+            return all(self.contains(o, exact=exact) for o in other)
 
         # treat `object` type_def as wildcard
         if self.type_def is object:
             return isinstance(other, type(self))
-        return super().contains(other)
+        return super().contains(other, exact=exact)
 
     @classmethod
     def slugify(cls, type_def: type = object) -> str:
@@ -70,16 +70,15 @@ class ObjectType(AtomicType, cache_size=64):
     ####    METHODS    ####
     #######################
 
-    def contains(self, other: Any) -> bool:
+    def contains(self, other: Any, exact: bool = False) -> bool:
         other = resolve.resolve_type(other)
+        if isinstance(other, CompositeType):
+            return all(self.contains(o, exact=exact) for o in other)
 
         # treat type_def=object as wildcard
         if self.type_def is object:
-            if isinstance(other, CompositeType):
-                return all(isinstance(o, type(self)) for o in other)
             return isinstance(other, type(self))
-
-        return super().contains(other)
+        return super().contains(other, exact=exact)
 
     def to_boolean(
         self,

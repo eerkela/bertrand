@@ -318,13 +318,19 @@ class TimedeltaType(TimedeltaMixin, AtomicType):
     @property
     def larger(self) -> list:
         """Get a list of types that this type can be upcasted to."""
-        # start with bounded subtypes that have range wider than self
-        candidates = set(self.subtypes) - {self}
+        # get candidates
+        candidates = {
+            x for y in self.backends.values() for x in y.subtypes if x != self
+        }
+
+        # filter off any that are upcast-only or larger than self
         result = [
             x for x in candidates if (
                 x.min <= x.max and (x.min < self.min or x.max > self.max)
             )
         ]
+
+        # sort by range
         result.sort(key=lambda x: x.max - x.min)
 
         # add subtypes that are themselves upcast-only
@@ -405,15 +411,15 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
             return f"{cls.name}[{cls.backend}, {unit}]"
         return f"{cls.name}[{cls.backend}, {step_size}{unit}]"
 
-    def contains(self, other: Any) -> bool:
+    def contains(self, other: Any, exact: bool = False) -> bool:
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(self.contains(o) for o in other)
+            return all(self.contains(o, exact=exact) for o in other)
 
         # treat unit=None as wildcard
         if self.unit is None:
             return isinstance(other, type(self))
-        return super().contains(other)
+        return super().contains(other, exact=exact)
 
     @classmethod
     def detect(cls, example: np.datetime64, **defaults) -> AtomicType:
