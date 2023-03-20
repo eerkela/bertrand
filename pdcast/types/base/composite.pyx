@@ -10,6 +10,9 @@ cimport pdcast.types.base.adapter as adapter
 from pdcast.util.type_hints import type_specifier
 
 
+# contains() should accept an `exact` argument which disregards subtypes.
+
+
 cdef class CompositeType(BaseType):
     """Set-like container for type objects.
 

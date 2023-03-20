@@ -15,6 +15,10 @@ from .base cimport AtomicType, AdapterType, CompositeType, ScalarType
 from .base import register, dispatch
 
 
+# TODO: allow naked SparseType to be resolved.  When it is encountered, it just
+# wraps the observed type of an input series.
+
+
 @register
 class SparseType(AdapterType):
 

@@ -1,10 +1,8 @@
 from collections import Counter
 import numbers
 import sys
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
-cimport cython
-cimport numpy as np
 import numpy as np
 import pandas as pd
 import pandas.core.algorithms as algorithms
@@ -15,115 +13,57 @@ from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
 
 import pdcast.convert as convert
 
-
-######################
-####    PUBLIC    ####
-######################
+import pdcast.util.time as time
 
 
-def construct_extension_dtype(
-    atomic_type,
-    is_boolean: bool,
-    is_numeric: bool,
-    add_comparison_ops: bool,
-    add_arithmetic_ops: bool,
-    kind: str = "O",
-    nullable: bool = True,
-    common_dtype: np.dtype | ExtensionDtype = None
-) -> pd.api.extensions.ExtensionDtype:
-    """Construct a new pandas ``ExtensionDtype`` to refer to elements
-    of this type.
+# NOTE: it is currently not possible to store np.datetime64 objects in a
+# pandas series with units other than `1ns`.  Pandas internally formats these
+# by checking the ExtensionDtype's `kind` and `type` attributes, which can
+# be worked around.  What cannot be worked around is when pandas formats the
+# underlying array itself, which we have no control over.  The only way to
+# bypass this would be to change the behavior of np.asarray() on our
+# ExtensionArrays or store them in a non-M8 container, which negates all the
+# benefits of making an explicit ExtensionDtype in the first place.  As such,
+# this module is currently dead in the water, though I haven't deleted it in
+# case the internal pandas implementation changes in the future.
 
-    This method is only invoked if no explicit ``dtype`` is assigned to
-    this ``AtomicType``.
-    """
-    _kind = kind
-    class_doc = (
-        f"An abstract data type, automatically generated to store\n "
-        f"{atomic_type.type_def} objects."
-    )
 
-    @register_extension_dtype
-    class ImplementationDtype(AbstractDtype):
+@register_extension_dtype
+class M8Dtype(ExtensionDtype):
+    """An ``ExtensionDtype`` that stores literal ``np.datetime64`` objects."""
 
-        _atomic_type = atomic_type
-        name = str(atomic_type)
-        type = atomic_type.type_def
-        kind = _kind
-        na_value = atomic_type.na_value
-        _is_boolean = is_boolean
-        _is_numeric = is_numeric
-        _can_hold_na = nullable
+    # NOTE: can't use kind="M" or type=np.datetime64 because it causes pandas
+    # to auto-format results as pd.Timestamp objects during repr() calls, which
+    # fails for any units other than 1ns.
 
-        @classmethod
-        def construct_array_type(cls):
-            return construct_array_type(
-                atomic_type,
-                add_arithmetic_ops=add_arithmetic_ops,
-                add_comparison_ops=add_comparison_ops
+    kind = "O"  # workaround for above
+    type = type(None)  # workaround for above
+    itemsize = 8
+    na_value = np.datetime64("nat")
+    _is_boolean = False
+    _is_numeric = False
+    _can_hold_na = True
+    _metadata = ("unit", "step_size")
+
+    def __init__(self, unit: str = "ns", step_size: int = 1):
+        if unit not in time.valid_units:
+            raise TypeError(
+                f"unit must be one of {time.valid_units}, not {repr(unit)}"
             )
+        if step_size < 1:
+            raise TypeError(f"step_size must be >= 1, not {step_size}")
+        self.unit = unit
+        self.step_size = step_size
 
-        def _get_common_dtype(self, dtypes: list):
-            if len(set(dtypes)) == 1:  # only itself
-                return self
-            return common_dtype
+    @property
+    def name(self) -> str:
+        if self.step_size == 1:
+            return f"M8[{self.unit}]"
+        return f"M8[{self.step_size}{self.unit}]"
 
-    ImplementationDtype.__doc__ = class_doc
-    return ImplementationDtype()
-
-
-def construct_array_type(
-    atomic_type,
-    add_arithmetic_ops: bool = True,
-    add_comparison_ops: bool = True
-) -> ExtensionArray:
-    """Create a new ExtensionArray definition to store objects of the given
-    type.
-    """
-    class_doc = (
-        f"An abstract data type, automatically generated to store\n "
-        f"{str(atomic_type)} objects."
-    )
-
-    class ImplementationArray(AbstractArray):
-        
-        def __init__(self, *args, **kwargs):
-            self._atomic_type = atomic_type
-            super().__init__(*args, **kwargs)
-
-    # add scalar operations from ExtensionScalarOpsMixin
-    if add_arithmetic_ops:
-        ImplementationArray._add_arithmetic_ops()
-    if add_comparison_ops:
-        ImplementationArray._add_comparison_ops()
-
-    # replace docstring
-    ImplementationArray.__doc__ = class_doc
-    return ImplementationArray
-
-
-#######################
-####    PRIVATE    ####
-#######################
-
-
-class AbstractDtype(ExtensionDtype):
-    """Base class for automatically-generated ExtensionDtype definitions.
-
-    This class allows :class:`AtomicType` definitions that do not define an
-    explicit ``.dtype`` field to automatically generate one according to
-    `existing pandas guidelines <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
-    The resulting arrays are essentially identical to ``dtype: object`` arrays,
-    but are explicitly labeled and have better integration with base pandas.
-    They may also be slightly more performant in some cases.
-    """
-
-    def __init__(self):
-        # require use of construct_extension_dtype() factory
-        if not hasattr(self, "_atomic_type"):
-            raise NotImplementedError(
-                f"AbstractDtype must have an associated AtomicType"
-            )
+    @classmethod
+    def construct_array_type(cls):
+        return M8Array
 
     @classmethod
     def construct_from_string(cls: type, string: str) -> ExtensionDtype:
@@ -177,35 +117,28 @@ class AbstractDtype(ExtensionDtype):
         # disable string construction - use ``pdcast.resolve_type()`` instead
         raise TypeError(f"Cannot construct a '{cls.__name__}' from '{string}'")
 
+    def _get_common_dtype(self, dtypes: list):
+        if len(set(dtypes)) == 1:  # only itself
+            return self
+        return np.dtype(f"M8[{self.step_size}{self.unit}]")
+
     def __repr__(self) -> str:
-        return f"{type(self).__name__}({str(self._atomic_type)})"
+        return f"M8Dtype(unit={self.unit}, step_size={self.step_size})"
 
 
-class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
-    """Base class for automatically-generated ExtensionArray definitions.
-
-    This class allows :class:`AtomicType` definitions that do not define an
-    explicit ``.dtype`` field to automatically generate one according to the
-    `existing pandas guidelines <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
-    The resulting arrays are essentially identical to ``dtype: object`` arrays,
-    but are explicitly labeled and have better integration with base pandas.
-    They may also be slightly more performant in some cases.
-    """
+class M8Array(ExtensionArray, ExtensionScalarOpsMixin):
+    """An ``ExtensionArray`` for storing literal ``np.datetime64`` objects."""
 
     __array_priority__ = 1000  # this is used in pandas test code
 
     def __init__(self, values, dtype=None, copy=False):
-        # NOTE: this does NOT coerce inputs; that's handled by cast() itself
-        self._data = np.asarray(values, dtype=object)
+        self._data = np.asarray(values, dtype=dtype._get_common_dtype([]))
 
         # aliases for common attributes to ensure pandas support
-        self._items = self.data = self._data
+        self._items = self.data = self._ndarray = self._data
+        self._dtype = dtype
 
-        # require use of construct_array_type() factory
-        if not hasattr(self, "_atomic_type"):
-            raise NotImplementedError(
-                f"AbstractArray must have an associated AtomicType"
-            )
+        self.tz = None
 
     @classmethod
     def _from_sequence(cls, scalars, dtype=None, copy=False):
@@ -226,12 +159,6 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
         Returns
         -------
         ExtensionArray
-
-        Notes
-        -----
-        This **does not** coerce results to the specified type.  For
-        conversions, see the docs on :func:`cast` and its related functions.
-        All this does is wrap the scalars in an object array.
         """
         return cls(scalars, dtype=dtype, copy=copy)
 
@@ -312,8 +239,8 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
                     "setting an array element with a sequence."
                 )
             value = np.asarray(convert.cast(value, self._atomic_type))
-        else:
-            value = convert.cast(value, self._atomic_type)[0]
+        # else:
+        #     value = convert.cast(value, self._atomic_type)[0]
         self._data[key] = value
 
     def __len__(self) -> int:
@@ -335,23 +262,47 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
             return NotImplemented
         return self._data == other
 
+    # def __repr__(self) -> str:
+    #     if self.ndim > 1:
+    #         return self._repr_2d()
+
+    #     return "hello world"
+
+
+    # def _formatter(self, boxed: bool = False) -> Callable[[Any], str | None]:
+    #     """Formatting function for scalar values.
+
+    #     This is used in the default '__repr__'. The returned formatting
+    #     function receives instances of your scalar type.
+
+    #     Parameters
+    #     ----------
+    #     boxed : bool, default False
+    #         An indicated for whether or not your array is being printed
+    #         within a Series, DataFrame, or Index (True), or just by
+    #         itself (False). This may be useful if you want scalar values
+    #         to appear differently within a Series versus on its own (e.g.
+    #         quoted or not).
+
+    #     Returns
+    #     -------
+    #     Callable[[Any], str]
+    #         A callable that gets instances of the scalar type and
+    #         returns a string. By default, :func:`repr` is used
+    #         when ``boxed=False`` and :func:`str` is used when
+    #         ``boxed=True``.
+    #     """
+    #     return lambda *args, **kwargs: "hello world"
+
     @property
     def dtype(self):
         """An instance of 'ExtensionDtype'."""
-        return self._atomic_type.dtype
-
-    @property
-    def _dtype(self):
-        """An alias for ``self.dtype`` that ensures pandas compatibility."""
-        return self.dtype
+        return self._dtype
 
     @property
     def nbytes(self):
         """The number of bytes needed to store this object in memory."""
-        n = len(self)
-        if n:
-            return n * sys.getsizeof(self[0])
-        return 0
+        return self.dtype.itemsize * len(self)
 
     def astype(self, dtype, copy: bool = True):
         """Cast to a NumPy array or ExtensionArray with 'dtype'.
@@ -383,7 +334,7 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
         return self._data.astype(dtype=dtype, copy=copy)
 
     def isna(self):
-        return boolean_apply(self._data, self._atomic_type.is_na)
+        return np.isnan(self._data)
 
     def _values_for_argsort(self) -> np.ndarray:
         """Return values for sorting.
@@ -656,45 +607,45 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
     # NOTE: these are not defined in the base ExtensionArray class, but are
     # called in several pandas operations.
 
-    def round(self, *args, **kwargs) -> ExtensionArray:
-        """Default round implementation.  This simply passes through to
-        np.round().
-        """
-        return self._from_sequence(self._data.round(*args, **kwargs))
+    # def round(self, *args, **kwargs) -> ExtensionArray:
+    #     """Default round implementation.  This simply passes through to
+    #     np.round().
+    #     """
+    #     return self._from_sequence(self._data.round(*args, **kwargs))
 
-    def value_counts(self, dropna: bool = True) -> pd.Series:
-        """Returns a Series containing counts of each unique value.
+    # def value_counts(self, dropna: bool = True) -> pd.Series:
+    #     """Returns a Series containing counts of each unique value.
 
-        Parameters
-        ----------
-        dropna : bool, default True
-            Don't include counts of missing values.
+    #     Parameters
+    #     ----------
+    #     dropna : bool, default True
+    #         Don't include counts of missing values.
 
-        Returns
-        -------
-        counts : Series
+    #     Returns
+    #     -------
+    #     counts : Series
 
-        See Also
-        --------
-        Series.value_counts
-        """
-        # compute counts without nans
-        mask = self.isna()
-        counts = Counter(self._data[~mask])
-        result = pd.Series(
-            counts.values(),
-            index=pd.Index(list(counts.keys()), dtype=self.dtype)
-        )
-        if dropna:
-            return result.astype("Int64")
+    #     See Also
+    #     --------
+    #     Series.value_counts
+    #     """
+    #     # compute counts without nans
+    #     mask = self.isna()
+    #     counts = Counter(self._data[~mask])
+    #     result = pd.Series(
+    #         counts.values(),
+    #         index=pd.Index(list(counts.keys()), dtype=self.dtype)
+    #     )
+    #     if dropna:
+    #         return result.astype("Int64")
 
-        # if we want to include nans, count mask
-        nans = pd.Series(
-            [mask.sum()],
-            index=pd.Index([self.dtype.na_value], dtype=self.dtype)
-        )
-        result = pd.concat([result, nans])
-        return result.astype("Int64")
+    #     # if we want to include nans, count mask
+    #     nans = pd.Series(
+    #         [mask.sum()],
+    #         index=pd.Index([self.dtype.na_value], dtype=self.dtype)
+    #     )
+    #     result = pd.concat([result, nans])
+    #     return result.astype("Int64")
 
     ###############################
     ####    UNARY OPERATORS    ####
@@ -745,19 +696,6 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
         return self._from_sequence(self._data | other)
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef np.ndarray[np.uint8_t, cast=True] boolean_apply(
-    np.ndarray[object] arr,
-    object call
-):
-    cdef unsigned int arr_length = arr.shape[0]
-    cdef np.ndarray[np.uint8_t, cast=True] result
-    cdef unsigned int i
-
-    result = np.empty(arr_length, dtype=bool)
-
-    for i in range(arr_length):
-        result[i] = call(arr[i])
-
-    return result
+# add scalar ops via ExtensionScalarOpsMixin
+M8Array._add_arithmetic_ops()
+M8Array._add_comparison_ops()

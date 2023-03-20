@@ -23,13 +23,9 @@ from .base cimport AtomicType, CompositeType
 from .base import generic, register
 
 
-# NOTE: timedelta -> float does not retain longdouble precision.  This is due
+# TODO: timedelta -> float does not retain longdouble precision.  This is due
 # to the / operator in convert_unit() defaulting to float64 precision, which is
 # probably unfixable.
-
-
-# TODO: need to make a special case of ExtensionArray for
-# np.datetime64/timedelta64 that stores its values as a literal M8/m8 array.
 
 
 ######################
@@ -354,6 +350,10 @@ class TimedeltaType(TimedeltaMixin, AtomicType):
 @TimedeltaType.register_backend("numpy")
 class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
 
+    # NOTE: dtype is set to object due to pandas and its penchant for
+    # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
+    # an AbstractDtype or the raw numpy dtypes here.
+
     aliases = {
         np.timedelta64,
         # np.dtype("m8") handled in resolve_typespec_dtype special case
@@ -362,18 +362,19 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
         "numpy.timedelta64",
         "np.timedelta64",
     }
+    type_def = np.timedelta64
+    dtype = np.dtype(object)  # workaround for above
     itemsize = 8
     na_value = np.timedelta64("NaT")
-    type_def = np.timedelta64
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
-            self.dtype = np.dtype("m8")
+            # self.dtype = np.dtype("m8")
             # NOTE: these min/max values always trigger upcast check.
             self.min = 1  # increase this to take precedence when upcasting
             self.max = 0
         else:
-            self.dtype = np.dtype(f"m8[{step_size}{unit}]")
+            # self.dtype = np.dtype(f"m8[{step_size}{unit}]")
             # NOTE: these epochs are chosen to minimize range in the event of
             # irregular units ('Y'/'M'), so that conversions work regardless of
             # leap days and irregular month lengths.

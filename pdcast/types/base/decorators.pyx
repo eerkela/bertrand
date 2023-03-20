@@ -1,33 +1,23 @@
 import inspect
 from functools import wraps
+from types import MethodType
 from typing import Any, Iterable
 
 cimport pdcast.convert as convert
 import pdcast.convert as convert
+cimport pdcast.resolve as resolve
+import pdcast.resolve as resolve
 
 from pdcast.util.type_hints import type_specifier
 
 from .atomic import ScalarType, AtomicType
 
 
-# TODO: implement the types argument
-# -> If types is not None, check to make sure that the wrapped object is not
-# bound.  If it is, throw a ValueError.  Else, if it does not have a self
-# argument, insert one before broadcasting to each type definition. This
-# requires an extra decorator.
+# TODO: dispatch should have an option to allow length changes?
 
-# @dispatch
-# def func(x, y, ...)
 
-# is not allowed.
-
-# @dispatch(types="int, float, ...")
-# def func(x, y, ...)
-
-# @dispatch(types="int, float, ...")
-# def func(self, x, y, ...)
-
-# are.
+# TODO: change behavior of exact argument to allow generics to match their
+# backends.
 
 
 ######################
@@ -39,7 +29,8 @@ def dispatch(
     _method=None,
     *,
     namespace: str = None,
-    types: type_specifier | Iterable[type_specifier] = None
+    types: type_specifier | Iterable[type_specifier] = None,
+    exact: bool = False
 ):
     """Dispatch a method to ``pandas.Series`` objects of the associated type.
 
@@ -132,25 +123,59 @@ def dispatch(
     then it will be chosen instead of the default implementation.  Otherwise,
     the attribute access is treated normally.
     """
-    has_options = _method is not None
-    if has_options:
-        validate_dispatch_signature(_method)
+    types = resolve.resolve_type([types]) if types is not None else types
 
     def dispatch_decorator(method):
-        if not has_options:
-            validate_dispatch_signature(method)
+        # check for compatible signature
+        sig = inspect.signature(method)
+        pars = list(sig.parameters.items())
+        has_self = False
+        if not pars:
+            raise TypeError(
+                f"@dispatch method {repr(method.__qualname__)}() signature "
+                f"must not be empty"
+            )
+        if pars[0][0] == "self":
+            has_self = True
+            pars = pars[1:]
+        if not pars or pars[0][1].annotation not in valid_series_annotations:
+            raise TypeError(
+                f"@dispatch method {method.__qualname__}() must accept a "
+                f"'SeriesWrapper' as its first non-self argument"
+            )
+        if sig.return_annotation not in valid_series_annotations:
+            raise TypeError(
+                f"@dispatch method {method.__qualname__}() must return a "
+                f"'SeriesWrapper' object"
+            )
 
         @wraps(method)
         def dispatch_wrapper(self, *args, **kwargs):
-            return method(self, *args, **kwargs)
+            if has_self:
+                return method(self, *args, **kwargs)
+            return method(*args, **kwargs)  # insert reference to self
 
+        # mark as dispatch method
         dispatch_wrapper._dispatch = True
         dispatch_wrapper._namespace = namespace
+
+        # add to selected types
+        if types is not None:
+            for typ in types:
+                typ = typ.strip()
+                wrapped_name = dispatch_wrapper.__name__
+                if exact:
+                    setattr(type(typ), wrapped_name, dispatch_wrapper)
+                else:
+                    for t in typ.subtypes:
+                        setattr(type(t), wrapped_name, dispatch_wrapper)
+            AtomicType.registry.flush()
+
         return dispatch_wrapper
 
-    if has_options:
-        return dispatch_decorator(_method)
-    return dispatch_decorator
+    if _method is None:
+        return dispatch_decorator
+    return dispatch_decorator(_method)
 
 
 def generic(_class: type):
@@ -336,26 +361,5 @@ def subtype(supertype: type):
 #######################
 
 
-cdef int validate_dispatch_signature(object call) except -1:
-    """Inspect the signature of an AtomicType method decorated with @dispatch,
-    ensuring that it accepts and returns SeriesWrapper objects.
-    """
-    cdef object sig = inspect.signature(call)
-    cdef object first_type = list(sig.parameters.values())[1].annotation
-    cdef object return_type = sig.return_annotation
-    cdef set valid_annotations = {"SeriesWrapper", convert.SeriesWrapper}
-
-    # NOTE: methods defined in .pyx files will store their SeriesWrapper
-    # annotations as strings, while those defined in .py files store them as
-    # direct references.
-
-    if first_type not in valid_annotations:
-        raise TypeError(
-            f"@dispatch method {call.__qualname__}() must accept a "
-            f"SeriesWrapper as its first argument after self, not {first_type}"
-        )
-    if return_type not in valid_annotations:
-        raise TypeError(
-            f"@dispatch method {call.__qualname__}() must return a "
-            f"SeriesWrapper object, not {return_type}"
-        )
+# NOTE: cython stores type hints as strings; python stores them as objects.
+cdef set valid_series_annotations = {"SeriesWrapper", convert.SeriesWrapper}

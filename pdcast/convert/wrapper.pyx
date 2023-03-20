@@ -657,8 +657,7 @@ cdef class SeriesWrapper:
     # unexpected ways.  If you know the final element_type ahead of time, set
     # it manually after the operation by assigning to the result's
     # .element_type field.  Otherwise it will automatically be forgotten and
-    # regenerated when you next request it, which can be expensive if the final
-    # series has dtype="O".
+    # regenerated when you next request it (which is safer).
 
     def __abs__(self) -> SeriesWrapper:
         return SeriesWrapper(abs(self.series), hasnans=self._hasnans)

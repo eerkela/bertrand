@@ -20,6 +20,10 @@ from .base import register
 # NOTE: this is enabled in pandas, but probably shouldn't be here.
 
 
+# TODO: allow naked CategoricalType.  When it is encountered, it just wraps the
+# observed type of the series.
+
+
 @register
 class CategoricalType(AdapterType):
     """Categorical adapter for :class:`AtomicType` objects.

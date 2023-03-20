@@ -33,10 +33,6 @@ from .base import dispatch, generic, register
 # TODO: PandasTimestampType.from_string cannot convert quarterly dates
 
 
-# TODO: need to make a special case of ExtensionArray for
-# np.datetime64/timedelta64 that stores its values as a literal M8/m8 array.
-
-
 ######################
 ####    MIXINS    ####
 ######################
@@ -382,6 +378,10 @@ class DatetimeType(DatetimeMixin, AtomicType):
 @DatetimeType.register_backend("numpy")
 class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
 
+    # NOTE: dtype is set to object due to pandas and its penchant for
+    # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
+    # a custom ExtensionDtype/AbstractDtype or the raw numpy dtypes here.
+
     aliases = {
         np.datetime64,
         # np.dtype("M8") handled in resolve_typespec_dtype special case
@@ -390,18 +390,19 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
         "numpy.datetime64",
         "np.datetime64",
     }
+    type_def = np.datetime64
+    dtype = np.dtype(object)  # workaround for above
     itemsize = 8
     na_value = pd.NaT
-    type_def = np.datetime64
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
-            self.dtype = np.dtype("M8")
+            # self.dtype = np.dtype("M8")
             # NOTE: these min/max values always trigger upcast check.
             self.min = 1  # increase this to take precedence when upcasting
             self.max = 0
         else:
-            self.dtype = np.dtype(f"M8[{step_size}{unit}]")
+            # self.dtype = np.dtype(f"M8[{step_size}{unit}]")
             # NOTE: min/max datetime64 depends on unit
             if unit == "Y":  # appears to be biased toward UTC
                 min_M8 = np.datetime64(-2**63 + 1, "Y")
