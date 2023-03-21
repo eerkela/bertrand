@@ -235,13 +235,9 @@ cdef types.BaseType resolve_typespec_string(str input_str):
         else:
             base = registry.aliases[m["type"]]
 
-        # if no args are provided, use the default kwargs
-        if not m["args"]:  # empty string or None
-            instance = base.instance()
-
         # tokenize args and pass to base.resolve()
-        else:
-            instance = base.resolve(*tokenize(m["args"]))
+        args = () if not m["args"] else tokenize(m["args"])
+        instance = base.resolve(*args)
 
         # add to result set
         result.add(instance)
@@ -279,7 +275,7 @@ cdef types.ScalarType resolve_typespec_dtype(object input_dtype):
     return registry.aliases[type(input_dtype)].from_dtype(input_dtype)
 
 
-cdef types.AtomicType resolve_typespec_type(type input_type):
+cdef types.ScalarType resolve_typespec_type(type input_type):
     """Resolve a runtime type definition, returning a corresponding AtomicType.
     """
     cdef dict aliases = types.AtomicType.registry.aliases
@@ -287,4 +283,6 @@ cdef types.AtomicType resolve_typespec_type(type input_type):
 
     if result is None:
         return types.ObjectType.instance(type_def=input_type)
+    if issubclass(result, types.AdapterType):
+        return result()
     return result.instance()

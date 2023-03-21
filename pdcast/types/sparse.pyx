@@ -17,7 +17,8 @@ from .base import register, dispatch
 
 # TODO: allow naked SparseType to be resolved.  When it is encountered, it just
 # wraps the observed type of an input series.
-# -> requires changes to resolve(), init(), slugify(), and conversion functions
+# -> requires changes to resolve(), init(), slugify(), and conversion
+# functions.  Maybe also typecheck.  Create a new .contains() method?
 
 
 @register
@@ -27,13 +28,13 @@ class SparseType(AdapterType):
     aliases = {pd.SparseDtype, "sparse", "Sparse"}
     is_sparse = True
 
-    def __init__(self, wrapped: ScalarType, fill_value: Any = None):
+    def __init__(self, wrapped: ScalarType = None, fill_value: Any = None):
         # do not re-wrap SparseTypes
         if isinstance(wrapped, SparseType):  # 1st order
             if fill_value is None:
                 fill_value = wrapped.fill_value
             wrapped = wrapped.wrapped
-        else:  # 2nd order
+        elif wrapped is not None:  # 2nd order
             for x in wrapped.adapters:
                 if isinstance(x.wrapped, SparseType):
                     if fill_value is None:
@@ -43,12 +44,57 @@ class SparseType(AdapterType):
                     break
 
         # wrap dtype
-        if fill_value is None:
-            fill_value = wrapped.na_value
-        self.dtype = pd.SparseDtype(wrapped.dtype, fill_value)
+        if wrapped is not None:
+            if fill_value is None:
+                fill_value = wrapped.na_value
+            self.dtype = pd.SparseDtype(wrapped.dtype, fill_value)
 
         # call AdapterType.__init__()
         super().__init__(wrapped=wrapped, fill_value=fill_value)
+
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
+
+    @classmethod
+    def from_dtype(
+        cls,
+        dtype: pd.api.extensions.ExtensionDtype
+    ) -> AdapterType:
+        return cls(
+            wrapped=resolve.resolve_type(dtype.subtype),
+            fill_value=dtype.fill_value
+        )
+
+    @classmethod
+    def resolve(cls, wrapped: str = None, fill_value: str = None):
+        cdef ScalarType instance = None
+        cdef object parsed = None
+
+        # resolve wrapped
+        if wrapped is not None:
+            instance = resolve.resolve_type(wrapped)
+
+        # resolve fill_value
+        if fill_value is not None:
+            if fill_value in resolve.na_strings:
+                parsed = resolve.na_strings[fill_value]
+            else:
+                parsed = convert.cast(fill_value, instance)[0]
+
+        return cls(wrapped=instance, fill_value=parsed)
+
+    @classmethod
+    def slugify(
+        cls,
+        wrapped: ScalarType = None,
+        fill_value: Any = None
+    ) -> str:
+        if wrapped is None:
+            return cls.name
+        if fill_value is None:
+            return f"{cls.name}[{str(wrapped)}]"
+        return f"{cls.name}[{str(wrapped)}, {fill_value}]"
 
     ############################
     ####    TYPE METHODS    ####
@@ -62,50 +108,30 @@ class SparseType(AdapterType):
         if isinstance(other, CompositeType):
             return all(self.contains(o, exact=exact) for o in other)
 
-        if isinstance(other, type(self)):
-            na_1 = pd.isna(self.fill_value)
-            na_2 = pd.isna(other.fill_value)
-            if na_1 or na_2:
-                result = na_1 & na_2
-            else:
-                result = self.fill_value == other.fill_value
-            return result and self.wrapped.contains(other.wrapped, exact=exact)
-        return False
+        # check for type compatibility
+        if not isinstance(other, type(self)):
+            return False
 
-    @classmethod
-    def from_dtype(cls, dtype: pd.api.extensions.ExtensionDtype) -> AdapterType:
-        return cls(
-            wrapped=resolve.resolve_type(dtype.subtype),
-            fill_value=dtype.fill_value
-        )
+        # check for naked specifier
+        if self.wrapped is None:
+            return True
+        if other.wrapped is None:
+            return False
 
-    @classmethod
-    def slugify(
-        cls,
-        wrapped: ScalarType,
-        fill_value: Any = None
-    ) -> str:
-        if fill_value is None:
-            return f"{cls.name}[{str(wrapped)}]"
-        return f"{cls.name}[{str(wrapped)}, {fill_value}]"
+        # check for equal NA vals
+        na_1 = pd.isna(self.fill_value)
+        na_2 = pd.isna(other.fill_value)
+        if na_1 or na_2:
+            result = na_1 & na_2
+        else:
+            result = self.fill_value == other.fill_value
+
+        # delegate to wrapped
+        return result and self.wrapped.contains(other.wrapped, exact=exact)
 
     ##############################
     ####    SERIES METHODS    ####
     ##############################
-
-    @classmethod
-    def resolve(cls, wrapped: str, fill_value: str = None):
-        cdef ScalarType instance = resolve.resolve_type(wrapped)
-        cdef object parsed = None
-
-        # resolve fill_value
-        if fill_value is not None:
-            if fill_value in resolve.na_strings:
-                parsed = resolve.na_strings[fill_value]
-            else:
-                parsed = convert.cast(fill_value, instance)[0]
-
-        return cls(wrapped=instance, fill_value=parsed)
 
     def inverse_transform(
         self,

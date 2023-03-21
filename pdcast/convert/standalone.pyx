@@ -42,11 +42,13 @@ def cast(
                 f"cannot interpret empty series without an explicit `dtype` "
                 f"argument: {dtype}"
             )
-        return series_type.conversion_func(series, **kwargs)  # default dtype
+        return series_type.conversion_func(series, **kwargs)  # use default
 
     # delegate to appropriate to_x function below
-    conv_func = default.validate_dtype(dtype).conversion_func
-    return conv_func(series, dtype, **kwargs)
+    dtype = default.validate_dtype(dtype)
+    if dtype.unwrap() is None:
+        dtype.atomic_type = detect.detect_type(series)
+    return dtype.conversion_func(series, dtype, **kwargs)
 
 
 def to_boolean(
@@ -491,15 +493,16 @@ def do_conversion(
         getattr(dtype, endpoint)(series, *args, **kwargs)
     )
 
-    # wrap dtype according to adapter settings
-    if categorical:
-        dtype = types.CategoricalType(dtype)
-    if sparse is not None:
-        dtype = types.SparseType(dtype, fill_value=sparse)
+    # convert to series
+    data = as_series(data)
+
+    # parse naked adapters ("sparse"/"categorical" without a wrapped type)
+    if dtype.unwrap() is None:
+        dtype.atomic_type = detect.detect_type(data)
 
     # create manual dispatch method
     dispatch = patch.DispatchMethod(
-        as_series(data),
+        data,
         name="",  # passing empty string causes us to never fall back to pandas
         submap=submap,
         namespace=None,

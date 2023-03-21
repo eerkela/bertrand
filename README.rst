@@ -18,9 +18,9 @@ Features
    In either case, integration is seamless and automatic, and every aspect of a
    type's behavior can be customized as needed.
 *  **A generalized mini-language** for resolving types, with user-definable
-   aliases and semantics similar to the existing pandas conventions.  This
-   allows types to be quickly and unambiguously specified while maintaining
-   fine control over their behavior and composition.
+   aliases and semantics similar to existing pandas conventions.  This allows
+   types to be quickly and unambiguously specified while maintaining fine
+   control over their behavior and composition.
 *  Tools for **inference** and **type checking**.  Types can be easily
    detected from example data, even if those data are non-homogenous or not
    supported by existing numpy/pandas alternatives.  This can be customized in
@@ -193,6 +193,18 @@ basis.
    1   -2.0
    2    4.0
    dtype: float64
+
+   # new methods can be defined programmatically
+   >>> @pdcast.dispatch(namespace="foo", types="int, float")
+   ... def bar(series: pdcast.SeriesWrapper) -> pdcast.SeriesWrapper:
+   ...     print("Hello, World!")
+   ...     return series
+   >>> pd.Series([1, 2, 3]).foo.bar()
+   Hello World!
+   0    1
+   1    2
+   2    3
+   dtype: int64
 
    # original functionality can be easily recovered
    >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round.original()

@@ -271,7 +271,7 @@ def validate_dtype(
     if isinstance(dtype, types.CompositeType):
         raise ValueError(f"`dtype` cannot be composite (received: {dtype})")
 
-    if supertype is not None:
+    if supertype is not None and dtype.unwrap() is not None:
         supertype = resolve.resolve_type(supertype)
         if not dtype.unwrap().is_subtype(supertype):
             raise ValueError(f"`dtype` must be {supertype}-like, not {dtype}")
