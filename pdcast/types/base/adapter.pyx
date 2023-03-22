@@ -25,6 +25,9 @@ cdef class AdapterType(atomic.ScalarType):
     well-supported individually, but may not work in combination, for instance.
     """
 
+    _priority = 0  # controls the order of nested adapters.  Higher comes first
+    # NOTE: CategoricalType has priority 5, SparseType has priority 10.
+
     def __init__(self, wrapped: atomic.ScalarType, **kwargs):
         self._wrapped = wrapped
         self.kwargs = MappingProxyType({"wrapped": wrapped} | kwargs)
@@ -36,7 +39,7 @@ cdef class AdapterType(atomic.ScalarType):
     #############################
 
     @classmethod
-    def resolve(cls, wrapped: str, *args: str) -> AdapterType:
+    def resolve(cls, wrapped: str = None, *args: str) -> AdapterType:
         """An alternate constructor used to parse input in the type
         specification mini-language.
 
@@ -45,9 +48,20 @@ cdef class AdapterType(atomic.ScalarType):
 
         .. Note: The inputs to each argument will always be strings.
         """
-        instance = resolve.resolve_type(wrapped)
-        if isinstance(instance, composite.CompositeType):
-            raise TypeError(f"wrapped type must be atomic, not {instance}")
+        if wrapped is None:
+            return cls()
+
+        cdef ScalarType instance = resolve.resolve_type(wrapped)
+
+        # insert into sorted adapter stack according to priority
+        for x in instance.adapters:
+            if x._priority <= cls._priority:  # initial
+                break
+            if getattr(x.wrapped, "_priority", -np.inf) <= cls._priority:
+                x.wrapped = cls(x.wrapped, *args)
+                return instance
+
+        # add to front of stack
         return cls(instance, *args)
 
     @classmethod
@@ -131,6 +145,14 @@ cdef class AdapterType(atomic.ScalarType):
             isinstance(other, type(self)) and
             self.wrapped.contains(other.wrapped, exact=exact)
         )
+
+    def inverse_transform(
+        self,
+        series: convert.SeriesWrapper
+    ) -> convert.SeriesWrapper:
+        """Remove an adapter from an example series."""
+        series.element_type = self.wrapped
+        return series.rectify()
 
     def replace(self, **kwargs) -> AdapterType:
         # extract kwargs pertaining to AdapterType

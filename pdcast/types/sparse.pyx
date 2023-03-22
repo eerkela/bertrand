@@ -15,18 +15,13 @@ from .base cimport AtomicType, AdapterType, CompositeType, ScalarType
 from .base import register, dispatch
 
 
-# TODO: allow naked SparseType to be resolved.  When it is encountered, it just
-# wraps the observed type of an input series.
-# -> requires changes to resolve(), init(), slugify(), and conversion
-# functions.  Maybe also typecheck.  Create a new .contains() method?
-
-
 @register
 class SparseType(AdapterType):
 
     name = "sparse"
     aliases = {pd.SparseDtype, "sparse", "Sparse"}
     is_sparse = True
+    _priority = 10
 
     def __init__(self, wrapped: ScalarType = None, fill_value: Any = None):
         # do not re-wrap SparseTypes
@@ -43,11 +38,9 @@ class SparseType(AdapterType):
                     x.wrapped = self
                     break
 
-        # wrap dtype
-        if wrapped is not None:
-            if fill_value is None:
-                fill_value = wrapped.na_value
-            self.dtype = pd.SparseDtype(wrapped.dtype, fill_value)
+        # get fill_value
+        if wrapped is not None and fill_value is None:
+            fill_value = getattr(wrapped, "na_value", None)
 
         # call AdapterType.__init__()
         super().__init__(wrapped=wrapped, fill_value=fill_value)
@@ -67,13 +60,16 @@ class SparseType(AdapterType):
         )
 
     @classmethod
-    def resolve(cls, wrapped: str = None, fill_value: str = None):
-        cdef ScalarType instance = None
-        cdef object parsed = None
+    def resolve(
+        cls,
+        wrapped: str = None,
+        fill_value: str = None
+    ) -> AdapterType:
+        if wrapped is None:
+            return cls()
 
-        # resolve wrapped
-        if wrapped is not None:
-            instance = resolve.resolve_type(wrapped)
+        cdef ScalarType instance = resolve.resolve_type(wrapped)
+        cdef object parsed = None
 
         # resolve fill_value
         if fill_value is not None:
@@ -82,7 +78,16 @@ class SparseType(AdapterType):
             else:
                 parsed = convert.cast(fill_value, instance)[0]
 
-        return cls(wrapped=instance, fill_value=parsed)
+        # insert into sorted adapter stack according to priority
+        for x in instance.adapters:
+            if x._priority <= cls._priority:  # initial
+                break
+            if getattr(x.wrapped, "_priority", -np.inf) <= cls._priority:
+                x.wrapped = cls(x.wrapped, fill_value=parsed)
+                return instance
+
+        # add to front of stack
+        return cls(instance, fill_value=parsed)
 
     @classmethod
     def slugify(
@@ -108,7 +113,6 @@ class SparseType(AdapterType):
         if isinstance(other, CompositeType):
             return all(self.contains(o, exact=exact) for o in other)
 
-        # check for type compatibility
         if not isinstance(other, type(self)):
             return False
 
@@ -128,6 +132,10 @@ class SparseType(AdapterType):
 
         # delegate to wrapped
         return result and self.wrapped.contains(other.wrapped, exact=exact)
+
+    @property
+    def dtype(self) -> pd.SparseDtype:
+        return pd.SparseDtype(self.wrapped.dtype, fill_value=self.fill_value)
 
     ##############################
     ####    SERIES METHODS    ####
