@@ -559,7 +559,7 @@ class M8Array(ExtensionArray, ExtensionScalarOpsMixin):
         # get handled values
         array_like = (np.ndarray, ExtensionArray)
         scalar_like = (self._atomic_type.type_def,)
-        if self._atomic_type._is_numeric:
+        if self._atomic_type.is_numeric:
             scalar_like += (numbers.Number,)
 
         if not all(isinstance(t, array_like + scalar_like) for t in inputs):
@@ -653,7 +653,7 @@ class M8Array(ExtensionArray, ExtensionScalarOpsMixin):
 
     def __neg__(self):
         # NOTE: shim allows unary negation (-)
-        if self._atomic_type._is_boolean:
+        if self._atomic_type.is_boolean:
             return self.__invert__()
         return self._from_sequence(-self._data)
 
@@ -663,7 +663,7 @@ class M8Array(ExtensionArray, ExtensionScalarOpsMixin):
 
     def __invert__(self):
         # NOTE: shim allows unary inversion (~)
-        if self._atomic_type._is_boolean:
+        if self._atomic_type.is_boolean:
             return self.__xor__(True)
         return self._from_sequence(~self._data)
 

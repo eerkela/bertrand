@@ -2,11 +2,11 @@ PYTHON = python3
 
 
 help:
-	@echo "-------------------------HELP---------------------------"
+	@echo "-------------------------------------------------------"
 	@echo "make install - compile binaries and build documentation"
 	@echo "make clean   - remove compiled elements/autodoc stubs"
 	@echo "make test    - run test suite + doctests"
-	@echo "--------------------------------------------------------"
+	@echo "-------------------------------------------------------"
 
 
 install:

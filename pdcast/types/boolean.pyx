@@ -117,8 +117,8 @@ class BooleanType(BooleanMixin, AtomicType):
 
     # internal root fields - all subtypes/backends inherit these
     conversion_func = convert.to_boolean
-    _is_boolean = True
-    _is_numeric = True
+    is_boolean = True
+    is_numeric = True
 
     # standard type definition
     name = "bool"

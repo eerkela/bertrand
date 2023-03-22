@@ -110,8 +110,8 @@ cdef class AtomicType(ScalarType):
     # Internal fields.  These should never be overridden.
     flyweights: dict[str, AtomicType] = {}
     conversion_func = convert.to_object
-    _is_boolean = None
-    _is_numeric = None
+    is_boolean = None
+    is_numeric = None
     is_sparse = False
     is_categorical = False
 
@@ -341,8 +341,8 @@ cdef class AtomicType(ScalarType):
         """
         return array.construct_extension_dtype(
             self,
-            is_boolean=self._is_boolean,
-            is_numeric=self._is_numeric,
+            is_boolean=self.is_boolean,
+            is_numeric=self.is_numeric,
             add_comparison_ops=True,
             add_arithmetic_ops=True
         )

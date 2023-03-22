@@ -95,7 +95,7 @@ Compared to the existing ``astype()`` framework, ``pdcast`` is:
 Demonstration
 -------------
 ``pdcast`` can be used to easily verify the types that are present within
-a pandas data structure:
+pandas data structures:
 
 .. doctest:: typecheck
 
@@ -104,6 +104,8 @@ a pandas data structure:
 
    >>> df = pd.DataFrame({"a": [1, 2], "b": [1., 2.], "c": ["a", "b"]})
    >>> df.typecheck({"a": "int", "b": "float", "c": "string"})
+   True
+   >>> df["a"].typecheck("int")
    True
 
 It can also be used to convert data from one representation to another.  Here
@@ -118,6 +120,7 @@ is a short walk around the various type categories that are recognized by
    >>> class CustomObj:
    ...     def __init__(self, x): self.x = x
    ...     def __str__(self): return f"CustomObj({self.x})"
+   ...     def __repr__(self): return str(self)
 
    >>> pdcast.to_boolean([1+0j, "False", None])  # non-homogenous
    0     True
@@ -165,52 +168,61 @@ is a short walk around the various type categories that are recognized by
    2                            <NA>
    dtype: category
    Categories (2, string): [CustomObj(0:00:00), CustomObj(366 days, 0:00:00)]
-   >>> _.cast(bool, true="*", false="CustomObj(0:00:00)")  # our original data
+   >>> _.cast("bool", true="*", false="CustomObj(0:00:00)")  # our original data
    0     True
    1    False
    2     <NA>
    dtype: boolean
 
-And finally, dispatching allows users to modify series behavior on a per-type
-basis.
+Occasionally a pandas method might break when working with data in a
+nonstandard representation.
 
 .. NOTE: BREAK HERE IN INDEX.RST
 
 .. doctest:: dispatch
 
    >>> import pandas as pd
-
    >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round()
    Traceback (most recent call last):
       ...
    TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
 
-   >>> import pdcast; pdcast.attach()
+``pdcast`` defines type-agnostic alternatives for these where applicable.  If
+required, the original functionality can be easily recovered.
 
-   # pdcast attaches a round() function that is type-agnostic
+.. doctest:: dispatch
+
+   >>> import pdcast; pdcast.attach()
    >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round()
    0    1.0
    1   -2.0
    2    4.0
-   dtype: float64
+   dtype: float[python]
+   >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round.original()
+   Traceback (most recent call last):
+      ...
+   TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
 
-   # new methods can be defined programmatically
+New methods can be defined programmatically using ``pdcast``'s powerful
+dispatching tools.
+
+.. doctest:: dispatch
+
    >>> @pdcast.dispatch(namespace="foo", types="int, float")
    ... def bar(series: pdcast.SeriesWrapper) -> pdcast.SeriesWrapper:
    ...     print("Hello, World!")
    ...     return series
    >>> pd.Series([1, 2, 3]).foo.bar()
-   Hello World!
+   Hello, World!
    0    1
    1    2
    2    3
    dtype: int64
-
-   # original functionality can be easily recovered
-   >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round.original()
+   >>> pd.Series([True, False, True]).foo.bar()
    Traceback (most recent call last):
       ...
-   TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
+   AttributeError: type object 'Series' has no attribute 'foo'
+
 
 .. uncomment this when documentation goes live
 
