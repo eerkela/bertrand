@@ -16,5 +16,7 @@ install:
 clean:
 	@find pdcast/ -name "*.c" -type f -delete
 	@find pdcast/ -name "*.so" -type f -delete
+	@find . | grep -E "(/__pycache__$|\.pyc$|\.pyo$)" | xargs rm -rf
 	@rm -r build/
 	@rm -r docs/build
+	@rm -r docs/source/generated

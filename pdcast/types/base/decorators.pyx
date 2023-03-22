@@ -1,7 +1,6 @@
 import inspect
 from functools import wraps
-from types import MethodType
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 cimport pdcast.convert as convert
 import pdcast.convert as convert
@@ -10,7 +9,9 @@ import pdcast.resolve as resolve
 
 from pdcast.util.type_hints import type_specifier
 
+from .adapter import AdapterType
 from .atomic import ScalarType, AtomicType
+from .composite import CompositeType
 
 
 # TODO: dispatch should have an option to allow length changes?
@@ -26,7 +27,7 @@ def dispatch(
     *,
     namespace: str = None,
     types: type_specifier | Iterable[type_specifier] = None,
-    exact: bool = False
+    include_subtypes: bool = True
 ):
     """Dispatch a method to ``pandas.Series`` objects of the associated type.
 
@@ -50,10 +51,20 @@ def dispatch(
             method only applies when certain settings are selected, then it
             must do the filtering itself.
 
+    include_subtypes : bool, default True
+        Specifies whether to add the dispatched method to subtypes of the
+        given ``types``.  If this is set to ``False``, then the method will
+        only be added to the types themselves (along with each of their
+        implementations if any are :func:`generic`).
+
     Raises
     ------
     ValueError
-        If ``types`` is given and could not be resolved.
+        If ``types`` is given and could not be resolved, or if it contains
+        types that are wrapped in adapters (e.g. ``"sparse[int]"``, etc.).
+        If you'd like to dispatch method to an ``AdapterType`` globally, then
+        it should be naked when it is provided to this function (e.g.
+        ``"sparse"`` rather than ``"sparse[int]"``).
     TypeError
         If the decorated method does not conform to the dispatch criteria.
 
@@ -119,31 +130,10 @@ def dispatch(
     then it will be chosen instead of the default implementation.  Otherwise,
     the attribute access is treated normally.
     """
-    types = resolve.resolve_type([types]) if types is not None else types
+    types = CompositeType() if types is None else resolve.resolve_type([types])
 
     def dispatch_decorator(method):
-        # check for compatible signature
-        sig = inspect.signature(method)
-        pars = list(sig.parameters.items())
-        has_self = False
-        if not pars:
-            raise TypeError(
-                f"@dispatch method {repr(method.__qualname__)}() signature "
-                f"must not be empty"
-            )
-        if pars[0][0] == "self":
-            has_self = True
-            pars = pars[1:]
-        if not pars or pars[0][1].annotation not in valid_series_annotations:
-            raise TypeError(
-                f"@dispatch method {method.__qualname__}() must accept a "
-                f"'SeriesWrapper' as its first non-self argument"
-            )
-        if sig.return_annotation not in valid_series_annotations:
-            raise TypeError(
-                f"@dispatch method {method.__qualname__}() must return a "
-                f"'SeriesWrapper' object"
-            )
+        has_self = validate_dispatch_signature(method)
 
         @wraps(method)
         def dispatch_wrapper(self, *args, **kwargs):
@@ -154,22 +144,7 @@ def dispatch(
         # mark as dispatch method
         dispatch_wrapper._dispatch = True
         dispatch_wrapper._namespace = namespace
-
-        # add to selected types
-        if types is not None:
-            for typ in types:  # iterate through types argument
-                typ = typ.unwrap()
-                wrapped_name = dispatch_wrapper.__name__
-                for back in typ.backends.values():  # add to all backends
-                    if exact:  # ignore subtypes
-                        setattr(type(back), wrapped_name, dispatch_wrapper)
-                    else:  # repeat for all subtypes
-                        for t in back.subtypes:
-                            setattr(type(t), wrapped_name, dispatch_wrapper)
-
-            # flush registry to force rebuild of dispatch_map
-            AtomicType.registry.flush()
-
+        broadcast_to_types(dispatch_wrapper, types, include_subtypes)
         return dispatch_wrapper
 
     if _method is None:
@@ -351,3 +326,69 @@ def subtype(supertype: type):
 
 # NOTE: cython stores type hints as strings; python stores them as objects.
 cdef set valid_series_annotations = {"SeriesWrapper", convert.SeriesWrapper}
+
+
+def validate_dispatch_signature(call: Callable) -> bool:
+    """Given a callable decorated with @dispatch, ensure that its signature is
+    compatible.
+
+    This function returns a boolean, which indicates whether the callable
+    includes a ``self`` argument.
+    """
+    # check for compatible signature
+    sig = inspect.signature(call)
+    pars = list(sig.parameters.items())
+    has_self = False
+    if not pars:
+        raise TypeError(
+            f"@dispatch method {repr(call.__qualname__)}() signature "
+            f"must not be empty"
+        )
+    if pars[0][0] == "self":
+        has_self = True
+        pars = pars[1:]
+    if not pars or pars[0][1].annotation not in valid_series_annotations:
+        raise TypeError(
+            f"@dispatch method {call.__qualname__}() must accept a "
+            f"'SeriesWrapper' as its first non-self argument"
+        )
+    if sig.return_annotation not in valid_series_annotations:
+        raise TypeError(
+            f"@dispatch method {call.__qualname__}() must return a "
+            f"'SeriesWrapper' object"
+        )
+
+    return has_self
+
+
+def broadcast_to_types(
+    call: Callable,
+    types: CompositeType,
+    include_subtypes: bool
+) -> None:
+    """Add the given callable to each of the specified types."""
+    name = call.__name__
+
+    # ensure all types are dispatchable
+    for typ in types:
+        if isinstance(typ, AdapterType) and typ.wrapped is not None:
+            raise NotImplementedError(
+                f"adapters are ignored during @dispatch: {typ}"
+            )
+
+    # attach to selected types
+    for typ in types:
+        # adapters don't have backends/subtypes
+        if isinstance(typ, AdapterType):
+            setattr(type(typ), name, call)
+
+        else:
+            for back in typ.backends.values():  # add to all backends
+                if include_subtypes:
+                    for t in back.subtypes:
+                        setattr(type(t), name, call)
+                else:
+                    setattr(type(back), name, call)
+
+    # force rebuild of dispatch_map
+    AtomicType.registry.flush()

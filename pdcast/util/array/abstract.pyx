@@ -378,7 +378,7 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
 
         if isinstance(dtype, ExtensionDtype):
             cls = dtype.construct_array_type()
-            return cls._from_sequence(self, dtype=dtype, copy=copy)
+            return cls._from_sequence(self._data, dtype=dtype, copy=copy)
 
         return self._data.astype(dtype=dtype, copy=copy)
 

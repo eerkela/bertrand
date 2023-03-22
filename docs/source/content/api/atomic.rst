@@ -53,7 +53,7 @@ Adapters
     :toctree: ../../generated/
 
     AtomicType.adapters
-    AtomicType.strip
+    AtomicType.unwrap
     AtomicType.make_sparse
     AtomicType.make_categorical
 

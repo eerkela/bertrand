@@ -37,12 +37,12 @@ Adapters
 .. autosummary::
     :toctree: ../../generated/
 
-    AdapterType.adapters
-    AdapterType.atomic_type
-    AdapterType.strip
-    AdapterType.unwrap
-    AdapterType.wrap
     AdapterType.wrapped
+    AdapterType.atomic_type
+    AdapterType.unwrap
+    AdapterType.adapters
+    AdapterType.transform
+    AdapterType.inverse_transform
 
 Special Methods
 ---------------
