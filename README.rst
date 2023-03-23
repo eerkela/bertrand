@@ -1,32 +1,35 @@
 .. NOTE: whenever a change is made to this file, make sure to update the
 .. start and end lines of index.rst to allow doctests to run.
 
-pdcast - flexible type extensions for numpy/pandas
-==================================================
+pdcast - pandas data types made easy
+====================================
 ``pdcast`` modifies the existing numpy/pandas typing infrastructure, making it
-easier to work with tabular data in a variety of formats.
+easier to work with tabular data in a wide variety of formats.
 
 Features
 --------
 ``pdcast`` adds support for:
 
-*  **Extendable type hierarchies** for numpy/pandas ``dtype`` objects.  These
-   can be used to add arbitrary object types to the pandas ecosystem in as
-   little as 10 lines of code.  They can incorporate existing ``dtype``\ /
-   \ ``ExtensionDtype`` definitions or automatically generate their own via the
-   `pandas extension API <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.   
-   In either case, integration is seamless and automatic, and every aspect of a
-   type's behavior can be customized as needed.
+*  **Extendable hierarchies** for numpy/pandas ``dtype`` objects.  These can
+   be arranged into trees representing different subtypes and implementations,
+   and new types can be defined in as little as 10 lines of code.  They can use
+   existing ``dtype``\ /\ ``ExtensionDtype`` definitions or *automatically
+   generate* their own via the  `pandas extension API <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
+   This unifies the two halves of the pandas typing infrastructure and takes
+   the guesswork out of writing new extensions.  In either case, integration is
+   seamless and automatic, and every aspect of a type's behavior can be
+   customized as needed.
 *  **A generalized mini-language** for resolving types, with user-definable
-   aliases and semantics similar to existing pandas conventions.  This allows
-   types to be quickly and unambiguously specified while maintaining fine
-   control over their behavior and composition.
-*  Tools for **inference** and **type checking**.  Types can be easily
-   detected from example data, even if those data are non-homogenous or not
-   supported by existing numpy/pandas alternatives.  This can be customized in
-   the same way as the type specification mini-language, and is more robust
-   than simply checking an array's ``.dtype`` field.  Users can even work with
-   ``dtype: object`` arrays without losing confidence in their results.
+   aliases and semantics in the style of existing pandas conventions.  This
+   allows users to quickly and unambiguously specify types while maintaining
+   fine control over their composition and behavior.
+*  Tools for **inference** and **type checking**.  Types can be easily detected
+   from example data, even if those data are non-homogenous or not supported by
+   existing numpy/pandas alternatives.  This is more robust than simply
+   checking an array's ``.dtype`` field, and allows explicit
+   ``isinstance()``\-like checks for vectorized data in any representation.
+   Users can even work with ``dtype: object`` arrays without losing confidence
+   in their results.
 *  **A suite of conversions** covering 9 of the most commonly-encountered data
    types: *boolean*, *integer*, *floating point*, *complex*, *decimal*
    (arbitrary precision), *datetime*, *timedelta*, *string*, *raw python
@@ -36,9 +39,9 @@ Features
    tools outlined above.
 *  **Automatic method dispatching** based on observed data.  This functions in
    a manner similar to ``@functools.singledispatch``, allowing series methods
-   to dispatch to multiple different implementations based on the underlying
+   to dispatch to multiple different implementations based on their underlying
    data type.  This mechanism is fully general-purpose, and can be used to
-   dynamically repair/modify existing pandas functionality in cases where it is
+   dynamically modify existing pandas functionality in cases where it is
    broken, or to extend it arbitrarily without interference.  In either case,
    ``pdcast`` handles all the necessary type checks and inferencing,
    dispatching to the appropriate implementation if one exists and falling back
@@ -50,6 +53,10 @@ Advantages over Pandas
 ----------------------
 Compared to the existing ``astype()`` framework, ``pdcast`` is:
 
+*  **Simple**.  ``pdcast`` functions and methods are built to mimic base python
+   and pandas analogues like ``isinstance()``, ``@singledispatch``, and
+   ``astype()``.  There are no new frameworks to learn, and any additional
+   functionality is designed to be familiar and self-explanatory.
 *  **Robust**. ``pdcast`` can handle almost any input data, even if they are
    missing, malformed, imprecise, or ambiguous.  They can even be of mixed type
    and still be processed intelligibly.
@@ -203,7 +210,7 @@ required, the original functionality can be easily recovered.
       ...
    TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
 
-New methods can be defined programmatically using ``pdcast``'s powerful
+New methods can also be defined programmatically using ``pdcast``'s powerful
 dispatching tools.
 
 .. doctest:: dispatch
@@ -218,11 +225,6 @@ dispatching tools.
    1    2
    2    3
    dtype: int64
-   >>> pd.Series([True, False, True]).foo.bar()
-   Traceback (most recent call last):
-      ...
-   AttributeError: type object 'Series' has no attribute 'foo'
-
 
 .. uncomment this when documentation goes live
 

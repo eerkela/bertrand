@@ -63,8 +63,6 @@ def to_boolean(
     false: str | Iterable[str] = None,
     ignore_case: bool = None,
     call: Callable = None,
-    sparse: Any = None,
-    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -113,8 +111,6 @@ def to_boolean(
         false=false,
         ignore_case=ignore_case,
         call=call,
-        sparse=sparse,
-        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -131,8 +127,6 @@ def to_integer(
     base: int = None,
     call: Callable = None,
     downcast: bool | type_specifier = None,
-    sparse: Any = None,
-    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -162,8 +156,6 @@ def to_integer(
         base=base,
         call=call,
         downcast=downcast,
-        sparse=sparse,
-        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -179,8 +171,6 @@ def to_float(
     since: str | datetime_like = None,
     call: Callable = None,
     downcast: bool | type_specifier = None,
-    sparse: Any = None,
-    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -208,8 +198,6 @@ def to_float(
         since=since,
         call=call,
         downcast=downcast,
-        sparse=sparse,
-        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -225,8 +213,6 @@ def to_complex(
     since: str | datetime_like = None,
     call: Callable = None,
     downcast: bool | type_specifier = None,
-    sparse: Any = None,
-    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -253,8 +239,6 @@ def to_complex(
         step_size=step_size,
         since=since,
         downcast=downcast,
-        sparse=sparse,
-        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -269,8 +253,6 @@ def to_decimal(
     step_size: int = None,
     since: str | datetime_like = None,
     call: Callable = None,
-    sparse: Any = None,
-    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -296,8 +278,6 @@ def to_decimal(
         step_size=step_size,
         since=since,
         call=call,
-        sparse=sparse,
-        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -317,8 +297,6 @@ def to_datetime(
     day_first: bool = None,
     year_first: bool = None,
     call: Callable = None,
-    sparse: Any = None,
-    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -354,8 +332,6 @@ def to_datetime(
         day_first=day_first,
         year_first=year_first,
         call=call,
-        sparse=sparse,
-        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -371,8 +347,6 @@ def to_timedelta(
     since: str | datetime_like = None,
     as_hours: bool = None,
     call: Callable = None,
-    sparse: Any = None,
-    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -400,8 +374,6 @@ def to_timedelta(
         since=since,
         as_hours=as_hours,
         call=call,
-        sparse=sparse,
-        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -413,8 +385,6 @@ def to_string(
     format: str = None,
     base: int = None,
     call: Callable = None,
-    sparse: Any = None,
-    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -434,8 +404,6 @@ def to_string(
         base=base,
         format=format,
         call=call,
-        sparse=sparse,
-        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -445,8 +413,6 @@ def to_object(
     series: Iterable,
     dtype: type_specifier = "object",
     call: Callable = None,
-    sparse: Any = None,
-    categorical: bool = None,
     errors: str = None,
     **kwargs
 ) -> pd.Series:
@@ -462,8 +428,6 @@ def to_object(
         "to_object",
         dtype=dtype,
         call=call,
-        sparse=sparse,
-        categorical=categorical,
         errors=errors,
         **kwargs
     )
@@ -478,8 +442,6 @@ def do_conversion(
     data,
     endpoint: str,
     dtype: types.ScalarType,
-    sparse: Any,
-    categorical: bool,
     errors: str,
     *args,
     **kwargs

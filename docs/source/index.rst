@@ -4,7 +4,7 @@
    contain the root `toctree` directive.
 
 .. include:: ../../README.rst
-   :end-line: 180
+   :end-line: 187
 
 .. testsetup:: dispatch
 
@@ -13,7 +13,7 @@
    pdcast.detach()
 
 .. include:: ../../README.rst
-   :start-line: 181
+   :start-line: 188
 
 .. toctree::
    :hidden:

@@ -372,7 +372,7 @@ def broadcast_to_types(
     # ensure all types are dispatchable
     for typ in types:
         if isinstance(typ, AdapterType) and typ.wrapped is not None:
-            raise NotImplementedError(
+            raise ValueError(
                 f"adapters are ignored during @dispatch: {typ}"
             )
 
