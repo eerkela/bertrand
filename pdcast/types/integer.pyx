@@ -92,9 +92,11 @@ class IntegerMixin:
     def larger(self) -> list:
         """Get a list of types that this type can be upcasted to."""
         # get all subtypes with range wider than self
-        result = [
-            x for x in self.subtypes if x.min < self.min or x.max > self.max
-        ]
+        result = []
+        for back in self.backends.values():
+            for x in back.subtypes:
+                if x.min < self.min or x.max > self.max:
+                    result.append(x)
 
         # collapse types that are not unique
         result = [

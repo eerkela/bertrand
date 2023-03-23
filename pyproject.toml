@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pdcast"
 version = "0.0.1"
-description = "Flexible type extensions for pandas"
+description = "Pandas data types made easy"
 readme = "README.rst"
 authors = [
     { name="Eric Erkela", email="eerkela42@gmail.com" }
@@ -23,6 +23,7 @@ keywords = [
     "extension",
     "type",
     "conversion",
+    "dispatch"
 ]
 dependencies = [
     "numpy",
@@ -33,6 +34,14 @@ dependencies = [
     "tzlocal"
 ]
 requires-python = ">=3.7"
+
+
+[project.optional-dependencies]
+dev = [
+    "cibuildwheel",
+    "pytest",
+    "sphinx"
+]
 
 
 [project.urls]

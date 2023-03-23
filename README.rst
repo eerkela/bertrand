@@ -11,10 +11,10 @@ Features
 ``pdcast`` adds support for:
 
 *  **Extendable hierarchies** for numpy/pandas ``dtype`` objects.  These can
-   be arranged into trees representing different subtypes and implementations,
-   and new types can be defined in as little as 10 lines of code.  They can use
-   existing ``dtype``\ /\ ``ExtensionDtype`` definitions or *automatically
-   generate* their own via the  `pandas extension API <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
+   be arranged into trees to represent different subtypes and implementations,
+   and new types can be defined in as little as 10 lines of code.  They can
+   utilize existing ``dtype``\ /\ ``ExtensionDtype`` definitions or
+   *automatically generate* their own via the  `pandas extension API <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
    This unifies the two halves of the pandas typing infrastructure and takes
    the guesswork out of writing new extensions.  In either case, integration is
    seamless and automatic, and every aspect of a type's behavior can be
@@ -23,10 +23,10 @@ Features
    aliases and semantics in the style of existing pandas conventions.  This
    allows users to quickly and unambiguously specify types while maintaining
    fine control over their composition and behavior.
-*  Tools for **inference** and **type checking**.  Types can be easily detected
-   from example data, even if those data are non-homogenous or not supported by
-   existing numpy/pandas alternatives.  This is more robust than simply
-   checking an array's ``.dtype`` field, and allows explicit
+*  Tools for **inferencing** and **type checking**.  Types can be readily
+   detected from example data, even if those data are non-homogenous or not
+   supported by existing numpy/pandas alternatives.  This is more robust than
+   simply checking an array's ``.dtype`` field, and allows explicit
    ``isinstance()``\-like checks for vectorized data in any representation.
    Users can even work with ``dtype: object`` arrays without losing confidence
    in their results.
@@ -41,39 +41,40 @@ Features
    a manner similar to ``@functools.singledispatch``, allowing series methods
    to dispatch to multiple different implementations based on their underlying
    data type.  This mechanism is fully general-purpose, and can be used to
-   dynamically modify existing pandas functionality in cases where it is
-   broken, or to extend it arbitrarily without interference.  In either case,
-   ``pdcast`` handles all the necessary type checks and inferencing,
-   dispatching to the appropriate implementation if one exists and falling back
-   to pandas if it does not.  Original functionality can be easily recovered if
-   necessary, and dispatched methods can be hidden behind virtual namespaces to
-   avoid conflicts, similar to ``Series.dt``, ``Series.str``, etc.
+   modify existing pandas functionality in cases where it is broken, or to
+   extend it arbitrarily without interference.  In either case, ``pdcast``
+   handles all the necessary type checks and inferencing, dispatching to the
+   appropriate implementation if one exists and falling back to pandas if it
+   does not.  Original functionality can be easily recovered if necessary, and
+   dispatched methods can be hidden behind virtual namespaces to avoid
+   conflicts, similar to ``Series.dt``, ``Series.str``, etc.
 
 Advantages over Pandas
 ----------------------
-Compared to the existing ``astype()`` framework, ``pdcast`` is:
+Compared to the existing pandas framework, ``pdcast`` is:
 
-*  **Simple**.  ``pdcast`` functions and methods are built to mimic base python
-   and pandas analogues like ``isinstance()``, ``@singledispatch``, and
-   ``astype()``.  There are no new frameworks to learn, and any additional
-   functionality is designed to be familiar and self-explanatory.
+*  **Simple**.  ``pdcast`` avoids many common gotchas and edge cases that
+   can crop up during type manipulations, including (but not limited to):
+   missing values, overflow, precision loss, string parsing, datetimes, and
+   sparse/categorical encoding.
 *  **Robust**. ``pdcast`` can handle almost any input data, even if they are
-   missing, malformed, imprecise, or ambiguous.  They can even be of mixed type
-   and still be processed intelligibly.
+   missing, imprecise, or ambiguous.  They can even be of mixed type and still
+   be processed intelligibly.
 *  **Flexible**.  Every aspect of ``pdcast``'s functionality can be modified or
    extended to meet one's needs, no matter how complex.
 *  **Comprehensive**.  ``pdcast`` comes prepackaged with support for several
    different backends for each data type, including numpy, pandas, python, and
    pyarrow where applicable.
-*  **Intuitive**.  ``pdcast`` avoids many common gotchas and edge cases that
-   can crop up during type manipulations, including (but not limited to):
-   missing values, precision loss, overflow, timezones, string parsing, and
-   sparse/categorical data.
+*  **Intuitive**.  ``pdcast`` has a minimalistic, decorator-focused design that
+   can be attached directly to existing pandas data structures.  There are no
+   new frameworks to learn, and any additional functionality is designed to be
+   familiar and self-explanatory.
 *  **Efficient**.  By giving users more control over the types that are present
    within their series and dataframe objects, substantial memory savings and
    performance improvements can be achieved.  Sparse data structures and
    lossless downcasting make it possible to shrink data by up to a factor of
-   10 in some cases, increasing access to big data.
+   10 in some cases, increasing access to big data and enhancing compatibility
+   with statically-typed production code.
 
 .. TODO: uncomment this once the package is pushed to PyPI
 
