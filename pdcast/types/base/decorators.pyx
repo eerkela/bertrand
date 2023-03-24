@@ -139,7 +139,7 @@ def dispatch(
         def dispatch_wrapper(self, *args, **kwargs):
             if has_self:
                 return method(self, *args, **kwargs)
-            return method(*args, **kwargs)  # insert reference to self
+            return method(*args, **kwargs)
 
         # mark as dispatch method
         dispatch_wrapper._dispatch = True
@@ -324,7 +324,7 @@ def subtype(supertype: type):
 #######################
 
 
-# NOTE: cython stores type hints as strings; python stores them as objects.
+# NOTE: cython stores type hints as strings; python stores them as references.
 cdef set valid_series_annotations = {"SeriesWrapper", convert.SeriesWrapper}
 
 

@@ -56,12 +56,12 @@ def typecheck(
 
     Notes
     -----
-    If ``pdcast.attach`` is imported, this function is directly attached to
-    ``pandas.Series`` objects, allowing users to omit the ``data`` argument.
+    If :func:`pdcast.attach()` is invoked, this function is directly attached
+    to ``pandas.Series`` objects, allowing users to omit the ``data`` argument.
 
     >>> import pandas as pd
-    >>> import pdcast.attach
-    >>> pd.Series([1, 2, 3]).typecheck(int)
+    >>> import pdcast; pdcast.attach()
+    >>> pd.Series([1, 2, 3]).typecheck("int")
     True
     >>> pd.Series([1, 2, 3]).typecheck("int64", exact=True)
     True

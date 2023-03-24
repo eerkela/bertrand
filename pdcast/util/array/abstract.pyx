@@ -169,13 +169,27 @@ class AbstractDtype(ExtensionDtype):
         ...             f"'{string}'"
         ...         )
         """
-        if not isinstance(string, str):
-            raise TypeError(
-                f"'construct_from_string' expects a string, got {type(string)}"
-            )
-
         # disable string construction - use ``pdcast.resolve_type()`` instead
         raise TypeError(f"Cannot construct a '{cls.__name__}' from '{string}'")
+
+    def __dir__(self) -> list:
+        # direct AbstractDtype attributes
+        result = dir(type(self))
+        result += list(self.__dict__.keys())
+
+        # AtomicType kwargs
+        result += [x for x in self._atomic_type.kwargs if x not in result]
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self._atomic_type.kwargs[name]
+        except KeyError as err:
+            err_msg = (
+                f"{repr(type(self).__name__)} object has no attribute: "
+                f"{repr(name)}"
+            )
+            raise AttributeError(err_msg) from err
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({str(self._atomic_type)})"

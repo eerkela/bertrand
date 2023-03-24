@@ -3,16 +3,21 @@
 Motivation
 ==========
 ``pdcast`` is meant to be a flexible framework for resolving certain
-idiosyncrasies in pandas functionality.  To explain this further, we need to do
-an in-depth examination of what these idiosyncrasies are, and how they can
-adversely affect your data science pipelines.
+idiosyncrasies in pandas functionality, particularly as it relates to data
+cleaning and preprocessing.  It allows users to easily detect and manipulate
+data in virtually any representation, and to safely convert between
+them without losing information in the process.
+
+To explain this further, we need to do an in-depth examination of what these
+idiosyncrasies are, and how they can adversely affect your data science
+pipelines.
 
 Static vs Dynamic Typing
 ------------------------
 Python is a dynamically-typed language.  This comes with a number of noteworthy
 benefits, many of which have spurred the growth of Python as an easy to use,
 general purpose programming language.  Simultaneously, it is also the basis for
-most of the major complaints against Python as just such a language.  Python is
+many of the complaints against Python as just such a language.  Python is
 too slow?  Blame dynamic typing.  Python uses too much memory?  Blame dynamic
 typing (and reference counting).  Python is buggy?  *Blame dynamic typing.*
 
@@ -27,20 +32,25 @@ platform-specific and may not fit arbitrary data without overflowing, like
 Python integers can.  Similarly, they are unable to hold missing values, which
 are often encountered in real-world data.  Nevertheless, as long as one is
 aware of these limitations going in, the benefits can be significant, and so it
-is done regardless.  This, however, presents an entirely new problem: one of
-translation.  Given the fact that there is no direct C equivalent for the
-built-in Python integer type, how can we be sure that our inputs will fit
-within the limits of our statically-typed containers?  Furthermore, what if
-there is no direct analogue at all in the target language (as might be the case
-with datetimes, for example)?
+is done regardless.
 
-If we were working with scalar values, we could insert one or more explicit
-``isinstance()`` and/or range checks to work it out manually, but this adds
-overhead and counteracts the performance benefits we can expect to achieve.  It
-also fails to address the case where our data has no analogue, for which we'd
-need to implement our own custom encoding/decoding logic.  Additionally, if our
-data is vectorized, we'd need to repeat the check at every index, which might
-be slow and inefficient, particularly in Python.  Of course we could just move
+This, however, presents an entirely new problem: one of translation.  Given the
+fact that there is no direct C equivalent for the built-in Python integer type,
+how can we be sure that our dynamic inputs will fit within the limits of our
+statically-typed containers?  In fact, how can we be certain that we're dealing
+with integers at all?  What if our data is given as datetimes, for which there
+is no direct C analogue?  Dynamic typing forces us to answer these questions at
+**runtime.**  We cannot rely on a static compiler to keep things consistent for
+us.  If we want to be certain, then we must insert manual checks to guarantee
+that the translation occurs without error.  
+
+If we were working with scalar values, we could do this by inserting one or
+more ``isinstance()`` and/or range checks, but this adds overhead and
+counteracts the performance benefits we can expect to achieve.  It also fails
+to address the case where our data has no analogue, for which we'd need to
+implement our own custom encoding/decoding logic.  Additionally, if our data is
+vectorized, then we'd need to repeat the check at every index, which might be
+slow and inefficient, particularly in Python.  Of course we could just move
 forward and hope we don't encounter any problems, but what if we do?  What if
 our assumptions are wrong, or what if we don't know ahead of time what data we
 will encounter?
@@ -53,14 +63,14 @@ pipeline of formatting, visualizations, normalization, cuts, biases,
 conversions, and anything else a data scientist might keep in their toolkit for
 just such an occassion.
 
-Paradoxically, this is also the exact case where reliability and performance 
-matter most, especially in the era of big data.  As such, one should be looking
-to use statically-typed acceleration wherever possible, and indeed this is
-exactly what the two most common data analysis packages (numpy and pandas) do
-under the hood.  It is important to state, however, that they do not eliminate
-the problems that arise when converting from dynamic to static typing; they
-merely bury them beneath an extra layer of abstraction.  Occasionally, they
-still rear their ugly heads.
+This is also the exact case where reliability and performance matter most,
+especially in the era of big data.  As such, one should be looking to use
+statically-typed acceleration wherever possible, and indeed this is exactly
+what the two most common data analysis packages (numpy and pandas) do under the
+hood.  It is important to state, however, that they do not eliminate the
+problems that arise when converting from dynamic to static typing; they merely
+bury them beneath an extra layer of abstraction.  Occasionally, they still rear
+their ugly heads.
 
 Limitations of Numpy/Pandas
 ---------------------------
@@ -158,6 +168,8 @@ It gets even worse when you combine large integers with missing values:
 
 As before, this converts our data into a floating point format.  What happens
 if we add 1 to this series?
+
+.. _floating_point_rounding_error:
 
 .. doctest:: limitations
 
@@ -315,8 +327,8 @@ representation to another.  This is where ``pdcast`` really shines.
 Case study: integers & floats
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Before we dive into the differences, let's see how pandas handles conversions
-in cases of precision loss and/or overflow.  We'll start with our large
-integers from before:
+in cases of precision loss and overflow.  We'll start with our large integers
+from before:
 
 .. testsetup:: conversions
 
@@ -429,8 +441,8 @@ replaced with NAs to avoid biasing the result:
     2    <NA>
     dtype: Int32
 
-If any of our values *had* fit into the available range for ``int32`` objects,
-they would have been preserved.
+If any of our values *had* fit into the available range for ``int32``, they
+would have been preserved.
 
 .. doctest:: conversions
 
@@ -453,7 +465,7 @@ could slowly go insane doing this in pandas:
 .. figure:: ../images/pandas_time_conversions_naive.png
     :align: center
 
-    (And that's just for timezone-naive datetimes)
+    (And this doesn't even consider timezones)
 
 Or you could let ``pdcast`` work out all the messy details for you:
 
@@ -501,7 +513,7 @@ And calendar-accurate unit conversions:
     2   1972-04-01
     dtype: datetime64[ns]
 
-Completely reversibly:
+Without data loss:
 
 .. doctest:: conversions
 
@@ -543,7 +555,7 @@ With arbitrary string parsing:
     2   2022-03-27 00:00:00
     dtype: datetime64[ns]
 
-Support for several different datetime representations:
+And support for several different datetime representations:
 
 .. doctest:: conversions
 
@@ -563,24 +575,27 @@ Support for several different datetime representations:
     2    -4710-11-24T12:00:00.000000
     dtype: object
 
-And automatic upcasting, similar to ``int`` above:
+.. TODO: 
 
-.. doctest:: conversions
+    With automatic upcasting, similar to ``int`` above:
 
-    >>> integers.cast("datetime", unit="us", since=pd.Timestamp.max)
-    0    2262-04-11 23:47:16.854776
-    1    2262-04-11 23:47:16.854777
-    2    2262-04-11 23:47:16.854778
-    dtype: datetime[python]
-    >>> _[0]
-    datetime.datetime(2262, 4, 11, 23, 47, 16, 854776)
-    >>> integers.cast("datetime", unit="s", since=datetime.datetime.max)
-    0    10000-01-01T00:00:00.999999
-    1    10000-01-01T00:00:01.999999
-    2    10000-01-01T00:00:02.999999
-    dtype: object
-    >>> _[0]
-    numpy.datetime64('10000-01-01T00:00:00.999999')
+    .. doctest:: conversions
+
+        >>> import datetime
+        >>> integers.cast("datetime", unit="us", since=pd.Timestamp.max)
+        0    2262-04-11 23:47:16.854776
+        1    2262-04-11 23:47:16.854777
+        2    2262-04-11 23:47:16.854778
+        dtype: datetime[python]
+        >>> _[0]
+        datetime.datetime(2262, 4, 11, 23, 47, 16, 854776)
+        >>> integers.cast("datetime", unit="s", since=datetime.datetime.max)
+        0    10000-01-01T00:00:00.999999
+        1    10000-01-01T00:00:01.999999
+        2    10000-01-01T00:00:02.999999
+        dtype: object
+        >>> _[0]
+        numpy.datetime64('10000-01-01T00:00:00.999999')
 
 .. note::
 
@@ -703,8 +718,7 @@ potentially inaccurate ``.dtype`` field, we can apply this to arbitrary data:
 
     >>> from decimal import Decimal
     >>> class CustomObj:
-    ...     def __init__(self, x):
-    ...         self.x = x
+    ...     def __init__(self, x):  self.x = x
 
     >>> pd.Series([1, 2, 3], dtype="O").typecheck("int")
     True
@@ -733,20 +747,154 @@ And even to non-homogenous data:
 
 Expanded Support
 ----------------
-``pdcast`` also allows users to make use of a wider variety of data than base
-pandas.
+``pdcast`` also exposes several new types for use in pandas data structures.
 
 Case Study: decimals
 ^^^^^^^^^^^^^^^^^^^^
+Earlier, we saw how :ref:`floating point rounding errors <floating_point_rounding_error>`
+can influence common data analysis tasks.  One way to avoid these is to use
+Python's built-in `decimal <https://docs.python.org/3/library/decimal.html>`_
+library, which provides data types for arbitrary precision arithmetic.  Pandas
+does not expose these by default, but ``pdcast`` makes it easy to integrate
+them into our typing ecosystem.
 
-.. TODO: arbitrary precision arithmetic, round() method
+.. testsetup:: decimal_support
 
+    import numpy as np
+    import pandas as pd
+
+.. doctest:: decimal_support
+
+    >>> import decimal
+    >>> import pdcast
+    >>> pdcast.to_decimal([1, 2, 3])
+    0    1
+    1    2
+    2    3
+    dtype: decimal
+
+Note that we get a ``dtype: decimal`` series in return.  This is because
+``pdcast`` has *automatically generated* an appropriate ``ExtensionDtype`` for
+this data.  In practice, this is simply a ``dtype: object`` array with some
+extra functionality added on top for comparisons, coercion, and arithmetic.
+
+.. doctest:: decimal_support
+
+    >>> series = pdcast.to_decimal([1, 2, 3])
+    >>> series.dtype
+    ImplementationDtype(decimal)
+    >>> series.array
+    <ImplementationArray>
+    [Decimal('1'), Decimal('2'), Decimal('3')]
+    Length: 3, dtype: decimal
+    >>> series.array.data
+    array([Decimal('1'), Decimal('2'), Decimal('3')], dtype=object)
+
+Most importantly, this label provides an explicit hook for :func:`detect_type`
+to interpret.  This turns type inference into an *O(1)* operation.
+
+.. doctest:: decimal_support
+
+    >>> import timeit
+    >>> series = pdcast.to_decimal(np.arange(10**6))
+    >>> series
+    0              0
+    1              1
+    2              2
+    3              3
+    4              4
+            ...
+    999995    999995
+    999996    999996
+    999997    999997
+    999998    999998
+    999999    999999
+    Length: 1000000, dtype: decimal
+    >>> timeit.timeit(lambda: pdcast.detect_type(series), number=10**3)   # doctest: +SKIP
+    0.0024710440047783777
+
+If we stored the same values in a ``dtype: object`` series, we would be forced
+to iterate over the entire array to find its type.
+
+.. doctest:: decimal_support
+
+    >>> series = series.astype(object)
+    >>> series
+    0              0
+    1              1
+    2              2
+    3              3
+    4              4
+            ...
+    999995    999995
+    999996    999996
+    999997    999997
+    999998    999998
+    999999    999999
+    Length: 1000000, dtype: object
+    >>> timeit.timeit(lambda: pdcast.detect_type(series), number=1)   # doctest: +SKIP
+    0.22230663200025447
+
+This is still fast, but it's nowhere near the constant-time equivalent.  Such
+speed allows us to do near-instantaneous type checks on properly-formatted
+data, and as a result, we are at liberty to sprinkle these checks throughout
+our code without worrying about incurring significant overhead.
+
+Now, if we want to use our ``decimal`` objects for some practical math, we
+might notice that some things are broken.  While the normal operators work as
+expected, some of the more specialized methods (like ``round()``) may not work
+properly.
+
+.. doctest:: decimal_support
+
+    >>> series = pdcast.to_decimal([-1.8, 0.5, 1.5, 2.4])
+    >>> series.round()
+    Traceback (most recent call last):
+        ...
+    TypeError: loop of ufunc does not support argument 0 of type decimal.Decimal which has no callable rint method
+
+This can be fixed by :func:`attaching <attach>` ``pdcast`` to pandas, which
+we've been doing throughout this documentation already.  This gives us a new
+implementation of the ``round()`` method designed specifically for ``decimal``
+objects.
+
+.. doctest:: decimal_support
+
+    >>> pdcast.attach()
+    >>> series.round   # doctest: +SKIP
+    <pdcast.patch.virtual.DispatchMethod object at 0x7f6ad2ed9990>
+    >>> series.round()
+    0    -2
+    1     0
+    2     2
+    3     2
+    dtype: decimal
+
+.. note::
+
+    This is actually even stronger than the normal ``round()`` method, since it
+    allows for a wider variety of rounding rules.  For instance:
+
+    .. doctest:: decimal_support
+
+        >>> series.round(rule="down")  # toward zero
+        0    -1
+        1     0
+        2     1
+        3     2
+        dtype: decimal
+        >>> series.round(rule="up")  # away from zero
+        0    -2
+        1     1
+        2     2
+        3     3
+        dtype: decimal
 
 Case Study: datetimes
 ^^^^^^^^^^^^^^^^^^^^^
-Suppose you are working with datetime-like data.  By default, pandas stores
-these in its own ``pandas.Timestamp`` format, which is built on top of a
-``numpy.datetime64`` object with nanosecond precision.
+By default, pandas stores datetimes in its own ``pandas.Timestamp`` format,
+which is built on top of a ``numpy.datetime64`` object with nanosecond
+precision.
 
 .. testsetup:: datetime_support
 
@@ -762,8 +910,8 @@ these in its own ``pandas.Timestamp`` format, which is built on top of a
 
 In essence, these are just 64-bit integers with extra support for timezones,
 formatting, etc.  They simply count the number of nanoseconds from the UTC
-epoch (1970-01-01 00:00:00), and as such, are subject to overflow errors if the
-dates being represented are too extreme:
+epoch (1970-01-01 00:00:00), and as such are subject to overflow errors if the
+dates are too extreme:
 
 .. doctest:: datetime_support
 
@@ -772,7 +920,7 @@ dates being represented are too extreme:
     >>> pd.to_datetime(2**63)
     Traceback (most recent call last):
         ...
-    pandas._libs.tslibs.np_datetime.OutOfBoundsDatetime: Out of bounds nanosecond timestamp: 9223372036854775808
+    pandas._libs.tslibs.np_datetime.OutOfBoundsDatetime: Out of bounds nanosecond timestamp
 
 This means that only dates within the range
 
@@ -830,7 +978,7 @@ But if you try to store these in a ``pandas.Series``, you're left with a
 
     .. doctest:: datetime_support
 
-        >>> pd.Series(np.array(["1500-01-01"], dtype="M8[us]"))  # using np.array
+        >>> pd.Series(np.array(["1500-01-01"], dtype="M8[us]"))
         Traceback (most recent call last):
             ...
         pandas._libs.tslibs.np_datetime.OutOfBoundsDatetime: Out of bounds nanosecond timestamp: 1500-01-01 00:00:00
@@ -848,12 +996,12 @@ In contrast, ``pdcast`` handles these objects gracefully:
     dtype: datetime64[ns]
     >>> pdcast.to_datetime(2**63)
     0    2262-04-11 23:47:16.854775
-    dtype: object
+    dtype: datetime[python]
     >>> _[0]
     datetime.datetime(2262, 4, 11, 23, 47, 16, 854775)
     >>> pdcast.to_datetime("October 12th, 400AD")
     0    0400-10-12 00:00:00
-    dtype: object
+    dtype: datetime[python]
     >>> _[0]
     datetime.datetime(400, 10, 12, 0, 0)
     >>> pdcast.to_datetime("-400-01-01")
@@ -872,18 +1020,18 @@ Which lets users represent dates all the way back to the age of the universe.
     >>> _[0]
     numpy.datetime64('-13799998030-01-01T00:00:00')
 
-And, using :func:`dispatch`, you can even make use of the ``.dt`` namespace
-just like you would for ``pandas.Timestamp`` objects.
+And, using the same dispatching mechanism as earlier, we can even make use of
+the ``.dt`` namespace just like we would for ``pandas.Timestamp`` objects.
 
 .. doctest:: datetime_support
 
     >>> pdcast.attach()
     >>> pdcast.to_datetime("1500-01-01")
     0    1500-01-01 00:00:00
-    dtype: object
+    dtype: datetime[python]
     >>> _.dt.tz_localize("Europe/Berlin")
     0    1500-01-01 00:00:00+00:53
-    dtype: object
+    dtype: datetime[python, Europe/Berlin]
     >>> _[0]
     datetime.datetime(1500, 1, 1, 0, 0, tzinfo=<DstTzInfo 'Europe/Berlin' LMT+0:53:00 STD>)
 

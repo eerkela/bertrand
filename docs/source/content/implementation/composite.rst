@@ -45,8 +45,8 @@ data.
 
     >>> import pdcast
     >>> pdcast.detect_type([False, 1, 2.3, 4+5j]).index
-    array([BooleanType(), IntegerType(), FloatType(), ComplexType()],
-          dtype=object)
+    array([PythonBooleanType(), PythonIntegerType(), PythonFloatType(),
+           PythonComplexType()], dtype=object)
 
 This can be used during ``pd.Series.groupby()`` operations to apply functions
 by type, rather than all at once.

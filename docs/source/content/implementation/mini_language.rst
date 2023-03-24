@@ -62,6 +62,7 @@ sizes, and/or timezones, enabling the following forms:
 
 .. doctest:: type_resolution
 
+    >>> import pdcast
     >>> pdcast.resolve_type("Timestamp[US/Pacific]")
     PandasTimestampType(tz=<DstTzInfo 'US/Pacific' LMT-1 day, 16:07:00 STD>)
     >>> pdcast.resolve_type("pydatetime[UTC]")

@@ -144,13 +144,13 @@ their original form, the same as they were before
 
     .. doctest::
 
-        >>> import pdcast.attach
+        >>> import pdcast; pdcast.attach()
         >>> pd.Series([-1.2, -2.5, 3.5, 4.7], dtype="O").round()
         0   -1.0
         1   -2.0
         2    4.0
         3    5.0
-        dtype: float64
+        dtype: float[python]
 
     Here are some examples of the various rounding rules:
 
@@ -265,12 +265,12 @@ their original form, the same as they were before
 
         >>> from datetime import datetime
         >>> import pandas as pd
-        >>> import pdcast.attach
+        >>> import pdcast; pdcast.attach()
         >>> series = pd.Series([datetime(2022, 1, 12), datetime(2022, 3, 27)], dtype="O")
         >>> series.dt.tz_localize("US/Pacific")
         0    2022-01-12 00:00:00-08:00
         1    2022-03-27 00:00:00-07:00
-        dtype: object
+        dtype: datetime[python, US/Pacific]
         >>> _[0]
         datetime.datetime(2022, 1, 12, 0, 0, tzinfo=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
 
@@ -316,15 +316,15 @@ their original form, the same as they were before
 
         >>> from datetime import datetime
         >>> import pandas as pd
-        >>> import pdcast.attach
+        >>> import pdcast; pdcast.attach()
         >>> series = pd.Series([datetime(2022, 1, 12), datetime(2022, 3, 27)], dtype="O")
         >>> series.dt.tz_localize("US/Pacific")
         0    2022-01-12 00:00:00-08:00
         1    2022-03-27 00:00:00-07:00
-        dtype: object
+        dtype: datetime[python, US/Pacific]
         >>> _.dt.tz_convert("US/Eastern")
         0    2022-01-12 03:00:00-05:00
         1    2022-03-27 03:00:00-04:00
-        dtype: object
+        dtype: datetime[python, US/Eastern]
         >>> _[0]
         datetime.datetime(2022, 1, 12, 3, 0, tzinfo=<DstTzInfo 'US/Eastern' EST-1 day, 19:00:00 STD>)

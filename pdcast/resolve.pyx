@@ -129,7 +129,6 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
     CategoricalType(wrapped=PyArrowStringType(), levels=None)
     >>> pdcast.resolve_type("sparse[categorical[int]]")
     SparseType(wrapped=CategoricalType(wrapped=IntegerType(), levels=None), fill_value=<NA>)
-    >>> pdcast.resolve_type()
 
     Iterables:
 

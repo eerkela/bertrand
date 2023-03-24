@@ -59,14 +59,14 @@ def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
     operations and is highly memory-efficient thanks to :class:`AtomicType`\'s
     :ref:`flyweight construction <flyweight>`.
 
-    If ``pdcast.attach`` is imported, the output from this function is directly
-    attached to ``pandas.Series`` objects under ``pd.Series.element_type``.  A
-    similar attribute is attached to ``pd.DataFrame`` objects under the same
-    name, except it returns a dictionary mapping column names to their inferred
-    type(s).
+    If :func:`pdcast.attach` is invoked, the output from this function is
+    directly attached to ``pandas.Series`` objects under
+    ``pd.Series.element_type``.  A similar attribute is attached to
+    ``pd.DataFrame`` objects under the same name, except it returns a
+    dictionary mapping column names to their inferred type(s).
 
     >>> import pandas as pd
-    >>> import pdcast.attach
+    >>> import pdcast; pdcast.attach()
     >>> pd.Series([1, 2, 3]).element_type
     NumpyInt64Type()
     >>> pd.DataFrame({"a": [1, 2], "b": [1., 2.], "c": ["1", "2"]}).element_type
@@ -80,7 +80,7 @@ def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
     >>> class CustomObj:
     ...     def __init__(self, x): self.x = x
     >>> pdcast.detect_type(True)
-    BooleanType()
+    PythonBooleanType()
     >>> pdcast.detect_type([CustomObj(1), CustomObj(2), CustomObj(3)])
     ObjectType(type_def=<class 'CustomObj'>)
     >>> pdcast.detect_type(np.array([1, 2, 3]))

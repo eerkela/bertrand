@@ -18,6 +18,13 @@ from pdcast.types import (
 import pdcast.util.array as array
 
 
+# TODO: if this is a .pyx file, then there is no need for _ignore_object_frame
+
+
+# ignore this file when doing string-based object lookups in resolve_type()
+_ignore_frame_objects = True
+
+
 class Namespace:
     """A mock accessor in the style of `pd.Series.dt`/`pd.Series.str` that
     holds @dispatch methods that are being applied to pd.Series objects.
@@ -75,16 +82,18 @@ class DispatchMethod:
         self.wrap_adapters = wrap_adapters
 
         # create appropriate docstring
-        docmap = {str(k): v.__qualname__ for k, v in submap.items()}
+        docmap = {k.__name__: v.__qualname__ for k, v in submap.items()}
         docmap = dict(sorted(docmap.items()))
         if self.namespace:
-            docmap["..."] = "Series.{self.namespace.name}.{self.name}"
+            docmap["..."] = f"Series.{self.namespace.name}.{self.name}"
         else:
-            docmap["..."] = "Series.{self.name}"
+            docmap["..."] = f"Series.{self.name}"
+        sep = "\n    "
         self.__doc__ = (
             f"A wrapper that applies custom logic for one or more data "
             f"types:\n"
-            f"{json.dumps(docmap, indent=4)}\n\n"
+            f"{{{sep}{sep.join(f'{k}: {v}' for k, v in docmap.items())}\n}}"
+            f"\n\n"
             f"The above map is available under this method's `.dispatched`\n"
             f"attribute, and the original pandas implementation (if one "
             f"exists)\n can be recovered under its `.original` attribute."

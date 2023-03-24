@@ -273,8 +273,8 @@ class DecimalMixin:
         elif unit == "M":
             ns = round_months_to_ns(series.series * step_size, since=since)
         else:
-            cast_to_int = np.frompyfunc(int, 1, 1)
-            ns = cast_to_int(series.series * step_size * as_ns[unit])
+            ns = series.series * step_size * as_ns[unit]
+        ns = np.frompyfunc(int, 1, 1)(ns).astype("O", copy=False)
 
         # account for non-utc epoch
         if since:

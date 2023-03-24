@@ -181,6 +181,7 @@ For example, on a 64-bit x86-64 platform:
 
 .. doctest:: type_resolution
 
+    >>> import pdcast
     >>> pdcast.resolve_type("char")  # C char
     Int8Type()
     >>> pdcast.resolve_type("short int")  # C short

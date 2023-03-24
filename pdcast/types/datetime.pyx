@@ -516,6 +516,11 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
                 self.step_size,
                 rule=rounding or "down"
             )
+
+        # TODO: we get these as decimals rather than integers, but only
+        # for units 'M' and 'Y'
+        # pdcast.to_datetime([-13.8], "datetime[numpy]", unit="Y")
+
         M8_str = f"M8[{self.step_size}{self.unit}]"
         return convert.SeriesWrapper(
             pd.Series(

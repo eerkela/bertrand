@@ -32,5 +32,12 @@ clean:
 
 
 test:
+#	check links in documentation
+	@cd docs/ && $(MAKE) linkcheck
+
 #	run doctests
 	@cd docs/ && $(MAKE) doctest
+#	@pytest --doctest-glob="*.rst" README.rst docs/
+
+#	TODO: run pytest suite
+#	@pytest tests/

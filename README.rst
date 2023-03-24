@@ -124,12 +124,10 @@ is a short walk around the various type categories that are recognized by
 
    >>> import numpy as np
    >>> import pdcast; pdcast.attach()
-
    >>> class CustomObj:
-   ...     def __init__(self, x): self.x = x
-   ...     def __str__(self): return f"CustomObj({self.x})"
-   ...     def __repr__(self): return str(self)
-
+   ...     def __init__(self, x):  self.x = x
+   ...     def __str__(self):  return f"CustomObj({self.x})"
+   ...     def __repr__(self):  return str(self)
    >>> pdcast.to_boolean([1+0j, "False", None])  # non-homogenous
    0     True
    1    False

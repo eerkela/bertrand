@@ -10,6 +10,14 @@ from pdcast.types import AdapterType, AtomicType, CompositeType
 from .virtual import Namespace, DispatchMethod
 
 
+# TODO: if this is a .pyx file, then there is no need for _ignore_object_frame
+# -> this causes a headache with bound/unbound methods though.
+
+
+# ignore this file when doing string-based object lookups in resolve_type()
+_ignore_frame_objects = True
+
+
 ######################
 ####    PUBLIC    ####
 ######################
