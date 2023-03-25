@@ -16,6 +16,7 @@ information.
 
     Type Specification Mini-Language <mini_language>
     Cast Functions <cast>
+    Dispatch <dispatch>
     AtomicType <atomic>
     AdapterType <adapter>
     CompositeType <composite>

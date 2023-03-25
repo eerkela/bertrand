@@ -28,8 +28,9 @@ cdef object default_string_dtype
 cdef bint pyarrow_installed
 
 
-# if pyarrow >= 1.0.0 is installed, use as default string storage backend
+# if pyarrow >= 1.0.0 is installed, use it as default string storage backend
 try:
+    import pyarrow
     default_string_dtype = pd.StringDtype("pyarrow")
     pyarrow_installed = True
 except ImportError:
@@ -266,7 +267,7 @@ class StringType(StringMixin, AtomicType):
 @StringType.register_backend("python")
 class PythonStringType(StringMixin, AtomicType):
 
-    aliases = {pd.StringDtype("python"), "pystr"}
+    aliases = {pd.StringDtype("python")}
     dtype = pd.StringDtype("python")
     type_def = str
 
@@ -288,7 +289,7 @@ if pyarrow_installed:
     @StringType.register_backend("pyarrow")
     class PyArrowStringType(StringMixin, AtomicType):
 
-        aliases = {"arrowstr", pd.StringDtype("pyarrow")}
+        aliases = {pd.StringDtype("pyarrow")}
         dtype = pd.StringDtype("pyarrow")
         type_def = str
 

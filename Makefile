@@ -4,6 +4,7 @@ PYTHON = python3
 help:
 	@echo "-------------------------------------------------------"
 	@echo "make install - compile binaries and build documentation"
+	@echo "make doc     - build documentation only"
 	@echo "make clean   - remove compiled elements/autodoc stubs"
 	@echo "make test    - run test suite + doctests"
 	@echo "-------------------------------------------------------"
@@ -17,7 +18,17 @@ install:
 	@cd docs/ && $(MAKE) html
 
 
+doc:
+#	remove documentation stubs
+	@rm -r docs/build
+	@rm -r docs/source/generated
+
+# 	rebuild
+	@cd docs/ && $(MAKE) html
+
+
 clean:
+#	TODO: replace find with python3 invocations.  Can use pathlib.
 #	remove compiled cython elements
 	@find pdcast/ -name "*.c" -type f -delete
 	@find pdcast/ -name "*.so" -type f -delete

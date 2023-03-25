@@ -8,10 +8,9 @@ Type specification mini-language
 ================================
 With all these new types, we need a more precise way to build and specify them.
 This is where ``pdcast``\'s type specification mini-language comes in.  This is
-a **superset** of the existing
-`numpy <https://numpy.org/doc/stable/reference/arrays.dtypes.html>`_\ /
-\ `pandas <https://pandas.pydata.org/pandas-docs/stable/user_guide/basics.html#basics-dtypes>`_
-``dtype`` keywords, and follows some of the conventions set out by pandas.
+a **superset** of the existing `numpy <https://numpy.org/doc/stable/reference/arrays.dtypes.html>`_
+/\ `pandas <https://pandas.pydata.org/pandas-docs/stable/user_guide/basics.html#basics-dtypes>`_
+``dtype`` framework, and follows some of the conventions set out by pandas.
 Here's how it works:
 
 A type specifier is composed of 2 parts:
@@ -24,26 +23,16 @@ This mimics a callable grammar.  When a type specifier is parsed, the alias is
 resolved into its corresponding type definition, and that types's
 ``.resolve()`` method is called with the optional arguments.  Types are free to
 customize their behavior during this process, and they can assign arbitrary
-meanings to these arguments.
+meaning to each argument.
 
-Aliases
--------
-
-.. TODO:
-
-Some aliases are `platform-specific <https://numpy.org/doc/stable/user/basics.types.html#data-types>`
-
-
-
-Arguments
----------
 When arguments are supplied to a type, they are automatically tokenized,
-splitting on commas.  These arguments can include nested sequences or even
-other type specifiers, which are both enabled by
-`recursive regular expressions <https://perldoc.perl.org/perlre#(?PARNO)-(?-PARNO)-(?+PARNO)-(?R)-(?0)>`_.
-Once tokenized, they are passed as strings to the type's ``.resolve()`` method,
-filling out its call signature with positional arguments.  This method then
-parses them and returns an appropriate instance of the attached type.
+splitting on top-level commas.  These arguments can also include nested
+sequences or even other type specifiers, both of which are enabled by
+`PCRE <https://pcre.org/>`_\-style `recursive regular expressions <https://perldoc.perl.org/perlre#(?PARNO)-(?-PARNO)-(?+PARNO)-(?R)-(?0)>`_.
+Once tokenized, they are passed as strings to the associated type's
+``.resolve()`` method, filling out its call signature with positional
+arguments.  This method then parses them and returns an appropriate instance of
+the attached type.
 
 Most types don't accept any arguments at all.  The exceptions are datetimes,
 timedeltas, object types, ``AdapterType``\s, and any type that has been marked
@@ -53,7 +42,58 @@ as generic.
 
     ``pdcast.resolve_type()`` accepts a superset of the existing ``np.dtype()``
     syntax, meaning that any specifier that is accepted by numpy can also be
-    accepted by ``pdcast``.
+    accepted by ``pdcast``.  The only exceptions are for literal python types,
+    which always point to their associated implementation (e.g. ``int``
+    resolves to :class:`PythonIntegerType`, rather than
+    :class:`NumpyInt64Type`).
+
+Aliases
+-------
+A complete mapping from every alias that is currently recognized by
+``resolve_type()`` to the corresponding type definition can be obtained by
+calling ``pdcast.AtomicType.registry.aliases``.  This is guaranteed to be
+up-to-date at the time it is invoked.
+
+.. note::
+
+    This includes aliases of every type, from strings and ``dtype`` objects to
+    raw python classes.
+
+Some aliases (such as ``"char"``, ``"short"``, ``"long"``, etc.) may be
+platform-specific.  These are interpreted as if they were literal C types,
+which always map to their `numpy counterparts <https://numpy.org/doc/stable/user/basics.types.html#data-types>`_.
+They can be used interchangeably with their fixed-width alternatives to reflect
+current system configuration.
+
+For example, on a 64-bit x86-64 platform:
+
+.. doctest:: type_resolution
+
+    >>> import pdcast
+    >>> pdcast.resolve_type("char")  # C char
+    Int8Type()
+    >>> pdcast.resolve_type("short int")  # C short
+    Int16Type()
+    >>> pdcast.resolve_type("signed intc")  # C int
+    Int32Type()
+    >>> pdcast.resolve_type("unsigned long integer")  # C unsigned long
+    UInt64Type()
+    >>> pdcast.resolve_type("longlong")  # C long long
+    Int64Type()
+    >>> pdcast.resolve_type("ssize_t")  # C pointer size
+    Int64Type()
+
+These might be different on 32-bit platforms, or on those that do not use the
+x86-64 instruction set (such as ARM, RISC-V, etc.).
+
+When in doubt, always prefer the platform-independent alternatives.
+
+Arguments
+---------
+
+.. TODO: move these into individual type docs
+
+
 
 Datetime & timedelta types
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -119,8 +159,8 @@ and enables constructs of the form:
     >>> pdcast.resolve_type("timedelta[numpy, s]")
     NumpyTimedelta64Type(unit='s', step_size=1)
 
-Adapter types
-^^^^^^^^^^^^^
+Adapters
+--------
 ``AdapterType``\s are types that modify other types.  These include sparse and
 categorical types, which provide a wrapper on top of a base ``AtomicType``
 instance, adding information related to fill values and levels, respectively.
@@ -186,7 +226,7 @@ categorical type.
     ``cast.defaults``.
 
 Composite types
-^^^^^^^^^^^^^^^
+---------------
 Types can also be easily composited in the type specification mini-language
 simply by separating them with commas, like so:
 

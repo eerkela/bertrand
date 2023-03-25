@@ -16,6 +16,9 @@ from .base cimport AtomicType
 from .base import generic, register
 
 
+# TODO: Add pyarrow boolean types?
+
+
 ######################
 ####    MIXINS    ####
 ######################
@@ -113,7 +116,39 @@ class BooleanMixin:
 @register
 @generic
 class BooleanType(BooleanMixin, AtomicType):
-    """Generic boolean supertype."""
+    """Generic boolean type.
+
+    *   **aliases:** ``"bool"``, ``"boolean"``, ``"bool_"``, ``"bool8"``,
+        ``"b1"``, ``"?"``
+    *   **arguments:** [backend]
+
+        *   **backends:** :class:`numpy <NumpyBooleanType>`,
+            :class:`pandas <PandasBooleanType>`,
+            :class:`python <PythonBooleanType>`
+
+    *   **type_def:** ``bool``
+    *   **dtype:** ``np.dtype(bool)``
+    *   **itemsize:** 1
+    *   **na_value**: ``pd.NA``
+    *   **is_nullable:** False
+    *   **max**: 1
+    *   **min**: 0
+
+    .. testsetup:: boolean_type_example:
+
+        import pdcast
+
+    .. doctest:: boolean_type_example
+
+        >>> pdcast.resolve_type("bool")
+        BooleanType()
+        >>> pdcast.resolve_type("boolean[numpy]")
+        NumpyBooleanType()
+        >>> pdcast.resolve_type("b1[pandas]")
+        PandasBooleanType()
+        >>> pdcast.resolve_type("?[python]")
+        PythonBooleanType()
+    """
 
     # internal root fields - all subtypes/backends inherit these
     conversion_func = convert.to_boolean
@@ -139,7 +174,27 @@ class BooleanType(BooleanMixin, AtomicType):
 class NumpyBooleanType(BooleanMixin, AtomicType):
     """Numpy boolean type.
 
-    This data type does not support missing values.
+    *   **aliases:** ``np.bool_``, ``np.dtype(bool)``
+    *   **arguments:** []
+    *   **type_def:** ``np.bool_``
+    *   **dtype:** ``np.dtype(bool)``
+    *   **itemsize:** 1
+    *   **na_value**: ``pd.NA``
+    *   **is_nullable:** False
+    *   **max**: 1
+    *   **min**: 0
+
+    .. testsetup:: numpy_boolean_type_example:
+
+        import numpy as np
+        import pdcast
+
+    .. doctest:: numpy_boolean_type_example
+
+        >>> pdcast.resolve_type(np.bool_)
+        NumpyBooleanType()
+        >>> pdcast.resolve_type(np.dtype(bool))
+        NumpyBooleanType()
     """
 
     aliases = {np.bool_, np.dtype(np.bool_)}
@@ -157,7 +212,32 @@ class NumpyBooleanType(BooleanMixin, AtomicType):
 @register
 @BooleanType.register_backend("pandas")
 class PandasBooleanType(BooleanMixin, AtomicType):
-    """Pandas boolean type."""
+    """Pandas boolean type.
+
+    *   **aliases:** ``"Boolean"``, ``pd.BooleanDtype``, ``pd.BooleanDtype()``
+    *   **arguments:** []
+    *   **type_def:** ``np.bool_``
+    *   **dtype:** ``pd.BooleanDtype()``
+    *   **itemsize:** 1
+    *   **na_value**: ``pd.NA``
+    *   **is_nullable:** True
+    *   **max**: 1
+    *   **min**: 0
+
+    .. testsetup:: pandas_boolean_type_example:
+
+        import pandas as pd
+        import pdcast
+
+    .. doctest:: pandas_boolean_type_example
+
+        >>> pdcast.resolve_type("Boolean")
+        PandasBooleanType()
+        >>> pdcast.resolve_type(pd.BooleanDtype)
+        PandasBooleanType()
+        >>> pdcast.resolve_type(pd.BooleanDtype())
+        PandasBooleanType()
+    """
 
     aliases = {pd.BooleanDtype, pd.BooleanDtype(), "Boolean"}
     dtype = pd.BooleanDtype()
@@ -173,7 +253,27 @@ class PandasBooleanType(BooleanMixin, AtomicType):
 @register
 @BooleanType.register_backend("python")
 class PythonBooleanType(BooleanMixin, AtomicType):
-    """Python boolean type."""
+    """Python boolean type.
+
+    *   **aliases:** ``bool``
+    *   **arguments:** []
+    *   **type_def:** ``bool``
+    *   **dtype:** auto-generated
+    *   **itemsize:** 28
+    *   **na_value**: ``pd.NA``
+    *   **is_nullable:** True
+    *   **max**: 1
+    *   **min**: 0
+
+    .. testsetup:: python_boolean_type_example:
+
+        import pdcast
+
+    .. doctest:: python_boolean_type_example
+
+        >>> pdcast.resolve_type(bool)
+        PythonBooleanType()
+    """
 
     aliases = {bool}
     itemsize = sys.getsizeof(True)

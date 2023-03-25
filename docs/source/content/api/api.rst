@@ -8,6 +8,7 @@ considered public.
 
 
 .. toctree::
+    :hidden:
     :maxdepth: 1
 
     Check <check>

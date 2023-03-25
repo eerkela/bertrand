@@ -36,6 +36,9 @@ from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, register, subtype
 
 
+# TODO: Add pyarrow integer types?
+
+
 ######################
 ####    MIXINS    ####
 ######################

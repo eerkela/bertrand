@@ -57,7 +57,7 @@ Compared to the existing pandas framework, ``pdcast`` is:
    can crop up during type manipulations, including (but not limited to):
    missing values, overflow, precision loss, string parsing, datetimes, and
    sparse/categorical encoding.
-*  **Robust**. ``pdcast`` can handle almost any input data, even if they are
+*  **Robust**. ``pdcast`` can ingest almost any input data, even if they are
    missing, imprecise, or ambiguous.  They can even be of mixed type and still
    be processed intelligibly.
 *  **Flexible**.  Every aspect of ``pdcast``'s functionality can be modified or
@@ -73,8 +73,8 @@ Compared to the existing pandas framework, ``pdcast`` is:
    within their series and dataframe objects, substantial memory savings and
    performance improvements can be achieved.  Sparse data structures and
    lossless downcasting make it possible to shrink data by up to a factor of
-   10 in some cases, increasing access to big data and enhancing compatibility
-   with statically-typed production code.
+   10 in some cases, and conversions can be used to enhance compatibility with
+   statically-typed, third party libraries.
 
 .. TODO: uncomment this once the package is pushed to PyPI
 
@@ -124,10 +124,12 @@ is a short walk around the various type categories that are recognized by
 
    >>> import numpy as np
    >>> import pdcast; pdcast.attach()
+
    >>> class CustomObj:
    ...     def __init__(self, x):  self.x = x
    ...     def __str__(self):  return f"CustomObj({self.x})"
    ...     def __repr__(self):  return str(self)
+
    >>> pdcast.to_boolean([1+0j, "False", None])  # non-homogenous
    0     True
    1    False
@@ -188,6 +190,7 @@ nonstandard representation.
 .. doctest:: dispatch
 
    >>> import pandas as pd
+
    >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round()
    Traceback (most recent call last):
       ...
@@ -199,6 +202,7 @@ required, the original functionality can be easily recovered.
 .. doctest:: dispatch
 
    >>> import pdcast; pdcast.attach()
+
    >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round()
    0    1.0
    1   -2.0
@@ -218,6 +222,7 @@ dispatching tools.
    ... def bar(series: pdcast.SeriesWrapper) -> pdcast.SeriesWrapper:
    ...     print("Hello, World!")
    ...     return series
+
    >>> pd.Series([1, 2, 3]).foo.bar()
    Hello, World!
    0    1
