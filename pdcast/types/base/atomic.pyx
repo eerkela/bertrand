@@ -22,9 +22,9 @@ from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import type_specifier
 
 
-# TODO: document AtomicType methods.
+# TODO: add examples/raises for each method
 
-# TODO: add hyperlinks for AtomicType aliases
+# TODO: IntegerType.downcast should accept a tolerance argument
 
 
 # conversions
@@ -588,10 +588,10 @@ cdef class AtomicType(ScalarType):
 
     @property
     def backends(self) -> MappingProxyType:
-        """A dictionary mapping backend names to their corresponding
+        """A dictionary mapping backend specifiers to their corresponding
         implementation types.
 
-        This always contains the key/value pair ``{None: self}``.
+        This dictionary always contains the key/value pair ``{None: self}``.
         """
         if self.registry.needs_updating(self._backend_cache):
             result = {None: self}
@@ -605,7 +605,7 @@ cdef class AtomicType(ScalarType):
 
     @property
     def generic(self) -> AtomicType:
-        """Return the generic equivalent for this AtomicType."""
+        """The generic equivalent of this type, if one exists."""
         if self.registry.needs_updating(self._generic_cache):
             if self.is_generic:
                 result = self
@@ -640,26 +640,52 @@ cdef class AtomicType(ScalarType):
 
     @property
     def adapters(self) -> Iterator[adapter.AdapterType]:
-        """Iterate through each AdapterType that is attached to this instance.
+        """An iterator that yields each :class:`AdapterType` that is attached
+        to this type.
 
-        For AtomicTypes, this is always an empty iterator.
+        For :class:`AtomicTypes <AtomicType>`, this is always an empty
+        iterator.
         """
         yield from ()
 
     def unwrap(self) -> AtomicType:
-        """Strip any adapters that have been attached to this AtomicType."""
+        """Get the base :clasS:`AtomicType` for this type, disregarding
+        adapters.
+
+        For :class:`AtomicTypes <AtomicType>`, this always returns ``self``.
+        """
         return self
 
     def make_categorical(
         self,
         series: convert.SeriesWrapper,
-        levels: list
+        levels: list = None
     ) -> convert.SeriesWrapper:
-        """Convert a SeriesWrapper of the associated type into a categorical
-        format, with the given levels.
+        """Transform a series of the associated type into a categorical format
+        with the given levels.
 
-        This is invoked whenever a categorical conversion is performed that
-        targets this type.
+        This method is invoked whenever a categorical conversion is performed
+        that targets this type.
+
+        Parameters
+        ----------
+        series : SeriesWrapper
+            The series to be transformed.  This is always provided as a
+            :class:`SeriesWrapper` object.
+        levels : list
+            The categories to use for the transformation.  If this is ``None``
+            (the default), then levels will be automatically discovered when
+            this method is called.
+
+        Returns
+        -------
+        SeriesWrapper
+            The transformed series, returned as a :class:`SeriesWrapper`.
+
+        Notes
+        -----
+        If a type implements custom logic when performing a categorical
+        conversion, it should be implemented here.
         """
         if levels is None:
             categorical_type = pd.CategoricalDtype()
@@ -667,6 +693,7 @@ cdef class AtomicType(ScalarType):
             categorical_type = pd.CategoricalDtype(
                 pd.Index(levels, dtype=self.dtype)
             )
+
         return convert.SeriesWrapper(
             series.series.astype(categorical_type),
             hasnans=series.hasnans
@@ -676,17 +703,37 @@ cdef class AtomicType(ScalarType):
     def make_sparse(
         self,
         series: convert.SeriesWrapper,
-        fill_value: Any
+        fill_value: Any = None
     ) -> convert.SeriesWrapper:
-        """Convert a SeriesWrapper of the associated type into a sparse format,
-        with the given fill value.
+        """Transform a series of the associated type into a sparse format with
+        the given fill value.
 
-        This is invoked whenever a sparse conversion is performed that targets
-        this type.
+        This method is invoked whenever a sparse conversion is performed that
+        targets this type.
+
+        Parameters
+        ----------
+        series : SeriesWrapper
+            The series to be transformed.  This is always provided as a
+            :class:`SeriesWrapper` object.
+        fill_value : Any
+            The fill value to use for the transformation.  If this is ``None``
+            (the default), then this type's ``na_value`` will be used instead.
+
+        Returns
+        -------
+        SeriesWrapper
+            The transformed series, returned as a :class:`SeriesWrapper`.
+
+        Notes
+        -----
+        If a type implements custom logic when performing a sparse conversion,
+        it should be implemented here.
         """
         if fill_value is None:
             fill_value = self.na_value
         sparse_type = pd.SparseDtype(series.dtype, fill_value)
+
         return convert.SeriesWrapper(
             series.series.astype(sparse_type),
             hasnans=series.hasnans
@@ -844,26 +891,66 @@ cdef class AtomicType(ScalarType):
 
     @property
     def larger(self) -> list:
-        """return a list of candidate AtomicTypes that this type can be
-        upcasted to in the event of overflow.
+        """A list of types that this type can be
+        :meth:`upcasted <AtomicType.upcast>` to in the event of overflow.
 
         Override this to change the behavior of a bounded type (with
-        appropriate `.min`/`.max` fields) when an OverflowError is detected.
-        Note that candidate types will always be tested in order.
+        appropriate `.min`/`.max` fields) when an ``OverflowError`` is
+        detected.
+
+        Notes
+        -----
+        Candidate types will always be tested in order.
         """
-        return []  # NOTE: empty list skips upcasting entirely
+        return []  # NOTE: most types cannot be upcasted
+
+    @property
+    def smaller(self) -> list:
+        """A list of types that this type can be
+        :meth:`downcasted <AtomicType.downcast>` to if directed.
+
+        Override this to change the behavior of a type when the ``downcast``
+        argument is supplied to a conversion function.
+
+        Notes
+        -----
+        Candidate types will always be tested in order.
+        """
 
     def upcast(self, series: convert.SeriesWrapper) -> AtomicType:
-        """Attempt to upcast an AtomicType to fit the observed range of a
-        series.
+        """Upcast an :class:`AtomicType` to fit the observed range of a series.
+
+        Parameters
+        ----------
+        series : SeriesWrapper
+            The series to be fitted.  This is always provided as a
+            :class:`SeriesWrapper` object.
+
+        Returns
+        -------
+        SeriesWrapper
+            The transformed series, returned as a :class:`SeriesWrapper`.
+
+        Notes
+        -----
+        Upcasting occurs whenever :meth:`SeriesWrapper.boundscheck` is called
+        and an ``OverflowError`` is detected.  When this occurs, we search
+        :attr:`AtomicType.larger` for another type that has a wider range than
+        ``self``, which we can use to represent the series without overflowing.
+
+        This is generally relevant only for generic types and supertypes that
+        have implementations/subtypes with a wider range than the default.
+        This method allows these to be dynamically resized to match observed
+        data.
         """
-        # NOTE: we convert to pyint to prevent inconsistent comparisons
+        # NOTE: we convert to python int to prevent inconsistent comparisons
         if pd.isna(series.min):
             min_val = self.max  # NOTE: we swap these to maintain upcast()
             max_val = self.min  # behavior for upcast-only types
         else:
             min_val = int(series.min - bool(series.min % 1))  # round floor
             max_val = int(series.max + bool(series.max % 1))  # round ceiling
+
         if min_val < self.min or max_val > self.max:
             # recursively search for a larger alternative
             for t in self.larger:
@@ -881,19 +968,78 @@ cdef class AtomicType(ScalarType):
         # series fits type
         return self
 
+    def downcast(
+        self,
+        series: convert.SeriesWrapper,
+        tol: Tolerance,
+        smallest: composite.CompositeType = None
+    ) -> AtomicType:
+        """Downcast an :class:`AtomicType` to compress an observed series.
+
+        Parameters
+        ----------
+        series : SeriesWrapper
+            The series to be fitted.  This is always provided as a
+            :class:`SeriesWrapper` object.
+        tol : Tolerance
+            The tolerance to use for downcasting.  This sets an upper bound on
+            the amount of precision loss that can occur during this operation.
+        smallest : CompositeType, default None
+            Forbids downcasting past the specified types.  If this is omitted,
+            then downcasting will proceed to the smallest possible type rather
+            than stopping early.
+
+        Returns
+        -------
+        SeriesWrapper
+            The transformed series, returned as a :class:`SeriesWrapper`.
+
+        Notes
+        -----
+        Downcasting allows users to losslessly compress numeric data by
+        reducing the precision or range of a data type.
+        """
+        raise NotImplementedError(
+            f"'{type(self).__name__}' objects cannot be downcasted."
+        )
+
     ##############################
     ####    MISSING VALUES    ####
     ##############################
 
     def is_na(self, val: Any) -> bool:
-        """Check if an arbitrary value is an NA value in this representation.
+        """Check if a scalar value is equal to this type's NA representation.
 
-        Override this if your type does something funky with missing values.
+        Parameters
+        ----------
+        val : Any
+            A scalar value to check for NA equality.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``val`` is equal to this type's ``na_value``, ``False``
+            otherwise.
+
+        Notes
+        -----
+        Comparison with missing values is often tricky.  Most NA values are not
+        equal to themselves, so some other algorithm must be used to test for
+        them.  This method allows users to define this logic on a per-type
+        basis.
         """
         return val is pd.NA or val is None or val != val
 
     def make_nullable(self) -> AtomicType:
-        """Create an equivalent AtomicType that can accept missing values."""
+        """Convert a non-nullable :class:`AtomicType` into one that can accept
+        missing values.
+
+        Returns
+        -------
+        AtomicType
+            A nullable version of this data type to be used when missing or
+            coerced values are detected during a conversion.
+        """
         if self.is_nullable:
             return self
         return self.generic.instance(backend="pandas", **self.kwargs)
@@ -910,6 +1056,7 @@ cdef class AtomicType(ScalarType):
         return isinstance(other, AtomicType) and self.hash == other.hash
 
     def __getattr__(self, name: str) -> Any:
+        """Pass attribute lookups to ``self.kwargs``."""
         try:
             return self.kwargs[name]
         except KeyError as err:
@@ -921,6 +1068,12 @@ cdef class AtomicType(ScalarType):
 
     @classmethod
     def __init_subclass__(cls, cache_size: int = None, **kwargs):
+        """Metaclass initializer.
+
+        This method is responsible for
+        `initializing subclasses <https://peps.python.org/pep-0487/>`_ of
+        :class:`AtomicType`.
+        """
         # allow cooperative inheritance
         super(AtomicType, cls).__init_subclass__(**kwargs)
 
@@ -946,7 +1099,6 @@ cdef class AtomicType(ScalarType):
         # init fields for @generic
         cls._generic = None
         cls._backends = {}
-          # True if @generic, False if @register_backend
 
     def __setattr__(self, name: str, value: Any) -> None:
         if self._is_frozen:

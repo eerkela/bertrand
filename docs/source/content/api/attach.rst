@@ -1,5 +1,9 @@
 .. currentmodule:: pdcast
 
+.. TODO: move prologue into description of attach()
+
+.. TODO: create section for Series, DataFrame
+
 Attach
 ======
 If :func:`pdcast.attach() <attach>` is invoked, each of these methods will be

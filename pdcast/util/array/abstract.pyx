@@ -18,6 +18,9 @@ import pdcast.convert as convert
 from pdcast.util.type_hints import type_specifier
 
 
+# TODO: move this into util/structs
+
+
 ######################
 ####    PUBLIC    ####
 ######################

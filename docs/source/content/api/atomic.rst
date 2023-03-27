@@ -89,8 +89,8 @@ See the :doc:`conversion docs <cast>` for more information on type conversions.
     AtomicType.to_string
     AtomicType.to_object
 
-Upcasting/Downcasting
----------------------
+Upcast/Downcast
+---------------
 
 .. autosummary::
     :toctree: ../../generated/
@@ -118,6 +118,5 @@ Special Methods
     AtomicType.__contains__
     AtomicType.__eq__
     AtomicType.__hash__
-    AtomicType.__init_subclass__
     AtomicType.__str__
     AtomicType.__repr__

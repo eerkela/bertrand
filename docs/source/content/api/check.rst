@@ -1,10 +1,6 @@
 Type Checks, Inference, and Resolution
 --------------------------------------
 
-.. _typecheck:
-
-.. autofunction:: pdcast.typecheck
-
 .. _detect_type:
 
 .. autofunction:: pdcast.detect_type
@@ -12,3 +8,7 @@ Type Checks, Inference, and Resolution
 .. _resolve_type:
 
 .. autofunction:: pdcast.resolve_type
+
+.. _typecheck:
+
+.. autofunction:: pdcast.typecheck

@@ -45,6 +45,9 @@ Cast
 
 .. autofunction:: to_object
 
+Defaults
+--------
+
 .. _cast_defaults:
 
-.. autoclass:: defaults
+.. autoclass:: CastDefaults

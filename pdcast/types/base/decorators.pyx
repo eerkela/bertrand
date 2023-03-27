@@ -17,7 +17,7 @@ from .composite import CompositeType
 # TODO: dispatch should have an option to allow length changes?
 
 
-# TODO: generic types should never accept raw types as aliases
+# TODO: move this alongside detect, resolve, check
 
 
 ######################
