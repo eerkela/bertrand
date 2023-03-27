@@ -4,27 +4,29 @@
 
 AtomicType
 ==========
-AtomicTypes hold all the necessary implementation logic for dispatched methods,
-conversions, and type-related functionality.  They can be linked together into
-tree structures to represent subtypes, and can be marked as generic to hold
-different implementations.  If you're looking to extend ``pdcast`` in some way,
-it will most likely boil down to writing a new AtomicType.  Luckily, this is
-:ref:`easy to do <tutorial>`.
+
+.. autoclass:: AtomicType
 
 Constructors
 ------------
+These methods should always be preferred over direct instantiation to allow for
+the `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_
+pattern.
 
 .. autosummary::
     :toctree: ../../generated/
 
     AtomicType.instance
-    AtomicType.detect
     AtomicType.resolve
+    AtomicType.detect
+    AtomicType.from_dtype
     AtomicType.replace
     AtomicType.slugify
 
 Aliases
 -------
+See the :ref:`implementation docs <atomic_type_aliases>` for more information
+on how aliases are used.
 
 .. autosummary::
     :toctree: ../../generated/
@@ -35,19 +37,34 @@ Aliases
 
 Subtypes/Supertypes
 -------------------
+See the :func:`@subtype <subtype>` decorator for more information on how to
+define subtypes.
 
 .. autosummary::
     :toctree: ../../generated/
 
     AtomicType.subtypes
     AtomicType.supertype
-    AtomicType.generic
     AtomicType.root
     AtomicType.contains
     AtomicType.is_subtype
 
+Generic
+-------
+See the :func:`@generic <generic>` decorator for more information on how to
+leverage generic types and register individual backends.
+
+.. autosummary::
+    :toctree: ../../generated/
+
+    AtomicType.generic
+    AtomicType.backends
+    AtomicType.register_backend
+
 Adapters
 --------
+See :class:`AdapterType` for more information on how to wrap
+:class:`AtomicTypes <AtomicType>` with adapters.
 
 .. autosummary::
     :toctree: ../../generated/
@@ -59,6 +76,7 @@ Adapters
 
 Conversions
 -----------
+See the :doc:`conversion docs <cast>` for more information on type conversions.
 
 .. autosummary::
     :toctree: ../../generated/
@@ -71,15 +89,25 @@ Conversions
     AtomicType.to_string
     AtomicType.to_object
 
-Misc
-----
+Upcasting/Downcasting
+---------------------
 
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.make_nullable
-    AtomicType.upcast
     AtomicType.larger
+    AtomicType.smaller
+    AtomicType.upcast
+    AtomicType.downcast
+
+Missing Values
+--------------
+
+.. autosummary::
+    :toctree: ../../generated/
+
+    AtomicType.is_na
+    AtomicType.make_nullable
 
 Special Methods
 ---------------

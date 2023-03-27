@@ -15,6 +15,8 @@ from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
 
 import pdcast.convert as convert
 
+from pdcast.util.type_hints import type_specifier
+
 
 ######################
 ####    PUBLIC    ####
@@ -343,7 +345,7 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
         """Iterate over elements of the array."""
         return iter(self._data)
 
-    def __eq__(self, other: Any):  # type: ignore[override]
+    def __eq__(self, other: type_specifier):  # type: ignore[override]
         """Return for `self == other` (element-wise equality)."""
         if isinstance(other, (pd.Series, pd.Index, pd.DataFrame)):
             return NotImplemented

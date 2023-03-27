@@ -4,7 +4,7 @@ from typing import Any, Callable, Iterator
 cimport numpy as np
 import numpy as np
 import pandas as pd
-from pandas.api.extensions import register_extension_dtype
+from pandas.api.extensions import ExtensionDtype, register_extension_dtype
 
 cimport pdcast.convert as convert
 import pdcast.convert as convert
@@ -20,6 +20,11 @@ import pdcast.util.array as array
 from pdcast.util.round cimport Tolerance
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import type_specifier
+
+
+# TODO: document AtomicType methods.
+
+# TODO: add hyperlinks for AtomicType aliases
 
 
 # conversions
@@ -54,24 +59,39 @@ from pdcast.util.type_hints import type_specifier
 cdef class BaseType:
     """Base type for all type objects.
 
-    This has no interface of its own and merely serves to anchor inheritance.
+    This has no interface of its own.  It simply serves to anchor inheritance
+    and distribute the shared type registry to all ``pdcast`` types.
     """
 
     registry: registry.TypeRegistry = registry.TypeRegistry()
 
 
 cdef class ScalarType(BaseType):
-    """Base type for AtomicType and AdapterType objects."""
+    """Base type for :class:`AtomicType` and :class:`AdapterType` objects.
 
-    @classmethod
-    def clear_aliases(cls) -> None:
-        """Remove every alias that is registered to this AdapterType."""
-        cls.aliases.clear()
-        cls.registry.flush()
+    This allows inherited types to manage aliases and update them at runtime.
+    """
+
+    #######################
+    ####    ALIASES    ####
+    #######################
 
     @classmethod
     def register_alias(cls, alias: Any, overwrite: bool = False) -> None:
-        """Register a new alias for this AdapterType."""
+        """Register a new alias for this type.
+
+        See the docs on the :ref:`type specification mini language
+        <mini_language>` for more information on how aliases work.
+
+        Parameters
+        ----------
+        alias : Any
+            A string, ``dtype``, ``ExtensionDtype``, or scalar type to register
+            as an alias of this type.
+        overwrite : bool, default False
+            Indicates whether to overwrite existing aliases (``True``) or
+            raise an error (``False``) in the event of a conflict.
+        """
         if alias in cls.registry.aliases:
             other = cls.registry.aliases[alias]
             if other is cls:
@@ -87,8 +107,29 @@ cdef class ScalarType(BaseType):
 
     @classmethod
     def remove_alias(cls, alias: Any) -> None:
-        """Remove an alias from this AdapterType."""
+        """Remove an alias from this type.
+
+        See the docs on the :ref:`type specification mini language
+        <mini_language>` for more information on how aliases work.
+
+        Parameters
+        ----------
+        alias : Any
+            The alias to remove.  This can be a string, ``dtype``,
+            ``ExtensionDtype``, or scalar type that is present in this type's
+            ``.aliases`` attribute.
+        """
         del cls.aliases[alias]
+        cls.registry.flush()  # rebuild regex patterns
+
+    @classmethod
+    def clear_aliases(cls) -> None:
+        """Remove every alias that is registered to this type.
+
+        See the docs on the :ref:`type specification mini language
+        <mini_language>` for more information on how aliases work.
+        """
+        cls.aliases.clear()
         cls.registry.flush()  # rebuild regex patterns
 
 
@@ -98,30 +139,48 @@ cdef class ScalarType(BaseType):
 
 
 cdef class AtomicType(ScalarType):
-    """Base type for all user-defined atomic types.
+    """Base class for all user-defined implementation types.
 
-    AtomicTypes hold all the necessary implementation logic for dispatched
-    methods, conversions, and type-related functionality.  They can be linked
-    together into tree structures to represent subtypes, and can be marked as
-    generic to hold different implementations.  If you're looking to extend
-    ``pdcast``, it will most likely boil down to writing a new AtomicType.
+    :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
+    ``pdcast`` type system.  They are used to describe scalar values of a
+    particular type (i.e. ``int``, ``numpy.float32``, etc.).  They can
+    dynamically wrapped with :class:`AdapterTypes <AdapterType>` to modify
+    their behavior or contained in :class:`CompositeTypes <CompositeType>` to
+    refer to multiple types at once, and they are responsible for defining all
+    the necessary implementation logic for dispatched methods, conversions, and
+    type-related functionality.
+
+    Parameters
+    ----------
+    **kwargs : dict
+        Arbitrary keyword arguments describing metadata for this type.  If a
+        subclass accepts arguments in its ``__init__`` method, they should
+        always be passed here.  This is conceptually equivalent to the
+        ``_metadata`` field of pandas `ExtensionDtype <https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.api.extensions.ExtensionDtype.html#>`_
+        objects.
+
+    Notes
+    -----
+    See the :doc:`implementation docs </content/implementation/atomic>` and
+    :doc:`tutorial </content/tutorial>` for more information on how
+    :class:`AtomicTypes <AtomicType>` work and how to build your own.
     """
 
-    # Internal fields.  These should never be overridden.
-    flyweights: dict[str, AtomicType] = {}
-    conversion_func = convert.to_object
-    is_boolean = None
-    is_numeric = None
-    is_sparse = False
-    is_categorical = False
+    # INTERNAL FIELDS.  These should never be overridden.
+    conversion_func = convert.to_object   # default standalone conversion
+    is_boolean = None   # used to autogenerete ExtensionDtypes
+    is_numeric = None   # used to autogenerate ExtensionDtypes
+    is_sparse = False   # marker for SparseType
+    is_categorical = False   # marker for CategoricalType
+    is_generic = None   # marker for @generic, @register_backend
+    is_root = True   # marker for @subtype
+    backend = None   # marker for @register_backend
 
-    # Default fields.  These can be overridden in AtomicType definitions to
-    # customize behavior.
-    type_def = None
-    dtype = NotImplemented  # if using abstract extensions, uncomment this
-    # dtype = np.dtype("O")  # if NOT using abstract extensions, uncomment this
-    itemsize = None
-    na_value = pd.NA
+    # DEFAULT FIELDS.  These can be overridden to customize a type's behavior.
+    type_def = None   # output from type() on an example of this type
+    dtype = NotImplemented   # signals pdcast to autogenerate an ExtensionDtype
+    itemsize = None   # size in bytes for members of this type
+    na_value = pd.NA   # missing value for vectors of this type
     is_nullable = True  # must be explicitly set False where applicable
 
     def __init__(self, **kwargs):
@@ -129,47 +188,81 @@ cdef class AtomicType(ScalarType):
         self.slug = self.slugify(**kwargs)
         self.hash = hash(self.slug)
 
-        # auto-generate an ExtensionDtype for objects of this type
+        # Auto-generate a new ExtensionDtype if directed
         if self.dtype == NotImplemented:
-            self.dtype = self._construct_extension_dtype()
+            self.dtype = array.construct_extension_dtype(
+                self,
+                is_boolean=self.is_boolean,
+                is_numeric=self.is_numeric,
+                add_comparison_ops=True,
+                add_arithmetic_ops=True
+            )
 
         self._is_frozen = True  # no new attributes beyond this point
 
-    #############################
-    ####    CLASS METHODS    ####
-    #############################
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
 
     @classmethod
-    def detect(cls, example: Any) -> AtomicType:
-        """Given a scalar example of the given AtomicType, construct a new
-        instance with the corresponding representation.
+    def slugify(cls) -> str:
+        """Generate a string representation of a type.
 
-        Override this if your AtomicType has attributes that depend on the
-        value of a corresponding scalar (e.g. datetime64 units, timezones,
-        etc.)
-        """
-        return cls.instance()  # NOTE: most types disregard example data
+        The signature of this class method must match a type's ``__init__``
+        method.  This symmetry is enforced by the :func:`@register <register>`
+        decorator.
 
-    @classmethod
-    def from_dtype(
-        cls,
-        dtype: np.dtype | pd.api.extensions.ExtensionDtype
-    ) -> AtomicType:
-        """Construct an AtomicType from a corresponding numpy/pandas ``dtype``
-        object.
+        Returns
+        -------
+        str
+            A string that fully specifies the type.  The string must be unique
+            for every set of inputs, as it is used to look up flyweights.
+
+        Notes
+        -----
+        This method is always called **before** initializing a new
+        :class:`AtomicType`.  Its uniqueness determines whether a new flyweight
+        will be generated for this type.
         """
-        return cls.instance()  # NOTE: most types disregard dtype fields
+        # NOTE: we explicitly check for is_generic=False, which signals that
+        # @register_backend has been explicitly called on this type.
+        if cls.is_generic == False:
+            return f"{cls.name}[{cls.backend}]"
+        return cls.name
 
     @classmethod
     def instance(cls, *args, **kwargs) -> AtomicType:
-        """Base flyweight constructor.
+        """The preferred constructor for :class:`AtomicType` objects.
 
-        This factory method is the preferred constructor for AtomicType
-        objects.  It inherits the same signature as a subclass's `__init__()`
-        method, and consults its `.flyweights` table to ensure the uniqueness
-        of the result.
+        This method is responsible for implementing the
+        `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_
+        pattern for :class:`AtomicType` objects.
 
-        This should never be overriden.
+        Parameters
+        ----------
+        *args, **kwargs
+            Arguments passed to this type's
+            :meth:`slugify() <AtomicType.slugify>` and
+            :class:`__init__ <AtomicType>` methods.
+
+        Returns
+        -------
+        AtomicType
+            A flyweight for the specified type.  If this method is given the
+            same inputs again in the future, then this will be a simple
+            reference to the previous instance.
+
+        Notes
+        -----
+        This method should never be overriden.  Together with a corresponding
+        :meth:`slugify() <AtomicType.slugify>` method, it ensures that no
+        leakage occurs with the flyweight cache, which could result in
+        uncontrollable memory consumption.
+
+        Users should use this method in place of ``__init__`` to ensure the
+        `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_
+        pattern is obeyed.  One can manually check the cache that is used for
+        this method under a type's ``.flyweights`` attribute.
         """
         # generate slug
         cdef str slug = cls.slugify(*args, **kwargs)
@@ -185,33 +278,313 @@ cdef class AtomicType(ScalarType):
 
     @classmethod
     def resolve(cls, *args: str) -> AtomicType:
-        """An alternate constructor used to parse input in the type
-        specification mini-language.
-        
-        Override this if your AtomicType implements custom parsing rules for
-        any arguments that are supplied to this type.
+        """Construct a new :class:`AtomicType` in the :ref:`type specification
+        mini-language <mini_language>`.
 
-        .. Note: The inputs to each argument will always be strings.
+        Override this if a type implements custom parsing rules for any
+        arguments that are supplied to it.
+
+        Parameters
+        ----------
+        *args : str
+            Positional arguments supplied to this type.  These will always be
+            passed as strings, exactly as they appear in the :ref:`type
+            specification mini-language <mini_language>`.
+
+        Returns
+        -------
+        AtomicType
+            A flyweight for the specified type.  If this method is given the
+            same inputs again in the future, then this will be a simple
+            reference to the previous instance.
         """
+        # NOTE: Most types don't accept any arguments at all
         return cls.instance(*args)
 
     @classmethod
-    def slugify(cls) -> str:
-        if cls.is_generic == False:
-            return f"{cls.name}[{cls.backend}]"
-        return cls.name
+    def detect(cls, example: Any) -> AtomicType:
+        """Construct a new :class:`AtomicType` from scalar example data.
 
-    ##########################
-    ####    PROPERTIES    ####
-    ##########################
+        Override this if a type has attributes that depend on the value of a
+        corresponding scalar (e.g. datetime64 units, timezones, etc.)
+
+        Parameters
+        ----------
+        example : Any
+            A scalar example of this type (e.g. ``1``, ``42.0``, ``"foo"``,
+            etc.).
+
+        Returns
+        -------
+        AtomicType
+            A flyweight for the specified type.  If this method is given the
+            same input again in the future, then this will be a simple
+            reference to the previous instance.
+
+        Notes
+        -----
+        This method is called during :func:`detect_type` operations when there
+        is no explicit ``.dtype`` field to interpret.  This might be the case
+        for objects that are stored in a base Python list or ``dtype: object``
+        array, for instance.
+
+        In order for this method to be called, the output of ``type()`` on the
+        example must be registered as one of this type's aliases.
+
+        If the input to :func:`detect_type` is vectorized, then this method
+        will be called at each index.
+        """
+        # NOTE: most types disregard example data
+        return cls.instance()
+
+    @classmethod
+    def from_dtype(cls, dtype: np.dtype | ExtensionDtype) -> AtomicType:
+        """Construct an :class:`AtomicType` from a corresponding numpy/pandas
+        ``dtype`` object.
+
+        Override this if a type must parse the attributes of an associated
+        ``dtype`` or ``ExtensionDtype``.
+
+        Parameters
+        ----------
+        dtype : np.dtype | ExtensionDtype
+            The numpy ``dtype`` or pandas ``ExtensionDtype`` to parse.
+
+        Returns
+        -------
+        AtomicType
+            A flyweight for the specified type.  If this method is given the
+            same input again in the future, then this will be a simple
+            reference to the previous instance.
+
+        Notes
+        -----
+        For numpy ``dtype``\s, the input to this function must be a member of
+        the type's ``.aliases`` attribute.
+
+        For pandas ``ExtensionDtype``\s, the input's **type** must be a member
+        of ``.aliases``, not the dtype itself.  This asymmetry allows pandas
+        dtypes to be arbitrarily parameterized when passed to this method.
+        """
+        return cls.instance()  # NOTE: most types disregard dtype metadata
+
+    def replace(self, **kwargs) -> AtomicType:
+        """Return a modified copy of a type with the values specified in
+        `**kwargs`.
+
+        Parameters
+        ----------
+        **kwargs : dict
+            keyword arguments corresponding to attributes of this type.  Any
+            arguments that are not specified will be replaced with the current
+            values for this type.
+
+        Returns
+        -------
+        AtomicType
+            A flyweight for the specified type.  If this method is given the
+            same input again in the future, then this will be a simple
+            reference to the previous instance.
+
+        Notes
+        -----
+        This method respects the immutability of :class:`AtomicType` objects.
+        It always returns a flyweight with the new values.
+        """
+        cdef dict merged = {**self.kwargs, **kwargs}
+        return self.instance(**merged)
+
+    ###################################
+    ####    SUBTYPES/SUPERTYPES    ####
+    ###################################
+
+    def _generate_subtypes(self, types: set) -> set:
+        """Transform a set of subtype definitions into their corresponding
+        instances.
+
+        Override this if your AtomicType implements custom logic to generate
+        subtype instances (such as wildcard behavior or similar functionality).
+
+        Parameters
+        ----------
+        types : set
+            A set containing uninstantiated subtype definitions.  This
+            represents all the types that have been decorated with the
+            :func:`@subtype <subtype>` decorator with this type as one of their
+            parents.
+
+        Returns
+        -------
+        set
+            A set containing the transformed equivalents of the input types,
+            converted into their corresponding instances.  This method is free
+            to determine how this is done.
+
+        Notes
+        -----
+        This method will only be called once, with the result being cached
+        until the shared :class:`TypeRegistry` is next updated.
+        """
+        result = set()
+        for t in types:  # skip invalid kwargs
+            try:
+                result.add(t.instance(**self.kwargs))
+            except TypeError:
+                continue
+
+        return result
+
+    def _generate_supertype(self, supertype: type) -> AtomicType:
+        """Transform a (possibly null) supertype definition into its
+        corresponding instance.
+
+        Override this if your AtomicType implements custom logic to generate
+        supertype instances (due to an interface mismatch or similar obstacle).
+        
+        Parameters
+        ----------
+        supertype : type
+            A parent :class:`AtomicType` definition that has not yet been
+            instantiated.  This can be ``None``, indicating that the type has
+            not been decorated with :func:`@subtype <subtype>`.
+
+        Returns
+        -------
+        AtomicType | None
+            The transformed equivalent of the input type, converted to its
+            corresponding instance.  This method is free to determine how this
+            is done.
+
+        Notes
+        -----
+        This method will only be called once, with the result being cached
+        until the shared :class:`TypeRegistry` is next updated.
+        """
+        if supertype is None or supertype not in self.registry:
+            return None
+        return supertype.instance()
 
     @property
-    def adapters(self) -> Iterator[adapter.AdapterType]:
-        """Iterate through each AdapterType that is attached to this instance.
+    def subtypes(self) -> composite.CompositeType:
+        """A :class:`CompositeType` containing every subtype that is
+        currently registered to this type.
 
-        For AtomicTypes, this is always an empty iterator.
+        The result of this accessor is cached between :class:`TypeRegistry`
+        updates.
         """
-        yield from ()
+        if self.registry.needs_updating(self._subtype_cache):
+            result = composite.CompositeType(
+                self._generate_subtypes(traverse_subtypes(type(self)))
+            )
+            self._subtype_cache = self.registry.remember(result)
+
+        return self._subtype_cache.value
+
+    @property
+    def supertype(self) -> AtomicType:
+        """An :class:`AtomicType` representing the supertype that this type is
+        registered to, if one exists.
+
+        The result of this accessor is cached between :class:`TypeRegistry`
+        updates.
+        """
+        if self.registry.needs_updating(self._supertype_cache):
+            result = self._generate_supertype(self._parent)
+            self._supertype_cache = self.registry.remember(result)
+
+        return self._supertype_cache.value
+
+    @property
+    def root(self) -> AtomicType:
+        """The root node of this type's subtype hierarchy."""
+        if self.is_root:
+            return self
+        return self.supertype.root
+
+    def contains(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
+        """Test whether ``other`` is a member of this type's hierarchy tree.
+
+        Override this to change the behavior of the `in` keyword and implement
+        custom logic for membership tests for the given type.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The type to check for membership.  This can be in any
+            representation recognized by :func:`resolve_type`.
+        include_subtypes : bool, default True
+            Controls whether to include subtypes for this comparison.  If this
+            is set to ``False``, then subtypes will be excluded.  Backends will
+            still be considered, but only at the top level.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``other`` is a member of this type's hierarchy.
+            ``False`` otherwise.
+
+        Notes
+        -----
+        This method also controls the behavior of the ``in`` keyword for
+        :class:`AtomicTypes <AtomicType>`.
+        """
+        other = resolve.resolve_type(other)
+        if isinstance(other, composite.CompositeType):
+            return all(
+                self.contains(o, include_subtypes=include_subtypes)
+                for o in other
+            )
+
+        # self.backends includes self
+        for backend in self.backends.values():
+            if other == backend:
+                return True
+            if include_subtypes:
+                subtypes = backend.subtypes.atomic_types - {self}
+                if any(s.contains(other) for s in subtypes):
+                    return True
+
+        return False
+
+    def is_subtype(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
+        """Reverse of :meth:`AtomicType.contains`.
+
+        Parameters
+        ----------
+        other : type specifier
+            The type to check for membership.  This can be in any
+            representation recognized by :func:`resolve_type`.
+        include_subtypes : bool, default True
+            Controls whether to include subtypes for this comparison.  If this
+            is set to ``False``, then subtypes will be excluded.  Backends will
+            still be considered, but only at the top level.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``self`` is a member of ``other``\'s hierarchy.
+            ``False`` otherwise.
+
+        Notes
+        -----
+        This method performs the same check as :meth:`AtomicType.contains`,
+        except in reverse.  It is functionally equivalent to
+        ``other.contains(self)``.
+        """
+        other = resolve.resolve_type(other)
+        return other.contains(self, include_subtypes=include_subtypes)
+
+    #######################
+    ####    GENERIC    ####
+    #######################
 
     @property
     def backends(self) -> MappingProxyType:
@@ -243,196 +616,39 @@ cdef class AtomicType(ScalarType):
             self._generic_cache = self.registry.remember(result)
         return self._generic_cache.value
 
-    @property
-    def root(self) -> AtomicType:
-        """Return the root node of this AtomicType's subtype hierarchy."""
-        if self.is_root:
-            return self
-        return self.supertype.root
+    @classmethod
+    def register_backend(cls, backend: str):
+        """A decorator that allows individual backends to be added to generic
+        types.
 
-    @property
-    def larger(self) -> list:
-        """return a list of candidate AtomicTypes that this type can be
-        upcasted to in the event of overflow.
+        Parameters
+        ----------
+        backend : str
+            The string to use as this type's backend specifier.
 
-        Override this to change the behavior of a bounded type (with
-        appropriate `.min`/`.max` fields) when an OverflowError is detected.
-        Note that candidate types will always be tested in order.
+        Notes
+        -----
+        The implementation for this method can be found within the
+        :func:`@generic <generic>` decorator itself.  Users do not need to
+        implement it themselves.
         """
-        return []  # NOTE: empty list skips upcasting entirely
+        raise NotImplementedError(f"'{cls.__name__}' is not generic")
 
-    @property
-    def subtypes(self) -> composite.CompositeType:
-        """Return a CompositeType containing instances for every subtype
-        currently registered to this AtomicType.
-
-        The result is cached between `AtomicType.registry` updates, and can be
-        customized via the `_generate_subtypes()` helper method.
-        """
-        if self.registry.needs_updating(self._subtype_cache):
-            result = composite.CompositeType(
-                self._generate_subtypes(traverse_subtypes(type(self)))
-            )
-            self._subtype_cache = self.registry.remember(result)
-
-        return self._subtype_cache.value
+    ########################
+    ####    ADAPTERS    ####
+    ########################
 
     @property
-    def supertype(self) -> AtomicType:
-        """Return an AtomicType instance representing the supertype to which
-        this AtomicType is registered, if one exists.
+    def adapters(self) -> Iterator[adapter.AdapterType]:
+        """Iterate through each AdapterType that is attached to this instance.
 
-        The result is cached between `AtomicType.registry` updates, and can be
-        customized via the `_generate_supertype()` helper method.
+        For AtomicTypes, this is always an empty iterator.
         """
-        if self.registry.needs_updating(self._supertype_cache):
-            result = self._generate_supertype(self._parent)
-            self._supertype_cache = self.registry.remember(result)
-
-        return self._supertype_cache.value
-
-    ############################
-    ####    TYPE METHODS    ####
-    ############################
-
-    def _generate_subtypes(self, types: set) -> set:
-        """Given a set of subtype definitions, map them to their corresponding
-        instances.
-
-        `types` is always a set containing all the AtomicType subclass
-        definitions that have been registered to this AtomicType.  This
-        method is responsible for transforming them into their respective
-        instances, which are cached until the AtomicType registry is updated.
-
-        Override this if your AtomicType implements custom logic to generate
-        subtype instances (such as wildcard behavior or similar functionality).
-        """
-        # skip invalid kwargs
-        result = set()
-        for t in types:
-            try:
-                result.add(t.instance(**self.kwargs))
-            except TypeError:
-                continue
-        return result
-
-    def _generate_supertype(self, type_def: type) -> AtomicType:
-        """Given a (possibly null) supertype definition, map it to its
-        corresponding instance.
-
-        `type_def` is always either `None` or an AtomicType subclass definition
-        representing the supertype that this AtomicType has been registered to.
-        This method is responsible for transforming it into the corresponding
-        instance, which is cached until the AtomicType registry is updated.
-
-        Override this if your AtomicType implements custom logic to generate
-        supertype instances (due to an interface mismatch or similar obstacle).
-        """
-        if type_def is None or type_def not in self.registry:
-            return None
-        return type_def.instance()
-
-    def _construct_extension_dtype(self) -> pd.api.extensions.ExtensionDtype:
-        """Construct a new pandas ``ExtensionDtype`` to refer to elements
-        of this type.
-
-        This method is only invoked if no explicit ``dtype`` is assigned to
-        this ``AtomicType``.
-        """
-        return array.construct_extension_dtype(
-            self,
-            is_boolean=self.is_boolean,
-            is_numeric=self.is_numeric,
-            add_comparison_ops=True,
-            add_arithmetic_ops=True
-        )
-
-    def contains(self, other: type_specifier, exact: bool = False) -> bool:
-        """Test whether `other` is a subtype of the given AtomicType.
-        This is functionally equivalent to `other in self`, except that it
-        applies automatic type resolution to `other`.
-
-        Override this to change the behavior of the `in` keyword and implement
-        custom logic for membership tests of the given type.
-        """
-        other = resolve.resolve_type(other)
-        if isinstance(other, composite.CompositeType):
-            return all(self.contains(o, exact=exact) for o in other)
-
-        # self.backends includes self
-        for backend in self.backends.values():
-            if other == backend:
-                return True
-            if not exact:
-                subtypes = backend.subtypes.atomic_types - {self}
-                if any(s.contains(other) for s in subtypes):
-                    return True
-
-        return False
-
-    def is_na(self, val: Any) -> bool:
-        """Check if an arbitrary value is an NA value in this representation.
-
-        Override this if your type does something funky with missing values.
-        """
-        return val is pd.NA or val is None or val != val
-
-    def is_subtype(self, other: type_specifier) -> bool:
-        """Reverse of `AtomicType.contains()`.
-
-        This is functionally equivalent to `self in other`, except that it
-        applies automatic type resolution + `.contains()` logic to `other`.
-        """
-        return resolve.resolve_type(other).contains(self)
-
-    def make_nullable(self) -> AtomicType:
-        """Create an equivalent AtomicType that can accept missing values."""
-        if self.is_nullable:
-            return self
-        return self.generic.instance(backend="pandas", **self.kwargs)
-
-    def replace(self, **kwargs) -> AtomicType:
-        """Return a modified copy of the given AtomicType with the values
-        specified in `**kwargs`.
-        """
-        cdef dict merged = {**self.kwargs, **kwargs}
-        return self.instance(**merged)
+        yield from ()
 
     def unwrap(self) -> AtomicType:
         """Strip any adapters that have been attached to this AtomicType."""
         return self
-
-    def upcast(self, series: convert.SeriesWrapper) -> AtomicType:
-        """Attempt to upcast an AtomicType to fit the observed range of a
-        series.
-        """
-        # NOTE: we convert to pyint to prevent inconsistent comparisons
-        if pd.isna(series.min):
-            min_val = self.max  # NOTE: we swap these to maintain upcast()
-            max_val = self.min  # behavior for upcast-only types
-        else:
-            min_val = int(series.min - bool(series.min % 1))  # round floor
-            max_val = int(series.max + bool(series.max % 1))  # round ceiling
-        if min_val < self.min or max_val > self.max:
-            # recursively search for a larger alternative
-            for t in self.larger:
-                try:
-                    return t.upcast(series)
-                except OverflowError:
-                    pass
-
-            # no matching type could be found
-            raise OverflowError(
-                f"could not upcast {self} to fit observed range "
-                f"({series.min}, {series.max})"
-            )
-
-        # series fits type
-        return self
-
-    ##############################
-    ####    SERIES METHODS    ####
-    ##############################
 
     def make_categorical(
         self,
@@ -476,6 +692,10 @@ cdef class AtomicType(ScalarType):
             hasnans=series.hasnans
             # element_type is set in AdapterType.transform()
         )
+
+    ###########################
+    ####    CONVERSIONS    ####
+    ###########################
 
     def to_boolean(
         self,
@@ -618,9 +838,69 @@ cdef class AtomicType(ScalarType):
             element_type=dtype
         )
 
-    #############################
-    ####    MAGIC METHODS    ####
-    #############################
+    ###############################
+    ####    UPCAST/DOWNCAST    ####
+    ###############################
+
+    @property
+    def larger(self) -> list:
+        """return a list of candidate AtomicTypes that this type can be
+        upcasted to in the event of overflow.
+
+        Override this to change the behavior of a bounded type (with
+        appropriate `.min`/`.max` fields) when an OverflowError is detected.
+        Note that candidate types will always be tested in order.
+        """
+        return []  # NOTE: empty list skips upcasting entirely
+
+    def upcast(self, series: convert.SeriesWrapper) -> AtomicType:
+        """Attempt to upcast an AtomicType to fit the observed range of a
+        series.
+        """
+        # NOTE: we convert to pyint to prevent inconsistent comparisons
+        if pd.isna(series.min):
+            min_val = self.max  # NOTE: we swap these to maintain upcast()
+            max_val = self.min  # behavior for upcast-only types
+        else:
+            min_val = int(series.min - bool(series.min % 1))  # round floor
+            max_val = int(series.max + bool(series.max % 1))  # round ceiling
+        if min_val < self.min or max_val > self.max:
+            # recursively search for a larger alternative
+            for t in self.larger:
+                try:
+                    return t.upcast(series)
+                except OverflowError:
+                    pass
+
+            # no matching type could be found
+            raise OverflowError(
+                f"could not upcast {self} to fit observed range "
+                f"({series.min}, {series.max})"
+            )
+
+        # series fits type
+        return self
+
+    ##############################
+    ####    MISSING VALUES    ####
+    ##############################
+
+    def is_na(self, val: Any) -> bool:
+        """Check if an arbitrary value is an NA value in this representation.
+
+        Override this if your type does something funky with missing values.
+        """
+        return val is pd.NA or val is None or val != val
+
+    def make_nullable(self) -> AtomicType:
+        """Create an equivalent AtomicType that can accept missing values."""
+        if self.is_nullable:
+            return self
+        return self.generic.instance(backend="pandas", **self.kwargs)
+
+    ###############################
+    ####    SPECIAL METHODS    ####
+    ###############################
 
     def __contains__(self, other: type_specifier) -> bool:
         return self.contains(other)
@@ -654,19 +934,19 @@ cdef class AtomicType(ScalarType):
 
         # init required fields
         cls.aliases.add(cls)  # cls always aliases itself
-        if cache_size is not None:
+        if cache_size is None:
+            cls.flyweights = {}
+        else:
             cls.flyweights = LRUDict(maxsize=cache_size)
 
         # init fields for @subtype
         cls._children = set()
         cls._parent = None
-        cls.is_root = True
 
         # init fields for @generic
         cls._generic = None
-        cls.backend = None
         cls._backends = {}
-        cls.is_generic = None  # True if @generic, False if @register_backend
+          # True if @generic, False if @register_backend
 
     def __setattr__(self, name: str, value: Any) -> None:
         if self._is_frozen:

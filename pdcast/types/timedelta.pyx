@@ -1,5 +1,4 @@
 import datetime
-from typing import Any
 
 import numpy as np
 cimport numpy as np
@@ -18,6 +17,7 @@ from pdcast.util.time cimport Epoch
 from pdcast.util.time import (
     as_ns, convert_unit, pytimedelta_to_ns, valid_units
 )
+from pdcast.util.type_hints import type_specifier
 
 from .base cimport AtomicType, CompositeType
 from .base import generic, register
@@ -411,15 +411,22 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
             return f"{cls.name}[{cls.backend}, {unit}]"
         return f"{cls.name}[{cls.backend}, {step_size}{unit}]"
 
-    def contains(self, other: Any, exact: bool = False) -> bool:
+    def contains(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(self.contains(o, exact=exact) for o in other)
+            return all(
+                self.contains(o, include_subtypes=include_subtypes)
+                for o in other
+            )
 
         # treat unit=None as wildcard
         if self.unit is None:
             return isinstance(other, type(self))
-        return super().contains(other, exact=exact)
+        return super().contains(other, include_subtypes=include_subtypes)
 
     @classmethod
     def detect(cls, example: np.datetime64, **defaults) -> AtomicType:

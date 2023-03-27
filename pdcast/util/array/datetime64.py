@@ -1,11 +1,8 @@
-from collections import Counter
 import numbers
-import sys
-from typing import Any, Callable, Iterator
+from typing import Any, Iterator
 
 import numpy as np
 import pandas as pd
-import pandas.core.algorithms as algorithms
 from pandas.api.extensions import register_extension_dtype
 from pandas.core.arrays import ExtensionArray, ExtensionScalarOpsMixin
 from pandas.core.dtypes.base import ExtensionDtype
@@ -14,6 +11,7 @@ from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
 import pdcast.convert as convert
 
 import pdcast.util.time as time
+from pdcast.util.type_hints import type_specifier
 
 
 # NOTE: it is currently not possible to store np.datetime64 objects in a
@@ -256,7 +254,7 @@ class M8Array(ExtensionArray, ExtensionScalarOpsMixin):
         """Iterate over elements of the array."""
         return iter(self._data)
 
-    def __eq__(self, other: Any):  # type: ignore[override]
+    def __eq__(self, other: type_specifier):
         """Return for `self == other` (element-wise equality)."""
         if isinstance(other, (pd.Series, pd.Index, pd.DataFrame)):
             return NotImplemented

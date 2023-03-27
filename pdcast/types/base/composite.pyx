@@ -10,9 +10,6 @@ cimport pdcast.types.base.adapter as adapter
 from pdcast.util.type_hints import type_specifier
 
 
-# contains() should accept an `exact` argument which disregards subtypes.
-
-
 cdef class CompositeType(BaseType):
     """Set-like container for type objects.
 
@@ -79,14 +76,24 @@ cdef class CompositeType(BaseType):
             if not any(a != b and a in b for b in self.atomic_types)
         )
 
-    def contains(self, other: type_specifier, exact: bool = False) -> bool:
+    def contains(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
         """Test whether a given type specifier is fully contained within `self`
         or any combination of its elements.
         """
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(self.contains(o, exact=exact) for o in other)
-        return any(x.contains(other, exact=exact) for x in self)
+            return all(
+                self.contains(o, include_subtypes=include_subtypes)
+                for o in other
+            )
+        return any(
+            x.contains(other, include_subtypes=include_subtypes)
+            for x in self
+        )
 
     def expand(self) -> CompositeType:
         """Expand the contained types to include each of their subtypes."""

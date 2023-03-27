@@ -130,7 +130,11 @@ cdef class AdapterType(atomic.ScalarType):
     ####    METHODS    ####
     #######################
 
-    def contains(self, other: type_specifier, exact: bool = False) -> bool:
+    def contains(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
         """Test whether `other` is a subtype of the given AtomicType.
         This is functionally equivalent to `other in self`, except that it
         applies automatic type resolution to `other`.
@@ -139,11 +143,17 @@ cdef class AdapterType(atomic.ScalarType):
         """
         other = resolve.resolve_type(other)
         if isinstance(other, composite.CompositeType):
-            return all(self.contains(o, exact=exact) for o in other)
+            return all(
+                self.contains(o, include_subtypes=include_subtypes)
+                for o in other
+            )
 
         return (
             isinstance(other, type(self)) and
-            self.wrapped.contains(other.wrapped, exact=exact)
+            self.wrapped.contains(
+                other.wrapped,
+                include_subtypes=include_subtypes
+            )
         )
 
     def inverse_transform(

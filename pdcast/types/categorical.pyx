@@ -115,7 +115,11 @@ class CategoricalType(AdapterType):
     ####    TYPE METHODS    ####
     ############################
 
-    def contains(self, other: type_specifier, exact: bool = False) -> bool:
+    def contains(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
         """Test whether a given type is contained within this type's subtype
         hierarchy.
         """
@@ -136,7 +140,10 @@ class CategoricalType(AdapterType):
         result = self.levels is None or self.levels == other.levels
 
         # delegate to wrapped
-        return result and self.wrapped.contains(other.wrapped, exact=exact)
+        return result and self.wrapped.contains(
+            other.wrapped,
+            include_subtypes=include_subtypes
+        )
 
     @property
     def dtype(self) -> pd.CategoricalDtype:

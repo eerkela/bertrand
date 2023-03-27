@@ -1,7 +1,6 @@
 import datetime
 import decimal
 from functools import partial
-from typing import Any
 
 import dateutil
 import numpy as np
@@ -25,6 +24,7 @@ from pdcast.util.time import (
     ns_to_pydatetime, numpy_datetime64_to_ns, pydatetime_to_ns,
     string_to_pydatetime, valid_units
 )
+from pdcast.util.type_hints import type_specifier
 
 from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, register
@@ -439,15 +439,22 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
             return f"{cls.name}[{cls.backend}, {unit}]"
         return f"{cls.name}[{cls.backend}, {step_size}{unit}]"
 
-    def contains(self, other: Any, exact: bool = False) -> bool:
+    def contains(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(self.contains(o, exact=exact) for o in other)
+            return all(
+                self.contains(o, include_subtypes=include_subtypes)
+                for o in other
+            )
 
         # treat unit=None as wildcard
         if self.unit is None:
             return isinstance(other, type(self))
-        return super().contains(other, exact=exact)
+        return super().contains(other, include_subtypes=include_subtypes)
 
     @classmethod
     def detect(cls, example: np.datetime64, **defaults) -> AtomicType:
@@ -663,15 +670,22 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
             return f"{cls.name}[{cls.backend}]"
         return f"{cls.name}[{cls.backend}, {str(tz))}]"
 
-    def contains(self, other: Any, exact: bool = False) -> bool:
+    def contains(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(self.contains(o, exact=exact) for o in other)
+            return all(
+                self.contains(o, include_subtypes=include_subtypes)
+                for o in other
+            )
 
         # treat tz=None as wildcard
         if self.tz is None:
             return isinstance(other, type(self))
-        return super().contains(other, exact=exact)
+        return super().contains(other, include_subtypes=include_subtypes)
 
     @classmethod
     def detect(cls, example: pd.Timestamp, **defaults) -> AtomicType:
@@ -944,15 +958,22 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
             return f"{cls.name}[{cls.backend}]"
         return f"{cls.name}[{cls.backend}, {str(tz))}]"
 
-    def contains(self, other: Any, exact: bool = False) -> bool:
+    def contains(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(self.contains(o, exact=exact) for o in other)
+            return all(
+                self.contains(o, include_subtypes=include_subtypes)
+                for o in other
+            )
 
         # treat tz=None as wildcard
         if self.tz is None:
             return isinstance(other, type(self))
-        return super().contains(other, exact=exact)
+        return super().contains(other, include_subtypes=include_subtypes)
 
     @classmethod
     def detect(cls, example: datetime.datetime, **defaults) -> AtomicType:

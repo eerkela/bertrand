@@ -4,48 +4,48 @@
 
 Tutorial: bfloat16
 ==================
-This tutorial will walk through the necessary steps to define and integrate new
-types into the ``pdcast`` ecosystem.  By the end of it, you should be able to
-build arbitrary object types to use with :func:`cast`, :func:`typecheck`, and
-other dispatched methods as you see fit.
+This tutorial will walk through the steps necessary to define and integrate a
+new data type into the ``pdcast`` ecosystem.  By the end of it, you should be
+able to build arbitrary object types to use with :func:`cast`,
+:func:`typecheck`, and other dispatched methods as you see fit.
 
 "Brain" floats
 --------------
-The ``bfloat16`` data type was
-`developed by Google <https://arxiv.org/pdf/1905.12322.pdf>`_ as a
-high-performance alternative to half- and single-precision floating point
-numbers for machine learning applications.  These "brain" floats have a wider
-range of allowable exponents, but fewer bits in their significand than the
-traditional `IEEE 754 specification <https://en.wikipedia.org/wiki/IEEE_754>`_.
-This allows them to represent larger values at the cost of reduced precision
-compared to equivalent ``float16`` objects.  This tradeoff is desirable in the
-case of machine learning cost computations, where precision is relatively
-unimportant compared to speed and memory efficiency.
+The ``bfloat16`` data type was `developed by Google <https://arxiv.org/pdf/1905.12322.pdf>`_
+as a high-performance alternative to `half- <https://en.wikipedia.org/wiki/Half-precision_floating-point_format>`_
+and `single-precision <https://en.wikipedia.org/wiki/Single-precision_floating-point_format>`_
+floating point numbers.  These "brain" floats have more bits devoted to their
+exponents than their `IEEE 754 <https://en.wikipedia.org/wiki/IEEE_754>`_
+alternatives, allowing them to represent a wider range of values at the cost of
+reduced precision.  This tradeoff is desirable in the case of machine learning
+`cost computations <https://en.wikipedia.org/wiki/Gradient_descent>`_, where
+precision is relatively unimportant compared to speed and memory efficiency.
 
 `TensorFlow <https://www.tensorflow.org/>`_, one of the primary frameworks for
-deep learning, allows us to implement these bfloat16 types in normal python.
+deep learning, allows us to implement these ``bfloat16`` types in normal
+Python:
 
 .. doctest::
 
     >>> import tensorflow as tf
-    >>> bfloat16 = tf.bfloat16.as_numpy_dtype  # get base class
+    >>> bfloat16 = tf.bfloat16.as_numpy_dtype
     >>> bfloat16(1.2)
     1.20312
     >>> print(f"{np.float16(1.2):.6f}")  # equivalent float16 for comparison
     1.200195
 
-This tutorial will walk through the process of adding these objects to pandas
-via ``pdcast``.
+This tutorial will describe the process of exposing these objects to pandas via
+``pdcast``.
 
 .. _new_type_defition:
 
 Creating a new type definition
 ------------------------------
-The first order of business when defining a new type is to create a subclass of
-:class:`AtomicType`.  This can be done from anywhere - the new type will be
-automatically discovered during registration.
+The first order of business when defining a new data type is to create a
+subclass of :class:`AtomicType`.  This can be done from anywhere in your code
+base - the new type will be automatically discovered during registration.
 
-We'll start from the bottom and work our way up.
+We'll start from the bottom and work our way up.  
 
 .. doctest::
 
@@ -55,12 +55,12 @@ We'll start from the bottom and work our way up.
     >>> class BFloat16Type(pdcast.AtomicType):
     ...    name = "bfloat16"
     ...    aliases = {"bfloat16", "bf16", "brain float", bfloat16, tf.bfloat16}
-    ...    type = bfloat16
+    ...    type_def = bfloat16
     ...    itemsize = 2
     ...    na_value = np.nan
 
 This gives us a rudimentary type object that contains all the necessary
-information to construct ``bfloat16``-based AtomicTypes.
+information to construct ``bfloat16``-based :class:`AtomicTypes <AtomicType>`.
 
 .. doctest::
 
@@ -71,8 +71,8 @@ information to construct ``bfloat16``-based AtomicTypes.
     >>> BFloat16Type.flyweights
     {'bfloat16': BFloat16Type()}
 
-Note that just because we inherited from AtomicType, the new type has not yet
-been added to :func:`resolve_type` or :func:`detect_type` operations.
+Note that just because we inherited from :class:`AtomicType`, the new type has
+not yet been added to :func:`resolve_type` or :func:`detect_type` operations.
 
 .. doctest::
 
@@ -83,8 +83,9 @@ been added to :func:`resolve_type` or :func:`detect_type` operations.
     >>> pdcast.detect_type(bfloat16(1.2))
     ObjectType(type=<class 'bfloat16'>)
 
-To change this, we have to :func:`register <register>` the type, validating its
-structure and linking its aliases to the aforementioned functions.
+To change this, we must :func:`register <register>` the type,
+:ref:`validating <atomic_type_registration>` its structure and linking its
+:ref:`aliases <atomic_type_aliases>` to the aforementioned functions.
 
 .. doctest::
 

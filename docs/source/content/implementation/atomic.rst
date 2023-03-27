@@ -1,8 +1,10 @@
+.. currentmodule:: pdcast
+
 .. _implementation.atomic_type:
 
 AtomicType
 ==========
-The base ``AtomicType`` definition is a `metaclass <https://peps.python.org/pep-0487/>`_
+The base :class:`AtomicType` definition is a `metaclass <https://peps.python.org/pep-0487/>`_
 that is aware of its own subtypes.  Whenever a class inherits from it,
 ``AtomicType`` introspects various attributes of that class, bringing it into
 a safe state, ready for integration with the rest of the package.  This allows
@@ -172,6 +174,14 @@ they can be integrated with the rest of the package.  These are as follows:
         are identified, so care must be taken to ensure that each output is
         unique.  If a type does not implement a custom ``__init__()`` method,
         this can be safely omitted.
+
+.. _atomic_type_aliases:
+
+Aliases
+^^^^^^^
+TODO.  string aliases are for resolve_type, python types are for detect_type.
+
+.. _atomic_type_registration:
 
 Registration
 ------------

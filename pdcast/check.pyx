@@ -9,7 +9,7 @@ from pdcast.util.type_hints import type_specifier
 def typecheck(
     data: Any,
     dtype: type_specifier ,
-    exact: bool = False,
+    include_subtypes: bool = True,
     ignore_adapters: bool = False
 ) -> bool:
     """Check whether example data contains elements of a specified type.
@@ -29,9 +29,9 @@ def typecheck(
     dtype : type specifier
         The type to compare against.  This can be in any format accepted by
         :func:`resolve_type`.
-    exact : bool, default False
-        Specifies whether to include subtypes in comparisons (False), or only
-        check for exact matches (True).
+    include_subtypes : bool, default True
+        Specifies whether to include subtypes in comparisons (True), or only
+        check for backend matches (False).
     ignore_adapters : bool, default False
         Specifies whether to ignore adapters (sparse, categorical, etc.) that
         are detected in example data.  By default, the comparison type must
@@ -63,12 +63,12 @@ def typecheck(
     >>> import pdcast; pdcast.attach()
     >>> pd.Series([1, 2, 3]).typecheck("int")
     True
-    >>> pd.Series([1, 2, 3]).typecheck("int64", exact=True)
+    >>> pd.Series([1, 2, 3]).typecheck("int64", include_subtypes=False)
     True
 
     Examples
     --------
-    If ``exact=True``, then subtypes will be excluded from membership tests.
+    If ``include_subtypes=False``, then subtypes will be excluded from membership tests.
 
     >>> import pandas as pd
     >>> import pdcast
@@ -78,20 +78,19 @@ def typecheck(
     1    2
     2    3
     dtype: int16
-    >>> pdcast.typecheck(series, "int", exact=False)
+    >>> pdcast.typecheck(series, "int", include_subtypes=True)
     True
-    >>> pdcast.typecheck(series, "int", exact=True)
+    >>> pdcast.typecheck(series, "int", include_subtypes=False)
     False
-    >>> pdcast.typecheck(series, "int16", exact=True)
+    >>> pdcast.typecheck(series, "int16", include_subtypes=False)
     True
     """
     cdef CompositeType data_type = CompositeType(detect_type(data))
     cdef CompositeType target_type = resolve_type([dtype])
-    cdef set exact_target
 
     # strip adapters if directed
     if ignore_adapters:
         target_type = CompositeType(x.unwrap() for x in target_type)
         data_type = CompositeType(x.unwrap() for x in data_type)
 
-    return target_type.contains(data_type, exact=exact)
+    return target_type.contains(data_type, include_subtypes=include_subtypes)
