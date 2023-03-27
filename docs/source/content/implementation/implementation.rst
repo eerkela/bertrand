@@ -15,7 +15,7 @@ information.
     :maxdepth: 1
 
     Type Specification Mini-Language <mini_language>
-    Cast Functions <cast>
+    Conversions <cast>
     Dispatch <dispatch>
     AtomicType <atomic>
     AdapterType <adapter>
