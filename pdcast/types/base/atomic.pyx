@@ -143,7 +143,7 @@ cdef class AtomicType(ScalarType):
 
     :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
     ``pdcast`` type system.  They are used to describe scalar values of a
-    particular type (i.e. ``int``, ``numpy.float32``, etc.).  They can
+    particular type (i.e. ``int``, ``numpy.float32``, etc.).  They can be
     dynamically wrapped with :class:`AdapterTypes <AdapterType>` to modify
     their behavior or contained in :class:`CompositeTypes <CompositeType>` to
     refer to multiple types at once, and they are responsible for defining all

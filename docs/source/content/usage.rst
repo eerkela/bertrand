@@ -300,6 +300,13 @@ This is also true for null cast operations, which can be used to rectify
     2    3
     dtype: int64
 
+.. note::
+
+    There are also several stand-alone
+    :ref:`conversion functions <conversions>`, similar to
+    ``pandas.to_datetime()``.  These are functionally equivalent to
+    :func:`cast`, and are actually called by it in the backend.
+
 Attaching/Detaching from pandas
 -------------------------------
 All of the above functionality can be attached directly to pandas data
@@ -325,7 +332,7 @@ the ``series`` argument.
 
 .. note::
 
-    This can be done in one line by invoking:
+    Importing and attaching ``pdcast`` to pandas can be done in one line:
 
     .. code:: python
 
@@ -360,7 +367,7 @@ Additionally, attaching ``pdcast`` in this way makes
     >>> type(series.round.original)
     <class 'functools.partial'>
 
-These attributes can also be hidden behind virtual namespaces, similar to
+These attributes can be hidden behind virtual namespaces, similar to
 ``Series.dt``, ``Series.str``, etc.
 
 .. doctest::

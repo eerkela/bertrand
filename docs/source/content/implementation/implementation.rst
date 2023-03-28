@@ -14,10 +14,10 @@ information.
 .. toctree::
     :maxdepth: 1
 
-    Type Specification Mini-Language <mini_language>
-    Conversions <cast>
-    Dispatch <dispatch>
     AtomicType <atomic>
     AdapterType <adapter>
     CompositeType <composite>
     SeriesWrapper <series>
+    Type Specification Mini-Language <mini_language>
+    Conversions <cast>
+    Dispatch <dispatch>

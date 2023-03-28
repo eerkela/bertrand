@@ -11,12 +11,13 @@ considered public.
     :hidden:
     :maxdepth: 1
 
-    Check <check>
-    Cast <cast>
-    Attach <attach>
-    Types <types/types>
     AtomicType <atomic>
     AdapterType <adapter>
     CompositeType <composite>
     SeriesWrapper <series>
     TypeRegistry <registry>
+    Decorators <decorators>
+    Type Checks <check>
+    Cast <cast>
+    Attach <attach>
+    Types <types/types>
