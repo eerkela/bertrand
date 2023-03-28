@@ -219,8 +219,8 @@ automatically generate a new ``ExtensionDtype`` via the `pandas extension api
     Auto-generated ``ExtensionDtypes`` store data internally as a
     ``dtype: object`` array, which may not be the most efficient way of
     storing every type.  If there is a more compact representation for a
-    particular type of data, then users can write their own ``ExtensionDtypes``
-    to be used instead.
+    particular data type, users can write their own ``ExtensionDtypes``
+    instead.
 
 itemsize
 ^^^^^^^^
@@ -241,6 +241,32 @@ taken to ensure that each result is unique.  If a type is not parameterized and
 does not implement a custom ``__init__()`` method, then this can be safely
 omitted.
 
+Hierarchies
+-----------
+:class:`AtomicTypes <AtomicType>` can be linked together to form trees using
+the :func:`@subtype() <subtype>` decorator.  This adds the decorated type to
+its parent's :attr:`subtypes <AtomicType.subtypes>` collection, including it
+in :func:`typecheck` operations.
+
+:class:`AtomicTypes <AtomicType>` can also be marked as
+:func:`@generic <generic>`, meaning they can serve as containers for more
+specific implementations.  In order to add an implementation to a generic type,
+use its :meth:`register_backend() <AtomicType.register_backend>` decorator,
+like so:
+
+.. code:: python
+
+    @pdcast.generic
+    class GenericType(pdcast.AtomicType):
+        ...
+
+    @GenericType.register_backend("backend_name")
+    class ImplementationType(pdcast.AtomicType):
+        ...
+
+This makes ``ImplementationType`` available from ``GenericType`` via the
+backend ``"backend_name"``.
+
 .. _atomic_type_registration:
 
 Registration
@@ -248,10 +274,10 @@ Registration
 Once an appropriate :class:`AtomicType` definition has been created, it can be
 integrated with the rest of the package by finishing its decorator stack with
 :func:`@register <register>`, which verifies its configuration and appends it
-to the registry.  Once registered, the type should be recognized by
-:func:`detect_type` and :func:`resolve_type` using all of its given aliases.
-Any dispatched methods that are attached to it can then be dispatched to pandas
-by calling :func:`attach`.
+to the :class:`registry <TypeRegistry>`.  Once registered, the type should be
+recognized by :func:`detect_type` and :func:`resolve_type` using all of its
+given aliases.  Any dispatched methods that are attached to it can then be
+dispatched to pandas by calling :func:`attach`.
 
 All in all, a typical :class:`AtomicType` definition could look something like
 this:

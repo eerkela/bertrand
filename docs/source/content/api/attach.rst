@@ -59,10 +59,6 @@ their original form, the same as they were before
 
 .. autofunction:: detach
 
-.. _dispatch:
-
-.. autodecorator:: dispatch
-
 .. method:: pandas.Series.cast(*args, **kwargs) -> pandas.Series:
 
     An attached version of :func:`cast` that allows users to omit the ``data``

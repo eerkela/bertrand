@@ -7,8 +7,8 @@ Below is a rough overview of the internal data structures ``pdcast`` uses to
 process data, with condensed descriptions for their important functionality.
 This is intended to provide increased context for those seeking to extend
 ``pdcast`` in some way, or those simply interested in learning how it works.
-If a question is not answered by this document, check the API docs for more
-information.
+If a question is not answered by this document, check the
+:doc:`API docs <../api/api>` for more information.
 
 
 .. toctree::
