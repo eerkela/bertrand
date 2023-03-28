@@ -27,6 +27,7 @@
    :maxdepth: 3
 
    Motivation <content/motivation>
+   Usage <content/usage>
    How It Works <content/implementation/implementation>
    Tutorial: bfloat16 <content/tutorial>
    API <content/api/api>

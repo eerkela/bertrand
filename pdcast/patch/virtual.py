@@ -1,10 +1,8 @@
 from __future__ import annotations
 from functools import partial
 import inspect
-import json
 from typing import Any, Callable
 
-import numpy as np
 import pandas as pd
 
 from pdcast.convert import SeriesWrapper
@@ -14,8 +12,6 @@ from pdcast.types import (
     CompositeType, ObjectType, PandasUnsignedIntegerType, SignedIntegerType,
     UnsignedIntegerType
 )
-
-import pdcast.util.array as array
 
 
 # TODO: if this is a .pyx file, then there is no need for _ignore_object_frame

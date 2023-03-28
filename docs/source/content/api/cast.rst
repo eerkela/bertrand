@@ -45,8 +45,10 @@ Cast
 
 .. autofunction:: to_object
 
-Defaults
---------
+.. _cast_arguments:
+
+Arguments
+---------
 
 .. _cast_defaults:
 
