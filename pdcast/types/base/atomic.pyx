@@ -141,29 +141,97 @@ cdef class ScalarType(BaseType):
 cdef class AtomicType(ScalarType):
     """Base class for all user-defined implementation types.
 
-    :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
-    ``pdcast`` type system.  They are used to describe scalar values of a
-    particular type (i.e. ``int``, ``numpy.float32``, etc.).  They can be
-    dynamically wrapped with :class:`AdapterTypes <AdapterType>` to modify
-    their behavior or contained in :class:`CompositeTypes <CompositeType>` to
-    refer to multiple types at once, and they are responsible for defining all
-    the necessary implementation logic for dispatched methods, conversions, and
-    type-related functionality.
-
     Parameters
     ----------
     **kwargs : dict
         Arbitrary keyword arguments describing metadata for this type.  If a
         subclass accepts arguments in its ``__init__`` method, they should
-        always be passed here.  This is conceptually equivalent to the
-        ``_metadata`` field of pandas `ExtensionDtype <https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.api.extensions.ExtensionDtype.html#>`_
+        always be passed here via ``super().__init__(**kwargs)``.  This is
+        conceptually equivalent to the ``_metadata`` field of pandas
+        `ExtensionDtype <https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.api.extensions.ExtensionDtype.html#>`_
         objects.
 
     Notes
     -----
-    See the :doc:`implementation docs </content/implementation/atomic>` and
-    :doc:`tutorial </content/tutorial>` for more information on how
-    :class:`AtomicTypes <AtomicType>` work and how to build your own.
+    :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
+    ``pdcast`` type system.  They are used to describe scalar values of a
+    particular type (e.g. ``int``, ``numpy.float32``, etc.) and are
+    responsible for defining all the necessary implementation logic for
+    dispatched methods, conversions, and type-related functionality at the
+    scalar level.  If you're looking to extend ``pdcast``, it will most likely
+    come down to writing a new :class:`AtomicType`.  Luckily, this is
+    :ref:`easy to do <tutorial>`.
+
+    **Inheritance:**
+
+    New types are strictly limited to *first-order inheritance*.  This means
+    that they must inherit from :class:`AtomicType` *directly*, and cannot have
+    any children of their own.  For example:
+
+    .. code:: python
+
+        class Type1(pdcast.AtomicType):  # valid
+            ...
+
+        class Type2(Type1):   # invalid
+            ...
+
+    If you'd like to share functionality between types, this can be done using
+    `Mixin classes <https://dev.to/bikramjeetsingh/write-composable-reusable-python-classes-using-mixins-6lj>`_:
+
+    .. code:: python
+
+        class Mixin:
+            # shared attributes/methods go here
+            ...
+
+        class Type1(Mixin, pdcast.AtomicType):
+            ...
+
+        class Type2(Mixin, pdcast.AtomicType):
+            ...
+
+    .. note::
+
+        Note that ``Mixin`` comes *before* ``AtomicType`` in each inheritance
+        signature.  This ensures correct `Method Resolution Order (MRO) <https://en.wikipedia.org/wiki/C3_linearization>`_.
+
+    .. _flyweight:
+
+    **Memory Allocation:**
+
+    :class:`AtomicType` instances are `flyweights <https://python-patterns.guide/gang-of-four/flyweight/>`_.
+    This allows them to be extremely memory-efficient (especially when stored
+    in arrays) but also forces each one to be completely immutable.  As a
+    result, all :class:`AtomicTypes <AtomicType>` are strictly **read-only**
+    after they are constructed.
+
+    .. testsetup:: allocation
+
+        import pdcast
+
+    .. doctest:: allocation
+
+        >>> pdcast.resolve_type("int") is pdcast.resolve_type("int")
+        True
+        >>> pdcast.resolve_type("int").new_attribute = 2
+        Traceback (most recent call last):
+            ...
+        AttributeError: AtomicType objects are read-only
+
+    Some types might be parameterized with continuous or unpredictable inputs,
+    which could cause `memory leaks <https://en.wikipedia.org/wiki/Memory_leak>`_.
+    In these cases, users can specify a `Least Recently Used (LRU) <https://en.wikipedia.org/wiki/Cache_replacement_policies#Least_recently_used_(LRU)>`_
+    caching strategy by passing an appropriate ``cache_size`` parameter to a
+    type's inheritance signature, like so:
+
+    .. code:: python
+
+        class CustomType(pdcast.AtomicType, cache_size=128):
+            ...
+
+    This utilizes the built-in `__init_subclass__ <https://peps.python.org/pep-0487/>`_
+    hook to customize class creation.
     """
 
     # INTERNAL FIELDS.  These should never be overridden.

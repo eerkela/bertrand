@@ -1,4 +1,4 @@
-.. TODO: move this entirely into API docs
+.. TODO: merge this with API docs
 
 Implementation
 ==============
