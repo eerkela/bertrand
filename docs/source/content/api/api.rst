@@ -17,7 +17,7 @@ considered public.
     SeriesWrapper <series>
     TypeRegistry <registry>
     Decorators <decorators>
-    Type Checks <check>
+    Inference & Resolution <check>
     Cast <cast>
     Attach <attach>
     Types <types/types>

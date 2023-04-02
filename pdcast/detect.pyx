@@ -57,7 +57,7 @@ def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
     :attr:`CompositeType.index` will contain an array indicating the location
     of each type in the example data.  This can be used for ``groupby()``
     operations and is highly memory-efficient thanks to :class:`AtomicType`\'s
-    :ref:`flyweight construction <flyweight>`.
+    :ref:`flyweight construction <atomic_type.allocation>`.
 
     If :func:`pdcast.attach` is invoked, the output from this function is
     directly attached to ``pandas.Series`` objects under

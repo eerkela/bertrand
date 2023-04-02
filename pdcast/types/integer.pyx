@@ -368,6 +368,19 @@ class IntegerMixin:
         )
 
 
+class NumpyIntegerMixin:
+    """A mixin class that allows numpy integers to automatically switch to
+    their pandas equivalents when missing values are detected.
+    """
+
+    @property
+    def is_nullable(self) -> bool:
+        return False
+
+    def make_nullable(self) -> AtomicType:
+        return self.generic.instance(backend="pandas", **self.kwargs)
+
+
 #######################
 ####    GENERIC    ####
 #######################
@@ -375,7 +388,7 @@ class IntegerMixin:
 
 @register
 @generic
-class IntegerType(IntegerMixin, AtomicType):
+class IntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic integer supertype."""
 
     # internal root fields - all subtypes/backends inherit these
@@ -387,7 +400,6 @@ class IntegerType(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = int
-    is_nullable = False
     max = 2**63 - 1
     min = -2**63
 
@@ -395,7 +407,7 @@ class IntegerType(IntegerMixin, AtomicType):
 @register
 @generic
 @subtype(IntegerType)
-class SignedIntegerType(IntegerMixin, AtomicType):
+class SignedIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic signed integer supertype."""
 
     name = "signed"
@@ -403,7 +415,6 @@ class SignedIntegerType(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = int
-    is_nullable = False
     max = 2**63 - 1
     min = -2**63
 
@@ -411,7 +422,7 @@ class SignedIntegerType(IntegerMixin, AtomicType):
 @register
 @generic
 @subtype(IntegerType)
-class UnsignedIntegerType(IntegerMixin, AtomicType):
+class UnsignedIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 8-bit unsigned integer type."""
 
     name = "unsigned"
@@ -419,7 +430,6 @@ class UnsignedIntegerType(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint64)
     itemsize = 8
     type_def = np.uint64
-    is_nullable = False
     max = 2**64 - 1
     min = 0
 
@@ -427,7 +437,7 @@ class UnsignedIntegerType(IntegerMixin, AtomicType):
 @register
 @generic
 @subtype(SignedIntegerType)
-class Int8Type(IntegerMixin, AtomicType):
+class Int8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 8-bit signed integer type."""
 
     name = "int8"
@@ -435,7 +445,6 @@ class Int8Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int8)
     itemsize = 1
     type_def = np.uint8
-    is_nullable = False
     max = 2**7 - 1
     min = -2**7
 
@@ -443,7 +452,7 @@ class Int8Type(IntegerMixin, AtomicType):
 @register
 @generic
 @subtype(SignedIntegerType)
-class Int16Type(IntegerMixin, AtomicType):
+class Int16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 16-bit signed integer type."""
 
     name = "int16"
@@ -451,7 +460,6 @@ class Int16Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int16)
     itemsize = 2
     type_def = np.uint16
-    is_nullable = False
     max = 2**15 - 1
     min = -2**15
 
@@ -459,7 +467,7 @@ class Int16Type(IntegerMixin, AtomicType):
 @register
 @generic
 @subtype(SignedIntegerType)
-class Int32Type(IntegerMixin, AtomicType):
+class Int32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 32-bit signed integer type."""
 
     name = "int32"
@@ -467,7 +475,6 @@ class Int32Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int32)
     itemsize = 4
     type_def = np.uint32
-    is_nullable = False
     max = 2**31 - 1
     min = -2**31
 
@@ -475,7 +482,7 @@ class Int32Type(IntegerMixin, AtomicType):
 @register
 @generic
 @subtype(SignedIntegerType)
-class Int64Type(IntegerMixin, AtomicType):
+class Int64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 64-bit signed integer type."""
 
     name = "int64"
@@ -483,7 +490,6 @@ class Int64Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = np.uint64
-    is_nullable = False
     max = 2**63 - 1
     min = -2**63
 
@@ -491,7 +497,7 @@ class Int64Type(IntegerMixin, AtomicType):
 @register
 @generic
 @subtype(UnsignedIntegerType)
-class UInt8Type(IntegerMixin, AtomicType):
+class UInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 8-bit unsigned integer type."""
 
     name = "uint8"
@@ -499,7 +505,6 @@ class UInt8Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint8)
     itemsize = 1
     type_def = np.uint8
-    is_nullable = False
     max = 2**8 - 1
     min = 0
 
@@ -507,7 +512,7 @@ class UInt8Type(IntegerMixin, AtomicType):
 @register
 @generic
 @subtype(UnsignedIntegerType)
-class UInt16Type(IntegerMixin, AtomicType):
+class UInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 16-bit unsigned integer type."""
 
     name = "uint16"
@@ -515,7 +520,6 @@ class UInt16Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint16)
     itemsize = 2
     type_def = np.uint16
-    is_nullable = False
     max = 2**16 - 1
     min = 0
 
@@ -523,7 +527,7 @@ class UInt16Type(IntegerMixin, AtomicType):
 @register
 @generic
 @subtype(UnsignedIntegerType)
-class UInt32Type(IntegerMixin, AtomicType):
+class UInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 32-bit unsigned integer type."""
 
     name = "uint32"
@@ -531,7 +535,6 @@ class UInt32Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint32)
     itemsize = 4
     type_def = np.uint32
-    is_nullable = False
     max = 2**32 - 1
     min = 0
 
@@ -539,7 +542,7 @@ class UInt32Type(IntegerMixin, AtomicType):
 @register
 @generic
 @subtype(UnsignedIntegerType)
-class UInt64Type(IntegerMixin, AtomicType):
+class UInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 64-bit unsigned integer type."""
 
     name = "uint64"
@@ -547,7 +550,6 @@ class UInt64Type(IntegerMixin, AtomicType):
     dtype = np.dtype(np.uint64)
     itemsize = 8
     type_def = np.uint64
-    is_nullable = False
     max = 2**64 - 1
     min = 0
 
@@ -559,14 +561,13 @@ class UInt64Type(IntegerMixin, AtomicType):
 
 @register
 @IntegerType.register_backend("numpy")
-class NumpyIntegerType(IntegerMixin, AtomicType):
+class NumpyIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Numpy integer type."""
 
     aliases = {np.integer}
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = np.int64
-    is_nullable = False
     max = 2**63 - 1
     min = -2**63
 
@@ -574,14 +575,13 @@ class NumpyIntegerType(IntegerMixin, AtomicType):
 @register
 @subtype(NumpyIntegerType)
 @SignedIntegerType.register_backend("numpy")
-class NumpySignedIntegerType(IntegerMixin, AtomicType):
+class NumpySignedIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Numpy signed integer type."""
 
     aliases = {np.signedinteger}
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = np.int64
-    is_nullable = False
     max = 2**63 - 1
     min = -2**63
 
@@ -589,14 +589,13 @@ class NumpySignedIntegerType(IntegerMixin, AtomicType):
 @register
 @subtype(NumpyIntegerType)
 @UnsignedIntegerType.register_backend("numpy")
-class NumpyUnsignedIntegerType(IntegerMixin, AtomicType):
+class NumpyUnsignedIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Numpy unsigned integer type."""
 
     aliases = {np.unsignedinteger}
     dtype = np.dtype(np.uint64)
     itemsize = 8
     type_def = np.uint64
-    is_nullable = False
     max = 2**64 - 1
     min = 0
 
@@ -604,14 +603,13 @@ class NumpyUnsignedIntegerType(IntegerMixin, AtomicType):
 @register
 @subtype(NumpySignedIntegerType)
 @Int8Type.register_backend("numpy")
-class NumpyInt8Type(IntegerMixin, AtomicType):
+class NumpyInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """8-bit numpy integer subtype."""
 
     aliases = {np.int8, np.dtype(np.int8)}
     dtype = np.dtype(np.int8)
     itemsize = 1
     type_def = np.int8
-    is_nullable = False
     max = 2**7 - 1
     min = -2**7
 
@@ -619,14 +617,13 @@ class NumpyInt8Type(IntegerMixin, AtomicType):
 @register
 @subtype(NumpySignedIntegerType)
 @Int16Type.register_backend("numpy")
-class NumpyInt16Type(IntegerMixin, AtomicType):
+class NumpyInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """16-bit numpy integer subtype."""
 
     aliases = {np.int16, np.dtype(np.int16)}
     dtype = np.dtype(np.int16)
     itemsize = 2
     type_def = np.int16
-    is_nullable = False
     max = 2**15 - 1
     min = -2**15
 
@@ -634,14 +631,13 @@ class NumpyInt16Type(IntegerMixin, AtomicType):
 @register
 @subtype(NumpySignedIntegerType)
 @Int32Type.register_backend("numpy")
-class NumpyInt32Type(IntegerMixin, AtomicType):
+class NumpyInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """32-bit numpy integer subtype."""
 
     aliases = {np.int32, np.dtype(np.int32)}
     dtype = np.dtype(np.int32)
     itemsize = 4
     type_def = np.int32
-    is_nullable = False
     max = 2**31 - 1
     min = -2**31
 
@@ -649,14 +645,13 @@ class NumpyInt32Type(IntegerMixin, AtomicType):
 @register
 @subtype(NumpySignedIntegerType)
 @Int64Type.register_backend("numpy")
-class NumpyInt64Type(IntegerMixin, AtomicType):
+class NumpyInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """64-bit numpy integer subtype."""
 
     aliases = {np.int64, np.dtype(np.int64)}
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = np.int64
-    is_nullable = False
     max = 2**63 - 1
     min = -2**63
 
@@ -664,14 +659,13 @@ class NumpyInt64Type(IntegerMixin, AtomicType):
 @register
 @subtype(NumpyUnsignedIntegerType)
 @UInt8Type.register_backend("numpy")
-class NumpyUInt8Type(IntegerMixin, AtomicType):
+class NumpyUInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """8-bit numpy unsigned integer subtype."""
 
     aliases = {np.uint8, np.dtype(np.uint8)}
     dtype = np.dtype(np.uint8)
     itemsize = 1
     type_def = np.uint8
-    is_nullable = False
     max = 2**8 - 1
     min = 0
 
@@ -679,14 +673,13 @@ class NumpyUInt8Type(IntegerMixin, AtomicType):
 @register
 @subtype(NumpyUnsignedIntegerType)
 @UInt16Type.register_backend("numpy")
-class NumpyUInt16Type(IntegerMixin, AtomicType):
+class NumpyUInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """16-bit numpy unsigned integer subtype."""
 
     aliases = {np.uint16, np.dtype(np.uint16)}
     dtype = np.dtype(np.uint16)
     itemsize = 2
     type_def = np.uint16
-    is_nullable = False
     max = 2**16 - 1
     min = 0
 
@@ -694,14 +687,13 @@ class NumpyUInt16Type(IntegerMixin, AtomicType):
 @register
 @subtype(NumpyUnsignedIntegerType)
 @UInt32Type.register_backend("numpy")
-class NumpyUInt32Type(IntegerMixin, AtomicType):
+class NumpyUInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """32-bit numpy unsigned integer subtype."""
 
     aliases = {np.uint32, np.dtype(np.uint32)}
     dtype = np.dtype(np.uint32)
     itemsize = 4
     type_def = np.uint32
-    is_nullable = False
     max = 2**32 - 1
     min = 0
 
@@ -709,14 +701,13 @@ class NumpyUInt32Type(IntegerMixin, AtomicType):
 @register
 @subtype(NumpyUnsignedIntegerType)
 @UInt64Type.register_backend("numpy")
-class NumpyUInt64Type(IntegerMixin, AtomicType):
+class NumpyUInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """64-bit numpy unsigned integer subtype."""
 
     aliases = {np.uint64, np.dtype(np.uint64)}
     dtype = np.dtype(np.uint64)
     itemsize = 8
     type_def = np.uint64
-    is_nullable = False
     max = 2**64 - 1
     min = 0
 

@@ -108,6 +108,19 @@ class BooleanMixin:
         )
 
 
+class NumpyBooleanMixin:
+    """A mixin class that allows numpy booleans to automatically switch to
+    their pandas equivalents when missing values are detected.
+    """
+
+    @property
+    def is_nullable(self) -> bool:
+        return False
+
+    def make_nullable(self) -> AtomicType:
+        return self.generic.instance(backend="pandas", **self.kwargs)
+
+
 #######################
 ####    GENERIC    ####
 #######################
@@ -115,7 +128,7 @@ class BooleanMixin:
 
 @register
 @generic
-class BooleanType(BooleanMixin, AtomicType):
+class BooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
     """Generic boolean type.
 
     *   **aliases:** ``"bool"``, ``"boolean"``, ``"bool_"``, ``"bool8"``,
@@ -171,7 +184,7 @@ class BooleanType(BooleanMixin, AtomicType):
 
 @register
 @BooleanType.register_backend("numpy")
-class NumpyBooleanType(BooleanMixin, AtomicType):
+class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
     """Numpy boolean type.
 
     *   **aliases:** ``np.bool_``, ``np.dtype(bool)``

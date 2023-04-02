@@ -155,29 +155,34 @@ cdef class AtomicType(ScalarType):
     -----
     :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
     ``pdcast`` type system.  They are used to describe scalar values of a
-    particular type (e.g. ``int``, ``numpy.float32``, etc.) and are
-    responsible for defining all the necessary implementation logic for
-    dispatched methods, conversions, and type-related functionality at the
-    scalar level.  If you're looking to extend ``pdcast``, it will most likely
-    come down to writing a new :class:`AtomicType`.  Luckily, this is
-    :ref:`easy to do <tutorial>`.
+    particular type (i.e. ``int``, ``numpy.float32``, etc.), and are responsible
+    for defining all the necessary implementation logic for dispatched methods,
+    conversions, and type-related functionality at the scalar level.  If you're
+    looking to extend ``pdcast``, it will most likely come down to writing a new
+    :class:`AtomicType`.  Luckily, this is :ref:`easy to do <tutorial>`.
 
-    **Inheritance:**
+    There are, however, a few caveats to this process, as described below.
 
-    New types are strictly limited to *first-order inheritance*.  This means
-    that they must inherit from :class:`AtomicType` *directly*, and cannot have
-    any children of their own.  For example:
+    .. _atomic_type.inheritance:
+
+    **Inheritance**
+
+    The first caveat is that :class:`AtomicTypes <AtomicType>` are `metaclasses
+    <https://peps.python.org/pep-0487/>`_ that are limited to **first-order
+    inheritance**.  This means that they must inherit from :class:`AtomicType`
+    *directly*, and cannot have any children of their own.  For example:
 
     .. code:: python
 
-        class Type1(pdcast.AtomicType):  # valid
+        class Type1(pdcast.AtomicType):   # valid
             ...
 
         class Type2(Type1):   # invalid
             ...
 
     If you'd like to share functionality between types, this can be done using
-    `Mixin classes <https://dev.to/bikramjeetsingh/write-composable-reusable-python-classes-using-mixins-6lj>`_:
+    `Mixin classes <https://dev.to/bikramjeetsingh/write-composable-reusable-python-classes-using-mixins-6lj>`_,
+    like so:
 
     .. code:: python
 
@@ -188,23 +193,25 @@ cdef class AtomicType(ScalarType):
         class Type1(Mixin, pdcast.AtomicType):
             ...
 
+        @pdcast.subtype(Type1)
         class Type2(Mixin, pdcast.AtomicType):
             ...
 
     .. note::
 
-        Note that ``Mixin`` comes *before* ``AtomicType`` in each inheritance
+        Note that ``Mixin`` comes **before** ``AtomicType`` in each inheritance
         signature.  This ensures correct `Method Resolution Order (MRO) <https://en.wikipedia.org/wiki/C3_linearization>`_.
 
-    .. _flyweight:
+    .. _atomic_type.allocation:
 
-    **Memory Allocation:**
+    **Memory Allocation**
 
-    :class:`AtomicType` instances are `flyweights <https://python-patterns.guide/gang-of-four/flyweight/>`_.
-    This allows them to be extremely memory-efficient (especially when stored
-    in arrays) but also forces each one to be completely immutable.  As a
-    result, all :class:`AtomicTypes <AtomicType>` are strictly **read-only**
-    after they are constructed.
+    Another caveat is that :class:`AtomicType` instances are
+    `flyweights <https://python-patterns.guide/gang-of-four/flyweight/>`_.  This
+    allows them to be extremely memory-efficient (especially when stored in arrays)
+    but also requires each one to be completely immutable.  As a result, all
+    :class:`AtomicTypes <AtomicType>` are strictly **read-only** after they are
+    constructed.
 
     .. testsetup:: allocation
 
@@ -221,8 +228,9 @@ cdef class AtomicType(ScalarType):
 
     Some types might be parameterized with continuous or unpredictable inputs,
     which could cause `memory leaks <https://en.wikipedia.org/wiki/Memory_leak>`_.
-    In these cases, users can specify a `Least Recently Used (LRU) <https://en.wikipedia.org/wiki/Cache_replacement_policies#Least_recently_used_(LRU)>`_
-    caching strategy by passing an appropriate ``cache_size`` parameter to a
+    In these cases, users can specify a `Least Recently Used (LRU)
+    <https://en.wikipedia.org/wiki/Cache_replacement_policies#Least_recently_used_(LRU)>`_
+    caching strategy by passing an appropriate ``cache_size`` parameter in the
     type's inheritance signature, like so:
 
     .. code:: python
@@ -230,8 +238,105 @@ cdef class AtomicType(ScalarType):
         class CustomType(pdcast.AtomicType, cache_size=128):
             ...
 
-    This utilizes the built-in `__init_subclass__ <https://peps.python.org/pep-0487/>`_
-    hook to customize class creation.
+    .. note::
+
+        Setting ``cache_size`` to 0 effectively eliminates flyweight caching for
+        the type in question, though this is not recommended.
+
+    .. _atomic_type.required:
+
+    **Required Attributes**
+
+    Lastly, every :class:`AtomicType` subclass must define certain required
+    fields at the class level before it can be :func:`registered <register>`.
+    These are as follows:
+
+        *   **name** *(str)* - A unique name for each type.  This is used to
+            generate string representations of the associated type, in conjunction
+            with :meth:`slugify() <AtomicType.slugify>`.  They can also be
+            inherited from :func:`generic <generic>` types via
+            :meth:`@AtomicType.register_backend <AtomicType.register_backend>`
+        *   **aliases** *(set)* - a set of unique aliases for this type.  These are
+            used by :func:`detect_type` and :func:`resolve_type` to map aliases
+            onto their corresponding types
+
+            .. note::
+
+                Special significance is given to the type of each alias:
+
+                *   Strings are used by the :ref:`type specification mini-language
+                    <mini_language>` to trigger :meth:`resolution
+                    <AtomicType.resolve>` of the associated type.
+                *   Numpy/pandas ``dtype``\ /\ ``ExtensionDtype`` objects are used
+                    by :func:`detect_type` for *O(1)* type inference.
+                    Parameterized extensions can be parsed by adding
+                    ``type(dtype)`` to the type's aliases, which invokes its
+                    :meth:`from_dtype() <AtomicType.from_dtype>` constructor.
+                *   Raw Python types are used by :func:`detect_type` for scalar or
+                    unlabeled vector inference.  If the type of a scalar element
+                    appears in ``aliases``, then the associated type's
+                    :meth:`detect() <AtomicType.detect>` method will be called on
+                    it.
+
+        *   **type_def** *(type, default None)* - The scalar class for objects of
+            this type.
+        *   **dtype** *(dtype | ExtensionDtype, default NotImplemented)* - The
+            numpy ``dtype`` or pandas ``ExtensionDtype`` to use for arrays of this
+            type.  This can also be ``NotImplemented``\, which signals ``pdcast``
+            to automatically generate one according to the `pandas extension api
+            <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
+
+            .. note::
+
+                Auto-generated ``ExtensionDtypes`` store data internally as a
+                ``dtype: object`` array, which may not be the most efficient.  If
+                there is a more compact representation for a particular type of
+                data, users can provide their own ``ExtensionDtypes`` instead.
+
+        *   **itemsize** *(int, default None)* - The size (in bytes) for scalars of
+            this type.  ``None`` is interpreted as being resizable/unlimited.
+        *   **na_value** *(Any, default pd.NA)* - The representation to use for
+            missing values of this type.  This must pass a ``pd.isna()`` check.
+        *   **slugify(...)** *(classmethod, default* :meth:`AtomicType.slugify`
+            *)* - This describes how to generate string labels for the associated
+            type.  It must have the same arguments as the type's ``__init__()``
+            method, and its output determines how flyweights are identified.  If a
+            type is not parameterized and does not implement a custom
+            ``__init__()`` method, this can be safely omitted.
+
+    All aliases are recognized by :func:`resolve_type` and the set always includes
+    the type itself.
+
+    Examples
+    --------
+    All in all, a typical :class:`AtomicType` definition could look something like
+    this:
+
+    .. code:: python
+
+        @pdcast.register
+        @pdcast.subtype(ParentType)
+        @GenericType.register_backend("backend name")  # inherits .name
+        class BackendType(pdcast.AtomicType, cache_size=128):
+
+            aliases = {"foo", "bar", "baz", np.dtype(np.int64), int, ...}
+            type_def = int
+            dtype = np.dtype(np.int64)
+            itemsize = 8
+            na_value = pd.NA
+
+            def __init__(self, x, y):
+                # custom arg parsing goes here, along with any new attributes
+                super().__init__(x=x, y=y)  # no new attributes after this point
+
+            @classmethod
+            def slugify(cls, x, y) -> str:
+                return f"cls.name[{str(x)}, {str(y)}]"
+
+            # additional customizations/dispatch methods as needed
+
+    Where ``ParentType`` and ``GenericType`` reference other :class:`AtomicType`
+    definitions that ``BackendType`` is linked to.
     """
 
     # INTERNAL FIELDS.  These should never be overridden.
@@ -244,12 +349,11 @@ cdef class AtomicType(ScalarType):
     is_root = True   # marker for @subtype
     backend = None   # marker for @register_backend
 
-    # DEFAULT FIELDS.  These can be overridden to customize a type's behavior.
+    # REQUIRED FIELDS.  These can be overridden to customize a type's behavior.
     type_def = None   # output from type() on an example of this type
     dtype = NotImplemented   # signals pdcast to autogenerate an ExtensionDtype
     itemsize = None   # size in bytes for members of this type
     na_value = pd.NA   # missing value for vectors of this type
-    is_nullable = True  # must be explicitly set False where applicable
 
     def __init__(self, **kwargs):
         self.kwargs = MappingProxyType(kwargs)
@@ -1075,8 +1179,19 @@ cdef class AtomicType(ScalarType):
     ####    MISSING VALUES    ####
     ##############################
 
+    @property
+    def is_nullable(self) -> bool:
+        """Indicates whether a type supports missing values.
+
+        Set this ``False`` where necessary to invoke :meth:`make_nullable
+        <AtomicType.make_nullable>`.  This allows automatic conversion to a
+        nullable alternative when missing values are detected/coerced.
+        """
+        return True
+
     def is_na(self, val: Any) -> bool:
-        """Check if a scalar value is equal to this type's NA representation.
+        """Check if a scalar value is considered missing in this
+        representation.
 
         Parameters
         ----------
@@ -1095,12 +1210,18 @@ cdef class AtomicType(ScalarType):
         equal to themselves, so some other algorithm must be used to test for
         them.  This method allows users to define this logic on a per-type
         basis.
+
+        If you override this method, you should always call its base equivalent
+        via ``super().is_na()`` before returning a custom result.
         """
         return val is pd.NA or val is None or val != val
 
     def make_nullable(self) -> AtomicType:
         """Convert a non-nullable :class:`AtomicType` into one that can accept
         missing values.
+
+        Override this to control how this type is coerced when missing values
+        are detected during a :func:`cast` operation. 
 
         Returns
         -------
@@ -1110,7 +1231,10 @@ cdef class AtomicType(ScalarType):
         """
         if self.is_nullable:
             return self
-        return self.generic.instance(backend="pandas", **self.kwargs)
+
+        raise NotImplementedError(
+            f"'{type(self).__name__}' objects have no nullable alternative."
+        )
 
     ###############################
     ####    SPECIAL METHODS    ####

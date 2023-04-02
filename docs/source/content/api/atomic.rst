@@ -1,7 +1,5 @@
 .. currentmodule:: pdcast
 
-.. _atomic_type:
-
 AtomicType
 ==========
 
@@ -25,7 +23,7 @@ pattern.
 
 Aliases
 -------
-See the :ref:`implementation docs <atomic_type_aliases>` for more information
+See the :ref:`implementation docs <atomic_type.required>` for more information
 on how aliases are used.
 
 .. autosummary::
@@ -106,6 +104,7 @@ Missing Values
 .. autosummary::
     :toctree: ../../generated/
 
+    AtomicType.is_nullable
     AtomicType.is_na
     AtomicType.make_nullable
 

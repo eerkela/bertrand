@@ -84,8 +84,8 @@ not yet been added to :func:`resolve_type` or :func:`detect_type` operations.
     ObjectType(type=<class 'bfloat16'>)
 
 To change this, we must :func:`register <register>` the type,
-:ref:`validating <atomic_type_registration>` its structure and linking its
-:ref:`aliases <atomic_type_aliases>` to the aforementioned functions.
+:ref:`validating <atomic_type.required>` its structure and linking its
+:ref:`aliases <atomic_type.required>` to the aforementioned functions.
 
 .. doctest::
 

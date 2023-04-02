@@ -14,7 +14,6 @@ If a question is not answered by this document, check the
 .. toctree::
     :maxdepth: 1
 
-    AtomicType <atomic>
     AdapterType <adapter>
     CompositeType <composite>
     SeriesWrapper <series>
