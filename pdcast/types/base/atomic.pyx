@@ -181,10 +181,14 @@ cdef class AtomicType(ScalarType):
                 <mini_language>` to trigger :meth:`resolution
                 <AtomicType.resolve>` of the associated type.
             *   Numpy/pandas ``dtype``\ /\ ``ExtensionDtype`` objects are used
-                by :func:`detect_type` for *O(1)* type inference.
-                Parameterized extensions can be parsed by adding
-                ``type(dtype)`` to the type's aliases, which invokes its
-                :meth:`from_dtype() <AtomicType.from_dtype>` constructor.
+                by :func:`detect_type` for *O(1)* type inference.  In both
+                cases, parametrized dtypes can be handled by adding a root
+                dtype to ``aliases``.  For numpy ``dtypes``, this will be the
+                root of their ``np.issubdtype()`` hierarchy.  For pandas
+                ``ExtensionDtypes``, it is its ``type()`` directly.  When
+                either of these are encountered, they will invoke the
+                :class:`AtomicType`'s :meth:`from_dtype()
+                <AtomicType.from_dtype>` constructor.
             *   Raw Python types are used by :func:`detect_type` for scalar or
                 unlabeled vector inference.  If the type of a scalar element
                 appears in ``aliases``, then the associated type's
@@ -362,6 +366,7 @@ cdef class AtomicType(ScalarType):
         type | None
             A class object used to instantiate scalar examples of this type.
         """
+        # TODO: raise NotImplementedError?
         return None
 
     @property

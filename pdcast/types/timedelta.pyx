@@ -362,7 +362,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
 
     aliases = {
         np.timedelta64,
-        # np.dtype("m8") handled in resolve_typespec_dtype special case
+        np.dtype("m8"),
         "m8",
         "timedelta64",
         "numpy.timedelta64",
@@ -375,12 +375,10 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
-            # self.dtype = np.dtype("m8")
             # NOTE: these min/max values always trigger upcast check.
             self.min = 1  # increase this to take precedence when upcasting
             self.max = 0
         else:
-            # self.dtype = np.dtype(f"m8[{step_size}{unit}]")
             # NOTE: these epochs are chosen to minimize range in the event of
             # irregular units ('Y'/'M'), so that conversions work regardless of
             # leap days and irregular month lengths.

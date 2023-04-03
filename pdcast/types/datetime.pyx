@@ -390,7 +390,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
 
     aliases = {
         np.datetime64,
-        # np.dtype("M8") handled in resolve_typespec_dtype special case
+        np.dtype("M8"),
         "M8",
         "datetime64",
         "numpy.datetime64",

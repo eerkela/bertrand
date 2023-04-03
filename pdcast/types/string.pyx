@@ -231,7 +231,7 @@ class StringType(StringMixin, AtomicType):
     aliases = {
         str,
         np.str_,
-        # np.dtype("U") handled in resolve_typespec_dtype() special case
+        np.dtype("U"),
         pd.StringDtype,
         "string",
         "str",

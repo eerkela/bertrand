@@ -764,7 +764,7 @@ class PandasUnsignedIntegerType(IntegerMixin, AtomicType):
 class PandasInt8Type(IntegerMixin, AtomicType):
     """8-bit numpy integer subtype."""
 
-    aliases = {pd.Int8Dtype, pd.Int8Dtype(), "Int8"}
+    aliases = {pd.Int8Dtype, "Int8"}
     dtype = pd.Int8Dtype()
     itemsize = 1
     type_def = np.int8
@@ -778,7 +778,7 @@ class PandasInt8Type(IntegerMixin, AtomicType):
 class PandasInt16Type(IntegerMixin, AtomicType):
     """16-bit numpy integer subtype."""
 
-    aliases = {pd.Int16Dtype, pd.Int16Dtype(), "Int16"}
+    aliases = {pd.Int16Dtype, "Int16"}
     dtype = pd.Int16Dtype()
     itemsize = 2
     type_def = np.int16
@@ -792,7 +792,7 @@ class PandasInt16Type(IntegerMixin, AtomicType):
 class PandasInt32Type(IntegerMixin, AtomicType):
     """32-bit numpy integer subtype."""
 
-    aliases = {pd.Int32Dtype, pd.Int32Dtype(), "Int32"}
+    aliases = {pd.Int32Dtype, "Int32"}
     dtype = pd.Int32Dtype()
     itemsize = 4
     type_def = np.int32
@@ -806,7 +806,7 @@ class PandasInt32Type(IntegerMixin, AtomicType):
 class PandasInt64Type(IntegerMixin, AtomicType):
     """64-bit numpy integer subtype."""
 
-    aliases = {pd.Int64Dtype, pd.Int64Dtype(), "Int64"}
+    aliases = {pd.Int64Dtype, "Int64"}
     dtype = pd.Int64Dtype()
     itemsize = 8
     type_def = np.int64
@@ -820,7 +820,7 @@ class PandasInt64Type(IntegerMixin, AtomicType):
 class PandasUInt8Type(IntegerMixin, AtomicType):
     """8-bit numpy integer subtype."""
 
-    aliases = {pd.UInt8Dtype, pd.UInt8Dtype(), "UInt8"}
+    aliases = {pd.UInt8Dtype, "UInt8"}
     dtype = pd.UInt8Dtype()
     itemsize = 1
     type_def = np.uint8
@@ -834,7 +834,7 @@ class PandasUInt8Type(IntegerMixin, AtomicType):
 class PandasUInt16Type(IntegerMixin, AtomicType):
     """16-bit numpy integer subtype."""
 
-    aliases = {pd.UInt16Dtype, pd.UInt16Dtype(), "UInt16"}
+    aliases = {pd.UInt16Dtype, "UInt16"}
     dtype = pd.UInt16Dtype()
     itemsize = 2
     type_def = np.uint16
@@ -848,7 +848,7 @@ class PandasUInt16Type(IntegerMixin, AtomicType):
 class PandasUInt32Type(IntegerMixin, AtomicType):
     """32-bit numpy integer subtype."""
 
-    aliases = {pd.UInt32Dtype, pd.UInt32Dtype(), "UInt32"}
+    aliases = {pd.UInt32Dtype, "UInt32"}
     dtype = pd.UInt32Dtype()
     itemsize = 4
     type_def = np.uint32
@@ -862,7 +862,7 @@ class PandasUInt32Type(IntegerMixin, AtomicType):
 class PandasUInt64Type(IntegerMixin, AtomicType):
     """64-bit numpy integer subtype."""
 
-    aliases = {pd.UInt64Dtype, pd.UInt64Dtype(), "UInt64"}
+    aliases = {pd.UInt64Dtype, "UInt64"}
     dtype = pd.UInt64Dtype()
     itemsize = 8
     type_def = np.uint64

@@ -256,7 +256,7 @@ class PandasBooleanType(BooleanMixin, AtomicType):
         PandasBooleanType()
     """
 
-    aliases = {pd.BooleanDtype, pd.BooleanDtype(), "Boolean"}
+    aliases = {pd.BooleanDtype, "Boolean"}
     dtype = pd.BooleanDtype()
     itemsize = 1
     type_def = np.bool_

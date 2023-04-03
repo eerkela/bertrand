@@ -14,5 +14,6 @@ cdef object token
 cdef str nested(str opener, str closer, str name)
 cdef list tokenize(str input_str)
 cdef types.BaseType resolve_typespec_string(str input_str)
-cdef types.ScalarType resolve_typespec_dtype(object input_dtype)
+cdef types.ScalarType resolve_typespec_dtype_numpy(object input_dtype)
+cdef types.ScalarType resolve_typespec_dtype_pandas(object input_dtype)
 cdef types.ScalarType resolve_typespec_type(type input_type)

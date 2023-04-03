@@ -32,6 +32,12 @@ from pdcast.util.type_hints import type_specifier
 # -> CategoricalType must be able to wrap CompositeTypes
 
 
+# TODO: for np.dtype inputs, iterate through aliases for instances of np.dtype,
+# then do an np.issubdtype() check on each one and use the associated type.
+# ExtensionDtypes should be checked by their type().  These can be separated
+# into different helpers.
+
+
 #####################
 ####   PUBLIC    ####
 #####################
@@ -145,8 +151,10 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
         result = resolve_typespec_string(typespec)
     elif isinstance(typespec, type):
         result = resolve_typespec_type(typespec)
-    elif isinstance(typespec, (np.dtype, pd.api.extensions.ExtensionDtype)):
-        result = resolve_typespec_dtype(typespec)
+    elif isinstance(typespec, np.dtype):
+        result = resolve_typespec_dtype_numpy(typespec)
+    elif isinstance(typespec, pd.api.extensions.ExtensionDtype):
+        result = resolve_typespec_dtype_pandas(typespec)
     elif hasattr(typespec, "__iter__"):
         result = types.CompositeType(resolve_type(x) for x in typespec)
     else:
@@ -247,7 +255,18 @@ cdef types.BaseType resolve_typespec_string(str input_str):
     return types.CompositeType(result)
 
 
-cdef types.ScalarType resolve_typespec_dtype(object input_dtype):
+cdef types.ScalarType resolve_typespec_dtype_numpy(object input_dtype):
+    """Resolve a numpy/pandas dtype object, returning a corresponding
+    AtomicType.
+    """
+    for k, v in types.AtomicType.registry.aliases.items():
+        if isinstance(k, np.dtype) and np.issubdtype(input_dtype, k):
+            return v.from_dtype(input_dtype)
+
+    raise ValueError(f"numpy dtype not recognized: {input_dtype}")
+
+
+cdef types.ScalarType resolve_typespec_dtype_pandas(object input_dtype):
     """Resolve a numpy/pandas dtype object, returning a corresponding
     AtomicType.
     """
@@ -256,27 +275,13 @@ cdef types.ScalarType resolve_typespec_dtype(object input_dtype):
         return input_dtype._atomic_type
 
     cdef types.TypeRegistry registry = types.AtomicType.registry
-    cdef types.ScalarType result = None
-
-    # special cases for numpy M8/m8/U, etc.
-    if isinstance(input_dtype, np.dtype):
-        if np.issubdtype(input_dtype, "M8"):
-            result = types.NumpyDatetime64Type.from_dtype(input_dtype)
-        elif np.issubdtype(input_dtype, "m8"):
-            result = types.NumpyTimedelta64Type.from_dtype(input_dtype)
-        elif np.issubdtype(input_dtype, "U"):
-            result = types.StringType.from_dtype(input_dtype)
-        else:
-            result = registry.aliases[input_dtype].instance()
-        return result
 
     # look up ExtensionDtype and pass example
     return registry.aliases[type(input_dtype)].from_dtype(input_dtype)
 
 
 cdef types.ScalarType resolve_typespec_type(type input_type):
-    """Resolve a runtime type definition, returning a corresponding AtomicType.
-    """
+    """Resolve a python type, returning a corresponding AtomicType."""
     cdef dict aliases = types.AtomicType.registry.aliases
     cdef type result = aliases.get(input_type, None)
 

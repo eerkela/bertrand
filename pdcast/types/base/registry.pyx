@@ -199,11 +199,6 @@ cdef class TypeRegistry:
         self.validate_name(new_type)
         self.validate_aliases(new_type)
         self.validate_slugify(new_type)
-        # if issubclass(new_type, atomic.AtomicType):
-        #     self.validate_type_def(new_type)
-        #     self.validate_dtype(new_type)
-        #     self.validate_itemsize(new_type)
-        #     self.validate_na_value(new_type)
 
         # add type to registry and update hash
         self.atomic_types.append(new_type)
@@ -240,53 +235,6 @@ cdef class TypeRegistry:
         """Hash the registry's internal state, for use in cached properties."""
         self.hash = hash(tuple(self.atomic_types))
 
-    cdef int validate_aliases(self, type subclass) except -1:
-        """Ensure that a subclass of AtomicType has an `aliases` dictionary
-        and that none of its aliases overlap with another registered
-        AtomicType.
-        """
-        validate(subclass, "aliases", expected_type=set)
-
-        # ensure that no aliases are already registered to another AtomicType
-        for k in subclass.aliases:
-            if k in self.aliases:
-                raise TypeError(
-                    f"{subclass.__name__} alias {repr(k)} is already "
-                    f"registered to {self.aliases[k].__name__}"
-                )
-
-    cdef int validate_dtype(self, type subclass) except -1:
-        """Ensure that if a subclass of AtomicType defines a `dtype`
-        attribute, that it is a valid numpy dtype or pandas extension type.
-        """
-        valid_dtypes = (
-            np.dtype,
-            pd.api.extensions.ExtensionDtype,
-            type(NotImplemented)
-        )
-        if subclass.dtype is not None:
-            validate(subclass, "dtype", expected_type=valid_dtypes)
-
-    cdef int validate_itemsize(self, type subclass) except -1:
-        """Ensure that if a subclass of AtomicType defines an `itemsize`
-        attribute, that it is a positive integer.
-        """
-        if subclass.itemsize is not None:
-            validate(subclass, "itemsize", expected_type=int)
-            if subclass.itemsize < 1:
-                raise TypeError(f"`{subclass.__name__}.itemsize` must be >= 1")
-
-    cdef int validate_slugify(self, type subclass) except -1:
-        """Ensure that a subclass of AtomicType has a `slugify()`
-        classmethod and that its signature matches __init__.
-        """
-        validate(
-            subclass,
-            "slugify",
-            expected_type="classmethod",
-            signature=subclass
-        )
-
     cdef int validate_name(self, type subclass) except -1:
         """Ensure that a subclass of AtomicType has a unique `name` attribute
         associated with it.
@@ -305,21 +253,31 @@ cdef class TypeRegistry:
                     f"unique (not one of {observed_names})"
                 )
 
-    cdef int validate_na_value(self, type subclass) except -1:
-        """Ensure that if a subclass of AtomicType defines an `na_value`
-        attribute, that it is accepted by `pd.isna()`.
+    cdef int validate_aliases(self, type subclass) except -1:
+        """Ensure that a subclass of AtomicType has an `aliases` dictionary
+        and that none of its aliases overlap with another registered
+        AtomicType.
         """
-        if not pd.isna(subclass.na_value):
-            raise TypeError(
-                f"`{subclass.__name__}.na_value` must pass pd.isna()"
-            )
+        validate(subclass, "aliases", expected_type=set)
 
-    cdef int validate_type_def(self, type subclass) except -1:
-        """Ensure that if a subclass of AtomicType defines a `type_def`
-        attribute, that it is a valid type definition.
+        # ensure that no aliases are already registered to another AtomicType
+        for k in subclass.aliases:
+            if k in self.aliases:
+                raise TypeError(
+                    f"{subclass.__name__} alias {repr(k)} is already "
+                    f"registered to {self.aliases[k].__name__}"
+                )
+
+    cdef int validate_slugify(self, type subclass) except -1:
+        """Ensure that a subclass of AtomicType has a `slugify()`
+        classmethod and that its signature matches __init__.
         """
-        if subclass.type_def is not None:
-            validate(subclass, "type_def", expected_type=type)
+        validate(
+            subclass,
+            "slugify",
+            expected_type="classmethod",
+            signature=subclass
+        )
 
     #############################
     ####    MAGIC METHODS    ####
