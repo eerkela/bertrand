@@ -403,12 +403,10 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
-            # self.dtype = np.dtype("M8")
             # NOTE: these min/max values always trigger upcast check.
             self.min = 1  # increase this to take precedence when upcasting
             self.max = 0
         else:
-            # self.dtype = np.dtype(f"M8[{step_size}{unit}]")
             # NOTE: min/max datetime64 depends on unit
             if unit == "Y":  # appears to be biased toward UTC
                 min_M8 = np.datetime64(-2**63 + 1, "Y")
@@ -649,23 +647,27 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
     min = pd.Timestamp.min.value + 14 * as_ns["h"]  # UTC-14 is furthest ahead
     max = pd.Timestamp.max.value - 12 * as_ns["h"]  # UTC+12 is furthest behind
 
-    def __init__(self, tz: datetime.tzinfo = None):
+    def __init__(self, tz: datetime.tzinfo | str = None):
         if isinstance(tz, str):
             tz = pytz.timezone(tz)
-
-        if tz is None:
-            self.dtype = np.dtype("M8[ns]")
-        else:
-            self.dtype = pd.DatetimeTZDtype(tz=tz)
-
         super().__init__(tz=tz)
+
+    ########################
+    ####    REQUIRED    ####
+    ########################
+
+    @property
+    def dtype(self) -> np.dtype | pd.api.extensions.ExtensionDtype:
+        if self.tz is None:
+            return np.dtype("M8[ns]")
+        return pd.DatetimeTZDtype(tz=self.tz)
 
     ############################
     ####    TYPE METHODS    ####
     ############################
 
     @classmethod
-    def slugify(cls, tz: datetime.tzinfo = None):
+    def slugify(cls, tz: datetime.tzinfo | str = None):
         if tz is None:
             return f"{cls.name}[{cls.backend}]"
         return f"{cls.name}[{cls.backend}, {str(tz))}]"

@@ -1,3 +1,4 @@
+import decimal
 from types import MappingProxyType
 from typing import Any, Callable, Iterator
 
@@ -5,6 +6,7 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 from pandas.api.extensions import ExtensionDtype, register_extension_dtype
+import pytz
 
 cimport pdcast.convert as convert
 import pdcast.convert as convert
@@ -19,6 +21,7 @@ cimport pdcast.types.base.composite as composite
 import pdcast.util.array as array
 from pdcast.util.round cimport Tolerance
 from pdcast.util.structs cimport LRUDict
+from pdcast.util.time cimport Epoch
 from pdcast.util.type_hints import type_specifier
 
 
@@ -139,7 +142,13 @@ cdef class ScalarType(BaseType):
 
 
 cdef class AtomicType(ScalarType):
-    """Base class for all user-defined implementation types.
+    """Abstract Base class for all user-defined implementation types.
+
+    :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
+    ``pdcast`` type system.  They are used to describe scalar values of a
+    particular type (i.e. ``int``, ``numpy.float32``, etc.), and are responsible
+    for defining all the necessary implementation logic for dispatched methods,
+    conversions, and type-related functionality at the scalar level.
 
     Parameters
     ----------
@@ -151,26 +160,69 @@ cdef class AtomicType(ScalarType):
         `ExtensionDtype <https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.api.extensions.ExtensionDtype.html#>`_
         objects.
 
+    Attributes
+    ----------
+    name : str
+        A unique name for each type, which must be defined at the class level.
+        This is used in conjunction with :meth:`slugify() <AtomicType.slugify>`
+        to generate string representations of the associated type.  Names can
+        also be inherited from :func:`generic <generic>` types via
+        :meth:`@AtomicType.register_backend <AtomicType.register_backend>`
+    aliases : set[str | type | np.dtype | ExtensionDtype]
+        A set of unique aliases for this type, which must be defined at the
+        class level.  These are used by :func:`detect_type` and
+        :func:`resolve_type` to map aliases onto their corresponding types.
+
+        .. note::
+
+            Special significance is given to the type of each alias:
+
+            *   Strings are used by the :ref:`type specification mini-language
+                <mini_language>` to trigger :meth:`resolution
+                <AtomicType.resolve>` of the associated type.
+            *   Numpy/pandas ``dtype``\ /\ ``ExtensionDtype`` objects are used
+                by :func:`detect_type` for *O(1)* type inference.
+                Parameterized extensions can be parsed by adding
+                ``type(dtype)`` to the type's aliases, which invokes its
+                :meth:`from_dtype() <AtomicType.from_dtype>` constructor.
+            *   Raw Python types are used by :func:`detect_type` for scalar or
+                unlabeled vector inference.  If the type of a scalar element
+                appears in ``aliases``, then the associated type's
+                :meth:`detect() <AtomicType.detect>` method will be called on
+                it.
+
+        All aliases are recognized by :func:`resolve_type` and the set always
+        includes the type itself.
+
+    type_def : type | None
+        The scalar class for objects of this type.
+    dtype : np.dtype | ExtensionDtype
+        The numpy ``dtype`` or pandas ``ExtensionDtype`` to use for arrays of
+        this type.  If this is not explicitly given, ``pdcast`` will
+        automatically generate an ``ExtensionDtype`` according to the `pandas
+        extension api <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
+
+        .. note::
+
+            Auto-generated ``ExtensionDtypes`` store data internally as a
+            ``dtype: object`` array, which may not be the most efficient.  If
+            there is a more compact representation for a particular data type,
+            users can provide their own ``ExtensionDtypes`` instead.
+
+    itemsize : int | None
+        The size (in bytes) for scalars of this type.  ``None`` is interpreted
+        as being resizable/unlimited.
+    na_value : Any
+        The representation to use for missing values of this type.
+
     Notes
     -----
-    :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
-    ``pdcast`` type system.  They are used to describe scalar values of a
-    particular type (i.e. ``int``, ``numpy.float32``, etc.), and are responsible
-    for defining all the necessary implementation logic for dispatched methods,
-    conversions, and type-related functionality at the scalar level.  If you're
-    looking to extend ``pdcast``, it will most likely come down to writing a new
-    :class:`AtomicType`.  Luckily, this is :ref:`easy to do <tutorial>`.
-
-    There are, however, a few caveats to this process, as described below.
-
     .. _atomic_type.inheritance:
 
-    **Inheritance**
-
-    The first caveat is that :class:`AtomicTypes <AtomicType>` are `metaclasses
-    <https://peps.python.org/pep-0487/>`_ that are limited to **first-order
-    inheritance**.  This means that they must inherit from :class:`AtomicType`
-    *directly*, and cannot have any children of their own.  For example:
+    :class:`AtomicTypes <AtomicType>` are `metaclasses <https://peps.python.org/pep-0487/>`_
+    that are limited to **first-order inheritance**.  This means that they must
+    inherit from :class:`AtomicType` *directly*, and cannot have any children
+    of their own.  For example:
 
     .. code:: python
 
@@ -200,18 +252,18 @@ cdef class AtomicType(ScalarType):
     .. note::
 
         Note that ``Mixin`` comes **before** ``AtomicType`` in each inheritance
-        signature.  This ensures correct `Method Resolution Order (MRO) <https://en.wikipedia.org/wiki/C3_linearization>`_.
+        signature.  This ensures correct `Method Resolution Order (MRO)
+        <https://en.wikipedia.org/wiki/C3_linearization>`_.
 
     .. _atomic_type.allocation:
 
-    **Memory Allocation**
-
-    Another caveat is that :class:`AtomicType` instances are
-    `flyweights <https://python-patterns.guide/gang-of-four/flyweight/>`_.  This
-    allows them to be extremely memory-efficient (especially when stored in arrays)
-    but also requires each one to be completely immutable.  As a result, all
-    :class:`AtomicTypes <AtomicType>` are strictly **read-only** after they are
-    constructed.
+    Additionally, :class:`AtomicType` instances are `flyweights
+    <https://python-patterns.guide/gang-of-four/flyweight/>`_ that are
+    identified by their :meth:`slug <AtomicType.slugify>` attribute.  This
+    allows them to be extremely memory-efficient (especially when stored in
+    arrays) but also requires each one to be completely immutable.  As a
+    result, all :class:`AtomicTypes <AtomicType>` are strictly **read-only**
+    after they are constructed.
 
     .. testsetup:: allocation
 
@@ -242,70 +294,6 @@ cdef class AtomicType(ScalarType):
 
         Setting ``cache_size`` to 0 effectively eliminates flyweight caching for
         the type in question, though this is not recommended.
-
-    .. _atomic_type.required:
-
-    **Required Attributes**
-
-    Lastly, every :class:`AtomicType` subclass must define certain required
-    fields at the class level before it can be :func:`registered <register>`.
-    These are as follows:
-
-        *   **name** *(str)* - A unique name for each type.  This is used to
-            generate string representations of the associated type, in conjunction
-            with :meth:`slugify() <AtomicType.slugify>`.  They can also be
-            inherited from :func:`generic <generic>` types via
-            :meth:`@AtomicType.register_backend <AtomicType.register_backend>`
-        *   **aliases** *(set)* - a set of unique aliases for this type.  These are
-            used by :func:`detect_type` and :func:`resolve_type` to map aliases
-            onto their corresponding types
-
-            .. note::
-
-                Special significance is given to the type of each alias:
-
-                *   Strings are used by the :ref:`type specification mini-language
-                    <mini_language>` to trigger :meth:`resolution
-                    <AtomicType.resolve>` of the associated type.
-                *   Numpy/pandas ``dtype``\ /\ ``ExtensionDtype`` objects are used
-                    by :func:`detect_type` for *O(1)* type inference.
-                    Parameterized extensions can be parsed by adding
-                    ``type(dtype)`` to the type's aliases, which invokes its
-                    :meth:`from_dtype() <AtomicType.from_dtype>` constructor.
-                *   Raw Python types are used by :func:`detect_type` for scalar or
-                    unlabeled vector inference.  If the type of a scalar element
-                    appears in ``aliases``, then the associated type's
-                    :meth:`detect() <AtomicType.detect>` method will be called on
-                    it.
-
-        *   **type_def** *(type, default None)* - The scalar class for objects of
-            this type.
-        *   **dtype** *(dtype | ExtensionDtype, default NotImplemented)* - The
-            numpy ``dtype`` or pandas ``ExtensionDtype`` to use for arrays of this
-            type.  This can also be ``NotImplemented``\, which signals ``pdcast``
-            to automatically generate one according to the `pandas extension api
-            <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
-
-            .. note::
-
-                Auto-generated ``ExtensionDtypes`` store data internally as a
-                ``dtype: object`` array, which may not be the most efficient.  If
-                there is a more compact representation for a particular type of
-                data, users can provide their own ``ExtensionDtypes`` instead.
-
-        *   **itemsize** *(int, default None)* - The size (in bytes) for scalars of
-            this type.  ``None`` is interpreted as being resizable/unlimited.
-        *   **na_value** *(Any, default pd.NA)* - The representation to use for
-            missing values of this type.  This must pass a ``pd.isna()`` check.
-        *   **slugify(...)** *(classmethod, default* :meth:`AtomicType.slugify`
-            *)* - This describes how to generate string labels for the associated
-            type.  It must have the same arguments as the type's ``__init__()``
-            method, and its output determines how flyweights are identified.  If a
-            type is not parameterized and does not implement a custom
-            ``__init__()`` method, this can be safely omitted.
-
-    All aliases are recognized by :func:`resolve_type` and the set always includes
-    the type itself.
 
     Examples
     --------
@@ -350,27 +338,91 @@ cdef class AtomicType(ScalarType):
     backend = None   # marker for @register_backend
 
     # REQUIRED FIELDS.  These can be overridden to customize a type's behavior.
-    type_def = None   # output from type() on an example of this type
-    dtype = NotImplemented   # signals pdcast to autogenerate an ExtensionDtype
-    itemsize = None   # size in bytes for members of this type
-    na_value = pd.NA   # missing value for vectors of this type
+    # type_def = None   # output from type() on an example of this type
+    # dtype = NotImplemented   # signals pdcast to autogenerate an ExtensionDtype
+    # itemsize = None   # size in bytes for members of this type
+    # na_value = pd.NA   # missing value for vectors of this type
 
     def __init__(self, **kwargs):
         self.kwargs = MappingProxyType(kwargs)
         self.slug = self.slugify(**kwargs)
         self.hash = hash(self.slug)
+        self._is_frozen = True  # no new attributes beyond this point
 
-        # Auto-generate a new ExtensionDtype if directed
-        if self.dtype == NotImplemented:
-            self.dtype = array.construct_extension_dtype(
+    ###################################
+    ####    REQUIRED ATTRIBUTES    ####
+    ###################################
+
+    @property
+    def type_def(self) -> type | None:
+        """The scalar class for objects of this type.
+
+        Returns
+        -------
+        type | None
+            A class object used to instantiate scalar examples of this type.
+        """
+        return None
+
+    @property
+    def dtype(self) -> np.dtype | ExtensionDtype:
+        """The numpy ``dtype`` or pandas ``ExtensionDtype`` to use for arrays
+        of this type.
+
+        Returns
+        -------
+        np.dtype | ExtensionDtype
+            The dtype to use for arrays of this type.  ``ExtensionDtype``s are
+            free to define their own storage backends for objects of this type.
+
+        Notes
+        -----
+        By default, this will automatically create a new ``ExtensionDtype`` to
+        encapsulate data of this type, storing them internally in a
+        ``dtype: object`` array.  If there is a more efficient way to
+        store objects of this type, then it should be specified here.
+        """
+        if not self._dtype:
+            return array.construct_extension_dtype(
                 self,
                 is_boolean=self.is_boolean,
                 is_numeric=self.is_numeric,
                 add_comparison_ops=True,
                 add_arithmetic_ops=True
             )
+        return self._dtype
 
-        self._is_frozen = True  # no new attributes beyond this point
+    @property
+    def itemsize(self) -> int | None:
+        """The size (in bytes) for scalars of this type.
+
+        Returns
+        -------
+        int | None
+            If not ``None``, a positive integer describing the size of each
+            element in bytes.  If this would be hard to compute, use
+            ``sys.getsizeof`` or give an approximate lower bound here.
+
+        Notes
+        -----
+        ``None`` is interpreted as being resizable/unlimited.
+        """
+        return None
+
+    @property
+    def na_value(self) -> Any:
+        """The representation to use for missing values of this type.
+
+        Returns
+        -------
+        Any
+            An NA-like value for this data type.
+
+        See Also
+        --------
+        AtomicType.is_na : for comparisons against this value.
+        """
+        return pd.NA
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -380,9 +432,10 @@ cdef class AtomicType(ScalarType):
     def slugify(cls) -> str:
         """Generate a string representation of a type.
 
-        The signature of this class method must match a type's ``__init__``
-        method.  This symmetry is enforced by the :func:`@register <register>`
-        decorator.
+        This method must have the same arguments as a type's ``__init__()``
+        method, and its output determines how flyweights are identified.  If a
+        type is not parameterized and does not implement a custom
+        ``__init__()`` method, this can be safely omitted in subclasses.
 
         Returns
         -------
@@ -393,8 +446,8 @@ cdef class AtomicType(ScalarType):
         Notes
         -----
         This method is always called **before** initializing a new
-        :class:`AtomicType`.  Its uniqueness determines whether a new flyweight
-        will be generated for this type.
+        :class:`AtomicType`.  The uniqueness of its result determines whether a
+        new flyweight will be generated for this type.
         """
         # NOTE: we explicitly check for is_generic=False, which signals that
         # @register_backend has been explicitly called on this type.
@@ -431,9 +484,9 @@ cdef class AtomicType(ScalarType):
         leakage occurs with the flyweight cache, which could result in
         uncontrollable memory consumption.
 
-        Users should use this method in place of ``__init__`` to ensure the
-        `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_
-        pattern is obeyed.  One can manually check the cache that is used for
+        Users should use this method in place of ``__init__`` to ensure that
+        the `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_
+        pattern is observed.  One can manually check the cache that is used for
         this method under a type's ``.flyweights`` attribute.
         """
         # generate slug
@@ -1000,6 +1053,68 @@ cdef class AtomicType(ScalarType):
     ) -> convert.SeriesWrapper:
         """Convert boolean data to a decimal data type."""
         return series.astype(dtype, errors=errors)
+
+    def to_datetime(
+        self,
+        series: convert.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        rounding: str,
+        tz: pytz.BaseTzInfo,
+        since: Epoch,
+        errors: str,
+        **unused
+    ) -> convert.SeriesWrapper:
+        """Convert integer data to a timedelta data type."""
+        # 2-step conversion: X -> decimal, decimal -> datetime
+        transfer_type = resolve.resolve_type(decimal.Decimal)
+        series = self.to_decimal(
+            series,
+            dtype=transfer_type,
+            errors="raise"
+        )
+        return transfer_type.to_datetime(
+            series,
+            dtype=dtype,
+            unit=unit,
+            step_size=step_size,
+            rounding=rounding,
+            tz=tz,
+            since=since,
+            errors=errors,
+            **unused
+        )
+
+    def to_timedelta(
+        self,
+        series: convert.SeriesWrapper,
+        dtype: AtomicType,
+        unit: str,
+        step_size: int,
+        rounding: str,
+        since: Epoch,
+        errors: str,
+        **unused
+    ) -> convert.SeriesWrapper:
+        """Convert integer data to a timedelta data type."""
+        # 2-step conversion: X -> decimal, decimal -> timedelta
+        transfer_type = resolve.resolve_type(decimal.Decimal)
+        series = self.to_decimal(
+            series,
+            dtype=transfer_type,
+            errors="raise"
+        )
+        return transfer_type.to_timedelta(
+            series,
+            dtype=dtype,
+            unit=unit,
+            step_size=step_size,
+            rounding=rounding,
+            since=since,
+            errors=errors,
+            **unused
+        )
 
     def to_string(
         self,

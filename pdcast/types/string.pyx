@@ -267,7 +267,7 @@ class StringType(StringMixin, AtomicType):
 @StringType.register_backend("python")
 class PythonStringType(StringMixin, AtomicType):
 
-    aliases = {pd.StringDtype("python")}
+    aliases = set()
     dtype = pd.StringDtype("python")
     type_def = str
 
@@ -289,7 +289,7 @@ if pyarrow_installed:
     @StringType.register_backend("pyarrow")
     class PyArrowStringType(StringMixin, AtomicType):
 
-        aliases = {pd.StringDtype("pyarrow")}
+        aliases = set()
         dtype = pd.StringDtype("pyarrow")
         type_def = str
 

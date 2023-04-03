@@ -226,68 +226,6 @@ class FloatMixin:
             errors=errors
         )
 
-    def to_datetime(
-        self,
-        series: convert.SeriesWrapper,
-        dtype: AtomicType,
-        unit: str,
-        step_size: int,
-        rounding: str,
-        tz: pytz.BaseTzInfo,
-        since: Epoch,
-        errors: str,
-        **unused
-    ) -> convert.SeriesWrapper:
-        """Convert integer data to a timedelta data type."""
-        # 2-step conversion: float -> decimal, decimal -> datetime
-        transfer_type = resolve.resolve_type(decimal.Decimal)
-        series = self.to_decimal(
-            series,
-            dtype=transfer_type,
-            errors="raise"
-        )
-        return transfer_type.to_datetime(
-            series,
-            dtype=dtype,
-            unit=unit,
-            step_size=step_size,
-            rounding=rounding,
-            tz=tz,
-            since=since,
-            errors=errors,
-            **unused
-        )
-
-    def to_timedelta(
-        self,
-        series: convert.SeriesWrapper,
-        dtype: AtomicType,
-        unit: str,
-        step_size: int,
-        rounding: str,
-        since: Epoch,
-        errors: str,
-        **unused
-    ) -> convert.SeriesWrapper:
-        """Convert integer data to a timedelta data type."""
-        # 2-step conversion: float -> decimal, decimal -> timedelta
-        transfer_type = resolve.resolve_type(decimal.Decimal)
-        series = self.to_decimal(
-            series,
-            dtype=transfer_type,
-            errors="raise"
-        )
-        return transfer_type.to_timedelta(
-            series,
-            dtype=dtype,
-            unit=unit,
-            step_size=step_size,
-            rounding=rounding,
-            since=since,
-            errors=errors,
-            **unused
-        )
-
 
 class LongDoubleSpecialCase:
     """Special cases of the above conversions for longdouble types."""

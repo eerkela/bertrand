@@ -23,6 +23,9 @@ cdef class ScalarType(BaseType):
 
 
 cdef class AtomicType(ScalarType):
+    cdef public:
+        object _dtype
+
     cdef:
         CacheValue _generic_cache
         CacheValue _backend_cache

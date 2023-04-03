@@ -31,11 +31,20 @@ class ObjectType(AtomicType, cache_size=64):
     aliases = {
         "object", "obj", "O", "pyobject", "object_", "object0", np.dtype("O")
     }
-    dtype = np.dtype("O")
+    # dtype = np.dtype("O")
 
     def __init__(self, type_def: type = object):
-        self.type_def = type_def
         super().__init__(type_def=type_def)
+
+    @property
+    def dtype(self) -> np.dtype | pd.api.extensions.ExtensionDtype:
+        if self.type_def is object:
+            return np.dtype("O")
+        return super().dtype
+
+    @property
+    def type_def(self) -> type:
+        return self.kwargs["type_def"]
 
     ############################
     ####    TYPE METHODS    ####
@@ -65,7 +74,9 @@ class ObjectType(AtomicType, cache_size=64):
     def slugify(cls, type_def: type = object) -> str:
         if type_def is object:
             return cls.name
-        return f"{cls.name}[{type_def.__module__}.{type_def.__name__}]"
+        if type_def.__module__ in {None, "builtins", "__main__"}:
+            return f"{cls.name}[{type_def.__qualname__}]"
+        return f"{cls.name}[{type_def.__module__}.{type_def.__qualname__}]"
 
     @classmethod
     def resolve(cls, type_def: str = None) -> AtomicType:

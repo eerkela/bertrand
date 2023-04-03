@@ -7,9 +7,8 @@ AtomicType
 
 Constructors
 ------------
-These methods should always be preferred over direct instantiation to allow for
-the `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_
-pattern.
+These should always be preferred over direct instantiation to allow for the
+`flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_ pattern.
 
 .. autosummary::
     :toctree: ../../generated/
@@ -23,8 +22,7 @@ pattern.
 
 Aliases
 -------
-See the :ref:`implementation docs <atomic_type.required>` for more information
-on how aliases are used.
+See :attr:`AtomicType.aliases` for more information on how aliases are used.
 
 .. autosummary::
     :toctree: ../../generated/
@@ -84,6 +82,8 @@ See the :doc:`conversion docs <cast>` for more information on type conversions.
     AtomicType.to_float
     AtomicType.to_complex
     AtomicType.to_decimal
+    AtomicType.to_datetime
+    AtomicType.to_timedelta
     AtomicType.to_string
     AtomicType.to_object
 

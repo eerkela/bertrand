@@ -29,9 +29,9 @@ class BooleanMixin:
     max = 1
     min = 0
 
-    ##############################
-    ####    SERIES METHODS    ####
-    ##############################
+    ###########################
+    ####    CONVERSIONS    ####
+    ###########################
 
     def to_decimal(
         self,
@@ -39,7 +39,7 @@ class BooleanMixin:
         dtype: AtomicType,
         **unused
     ) -> convert.SeriesWrapper:
-        """Convert boolean data into an equivalent decimal representation."""
+        """Convert boolean data to decimal."""
         series = series + dtype.type_def(0)  # ~2x faster than loop
         series.element_type = dtype
         return series
@@ -56,7 +56,7 @@ class BooleanMixin:
         errors: str,
         **unused
     ) -> convert.SeriesWrapper:
-        """Convert boolean data into an equivalent datetime representation."""
+        """Convert boolean data to datetime."""
         # 2-step conversion: bool -> int, int -> datetime
         transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
@@ -88,7 +88,7 @@ class BooleanMixin:
         errors: str,
         **unused
     ) -> convert.SeriesWrapper:
-        """Convert integer data to a timedelta data type."""
+        """Convert boolean data to a timedelta."""
         transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
             series,
@@ -112,6 +112,10 @@ class NumpyBooleanMixin:
     """A mixin class that allows numpy booleans to automatically switch to
     their pandas equivalents when missing values are detected.
     """
+
+    ##############################
+    ####    MISSING VALUES    ####
+    ##############################
 
     @property
     def is_nullable(self) -> bool:

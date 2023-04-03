@@ -338,7 +338,6 @@ cdef class SeriesWrapper:
             dtype.type_def != object and
             not isinstance(target, pd.StringDtype)
         ):
-
             return self.apply_with_errors(
                 call=lambda x: (
                     x if isinstance(x, dtype.type_def) else dtype.type_def(x)
@@ -614,14 +613,13 @@ cdef class SeriesWrapper:
 
     def rectify(self) -> SeriesWrapper:
         """If a :class:`SeriesWrapper`'s ``.dtype`` field does not match
-        ``self.element_type.dtype``, then
-        :meth:`astype() <SeriesWrapper.astype>` it to match.
+        ``self.element_type.dtype``, then ``astype()`` it to match.
 
         This method is used to convert a ``dtype: object`` series to a standard
         numpy/pandas data type.
         """
         if self.series.dtype != self.element_type.dtype:
-            return self.astype(self.element_type)
+            self.series = self.series.astype(self.element_type.dtype)
         return self
 
     def within_tol(self, other, tol: numeric) -> SeriesWrapper:

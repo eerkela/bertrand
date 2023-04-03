@@ -199,11 +199,11 @@ cdef class TypeRegistry:
         self.validate_name(new_type)
         self.validate_aliases(new_type)
         self.validate_slugify(new_type)
-        if issubclass(new_type, atomic.AtomicType):
-            self.validate_type_def(new_type)
-            self.validate_dtype(new_type)
-            self.validate_itemsize(new_type)
-            self.validate_na_value(new_type)
+        # if issubclass(new_type, atomic.AtomicType):
+        #     self.validate_type_def(new_type)
+        #     self.validate_dtype(new_type)
+        #     self.validate_itemsize(new_type)
+        #     self.validate_na_value(new_type)
 
         # add type to registry and update hash
         self.atomic_types.append(new_type)
