@@ -1,14 +1,11 @@
-Type Checks, Inference, and Resolution
---------------------------------------
+.. currentmodule:: pdcast
 
-.. _detect_type:
+Inference, Resolution & Type Checks
+===================================
 
-.. autofunction:: pdcast.detect_type
+.. autosummary::
+    :toctree: ../../generated
 
-.. _resolve_type:
-
-.. autofunction:: pdcast.resolve_type
-
-.. _typecheck:
-
-.. autofunction:: pdcast.typecheck
+    resolve_type
+    detect_type
+    typecheck

@@ -42,13 +42,13 @@ def cast(
                 f"cannot interpret empty series without an explicit `dtype` "
                 f"argument: {dtype}"
             )
-        return series_type.conversion_func(series, **kwargs)  # use default
+        return series_type._conversion_func(series, **kwargs)  # use default
 
     # delegate to appropriate to_x function below
     dtype = default.validate_dtype(dtype)
     if dtype.unwrap() is None:
         dtype.atomic_type = detect.detect_type(series)
-    return dtype.conversion_func(series, dtype, **kwargs)
+    return dtype._conversion_func(series, dtype, **kwargs)
 
 
 def to_boolean(

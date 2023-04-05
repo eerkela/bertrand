@@ -1,55 +1,23 @@
 .. currentmodule:: pdcast
 
-.. _conversions:
-
 Cast
 ====
 
-.. _cast:
+.. autosummary::
+    :toctree: ../../generated/
 
-.. autofunction:: cast
-
-.. _to_boolean:
-
-.. autofunction:: to_boolean
-
-.. _to_integer:
-
-.. autofunction:: to_integer
-
-.. _to_float:
-
-.. autofunction:: to_float
-
-.. _to_complex:
-
-.. autofunction:: to_complex
-
-.. _to_decimal:
-
-.. autofunction:: to_decimal
-
-.. _to_datetime:
-
-.. autofunction:: to_datetime
-
-.. _to_timedelta:
-
-.. autofunction:: to_timedelta
-
-.. _to_string:
-
-.. autofunction:: to_string
-
-.. _to_object:
-
-.. autofunction:: to_object
-
-.. _cast_arguments:
+    cast
+    to_boolean
+    to_integer
+    to_float
+    to_complex
+    to_decimal
+    to_datetime
+    to_timedelta
+    to_string
+    to_object
 
 Arguments
 ---------
-
-.. _cast_defaults:
 
 .. autoclass:: CastDefaults

@@ -3,10 +3,10 @@
 Decorators
 ==========
 
-.. autofunction:: dispatch
+.. autosummary::
+    :toctree: ../../generated
 
-.. autofunction:: generic
-
-.. autofunction:: subtype
-
-.. autofunction:: register
+    dispatch
+    generic
+    subtype
+    register

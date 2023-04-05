@@ -13,8 +13,8 @@ cdef class BaseType:
 cdef class ScalarType(BaseType):
     cdef readonly:
         object kwargs  # MappingProxyType
-        str slug
-        long long hash
+        str _slug
+        long long _hash
 
 
 ######################

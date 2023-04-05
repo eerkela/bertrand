@@ -54,9 +54,67 @@ cdef class TypeRegistry:
         self.atomic_types = []
         self.update_hash()
 
+    #####################
+    ####    STATE    ####
+    #####################
+
+    @property
+    def hash(self) -> int:
+        """Hash representing the current state of the ``pdcast`` type system.
+
+        This hash is updated whenever a new type is :meth:`added
+        <TypeRegistry.add>` or :meth:`removed <TypeRegistry.remove>` from the
+        registry or :meth:`gains <AtomicType.register_alias>`/:meth:`loses
+        <AtomicType.remove_alias>` an :attr:`alias <AtomicType.aliases>` or
+        :func:`dispatched <dispatch>` attribute.
+        """
+        return self._hash
+
+    cdef void update_hash(self):
+        """Hash the registry's internal state, for use in cached properties."""
+        self._hash = hash(tuple(self.atomic_types))
+
+    def flush(self):
+        """Reset the registry's internal state, forcing every property to be
+        recomputed.
+        """
+        self._hash += 1  # this is overflow-safe
+
+    def remember(self, val) -> CacheValue:
+        return CacheValue(value=val, hash=self.hash)
+
+    def needs_updating(self, prop) -> bool:
+        """Check if a `remember()`-ed registry property is out of date."""
+        return prop is None or prop.hash != self.hash
+
     ##########################
-    ####    PROPERTIES    ####
+    ####    ADD/REMOVE    ####
     ##########################
+
+    def add(self, new_type: type) -> None:
+        """Add an AtomicType/AdapterType subclass to the registry."""
+        # validate subclass has required fields
+        self.validate_name(new_type)
+        self.validate_aliases(new_type)
+        self.validate_slugify(new_type)
+
+        # add type to registry and update hash
+        self.atomic_types.append(new_type)
+        self.update_hash()
+
+    def remove(self, old_type: type) -> None:
+        """Remove an AtomicType subclass from the registry."""
+        self.atomic_types.remove(old_type)
+        self.update_hash()
+
+    def clear(self):
+        """Clear the AtomicType registry of all AtomicType subclasses."""
+        self.atomic_types.clear()
+        self.update_hash()
+
+    ###################################
+    ####    REGULAR EXPRESSIONS    ####
+    ###################################
 
     @property
     def aliases(self) -> dict:
@@ -76,6 +134,64 @@ cdef class TypeRegistry:
 
         # return cached value
         return self._aliases.value
+
+    @property
+    def regex(self) -> re.Pattern:
+        """Compile a regular expression to match any registered AtomicType
+        name or alias, as well as any arguments that may be passed to its
+        `resolve()` constructor.
+        """
+        # check if cache is out of date
+        if self.needs_updating(self._regex):
+            # fastfail: empty case
+            if not self.atomic_types:
+                result = re.compile(".^")  # matches nothing
+
+            # update using string aliases from every registered subtype
+            else:
+                # automatically escape reserved regex characters
+                string_aliases = [
+                    re.escape(k) for k in self.aliases if isinstance(k, str)
+                ]
+                string_aliases.append(r"(?P<sized_unicode>U(?P<size>[0-9]*))")
+
+                # sort into reverse order based on length
+                string_aliases.sort(key=len, reverse=True)
+
+                # join with regex OR and compile regex
+                result = re.compile(
+                    rf"(?P<type>{'|'.join(string_aliases)})"
+                    rf"(?P<nested>\[(?P<args>([^\[\]]|(?&nested))*)\])?"
+                )
+
+            # remember result
+            self._regex = self.remember(result)
+
+        # return cached value
+        return self._regex.value
+
+    @property
+    def resolvable(self) -> re.Pattern:
+        # check if cache is out of date
+        if self.needs_updating(self._resolvable):
+            # wrap self.regex in ^$ to match the entire string and allow for
+            # comma-separated repetition of AtomicType patterns.
+            pattern = rf"(?P<atomic>{self.regex.pattern})(,\s*(?&atomic))*"
+            lead = r"((CompositeType\(\{)|\{)?"
+            follow = r"((\}\))|\})?"
+
+            # compile regex
+            result = re.compile(rf"{lead}(?P<body>{pattern}){follow}")
+
+            # remember result
+            self._resolvable = self.remember(result)
+
+        # return cached value
+        return self._resolvable.value
+
+    ########################
+    ####    DISPATCH    ####
+    ########################
 
     @property
     def dispatch_map(self) -> dict[str, dict[atomic.AtomicType, Callable]]:
@@ -135,105 +251,9 @@ cdef class TypeRegistry:
         # return cached value
         return self._dispatch_map.value
 
-    @property
-    def regex(self) -> re.Pattern:
-        """Compile a regular expression to match any registered AtomicType
-        name or alias, as well as any arguments that may be passed to its
-        `resolve()` constructor.
-        """
-        # check if cache is out of date
-        if self.needs_updating(self._regex):
-            # fastfail: empty case
-            if not self.atomic_types:
-                result = re.compile(".^")  # matches nothing
-
-            # update using string aliases from every registered subtype
-            else:
-                # automatically escape reserved regex characters
-                string_aliases = [
-                    re.escape(k) for k in self.aliases if isinstance(k, str)
-                ]
-                string_aliases.append(r"(?P<sized_unicode>U(?P<size>[0-9]*))")
-
-                # sort into reverse order based on length
-                string_aliases.sort(key=len, reverse=True)
-
-                # join with regex OR and compile regex
-                result = re.compile(
-                    rf"(?P<type>{'|'.join(string_aliases)})"
-                    rf"(?P<nested>\[(?P<args>([^\[\]]|(?&nested))*)\])?"
-                )
-
-            # remember result
-            self._regex = self.remember(result)
-
-        # return cached value
-        return self._regex.value
-
-    @property
-    def resolvable(self) -> re.Pattern:
-        # check if cache is out of date
-        if self.needs_updating(self._resolvable):
-            # wrap self.regex in ^$ to match the entire string and allow for
-            # comma-separated repetition of AtomicType patterns.
-            pattern = rf"(?P<atomic>{self.regex.pattern})(,\s*(?&atomic))*"
-            lead = r"((CompositeType\(\{)|\{)?"
-            follow = r"((\}\))|\})?"
-
-            # compile regex
-            result = re.compile(rf"{lead}(?P<body>{pattern}){follow}")
-
-            # remember result
-            self._resolvable = self.remember(result)
-
-        # return cached value
-        return self._resolvable.value
-
-    #######################
-    ####    METHODS    ####
-    #######################
-
-    def add(self, new_type: type) -> None:
-        """Add an AtomicType/AdapterType subclass to the registry."""
-        # validate subclass has required fields
-        self.validate_name(new_type)
-        self.validate_aliases(new_type)
-        self.validate_slugify(new_type)
-
-        # add type to registry and update hash
-        self.atomic_types.append(new_type)
-        self.update_hash()
-
-    def clear(self):
-        """Clear the AtomicType registry of all AtomicType subclasses."""
-        self.atomic_types.clear()
-        self.update_hash()
-
-    def flush(self):
-        """Reset the registry's internal state, forcing every property to be
-        recomputed.
-        """
-        self.hash += 1  # this is overflow-safe
-
-    def needs_updating(self, prop) -> bool:
-        """Check if a `remember()`-ed registry property is out of date."""
-        return prop is None or prop.hash != self.hash
-
-    def remember(self, val) -> CacheValue:
-        return CacheValue(value=val, hash=self.hash)
-
-    def remove(self, old_type: type) -> None:
-        """Remove an AtomicType subclass from the registry."""
-        self.atomic_types.remove(old_type)
-        self.update_hash()
-
     #######################
     ####    PRIVATE    ####
     #######################
-
-    cdef void update_hash(self):
-        """Hash the registry's internal state, for use in cached properties."""
-        self.hash = hash(tuple(self.atomic_types))
 
     cdef int validate_name(self, type subclass) except -1:
         """Ensure that a subclass of AtomicType has a unique `name` attribute
@@ -243,7 +263,7 @@ cdef class TypeRegistry:
 
         # ensure subclass.name is unique or inherited from generic type
         if (issubclass(subclass, atomic.AtomicType) and (
-            subclass.is_generic != False or
+            subclass._is_generic != False or
             subclass.name != subclass._generic.name
         )):
             observed_names = {x.name for x in self.atomic_types}
@@ -279,9 +299,9 @@ cdef class TypeRegistry:
             signature=subclass
         )
 
-    #############################
-    ####    MAGIC METHODS    ####
-    #############################
+    ###############################
+    ####    SPECIAL METHODS    ####
+    ###############################
 
     def __contains__(self, val) -> bool:
         return val in self.atomic_types

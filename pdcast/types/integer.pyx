@@ -392,8 +392,8 @@ class IntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic integer supertype."""
 
     # internal root fields - all subtypes/backends inherit these
-    conversion_func = convert.to_integer
-    is_numeric = True
+    _conversion_func = convert.to_integer
+    _is_numeric = True
 
     name = "int"
     aliases = {"int", "integer"}

@@ -34,6 +34,9 @@ exclude_patterns = []
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
 html_theme = 'sphinx_rtd_theme'
+html_theme_options = {
+    "navigation_depth": 3
+}
 html_static_path = ['_static']
 html_css_files = [
     "autosummary_wrap.css",  # force autosummary tables to wrap descriptions

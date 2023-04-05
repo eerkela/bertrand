@@ -302,7 +302,7 @@ class TimedeltaMixin:
 class TimedeltaType(TimedeltaMixin, AtomicType):
 
     # internal root fields - all subtypes/backends inherit these
-    conversion_func = convert.to_timedelta
+    _conversion_func = convert.to_timedelta
 
     name = "timedelta"
     aliases = {"timedelta"}

@@ -28,6 +28,7 @@
 
    Motivation <content/motivation>
    Usage <content/usage>
+   Type Index <content/types/types>
    Tutorial: bfloat16 <content/tutorial>
    API <content/api/api>
    Changelog <content/changelog>

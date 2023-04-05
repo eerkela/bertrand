@@ -247,8 +247,8 @@ class ComplexMixin:
 class ComplexType(ComplexMixin, AtomicType):
 
     # internal root fields - all subtypes/backends inherit these
-    conversion_func = convert.to_complex
-    is_numeric = True
+    _conversion_func = convert.to_complex
+    _is_numeric = True
 
     name = "complex"
     aliases = {

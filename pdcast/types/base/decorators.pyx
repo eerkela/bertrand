@@ -226,30 +226,30 @@ def generic(_class: type):
                 )
 
             # ensure backend is self-consistent
-            if specific.backend is None:
-                specific.backend = backend
-            elif backend != specific.backend:
+            if specific._backend is None:
+                specific._backend = backend
+            elif backend != specific._backend:
                 raise TypeError(
                     f"backends must match ({repr(backend)} != "
                     f"{repr(specific.backend)})"
                 )
 
             # inherit generic attributes
-            specific.is_generic = False
-            specific.conversion_func = cls.conversion_func
+            specific._is_generic = False
+            specific._conversion_func = cls._conversion_func
             specific.name = cls.name
             specific._generic = cls
             cls._backends[backend] = specific
-            specific.is_boolean = specific.is_boolean or cls.is_boolean
-            specific.is_numeric = specific.is_numeric or cls.is_numeric
+            specific._is_boolean = specific._is_boolean or cls._is_boolean
+            specific._is_numeric = specific._is_numeric or cls._is_numeric
             specific.registry.flush()
             return specific
 
         return decorator
 
     # overwrite class attributes
-    _class.is_generic = True
-    _class.backend = None
+    _class._is_generic = True
+    _class._backend = None
 
     # patch in new methods
     loc = locals()
@@ -308,14 +308,13 @@ def subtype(supertype: type):
             )
 
         # inherit supertype attributes
-        class_def.conversion_func = supertype.conversion_func
+        class_def._conversion_func = supertype._conversion_func
 
         # overwrite class attributes
-        class_def.is_root = False
         class_def._parent = supertype
         supertype._children.add(class_def)
-        class_def.is_boolean = class_def.is_boolean or supertype.is_boolean
-        class_def.is_numeric = class_def.is_numeric or supertype.is_numeric
+        class_def._is_boolean = class_def._is_boolean or supertype._is_boolean
+        class_def._is_numeric = class_def._is_numeric or supertype._is_numeric
         AtomicType.registry.flush()
         return class_def
 

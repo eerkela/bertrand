@@ -352,8 +352,8 @@ class DecimalMixin:
 class DecimalType(DecimalMixin, AtomicType):
 
     # internal root fields - all subtypes/backends inherit these
-    conversion_func = convert.to_decimal
-    is_numeric = True
+    _conversion_func = convert.to_decimal
+    _is_numeric = True
 
     name = "decimal"
     aliases = {"decimal"}

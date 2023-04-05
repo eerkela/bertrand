@@ -3,7 +3,10 @@
 AtomicType
 ==========
 
-.. autoclass:: AtomicType
+.. autosummary::
+    :toctree: ../../generated
+
+    AtomicType
 
 Constructors
 ------------
@@ -39,9 +42,10 @@ define subtypes.
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.subtypes
-    AtomicType.supertype
+    AtomicType.is_root
     AtomicType.root
+    AtomicType.supertype
+    AtomicType.subtypes
     AtomicType.contains
     AtomicType.is_subtype
 
@@ -53,6 +57,7 @@ leverage generic types and register individual backends.
 .. autosummary::
     :toctree: ../../generated/
 
+    AtomicType.is_generic
     AtomicType.generic
     AtomicType.backends
     AtomicType.register_backend

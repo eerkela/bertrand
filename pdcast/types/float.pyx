@@ -263,8 +263,8 @@ class FloatType(FloatMixin, AtomicType):
     """Generic float supertype"""
 
     # internal root fields - all subtypes/backends inherit these
-    conversion_func = convert.to_float
-    is_numeric = True
+    _conversion_func = convert.to_float
+    _is_numeric = True
 
     name = "float"
     aliases = {"float", "floating", "f"}

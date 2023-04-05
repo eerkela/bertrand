@@ -3,15 +3,22 @@
 AdapterType
 ===========
 
+.. autosummary::
+    :toctree: ../../generated
+
+    AdapterType
+
 Constructors
 ------------
+These are used by 
 
 .. autosummary::
     :toctree: ../../generated/
 
     AdapterType.resolve
-    AdapterType.slugify
+    AdapterType.from_dtype
     AdapterType.replace
+    AdapterType.slugify
 
 Aliases
 -------

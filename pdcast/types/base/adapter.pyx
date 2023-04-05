@@ -17,36 +17,165 @@ from pdcast.util.type_hints import type_specifier
 
 
 cdef class AdapterType(atomic.ScalarType):
-    """Special case for AtomicTypes that modify other AtomicTypes.
+    """Abstract base class for all `Decorator pattern
+    <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_ type
+    objects.
 
-    These can be nested to form a singly-linked list that can be used to apply
-    multiple transformations at once, provided they are supported by pandas
-    (which is not a guarantee).  Sparse types and categorical types may be
-    well-supported individually, but may not work in combination, for instance.
+    These are used to dynamically modify the behavior of other types, for
+    instance by marking them as sparse or categorical.  They can be nested to
+    form a singly-linked list that can be iteratively unwrapped using a type's
+    :attr:`.adapters <AdapterType.adapters>` attribute.  Conversions and other
+    type-related functionality will automatically take these adapters into
+    account, unwrapping them to the appropriate level before re-packaging the
+    result.
+
+    .. note::
+
+        These are examples of the `Gang of Four
+        <https://en.wikipedia.org/wiki/Design_Patterns>`_\'s `Decorator Pattern
+        <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_,
+        which is not to be confused with the built-in python ``@decorator``
+        syntax.  This pattern leverages `composition over inheritance
+        <https://en.wikipedia.org/wiki/Composition_over_inheritance>`_ to
+        prevent subclass explosions in the ``pdcast`` type system.
+
+    Parameters
+    ----------
+    wrapped : AtomicType | AdapterType
+        The type object to wrap.  Any attributes that are not caught by the
+        :class:`AdapterType` itself will be automatically delegated to this
+        object, in accordance with the `Decorator pattern
+        <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_.
+    **kwargs : dict
+        Arbitrary keyword arguments describing metadata for this type.  If a
+        subclass accepts arguments in its ``__init__`` method, they should
+        always be passed here via ``super().__init__(**kwargs)``.  This is
+        conceptually equivalent to the ``_metadata`` field of pandas
+        `ExtensionDtype <https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.api.extensions.ExtensionDtype.html>`_
+        objects.
+
+    Attributes
+    ----------
+    name : str
+        A unique name for each type, which must be defined at the class level.
+        This is used in conjunction with :meth:`slugify()
+        <AdapterType.slugify>` to generate string representations of the
+        associated type.
+    aliases : set[str | ExtensionDtype]
+        A set of unique aliases for this type, which must be defined at the
+        class level.  These are used by :func:`detect_type` and
+        :func:`resolve_type` to map aliases onto their corresponding types.
+
+        .. note::
+
+            These work slightly differently from :attr:`AtomicType.aliases` in
+            that they do not support ``type`` or ``np.dtype`` objects.  This is
+            because :class:`AdapterTypes <AdapterType>` cannot describe scalar
+            (non-vectorized) data, and there is no direct equivalent within
+            the numpy typing system.  Strings and ``ExtensionDtypes`` work
+            identically to their :class:`AtomicType` equivalents.
+
+    Notes
+    -----
+    .. _adapter_type.inheritance:
+
+    :class:`AdapterTypes <AdapterType>` are `metaclasses <https://peps.python.org/pep-0487/>`_
+    that are limited to **first-order inheritance**.  This means that they must
+    inherit from :class:`AdapterType` *directly*, and cannot have any children
+    of their own.  For example:
+
+    .. code:: python
+
+        class Type1(pdcast.AdapterType):   # valid
+            ...
+
+        class Type2(Type1):   # invalid
+            ...
+
+    If you'd like to share functionality between types, this can be done using
+    `Mixin classes <https://dev.to/bikramjeetsingh/write-composable-reusable-python-classes-using-mixins-6lj>`_,
+    like so:
+
+    .. code:: python
+
+        class Mixin:
+            # shared attributes/methods go here
+            ...
+
+        class Type1(Mixin, pdcast.AdapterType):
+            ...
+
+        class Type2(Mixin, pdcast.AdapterType):
+            ...
+
+    .. note::
+
+        Note that ``Mixin`` comes **before** :class:`AdapterType` in each
+        inheritance signature.  This ensures correct `Method Resolution Order
+        (MRO) <https://en.wikipedia.org/wiki/C3_linearization>`_.
+
+    .. _adapter_type.allocation:
+
+    :class:`AdapterTypes <AdapterType>` are **not** cached as `flyweights
+    <https://python-patterns.guide/gang-of-four/flyweight/>`_, unlike
+    :class:`AtomicType`.
     """
 
-    _priority = 0  # controls the order of nested adapters.  Higher comes first
-    # NOTE: CategoricalType has priority 5, SparseType has priority 10.
+    # NOTE: controls the order of nested adapters.  Higher comes first.
+    _priority = 0  # categorical has priority 5, sparse has priority 10.
 
     def __init__(self, wrapped: atomic.ScalarType, **kwargs):
         self._wrapped = wrapped
         self.kwargs = MappingProxyType({"wrapped": wrapped} | kwargs)
-        self.slug = self.slugify(wrapped, **kwargs)
-        self.hash = hash(self.slug)
+        self._slug = self.slugify(wrapped, **kwargs)
+        self._hash = hash(self._slug)
 
-    #############################
-    ####    CLASS METHODS    ####
-    #############################
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
 
     @classmethod
     def resolve(cls, wrapped: str = None, *args: str) -> AdapterType:
-        """An alternate constructor used to parse input in the type
-        specification mini-language.
+        """Construct a new :class:`AdapterType` in the :ref:`type specification
+        mini-language <mini_language>`.
 
-        Override this if your AdapterType implements custom parsing rules for
-        any arguments that are supplied to this type.
+        Override this if a type implements custom parsing rules for any
+        arguments that are supplied to it.
 
-        .. Note: The inputs to each argument will always be strings.
+        Parameters
+        ----------
+        wrapped : str, optional
+            The type to be wrapped.  If given, this must be an
+            independently-resolvable type specifier in the :ref:`type
+            specification mini-language <mini_language>`.
+        *args : str
+            Positional arguments supplied to this type.  These will always be
+            passed as strings, exactly as they appear in the :ref:`type
+            specification mini-language <mini_language>`.
+
+        Returns
+        -------
+        AdapterType
+            An :class:`AdapterType` with the appropriate configuration based
+            on the arguments that were passed to this constructor.
+
+        See Also
+        --------
+        AtomicType.resolve : The scalar equivalent of this method.
+
+        Notes
+        -----
+        If ``wrapped`` is not specified, then this method will return a *naked*
+        :class:`AdapterType`, meaning that it is not backed by an associated
+        :class:`AtomicType` instance.  This technically breaks the `Decorator
+        Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_,
+        limiting the usefulness of these types.
+
+        Naked :class:`AdapterTypes <AdapterType>` act as wildcards when
+        provided to :doc:`conversion functions </content/api/cast>` or
+        :func:`typechecks <typecheck>`.  Additionally, new :func:`@dispatch
+        <dispatch>` methods can be attached to :class:`AdapterTypes
+        <AdapterType>` by providing a naked example of that type.
         """
         if wrapped is None:
             return cls()
@@ -66,10 +195,62 @@ cdef class AdapterType(atomic.ScalarType):
 
     @classmethod
     def from_dtype(cls, dtype: pd.api.extension.ExtensionDtype) -> AdapterType:
-        """Construct an AtomicType from a corresponding numpy/pandas ``dtype``
-        object.
+        """Construct an :class:`AdapterType` from a corresponding pandas
+        ``ExtensionDtype``.
+
+        Override this if a type must parse the attributes of an associated
+        ``ExtensionDtype``.
+
+        Parameters
+        ----------
+        dtype : ExtensionDtype
+            The pandas ``ExtensionDtype`` to parse.
+
+        Returns
+        -------
+        AdapterType
+            An :class:`AdapterType` with the appropriate configuration based
+            on the ``ExtensionDtype`` that was passed to this constructor.
+
+        See Also
+        --------
+        AtomicType.from_dtype : The scalar equivalent of this method.
+
+        Notes
+        -----
+        If a raw ``ExtensionDtype`` class is provided to this function, then it
+        will return a *naked* :class:`AdapterType`, meaning that it is not
+        backed by an associated :class:`AtomicType` instance.  This technically
+        breaks the `Decorator Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_,
+        limiting the usefulness of these types.
+
+        Naked :class:`AdapterTypes <AdapterType>` act as wildcards when
+        provided to :doc:`conversion functions </content/api/cast>` or
+        :func:`typechecks <typecheck>`.  Additionally, new :func:`@dispatch
+        <dispatch>` methods can be attached to :class:`AdapterTypes
+        <AdapterType>` by providing a naked example of that type.
         """
-        return cls.instance()  # NOTE: most types disregard dtype fields
+        return cls()  # NOTE: By default, types ignore extension metadata
+
+    def replace(self, **kwargs) -> AdapterType:
+        # extract kwargs pertaining to AdapterType
+        adapter_kwargs = {}
+        atomic_kwargs = {}
+        for k, v in kwargs.items():
+            if k in self.kwargs:
+                adapter_kwargs[k] = v
+            else:
+                atomic_kwargs[k] = v
+
+        # merge adapter_kwargs with self.kwargs and get wrapped type
+        adapter_kwargs = {**self.kwargs, **adapter_kwargs}
+        wrapped = adapter_kwargs.pop("wrapped")
+
+        # pass non-adapter kwargs down to wrapped.replace()
+        wrapped = wrapped.replace(**atomic_kwargs)
+
+        # construct new AdapterType
+        return type(self)(wrapped=wrapped, **adapter_kwargs)
 
     @classmethod
     def slugify(cls, wrapped: atomic.ScalarType) -> str:
@@ -123,8 +304,8 @@ cdef class AdapterType(atomic.ScalarType):
         """Change the type object that this AdapterType modifies."""
         self._wrapped = val
         self.kwargs = self.kwargs | {"wrapped": val}
-        self.slug = self.slugify(**self.kwargs)
-        self.hash = hash(self.slug)
+        self._slug = self.slugify(**self.kwargs)
+        self._hash = hash(self._slug)
 
     #######################
     ####    METHODS    ####
@@ -163,26 +344,6 @@ cdef class AdapterType(atomic.ScalarType):
         """Remove an adapter from an example series."""
         series.element_type = self.wrapped
         return series.rectify()
-
-    def replace(self, **kwargs) -> AdapterType:
-        # extract kwargs pertaining to AdapterType
-        adapter_kwargs = {}
-        atomic_kwargs = {}
-        for k, v in kwargs.items():
-            if k in self.kwargs:
-                adapter_kwargs[k] = v
-            else:
-                atomic_kwargs[k] = v
-
-        # merge adapter_kwargs with self.kwargs and get wrapped type
-        adapter_kwargs = {**self.kwargs, **adapter_kwargs}
-        wrapped = adapter_kwargs.pop("wrapped")
-
-        # pass non-adapter kwargs down to wrapped.replace()
-        wrapped = wrapped.replace(**atomic_kwargs)
-
-        # construct new AdapterType
-        return type(self)(wrapped=wrapped, **adapter_kwargs)
 
     def transform(
         self,
@@ -229,7 +390,7 @@ cdef class AdapterType(atomic.ScalarType):
 
     def __eq__(self, other: type_specifier) -> bool:
         other = resolve.resolve_type(other)
-        return isinstance(other, AdapterType) and self.hash == other.hash
+        return isinstance(other, AdapterType) and hash(self) == hash(other)
 
     def __getattr__(self, name: str) -> Any:
         try:
@@ -260,7 +421,7 @@ cdef class AdapterType(atomic.ScalarType):
         return val
 
     def __hash__(self) -> int:
-        return self.hash
+        return self._hash
 
     @classmethod
     def __init_subclass__(cls, cache_size: int = None, **kwargs):
@@ -276,4 +437,4 @@ cdef class AdapterType(atomic.ScalarType):
         return f"{type(self).__name__}({sig})"
 
     def __str__(self) -> str:
-        return self.slug
+        return self._slug

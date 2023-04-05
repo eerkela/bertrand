@@ -40,8 +40,6 @@ except ImportError:
 
 class StringMixin:
 
-    conversion_func = convert.to_string
-
     #############################
     ####    SERIES METHODS   ####
     #############################
@@ -225,7 +223,7 @@ class StringType(StringMixin, AtomicType):
     """String supertype."""
 
     # internal root fields - all subtypes/backends inherit these
-    conversion_func = convert.to_string
+    _conversion_func = convert.to_string
 
     name = "string"
     aliases = {

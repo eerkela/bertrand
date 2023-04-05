@@ -12,7 +12,7 @@ cdef class TypeRegistry:
         CacheValue _regex
         CacheValue _resolvable
         list atomic_types
-        long long hash
+        long long _hash
 
     cdef int validate_aliases(self, type subclass) except -1
     cdef int validate_name(self, type subclass) except -1

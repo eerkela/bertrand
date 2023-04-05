@@ -307,7 +307,7 @@ class DatetimeMixin:
 class DatetimeType(DatetimeMixin, AtomicType):
 
     # internal root fields - all subtypes/backends inherit these
-    conversion_func = convert.to_datetime
+    _conversion_func = convert.to_datetime
 
     name = "datetime"
     aliases = {"datetime"}
