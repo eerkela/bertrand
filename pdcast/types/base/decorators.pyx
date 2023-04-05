@@ -231,7 +231,7 @@ def generic(_class: type):
             elif backend != specific._backend:
                 raise TypeError(
                     f"backends must match ({repr(backend)} != "
-                    f"{repr(specific.backend)})"
+                    f"{repr(specific._backend)})"
                 )
 
             # inherit generic attributes

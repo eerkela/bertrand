@@ -82,9 +82,9 @@ their original form, the same as they were before
 .. toctree::
     :hidden:
 
-    pandas.Series.cast <abstract/series/cast>
-    pandas.Series.typecheck <abstract/series/typecheck>
-    pandas.Series.element_type <abstract/series/element_type>
-    pandas.Series.round <abstract/series/round>
-    pandas.Series.dt.tz_localize <abstract/series/dt/tz_localize>
-    pandas.Series.dt.tz_convert <abstract/series/dt/tz_convert>
+    pandas.Series.cast <abstract/Series/cast>
+    pandas.Series.typecheck <abstract/Series/typecheck>
+    pandas.Series.element_type <abstract/Series/element_type>
+    pandas.Series.round <abstract/Series/round>
+    pandas.Series.dt.tz_localize <abstract/Series/dt/tz_localize>
+    pandas.Series.dt.tz_convert <abstract/Series/dt/tz_convert>

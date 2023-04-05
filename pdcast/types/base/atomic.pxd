@@ -12,7 +12,7 @@ cdef class BaseType:
 
 cdef class ScalarType(BaseType):
     cdef readonly:
-        object kwargs  # MappingProxyType
+        dict _kwargs
         str _slug
         long long _hash
 

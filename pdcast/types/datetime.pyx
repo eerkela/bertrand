@@ -432,10 +432,10 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
     @classmethod
     def slugify(cls, unit: str = None, step_size: int = 1) -> str:
         if unit is None:
-            return f"{cls.name}[{cls.backend}]"
+            return f"{cls.name}[{cls._backend}]"
         if step_size == 1:
-            return f"{cls.name}[{cls.backend}, {unit}]"
-        return f"{cls.name}[{cls.backend}, {step_size}{unit}]"
+            return f"{cls.name}[{cls._backend}, {unit}]"
+        return f"{cls.name}[{cls._backend}, {step_size}{unit}]"
 
     def contains(
         self,
@@ -669,8 +669,8 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
     @classmethod
     def slugify(cls, tz: datetime.tzinfo | str = None):
         if tz is None:
-            return f"{cls.name}[{cls.backend}]"
-        return f"{cls.name}[{cls.backend}, {str(tz))}]"
+            return f"{cls.name}[{cls._backend}]"
+        return f"{cls.name}[{cls._backend}, {str(tz))}]"
 
     def contains(
         self,
@@ -957,8 +957,8 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
     @classmethod
     def slugify(cls, tz: datetime.tzinfo = None):
         if tz is None:
-            return f"{cls.name}[{cls.backend}]"
-        return f"{cls.name}[{cls.backend}, {str(tz))}]"
+            return f"{cls.name}[{cls._backend}]"
+        return f"{cls.name}[{cls._backend}, {str(tz))}]"
 
     def contains(
         self,

@@ -51,3 +51,7 @@ try:
     from .string import PyArrowStringType
 except ImportError:
     pass
+
+
+# global objects
+registry = AtomicType.registry

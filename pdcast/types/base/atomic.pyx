@@ -160,144 +160,6 @@ cdef class AtomicType(ScalarType):
         `ExtensionDtype <https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.api.extensions.ExtensionDtype.html>`_
         objects.
 
-    Attributes
-    ----------
-    name : str
-        A unique name for each type, which must be defined at the class level.
-        This is used in conjunction with :meth:`slugify() <AtomicType.slugify>`
-        to generate string representations of the associated type.  Names can
-        also be inherited from :func:`generic <generic>` types via
-        :meth:`@AtomicType.register_backend <AtomicType.register_backend>`.
-    aliases : set[str | type | np.dtype | ExtensionDtype]
-        A set of unique aliases for this type, which must be defined at the
-        class level.  These are used by :func:`detect_type` and
-        :func:`resolve_type` to map aliases onto their corresponding types.
-
-        .. note::
-
-            Special significance is given to the type of each alias:
-
-            *   Strings are used by the :ref:`type specification mini-language
-                <mini_language>` to trigger :meth:`resolution
-                <AtomicType.resolve>` of the associated type.
-            *   Numpy/pandas ``dtype``\ /\ ``ExtensionDtype`` objects are used
-                by :func:`detect_type` for *O(1)* type inference.  In both
-                cases, parametrized dtypes can be handled by adding a root
-                dtype to ``aliases``.  For numpy ``dtypes``, this will be the
-                root of their ``np.issubdtype()`` hierarchy.  For pandas
-                ``ExtensionDtypes``, it is its ``type()`` directly.  When
-                either of these are encountered, they will invoke the
-                :class:`AtomicType`'s :meth:`from_dtype()
-                <AtomicType.from_dtype>` constructor.
-            *   Raw Python types are used by :func:`detect_type` for scalar or
-                unlabeled vector inference.  If the type of a scalar element
-                appears in ``aliases``, then the associated type's
-                :meth:`detect() <AtomicType.detect>` method will be called on
-                it.
-
-        All aliases are recognized by :func:`resolve_type` and the set always
-        includes the :class:`AtomicType` itself.
-
-    type_def : type | None
-        The scalar class for objects of this type.
-    dtype : np.dtype | ExtensionDtype
-        The numpy ``dtype`` or pandas ``ExtensionDtype`` to use for arrays of
-        this type.  If this is not explicitly given, ``pdcast`` will
-        automatically generate an ``ExtensionDtype`` according to the `pandas
-        extension api <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
-
-        .. note::
-
-            Auto-generated ``ExtensionDtypes`` store data internally as a
-            ``dtype: object`` array, which may not be the most efficient.  If
-            there is a more compact representation for a particular data type,
-            users can provide their own ``ExtensionDtypes`` instead.
-
-    itemsize : int | None
-        The size (in bytes) for scalars of this type.  ``None`` is interpreted
-        as being resizable/unlimited.
-    na_value : Any
-        The representation to use for missing values of this type.
-
-    Notes
-    -----
-    .. _atomic_type.inheritance:
-
-    :class:`AtomicTypes <AtomicType>` are `metaclasses <https://peps.python.org/pep-0487/>`_
-    that are limited to **first-order inheritance**.  This means that they must
-    inherit from :class:`AtomicType` *directly*, and cannot have any children
-    of their own.  For example:
-
-    .. code:: python
-
-        class Type1(pdcast.AtomicType):   # valid
-            ...
-
-        class Type2(Type1):   # invalid
-            ...
-
-    If you'd like to share functionality between types, this can be done using
-    `Mixin classes <https://dev.to/bikramjeetsingh/write-composable-reusable-python-classes-using-mixins-6lj>`_,
-    like so:
-
-    .. code:: python
-
-        class Mixin:
-            # shared attributes/methods go here
-            ...
-
-        class Type1(Mixin, pdcast.AtomicType):
-            ...
-
-        class Type2(Mixin, pdcast.AtomicType):
-            ...
-
-    .. note::
-
-        Note that ``Mixin`` comes **before** :class:`AtomicType` in each
-        inheritance signature.  This ensures correct `Method Resolution Order
-        (MRO) <https://en.wikipedia.org/wiki/C3_linearization>`_.
-
-    .. _atomic_type.allocation:
-
-    Additionally, :class:`AtomicType` instances are `flyweights
-    <https://python-patterns.guide/gang-of-four/flyweight/>`_ that are
-    identified by their :meth:`slug <AtomicType.slugify>` attribute.  This
-    allows them to be extremely memory-efficient (especially when stored in
-    arrays) but also requires each one to be completely immutable.  As a
-    result, all :class:`AtomicTypes <AtomicType>` are strictly **read-only**
-    after they are constructed.
-
-    .. testsetup:: allocation
-
-        import pdcast
-
-    .. doctest:: allocation
-
-        >>> pdcast.resolve_type("int") is pdcast.resolve_type("int")
-        True
-        >>> pdcast.resolve_type("int").new_attribute = 2
-        Traceback (most recent call last):
-            ...
-        AttributeError: AtomicType objects are read-only
-
-    Some types might be parameterized with continuous or unpredictable inputs,
-    which could cause `memory leaks <https://en.wikipedia.org/wiki/Memory_leak>`_.
-    In these cases, users can specify a `Least Recently Used (LRU)
-    <https://en.wikipedia.org/wiki/Cache_replacement_policies#Least_recently_used_(LRU)>`_
-    caching strategy by passing an appropriate ``cache_size`` parameter in the
-    type's inheritance signature, like so:
-
-    .. code:: python
-
-        class CustomType(pdcast.AtomicType, cache_size=128):
-            ...
-
-    .. note::
-
-        Setting ``cache_size`` to 0 effectively eliminates flyweight caching for
-        the type in question, though this is not recommended.
-
     Examples
     --------
     All in all, a typical :class:`AtomicType` definition could look something like
@@ -338,7 +200,7 @@ cdef class AtomicType(ScalarType):
     _backend = None   # marker for @register_backend
 
     def __init__(self, **kwargs):
-        self.kwargs = kwargs
+        self._kwargs = kwargs
         self._slug = self.slugify(**kwargs)
         self._hash = hash(self._slug)
         self._is_frozen = True  # no new attributes beyond this point
@@ -346,6 +208,69 @@ cdef class AtomicType(ScalarType):
     ###################################
     ####    REQUIRED ATTRIBUTES    ####
     ###################################
+
+    @property
+    def name(self) -> str:
+        """A unique name for each type.
+
+        This must be defined at the **class level**.  It is used in conjunction
+        with :meth:`slugify() <AtomicType.slugify>` to generate string
+        representations of the associated type, which use this as their base.
+
+        Returns
+        -------
+        str
+            A unique string identifying each type.
+
+        Notes
+        -----
+        Names can also be inherited from :func:`generic <generic>` types via
+        :meth:`@AtomicType.register_backend <AtomicType.register_backend>`.
+        """
+        raise NotImplementedError(
+            f"'{type(self).__name__}' do not have an associated name"
+        )
+
+    @property
+    def aliases(self) -> set:
+        """A set of unique aliases for this type.
+    
+        These must be defined at the **class level**, and are used by
+        :func:`detect_type` and :func:`resolve_type` to map aliases onto their
+        corresponding types.
+
+        Returns
+        -------
+        set[str | type | np.dtype]
+            A set containing all the aliases that are associated with this
+            type.
+
+        Notes
+        -----
+        Special significance is given to the type of each alias:
+
+            *   Strings are used by the :ref:`type specification mini-language
+                <mini_language>` to trigger :meth:`resolution <AtomicType.resolve>`
+                of the associated type.
+            *   Numpy/pandas ``dtype``\ /\ ``ExtensionDtype`` objects are used by
+                :func:`detect_type` for *O(1)* type inference.  In both cases,
+                parametrized dtypes can be handled by adding a root dtype to
+                ``aliases``.  For numpy ``dtypes``, this will be the root of their
+                ``np.issubdtype()`` hierarchy.  For pandas ``ExtensionDtypes``, it
+                is its ``type()`` directly.  When either of these are encountered,
+                they will invoke :class:`AtomicType`'s
+                :meth:`from_dtype() <AtomicType.from_dtype>` constructor.
+            *   Raw Python types are used by :func:`detect_type` for scalar or
+                unlabeled vector inference.  If the type of a scalar element
+                appears in ``aliases``, then the associated type's
+                :meth:`detect() <AtomicType.detect>` method will be called on it.
+
+        All aliases are recognized by :func:`resolve_type` and the set always
+        includes the :class:`AtomicType` itself.
+        """
+        raise NotImplementedError(
+            f"'{type(self).__name__}' do not have an associated name"
+        )
 
     @property
     def type_def(self) -> type | None:
@@ -373,9 +298,10 @@ cdef class AtomicType(ScalarType):
         Notes
         -----
         By default, this will automatically create a new ``ExtensionDtype`` to
-        encapsulate data of this type, storing them internally in a
-        ``dtype: object`` array.  If there is a more efficient way to
-        store objects of this type, then it should be specified here.
+        encapsulate data of this type, storing them internally as a
+        ``dtype: object`` array, which may not be the most efficient.  If there
+        is a more compact representation for a particular data type, users can
+        provide their own ``ExtensionDtypes`` instead.
         """
         if not self._dtype:
             return array.construct_extension_dtype(
@@ -619,8 +545,14 @@ cdef class AtomicType(ScalarType):
         # NOTE: we explicitly check for _is_generic=False, which signals that
         # @register_backend has been explicitly called on this type.
         if cls._is_generic == False:
-            return f"{cls.name}[{cls.backend}]"
+            return f"{cls.name}[{cls._backend}]"
         return cls.name
+
+    @property
+    def kwargs(self) -> MappingProxyType:
+        """TODO
+        """
+        return MappingProxyType(self._kwargs)
 
     ###################################
     ####    SUBTYPES/SUPERTYPES    ####
@@ -628,10 +560,8 @@ cdef class AtomicType(ScalarType):
 
     @property
     def is_root(self) -> bool:
-        """Indicates whether this type is the root of its :func:`subtype
-        <subtype>` hierarchy.
-
-        Extended description
+        """Indicates whether this type is the root of its
+        :func:`@subtype <subtype>` hierarchy.
 
         Returns
         -------
@@ -831,15 +761,15 @@ cdef class AtomicType(ScalarType):
 
     @property
     def is_generic(self) -> bool:
-        """Indicates whether this type is decorated with :func:`@generic
-        <generic>`.
+        """Indicates whether this type is decorated with
+        :func:`@generic <generic>`.
         """
         return self._is_generic
 
     @property
     def backend(self) -> str:
-        """The backend string used to refer to this type in the :ref:`type
-        specification mini-language <mini_language>`.
+        """The backend string used to refer to this type in the
+        :ref:`type specification mini-language <mini_language>`.
         """
         return self._backend
 
