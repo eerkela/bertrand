@@ -1,5 +1,0 @@
-.. currentmodule:: pdcast
-
-
-Dispatch
-========

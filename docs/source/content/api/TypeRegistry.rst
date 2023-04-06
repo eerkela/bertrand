@@ -1,7 +1,9 @@
 .. currentmodule:: pdcast
 
-TypeRegistry
-============
+pdcast.TypeRegistry
+===================
+
+.. autoclass:: TypeRegistry
 
 Resolution
 ----------

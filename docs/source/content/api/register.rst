@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-pdcast.dispatch
+pdcast.register
 ===============
 
-.. autodecorator:: dispatch
+.. autodecorator:: register

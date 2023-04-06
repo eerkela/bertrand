@@ -126,6 +126,14 @@ cdef class TypeRegistry:
         This is a cached property that is tied to the current state of the
         registry.  Whenever a new type is added, removed, or has one of its
         aliases changed, it will be regenerated to reflect that change.
+
+        .. note::
+
+            This table can be manually updated by :func:`adding <register>` or
+            :meth:`removing <TypeRegistry.remove>` whole types, or by
+            :meth:`updating <AtomicType.register_alias>` individual aliases, both of
+            which globally change the behavior of the :func:`resolve_type` factory
+            function.
         """
         # check if cache is out of date
         if self.needs_updating(self._aliases):

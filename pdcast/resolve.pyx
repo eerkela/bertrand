@@ -44,106 +44,38 @@ from pdcast.util.type_hints import type_specifier
 
 
 def resolve_type(typespec: type_specifier) -> types.BaseType:
-    """Interpret types from manual specifiers.
-
-    A type specifier can be any of the following:
-
-        #.  A ``dtype`` or ``ExtensionDtype`` object.
-        #.  A raw python type.  If the type has not been registered as an
-            AtomicType alias, a new ``ObjectType`` will be built around its
-            class definition.
-        #.  An appropriate string in the
-            :ref:`type specification mini-language <mini_language>`.
-        #.  An iterable containing any combination of the above.
+    """Interpret types from manual
+    :ref:`type specifiers <resolve_type.type_specifiers>`.
 
     Arguments
     ---------
     typespec : type specifier
-        The type specifier to resolve.
+        The :ref:`type specifier <resolve_type.type_specifiers>` to resolve.
 
     Returns
     -------
-    BaseType
+    AtomicType | AdapterType | CompositeType
         A type object corresponding to the given specifier.  If the specifier
         is an iterable, this will always be a :class:`CompositeType` object.
 
     Raises
     ------
     ValueError
-        If the type specifier could not be resolved.
+        If the :ref:`type specifier <resolve_type.type_specifiers>` could not
+        be resolved.
 
     See Also
     --------
-    AtomicType.resolve : Delegated method for resolve operations.
-    AdapterType.resolve : Delegated method for resolve operations.
-    TypeRegistry.aliases : Up-to-date map of all aliases recognized by this function.
-
-    Notes
-    -----
-    This function's behavior can be customized by overriding
-    :meth:`AtomicType.resolve` or :meth:`AdapterType.resolve` in individual
-    type definitions.  See those functions for a guide on how to do this.
-
-    :attr:`TypeRegistry.aliases` provides an up-to-date mapping of all the
-    aliases that are recognized by this function to their corresponding type
-    definitions.
-
-    See the :ref:`type specification mini language <mini_language>` for help on
-    how to construct string specifiers for arbitrary types.
-
-    Examples
-    --------
-    .. testsetup::
-
-        import numpy as np
-        import pandas as pd
-        import pdcast
-
-    Raw classes:
-
-    >>> pdcast.resolve_type("int")
-    IntegerType()
-    >>> class CustomObj:
-    ...     pass
-    >>> pdcast.resolve_type(np.float32)
-    NumpyFloat32Type()
-    >>> pdcast.resolve_type(CustomObj)
-    ObjectType(type_def=<class 'CustomObj'>)
-
-    dtype objects:
-
-    >>> pdcast.resolve_type(np.dtype("?"))
-    NumpyBooleanType()
-    >>> pdcast.resolve_type(np.dtype("M8[30s]"))
-    NumpyDatetime64Type(unit='s', step_size=30)
-    >>> pdcast.resolve_type(pd.UInt8Dtype())
-    PandasUInt8Type()
-
-    Strings:
-
-    >>> pdcast.resolve_type("string")
-    StringType()
-    >>> pdcast.resolve_type("timedelta[pandas], timedelta[python]")   # doctest: +SKIP
-    CompositeType({timedelta[pandas], timedelta[python]})
-    >>> pdcast.resolve_type("datetime[pandas, US/Pacific]")
-    PandasTimestampType(tz=<DstTzInfo 'US/Pacific' LMT-1 day, 16:07:00 STD>)
-    >>> pdcast.resolve_type("sparse[decimal]")
-    SparseType(wrapped=DecimalType(), fill_value=Decimal('NaN'))
-    >>> pdcast.resolve_type("sparse[bool, False]")
-    SparseType(wrapped=BooleanType(), fill_value=False)
-    >>> pdcast.resolve_type("categorical[str[pyarrow]]")
-    CategoricalType(wrapped=PyArrowStringType(), levels=None)
-    >>> pdcast.resolve_type("sparse[categorical[int]]")
-    SparseType(wrapped=CategoricalType(wrapped=IntegerType(), levels=None), fill_value=<NA>)
-
-    Iterables:
-
-    >>> pdcast.resolve_type(["int"])
-    CompositeType({int})
-    >>> pdcast.resolve_type((float, complex))   # doctest: +SKIP
-    CompositeType({float, complex})
-    >>> pdcast.resolve_type({bool, np.dtype("i2"), "decimal"})   # doctest: +SKIP
-    CompositeType({bool, int16[numpy], decimal})
+    AtomicType.from_dtype : customizable resolution of
+        :ref:`numpy <resolve_type.type_specifiers.numpy>`\ /\ 
+        :ref:`pandas <resolve_type.type_specifiers.pandas>` data types.
+    AdapterType.from_dtype : customizable resolution of
+        :ref:`numpy <resolve_type.type_specifiers.numpy>`\ /\ 
+        :ref:`pandas <resolve_type.type_specifiers.pandas>` data types.
+    AtomicType.resolve : customizable semantics for the
+        :ref:`type specification mini-language <mini_language>`.
+    AdapterType.resolve : customizable semantics for the
+        :ref:`type specification mini-language <mini_language>`.
     """
     if isinstance(typespec, types.BaseType):
         result = typespec

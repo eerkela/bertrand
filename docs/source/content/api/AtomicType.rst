@@ -1,12 +1,9 @@
 .. currentmodule:: pdcast
 
-AtomicType
-==========
+pdcast.AtomicType
+=================
 
-.. autosummary::
-    :toctree: ../../generated
-
-    AtomicType
+.. autoclass:: AtomicType
 
 .. _atomic_type.inheritance:
 

@@ -1,7 +1,56 @@
+.. currentmodule:: pdcast
+
+pdcast.SeriesWrapper
+====================
+
+.. autoclass:: SeriesWrapper
+
+Properties
+----------
+
+.. autosummary::
+    :toctree: ../../generated/
+
+    SeriesWrapper.series
+    SeriesWrapper.hasnans
+    SeriesWrapper.element_type
+    SeriesWrapper.max
+    SeriesWrapper.min
+    SeriesWrapper.real
+    SeriesWrapper.imag
+
+Wrapped Methods
+---------------
+These methods are overridden by :class:`SeriesWrapper`.
+
+.. autosummary::
+    :toctree: ../../generated/
+
+    SeriesWrapper.astype
+    SeriesWrapper.copy
+
+Additional Methods
+------------------
+These methods are added on top of existing ``pandas.Series`` functionality
+
+.. autosummary::
+    :toctree: ../../generated/
+
+    SeriesWrapper.__enter__
+    SeriesWrapper.__exit__
+    SeriesWrapper.apply_with_errors
+    SeriesWrapper.boundscheck
+    SeriesWrapper.isinf
+    SeriesWrapper.rectify
+    SeriesWrapper.within_tol
+
+Every other method/attribute is delegated to the wrapped
+:attr:`series <SeriesWrapper.series>`.
+
 .. _SeriesWrapper_description:
 
-SeriesWrapper
-=============
+Notes
+-----
 ``SeriesWrapper``\s are `Decorator Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_
 wrappers around ``pd.Series`` objects.  They provide a standardized format for
 dispatch and conversion methods, and are aware of their type via
@@ -46,3 +95,4 @@ conversions and dispatch methods easier.  These include:
 
 In every other respect, they are identical to normal ``pd.Series`` objects,
 and can be used as such.
+

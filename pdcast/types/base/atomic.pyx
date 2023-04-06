@@ -292,7 +292,7 @@ cdef class AtomicType(ScalarType):
         Returns
         -------
         np.dtype | ExtensionDtype
-            The dtype to use for arrays of this type.  ``ExtensionDtype``s are
+            The dtype to use for arrays of this type.  ``ExtensionDtypes`` are
             free to define their own storage backends for objects of this type.
 
         Notes
