@@ -23,8 +23,8 @@ def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
 
     If the example data has an appropriate ``.dtype`` field and that dtype is
     *not* an ``object`` type, then it will be parsed directly.  Otherwise, this
-    function essentially vectorizes the built-in ``type()`` function and
-    applies it elementwise over the example data.
+    function loops over the input and :meth:`detects <AtomicType.detect>` the
+    type of each element.
 
     Arguments
     ---------
@@ -37,7 +37,7 @@ def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
 
     Returns
     -------
-    BaseType
+    AtomicType | AdapterType | CompositeType
         The observed type of the example data.  If the example is homogenous,
         this will be an :class:`AtomicType` or :class:`AdapterType` instance.
         If the example contains elements of mixed type, it will be a
@@ -45,52 +45,13 @@ def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
 
     See Also
     --------
-    AtomicType.detect : Delegated method for inference operations.
-
-    Notes
-    -----
-    This function's behavior can be customized by overriding
-    :func:`AtomicType.detect` in individual type definitions.  See that
-    function for a guide on how to do this.
-
-    If the example data is of mixed type, the returned
-    :attr:`CompositeType.index` will contain an array indicating the location
-    of each type in the example data.  This can be used for ``groupby()``
-    operations and is highly memory-efficient thanks to :class:`AtomicType`\'s
-    :ref:`flyweight construction <atomic_type.allocation>`.
-
-    If :func:`pdcast.attach` is invoked, the output from this function is
-    directly attached to ``pandas.Series`` objects under
-    ``pd.Series.element_type``.  A similar attribute is attached to
-    ``pd.DataFrame`` objects under the same name, except it returns a
-    dictionary mapping column names to their inferred type(s).
-
-    >>> import pandas as pd
-    >>> import pdcast; pdcast.attach()
-    >>> pd.Series([1, 2, 3]).element_type
-    NumpyInt64Type()
-    >>> pd.DataFrame({"a": [1, 2], "b": [1., 2.], "c": ["1", "2"]}).element_type
-    {'a': NumpyInt64Type(), 'b': NumpyFloat64Type(), 'c': StringType()}
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> import pandas as pd
-    >>> import pdcast
-    >>> class CustomObj:
-    ...     def __init__(self, x): self.x = x
-    >>> pdcast.detect_type(True)
-    PythonBooleanType()
-    >>> pdcast.detect_type([CustomObj(1), CustomObj(2), CustomObj(3)])
-    ObjectType(type_def=<class 'CustomObj'>)
-    >>> pdcast.detect_type(np.array([1, 2, 3]))
-    NumpyInt64Type()
-    >>> pdcast.detect_type(pd.Series([1., 2., 3.]))
-    NumpyFloat64Type()
-    >>> pdcast.detect_type(pd.Series([1., 2., None], dtype="Sparse"))
-    SparseType(wrapped=NumpyFloat64Type(), fill_value=nan)
-    >>> pdcast.detect_type([True, 2, 3., 4+0j])   # doctest: +SKIP
-    CompositeType({bool, int, float, complex})
+    AtomicType.detect : customizable detection of scalar objects.
+    AtomicType.from_dtype : customizable resolution of
+        :ref:`numpy <resolve_type.type_specifiers.numpy>`\ /\ 
+        :ref:`pandas <resolve_type.type_specifiers.pandas>` data types.
+    AdapterType.from_dtype : customizable resolution of
+        :ref:`numpy <resolve_type.type_specifiers.numpy>`\ /\ 
+        :ref:`pandas <resolve_type.type_specifiers.pandas>` data types.
     """
     # trivial case: example is already a type object
     if isinstance(example, types.BaseType):

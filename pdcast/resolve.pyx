@@ -47,6 +47,8 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
     """Interpret types from manual
     :ref:`type specifiers <resolve_type.type_specifiers>`.
 
+    This function is called implicitly wherever type specifiers are accepted.
+
     Arguments
     ---------
     typespec : type specifier
@@ -61,8 +63,7 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
     Raises
     ------
     ValueError
-        If the :ref:`type specifier <resolve_type.type_specifiers>` could not
-        be resolved.
+        If the type specifier could not be resolved.
 
     See Also
     --------

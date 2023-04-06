@@ -86,6 +86,8 @@ type's inheritance signature, like so:
     Setting ``cache_size`` to 0 effectively eliminates flyweight caching for
     the type in question, though this is not recommended.
 
+.. _atomic_type.required:
+
 Required Attributes
 -------------------
 :class:`AtomicTypes <AtomicType>` must implement the following attributes to

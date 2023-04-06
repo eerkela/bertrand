@@ -1,5 +1,11 @@
 .. currentmodule:: pdcast
 
+.. testsetup::
+
+    import numpy as np
+    import pandas as pd
+    import pdcast
+
 pdcast.resolve_type
 ===================
 
@@ -34,8 +40,8 @@ overflow, and restriction to numeric data.  Conversely, they are by far the
 most efficient for both computation and storage, and pandas uses them by
 default wherever possible.
 
-:func:`resolve_type` can parse these data types directly, returning equivalents
-in the ``pdcast`` type system.
+:func:`resolve_type` can parse these data types directly, returning 1:1
+equivalents in the ``pdcast`` type system.
 
 .. doctest::
 
@@ -50,13 +56,17 @@ in the ``pdcast`` type system.
 
     Special cases exist for fixed-width string (``U``) and byte-like
     (``S``\ /\ ``a``\ /\ ``V``) data types.  ``pdcast``, like pandas, converts
-    strings into their Python equivalents to support dynamic resizing, and raw
-    bytes are unsupported.
+    strings into their Python equivalents to support dynamic resizing.
 
     .. doctest::
 
         >>> pdcast.resolve_type(np.dtype("U32"))
         StringType()
+
+    Raw bytes are unsupported.
+
+    .. doctest::
+
         >>> pdcast.resolve_type(np.dtype("S"))
         Traceback (most recent call last):
             ...
@@ -65,17 +75,6 @@ in the ``pdcast`` type system.
         Traceback (most recent call last):
             ...
         ValueError: numpy dtype not recognized: |V0
-
-Numpy also exposes a special `object
-<https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.object_>`_
-data type, which can store arbitrary Python objects.  Arrays of this type
-behave more like standard Python lists and lack most of the benefits of their
-packed equivalents.
-
-.. doctest::
-
-    >>> pdcast.resolve_type(np.dtype(object))
-    ObjectType(type_def=<class 'object'>)
 
 .. note::
 
@@ -99,8 +98,8 @@ Pandas uses these ``ExtensionDtypes`` to support `nullable integers
 `booleans <https://pandas.pydata.org/pandas-docs/stable/user_guide/boolean.html>`_,
 as well as `sparse <https://pandas.pydata.org/pandas-docs/stable/user_guide/sparse.html>`_\ 
 /\ `categorical <https://pandas.pydata.org/pandas-docs/stable/user_guide/categorical.html>`_
-data structures and `pyarrow integration <https://pandas.pydata.org/pandas-docs/stable/user_guide/pyarrow.html>`_
-
+data structures and `pyarrow integration
+<https://pandas.pydata.org/pandas-docs/stable/user_guide/pyarrow.html>`_.
 :func:`resolve_type` can parse these the same way as their
 :ref:`numpy <resolve_type.type_specifiers.numpy>` equivalents.
 
@@ -183,8 +182,8 @@ A ``typespec`` string is composed of 2 parts:
 
 This resembles a callable grammar.  In fact, it directly translates to a call
 to the type's :meth:`resolve() <AtomicType.resolve>` constructor, which can be
-customized to alter the type's behavior.  This leaves each type free to
-assign its own meaning to the optional arguments and parse them accordingly.
+customized to alter its behavior.  This leaves each type free to assign its own
+meaning to the optional arguments and parse them accordingly.
 
 When a type specifier is parsed, its alias is compared against a shared
 :attr:`table <TypeRegistry.aliases>` representing the current
@@ -268,8 +267,8 @@ When in doubt, always prefer the fixed-width alternatives.
 
 Composite types
 ---------------
-:func:`resolve_type` also supports easy :class:`compositing <CompositeType>` of
-types.  This can be done by providing an iterable as input:
+:func:`resolve_type` also supports easy :class:`CompositeType` creation.  This
+can be done by providing an iterable as input:
 
 .. doctest::
 
