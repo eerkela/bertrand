@@ -38,12 +38,16 @@ class SparseType(AdapterType):
                     x.wrapped = self
                     break
 
-        # get fill_value
-        if wrapped is not None and fill_value is None:
-            fill_value = getattr(wrapped, "na_value", None)
-
         # call AdapterType.__init__()
         super().__init__(wrapped=wrapped, fill_value=fill_value)
+
+    @property
+    def fill_value(self) -> Any:
+        """The value to mask from the array."""
+        val = self.kwargs["fill_value"]
+        if val is None:
+            return getattr(self.wrapped, "na_value", None)
+        return val
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -114,12 +118,15 @@ class SparseType(AdapterType):
         subtype hierarchy.
         """
         other = resolve.resolve_type(other)
+
+        # if target is composite, test each element individually
         if isinstance(other, CompositeType):
             return all(
                 self.contains(o, include_subtypes=include_subtypes)
                 for o in other
             )
 
+        # assert other is sparse
         if not isinstance(other, type(self)):
             return False
 
@@ -129,16 +136,18 @@ class SparseType(AdapterType):
         if other.wrapped is None:
             return False
 
-        # check for equal NA vals
-        na_1 = pd.isna(self.fill_value)
-        na_2 = pd.isna(other.fill_value)
-        if na_1 or na_2:
-            result = na_1 & na_2
-        else:
-            result = self.fill_value == other.fill_value
+        # check for equal fill values
+        if self.kwargs["fill_value"] is not None:
+            na_1 = self.is_na(self.fill_value)
+            na_2 = other.is_na(other.fill_value)
+            if (
+                na_1 ^ na_2 or
+                na_1 == na_2 == False and self.fill_value != other.fill_value
+            ):
+                return False
 
         # delegate to wrapped
-        return result and self.wrapped.contains(
+        return self.wrapped.contains(
             other.wrapped,
             include_subtypes=include_subtypes
         )

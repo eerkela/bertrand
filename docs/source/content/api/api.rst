@@ -14,7 +14,7 @@ sidebar.
     * - :func:`detect_type`
       - Infer types from example data.
     * - :func:`typecheck`
-      - TODO
+      - Check whether example data contains elements of a specified type.
     * - :func:`cast`
       - TODO
     * - :func:`attach`

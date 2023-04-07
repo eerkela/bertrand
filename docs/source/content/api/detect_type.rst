@@ -108,8 +108,8 @@ This is space-efficient thanks to :class:`AtomicType`\'s
 
 Pandas integration
 ------------------
-If :func:`pdcast.attach <attach>` is invoked, the output from this function is
-attached directly to ``pandas.Series`` objects under
+If :func:`pdcast.attach() <attach>` is invoked, the output from this function
+is attached directly to ``pandas.Series`` objects under
 :attr:`pandas.Series.element_type`.
 
 .. doctest::

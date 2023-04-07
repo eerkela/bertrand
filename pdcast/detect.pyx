@@ -18,17 +18,12 @@ from pdcast.util.structs import as_series
 ######################
 
 
-def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
+def detect_type(data: Any, skip_na: bool = True) -> types.BaseType:
     """Infer types from example data.
-
-    If the example data has an appropriate ``.dtype`` field and that dtype is
-    *not* an ``object`` type, then it will be parsed directly.  Otherwise, this
-    function loops over the input and :meth:`detects <AtomicType.detect>` the
-    type of each element.
 
     Arguments
     ---------
-    example : Any
+    data : Any
         The example data whose type will be inferred.  This can be a scalar
         or list-like iterable of any kind.
     skip_na : bool, default True
@@ -54,20 +49,20 @@ def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
         :ref:`pandas <resolve_type.type_specifiers.pandas>` data types.
     """
     # trivial case: example is already a type object
-    if isinstance(example, types.BaseType):
-        return example
+    if isinstance(data, types.BaseType):
+        return data
 
     cdef object fill_value = None
     cdef types.BaseType result = None
 
     # check if example is iterable
-    if hasattr(example, "__iter__") and not isinstance(example, type):
+    if hasattr(data, "__iter__") and not isinstance(data, type):
         # if example type has been explicitly registered, interpret as scalar
-        if type(example) in types.AtomicType.registry.aliases:
-            return detect_scalar_type(example)
+        if type(data) in types.AtomicType.registry.aliases:
+            return detect_scalar_type(data)
 
         # use .dtype field if available
-        dtype = getattr(example, "dtype", None)
+        dtype = getattr(data, "dtype", None)
         if dtype is not None:
             # strip sparse types
             if isinstance(dtype, pd.SparseDtype):
@@ -78,7 +73,7 @@ def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
             if dtype != np.dtype("O"):
                 # special cases for pd.Timestamp/pd.Timedelta series
                 cases = (pd.Series, pd.Index, pd.api.extensions.ExtensionArray)
-                if isinstance(example, cases):
+                if isinstance(data, cases):
                     if dtype == np.dtype("M8[ns]"):
                         dtype = resolve.resolve_type(types.PandasTimestampType)
                     elif dtype == np.dtype("m8[ns]"):
@@ -87,10 +82,10 @@ def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
 
         # no dtype or dtype=object, loop through and interpret
         if result is None:
-            example = as_series(example)
+            data = as_series(data)
             if skip_na:
-                example = example.dropna()
-            result = detect_vector_type(example.to_numpy(dtype="O"))
+                data = data.dropna()
+            result = detect_vector_type(data.to_numpy(dtype="O"))
 
         # parse resulting CompositeType
         if not result:  # empty set
@@ -102,7 +97,7 @@ def detect_type(example: Any, skip_na: bool = True) -> types.BaseType:
         return result  # non-homogenous
 
     # example is not iterable
-    return detect_scalar_type(example)
+    return detect_scalar_type(data)
 
 
 #######################
