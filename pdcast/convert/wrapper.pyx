@@ -14,7 +14,6 @@ import pdcast.resolve as resolve
 cimport pdcast.types as types
 import pdcast.types as types
 
-import pdcast.convert.default as default
 import pdcast.convert.standalone as standalone
 
 import pdcast.util.array as array

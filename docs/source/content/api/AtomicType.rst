@@ -103,6 +103,8 @@ be considered valid.
     AtomicType.itemsize
     AtomicType.na_value
 
+.. _atomic_type.constructors:
+
 Constructors
 ------------
 These should always be preferred over direct instantiation to allow for the
@@ -119,6 +121,8 @@ These should always be preferred over direct instantiation to allow for the
     AtomicType.slugify
     AtomicType.kwargs
 
+.. _atomic_type.aliases:
+
 Aliases
 -------
 See :attr:`AtomicType.aliases` for more information on how aliases are used.
@@ -129,6 +133,8 @@ See :attr:`AtomicType.aliases` for more information on how aliases are used.
     AtomicType.register_alias <ScalarType.register_alias>
     AtomicType.remove_alias <ScalarType.remove_alias>
     AtomicType.clear_aliases <ScalarType.clear_aliases>
+
+.. _atomic_type.subtypes:
 
 Subtypes/Supertypes
 -------------------
@@ -145,6 +151,8 @@ define subtypes.
     AtomicType.contains
     AtomicType.is_subtype
 
+.. _atomic_type.generic:
+
 Generic Backends
 ----------------
 See the :func:`@generic <generic>` decorator for more information on how to
@@ -159,6 +167,8 @@ leverage generic types and register individual backends.
     AtomicType.backends
     AtomicType.register_backend
 
+.. _atomic_type.adapters:
+
 Adapters
 --------
 See :class:`AdapterType` for more information on how to wrap
@@ -171,6 +181,8 @@ See :class:`AdapterType` for more information on how to wrap
     AtomicType.unwrap
     AtomicType.make_sparse
     AtomicType.make_categorical
+
+.. _atomic_type.conversions:
 
 Conversions
 -----------
@@ -189,6 +201,8 @@ See the :doc:`conversion docs <cast>` for more information on type conversions.
     AtomicType.to_string
     AtomicType.to_object
 
+.. _atomic_type.downcast:
+
 Upcast/Downcast
 ---------------
 
@@ -200,6 +214,8 @@ Upcast/Downcast
     AtomicType.upcast
     AtomicType.downcast
 
+.. _atomic_type.missing:
+
 Missing Values
 --------------
 
@@ -209,6 +225,8 @@ Missing Values
     AtomicType.is_nullable
     AtomicType.is_na
     AtomicType.make_nullable
+
+.. _atomic_type.special:
 
 Special Methods
 ---------------

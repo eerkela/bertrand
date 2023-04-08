@@ -137,10 +137,11 @@ class CategoricalType(AdapterType):
             return False
 
         # check for equal levels
-        result = self.levels is None or self.levels == other.levels
+        if self.levels is not None and self.levels != other.levels:
+            return False
 
         # delegate to wrapped
-        return result and self.wrapped.contains(
+        return self.wrapped.contains(
             other.wrapped,
             include_subtypes=include_subtypes
         )
