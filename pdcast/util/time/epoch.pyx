@@ -111,7 +111,7 @@ cdef dict epoch_aliases = {  # earliest - latest
     "modified julian":  np.datetime64("1858-11-16 00:00:00"),
     "reduced julian":   np.datetime64("1858-11-16 12:00:00"),
     "lotus":            np.datetime64("1899-12-30 00:00:00"),
-    "risc":             np.datetime64("1900-01-01 00:00:00"),
+    "ntp":              np.datetime64("1900-01-01 00:00:00"),
     "labview":          np.datetime64("1904-01-01 00:00:00"),
     "sas":              np.datetime64("1960-01-01 00:00:00"),
     "utc":              np.datetime64("1970-01-01 00:00:00"),
@@ -160,7 +160,7 @@ cdef class Epoch:
             implementation.  Still used internally in a variety of spreadsheet
             applications, including Microsoft Excel, Google Sheets, and
             LibreOffice.
-        * `'risc'`: refers to January 1st, 1900, which is used for Network Time
+        * `'ntp'`: refers to January 1st, 1900, which is used for Network Time
             Protocol (NTP) synchronization, IBM CICS, Mathematica, Common Lisp,
             and the RISC operating system.
         * `'labview'`: refers to January 1st, 1904, which is used by the

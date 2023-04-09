@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-ignore_case
-===========
+pdcast.defaults.ignore_case
+===========================
 
 .. autoattribute:: CastDefaults.ignore_case

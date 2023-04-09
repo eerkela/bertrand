@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-errors
-======
+pdcast.defaults.errors
+======================
 
 .. autoattribute:: CastDefaults.errors

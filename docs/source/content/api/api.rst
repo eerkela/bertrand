@@ -16,7 +16,7 @@ sidebar.
     * - :func:`typecheck`
       - Check whether example data contains elements of a specified type.
     * - :func:`cast`
-      - TODO
+      - Cast arbitrary data to the specified type.
     * - :func:`attach`
       - TODO
     * - :func:`detach`

@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-since
-======
+pdcast.defaults.since
+=====================
 
 .. autoattribute:: CastDefaults.since

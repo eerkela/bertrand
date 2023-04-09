@@ -41,7 +41,9 @@ pandas equivalents.  Each one explicitly lists the
 Arguments
 ---------
 The behavior of each conversion can be customized using the following
-arguments.
+arguments.  Default values for each are stored in a global
+:class:`pdcast.defaults <CastDefaults>` configuration object, which can be
+updated at run time.
 
 .. list-table::
 
@@ -49,13 +51,13 @@ arguments.
       - The maximum amount of precision loss that can occur before an error is
         raised.
     * - :attr:`rounding <CastDefaults.rounding>`
-      - TODO
+      - The rounding rule to use for numeric conversions.
     * - :attr:`unit <CastDefaults.unit>`
-      - TODO
+      - The unit to use for numeric <-> datetime/timedelta conversions.
     * - :attr:`step_size <CastDefaults.step_size>`
-      - TODO
+      - The step size to use for each :attr:`unit <CastDefaults.unit>`.
     * - :attr:`since <CastDefaults.since>`
-      - TODO
+      - The epoch to use for datetime/timedelta conversions.
     * - :attr:`tz <CastDefaults.tz>`
       - TODO
     * - :attr:`true <CastDefaults.true>`
@@ -83,11 +85,13 @@ arguments.
     * - :attr:`errors <CastDefaults.errors>`
       - TODO
     * - :attr:`\*\*kwargs`
-      - TODO
+      - Additional keyword arguments to be passed to the
+        :ref:`delegated <atomic_type.conversions>` conversion method.
 
 .. toctree::
     :hidden:
 
+    defaults <abstract/cast/defaults>
     tol <abstract/cast/tol>
     rounding <abstract/cast/rounding>
     unit <abstract/cast/unit>
@@ -107,178 +111,18 @@ arguments.
     downcast <abstract/cast/downcast>
     errors <abstract/cast/errors>
 
-.. _cast.arguments.rounding:
+.. _cast.mixed:
 
-rounding
-^^^^^^^^
-Optional rounding for numeric conversions.  This is independent from ``tol``,
-and can accept a variety of rules:
+Mixed data
+----------
 
-    *   ``None`` - do not round.
-    *   ``"floor"`` - round toward negative infinity.
-    *   ``"ceiling"`` - round toward positive infinity.
-    *   ``"down"`` - round toward zero.
-    *   ``"up"`` - round away from zero.
-    *   ``"half_floor"`` - round to nearest with ties toward positive infinity.
-    *   ``"half_ceiling"`` - round to nearest with ties toward negative
-        infinity.
-    *   ``"half_down"`` - round to nearest with ties toward zero.
-    *   ``"half_up"`` - round to nearest with ties away from zero.
-    *   ``"half_even"`` - round to nearest with ties toward the `nearest even
-        value <https://en.wikipedia.org/wiki/Rounding#Rounding_half_to_even>`_.
-        Also known as *convergent rounding*, *statistician's rounding*, or
-        *banker's rounding*.
+.. _cast.adapters:
 
-.. doctest::
-
-    >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="floor")
-    0   -2
-    1   -1
-    2    0
-    3    1
-    dtype: int64
-    >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="ceiling")
-    0   -1
-    1    0
-    2    1
-    3    2
-    dtype: int64
-    >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="down")
-    0   -1
-    1    0
-    2    0
-    3    1
-    dtype: int64
-    >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="up")
-    0   -2
-    1   -1
-    2    1
-    3    2
-    dtype: int64
-    >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_floor")
-    0   -2
-    1   -1
-    2    0
-    3    2
-    dtype: int64
-    >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_ceiling")
-    0   -1
-    1    0
-    2    0
-    3    2
-    dtype: int64
-    >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_down")
-    0   -1
-    1    0
-    2    0
-    3    2
-    dtype: int64
-    >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_up")
-    0   -2
-    1   -1
-    2    0
-    3    2
-    dtype: int64
-    >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_even")
-    0   -2
-    1    0
-    2    0
-    3    2
-    dtype: int64
-
-.. _cast.arguments.unit:
-
-unit
-^^^^
-The unit to use for numeric <-> datetime/timedelta conversions.  The available
-options are
-
-
-
-
-.. _cast.arguments.step_size:
-
-step_size
-^^^^^^^^^
-
-.. _cast.arguments.tz:
-
-tz
-^^
-
-.. _cast.arguments.since:
-
-since
-^^^^^
-
-.. _cast.arguments.true:
-
-true
-^^^^
-
-.. _cast.arguments.false:
-
-false
-^^^^^
-
-.. _cast.arguments.utc:
-
-utc
-^^^
-
-.. _cast.arguments.day_first:
-
-day_first
-^^^^^^^^^
-
-.. _cast.arguments.year_first:
-
-year_first
-^^^^^^^^^^
-
-.. _cast.arguments.as_hours:
-
-as_hours
-^^^^^^^^
-
-.. _cast.arguments.format:
-
-format
-^^^^^^
-
-.. _cast.arguments.base:
-
-base
-^^^^
-
-.. _cast.arguments.downcast:
-
-downcast
-^^^^^^^^
-
-.. _cast.arguments.call:
-
-call
-^^^^
-
-.. _cast.arguments.errors:
-
-errors
-^^^^^^
-
-.. _cast.arguments.\*\*kwargs:
-
-\*\*kwargs
-^^^^^^^^^^
-Additional keyword arguments that are passed to the
-:ref:`delegated <atomic_type.conversions>` conversion method.  This allows
-types to define new arguments for :func:`cast` and its related
-:ref:`stand-alone <cast.stand_alone>` equivalents, which are applied only to
-those conversions that need them.
-
-.. _cast.defaults:
-
-Defaults
+Adapters
 --------
 
-.. autoclass:: CastDefaults
+.. _cast.inference:
+
+Inference
+---------
+

@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-day_first
-=========
+pdcast.defaults.day_first
+=========================
 
 .. autoattribute:: CastDefaults.day_first

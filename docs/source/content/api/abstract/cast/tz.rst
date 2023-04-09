@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-tz
-==
+pdcast.defaults.tz
+==================
 
 .. autoattribute:: CastDefaults.tz

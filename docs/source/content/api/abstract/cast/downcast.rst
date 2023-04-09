@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-downcast
-========
+pdcast.defaults.downcast
+========================
 
 .. autoattribute:: CastDefaults.downcast

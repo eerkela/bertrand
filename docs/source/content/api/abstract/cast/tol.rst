@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-tol
-===
+pdcast.defaults.tol
+===================
 
 .. autoattribute:: CastDefaults.tol

@@ -40,70 +40,29 @@ get_default = GetDefault()
 
 
 def cast(
-    series: Iterable,
+    series: Any,
     dtype: Optional[type_specifier] = None,
     **kwargs
 ) -> pd.Series:
     """Cast arbitrary data to the specified data type.
 
-    This function dispatches to one of the
-    :ref:`standalone conversions <cast.stand_alone>` listed below based on the
-    value of its ``dtype`` argument.
-
     Parameters
     ----------
+    series : Any
+        The data to convert.  This can be a scalar or 1D iterable containing
+        arbitrary data.
     dtype : type specifier
         The target :doc:`type </content/types/types>` for this conversion.
         This can be in any format recognized by :func:`resolve_type`.
-    tol : numeric
-        The maximum amount of :ref:`precision loss <cast.arguments.tol>` that
-        can occur before an error is raised.
-    rounding : str
-        The :ref:`rounding <cast.arguments.rounding>` rule to use for numeric
-        conversions.
-    unit : str
-        The :ref:`unit <cast.arguments.unit>` to use for datetime/timedelta
-        conversions.
-    step_size : int
-        The :ref:`step size <cast.arguments.step_size>` to use for each
-        :ref:`unit <cast.arguments.unit>`.
-    tz : str | datetime.tzinfo
-        The :ref:`time zone <cast.arguments.tz>` to use for datetime/timedelta
-        conversions.
-    since : str | datetime-like
-        The :ref:`epoch <cast.arguments.since>` to use for datetime/timedelta
-        conversions.
-    true : str | set[str]
-        TODO
-    false : str | set[str]
-        TODO
-    utc : bool
-        Controls whether to consider naive datetimes as
-        :ref:`UTC timestamps <cast.arguments.utc>` (``True``), or in the
-        system's local timezone (``False``).
-    day_first : bool
-        TODO
-    year_first : bool
-        TODO
-    as_hours : bool
-        TODO
-    format : str
-        TODO
-    base : int
-        TODO
-    downcast : bool
-        TODO
-    call : Callable
-        TODO
-    errors : str
-        TODO
     **kwargs : dict
-        TODO
+        Arbitrary keyword :ref:`arguments <cast.arguments>` used to customize
+        the conversion.
 
     Notes
     -----
-    See the :ref:`arguments <cast.arguments>` section for more details on how
-    to use each argument.
+    This function dispatches to one of the
+    :ref:`standalone conversions <cast.stand_alone>` listed below based on the
+    value of its ``dtype`` argument.
     """
     # if no target is given, default to series type
     if dtype is None:
@@ -124,7 +83,7 @@ def cast(
 
 
 def to_boolean(
-    series: Iterable,
+    series: Any,
     dtype: type_specifier = "bool",
     tol: Optional[numeric] = get_default,
     rounding: Optional[str] = get_default,
@@ -177,7 +136,7 @@ def to_boolean(
 
 
 def to_integer(
-    series: Iterable,
+    series: Any,
     dtype: type_specifier = "int",
     tol: Optional[numeric] = get_default,
     rounding: Optional[str] = get_default,
@@ -224,7 +183,7 @@ def to_integer(
 
 
 def to_float(
-    series: Iterable,
+    series: Any,
     dtype: type_specifier = "float",
     tol: Optional[numeric] = get_default,
     rounding: Optional[str] = get_default,
@@ -268,7 +227,7 @@ def to_float(
 
 
 def to_complex(
-    series: Iterable,
+    series: Any,
     dtype: type_specifier = "complex",
     tol: Optional[numeric] = get_default,
     rounding: Optional[str] = get_default,
@@ -311,7 +270,7 @@ def to_complex(
 
 
 def to_decimal(
-    series: Iterable,
+    series: Any,
     dtype: type_specifier = "decimal",
     tol: Optional[numeric] = get_default,
     rounding: Optional[str] = get_default,
@@ -352,7 +311,7 @@ def to_decimal(
 
 
 def to_datetime(
-    series: Iterable,
+    series: Any,
     dtype: type_specifier = "datetime",
     unit: Optional[str] = get_default,
     step_size: Optional[int] = get_default,
@@ -408,7 +367,7 @@ def to_datetime(
 
 
 def to_timedelta(
-    series: Iterable,
+    series: Any,
     dtype: type_specifier = "timedelta",
     unit: Optional[str] = get_default,
     step_size: Optional[int] = get_default,
@@ -452,7 +411,7 @@ def to_timedelta(
 
 
 def to_string(
-    series: Iterable,
+    series: Any,
     dtype: type_specifier = "string",
     format: Optional[str] = get_default,
     base: Optional[int] = get_default,
@@ -484,7 +443,7 @@ def to_string(
 
 
 def to_object(
-    series: Iterable,
+    series: Any,
     dtype: type_specifier = "object",
     call: Optional[Callable] = get_default,
     errors: Optional[str] = get_default,
@@ -561,7 +520,7 @@ class CastDefaults(threading.local):
         Tolerance
             A ``Tolerance`` object that consists of two ``Decimal`` values, one
             for both the real and imaginary components.  This maintains the
-            highest possible precision in both cases.
+            highest possible precision in both cases.  Default is ``1e-6``.
 
         Notes
         -----
@@ -649,70 +608,427 @@ class CastDefaults(threading.local):
 
     @property
     def rounding(self) -> str:
+        """The rounding rule to use for numeric conversions.
+
+        Returns
+        -------
+        str | None
+            A string describing the rounding rule to apply, or ``None`` to
+            indicate that no rounding will be applied.  Default is ``None``.
+
+        Notes
+        -----
+        The available options for this argument are as follows:
+
+            *   ``None`` - do not round.
+            *   ``"floor"`` - round toward negative infinity.
+            *   ``"ceiling"`` - round toward positive infinity.
+            *   ``"down"`` - round toward zero.
+            *   ``"up"`` - round away from zero.
+            *   ``"half_floor"`` - round to nearest with ties toward positive infinity.
+            *   ``"half_ceiling"`` - round to nearest with ties toward negative
+                infinity.
+            *   ``"half_down"`` - round to nearest with ties toward zero.
+            *   ``"half_up"`` - round to nearest with ties away from zero.
+            *   ``"half_even"`` - round to nearest with ties toward the `nearest even
+                value <https://en.wikipedia.org/wiki/Rounding#Rounding_half_to_even>`_.
+                Also known as *convergent rounding*, *statistician's rounding*, or
+                *banker's rounding*.
+
+        This argument is applied **after** :attr:`tol <CastDefaults.tol>`.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="floor")
+            0   -2
+            1   -1
+            2    0
+            3    1
+            dtype: int64
+            >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="ceiling")
+            0   -1
+            1    0
+            2    1
+            3    2
+            dtype: int64
+            >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="down")
+            0   -1
+            1    0
+            2    0
+            3    1
+            dtype: int64
+            >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="up")
+            0   -2
+            1   -1
+            2    1
+            3    2
+            dtype: int64
+            >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_floor")
+            0   -2
+            1   -1
+            2    0
+            3    2
+            dtype: int64
+            >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_ceiling")
+            0   -1
+            1    0
+            2    0
+            3    2
+            dtype: int64
+            >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_down")
+            0   -1
+            1    0
+            2    0
+            3    2
+            dtype: int64
+            >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_up")
+            0   -2
+            1   -1
+            2    0
+            3    2
+            dtype: int64
+            >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_even")
+            0   -2
+            1    0
+            2    0
+            3    2
+            dtype: int64
+
+        """
         return self._vals["rounding"]
 
     @property
     def unit(self) -> str:
+        """The unit to use for numeric <-> datetime/timedelta conversions.
+
+        Returns
+        -------
+        str
+            A string describing the unit to use.  Default is ``"ns"``
+
+        Notes
+        -----
+        The available options for this argument are as follows (from smallest
+        to largest):
+
+            * ``"ns"`` - nanoseconds
+            * ``"us"`` - microseconds
+            * ``"ms"`` - milliseconds
+            * ``"s"`` - seconds
+            * ``"m"`` - minutes
+            * ``"h"`` - hours
+            * ``"D"`` - days
+            * ``"W"`` - weeks
+            * ``"M"`` - months
+            * ``"Y"`` - years
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.cast(1, "datetime", unit="ns")
+            0   1970-01-01 00:00:00.000000001
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="us")
+            0   1970-01-01 00:00:00.000001
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="ms")
+            0   1970-01-01 00:00:00.001
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="s")
+            0   1970-01-01 00:00:01
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="m")
+            0   1970-01-01 00:01:00
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="h")
+            0   1970-01-01 01:00:00
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="D")
+            0   1970-01-02
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="W")
+            0   1970-01-08
+            dtype: datetime64[ns]
+
+        Units ``"M"`` and ``"Y"`` have irregular lengths.  Rather than average
+        these like ``pandas.to_datetime()``, :func:`cast` gives
+        calendar-accurate results.
+
+        .. doctest::
+
+            >>> pdcast.cast(1, "datetime", unit="M")
+            0   1970-02-01
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="Y")
+            0   1971-01-01
+            dtype: datetime64[ns]
+
+        This accounts for leap years as well, following the `Gregorian calendar
+        <https://en.wikipedia.org/wiki/Gregorian_calendar>`_.
+
+        .. doctest::
+
+            >>> pdcast.cast(1, "datetime", unit="M", since="1972-02")
+            0   1972-03-01
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="Y", since="1972")
+            0   1973-01-01
+            dtype: datetime64[ns]
+        """
         return self._vals["unit"]
 
     @property
     def step_size(self) -> int:
+        """The step size to use for each :attr:`unit <CastDefaults.unit>`.
+
+        Returns
+        -------
+        int
+            A positive integer >= 1.  This is effectively a multiplier for
+            :attr:`unit <CastDefaults.unit>`.  Default is ``1``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.cast(1, "datetime", unit="ns", step_size=5)
+            0   1970-01-01 00:00:00.000000005
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="s", step_size=30)
+            0   1970-01-01 00:00:30
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="M", step_size=3)
+            0   1970-04-01
+            dtype: datetime64[ns]
+        """
         return self._vals["step_size"]
 
     @property
-    def since(self) -> np.datetime64:
+    def since(self) -> Epoch:
+        """The epoch to use for datetime/timedelta conversions.
+
+        Returns
+        -------
+        Epoch
+            An ``Epoch`` object that represents a nanosecond offset from the
+            UTC epoch (1970-01-01 00:00:00).  Defaults to UTC.
+
+        Notes
+        -----
+        This can accept any datetime-like value, including datetime strings,
+        actual datetime objects, or one of the special values listed below
+        (from earliest to latest):
+
+            *   ``"julian"``: refers to the start of the `Julian
+                <https://en.wikipedia.org/wiki/Julian_calendar>`_ period, which
+                corresponds to a historical date of January 1st, 4713 BC
+                (according to the `proleptic Julian calendar
+                <https://en.wikipedia.org/wiki/Proleptic_Julian_calendar>`_) or
+                November 24, 4714 BC (according to the `proleptic Gregorian
+                calendar <https://en.wikipedia.org//wiki/Proleptic_Gregorian_calendar>`_).
+            *   ``"gregorian"``: refers to October 14th, 1582, the date when
+                Pope Gregory XIII first instituted the `Gregorian calendar
+                <https://en.wikipedia.org/wiki/Gregorian_calendar>`_.
+            *   ``"ntfs"``: refers to January 1st, 1601.  Used by Microsoft's
+                `NTFS <https://en.wikipedia.org/wiki/NTFS>`_ file management
+                system.
+            *   ``"modified julian"``: equivalent to ``"reduced julian"``
+                except that it increments at midnight rather than noon.  This
+                was originally introduced by the `Smithsonian Astrophysical
+                Observatory <https://en.wikipedia.org/wiki/Smithsonian_Astrophysical_Observatory>`_
+                to track the orbit of Sputnik, the first man-made satellite to
+                orbit Earth.
+            *   ``"reduced julian"``: refers to November 16th, 1858, which
+                drops the first two leading digits of the corresponding
+                ``"julian"`` day number.
+            *   ``"lotus"``: refers to December 31st, 1899, which was
+                incorrectly identified as January 0, 1900 in the original
+                `Lotus 1-2-3 <https://en.wikipedia.org/wiki/Lotus_1-2-3>`_
+                implementation.  Still used internally in a variety of
+                spreadsheet applications, including Microsoft Excel, Google
+                Sheets, and LibreOffice.
+            *   ``"ntp"``: refers to January 1st, 1900, which is used for
+                `Network Time Protocol (NTP)
+                <https://en.wikipedia.org/wiki/Network_Time_Protocol>`_
+                synchronization, `IBM CICS
+                <https://en.wikipedia.org/wiki/CICS>`_, `Mathematica
+                <https://en.wikipedia.org/wiki/Wolfram_Mathematica>`_,
+                `Common Lisp <https://en.wikipedia.org/wiki/Common_Lisp>`_, and
+                the `RISC <https://en.wikipedia.org/wiki/RISC_OS>`_ operating
+                system.
+            *   ``"labview"``: refers to January 1st, 1904, which is used by
+                the `LabVIEW <https://en.wikipedia.org/wiki/LabVIEW>`_
+                laboratory control software.
+            *   ``"sas"``: refers to January 1st, 1960, which is used by the
+                `SAS <https://en.wikipedia.org/wiki/SAS_(software)>`_
+                statistical analysis suite.
+            *   ``"utc"``: refers to January 1st, 1970, the universal
+                `Unix <https://en.wikipedia.org/wiki/Unix>`_\ /\ `POSIX
+                <https://en.wikipedia.org/wiki/POSIX>`_ epoch.  Can also be
+                referred to through the ``"unix"`` and ``"posix"`` aliases.
+            *   ``"fat"``: refers to January 1st, 1980, which is used by the
+                `FAT <https://en.wikipedia.org/wiki/File_Allocation_Table>`_
+                file management system, as well as `ZIP
+                <https://en.wikipedia.org/wiki/ZIP_(file_format)>`_ and its
+                derivatives.  Equivalent to ``"zip"``.
+            *   ``"gps"``: refers to January 6th, 1980, which is used in most
+                `GPS <https://en.wikipedia.org/wiki/Global_Positioning_System>`_
+                systems.
+            *   ``"j2000"``: refers to January 1st, 2000, which is commonly
+                used in astronomical applications, as well as in `PostgreSQL
+                <https://en.wikipedia.org/wiki/PostgreSQL>`_.
+            *   ``"cocoa"``: refers to January 1st, 2001, which is used in
+                Apple's `Cocoa <https://en.wikipedia.org/wiki/Cocoa_(API)>`_
+                framework for macOS and related mobile devices.
+            *   ``"now"``: refers to the current `system time
+                <https://en.wikipedia.org/wiki/System_time>`_ at the time
+                :class:`cast` was invoked.
+
+        Examples
+        --------
+        Using epoch aliases:
+
+        .. doctest::
+
+            >>> pdcast.cast(1, "datetime", unit="s", since="j2000")
+            0   2000-01-01 12:00:01
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="s", since="gregorian")
+            0    1582-10-14 00:00:01
+            dtype: datetime[python]
+            >>> pdcast.cast(1, "datetime", unit="s", since="julian")
+            0    -4713-11-24T12:00:01.000000
+            dtype: object
+
+        Using datetime strings:
+
+        .. doctest::
+
+            >>> pdcast.cast(1, "datetime", unit="s", since="2022-03-27")
+            0   2022-03-27 00:00:01
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="s", since="27 mar 2022")
+            0   2022-03-27 00:00:01
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="s", since="03/27/22")
+            0   2022-03-27 00:00:01
+            dtype: datetime64[ns]
+
+        Using datetime objects:
+
+        .. doctest::
+
+            >>> pdcast.cast(1, "datetime", unit="s", since=pd.Timestamp("2022-03-27"))
+            0   2022-03-27 00:00:01
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="s", since=datetime.datetime(2022, 3, 27))
+            0   2022-03-27 00:00:01
+            dtype: datetime64[ns]
+            >>> pdcast.cast(1, "datetime", unit="s", since=np.datetime64("2022-03-27"))
+            0   2022-03-27 00:00:01
+            dtype: datetime64[ns]
+
+        """
         return self._vals["since"]
 
     @property
     def tz(self) -> pytz.BaseTzInfo:
+        """The time zone to use for datetime conversions.
+        """
         return self._vals["tz"]
 
     @property
     def true(self) -> set:
+        """A set of truthy strings to use for boolean conversions.
+        """
         return self._vals["true"]
 
     @property
     def false(self) -> set:
+        """A set of falsy strings to use for string conversions.
+        """
         return self._vals["false"]
 
     @property
     def ignore_case(self) -> bool:
+        """Indicates whether to ignore differences in case during string
+        conversions.
+        """
         return self._vals["ignore_case"]
 
     @property
     def day_first(self) -> bool:
+        """Indicates whether to interpret the first value in an ambiguous
+        3-integer date (e.g. 01/05/09) as the day (``True``) or month
+        (``False``).
+
+        If year_first is set to ``True``, this distinguishes between YDM and
+        YMD.
+        """
         return self._vals["day_first"]
 
     @property
     def year_first(self) -> bool:
+        """Indicates whether to interpret the first value in an ambiguous
+        3-integer date (e.g. 01/05/09) as the year.
+
+        If ``True``, the first number is taken to be the year, otherwise the
+        last number is taken to be the year.
+        """
         return self._vals["year_first"]
 
     @property
     def utc(self) -> bool:
+        """Indicates whether to consider naive datetimes as UTC timestamps
+        (``True``), or with the system's local timezone (``False``).
+        """
         return self._vals["utc"]
 
     @property
     def as_hours(self) -> bool:
+        """Indicates whether to interpret ambiguous MM:SS times as HH:MM
+        instead.
+        """
         return self._vals["as_hours"]
 
     @property
     def format(self) -> str:
+        """f-string formatting for conversions to strings.
+        
+        A `format specifier <https://docs.python.org/3/library/string.html#formatspec>`_
+        to use for conversions to string.
+        """
         return self._vals["format"]
 
     @property
     def base(self) -> int:
+        """Base to use for integer <-> string conversions.
+        """
         return self._vals["base"]
 
     @property
     def call(self) -> Callable:
+        """Apply a callable over the input data, producing the desired output.
+
+        This is only used for conversions from :class:`ObjectType`.  It allows
+        users to specify a custom endpoint to perform this conversion, rather
+        than relying exclusively on special methods (which is the default).
+        """
         return self._vals["call"]
 
     @property
     def downcast(self) -> types.CompositeType:
+        """Losslessly reduce the precision of numeric data after converting.
+        """
         return self._vals["downcast"]
 
     @property
     def errors(self) -> str:
+        """The rule to apply if/when errors are encountered during conversion.
+        """
         return self._vals["errors"]
 
     #######################

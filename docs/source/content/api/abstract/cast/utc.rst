@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-utc
-===
+pdcast.defaults.utc
+===================
 
 .. autoattribute:: CastDefaults.utc

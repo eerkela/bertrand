@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-format
-======
+pdcast.defaults.format
+======================
 
 .. autoattribute:: CastDefaults.format

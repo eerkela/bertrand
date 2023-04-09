@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-call
-====
+pdcast.defaults.call
+====================
 
 .. autoattribute:: CastDefaults.call

@@ -1,6 +1,6 @@
 .. currentmodule:: pdcast
 
-step_size
-=========
+pdcast.defaults.step_size
+=========================
 
 .. autoattribute:: CastDefaults.step_size
