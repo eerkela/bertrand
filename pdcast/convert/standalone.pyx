@@ -543,7 +543,7 @@ class CastDefaults(threading.local):
             "format": None,
             "base": 0,
             "call": None,
-            "downcast": False,
+            "downcast": None,
             "errors": "raise"
         }
 
@@ -553,6 +553,98 @@ class CastDefaults(threading.local):
 
     @property
     def tol(self) -> Tolerance:
+        """The maximum amount of precision loss that can occur before an error
+        is raised.
+
+        Returns
+        -------
+        Tolerance
+            A ``Tolerance`` object that consists of two ``Decimal`` values, one
+            for both the real and imaginary components.  This maintains the
+            highest possible precision in both cases.
+
+        Notes
+        -----
+        Precision loss is defined using a 2-sided window around each of the
+        observed values.  The size of this window is directly controlled by
+        this argument.  If a conversion causes any value to be coerced outside
+        this window, then a ``ValueError`` will be raised.
+
+        This argument only affects numeric conversions.
+
+        Examples
+        --------
+        The input to this argument must be a positive numeric that is
+        coercible to ``Decimal``.
+
+        .. doctest::
+
+            >>> pdcast.cast(1.001, "int", tol=0.01)
+            0    1
+            dtype: int64
+            >>> pdcast.cast(1.001, "int", tol=0)
+            Traceback (most recent call last):
+                ...
+            ValueError: precision loss exceeds tolerance 0 at index [0]
+
+        If a complex value is given, then its real and imaginary components
+        will be considered separately.
+
+        .. doctest::
+
+            >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0.01j)
+            0    1
+            dtype: int64
+            >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0j)
+            Traceback (most recent call last):
+                ...
+            ValueError: imaginary component exceeds tolerance 0 at index [0]
+
+        This argument also has special behavior around the min/max of bounded
+        numerics, like integers and booleans.  If a value would normally
+        overflow, but falls within tolerance of these bounds, then it will be
+        clipped to fit rather than raise an ``OverflowError``.
+
+        .. doctest::
+
+            >>> pdcast.cast(129, "int8", tol=2)
+            0    127
+            dtype: int8
+            >>> pdcast.cast(129, "int8", tol=0)
+            Traceback (most recent call last):
+                ...
+            OverflowError: values exceed int8 range at index [0]
+
+        Additionally, this argument controls the maximum amount of precision
+        loss that can occur when :attr:`downcasting <CastDefaults.downcast>`
+        numeric values.
+
+        .. doctest::
+
+            >>> pdcast.cast(1.1, "float", tol=0, downcast=True)
+            0    1.1
+            dtype: float64
+            >>> pdcast.cast(1.1, "float", tol=0.001, downcast=True)
+            0    1.099609
+            dtype: float16
+
+        Setting this to infinity ignores precision loss entirely.
+
+        .. doctest::
+
+            >>> pdcast.cast(1.5, "int", tol=np.inf)
+            0    2
+            dtype: int64
+            >>> pdcast.cast(np.inf, "int64", tol=np.inf)
+            0    9223372036854775807
+            dtype: int64
+
+        .. note::
+
+            For integer conversions, this is equivalent to setting
+            :attr:`rounding <CastDefaults.rounding>` to ``"half_even"``, with
+            additional clipping around the minimum and maximum values.
+        """
         return self._vals["tol"]
 
     @property

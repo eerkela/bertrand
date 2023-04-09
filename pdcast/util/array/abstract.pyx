@@ -402,7 +402,7 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
         return self._data.astype(dtype=dtype, copy=copy)
 
     def isna(self):
-        return boolean_apply(self._data, self._atomic_type.is_na)
+        return self._atomic_type.is_na(self._data)
 
     def _values_for_argsort(self) -> np.ndarray:
         """Return values for sorting.
@@ -762,21 +762,3 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
 
         # NOTE: shim allows binary or (|)
         return self._from_sequence(self._data | other)
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef np.ndarray[np.uint8_t, cast=True] boolean_apply(
-    np.ndarray[object] arr,
-    object call
-):
-    cdef unsigned int arr_length = arr.shape[0]
-    cdef np.ndarray[np.uint8_t, cast=True] result
-    cdef unsigned int i
-
-    result = np.empty(arr_length, dtype=bool)
-
-    for i in range(arr_length):
-        result[i] = call(arr[i])
-
-    return result

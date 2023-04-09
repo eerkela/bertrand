@@ -22,7 +22,7 @@ import pdcast.util.array as array
 from pdcast.util.round cimport Tolerance
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.time cimport Epoch
-from pdcast.util.type_hints import type_specifier
+from pdcast.util.type_hints import array_like, type_specifier
 
 
 # TODO: add examples/raises for each method
@@ -231,7 +231,7 @@ cdef class AtomicType(ScalarType):
         :meth:`@AtomicType.register_backend <AtomicType.register_backend>`.
         """
         raise NotImplementedError(
-            f"'{type(self).__name__}' do not have an associated name"
+            f"'{type(self).__name__}' is missing a `name` field."
         )
 
     @property
@@ -272,7 +272,7 @@ cdef class AtomicType(ScalarType):
         includes the :class:`AtomicType` itself.
         """
         raise NotImplementedError(
-            f"'{type(self).__name__}' do not have an associated name"
+            f"'{type(self).__name__}' is missing an `aliases` field."
         )
 
     @property
@@ -1196,7 +1196,7 @@ cdef class AtomicType(ScalarType):
         data.
         """
         # NOTE: we convert to python int to prevent inconsistent comparisons
-        if pd.isna(series.min):
+        if self.is_na(series.min):
             min_val = self.max  # NOTE: we swap these to maintain upcast()
             max_val = self.min  # behavior for upcast-only types
         else:
@@ -1269,20 +1269,21 @@ cdef class AtomicType(ScalarType):
         """
         return True
 
-    def is_na(self, val: Any) -> bool:
-        """Check if a scalar value is considered missing in this
+    def is_na(self, val: Any) -> bool | array_like:
+        """Check if one or more values are considered missing in this
         representation.
 
         Parameters
         ----------
         val : Any
-            A scalar value to check for NA equality.
+            A scalar or 1D vector of values to check for NA equality.
 
         Returns
         -------
-        bool
-            ``True`` if ``val`` is equal to this type's ``na_value``, ``False``
-            otherwise.
+        bool | array-like
+            ``True`` where ``val`` is equal to this type's ``na_value``,
+            ``False`` otherwise.  If the input is vectorized, then the output
+            will be as well.
 
         Notes
         -----
@@ -1294,7 +1295,7 @@ cdef class AtomicType(ScalarType):
         If you override this method, you should always call its base equivalent
         via ``super().is_na()`` before returning a custom result.
         """
-        return val is pd.NA or val is None or val != val
+        return pd.isna(val)
 
     def make_nullable(self) -> AtomicType:
         """Convert a non-nullable :class:`AtomicType` into one that can accept

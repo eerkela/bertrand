@@ -6,6 +6,8 @@
     import pandas as pd
     import pdcast
 
+.. TODO: remove arg descriptions from cast(), just link to arguments section.
+
 pdcast.cast
 ===========
 
@@ -41,77 +43,69 @@ Arguments
 The behavior of each conversion can be customized using the following
 arguments.
 
-.. _cast.arguments.tol:
+.. list-table::
 
-tol
-^^^
-This argument represents the maximum amount of precision loss that can occur
-before a ``ValueError`` is thrown.
+    * - :attr:`tol <CastDefaults.tol>`
+      - The maximum amount of precision loss that can occur before an error is
+        raised.
+    * - :attr:`rounding <CastDefaults.rounding>`
+      - TODO
+    * - :attr:`unit <CastDefaults.unit>`
+      - TODO
+    * - :attr:`step_size <CastDefaults.step_size>`
+      - TODO
+    * - :attr:`since <CastDefaults.since>`
+      - TODO
+    * - :attr:`tz <CastDefaults.tz>`
+      - TODO
+    * - :attr:`true <CastDefaults.true>`
+      - TODO
+    * - :attr:`false <CastDefaults.false>`
+      - TODO
+    * - :attr:`ignore_case <CastDefaults.ignore_case>`
+      - TODO
+    * - :attr:`day_first <CastDefaults.day_first>`
+      - TODO
+    * - :attr:`year_first <CastDefaults.year_first>`
+      - TODO
+    * - :attr:`utc <CastDefaults.utc>`
+      - TODO
+    * - :attr:`as_hours <CastDefaults.as_hours>`
+      - TODO
+    * - :attr:`format <CastDefaults.format>`
+      - TODO
+    * - :attr:`base <CastDefaults.base>`
+      - TODO
+    * - :attr:`call <CastDefaults.call>`
+      - TODO
+    * - :attr:`downcast <CastDefaults.downcast>`
+      - TODO
+    * - :attr:`errors <CastDefaults.errors>`
+      - TODO
+    * - :attr:`\*\*kwargs`
+      - TODO
 
-Precision loss is defined using a 2-sided window around each of the observed
-values.  The size of this window is controlled by this argument.  If a
-conversion causes any value to be coerced outside this window, then a
-``ValueError`` will be raised
+.. toctree::
+    :hidden:
 
-.. doctest::
-
-    >>> pdcast.cast(1.001, "int", tol=0.01)
-    0    1
-    dtype: int64
-    >>> pdcast.cast(1.001, "int", tol=0)
-    Traceback (most recent call last):
-        ...
-    ValueError: precision loss exceeds tolerance 0 at index [0]
-
-The input to this argument must be positive.  Supplying ``np.inf`` disables
-precision loss checks entirely.
-
-.. note::
-
-    If ``tol`` is given as a complex value, the real and imaginary parts will
-    be considered separately.
-
-    .. doctest::
-
-        >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0.01j)
-        0    1
-        dtype: int64
-        >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0j)
-        Traceback (most recent call last):
-            ...
-        ValueError: imaginary component exceeds tolerance 0 at index [0]
-
-.. note::
-
-    This argument also controls the maximum amount of precision loss that can
-    occur when :ref:`downcasting <cast.arguments.downcast>` numeric values.
-
-    .. doctest::
-
-        >>> pdcast.cast(1.1, "float", tol=0, downcast=True)
-        0    1.1
-        dtype: float64
-        >>> pdcast.cast(1.1, "float", tol=0.001, downcast=True)
-        0    1.099609
-        dtype: float16
-
-.. TODO: maybe include overflow in tolerance checks?  Slightly more complicated
-    than snap_round()
-
-    .. note::
-
-        Precision loss checks can be distinguished from overflow by providing
-        ``np.inf`` to ``tol``.  For instance:
-
-        .. doctest::
-
-            >>> series.cast(float, tol=np.inf)
-            0    9.223372e+18
-            1    9.223372e+18
-            2    9.223372e+18
-            dtype: float64
-
-        matches the original pandas output while simultaneously rejecting overflow.
+    tol <abstract/cast/tol>
+    rounding <abstract/cast/rounding>
+    unit <abstract/cast/unit>
+    step_size <abstract/cast/step_size>
+    since <abstract/cast/since>
+    tz <abstract/cast/tz>
+    true <abstract/cast/true>
+    false <abstract/cast/false>
+    ignore_case <abstract/cast/ignore_case>
+    day_first <abstract/cast/day_first>
+    year_first <abstract/cast/year_first>
+    utc <abstract/cast/utc>
+    as_hours <abstract/cast/as_hours>
+    format <abstract/cast/format>
+    base <abstract/cast/base>
+    call <abstract/cast/call>
+    downcast <abstract/cast/downcast>
+    errors <abstract/cast/errors>
 
 .. _cast.arguments.rounding:
 

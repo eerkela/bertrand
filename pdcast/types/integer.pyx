@@ -69,13 +69,15 @@ class IntegerMixin:
                         break
                 smaller = reversed(filtered)
 
-        # return smallest type that fits observed range
-        if pd.isna(series.min):
+        # convert range to python int for consistent comparison
+        if self.is_na(series.min):
             min_val = self.max  # NOTE: we swap these to maintain upcast()
             max_val = self.min  # behavior for upcast-only types
         else:
             min_val = int(series.min)
             max_val = int(series.max)
+
+        # search for smaller data type that fits observed range
         for t in smaller:
             if min_val < t.min or max_val > t.max:
                 continue
@@ -85,6 +87,7 @@ class IntegerMixin:
                 downcast=None,
                 errors="raise"
             )
+
         return series
 
     @property

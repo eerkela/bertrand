@@ -21,6 +21,9 @@ from pdcast.util.error import shorten_list
 from pdcast.util.type_hints import array_like, numeric, type_specifier
 
 
+# TODO: tol should clip overflowing values if they are within the window.
+
+
 # TODO: SparseType works, but not in all cases.
 # -> pd.NA disallows non-missing fill values
 # -> Timestamps must be sparsified manually by converting to object and then
@@ -571,33 +574,30 @@ cdef class SeriesWrapper:
         In most cases, this is a simple identity function.  It only changes the
         inputs in the event that overflow is detected.
         """
-        # NOTE: this takes advantage of SeriesWrapper's min/max caching.
         series = self
 
-        # NOTE: convert to python int to prevent inconsistent comparisons
-        if pd.isna(series.min):
-            min_val = dtype.max  # NOTE: we swap these to maintain upcast()
-            max_val = dtype.min  # behavior for upcast-only types
-        else:
+        # NOTE: we convert to python int to prevent inconsistent comparisons
+        if self.element_type is not None:
             min_val = int(series.min - bool(series.min % 1))  # round floor
             max_val = int(series.max + bool(series.max % 1))  # round ceiling
-        if min_val < dtype.min or max_val > dtype.max:
-            # attempt to upcast dtype to fit series
-            try:
-                return series, dtype.upcast(series)
-            except OverflowError:
-                pass
 
-            # continue with OverflowError
-            index = (series < dtype.min) | (series > dtype.max)
-            if errors == "coerce":
-                series = series[~index]
-                series.hasnans = True
-            else:
-                raise OverflowError(
-                    f"values exceed {dtype} range at index "
-                    f"{shorten_list(series[index].index.values)}"
-                )
+            # check for overflow
+            if min_val < dtype.min or max_val > dtype.max:
+                try:  # attempt to upcast dtype to fit series
+                    return series, dtype.upcast(series)
+                except OverflowError:
+                    pass
+
+                # continue with OverflowError
+                index = (series < dtype.min) | (series > dtype.max)
+                if errors == "coerce":
+                    series = series[~index]
+                    series.hasnans = True
+                else:
+                    raise OverflowError(
+                        f"values exceed {dtype} range at index "
+                        f"{shorten_list(series[index].index.values)}"
+                    )
 
         return series, dtype
 
