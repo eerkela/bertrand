@@ -60,19 +60,19 @@ updated at run time.
       - The epoch to use for datetime/timedelta conversions.
     * - :attr:`tz <CastDefaults.tz>`
       - TODO
-    * - :attr:`true <CastDefaults.true>`
-      - TODO
-    * - :attr:`false <CastDefaults.false>`
-      - TODO
-    * - :attr:`ignore_case <CastDefaults.ignore_case>`
+    * - :attr:`utc <CastDefaults.utc>`
       - TODO
     * - :attr:`day_first <CastDefaults.day_first>`
       - TODO
     * - :attr:`year_first <CastDefaults.year_first>`
       - TODO
-    * - :attr:`utc <CastDefaults.utc>`
-      - TODO
     * - :attr:`as_hours <CastDefaults.as_hours>`
+      - TODO
+    * - :attr:`true <CastDefaults.true>`
+      - TODO
+    * - :attr:`false <CastDefaults.false>`
+      - TODO
+    * - :attr:`ignore_case <CastDefaults.ignore_case>`
       - TODO
     * - :attr:`format <CastDefaults.format>`
       - TODO
@@ -98,13 +98,13 @@ updated at run time.
     step_size <abstract/cast/step_size>
     since <abstract/cast/since>
     tz <abstract/cast/tz>
+    utc <abstract/cast/utc>
+    day_first <abstract/cast/day_first>
+    year_first <abstract/cast/year_first>
+    as_hours <abstract/cast/as_hours>
     true <abstract/cast/true>
     false <abstract/cast/false>
     ignore_case <abstract/cast/ignore_case>
-    day_first <abstract/cast/day_first>
-    year_first <abstract/cast/year_first>
-    utc <abstract/cast/utc>
-    as_hours <abstract/cast/as_hours>
     format <abstract/cast/format>
     base <abstract/cast/base>
     call <abstract/cast/call>

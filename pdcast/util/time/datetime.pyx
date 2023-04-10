@@ -6,6 +6,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 import pytz
+import tzlocal
 
 from pdcast.util.type_hints import datetime_like
 
@@ -14,9 +15,101 @@ from .timedelta import pytimedelta_to_ns
 from .unit cimport as_ns
 
 
-#########################
-####    CONSTANTS    ####
-#########################
+################################
+####    PANDAS TIMESTAMP    ####
+################################
+
+
+def pandas_timestamp_to_ns(object date, object tz = None) -> int:
+    """Convert a pandas Timestamp into a nanosecond offset from UTC."""
+    if tz and not date.tzinfo:
+        date = date.tz_localize(tz)
+    return date.value
+
+###############################
+####    PYTHON DATETIME    ####
+###############################
+
+
+cdef object py_naive_utc = datetime.datetime.utcfromtimestamp(0)
+cdef object py_aware_utc = pytz.timezone("UTC").localize(py_naive_utc)
+
+
+def localize_pydatetime(
+    date: datetime.datetime,
+    tz: pytz.BaseTzInfo,
+    naive_tz: pytz.BaseTzInfo
+) -> datetime.datetime:
+    """Localize a scalar python datetime to the given timezone."""
+    if not date.tzinfo:
+        # NOTE: datetime is naive - 4 cases
+        # (1) naive_tz is None and tz is None: do nothing
+        # (2) naive_tz is None and tz is not None: localize directly
+        # (3) naive_tz is not None and tz is None: convert to utc and strip
+        # (4) naive_tz is not None and tz is not None: localize, then convert
+        if naive_tz is None:
+            if tz is None:
+                return date  # (1)
+            return tz.localize(date)  # (2)
+        date = naive_tz.localize(date)
+        if tz is None:
+            return date.astimezone(pytz.utc).replace(tzinfo=None)  # (3)
+        return date.astimezone(tz)  # (4)
+
+    # NOTE: datetime is aware - 2 cases
+    # (5) tz is None: convert to utc and strip
+    # (6) tz is not None: convert to final tz
+    if tz is None:
+        return date.astimezone(pytz.utc).replace(tzinfo=None)  # (5)
+    return date.astimezone(tz)  # (6)
+
+
+def ns_to_pydatetime(object ns, object tz = None) -> datetime.datetime:
+    """Convert a nanosecond offset from UTC into a properly-localized
+    `datetime.datetime` object.
+    """
+    cdef object offset = datetime.timedelta(microseconds=ns // as_ns["us"])
+    if tz is None:
+        return py_naive_utc + offset
+    if tz == pytz.utc:
+        return py_aware_utc + offset
+    return (py_aware_utc + offset).astimezone(tz)
+
+def pydatetime_to_ns(object date, object tz = None) -> int:
+    """Convert a python datetime into a nanosecond offset from UTC."""
+    if tz and not date.tzinfo:
+        date = tz.localize(date)
+    date -= py_aware_utc if date.tzinfo else py_naive_utc
+    return pytimedelta_to_ns(date)
+
+
+################################
+####    NUMPY DATETIME64    ####
+################################
+
+
+def numpy_datetime64_to_ns(
+    object date,
+    str unit = None,
+    long int step_size = -1
+) -> int:
+    """Convert a numpy datetime64 into a nanosecond offset from UTC."""
+    if unit is None or step_size < 0:
+        unit, step_size = np.datetime_data(date)
+
+    result = int(date.view(np.int64)) * step_size
+    if unit == "ns":
+        return result
+    if unit in as_ns:
+        return result * as_ns[unit]
+    if unit == "M":
+        return date_to_days(1970, 1 + result, 1) * as_ns["D"]
+    return date_to_days(1970 + result, 1, 1) * as_ns["D"]
+
+
+######################
+####    STRING    ####
+######################
 
 
 cdef object build_iso_8601_regex():
@@ -71,23 +164,6 @@ cdef object build_iso_8601_strptime_format_regex():
 
 cdef object iso_8601_format_pattern = build_iso_8601_strptime_format_regex()
 cdef object iso_8601_pattern = build_iso_8601_regex()
-cdef object parser_overflow_pattern = re.compile(r"out of range|must be in")
-
-
-cdef object py_naive_utc = datetime.datetime.utcfromtimestamp(0)
-cdef object py_aware_utc = pytz.timezone("UTC").localize(py_naive_utc)
-
-
-######################
-####    PUBLIC    ####
-######################
-
-
-def filter_dateutil_parser_error(err):
-    err_msg = str(err)
-    if parser_overflow_pattern.search(err_msg):
-        return OverflowError(err_msg)
-    return ValueError(err_msg)
 
 
 def is_iso_8601_format_string(input_string: str) -> bool:
@@ -145,79 +221,12 @@ def iso_8601_to_ns(str input_string) -> int:
     return result
 
 
-def localize_pydatetime(
-    date: datetime.datetime,
-    tz: pytz.BaseTzInfo,
-    utc: bool
-) -> datetime.datetime:
-    """Localize a scalar python datetime to the given timezone."""
-    # return naive
-    if not tz:
-        if not date.tzinfo:  # datetime is already naive
-            return date
-        date = date.astimezone(datetime.timezone.utc)  # as utc
-        return date.replace(tzinfo=None)  # make naive
-
-    # return aware
-    if not date.tzinfo:  # datetime is naive
-        if not utc:  # localize directly to timezone
-            return tz.localize(date)
-        date = date.replace(tzinfo=datetime.timezone.utc)  # as utc
-    return date.astimezone(tz)  # convert to final timezone
-
-
-def ns_to_pydatetime(object ns, object tz = None) -> datetime.datetime:
-    """Convert a nanosecond offset from UTC into a properly-localized
-    `datetime.datetime` object.
-    """
-    cdef object offset = datetime.timedelta(microseconds=ns // as_ns["us"])
-    if tz is None:
-        return py_naive_utc + offset
-    if tz == pytz.utc:
-        return py_aware_utc + offset
-    return (py_aware_utc + offset).astimezone(tz)
-
-
-def numpy_datetime64_to_ns(
-    object date,
-    str unit = None,
-    long int step_size = -1
-) -> int:
-    """Convert a numpy datetime64 into a nanosecond offset from UTC."""
-    if unit is None or step_size < 0:
-        unit, step_size = np.datetime_data(date)
-
-    result = int(date.view(np.int64)) * step_size
-    if unit == "ns":
-        return result
-    if unit in as_ns:
-        return result * as_ns[unit]
-    if unit == "M":
-        return date_to_days(1970, 1 + result, 1) * as_ns["D"]
-    return date_to_days(1970 + result, 1, 1) * as_ns["D"]
-
-
-def pandas_timestamp_to_ns(object date, object tz = None) -> int:
-    """Convert a pandas Timestamp into a nanosecond offset from UTC."""
-    if tz and not date.tzinfo:
-        date = date.tz_localize(tz)
-    return date.value
-
-
-def pydatetime_to_ns(object date, object tz = None) -> int:
-    """Convert a python datetime into a nanosecond offset from UTC."""
-    if tz and not date.tzinfo:
-        date = tz.localize(date)
-    date -= py_aware_utc if date.tzinfo else py_naive_utc
-    return pytimedelta_to_ns(date)
-
-
 def string_to_pydatetime(
     str input_string,
     str format = None,
     object parser_info = None,
     object tz = None,
-    bint utc = False,
+    object naive_tz = None,
     str errors = "raise"
 ) -> datetime.datetime:
     """Convert a string to a python datetime object."""
@@ -239,10 +248,10 @@ def string_to_pydatetime(
 
     # check for relative date
     if result is None and input_string in ("today", "now"):
-        if tz is None:
+        if naive_tz is None:
             result = datetime.datetime.now()
         else:
-            result = datetime.datetime.now(tz)
+            result = datetime.datetime.now(naive_tz)
 
     # check for quarterly date
     if result is None and "q" in input_string:
@@ -265,10 +274,39 @@ def string_to_pydatetime(
             raise filter_dateutil_parser_error(err) from None
 
     # apply timezone
-    if tz:
-        if result.tzinfo:
-            return result.astimezone(tz)
-        if utc:
-            return pytz.utc.localize(result).astimezone(tz)
-        return tz.localize(result)
-    return result
+    return localize_pydatetime(result, tz=tz, naive_tz=naive_tz)
+
+
+####################
+####    MISC    ####
+####################
+
+
+cdef object parser_overflow_pattern = re.compile(r"out of range|must be in")
+
+
+def filter_dateutil_parser_error(err) -> Exception:
+    """Convenience function to differentiate dateutil overflow errors from
+    those that are raised due to malformed values.
+    """
+    err_msg = str(err)
+    if parser_overflow_pattern.search(err_msg):
+        return OverflowError(err_msg)
+    return ValueError(err_msg)
+
+
+def timezone(tz: str | datetime.tzinfo | None) -> pytz.BaseTzInfo:
+    """Convert a time zone specifier into a ``datetime.tzinfo`` object."""
+    if tz is None:
+        return None
+
+    # trivial case
+    if isinstance(tz, pytz.BaseTzInfo):
+        return tz
+
+    # local specifier
+    if isinstance(tz, str) and tz.lower() == "local":
+        return pytz.timezone(tzlocal.get_localzone_name())
+
+    # IANA string
+    return pytz.timezone(tz)

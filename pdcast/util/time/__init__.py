@@ -28,7 +28,7 @@ from .calendar import (
 from .datetime import (
     filter_dateutil_parser_error, is_iso_8601_format_string, iso_8601_to_ns,
     localize_pydatetime, numpy_datetime64_to_ns, ns_to_pydatetime,
-    pandas_timestamp_to_ns, pydatetime_to_ns, string_to_pydatetime
+    pandas_timestamp_to_ns, pydatetime_to_ns, string_to_pydatetime, timezone
 )
 from .epoch import Epoch
 from .epoch import epoch_aliases_public as epoch_aliases

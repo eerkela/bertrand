@@ -8,7 +8,6 @@ cimport numpy as np
 import pandas as pd
 import pytz
 import regex as re  # using alternate python regex engine
-import tzlocal
 
 cimport pdcast.convert as convert
 import pdcast.convert as convert
@@ -22,12 +21,21 @@ from pdcast.util.time import (
     as_ns, convert_unit, filter_dateutil_parser_error, 
     is_iso_8601_format_string, iso_8601_to_ns, localize_pydatetime,
     ns_to_pydatetime, numpy_datetime64_to_ns, pydatetime_to_ns,
-    string_to_pydatetime, valid_units
+    string_to_pydatetime, timezone, valid_units
 )
 from pdcast.util.type_hints import type_specifier
 
 from .base cimport AtomicType, CompositeType
 from .base import dispatch, generic, register
+
+
+# TODO: naive_tz has inconsistent behavior.
+# >>> pdcast.cast("2022-03-07", "datetime[pandas, us/pacific]", tz=None, naive_tz=None)
+# 0   2022-03-07 00:00:00-08:00
+# dtype: datetime64[ns, US/Pacific]
+# >>> pdcast.cast(pd.Timestamp("2022-03-07"), "datetime[pandas, us/pacific]", tz=None, naive_tz=None)
+# 0   2022-03-07 08:00:00
+# dtype: datetime64[ns]
 
 
 # TODO: PandasTimestampType.from_string cannot convert quarterly dates
@@ -225,11 +233,12 @@ class DatetimeMixin:
         self,
         series: convert.SeriesWrapper,
         dtype: AtomicType,
+        rounding: str,
         unit: str,
         step_size: int,
-        rounding: str,
         since: Epoch,
         tz: pytz.BaseTzInfo,
+        naive_tz: pytz.BaseTzInfo,
         errors: str,
         **unused
     ) -> convert.SeriesWrapper:
@@ -238,26 +247,36 @@ class DatetimeMixin:
         if dtype == self:
             return series.rectify()
 
+        if tz and hasattr(dtype, "tz"):
+            dtype = dtype.replace(tz=tz)
+        if naive_tz is None:
+            if hasattr(dtype, "tz"):
+                naive_tz = dtype.tz
+            else:
+                naive_tz = tz
+
         # 2-step conversion: datetime -> ns, ns -> datetime
         transfer_type = resolve.resolve_type("int")
         series = self.to_integer(
             series,
             dtype=transfer_type,
+            rounding=rounding,
             unit="ns",
             step_size=1,
-            rounding=rounding,
             since=Epoch("utc"),
+            naive_tz=naive_tz,
             downcast=None,
             errors=errors
         )
         return transfer_type.to_datetime(
             series,
             dtype=dtype,
+            rounding=rounding,
             unit="ns",
             step_size=1,
-            rounding=rounding,
             since=Epoch("utc"),
             tz=tz,
+            naive_tz=naive_tz,
             errors=errors,
             **unused
         )
@@ -359,15 +378,15 @@ class DatetimeType(DatetimeMixin, AtomicType):
     ) -> convert.SeriesWrapper:
         """Convert string data into an arbitrary datetime data type."""
         last_err = None
-        for l in self.larger:
+        for candidate in self.larger:
             try:
-                return l.from_string(series, errors="raise", **unused)
+                return candidate.from_string(series, errors="raise", **unused)
             except OverflowError as err:
                 last_err = err
 
         # every representation overflows - pick the last one and coerce
         if errors == "coerce":
-            return l.from_string(
+            return candidate.from_string(
                 series,
                 errors=errors,
                 **unused
@@ -574,10 +593,10 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
         self,
         series: convert.SeriesWrapper,
         dtype: AtomicType,
+        rounding: str,
         unit: str,
         step_size: int,
         since: Epoch,
-        rounding: str,
         downcast: CompositeType,
         errors: str,
         **unused
@@ -648,8 +667,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
     max = pd.Timestamp.max.value - 12 * as_ns["h"]  # UTC+12 is furthest behind
 
     def __init__(self, tz: datetime.tzinfo | str = None):
-        if isinstance(tz, str):
-            tz = pytz.timezone(tz)
+        tz = timezone(tz)
         super().__init__(tz=tz)
 
     ########################
@@ -703,9 +721,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
     @classmethod
     def resolve(cls, context: str = None) -> AtomicType:
         if context is not None:
-            if context.lower() == "local":
-                context = tzlocal.get_localzone_name()
-            return cls.instance(tz=pytz.timezone(context))
+            return cls.instance(tz=timezone(context))
         return cls.instance()
 
     ##############################
@@ -745,7 +761,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         series: convert.SeriesWrapper,
         tz: pytz.BaseTzInfo,
         format: str,
-        utc: bool,
+        naive_tz: pytz.BaseTzInfo,
         day_first: bool,
         year_first: bool,
         errors: str,
@@ -758,7 +774,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
             dtype = dtype.replace(tz=tz)
 
         # configure kwargs for pd.to_datetime
-        utc = utc or dtype.tz == pytz.utc
+        utc = naive_tz == pytz.utc or naive_tz is None and dtype.tz == pytz.utc
         kwargs = {
             "dayfirst": day_first,
             "yearfirst": year_first,
@@ -777,11 +793,11 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
 
         # exception 1: outside pd.Timestamp range, but within datetime.datetime
         except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime as err:
-            raise OverflowError(str(err)) from None
+            raise OverflowError(str(err)) from None  # truncate stack
 
         # exception 2: bad string or outside datetime.datetime range
         except dateutil.parser.ParserError as err:  # ambiguous
-            raise filter_dateutil_parser_error(err) from None
+            raise filter_dateutil_parser_error(err) from None  # truncate stack
 
         # account for missing values introduced during error coercion
         hasnans = series.hasnans
@@ -795,14 +811,18 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
             # NOTE: if utc=False and there are mixed timezones and/or mixed
             # aware/naive strings in the input series, the output of
             # pd.to_datetime() could be malformed.
-            if utc:  # simple - convert to final timezone
-                result = result.dt.tz_convert(dtype.tz)
+            if utc:  # simple - convert to final tz
+                if dtype.tz != pytz.utc:
+                    result = result.dt.tz_convert(dtype.tz)
             else:
                 # homogenous - either naive or consistent timezone
                 if pd.api.types.is_datetime64_ns_dtype(result):
                     if not result.dt.tz:  # naive
-                        if dtype.tz is not None:  # localize directly
+                        if not naive_tz:  # localize directly
                             result = result.dt.tz_localize(dtype.tz)
+                        else:  # localize, then convert
+                            result = result.dt.tz_localize(naive_tz)
+                            result = result.dt.tz_convert(dtype.tz)
                     else:  # aware
                         result = result.dt.tz_convert(dtype.tz)
 
@@ -812,7 +832,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
                     localize = partial(
                         localize_pydatetime,
                         tz=dtype.tz,
-                        utc=False
+                        naive_tz=naive_tz
                     )
                     # NOTE: np.frompyfunc() implicitly casts to pd.Timestamp
                     result = np.frompyfunc(localize, 1, 1)(result)
@@ -831,17 +851,23 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         self,
         series: convert.SeriesWrapper,
         dtype: AtomicType,
+        rounding: str,
         unit: str,
         step_size: int,
-        rounding: str,
         since: Epoch,
+        naive_tz: pytz.BaseTzInfo,
         downcast: CompositeType,
         errors: str,
         **kwargs
     ) -> convert.SeriesWrapper:
         """Convert pandas Timestamps into an integer data type."""
         # convert to ns
-        series = series.rectify().astype(np.int64)
+        series = series.rectify()
+        if naive_tz:
+            series.series = series.series.dt.tz_localize(naive_tz)
+        series = series.astype(np.int64)
+
+        # apply epoch
         if since:
             series.series = series.series.astype("O")  # overflow-safe
             series.series -= since.offset
@@ -869,19 +895,40 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         series: convert.SeriesWrapper,
         dtype: AtomicType,
         tz: pytz.BaseTzInfo,
+        naive_tz: pytz.BaseTzInfo,
         **unused
     ) -> convert.SeriesWrapper:
         """Specialized for same-type conversions."""
         # fastpath for same-class datetime conversions
         if type(dtype) == type(self):
+            series = series.rectify()
             if tz:
                 dtype = dtype.replace(tz=tz)
             if dtype.tz != self.tz:
                 if not self.tz:
-                    series = self.tz_localize(series, "UTC")
-                return self.tz_convert(series, dtype.tz)
+                    if not naive_tz:
+                        result = series.series.dt.tz_localize(dtype.tz)
+                    else:
+                        result = series.series.dt.tz_localize(naive_tz)
+                    series = convert.SeriesWrapper(
+                        result,
+                        hasnans=series.hasnans,
+                        element_type=self.replace(tz=naive_tz)
+                    )
+                series = convert.SeriesWrapper(
+                    series.series.dt.tz_convert(dtype.tz),
+                    hasnans=series.hasnans,
+                    element_type=dtype
+                )
+            return series
 
-        return super().to_datetime(series, dtype=dtype, tz=tz, **unused)
+        return super().to_datetime(
+            series,
+            dtype=dtype,
+            tz=tz,
+            naive_tz=naive_tz,
+            **unused
+        )
 
     @dispatch(namespace="dt")
     def tz_convert(
@@ -892,12 +939,8 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         **kwargs
     ) -> convert.SeriesWrapper:
         """Convert python datetime objects to the specified timezone."""
-        # rectify object series
         series = series.rectify()
-
-        # account for tz="local"
-        if isinstance(tz, str) and tz.lower() == "local":
-            tz = tzlocal.get_localzone_name()
+        tz = timezone(tz)
 
         # pass to original .dt.tz_convert() implementation
         return convert.SeriesWrapper(
@@ -915,12 +958,8 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
         **kwargs
     ) -> convert.SeriesWrapper:
         """Localize python datetime objects to the specified timezone."""
-        # rectify object series
         series = series.rectify()
-
-        # account for tz="local"
-        if isinstance(tz, str) and tz.lower() == "local":
-            tz = tzlocal.get_localzone_name()
+        tz = timezone(tz)
 
         # pass to original .dt.tz_localize() implementation
         return convert.SeriesWrapper(
@@ -946,8 +985,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
     min = pydatetime_to_ns(datetime.datetime.min)
 
     def __init__(self, tz: datetime.tzinfo = None):
-        if isinstance(tz, str):
-            tz = pytz.timezone(tz)
+        tz = timezone(tz)
         super().__init__(tz=tz)
 
     ############################
@@ -984,9 +1022,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
     @classmethod
     def resolve(cls, context: str = None) -> AtomicType:
         if context is not None:
-            if context.lower() == "local":
-                context = tzlocal.get_localzone_name()
-            return cls.instance(tz=pytz.timezone(context))
+            return cls.instance(tz=timezone(context))
         return cls.instance()
 
     ##############################
@@ -1015,10 +1051,10 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
         self,
         series: convert.SeriesWrapper,
         tz: pytz.BaseTzInfo,
-        format: str,
-        utc: bool,
+        naive_tz: pytz.BaseTzInfo,
         day_first: bool,
         year_first: bool,
+        format: str,
         errors: str,
         **unused
     ) -> convert.SeriesWrapper:
@@ -1041,7 +1077,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
                 format=format,
                 parser_info=parser_info,
                 tz=dtype.tz,
-                utc=utc,
+                naive_tz=naive_tz,
                 errors=errors
             ),
             errors=errors,
@@ -1117,10 +1153,7 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
                 f"localize"
             )
 
-        if isinstance(tz, str):
-            if tz.lower() == "local":
-                tz = tzlocal.get_localzone_name()
-            tz = pytz.timezone(tz)
+        tz = timezone(tz)
 
         # iterate elementwise
         localize = partial(localize_pydatetime, tz=tz, utc=True)
@@ -1134,21 +1167,17 @@ class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
     def tz_localize(
         self,
         series: convert.SeriesWrapper,
-        tz: str | pytz.BaseTzInfo,
-        utc: bool = False
+        tz: str | pytz.BaseTzInfo
     ) -> convert.SeriesWrapper:
         """Localize python datetime objects to the specified timezone."""
         if tz is not None and self.tz is not None:
             # NOTE: matches error thrown by pandas
             raise TypeError("Already tz-aware, use tz_convert to convert.")
 
-        if isinstance(tz, str):
-            if tz.lower() == "local":
-                tz = tzlocal.get_localzone_name()
-            tz = pytz.timezone(tz)
+        tz = timezone(tz)
 
         # iterate elementwise
-        localize = partial(localize_pydatetime, tz=tz, utc=utc)
+        localize = partial(localize_pydatetime, tz=tz, naive_tz=None)
         return series.apply_with_errors(
             localize,
             errors="raise",

@@ -25,6 +25,7 @@ from pdcast.util.round cimport Tolerance
 from pdcast.util.round import valid_rules
 from pdcast.util.structs import as_series
 from pdcast.util.time cimport Epoch, epoch_aliases, valid_units
+from pdcast.util.time import timezone
 from pdcast.util.type_hints import datetime_like, numeric, type_specifier
 
 
@@ -143,6 +144,7 @@ def to_integer(
     unit: Optional[str] = get_default,
     step_size: Optional[int] = get_default,
     since: Optional[str | datetime_like] = get_default,
+    naive_tz: Optional[str | pytz.BaseTzInfo] = get_default,
     base: Optional[int] = get_default,
     call: Optional[Callable] = get_default,
     downcast: Optional[bool | type_specifier] = get_default,
@@ -159,6 +161,7 @@ def to_integer(
     unit = validate_unit(unit)
     step_size = validate_step_size(step_size)
     since = validate_since(since)
+    naive_tz = validate_naive_tz(naive_tz)
     base = validate_base(base)
     call = validate_call(call)
     downcast = validate_downcast(downcast)
@@ -174,6 +177,7 @@ def to_integer(
         unit=unit,
         step_size=step_size,
         since=since,
+        naive_tz=naive_tz,
         base=base,
         call=call,
         downcast=downcast,
@@ -313,16 +317,16 @@ def to_decimal(
 def to_datetime(
     series: Any,
     dtype: type_specifier = "datetime",
-    unit: Optional[str] = get_default,
-    step_size: Optional[int] = get_default,
     tol: Optional[numeric] = get_default,
     rounding: Optional[str] = get_default,
+    unit: Optional[str] = get_default,
+    step_size: Optional[int] = get_default,
     since: Optional[str | datetime_like] = get_default,
     tz: Optional[str | tzinfo] = get_default,
-    utc: Optional[bool] = get_default,
-    format: Optional[str] = get_default,
+    naive_tz: Optional[bool] = get_default,
     day_first: Optional[bool] = get_default,
     year_first: Optional[bool] = get_default,
+    format: Optional[str] = get_default,
     call: Optional[Callable] = get_default,
     errors: Optional[str] = get_default,
     **kwargs
@@ -338,7 +342,7 @@ def to_datetime(
     rounding = validate_rounding(rounding)
     since = validate_since(since)
     tz = validate_tz(tz)
-    utc = validate_utc(utc)
+    naive_tz = validate_naive_tz(naive_tz)
     format = validate_format(format)
     day_first = validate_day_first(day_first)
     year_first = validate_year_first(year_first)
@@ -356,7 +360,7 @@ def to_datetime(
         rounding=rounding,
         since=since,
         tz=tz,
-        utc=utc,
+        naive_tz=naive_tz,
         format=format,
         day_first=day_first,
         year_first=year_first,
@@ -369,10 +373,10 @@ def to_datetime(
 def to_timedelta(
     series: Any,
     dtype: type_specifier = "timedelta",
-    unit: Optional[str] = get_default,
-    step_size: Optional[int] = get_default,
     tol: Optional[numeric] = get_default,
     rounding: Optional[str] = get_default,
+    unit: Optional[str] = get_default,
+    step_size: Optional[int] = get_default,
     since: Optional[str | datetime_like] = get_default,
     as_hours: Optional[bool] = get_default,
     call: Optional[Callable] = get_default,
@@ -492,13 +496,13 @@ class CastDefaults(threading.local):
             "step_size": 1,
             "since": Epoch("utc"),
             "tz": None,
+            "naive_tz": None,
+            "day_first": False,
+            "year_first": False,
+            "as_hours": False,
             "true": {"true", "t", "yes", "y", "on", "1"},
             "false": {"false", "f", "no", "n", "off", "0"},
             "ignore_case": True,
-            "day_first": False,
-            "year_first": False,
-            "utc": False,
-            "as_hours": False,
             "format": None,
             "base": 0,
             "call": None,
@@ -828,7 +832,8 @@ class CastDefaults(threading.local):
                 (according to the `proleptic Julian calendar
                 <https://en.wikipedia.org/wiki/Proleptic_Julian_calendar>`_) or
                 November 24, 4714 BC (according to the `proleptic Gregorian
-                calendar <https://en.wikipedia.org//wiki/Proleptic_Gregorian_calendar>`_).
+                calendar <https://en.wikipedia.org//wiki/Proleptic_Gregorian_calendar>`_)
+                at noon.
             *   ``"gregorian"``: refers to October 14th, 1582, the date when
                 Pope Gregory XIII first instituted the `Gregorian calendar
                 <https://en.wikipedia.org/wiki/Gregorian_calendar>`_.
@@ -841,8 +846,8 @@ class CastDefaults(threading.local):
                 Observatory <https://en.wikipedia.org/wiki/Smithsonian_Astrophysical_Observatory>`_
                 to track the orbit of Sputnik, the first man-made satellite to
                 orbit Earth.
-            *   ``"reduced julian"``: refers to November 16th, 1858, which
-                drops the first two leading digits of the corresponding
+            *   ``"reduced julian"``: refers to noon on November 16th, 1858,
+                which drops the first two leading digits of the corresponding
                 ``"julian"`` day number.
             *   ``"lotus"``: refers to December 31st, 1899, which was
                 incorrectly identified as January 0, 1900 in the original
@@ -877,15 +882,20 @@ class CastDefaults(threading.local):
             *   ``"gps"``: refers to January 6th, 1980, which is used in most
                 `GPS <https://en.wikipedia.org/wiki/Global_Positioning_System>`_
                 systems.
-            *   ``"j2000"``: refers to January 1st, 2000, which is commonly
-                used in astronomical applications, as well as in `PostgreSQL
-                <https://en.wikipedia.org/wiki/PostgreSQL>`_.
+            *   ``"j2000"``: refers to noon on January 1st, 2000, which is
+                commonly used in astronomical applications, as well as in
+                `PostgreSQL <https://en.wikipedia.org/wiki/PostgreSQL>`_.
             *   ``"cocoa"``: refers to January 1st, 2001, which is used in
                 Apple's `Cocoa <https://en.wikipedia.org/wiki/Cocoa_(API)>`_
                 framework for macOS and related mobile devices.
             *   ``"now"``: refers to the current `system time
                 <https://en.wikipedia.org/wiki/System_time>`_ at the time
                 :class:`cast` was invoked.
+
+        .. note::
+
+            By convention, ``"julian"``, ``"reduced_julian"``, and ``"j2000"``
+            dates increment at noon (12:00:00 UTC) on the corresponding day.
 
         Examples
         --------
@@ -930,34 +940,69 @@ class CastDefaults(threading.local):
             >>> pdcast.cast(1, "datetime", unit="s", since=np.datetime64("2022-03-27"))
             0   2022-03-27 00:00:01
             dtype: datetime64[ns]
-
         """
         return self._vals["since"]
 
     @property
     def tz(self) -> pytz.BaseTzInfo:
-        """The time zone to use for datetime conversions.
+        """Specifies a time zone to use for datetime conversions.
+
+        Returns
+        --------
+        pytz.timezone | None
+            A `pytz <https://pypi.org/project/pytz/>`_ timezone object
+            corresponding to the input.  ``None`` indicates naive output.
+            Defaults to ``None``.
+
+        Notes
+        ------
+        In addition to the standard IANA time zone codes, this argument can
+        accept the special string ``"local"``.  This refers to the local time
+        zone for the current system at the time of execution.
+
+        Examples
+        ---------
+        Time zone localization is a somewhat complicated process, with
+        different behavior depending on the input data type.
+
+        Numerics (boolean, integer, float, complex, decimal) and timedeltas are
+        always computed in UTC relative to the
+        :attr:`since <CastDefaults.since>` argument.  When a time zone is
+        supplied via :attr:`tz <CastDefaults.tz>`, the resulting datetimes
+        will be *converted* from UTC to the specified time zone.
+
+        Strings and datetimes on the other hand are interpreted according to
+        the :attr:`naive_tz <CastDefaults.naive_tz>` argument.  Any naive
+        inputs will first be localized to
+        :attr:`naive_tz <CastDefaults.naive_tz>` and then converted to the
+        final :attr`tz <CastDefaults.tz>`.
         """
         return self._vals["tz"]
 
     @property
-    def true(self) -> set:
-        """A set of truthy strings to use for boolean conversions.
-        """
-        return self._vals["true"]
+    def naive_tz(self) -> pytz.BaseTzInfo:
+        """The assumed time zone when localizing naive datetimes.
 
-    @property
-    def false(self) -> set:
-        """A set of falsy strings to use for string conversions.
-        """
-        return self._vals["false"]
+        Returns
+        -------
+        pytz.timezone | None
+            A `pytz <https://pypi.org/project/pytz/>`_ timezone object
+            corresponding to the input.  ``None`` indicates direct
+            localization.  Defaults to ``None``. 
 
-    @property
-    def ignore_case(self) -> bool:
-        """Indicates whether to ignore differences in case during string
-        conversions.
+        Notes
+        ------
+        In addition to the standard IANA time zone codes, this argument can
+        accept the special string ``"local"``.  This refers to the local time
+        zone for the current system at the time of execution.
+
+        Examples
+        ---------
+        If a :attr:`tz <CastDefaults.tz>` is given while this is set to
+        ``None``, the results will be localized directly to
+        :attr:`tz <CastDefaults.tz>`.
         """
-        return self._vals["ignore_case"]
+        return self._vals["naive_tz"]
 
     @property
     def day_first(self) -> bool:
@@ -981,18 +1026,30 @@ class CastDefaults(threading.local):
         return self._vals["year_first"]
 
     @property
-    def utc(self) -> bool:
-        """Indicates whether to consider naive datetimes as UTC timestamps
-        (``True``), or with the system's local timezone (``False``).
-        """
-        return self._vals["utc"]
-
-    @property
     def as_hours(self) -> bool:
         """Indicates whether to interpret ambiguous MM:SS times as HH:MM
         instead.
         """
         return self._vals["as_hours"]
+
+    @property
+    def true(self) -> set:
+        """A set of truthy strings to use for boolean conversions.
+        """
+        return self._vals["true"]
+
+    @property
+    def false(self) -> set:
+        """A set of falsy strings to use for string conversions.
+        """
+        return self._vals["false"]
+
+    @property
+    def ignore_case(self) -> bool:
+        """Indicates whether to ignore differences in case during string
+        conversions.
+        """
+        return self._vals["ignore_case"]
 
     @property
     def format(self) -> str:
@@ -1059,6 +1116,22 @@ class CastDefaults(threading.local):
     def tz(self, val: str | tzinfo) -> None:
         self._vals["tz"] = validate_tz(val)
 
+    @naive_tz.setter
+    def naive_tz(self, val: bool) -> None:
+        self._vals["naive_tz"] = validate_naive_tz(val)
+
+    @day_first.setter
+    def day_first(self, val: bool) -> None:
+        self._vals["day_first"] = validate_day_first(val)
+
+    @year_first.setter
+    def year_first(self, val: bool) -> None:
+        self._vals["year_first"] = validate_year_first(val)
+
+    @as_hours.setter
+    def as_hours(self, val: bool) -> None:
+        self._vals["as_hours"] = validate_as_hours(val)
+
     @true.setter
     def true(self, val: str | set) -> None:
         try:
@@ -1084,22 +1157,6 @@ class CastDefaults(threading.local):
     @ignore_case.setter
     def ignore_case(self, val: bool) -> None:
         self._vals["ignore_case"] = validate_ignore_case(val)
-
-    @day_first.setter
-    def day_first(self, val: bool) -> None:
-        self._vals["day_first"] = validate_day_first(val)
-
-    @year_first.setter
-    def year_first(self, val: bool) -> None:
-        self._vals["year_first"] = validate_year_first(val)
-
-    @utc.setter
-    def utc(self, val: bool) -> None:
-        self._vals["utc"] = validate_utc(val)
-
-    @as_hours.setter
-    def as_hours(self, val: bool) -> None:
-        self._vals["as_hours"] = validate_as_hours(val)
 
     @format.setter
     def format(self, val: str) -> None:
@@ -1282,10 +1339,42 @@ def validate_tz(val) -> pytz.BaseTzInfo:
     if isinstance(val, GetDefault):
         return defaults.tz
 
+    return timezone(val)
+
+
+def validate_naive_tz(val) -> pytz.BaseTzInfo:
+    """Convert a `naive_tz` specifier into a corresponding timezone object."""
+    if isinstance(val, GetDefault):
+        return defaults.naive_tz
+
     # get system local timezone
     if val == "local":
         return pytz.timezone(tzlocal.get_localzone_name())
     return None if val is None else pytz.timezone(val)
+
+
+def validate_day_first(val) -> bool:
+    """Ensure that a `day_first` flag is valid."""
+    if isinstance(val, GetDefault):
+        return defaults.day_first
+
+    return bool(val)
+
+
+def validate_year_first(val) -> bool:
+    """Ensure that a `year_first` flag is valid."""
+    if isinstance(val, GetDefault):
+        return defaults.year_first
+
+    return bool(val)
+
+
+def validate_as_hours(val) -> bool:
+    """Ensure that an `as_hours` flag is valid."""
+    if isinstance(val, GetDefault):
+        return defaults.as_hours
+
+    return bool(val)
 
 
 def validate_true_false(true, false, ignore_case) -> tuple[set[str], set[str]]:
@@ -1332,38 +1421,6 @@ def validate_ignore_case(val) -> bool:
     """Ensure that an `ignore_case` flag is valid."""
     if isinstance(val, GetDefault):
         return defaults.ignore_case
-
-    return bool(val)
-
-
-def validate_day_first(val) -> bool:
-    """Ensure that a `day_first` flag is valid."""
-    if isinstance(val, GetDefault):
-        return defaults.day_first
-
-    return bool(val)
-
-
-def validate_year_first(val) -> bool:
-    """Ensure that a `year_first` flag is valid."""
-    if isinstance(val, GetDefault):
-        return defaults.year_first
-
-    return bool(val)
-
-
-def validate_utc(val) -> bool:
-    """Ensure that a `utc` flag is valid."""
-    if isinstance(val, GetDefault):
-        return defaults.utc
-
-    return bool(val)
-
-
-def validate_as_hours(val) -> bool:
-    """Ensure that an `as_hours` flag is valid."""
-    if isinstance(val, GetDefault):
-        return defaults.as_hours
 
     return bool(val)
 
