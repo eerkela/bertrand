@@ -22,6 +22,7 @@ from pdcast.util.type_hints import array_like, numeric, type_specifier
 
 
 # TODO: tol should clip overflowing values if they are within the window.
+# -> force boundscheck to accept ``tol``.
 
 
 # TODO: SparseType works, but not in all cases.
@@ -587,6 +588,12 @@ cdef class SeriesWrapper:
                     return series, dtype.upcast(series)
                 except OverflowError:
                     pass
+
+                # TODO: clip to within tolerance?
+                # if min_val > dtype.min - tol and max_val < dtype.max + tol:
+                #     series.clip(dtype.min, dtype.max)
+                # else:
+                #     see below
 
                 # continue with OverflowError
                 index = (series < dtype.min) | (series > dtype.max)

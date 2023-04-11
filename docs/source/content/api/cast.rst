@@ -60,7 +60,7 @@ updated at run time.
       - The epoch to use for datetime/timedelta conversions.
     * - :attr:`tz <CastDefaults.tz>`
       - TODO
-    * - :attr:`utc <CastDefaults.utc>`
+    * - :attr:`naive_tz <CastDefaults.naive_tz>`
       - TODO
     * - :attr:`day_first <CastDefaults.day_first>`
       - TODO
@@ -98,7 +98,7 @@ updated at run time.
     step_size <abstract/cast/step_size>
     since <abstract/cast/since>
     tz <abstract/cast/tz>
-    utc <abstract/cast/utc>
+    naive_tz <abstract/cast/naive_tz>
     day_first <abstract/cast/day_first>
     year_first <abstract/cast/year_first>
     as_hours <abstract/cast/as_hours>
