@@ -13,29 +13,6 @@ pdcast.cast
 
 .. autofunction:: cast
 
-.. _cast.stand_alone:
-
-Stand-alone conversions
------------------------
-Internally, :func:`cast` calls a selection of stand-alone conversion functions,
-similar to ``pandas.to_datetime()``, ``pandas.to_numeric()``, etc.  ``pdcast``
-makes these available for public use at the package level, mirroring their
-pandas equivalents.  Each one explicitly lists the
-:ref:`arguments <cast.arguments>` it can accept.
-
-.. autosummary::
-    :toctree: ../../generated/
-
-    to_boolean
-    to_integer
-    to_float
-    to_complex
-    to_decimal
-    to_datetime
-    to_timedelta
-    to_string
-    to_object
-
 .. _cast.arguments:
 
 Arguments
@@ -84,14 +61,10 @@ updated at run time.
       - TODO
     * - :attr:`errors <CastDefaults.errors>`
       - TODO
-    * - :attr:`\*\*kwargs`
-      - Additional keyword arguments to be passed to the
-        :ref:`delegated <atomic_type.conversions>` conversion method.
 
 .. toctree::
     :hidden:
 
-    defaults <abstract/cast/defaults>
     tol <abstract/cast/tol>
     rounding <abstract/cast/rounding>
     unit <abstract/cast/unit>
@@ -110,6 +83,29 @@ updated at run time.
     call <abstract/cast/call>
     downcast <abstract/cast/downcast>
     errors <abstract/cast/errors>
+
+.. _cast.stand_alone:
+
+Stand-alone conversions
+-----------------------
+Internally, :func:`cast` calls a selection of stand-alone conversion functions,
+similar to ``pandas.to_datetime()``, ``pandas.to_numeric()``, etc.  These are
+available for public use at the package level, mirroring their pandas
+equivalents.  They inherit the same :ref:`arguments <cast.arguments>` as above.
+
+.. autosummary::
+    :toctree: ../../generated/
+
+    to_boolean
+    to_integer
+    to_float
+    to_complex
+    to_decimal
+    to_datetime
+    to_timedelta
+    to_string
+    to_object
+
 
 .. _cast.mixed:
 

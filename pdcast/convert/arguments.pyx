@@ -18,6 +18,7 @@ from pdcast.util.type_hints import numeric, datetime_like, type_specifier
 # -> requires a module-level ``active`` variable that standalone uses rather
 # than the global defaults.  This is initialized to the global equivalent
 # and is replaced in __enter__.  __exit__ replaces the original.
+# -> benefits might not outweigh costs.
 
 
 ######################
@@ -32,11 +33,72 @@ class CastDefaults(threading.local):
     """A thread-local configuration object containing default values for
     :func:`cast` operations.
 
-    Notes
-    -----
     This object allows users to globally modify the default arguments for
     :func:`cast`\-related functionality.  It also performs some basic
     validation for each argument, ensuring that they are compatible.
+
+    Parameters
+    ----------
+    **kwargs : dict
+        Keyword args representing settings for any number of
+        :meth:`registered <CastDefaults.register_argument>` arguments.  These
+        can be used to selectively override their default values.
+
+    Examples
+    --------
+    ``pdcast`` exposes a global :class:`CastDefaults` object under
+    :attr:`pdcast.defaults`, which can be used to modify the behavior of
+    the :func:`cast` function on a global basis.
+
+    .. doctest::
+
+        >>> pdcast.cast(1, "datetime")
+        0   1970-01-01 00:00:00.000000001
+        dtype: datetime64[ns]
+        >>> pdcast.defaults.unit = "s"
+        >>> pdcast.defaults.tz = "us/pacific"
+        >>> pdcast.cast(1, "datetime")
+        0   1969-12-31 16:00:01-08:00
+        dtype: datetime64[ns, US/Pacific]
+        >>> del pdcast.defaults.unit, pdcast.defaults.tz
+        >>> pdcast.cast(1, "datetime")
+        0   1970-01-01 00:00:00.000000001
+        dtype: datetime64[ns]
+
+    Additionally, new arguments can be added at run time by calling
+    :meth:`CastDefaults.register_arg`.
+
+    .. doctest::
+
+        >>> @pdcast.defaults.register_arg("bar")
+        ... def foo(val: str, defaults: pdcast.CastDefaults) -> str:
+        ...     '''docstring for `foo`.''' 
+        ...     if val not in ("bar", "baz"):
+        ...         raise ValueError(f"`foo` must be one of ('bar', 'baz')")
+        ...     return val
+
+    From then on, all :func:`cast`\-related operations will accept an optional
+    ``foo`` argument, as shown:
+
+    .. doctest::
+
+        >>> pdcast.cast(1, "datetime", foo="baz")
+        0   1970-01-01 00:00:00.000000001
+        dtype: datetime64[ns]
+
+    The decorated function acts as a validator, ensuring that the input to
+    ``foo`` is correct.
+
+    .. doctest::
+
+        >>> pdcast.cast(1, "datetime", foo="some other value")
+        Traceback (most recent call last):
+            ...
+        ValueError: `foo` must be one of ('bar', 'baz')
+        >>> pdcast.defaults.foo = "another value"
+        Traceback (most recent call last):
+            ...
+        ValueError: `foo` must be one of ('bar', 'baz')
     """
 
     _defaults = {}
@@ -61,6 +123,38 @@ class CastDefaults(threading.local):
     def default_values(self) -> MappingProxyType:
         """A mapping of all argument names to their associated values for this
         :class:`CastDefaults` object.
+
+        Returns
+        -------
+        MappingProxyType
+            A read-only dictionary suitable for use as the ``**kwargs`` input
+            to :func:`cast` and its :ref:`related <cast.stand_alone>`
+            functions.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> from pprint import pprint
+            >>> pprint(pdcast.defaults.default_values)
+            mappingproxy({'as_hours': False,
+              'base': 0,
+              'call': None,
+              'day_first': False,
+              'downcast': None,
+              'errors': 'raise',
+              'false': {'false', 'no', 'off', 'n', 'f', '0'},
+              'format': None,
+              'ignore_case': True,
+              'naive_tz': None,
+              'rounding': None,
+              'since': 1970-01-01T00:00:00,
+              'step_size': 1,
+              'tol': Tolerance(9.99999999999999954748111825886258685613938723690807819366455078125E-7+9.99999999999999954748111825886258685613938723690807819366455078125E-7j),
+              'true': {'y', 'true', 'on', 't', 'yes', '1'},
+              'tz': None,
+              'unit': 'ns',
+              'year_first': False})
         """
         result = {k: getattr(self, k) for k in type(self)._defaults}
         return MappingProxyType(result)
@@ -68,6 +162,79 @@ class CastDefaults(threading.local):
     def register_arg(self, default_value: Any) -> Callable:
         """A decorator that transforms a naked validation function into a
         default argument to :func:`cast` and its derivatives.
+
+        Parameters
+        ----------
+        default_value : Any
+            The default value to use for this argument.  This is implicitly
+            passed to the validator itself, so any custom parsing logic that
+            is implemented there will also be applied to this value.
+
+        Returns
+        -------
+        Callable
+            A decorated version of the validation function that automatically
+            fills out its ``defaults`` argument.
+
+        Notes
+        -----
+        A validation function must have the following signature:
+
+        .. code:: python
+
+            def validator(val, defaults):
+                ...
+
+        Where ``val`` can be an arbitrary input to the argument and
+        ``defaults`` is a :class:`CastDefaults` object containing the current
+        parameter space.  If the validator interacts with other arguments
+        (via mutual exclusivity, for instance), then they can be obtained from
+        ``defaults``.
+
+        .. note::
+
+            Race conditions may be introduced when arguments access each other
+            in their validators.  This can be mitigated by using ``getattr()``
+            with a default value rather than relying on direct access, as well
+            as manually applying the same coercions as in the referenced
+            argument's validation function.
+
+        Examples
+        --------
+        Occasionally, when a new data type is introduced to ``pdcast``, that
+        type's conversions will require additional arguments beyond what is
+        included by default.  :meth:`CastDefaults.register_arg` allows users to
+        easily integrate these new arguments.
+
+        .. code:: python
+
+            @pdcast.defaults.register_arg("bar")
+            def foo(val: str, defaults: pdcast.CastDefaults) -> str:
+                '''docstring for `foo`.''' 
+                if val not in ("bar", "baz"):
+                    raise ValueError(f"`foo` must be one of ('bar', 'baz')")
+                return val
+
+        This allows the type's :ref:`delegated <atomic_type.conversions>`
+        conversion methods to access ``foo`` simply by adding it to their call
+        signature.
+
+        .. code:: python
+
+            def to_integer(
+                self,
+                series: pdcast.SeriesWrapper,
+                dtype: pdcast.AtomicType,
+                foo: str,
+                **unused
+            ) -> pdcast.SeriesWrapper:
+                ...
+
+        :class:`CastDefaults` ensures that ``foo`` is always passed to the
+        conversion method, either with the default value specified in
+        :meth:`register_arg <CastDefaults.register_arg>` or an overridden
+        value in :class:`pdcast.defaults <CastDefaults>` or the signature of
+        :func:`cast` itself.
         """
         def argument(validator: Callable) -> Callable:
             """Attach a validation function to CastDefaults objects as a
@@ -141,11 +308,11 @@ defaults = CastDefaults()
 #######################
 
 
-valid_errors = ("raise", "coerce", "ignore")
+cdef tuple valid_errors = ("raise", "coerce", "ignore")
 
 
-def as_string_set(val: str | set[str]) -> set[str]:
-    """doc"""
+cdef set as_string_set(object val):
+    """Create a set of strings from a scalar or iterable."""
     # scalar string
     if isinstance(val, str):
         return {val}
@@ -162,7 +329,7 @@ def as_string_set(val: str | set[str]) -> set[str]:
     return {str(val)}
 
 
-def assert_sets_are_disjoint(true: set[str], false: set[str]) -> None:
+cdef int assert_sets_are_disjoint(true: set, false: set) except -1:
     """Raise a `ValueError` if the sets have any overlap."""
     if not true.isdisjoint(false):
         err_msg = f"`true` and `false` must be disjoint"
