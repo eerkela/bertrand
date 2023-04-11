@@ -20,7 +20,7 @@ cimport pdcast.types as types
 import pdcast.types as types
 
 import pdcast.convert.wrapper as wrapper
-import pdcast.convert.config as config
+import pdcast.convert.arguments as arguments
 
 from pdcast.util.round cimport Tolerance
 from pdcast.util.round import valid_rules
@@ -81,7 +81,7 @@ def to_boolean(
     """Convert a to boolean representation."""
     # ensure dtype is bool-like
     dtype = validate_dtype(dtype, types.BooleanType)
-    kwargs = config.defaults.spawn_child(**kwargs)
+    kwargs = arguments.CastDefaults(**kwargs)
 
     # delegate to SeriesWrapper.to_boolean
     return do_conversion(
@@ -100,7 +100,7 @@ def to_integer(
     """Convert arbitrary data to integer representation."""
     # ensure dtype is int-like
     dtype = validate_dtype(dtype, types.IntegerType)
-    kwargs = config.defaults.spawn_child(**kwargs)
+    kwargs = arguments.CastDefaults(**kwargs)
 
     # delegate to SeriesWrapper.to_integer
     return do_conversion(
@@ -119,7 +119,7 @@ def to_float(
     """Convert arbitrary data to float representation."""
     # ensure dtype is float-like
     dtype = validate_dtype(dtype, types.FloatType)
-    kwargs = config.defaults.spawn_child(**kwargs)
+    kwargs = arguments.CastDefaults(**kwargs)
 
     # delegate to SeriesWrapper.to_float
     return do_conversion(
@@ -138,7 +138,7 @@ def to_complex(
     """Convert arbitrary data to complex representation."""
     # ensure dtype is complex-like
     dtype = validate_dtype(dtype, types.ComplexType)
-    kwargs = config.defaults.spawn_child(**kwargs)
+    kwargs = arguments.CastDefaults(**kwargs)
 
     # delegate to SeriesWrapper.to_complex
     return do_conversion(
@@ -157,7 +157,7 @@ def to_decimal(
     """Convert arbitrary data to decimal representation."""
     # ensure dtype is decimal-like
     dtype = validate_dtype(dtype, types.DecimalType)
-    kwargs = config.defaults.spawn_child(**kwargs)
+    kwargs = arguments.CastDefaults(**kwargs)
 
     # delegate to SeriesWrapper.to_decimal
     return do_conversion(
@@ -176,7 +176,7 @@ def to_datetime(
     """Convert arbitrary data to datetime representation."""
     # ensure dtype is datetime-like
     dtype = validate_dtype(dtype, types.DatetimeType)
-    kwargs = config.defaults.spawn_child(**kwargs)
+    kwargs = arguments.CastDefaults(**kwargs)
 
     # delegate to SeriesWrapper.to_datetime
     return do_conversion(
@@ -195,7 +195,7 @@ def to_timedelta(
     """Convert arbitrary data to timedelta representation."""
     # ensure dtype is timedelta-like
     dtype = validate_dtype(dtype, types.TimedeltaType)
-    kwargs = config.defaults.spawn_child(**kwargs)
+    kwargs = arguments.CastDefaults(**kwargs)
 
     # delegate to SeriesWrapper.to_timedelta
     return do_conversion(
@@ -214,7 +214,7 @@ def to_string(
     """Convert arbitrary data to string representation."""
     # ensure dtype is string-like
     dtype = validate_dtype(dtype, types.StringType)
-    kwargs = config.defaults.spawn_child(**kwargs)
+    kwargs = arguments.CastDefaults(**kwargs)
 
     # delegate to SeriesWrapper.to_string
     return do_conversion(
@@ -233,7 +233,7 @@ def to_object(
     """Convert arbitrary data to string representation."""
     # ensure dtype is object-like
     dtype = validate_dtype(dtype, types.ObjectType)
-    kwargs = config.defaults.spawn_child(**kwargs)
+    kwargs = arguments.CastDefaults(**kwargs)
 
     # delegate to SeriesWrapper.to_object
     return do_conversion(

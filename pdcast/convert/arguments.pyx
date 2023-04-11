@@ -14,9 +14,18 @@ from pdcast.util.time import timezone, valid_units, Epoch, epoch_aliases
 from pdcast.util.type_hints import numeric, datetime_like, type_specifier
 
 
+# TODO: enable CastDefaults to be used as a context manager?
+# -> requires a module-level ``active`` variable that standalone uses rather
+# than the global defaults.  This is initialized to the global equivalent
+# and is replaced in __enter__.  __exit__ replaces the original.
+
+
 ######################
 ####    PUBLIC    ####
 ######################
+
+
+defaults = None
 
 
 class CastDefaults(threading.local):
@@ -34,6 +43,11 @@ class CastDefaults(threading.local):
     _validators = {}
 
     def __init__(self, **kwargs):
+        global defaults
+
+        if defaults is not None:
+            kwargs = {**kwargs, **defaults._vals}
+
         self._vals = kwargs  # prevent race conditions in getters
         self._vals = {
             k: self._validators[k](v, self) for k, v in kwargs.items()
@@ -98,11 +112,6 @@ class CastDefaults(threading.local):
             return accept_default
 
         return argument
-
-    def spawn_child(self, **kwargs):
-        """Create a new :class:`CastDefaults` object with values from this one.
-        """
-        return CastDefaults(**{**kwargs, **self._vals})
 
     ###############################
     ####    SPECIAL METHODS    ####
