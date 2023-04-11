@@ -6,8 +6,6 @@
     import pandas as pd
     import pdcast
 
-.. TODO: remove arg descriptions from cast(), just link to arguments section.
-
 pdcast.cast
 ===========
 
@@ -119,6 +117,17 @@ Adapters
 
 .. _cast.inference:
 
-Inference
----------
+Anonymous conversions
+---------------------
 
+.. _cast.pandas:
+
+Pandas integration
+------------------
+.. TODO: see detect_type docs for a better example of how to do this.
+
+When :func:`pdcast.attach() <attach>` is invoked, this function is directly
+attached to ``pandas.Series`` and ``pandas.DataFrame`` objects under
+:meth:`pandas.Series.cast`.  This allows users to omit the ``data`` argument,
+and - in the case of ``DataFrames`` - accept mappings of column names to
+type specifiers in place of ``dtype``.

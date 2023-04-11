@@ -75,9 +75,9 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
         :ref:`numpy <resolve_type.type_specifiers.numpy>`\ /\ 
         :ref:`pandas <resolve_type.type_specifiers.pandas>` data types.
     AtomicType.resolve : customizable semantics for the
-        :ref:`type specification mini-language <mini_language>`.
+        :ref:`type specification mini-language <resolve_type.mini_language>`.
     AdapterType.resolve : customizable semantics for the
-        :ref:`type specification mini-language <mini_language>`.
+        :ref:`type specification mini-language <resolve_type.mini_language>`.
     """
     if isinstance(typespec, types.BaseType):
         result = typespec

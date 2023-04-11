@@ -7,8 +7,8 @@ Types
 =====
 Below is a complete list of all the types that come prepackaged with
 ``pdcast``.  Each can be supplied to ``pdcast.resolve_type()`` via the
-:ref:`type specification mini-language <mini_language>` to retrieve the type in
-question.
+:ref:`type specification mini-language <resolve_type.mini_language>` to
+retrieve the type in question.
 
 .. list-table::
     :header-rows: 1

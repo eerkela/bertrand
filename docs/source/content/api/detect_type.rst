@@ -11,6 +11,8 @@ pdcast.detect_type
 
 .. autofunction:: detect_type
 
+.. _detect_type.scalar:
+
 Scalar data
 --------------
 :func:`detect_type` can be used to parse scalar objects, similar to the
@@ -34,6 +36,8 @@ If the ``type()`` of an object has not been registered as an
 
     >>> pdcast.detect_type(CustomObj("abc"))
     ObjectType(type_def=<class 'CustomObj'>)
+
+.. _detect_type.vector:
 
 Vectorized data
 ---------------
@@ -105,6 +109,8 @@ each :attr:`index <CompositeType.index>`.
 
 This is space-efficient thanks to :class:`AtomicType`\'s
 :ref:`flyweight construction <atomic_type.allocation>`.
+
+.. _detect_type.pandas:
 
 Pandas integration
 ------------------

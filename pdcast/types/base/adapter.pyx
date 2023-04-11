@@ -137,7 +137,7 @@ cdef class AdapterType(atomic.ScalarType):
     @classmethod
     def resolve(cls, wrapped: str = None, *args: str) -> AdapterType:
         """Construct a new :class:`AdapterType` in the :ref:`type specification
-        mini-language <mini_language>`.
+        mini-language <resolve_type.mini_language>`.
 
         Override this if a type implements custom parsing rules for any
         arguments that are supplied to it.
@@ -147,11 +147,11 @@ cdef class AdapterType(atomic.ScalarType):
         wrapped : str, optional
             The type to be wrapped.  If given, this must be an
             independently-resolvable type specifier in the :ref:`type
-            specification mini-language <mini_language>`.
+            specification mini-language <resolve_type.mini_language>`.
         *args : str
             Positional arguments supplied to this type.  These will always be
             passed as strings, exactly as they appear in the :ref:`type
-            specification mini-language <mini_language>`.
+            specification mini-language <resolve_type.mini_language>`.
 
         Returns
         -------

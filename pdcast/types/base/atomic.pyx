@@ -84,7 +84,7 @@ cdef class ScalarType(BaseType):
         """Register a new alias for this type.
 
         See the docs on the :ref:`type specification mini language
-        <mini_language>` for more information on how aliases work.
+        <resolve_type.mini_language>` for more information on how aliases work.
 
         Parameters
         ----------
@@ -113,7 +113,7 @@ cdef class ScalarType(BaseType):
         """Remove an alias from this type.
 
         See the docs on the :ref:`type specification mini language
-        <mini_language>` for more information on how aliases work.
+        <resolve_type.mini_language>` for more information on how aliases work.
 
         Parameters
         ----------
@@ -130,7 +130,7 @@ cdef class ScalarType(BaseType):
         """Remove every alias that is registered to this type.
 
         See the docs on the :ref:`type specification mini language
-        <mini_language>` for more information on how aliases work.
+        <resolve_type.mini_language>` for more information on how aliases work.
         """
         cls.aliases.clear()
         cls.registry.flush()  # rebuild regex patterns
@@ -253,20 +253,22 @@ cdef class AtomicType(ScalarType):
         Special significance is given to the type of each alias:
 
             *   Strings are used by the :ref:`type specification mini-language
-                <mini_language>` to trigger :meth:`resolution <AtomicType.resolve>`
-                of the associated type.
-            *   Numpy/pandas ``dtype``\ /\ ``ExtensionDtype`` objects are used by
-                :func:`detect_type` for *O(1)* type inference.  In both cases,
-                parametrized dtypes can be handled by adding a root dtype to
-                ``aliases``.  For numpy ``dtypes``, this will be the root of their
-                ``np.issubdtype()`` hierarchy.  For pandas ``ExtensionDtypes``, it
-                is its ``type()`` directly.  When either of these are encountered,
-                they will invoke :class:`AtomicType`'s
+                <resolve_type.mini_language>` to trigger :meth:`resolution
+                <AtomicType.resolve>` of the associated type.
+            *   Numpy/pandas ``dtype``\ /\ ``ExtensionDtype`` objects are used
+                by :func:`detect_type` for *O(1)* type inference.  In both
+                cases, parametrized dtypes can be handled by adding a root
+                dtype to ``aliases``.  For numpy ``dtypes``, this will be the
+                root of their ``np.issubdtype()`` hierarchy.  For pandas
+                ``ExtensionDtypes``, it is its ``type()`` directly.  When
+                either of these are encountered, they will invoke
+                :class:`AtomicType`'s
                 :meth:`from_dtype() <AtomicType.from_dtype>` constructor.
             *   Raw Python types are used by :func:`detect_type` for scalar or
                 unlabeled vector inference.  If the type of a scalar element
                 appears in ``aliases``, then the associated type's
-                :meth:`detect() <AtomicType.detect>` method will be called on it.
+                :meth:`detect() <AtomicType.detect>` method will be called on
+                it.
 
         All aliases are recognized by :func:`resolve_type` and the set always
         includes the :class:`AtomicType` itself.
@@ -401,7 +403,7 @@ cdef class AtomicType(ScalarType):
     @classmethod
     def resolve(cls, *args: str) -> AtomicType:
         """Construct a new :class:`AtomicType` in the :ref:`type specification
-        mini-language <mini_language>`.
+        mini-language <resolve_type.mini_language>`.
 
         Override this if a type implements custom parsing rules for any
         arguments that are supplied to it.
@@ -411,7 +413,7 @@ cdef class AtomicType(ScalarType):
         *args : str
             Positional arguments supplied to this type.  These will always be
             passed as strings, exactly as they appear in the :ref:`type
-            specification mini-language <mini_language>`.
+            specification mini-language <resolve_type.mini_language>`.
 
         See Also
         --------
@@ -772,7 +774,7 @@ cdef class AtomicType(ScalarType):
     @property
     def backend(self) -> str:
         """The backend string used to refer to this type in the
-        :ref:`type specification mini-language <mini_language>`.
+        :ref:`type specification mini-language <resolve_type.mini_language>`.
         """
         return self._backend
 

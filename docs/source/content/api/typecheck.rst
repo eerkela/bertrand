@@ -11,6 +11,8 @@ pdcast.typecheck
 
 .. autofunction:: typecheck
 
+.. _typecheck.hierarchy:
+
 Hierarchical checks
 -------------------
 :func:`typecheck` can be used to perform ``isinstance()``-like type checks,
@@ -71,6 +73,8 @@ These can be ignored by setting ``ignore_adapters=True``, which strips
     >>> pdcast.typecheck(pd.Series([1, 2, 3], dtype="Sparse[int]"), "sparse[int]", ignore_adapters=True)
     True
 
+.. _typecheck.composite:
+
 Composite checks
 ----------------
 Just like ``isinstance()``, multiple
@@ -94,6 +98,8 @@ comparison type(s).
     True
     >>> pdcast.typecheck([True, 2, "baz"], "bool, int, float")
     False
+
+.. _typecheck.pandas:
 
 Pandas integration
 ------------------

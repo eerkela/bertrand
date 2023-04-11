@@ -22,7 +22,7 @@ A type specifier can be any of the following:
         ``ExtensionDtype`` object.
     #.  A :ref:`python <resolve_type.type_specifiers.python>` class object.
     #.  A string in the
-        :ref:`type specification mini-language <mini_language>`.
+        :ref:`type specification mini-language <resolve_type.mini_language>`.
     #.  An :ref:`iterable <resolve_type.composite>` containing any combination
         of the above.
 
@@ -162,7 +162,7 @@ In contrast, the ``pdcast`` equivalents are guaranteed to be valid.
         >>> pdcast.resolve_type(CustomObj)
         ObjectType(type_def=<class 'CustomObj'>)
 
-.. _mini_language:
+.. _resolve_type.mini_language:
 
 Type specification mini-language
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -280,7 +280,7 @@ can be done by providing an iterable as input:
     CompositeType({bool[python], int16[numpy], decimal})
 
 Or by separating specifiers with commas in the :ref:`type specification
-mini-language <mini_language>`.
+mini-language <resolve_type.mini_language>`.
 
 .. doctest::
 

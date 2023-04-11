@@ -10,7 +10,7 @@ Types can be constructed manually using :func:`resolve_type`.  There are 3 ways
 to do this:
 
     #.  By providing a string in the
-        :ref:`type specification mini language <mini_language>`.
+        :ref:`type specification mini language <resolve_type.mini_language>`.
     #.  By providing a numpy ``dtype`` or pandas ``ExtensionDtype`` object.
     #.  By providing a python class object (e.g. ``int``, ``float``, ``str``,
         etc.)
@@ -56,7 +56,7 @@ a ``pdcast`` function or method.
 Adapters (most commonly :class:`sparse <SparseType>`\ /
 :class:`categorical <CategoricalType>` types) can be added by providing an
 appropriate ``ExtensionDtype`` or nesting specifiers in the
-:ref:`type specification mini-language <mini_language>`.
+:ref:`type specification mini-language <resolve_type.mini_language>`.
 
 .. doctest::
 
@@ -66,8 +66,8 @@ appropriate ``ExtensionDtype`` or nesting specifiers in the
     CategoricalType(wrapped=StringType(), levels=None)
 
 Additionally, types can be composited together by separating them with commas
-in the :ref:`type specification mini language <mini_language>` or concatenating
-them into a list, set, or other sequence:
+in the :ref:`type specification mini language <resolve_type.mini_language>` or
+concatenating them into a list, set, or other sequence:
 
 .. doctest::
 

@@ -18,7 +18,8 @@ from pdcast.util.type_hints import numeric, datetime_like, type_specifier
 # -> requires a module-level ``active`` variable that standalone uses rather
 # than the global defaults.  This is initialized to the global equivalent
 # and is replaced in __enter__.  __exit__ replaces the original.
-# -> benefits might not outweigh costs.
+# -> benefits might not outweigh costs.  Would probably need to cache thread
+# ids to make it fully thread-safe.
 
 
 ######################
