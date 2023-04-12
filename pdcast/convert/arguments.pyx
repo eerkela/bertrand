@@ -281,6 +281,11 @@ class CastDefaults(threading.local):
 
         return argument
 
+    @property
+    def validators(self) -> MappingProxyType:
+        """TODO"""
+        return MappingProxyType(self._validators)
+
     ###############################
     ####    SPECIAL METHODS    ####
     ###############################

@@ -116,7 +116,7 @@ class FloatMixin:
         """Round a floating point series to the given number of decimal places
         using the specified rounding rule.
         """
-        rule = convert.validate_rounding(rule)
+        rule = convert.defaults.validators["rounding"](rule)
         return convert.SeriesWrapper(
             round_float(series.rectify().series, rule=rule, decimals=decimals),
             hasnans=series.hasnans,
@@ -263,7 +263,7 @@ class FloatType(FloatMixin, AtomicType):
     """Generic float supertype"""
 
     # internal root fields - all subtypes/backends inherit these
-    _conversion_func = convert.to_float
+    _family = "float"
     _is_numeric = True
 
     name = "float"

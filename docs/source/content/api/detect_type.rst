@@ -41,10 +41,9 @@ If the ``type()`` of an object has not been registered as an
 
 Vectorized data
 ---------------
-:func:`detect_type` can also accept one-dimensional vectorized examples.
+:func:`detect_type` can also accept one-dimensional examples in a variety of
+formats.
 
-Array-like data
-^^^^^^^^^^^^^^^
 If an input vector has an appropriate ``.dtype`` field, then
 :func:`detect_type` will attempt to :func:`resolve <resolve_type>` it directly.
 
@@ -66,10 +65,8 @@ array.
     >>> timeit.timeit(lambda: pdcast.detect_type(vals), number=10**3)   # doctest: +SKIP
     0.0040021560052991845
 
-Elementwise detection
-^^^^^^^^^^^^^^^^^^^^^
-If the input to :func:`detect_type` is a ``dtype: object`` array or other
-iterable, then its type will be inferred by iterating elementwise.
+If the input to is a ``dtype: object`` array or other iterable, then its type
+will be inferred by iterating elementwise.
 
 .. doctest::
 
@@ -86,10 +83,8 @@ iterable, then its type will be inferred by iterating elementwise.
 
 This is *O(N)*.
 
-Non-homogenous sequences
-^^^^^^^^^^^^^^^^^^^^^^^^
-If :func:`detect_type` is given a vector whose elements are of mixed type,
-then a :class:`CompositeType` will be returned.
+If the input is a vector whose elements are of mixed type, then a
+:class:`CompositeType` will be returned.
 
 .. doctest::
 
@@ -98,8 +93,8 @@ then a :class:`CompositeType` will be returned.
     >>> pdcast.detect_type(pd.Series([1., 2+0j, pd.Timestamp(0)]))    # doctest: +SKIP
     CompositeType({float[python], complex[python], datetime[pandas]})
 
-The returned :class:`CompositeType` also tracks the type that was observed at
-each :attr:`index <CompositeType.index>`.
+This also tracks the type that was observed at each
+:attr:`index <CompositeType.index>`.
 
 .. doctest::
 
@@ -107,7 +102,7 @@ each :attr:`index <CompositeType.index>`.
     array([PythonFloatType(), PythonComplexType(),
            PandasTimestampType(tz=None)], dtype=object)
 
-This is space-efficient thanks to :class:`AtomicType`\'s
+Which is space-efficient thanks to :class:`AtomicType`\'s
 :ref:`flyweight construction <atomic_type.allocation>`.
 
 .. _detect_type.pandas:

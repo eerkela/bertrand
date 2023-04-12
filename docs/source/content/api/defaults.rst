@@ -23,6 +23,7 @@ for internal use.
 
     CastDefaults.default_values
     CastDefaults.register_arg
+    CastDefaults.validators
 
 .. _defaults.reset:
 

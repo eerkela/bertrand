@@ -223,7 +223,7 @@ class StringType(StringMixin, AtomicType):
     """String supertype."""
 
     # internal root fields - all subtypes/backends inherit these
-    _conversion_func = convert.to_string
+    _family = "string"
 
     name = "string"
     aliases = {

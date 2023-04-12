@@ -30,8 +30,13 @@ from pdcast.util.time import timezone
 from pdcast.util.type_hints import datetime_like, numeric, type_specifier
 
 
+######################
+####    PUBLIC    ####
+######################
+
+
 def cast(
-    series: Any,
+    data: Any,
     dtype: Optional[type_specifier] = None,
     **kwargs
 ) -> pd.Series:
@@ -39,12 +44,14 @@ def cast(
 
     Parameters
     ----------
-    series : Any
+    data : Any
         The data to convert.  This can be a scalar or 1D iterable containing
         arbitrary data.
     dtype : type specifier
         The target :doc:`type </content/types/types>` for this conversion.
-        This can be in any format recognized by :func:`resolve_type`.
+        This can be in any format recognized by :func:`resolve_type`.  It can
+        also be omitted to perform an :ref:`anonymous <cast.anonymous>`
+        conversion.
     **kwargs : dict
         Arbitrary keyword :ref:`arguments <cast.arguments>` used to customize
         the conversion.
@@ -52,201 +59,166 @@ def cast(
     Notes
     -----
     This function dispatches to one of the
-    :ref:`standalone conversions <cast.stand_alone>` listed below based on the
-    value of its ``dtype`` argument.
+    :ref:`delegated <atomic_type.conversions>` conversion methods that are
+    attached to each :class:`AtomicType` definition.  Types can override these
+    methods to change the behavior of :func:`cast`.  The method that is chosen
+    is based on the :attr:`family <AtomicType.family>` of its ``dtype``
+    argument.
+
+    Examples
+    --------
+    This function can be used as an alternative to ``astype()``.
     """
+    series = as_series(data)
+    kwargs = arguments.CastDefaults(**kwargs)
+
     # if no target is given, default to series type
     if dtype is None:
-        series = as_series(series)
-        series_type = detect.detect_type(series)
-        if series_type is None:
+        dtype = detect.detect_type(series)
+        if dtype is None:
             raise ValueError(
                 f"cannot interpret empty series without an explicit `dtype` "
                 f"argument: {dtype}"
             )
-        return series_type._conversion_func(series, **kwargs)  # use default
+    else:
+        dtype = validate_dtype(dtype)
+        if dtype.unwrap() is None:
+            dtype.atomic_type = detect.detect_type(series)
 
-    # delegate to appropriate to_x function below
-    dtype = validate_dtype(dtype)
-    if dtype.unwrap() is None:
-        dtype.atomic_type = detect.detect_type(series)
-    return dtype._conversion_func(series, dtype, **kwargs)
+    # delegate to AtomicType conversion method
+    return do_conversion(
+        series,
+        f"to_{dtype.family}",
+        dtype=dtype,
+        **kwargs.default_values
+    )
+
+
+##########################
+####    STANDALONE    ####
+##########################
 
 
 def to_boolean(
-    series: Any,
+    data: Any,
     dtype: type_specifier = "bool",
     **kwargs
 ) -> pd.Series:
     """Convert a to boolean representation."""
     # ensure dtype is bool-like
     dtype = validate_dtype(dtype, types.BooleanType)
-    kwargs = arguments.CastDefaults(**kwargs)
 
-    # delegate to SeriesWrapper.to_boolean
-    return do_conversion(
-        series,
-        "to_boolean",
-        dtype=dtype,
-        **kwargs.default_values
-    )
+    # pass to cast()
+    return cast(data, dtype=dtype, **kwargs)
 
 
 def to_integer(
-    series: Any,
+    data: Any,
     dtype: type_specifier = "int",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to integer representation."""
     # ensure dtype is int-like
     dtype = validate_dtype(dtype, types.IntegerType)
-    kwargs = arguments.CastDefaults(**kwargs)
 
-    # delegate to SeriesWrapper.to_integer
-    return do_conversion(
-        series,
-        "to_integer",
-        dtype=dtype,
-        **kwargs.default_values
-    )
+    # pass to cast()
+    return cast(data, dtype=dtype, **kwargs)
 
 
 def to_float(
-    series: Any,
+    data: Any,
     dtype: type_specifier = "float",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to float representation."""
     # ensure dtype is float-like
     dtype = validate_dtype(dtype, types.FloatType)
-    kwargs = arguments.CastDefaults(**kwargs)
 
-    # delegate to SeriesWrapper.to_float
-    return do_conversion(
-        series,
-        "to_float",
-        dtype=dtype,
-        **kwargs.default_values
-    )
+    # pass to cast()
+    return cast(data, dtype=dtype, **kwargs)
 
 
 def to_complex(
-    series: Any,
+    data: Any,
     dtype: type_specifier = "complex",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to complex representation."""
     # ensure dtype is complex-like
     dtype = validate_dtype(dtype, types.ComplexType)
-    kwargs = arguments.CastDefaults(**kwargs)
 
-    # delegate to SeriesWrapper.to_complex
-    return do_conversion(
-        series,
-        "to_complex",
-        dtype=dtype,
-        **kwargs.default_values
-    )
+    # pass to cast()
+    return cast(data, dtype=dtype, **kwargs)
 
 
 def to_decimal(
-    series: Any,
+    data: Any,
     dtype: type_specifier = "decimal",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to decimal representation."""
     # ensure dtype is decimal-like
     dtype = validate_dtype(dtype, types.DecimalType)
-    kwargs = arguments.CastDefaults(**kwargs)
 
-    # delegate to SeriesWrapper.to_decimal
-    return do_conversion(
-        series,
-        "to_decimal",
-        dtype=dtype,
-        **kwargs.default_values
-    )
+    # pass to cast()
+    return cast(data, dtype=dtype, **kwargs)
 
 
 def to_datetime(
-    series: Any,
+    data: Any,
     dtype: type_specifier = "datetime",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to datetime representation."""
     # ensure dtype is datetime-like
     dtype = validate_dtype(dtype, types.DatetimeType)
-    kwargs = arguments.CastDefaults(**kwargs)
 
-    # delegate to SeriesWrapper.to_datetime
-    return do_conversion(
-        series,
-        "to_datetime",
-        dtype=dtype,
-        **kwargs.default_values
-    )
+    # pass to cast()
+    return cast(data, dtype=dtype, **kwargs)
 
 
 def to_timedelta(
-    series: Any,
+    data: Any,
     dtype: type_specifier = "timedelta",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to timedelta representation."""
     # ensure dtype is timedelta-like
     dtype = validate_dtype(dtype, types.TimedeltaType)
-    kwargs = arguments.CastDefaults(**kwargs)
 
-    # delegate to SeriesWrapper.to_timedelta
-    return do_conversion(
-        series,
-        "to_timedelta",
-        dtype=dtype,
-        **kwargs.default_values
-    )
+    # pass to cast()
+    return cast(data, dtype=dtype, **kwargs)
 
 
 def to_string(
-    series: Any,
+    data: Any,
     dtype: type_specifier = "string",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
     # ensure dtype is string-like
     dtype = validate_dtype(dtype, types.StringType)
-    kwargs = arguments.CastDefaults(**kwargs)
 
-    # delegate to SeriesWrapper.to_string
-    return do_conversion(
-        series,
-        "to_string",
-        dtype=dtype,
-        **kwargs.default_values
-    )
+    # pass to cast()
+    return cast(data, dtype=dtype, **kwargs)
 
 
 def to_object(
-    series: Any,
+    data: Any,
     dtype: type_specifier = "object",
     **kwargs
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
     # ensure dtype is object-like
     dtype = validate_dtype(dtype, types.ObjectType)
-    kwargs = arguments.CastDefaults(**kwargs)
 
-    # delegate to SeriesWrapper.to_object
-    return do_conversion(
-        series,
-        "to_object",
-        dtype=dtype,
-        **kwargs.default_values
-    )
+    # pass to cast()
+    return cast(data, dtype=dtype, **kwargs)
 
 
-########################
-####    DEFAULTS    ####
-########################
+#######################
+####    PRIVATE    ####
+#######################
 
 def do_conversion(
     data,

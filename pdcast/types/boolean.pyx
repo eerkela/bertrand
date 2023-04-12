@@ -168,7 +168,7 @@ class BooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
     """
 
     # internal root fields - all subtypes/backends inherit these
-    _conversion_func = convert.to_boolean
+    _family = "boolean"
     _is_boolean = True
     _is_numeric = True
 

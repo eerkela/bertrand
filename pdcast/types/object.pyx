@@ -25,7 +25,7 @@ from .base import register
 class ObjectType(AtomicType, cache_size=64):
 
     # internal root fields - all subtypes/backends inherit these
-    _conversion_func = convert.to_object
+    _family = "object"
 
     name = "object"
     aliases = {

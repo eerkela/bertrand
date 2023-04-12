@@ -235,8 +235,8 @@ def generic(_class: type):
                 )
 
             # inherit generic attributes
+            specific._family = cls._family  # TODO: check if this is already given?
             specific._is_generic = False
-            specific._conversion_func = cls._conversion_func
             specific.name = cls.name
             specific._generic = cls
             cls._backends[backend] = specific
@@ -308,7 +308,7 @@ def subtype(supertype: type):
             )
 
         # inherit supertype attributes
-        class_def._conversion_func = supertype._conversion_func
+        class_def._family = supertype._family  # TODO: check if this is already given?
 
         # overwrite class attributes
         class_def._parent = supertype

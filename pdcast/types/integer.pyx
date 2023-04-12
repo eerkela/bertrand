@@ -139,7 +139,7 @@ class IntegerMixin:
         NOTE: this function does not do anything unless the input to `decimals`
         is negative.
         """
-        rule = convert.validate_rounding(rule)
+        rule = convert.defaults.validators["rounding"](rule)
         if decimals < 0:
             scale = 10**(-1 * decimals)
             return convert.SeriesWrapper(
@@ -395,7 +395,7 @@ class IntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic integer supertype."""
 
     # internal root fields - all subtypes/backends inherit these
-    _conversion_func = convert.to_integer
+    _family = "integer"
     _is_numeric = True
 
     name = "int"

@@ -46,7 +46,7 @@ class DecimalMixin:
         """Round a decimal series to the given number of decimal places using
         the specified rounding rule.
         """
-        rule = convert.validate_rounding(rule)
+        rule = convert.defaults.validators["rounding"](rule)
         return convert.SeriesWrapper(
             round_decimal(series.series, rule=rule, decimals=decimals),
             hasnans=series.hasnans,
@@ -352,7 +352,7 @@ class DecimalMixin:
 class DecimalType(DecimalMixin, AtomicType):
 
     # internal root fields - all subtypes/backends inherit these
-    _conversion_func = convert.to_decimal
+    _family = "decimal"
     _is_numeric = True
 
     name = "decimal"

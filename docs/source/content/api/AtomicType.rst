@@ -144,6 +144,7 @@ define subtypes.
 .. autosummary::
     :toctree: ../../generated/
 
+    AtomicType.family
     AtomicType.is_root
     AtomicType.root
     AtomicType.supertype
