@@ -221,7 +221,7 @@ def to_object(
 #######################
 
 def do_conversion(
-    data,
+    series: pd.Series,
     endpoint: str,
     dtype: types.ScalarType,
     errors: str,
@@ -237,16 +237,9 @@ def do_conversion(
         getattr(dtype, endpoint)(series, *args, **kwargs)
     )
 
-    # convert to series
-    data = as_series(data)
-
-    # parse naked adapters ("sparse"/"categorical" without a wrapped type)
-    if dtype.unwrap() is None:
-        dtype.atomic_type = detect.detect_type(data)
-
     # create manual dispatch method
     dispatch = patch.DispatchMethod(
-        data,
+        series,
         name="",  # passing empty string causes us to never fall back to pandas
         submap=submap,
         namespace=None,
@@ -274,7 +267,7 @@ def do_conversion(
         raise  # never ignore these errors
     except Exception as err:
         if errors == "ignore":
-            return data
+            return series
         raise err
 
 

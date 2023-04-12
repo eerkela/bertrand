@@ -124,6 +124,43 @@ a global basis.
   0   1970-01-01 00:00:01
   dtype: datetime64[ns]
 
+.. TODO:
+    Occasionally, when a new data type is introduced to ``pdcast``, that
+    type's conversions will require additional arguments beyond what is
+    included by default.  :meth:`CastDefaults.register_arg` allows users to
+    easily integrate these new arguments.
+
+    .. code:: python
+
+        @pdcast.defaults.register_arg("bar")
+        def foo(val: str, defaults: pdcast.CastDefaults) -> str:
+            '''docstring for `foo`.''' 
+            if val not in ("bar", "baz"):
+                raise ValueError(f"`foo` must be one of ('bar', 'baz')")
+            return val
+
+    This allows the type's :ref:`delegated <atomic_type.conversions>`
+    conversion methods to access ``foo`` simply by adding it to their call
+    signature.
+
+    .. code:: python
+
+        def to_integer(
+            self,
+            series: pdcast.SeriesWrapper,
+            dtype: pdcast.AtomicType,
+            foo: str,
+            **unused
+        ) -> pdcast.SeriesWrapper:
+            ...
+
+    :class:`CastDefaults` ensures that ``foo`` is always passed to the
+    conversion method, either with the default value specified in
+    :meth:`register_arg <CastDefaults.register_arg>` or an overridden
+    value in :class:`pdcast.defaults <CastDefaults>` or the signature of
+    :func:`cast` itself.
+
+
 .. _cast.stand_alone:
 
 Stand-alone conversions
