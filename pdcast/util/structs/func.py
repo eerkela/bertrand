@@ -380,6 +380,13 @@ class BaseExtensionFunc(threading.local):
             implicitly be called whenever the :class:`ExtensionFunc` is
             executed.
 
+        Raises
+        ------
+        TypeError
+            If the decorator is applied to a non-function argument.
+        KeyError
+            If a managed property of the same name already exists.
+
         Notes
         -----
         A validation function must have the following signature:
@@ -412,6 +419,12 @@ class BaseExtensionFunc(threading.local):
             """Attach a validation function to the ExtensionFunc as a managed
             property.
             """
+            # ensure validator is callable
+            if not callable(validator):
+                raise TypeError(
+                    f"decorated function must be callable: {validator}"
+                )
+
             # use name of validation function as argument name
             name = validator.__name__
             if name in self._validators:
@@ -420,7 +433,7 @@ class BaseExtensionFunc(threading.local):
             # wrap validator to accept default arguments
             @wraps(validator)
             def accept_default(val, defaults=self.default_values):
-                return validator(val, defaults=defaults)
+                return validator(val, defaults)
 
             # compute and validate default value
             if default is no_default:
@@ -455,7 +468,7 @@ class BaseExtensionFunc(threading.local):
             )
             setattr(type(self), name, prop)
 
-            # make decorated validator available from CastDefaults and return
+            # make decorated validator available from ExtensionFunc and return
             self._validators[name] = accept_default
             return accept_default
 

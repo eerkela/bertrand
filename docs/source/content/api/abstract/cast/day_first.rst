@@ -1,6 +1,6 @@
-.. currentmodule:: pdcast
+.. currentmodule:: pdcast.convert.arguments
 
-pdcast.defaults.day_first
-=========================
+pdcast.cast.day_first
+=====================
 
-.. autoattribute:: CastDefaults.day_first
+.. autofunction:: day_first

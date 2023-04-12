@@ -1,6 +1,6 @@
-.. currentmodule:: pdcast
+.. currentmodule:: pdcast.convert.arguments
 
-pdcast.defaults.rounding
-========================
+pdcast.cast.rounding
+====================
 
-.. autoattribute:: CastDefaults.rounding
+.. autofunction:: rounding

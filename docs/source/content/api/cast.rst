@@ -16,12 +16,6 @@ pdcast.cast
 Arguments
 ---------
 The behavior of this function can be customized using the following arguments.
-Default values for each are stored in a thread-local
-:class:`pdcast.defaults <CastDefaults>` configuration object, which can be
-:meth:`updated <CastDefaults.register_arg>` at run time to add additional
-entries to this list.
-
-.. TODO: add a default column to this table and include a header.
 
 .. list-table::
     :header-rows: 1
@@ -29,59 +23,59 @@ entries to this list.
     * - Argument
       - Description
       - Default
-    * - :attr:`tol <CastDefaults.tol>`
+    * - :attr:`tol <convert.arguments.tol>`
       - The maximum amount of precision loss that can occur before an error is
         raised.
       - ``1e-6``
-    * - :attr:`rounding <CastDefaults.rounding>`
+    * - :attr:`rounding <convert.arguments.rounding>`
       - The rounding rule to use for numeric conversions.
       - ``None``
-    * - :attr:`unit <CastDefaults.unit>`
+    * - :attr:`unit <convert.arguments.unit>`
       - The unit to use for numeric <-> datetime/timedelta conversions.
       - ``"ns"``
-    * - :attr:`step_size <CastDefaults.step_size>`
-      - The step size to use for each :attr:`unit <CastDefaults.unit>`.
+    * - :attr:`step_size <convert.arguments.step_size>`
+      - The step size to use for each :attr:`unit <convert.arguments.unit>`.
       - ``1``
-    * - :attr:`since <CastDefaults.since>`
+    * - :attr:`since <convert.arguments.since>`
       - The epoch to use for datetime/timedelta conversions.
       - ``"utc"``
-    * - :attr:`tz <CastDefaults.tz>`
+    * - :attr:`tz <convert.arguments.tz>`
       - TODO
       - ``None``
-    * - :attr:`naive_tz <CastDefaults.naive_tz>`
+    * - :attr:`naive_tz <convert.arguments.naive_tz>`
       - TODO
       - ``None``
-    * - :attr:`day_first <CastDefaults.day_first>`
+    * - :attr:`day_first <convert.arguments.day_first>`
       - TODO
       - ``False``
-    * - :attr:`year_first <CastDefaults.year_first>`
+    * - :attr:`year_first <convert.arguments.year_first>`
       - TODO
       - ``False``
-    * - :attr:`as_hours <CastDefaults.as_hours>`
+    * - :attr:`as_hours <convert.arguments.as_hours>`
       - TODO
       - ``False``
-    * - :attr:`true <CastDefaults.true>`
+    * - :attr:`true <convert.arguments.true>`
       - TODO
       - ``{"true", "t", "yes", "y", "on", "1"}``
-    * - :attr:`false <CastDefaults.false>`
+    * - :attr:`false <convert.arguments.false>`
       - TODO
       - ``{"false", "f", "no", "n", "off", "0"}``
-    * - :attr:`ignore_case <CastDefaults.ignore_case>`
+    * - :attr:`ignore_case <convert.arguments.ignore_case>`
       - TODO
       - ``True``
-    * - :attr:`format <CastDefaults.format>`
+    * - :attr:`format <convert.arguments.format>`
       - TODO
       - ``None``
-    * - :attr:`base <CastDefaults.base>`
+    * - :attr:`base <convert.arguments.base>`
       - TODO
       - ``0`` [#base]_
-    * - :attr:`call <CastDefaults.call>`
+    * - :attr:`call <convert.arguments.call>`
       - TODO
       - ``None``
-    * - :attr:`downcast <CastDefaults.downcast>`
+    * - :attr:`downcast <convert.arguments.downcast>`
       - TODO
       - ``False``
-    * - :attr:`errors <CastDefaults.errors>`
+    * - :attr:`errors <convert.arguments.errors>`
       - TODO
       - ``"raise"``
 
@@ -110,34 +104,36 @@ entries to this list.
 .. [#base] as supplied to `python
     <https://docs.python.org/3/library/functions.html#int>`_ ``int()``.
 
-:class:`pdcast.defaults <CastDefaults>` also allows users to dynamically modify
-the default values of these arguments, altering the behavior of :func:`cast` on
-a global basis.
+.. note::
 
-.. doctest::
+    :func:`cast` is an :func:`extension_func <extension_func>`, meaning that
+    the default values listed above can be dynamically modified at run time.
 
-  >>> pdcast.cast(1, "datetime")
-  0   1970-01-01 00:00:00.000000001
-  dtype: datetime64[ns]
-  >>> pdcast.defaults.unit = "s"
-  >>> pdcast.cast(1, "datetime")
-  0   1970-01-01 00:00:01
-  dtype: datetime64[ns]
+    .. doctest::
 
-.. TODO:
-    Occasionally, when a new data type is introduced to ``pdcast``, that
-    type's conversions will require additional arguments beyond what is
-    included by default.  :meth:`CastDefaults.register_arg` allows users to
-    easily integrate these new arguments.
+        >>> pdcast.cast(1, "datetime")
+        0   1970-01-01 00:00:00.000000001
+        dtype: datetime64[ns]
+        >>> pdcast.cast.unit = "s"
+        >>> pdcast.cast(1, "datetime")
+        0   1970-01-01 00:00:01
+        dtype: datetime64[ns]
+        >>> del pdcast.cast.unit
+        >>> pdcast.cast(1, "datetime")
+        0   1970-01-01 00:00:00.000000001
+        dtype: datetime64[ns]
 
-    .. code:: python
+    Additionally, new arguments can be added by calling
+    :meth:`@cast.register_arg <ExtensionFunc.register_arg>`.
 
-        @pdcast.defaults.register_arg("bar")
-        def foo(val: str, defaults: pdcast.CastDefaults) -> str:
-            '''docstring for `foo`.''' 
-            if val not in ("bar", "baz"):
-                raise ValueError(f"`foo` must be one of ('bar', 'baz')")
-            return val
+    .. doctest::
+
+        >>> @pdcast.cast.register_arg(default="bar")
+        ... def foo(val: str, defaults: dict) -> str:
+        ...     '''docstring for `foo`.'''
+        ...     if val not in ("bar", "baz"):
+        ...         raise ValueError(f"`foo` must be one of ('bar', 'baz')")
+        ...     return val
 
     This allows the type's :ref:`delegated <atomic_type.conversions>`
     conversion methods to access ``foo`` simply by adding it to their call
@@ -154,12 +150,10 @@ a global basis.
         ) -> pdcast.SeriesWrapper:
             ...
 
-    :class:`CastDefaults` ensures that ``foo`` is always passed to the
-    conversion method, either with the default value specified in
-    :meth:`register_arg <CastDefaults.register_arg>` or an overridden
-    value in :class:`pdcast.defaults <CastDefaults>` or the signature of
-    :func:`cast` itself.
-
+    :func:`extension_func <extension_func>` ensures that ``foo`` is always
+    passed to the conversion method, either with the default value specified in
+    :meth:`register_arg <ExtensionFunc.register_arg>` or a dynamic value from
+    the global configuration or signature of :func:`cast` itself.
 
 .. _cast.stand_alone:
 

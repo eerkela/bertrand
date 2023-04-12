@@ -1,6 +1,6 @@
-.. currentmodule:: pdcast
+.. currentmodule:: pdcast.convert.arguments
 
-pdcast.defaults.as_hours
-========================
+pdcast.cast.as_hours
+====================
 
-.. autoattribute:: CastDefaults.as_hours
+.. autofunction:: as_hours

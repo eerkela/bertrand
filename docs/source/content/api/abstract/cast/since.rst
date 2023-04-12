@@ -1,6 +1,6 @@
-.. currentmodule:: pdcast
+.. currentmodule:: pdcast.convert.arguments
 
-pdcast.defaults.since
-=====================
+pdcast.cast.since
+=================
 
-.. autoattribute:: CastDefaults.since
+.. autofunction:: since

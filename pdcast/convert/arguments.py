@@ -128,8 +128,8 @@ def tol(val: numeric, defaults: dict) -> Tolerance:
         OverflowError: values exceed int8 range at index [0]
 
     Additionally, this argument controls the maximum amount of precision
-    loss that can occur when :attr:`downcasting <CastDefaults.downcast>`
-    numeric values.
+    loss that can occur when :attr:`downcasting <cast.downcast>` numeric
+    values.
 
     .. doctest::
 
@@ -154,8 +154,8 @@ def tol(val: numeric, defaults: dict) -> Tolerance:
     .. note::
 
         For integer conversions, this is equivalent to setting
-        :attr:`rounding <CastDefaults.rounding>` to ``"half_even"``, with
-        additional clipping around the minimum and maximum values.
+        :attr:`rounding <cast.rounding>` to ``"half_even"``, with additional
+        clipping around the minimum and maximum values.
     """
     return Tolerance(val)
 
@@ -189,7 +189,7 @@ def rounding(val: str | None, defaults: dict) -> str:
             Also known as *convergent rounding*, *statistician's rounding*, or
             *banker's rounding*.
 
-    This argument is applied **after** :attr:`tol <CastDefaults.tol>`.
+    This argument is applied **after** :attr:`tol <cast.tol>`.
 
     Examples
     --------
@@ -346,13 +346,13 @@ def unit(val: str, defaults: dict) -> str:
 
 @standalone.cast.register_arg(default=1)
 def step_size(val: int, defaults: dict) -> int:
-    """The step size to use for each :attr:`unit <CastDefaults.unit>`.
+    """The step size to use for each :attr:`unit <cast.unit>`.
 
     Returns
     -------
     int
         A positive integer >= 1.  This is effectively a multiplier for
-        :attr:`unit <CastDefaults.unit>`.  Default is ``1``.
+        :attr:`unit <cast.unit>`.  Default is ``1``.
 
     Examples
     --------
@@ -540,15 +540,14 @@ def tz(
 
     Numerics (boolean, integer, float, complex, decimal) and timedeltas are
     always computed in UTC relative to the
-    :attr:`since <CastDefaults.since>` argument.  When a time zone is
-    supplied via :attr:`tz <CastDefaults.tz>`, the resulting datetimes
-    will be *converted* from UTC to the specified time zone.
+    :attr:`since <cast.since>` argument.  When a time zone is supplied via
+    :attr:`tz <cast.tz>`, the resulting datetimes will be *converted* from UTC
+    to the specified time zone.
 
     Strings and datetimes on the other hand are interpreted according to
-    the :attr:`naive_tz <CastDefaults.naive_tz>` argument.  Any naive
-    inputs will first be localized to
-    :attr:`naive_tz <CastDefaults.naive_tz>` and then converted to the
-    final :attr`tz <CastDefaults.tz>`.
+    the :attr:`naive_tz <cast.naive_tz>` argument.  Any naive inputs will first
+    be localized to :attr:`naive_tz <cast.naive_tz>` and then converted to the
+    final :attr`tz <cast.tz>`.
     """
     return timezone(val)
 
@@ -575,9 +574,8 @@ def naive_tz(
 
     Examples
     ---------
-    If a :attr:`tz <CastDefaults.tz>` is given while this is set to
-    ``None``, the results will be localized directly to
-    :attr:`tz <CastDefaults.tz>`.
+    If a :attr:`tz <cast.tz>` is given while this is set to ``None``, the
+    results will be localized directly to :attr:`tz <cast.tz>`.
     """
     return timezone(val)
 

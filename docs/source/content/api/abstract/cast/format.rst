@@ -1,6 +1,6 @@
-.. currentmodule:: pdcast
+.. currentmodule:: pdcast.convert.arguments
 
-pdcast.defaults.format
-======================
+pdcast.cast.format
+==================
 
-.. autoattribute:: CastDefaults.format
+.. autofunction:: format

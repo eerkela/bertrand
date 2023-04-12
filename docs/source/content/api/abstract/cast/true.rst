@@ -1,6 +1,6 @@
-.. currentmodule:: pdcast
+.. currentmodule:: pdcast.convert.arguments
 
-pdcast.defaults.true
-====================
+pdcast.cast.true
+================
 
-.. autoattribute:: CastDefaults.true
+.. autofunction:: true

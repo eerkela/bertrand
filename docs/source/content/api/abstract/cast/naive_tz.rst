@@ -1,6 +1,6 @@
-.. currentmodule:: pdcast
+.. currentmodule:: pdcast.convert.arguments
 
-pdcast.defaults.naive_tz
-========================
+pdcast.cast.naive_tz
+====================
 
-.. autoattribute:: CastDefaults.naive_tz
+.. autofunction:: naive_tz

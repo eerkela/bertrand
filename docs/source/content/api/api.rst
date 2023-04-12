@@ -17,9 +17,6 @@ sidebar.
       - Check whether example data contains elements of a specified type.
     * - :func:`cast`
       - Cast arbitrary data to the specified type.
-    * - :class:`defaults <CastDefaults>`
-      - A thread-local configuration object containing default values for
-        :func:`cast` operations.
     * - :func:`attach`
       - TODO
     * - :func:`detach`
@@ -51,7 +48,6 @@ sidebar.
     pdcast.detect_type <detect_type>
     pdcast.typecheck <typecheck>
     pdcast.cast <cast>
-    pdcast.defaults <defaults>
     pdcast.attach <attach>
     pdcast.detach <detach>
     pdcast.dispatch <dispatch>

@@ -1,6 +1,6 @@
-.. currentmodule:: pdcast
+.. currentmodule:: pdcast.convert.arguments
 
-pdcast.defaults.year_first
-==========================
+pdcast.cast.year_first
+======================
 
-.. autoattribute:: CastDefaults.year_first
+.. autofunction:: year_first

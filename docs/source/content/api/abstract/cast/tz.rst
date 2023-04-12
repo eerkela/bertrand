@@ -1,6 +1,6 @@
-.. currentmodule:: pdcast
+.. currentmodule:: pdcast.convert.arguments
 
-pdcast.defaults.tz
-==================
+pdcast.cast.tz
+==============
 
-.. autoattribute:: CastDefaults.tz
+.. autofunction:: tz

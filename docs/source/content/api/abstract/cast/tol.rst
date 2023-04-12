@@ -1,6 +1,6 @@
-.. currentmodule:: pdcast
+.. currentmodule:: pdcast.convert.arguments
 
-pdcast.defaults.tol
-===================
+pdcast.cast.tol
+===============
 
-.. autoattribute:: CastDefaults.tol
+.. autofunction:: tol
