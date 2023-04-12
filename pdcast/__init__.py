@@ -2,9 +2,8 @@ from .patch import attach, detach, DispatchMethod, Namespace
 
 from .check import typecheck
 from .convert import (
-    cast, CastDefaults, defaults, SeriesWrapper, to_boolean, to_integer,
-    to_float, to_complex, to_decimal, to_datetime, to_timedelta, to_string,
-    to_object
+    cast, to_boolean, to_integer, to_float, to_complex, to_decimal,
+    to_datetime, to_timedelta, to_string, to_object, SeriesWrapper
 )
 from .detect import detect_type
 from .resolve import resolve_type

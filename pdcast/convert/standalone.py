@@ -1,33 +1,22 @@
+from __future__ import annotations
+from typing import Any, Optional
 
-from datetime import tzinfo
-import decimal
-import threading
-from typing import Any, Callable, Iterable, Optional
-
-cimport cython
-cimport numpy as np
-import numpy as np
 import pandas as pd
-import pytz
-import tzlocal
 
-cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
-cimport pdcast.detect as detect
 import pdcast.detect as detect
 import pdcast.patch as patch
-cimport pdcast.types as types
 import pdcast.types as types
 
 import pdcast.convert.wrapper as wrapper
 import pdcast.convert.arguments as arguments
 
-from pdcast.util.round cimport Tolerance
-from pdcast.util.round import valid_rules
-from pdcast.util.structs import as_series
-from pdcast.util.time cimport Epoch, epoch_aliases, valid_units
-from pdcast.util.time import timezone
-from pdcast.util.type_hints import datetime_like, numeric, type_specifier
+from pdcast.util.structs import as_series, extension_func
+from pdcast.util.type_hints import type_specifier
+
+
+# ignore this file when doing string-based object lookups in resolve_type()
+_ignore_frame_objects = True
 
 
 ######################
@@ -35,6 +24,7 @@ from pdcast.util.type_hints import datetime_like, numeric, type_specifier
 ######################
 
 
+@extension_func
 def cast(
     data: Any,
     dtype: Optional[type_specifier] = None,
@@ -70,7 +60,6 @@ def cast(
     This function can be used as an alternative to ``astype()``.
     """
     series = as_series(data)
-    kwargs = arguments.CastDefaults(**kwargs)
 
     # if no target is given, default to series type
     if dtype is None:
@@ -90,7 +79,7 @@ def cast(
         series,
         f"to_{dtype.family}",
         dtype=dtype,
-        **kwargs.default_values
+        **kwargs
     )
 
 
@@ -219,6 +208,7 @@ def to_object(
 #######################
 ####    PRIVATE    ####
 #######################
+
 
 def do_conversion(
     series: pd.Series,

@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 def extension_func(func: Callable) -> Callable:
     """A decorator that transforms a Python function into a thread-local
-    :class:`ExtensionFunc <BaseExtensionFunc>` object.
+    :class:`ExtensionFunc` object.
 
     Parameters
     ----------
@@ -24,9 +24,8 @@ def extension_func(func: Callable) -> Callable:
     Returns
     -------
     Callable
-        A callable :class:`ExtensionFunc <BaseExtensionFunc>` object, which
-        manages default values and argument validators for the decorated
-        function.
+        A callable :class:`ExtensionFunc` object, which manages default values
+        and argument validators for the decorated function.
 
     Raises
     ------
@@ -77,8 +76,8 @@ def extension_func(func: Callable) -> Callable:
             ...
         ValueError: invalid literal for int() with base 10: 'a'
 
-    :class:`ExtensionFunc <BaseExtensionFunc>` also allows us to
-    programmatically assign/modify default values for our managed arguments.
+    :class:`ExtensionFunc` also allows us to programmatically assign/modify
+    default values for our managed arguments.
 
     .. doctest::
 
@@ -271,8 +270,8 @@ class BaseExtensionFunc(threading.local):
 
     Notes
     -----
-    Whenever an argument is :meth:`registered <BaseExtensionFunc.register_arg>`
-    to this object, it is added as a managed ``@property``.  This automatically
+    Whenever an argument is :meth:`registered <ExtensionFunc.register_arg>` to
+    this object, it is added as a managed ``@property``.  This automatically
     generates an appropriate getter, setter, and deleter for the attribute
     based on the decorated validation function.
 
@@ -313,7 +312,7 @@ class BaseExtensionFunc(threading.local):
     @property
     def default_values(self) -> MappingProxyType:
         """A mapping of all argument names to their associated default values
-        for this :class:`ExtensionFunc <BaseExtensionFunc>`.
+        for this :class:`ExtensionFunc`.
 
         Returns
         -------
@@ -362,7 +361,7 @@ class BaseExtensionFunc(threading.local):
         default: Any = no_default
     ) -> Callable:
         """A decorator that transforms a naked validation function into a
-        managed argument for :class:`ExtensionFunc <BaseExtensionFunc>`.
+        managed argument for :class:`ExtensionFunc`.
 
         Parameters
         ----------
@@ -378,8 +377,8 @@ class BaseExtensionFunc(threading.local):
         Callable
             A decorated version of the validation function that automatically
             fills out its ``defaults`` argument.  This function will
-            implicitly be called whenever the
-            :class:`ExtensionFunc <BaseExtensionFunc>` is executed.
+            implicitly be called whenever the :class:`ExtensionFunc` is
+            executed.
 
         Notes
         -----
@@ -465,8 +464,8 @@ class BaseExtensionFunc(threading.local):
         return argument(_func)
 
     def remove_arg(self, *args: str) -> None:
-        """Remove a registered argument from an
-        :class:`ExtensionFunc <BaseExtensionFunc>` instance.
+        """Remove a registered argument from an :class:`ExtensionFunc`
+        instance.
 
         Parameters
         ----------
@@ -478,7 +477,7 @@ class BaseExtensionFunc(threading.local):
         ------
         AttributeError
             If any of the referenced arguments are not being actively managed
-            by this :class:`ExtensionFunc <BaseExtensionFunc>`.
+            by this :class:`ExtensionFunc`.
 
         Examples
         --------
