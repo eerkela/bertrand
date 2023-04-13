@@ -1,3 +1,5 @@
+.. currentmodule:: pdcast
+
 pandas.Series.dt.tz_convert
 ===========================
 
@@ -7,7 +9,7 @@ pandas.Series.dt.tz_convert
     Convert timezone-aware datetimes to the given timezone.
 
     :param tz:
-        The timezone to convert to.  If this is ``None``, datetimes will be
+        The timezone to convert to.  If this is :data:`None`, datetimes will be
         converted to UTC and then returned in naive format.
     :type tz: str | pytz.timezone | None
     :return:
@@ -35,7 +37,7 @@ pandas.Series.dt.tz_convert
     implementation.
 
     This method allows python datetimes to use the same conversion syntax as
-    ``pandas.Timestamp`` objects.
+    :class:`pandas.Timestamp` objects.
 
     **Examples**
 

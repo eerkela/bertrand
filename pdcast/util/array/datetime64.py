@@ -542,10 +542,9 @@ class M8Array(ExtensionArray, ExtensionScalarOpsMixin):
         """Allows AbstractArrays to utilize numpy ufuncs natively, without
         being coerced to dtype: object.
 
-        This implementation is adapted from the example given by numpy.  It
-        might require further modifications.
-
-        https://numpy.org/doc/stable/reference/generated/numpy.lib.mixins.NDArrayOperatorsMixin.html
+        This implementation is adapted from the
+        :class:`example <numpy.lib.mixins.NDArrayOperatorsMixin>` given by
+        numpy.  It might require further modifications.
         """
         # pandas unboxes these so we don't need to implement them ourselves
         if any(

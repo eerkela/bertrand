@@ -40,10 +40,10 @@ The behavior of this function can be customized using the following arguments.
       - The epoch to use for datetime/timedelta conversions.
       - ``"utc"``
     * - :attr:`tz <convert.arguments.tz>`
-      - TODO
+      - Specifies a time zone to use for datetime conversions.
       - ``None``
     * - :attr:`naive_tz <convert.arguments.naive_tz>`
-      - TODO
+      - The assumed time zone when localizing naive datetimes.
       - ``None``
     * - :attr:`day_first <convert.arguments.day_first>`
       - TODO
@@ -101,8 +101,7 @@ The behavior of this function can be customized using the following arguments.
     downcast <abstract/cast/downcast>
     errors <abstract/cast/errors>
 
-.. [#base] as supplied to `python
-    <https://docs.python.org/3/library/functions.html#int>`_ ``int()``.
+.. [#base] as supplied to python :class:`int() <python:int>`.
 
 .. note::
 
@@ -159,14 +158,16 @@ The behavior of this function can be customized using the following arguments.
 
 Stand-alone conversions
 -----------------------
-:func:`cast` is fully generic and can handle conversions from any data type to
-any data type.  
+Pandas offers a few simple convenience functions for quick conversions to
+predefined data types, like :func:`pandas.to_datetime`,
+:func:`pandas.to_numeric`, etc.  :func:`cast` can be used to replicate the
+behavior of these functions in a more abstract way, but sometimes the simple
+convenience of writing a :func:`to_datetime <pandas.to_datetime>` call is hard
+to beat.
 
-Internally, :func:`cast` calls a selection of stand-alone conversion functions,
-similar to ``pandas.to_datetime()``, ``pandas.to_numeric()``, etc.  These are
-available for use under the ``pdcast`` namespace if desired, mirroring their
-pandas equivalents.  They inherit the same :ref:`arguments <cast.arguments>` as
-above.
+To this end, ``pdcast`` exposes its own suite of analogous methods that operate
+within its expanded type system.  They inherit the same
+:ref:`arguments <cast.arguments>` as above.
 
 .. autosummary::
     :toctree: ../../generated/
@@ -238,7 +239,7 @@ wrapped around the inferred data type.
 Pandas integration
 ------------------
 If :func:`pdcast.attach() <attach>` is invoked, this function is attached
-directly to ``pandas.Series`` objects under :meth:`pandas.Series.cast`,
+directly to :class:`pandas.Series` objects under :meth:`pandas.Series.cast`,
 allowing users to omit the ``data`` argument.
 
 .. doctest::
@@ -250,7 +251,7 @@ allowing users to omit the ``data`` argument.
     2   1970-01-01 00:00:00.000000003
     dtype: datetime64[ns]
 
-A similar attribute is attached to ``pandas.DataFrame`` objects under
+A similar attribute is attached to :class:`pandas.DataFrame` objects under
 :meth:`pandas.DataFrame.cast`, except that it can also accept dictionaries
 mapping column names to type specifiers as its ``dtype`` argument.  Any column
 that does not appear in such a mapping will be ignored during conversion.

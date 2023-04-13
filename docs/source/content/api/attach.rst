@@ -3,16 +3,18 @@
 pdcast.attach
 =============
 If :func:`pdcast.attach() <attach>` is invoked, each of these methods will be
-attached directly to ``pandas.Series`` and ``pandas.DataFrame`` objects under
-the given endpoints.  The only exception is the :func:`@dispatch() <dispatch>`
-decorator itself, which allows users to add new methods to this list.
+attached directly to :class:`pandas.Series` and :class:`pandas.DataFrame`
+objects under the given endpoints.  The only exception is the
+:func:`@dispatch() <dispatch>` decorator itself, which allows users to add new
+methods to this list.
 
 These methods may not be defined for all types.  If a type does not define a
 method, it will default to the standard pandas implementation if one exists.
 See each method's description for a list of types that it applies to.  If there
 is any doubt, an explicit check can be performed by testing whether a series'
-``.element_type`` has an attribute of the same name.  If this is the case, then
-the overloaded definition will be used for that series.
+:attr:`element_type <pandas.Series.element_type>` has an attribute of the same
+name.  If this is the case, then the overloaded definition will be used for
+that series.
 
 .. doctest:: attach
 
@@ -35,8 +37,8 @@ checked individually.
     [True, True, True, False]
 
 If :func:`pdcast.detach() <detach>` is invoked, all of the above functionality
-will be removed, leaving ``pandas.Series`` and ``pandas.DataFrame`` objects in
-their original form, the same as they were before
+will be removed, leaving :class:`pandas.Series` and :class:`pandas.DataFrame`
+objects in their original form, the same as they were before
 :func:`pdcast.attach() <attach>` was called.
 
 .. doctest:: attach

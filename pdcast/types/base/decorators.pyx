@@ -32,15 +32,16 @@ def dispatch(
     types: type_specifier | Iterable[type_specifier] = None,
     include_subtypes: bool = True
 ):
-    """Dispatch a method to ``pandas.Series`` objects of the associated type.
+    """Dispatch a method to :class:`pandas.Series` objects of the associated
+    type.
 
     Parameters
     ----------
     namespace : str, default None
         Hide the dispatched method behind a virtual namespace, similar to
-        ``pandas.Series.dt``, ``pandas.Series.str``, etc.  The attribute will
-        only be accessible from this extended namespace.  This is useful for
-        preventing conflicts with existing pandas functionality.
+        :attr:`pandas.Series.dt`, :attr:`pandas.Series.str`, etc.  The
+        attribute will only be accessible from this extended namespace.  This
+        is useful for preventing conflicts with existing pandas functionality.
     types : type specifier | Iterable[type specifier], default None
         The existing types to broadcast this method to.  These can be given
         in any format recognized by :func:`resolve_type`, and any number of
@@ -56,7 +57,7 @@ def dispatch(
 
     include_subtypes : bool, default True
         Specifies whether to add the dispatched method to subtypes of the
-        given ``types``.  If this is set to ``False``, then the method will
+        given types.  If this is set to ``False``, then the method will
         only be added to the types themselves (along with each of their
         implementations if any are :func:`generic`).
 
@@ -65,8 +66,8 @@ def dispatch(
     ValueError
         If ``types`` is given and could not be resolved, or if it contains
         types that are wrapped in adapters (e.g. ``"sparse[int]"``, etc.).
-        If you'd like to dispatch method to an ``AdapterType`` globally, then
-        it should be naked when it is provided to this function (e.g.
+        If you'd like to dispatch method to an :class:`AdapterType` globally,
+        then it should be naked when it is provided to this function (e.g.
         ``"sparse"`` rather than ``"sparse[int]"``).
     TypeError
         If the decorated method does not conform to the dispatch criteria.
@@ -126,9 +127,9 @@ def dispatch(
     Both of these conditions are validated by the decorator when it is applied.
 
     On an implementation level, this function works by intercepting attribute
-    access to ``pandas.Series`` objects.  When an attribute is requested, its
-    name is first compared against a table of all the methods that have been
-    decorated by this function.  If a match is found, then the type of the
+    access to :class:`pandas.Series` objects.  When an attribute is requested,
+    its name is first compared against a table of all the methods that have
+    been decorated by this function.  If a match is found, then the type of the
     series is inferred, and if the inferred type implements the named method,
     then it will be chosen instead of the default implementation.  Otherwise,
     the attribute access is treated normally.

@@ -68,12 +68,8 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
 
     See Also
     --------
-    AtomicType.from_dtype : customizable resolution of
-        :ref:`numpy <resolve_type.type_specifiers.numpy>`\ /\ 
-        :ref:`pandas <resolve_type.type_specifiers.pandas>` data types.
-    AdapterType.from_dtype : customizable resolution of
-        :ref:`numpy <resolve_type.type_specifiers.numpy>`\ /\ 
-        :ref:`pandas <resolve_type.type_specifiers.pandas>` data types.
+    AtomicType.from_dtype : customizable resolution of numpy/pandas data types.
+    AdapterType.from_dtype : customizable resolution of numpy/pandas data types.
     AtomicType.resolve : customizable semantics for the
         :ref:`type specification mini-language <resolve_type.mini_language>`.
     AdapterType.resolve : customizable semantics for the

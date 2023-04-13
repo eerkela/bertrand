@@ -14,7 +14,8 @@ Features
    be arranged into trees to represent different subtypes and implementations,
    and new types can be defined in as little as 10 lines of code.  They can
    utilize existing ``dtype``\ /\ ``ExtensionDtype`` definitions or
-   *automatically generate* their own via the  `pandas extension API <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
+   *automatically generate* their own via the  `pandas extension API
+   <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
    This unifies the two halves of the pandas typing infrastructure and takes
    the guesswork out of writing new extensions.  In either case, integration is
    seamless and automatic, and every aspect of a type's behavior can be

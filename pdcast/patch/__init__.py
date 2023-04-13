@@ -10,6 +10,6 @@ def attach() -> None:
 
 
 def detach() -> None:
-    """Remove all `pdcast` functionality from pandas objects."""
+    """Remove all ``pdcast`` functionality from pandas objects."""
     series.detach()
     dataframe.detach()

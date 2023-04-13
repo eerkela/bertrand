@@ -1,3 +1,5 @@
+.. currentmodule:: pdcast
+
 pandas.Series.dt.tz_localize
 ============================
 
@@ -7,8 +9,8 @@ pandas.Series.dt.tz_localize
     Localize timezone-naive datetimes to the given timezone.
 
     :param tz:
-        The timezone to localize to.  If this is ``None``, datetimes will be
-        converted to naive format.
+        The timezone to localize to.  If this is :data:`None`, datetimes will
+        be converted to naive format.
     :type tz: str | pytz.timezone | None
     :return:
         A series of the same type as the input, localized to the given
@@ -35,7 +37,7 @@ pandas.Series.dt.tz_localize
     implementation.
 
     This method allows python datetimes to use the same localization syntax as
-    ``pandas.Timestamp`` objects.
+    :class:`pandas.Timestamp` objects.
 
     **Examples**
 

@@ -1,3 +1,5 @@
+.. currentmodule:: pdcast
+
 pandas.Series.round
 ===================
 
@@ -46,12 +48,13 @@ pandas.Series.round
         #.  ``"half_up"`` - round to nearest with halves away from zero.
         #.  ``"half_even"`` - Round to nearest with halves toward the nearest
             even value.  This is the default, matching the behavior of the
-            original ``pandas.Series.round()`` implementation.  Also known as
+            original :meth:`pandas.Series.round` implementation.  Also known as
             banker's rounding.  
 
     **Examples**
 
-    The standard ``pandas.Series.round()`` implementation fails in some cases:
+    The standard :meth:`pandas.Series.round` implementation fails in some
+    cases:
 
     .. doctest::
 

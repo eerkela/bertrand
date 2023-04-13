@@ -758,7 +758,7 @@ like without risk of collision.
     To address this, care must be taken to ensure that core functionality
     (including the argument signature) is retained.  In fact, this is why we
     placed the ``decimals`` argument *before* ``rule`` in our ``round()``
-    signature, to mirror the `pandas implementation <https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.Series.round.html>`_.
+    signature, to mirror :meth:`pandas:pandas.Series.round`.
 
 .. caution::
 

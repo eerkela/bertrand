@@ -251,6 +251,28 @@ function.
     >>> MyClass.foo()
     (1, 2)
 
+.. _extension_func.application:
+
+Where to go from here?
+----------------------
+Imagine you have a whole package's worth of :doc:`robust <detect_type>` and
+:doc:`extendable <AtomicType>` data :doc:`conversions <cast>` and a full 
+:doc:`type system <../types/types>` at your disposal.
+
+.. doctest::
+
+    >>> @extension_func
+    ... def my_func(foo: Any, **kwargs) -> int:
+    ...     return cast(foo, int, **kwargs)
+
+    >>> @my_func.register_arg
+    ... def foo(val: Any, defaults: dict) -> datetime_like:
+    ...     return cast(val, "datetime")
+
+    >>> my_func("today", unit="D", since="April 5th, 2022")   # doctest: +SKIP
+    0   373
+    dtype: int[python]
+
 .. _extension_func.internal:
 
 Internals

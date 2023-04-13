@@ -99,11 +99,11 @@ class ExtensionFunc(threading.local):
     Notes
     -----
     Whenever an argument is :meth:`registered <ExtensionFunc.register_arg>` to
-    this object, it is added as a managed ``@property``.  This automatically
-    generates an appropriate getter, setter, and deleter for the attribute
-    based on the decorated validation function.
+    this object, it is added as a managed :class:`property <python:property>`.
+    This automatically generates an appropriate getter, setter, and deleter for
+    the attribute based on the decorated validation function.
 
-    Additionally, this object inherits from ``threading.local``.  If the
+    Additionally, this object inherits from :class:`threading.local`.  If the
     decorated function is referenced in a child thread, a new instance will be
     dynamically created with arguments and defaults from the main thread.  This
     instance can then be modified without affecting the behavior of any other
@@ -111,7 +111,8 @@ class ExtensionFunc(threading.local):
 
     Examples
     --------
-    See the docs for :func:`extension_func` for example usage.
+    See the docs for :func:`@extension_func <extension_func>` for example
+    usage.
     """
 
     def __init__(self, _func: Callable):
@@ -233,10 +234,10 @@ class ExtensionFunc(threading.local):
         .. note::
 
             Race conditions may be introduced when arguments access each other
-            in their validators.  This can be mitigated by using ``dict.get()``
-            with a default value rather than relying on direct access, as well
-            as manually applying the same coercions as in the referenced
-            argument's validation function.
+            in their validators.  This can be mitigated by using
+            :meth:`dict.get() <python:dict.get>` with a default value rather
+            than relying on direct access, as well as manually applying the
+            same coercions as in the referenced argument's validation function.
 
         Examples
         --------
@@ -441,7 +442,8 @@ class ExtensionFunc(threading.local):
         -----
         This method attaches a :class:`VirtualMethod` descriptor to the
         associated class that serves as a factory for :class:`ExtensionMethod`
-        objects.  These are bound to individual instances via ``__get__()``.
+        objects.  These are bound to individual instances via
+        :meth:`__get__() <object.__get__>`.
 
         Examples
         --------
@@ -689,3 +691,53 @@ class VirtualMethod:
 
     def __get__(self, instance, owner=None) -> Callable:
         return ExtensionMethod(instance, self._ext_func, self._ext_name)
+
+
+
+
+if __name__ == "__main__":
+
+    @extension_func
+    def foo(bar, baz=2, **kwargs):
+        return (bar, baz)
+
+
+    @foo.register_arg(default=1)
+    def bar(val: int, defaults: dict) -> int:
+        return int(val)
+
+
+    @foo.register_arg
+    def baz(val: int, defaults: dict) -> int:
+        return int(val)
+
+
+    @foo.register_arg(default=3)
+    def qux(val: int, defaults: dict) -> int:
+        return int(val)
+
+
+    class MyClass:
+        def __int__(self) -> int:
+            print("Hello, World!")
+            return 4
+
+
+    foo.attach_to(MyClass)
+
+
+
+
+    from pdcast import *
+    from pdcast.util.type_hints import datetime_like
+
+
+    @extension_func
+    def my_func(foo: Any, **kwargs) -> int:
+        return cast(foo, int, **kwargs)
+
+    @my_func.register_arg
+    def foo(val: Any, defaults: dict) -> datetime_like:
+        return cast(val, "datetime")
+
+    my_func("today", unit="D", since="April 5th, 2022")

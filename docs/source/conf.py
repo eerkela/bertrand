@@ -21,13 +21,21 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
+    "sphinx.ext.intersphinx",
     "sphinx_rtd_theme",
 ]
 
-# TODO: check out sphinx.ext.inheritance_diagram, sphinx.ext.intersphinx
+# TODO: check out sphinx.ext.inheritance_diagram
 
 templates_path = ['_templates']
 exclude_patterns = []
+
+intersphinx_mapping = {
+    "dateutil": ("https://dateutil.readthedocs.io/en/stable/", None),
+    "numpy": ("https://numpy.org/doc/stable/", None),
+    "pandas": ("https://pandas.pydata.org/pandas-docs/stable/", None),
+    "python": ("https://docs.python.org/3", None),
+}
 
 
 # -- Options for HTML output -------------------------------------------------

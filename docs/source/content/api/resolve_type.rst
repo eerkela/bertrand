@@ -18,8 +18,9 @@ Type Specifiers
 A type specifier can be any of the following:
 
     #.  A :ref:`numpy <resolve_type.type_specifiers.numpy>`\ /\ 
-        :ref:`pandas <resolve_type.type_specifiers.pandas>` ``dtype``\ /\ 
-        ``ExtensionDtype`` object.
+        :ref:`pandas <resolve_type.type_specifiers.pandas>`
+        :class:`dtype <numpy.dtype>`\ /
+        :class:`ExtensionDtype <pandas.api.extension.ExtensionDtype>` object.
     #.  A :ref:`python <resolve_type.type_specifiers.python>` class object.
     #.  A string in the
         :ref:`type specification mini-language <resolve_type.mini_language>`.
@@ -28,12 +29,11 @@ A type specifier can be any of the following:
 
 .. _resolve_type.type_specifiers.numpy:
 
-Numpy ``dtypes``
-^^^^^^^^^^^^^^^^
-`Numpy <https://numpy.org/doc/stable/reference/arrays.dtypes.html>`_ uses
-``dtype`` objects to describe the contents of `packed arrays
-<https://numpy.org/doc/stable/reference/arrays.ndarray.html#internal-memory-layout-of-an-ndarray>`_.
-These are closely related to their `C equivalents
+Numpy dtypes
+^^^^^^^^^^^^
+:ref:`Numpy <numpy:arrays.dtypes>` uses :class:`dtype <numpy.dtype>` objects to
+describe the contents of :ref:`packed arrays <numpy:memory-layout>`.  These are
+closely related to their `C equivalents
 <https://en.wikipedia.org/wiki/C_data_types>`_ and have all the same
 constraints, including limited support for missing values, fixed-width
 overflow, and restriction to numeric data.  Conversely, they are by far the
@@ -78,30 +78,27 @@ equivalents in the ``pdcast`` type system.
 
 .. note::
 
-    The behavior of :func:`resolve_type` on numpy ``dtype`` objects can be
-    customized by overloading a type's
+    The behavior of :func:`resolve_type` on numpy :class:`dtype <numpy.dtype>`
+    objects can be customized by overloading a type's
     :meth:`from_dtype() <AtomicType.from_dtype>` method.
 
 .. _resolve_type.type_specifiers.pandas:
 
-Pandas ``ExtensionDtypes``
-^^^^^^^^^^^^^^^^^^^^^^^^^^
-`Pandas <https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.api.extensions.ExtensionDtype.html>`_
-also exposes its own ``ExtensionDtype`` objects.  These are conceptually
-identical to their :ref:`numpy <resolve_type.type_specifiers.numpy>`
-equivalents, but are free to define their own `storage backends
-<https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.api.extensions.ExtensionArray.html>`_,
-without being restricted to the numpy ecosystem.
+Pandas ExtensionDtypes
+^^^^^^^^^^^^^^^^^^^^^^
+Pandas also exposes its own
+:class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` objects.  These
+are conceptually identical to their
+:ref:`numpy <resolve_type.type_specifiers.numpy>` equivalents, but are free to
+define their own :class:`ExtensionArray <pandas.api.extensions.ExtensionArray>`
+backends without being restricted to the numpy ecosystem.
 
-Pandas uses these ``ExtensionDtypes`` to support `nullable integers
-<https://pandas.pydata.org/pandas-docs/stable/user_guide/integer_na.html>`_ and
-`booleans <https://pandas.pydata.org/pandas-docs/stable/user_guide/boolean.html>`_,
-as well as `sparse <https://pandas.pydata.org/pandas-docs/stable/user_guide/sparse.html>`_\ 
-/\ `categorical <https://pandas.pydata.org/pandas-docs/stable/user_guide/categorical.html>`_
-data structures and `pyarrow integration
-<https://pandas.pydata.org/pandas-docs/stable/user_guide/pyarrow.html>`_.
-:func:`resolve_type` can parse these the same way as their
-:ref:`numpy <resolve_type.type_specifiers.numpy>` equivalents.
+Pandas uses these :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`
+to support :ref:`nullable integers <pandas:integer_na>` and
+:ref:`booleans <pandas:boolean>`, as well as :ref:`sparse <pandas:sparse>`\  /\ 
+:ref:`categorical <pandas:categorical>` data structures and
+:ref:`pyarrow integration <pandas:pyarrow>`.  :func:`resolve_type` can parse
+these the same way as their numpy equivalents.
 
 .. doctest::
 
@@ -116,8 +113,9 @@ data structures and `pyarrow integration
 
 .. note::
 
-    The behavior of :func:`resolve_type` on pandas ``ExtensionDtype`` objects
-    can be customized by overloading a type's
+    The behavior of :func:`resolve_type` on pandas
+    :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` objects can
+    be customized by overloading a type's
     :meth:`from_dtype() <AtomicType.from_dtype>` method.
 
 .. _resolve_type.type_specifiers.python:
@@ -139,7 +137,7 @@ which are translated as literally as possible into the ``pdcast`` type system.
     PythonDecimalType()
 
 This differs slightly from the numpy convention, which maps built-in Python
-types to ``np.dtype`` objects that may not be entirely compatible.
+types to :class:`numpy.dtype` objects that may not be entirely compatible.
 
 .. doctest::
 
@@ -150,7 +148,7 @@ In contrast, the ``pdcast`` equivalents are guaranteed to be valid.
 
 .. note::
 
-    If a class has not been explicitly registered as an :class:`AtomicType`
+    If a class has not been explicitly registered as a recognized
     :attr:`alias <AtomicType.aliases>`, then a new :class:`ObjectType` will be
     built around it.
 
@@ -169,10 +167,9 @@ Type specification mini-language
 ``pdcast`` provides its own `domain-specific language
 <https://en.wikipedia.org/wiki/Domain-specific_language>`_ for parsing
 string-based type specifiers.  This language is a generalization of the
-existing `numpy <https://numpy.org/doc/stable/reference/arrays.dtypes.html>`_\ /\ 
-`pandas <https://pandas.pydata.org/pandas-docs/stable/user_guide/basics.html#basics-dtypes>`_
-keywords and syntax, which can be customized on a per-type basis.  Here's how
-it works:
+existing :ref:`numpy <numpy:arrays.dtypes>`\ /\ 
+:ref:`pandas <pandas:basics.dtypes>` keywords and syntax, which can be
+customized on a per-type basis.  Here's how it works:
 
 A ``typespec`` string is composed of 2 parts:
 
@@ -279,8 +276,8 @@ can be done by providing an iterable as input:
     >>> pdcast.resolve_type({bool, np.dtype("i2"), "decimal"})   # doctest: +SKIP
     CompositeType({bool[python], int16[numpy], decimal})
 
-Or by separating specifiers with commas in the :ref:`type specification
-mini-language <resolve_type.mini_language>`.
+Or by separating specifiers with commas in the
+:ref:`type specification mini-language <resolve_type.mini_language>`.
 
 .. doctest::
 

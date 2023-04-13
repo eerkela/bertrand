@@ -9,7 +9,6 @@ import pdcast.patch as patch
 import pdcast.types as types
 
 import pdcast.convert.wrapper as wrapper
-import pdcast.convert.arguments as arguments
 
 from pdcast.util.structs import as_series, extension_func
 from pdcast.util.type_hints import type_specifier
@@ -57,7 +56,8 @@ def cast(
 
     Examples
     --------
-    This function can be used as an alternative to ``astype()``.
+    This function can be used as an alternative to
+    :meth:`astype() <pandas.Series.astype>`.
     """
     # DataFrame recursive case
     if isinstance(data, pd.DataFrame):

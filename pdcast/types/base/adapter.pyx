@@ -51,8 +51,7 @@ cdef class AdapterType(atomic.ScalarType):
         subclass accepts arguments in its ``__init__`` method, they should
         always be passed here via ``super().__init__(**kwargs)``.  This is
         conceptually equivalent to the ``_metadata`` field of pandas
-        `ExtensionDtype <https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.api.extensions.ExtensionDtype.html>`_
-        objects.
+        :class:`ExtensionDtype <pandas.api.extension.ExtensionDtype>` objects.
 
     Attributes
     ----------

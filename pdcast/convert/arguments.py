@@ -71,23 +71,24 @@ def tol(val: numeric, defaults: dict) -> Tolerance:
     Returns
     -------
     Tolerance
-        A ``Tolerance`` object that consists of two ``Decimal`` values, one
-        for both the real and imaginary components.  This maintains the
-        highest possible precision in both cases.  Default is ``1e-6``.
+        A ``Tolerance`` object that consists of two
+        :class:`Decimal <python:decimal.Decimal>` values, one for both the real
+        and imaginary components.  This maintains the highest possible
+        precision in both cases.  Default is ``1e-6``.
 
     Notes
     -----
     Precision loss is defined using a 2-sided window around each of the
     observed values.  The size of this window is directly controlled by
     this argument.  If a conversion causes any value to be coerced outside
-    this window, then a ``ValueError`` will be raised.
+    this window, then a :class:`ValueError <python:ValueError>` will be raised.
 
     This argument only affects numeric conversions.
 
     Examples
     --------
     The input to this argument must be a positive numeric that is
-    coercible to ``Decimal``.
+    coercible to :class:`Decimal <python:decimal.Decimal>`.
 
     .. doctest::
 
@@ -115,7 +116,8 @@ def tol(val: numeric, defaults: dict) -> Tolerance:
     This argument also has special behavior around the min/max of bounded
     numerics, like integers and booleans.  If a value would normally
     overflow, but falls within tolerance of these bounds, then it will be
-    clipped to fit rather than raise an ``OverflowError``.
+    clipped to fit rather than raise an
+    :class:`OverflowError <python:OverflowError>`.
 
     .. doctest::
 
@@ -128,8 +130,8 @@ def tol(val: numeric, defaults: dict) -> Tolerance:
         OverflowError: values exceed int8 range at index [0]
 
     Additionally, this argument controls the maximum amount of precision
-    loss that can occur when :attr:`downcasting <cast.downcast>` numeric
-    values.
+    loss that can occur when
+    :func:`downcasting <pdcast.convert.arguments.downcast>` numeric values.
 
     .. doctest::
 
@@ -154,8 +156,9 @@ def tol(val: numeric, defaults: dict) -> Tolerance:
     .. note::
 
         For integer conversions, this is equivalent to setting
-        :attr:`rounding <cast.rounding>` to ``"half_even"``, with additional
-        clipping around the minimum and maximum values.
+        :func:`rounding <pdcast.convert.arguments.rounding>` to
+        ``"half_even"``, with additional clipping around the minimum and
+        maximum values.
     """
     if isinstance(val, Tolerance):
         return val
@@ -169,8 +172,8 @@ def rounding(val: str | None, defaults: dict) -> str:
     Returns
     -------
     str | None
-        A string describing the rounding rule to apply, or ``None`` to
-        indicate that no rounding will be applied.  Default is ``None``.
+        A string describing the rounding rule to apply, or :data:`None` to
+        indicate that no rounding will be applied.  Default is :data:`None`.
 
     Notes
     -----
@@ -191,7 +194,8 @@ def rounding(val: str | None, defaults: dict) -> str:
             Also known as *convergent rounding*, *statistician's rounding*, or
             *banker's rounding*.
 
-    This argument is applied **after** :attr:`tol <cast.tol>`.
+    This argument is applied **after**
+    :func:`tol <pdcast.convert.arguments.tol>`.
 
     Examples
     --------
@@ -315,8 +319,8 @@ def unit(val: str, defaults: dict) -> str:
         dtype: datetime64[ns]
 
     Units ``"M"`` and ``"Y"`` have irregular lengths.  Rather than average
-    these like ``pandas.to_datetime()``, :func:`cast` gives
-    calendar-accurate results.
+    these like :func:`pandas.to_datetime`, :func:`cast` gives calendar-accurate
+    results.
 
     .. doctest::
 
@@ -348,13 +352,14 @@ def unit(val: str, defaults: dict) -> str:
 
 @standalone.cast.register_arg(default=1)
 def step_size(val: int, defaults: dict) -> int:
-    """The step size to use for each :attr:`unit <cast.unit>`.
+    """The step size to use for each
+    :func:`unit <pdcast.convert.arguments.unit>`.
 
     Returns
     -------
     int
         A positive integer >= 1.  This is effectively a multiplier for
-        :attr:`unit <cast.unit>`.  Default is ``1``.
+        :func:`unit <pdcast.convert.arguments.unit>`.  Default is ``1``.
 
     Examples
     --------
@@ -529,8 +534,8 @@ def tz(
     --------
     pytz.timezone | None
         A `pytz <https://pypi.org/project/pytz/>`_ timezone object
-        corresponding to the input.  ``None`` indicates naive output.
-        Defaults to ``None``.
+        corresponding to the input.  :data:`None` indicates naive output.
+        Defaults to :data:`None`.
 
     Notes
     ------
@@ -545,14 +550,15 @@ def tz(
 
     Numerics (boolean, integer, float, complex, decimal) and timedeltas are
     always computed in UTC relative to the
-    :attr:`since <cast.since>` argument.  When a time zone is supplied via
-    :attr:`tz <cast.tz>`, the resulting datetimes will be *converted* from UTC
-    to the specified time zone.
+    :func:`since <pdcast.convert.arguments.since>` argument.  When a time zone
+    is supplied via :func:`tz <pdcast.convert.arguments.tz>`, the resulting
+    datetimes will be *converted* from UTC to the specified time zone.
 
     Strings and datetimes on the other hand are interpreted according to
-    the :attr:`naive_tz <cast.naive_tz>` argument.  Any naive inputs will first
-    be localized to :attr:`naive_tz <cast.naive_tz>` and then converted to the
-    final :attr`tz <cast.tz>`.
+    the :func:`naive_tz <pdcast.convert.arguments.naive_tz>` argument.  Any
+    naive inputs will first be localized to
+    :func:`naive_tz <pdcast.convert.arguments.naive_tz>` and then converted to
+    the final :func:`tz <pdcast.convert.arguments.tz>`.
     """
     return timezone(val)
 
@@ -568,8 +574,8 @@ def naive_tz(
     -------
     pytz.timezone | None
         A `pytz <https://pypi.org/project/pytz/>`_ timezone object
-        corresponding to the input.  ``None`` indicates direct
-        localization.  Defaults to ``None``. 
+        corresponding to the input.  :data:`None` indicates direct
+        localization.  Defaults to :data:`None`. 
 
     Notes
     ------
@@ -579,8 +585,9 @@ def naive_tz(
 
     Examples
     ---------
-    If a :attr:`tz <cast.tz>` is given while this is set to ``None``, the
-    results will be localized directly to :attr:`tz <cast.tz>`.
+    If a :func:`tz <pdcast.covnert.arguments.tz>` is given while this is set to
+    :data:`None`, the results will be localized directly to
+    :func:`tz <pdcast.convert.arguments.tz>`.
     """
     return timezone(val)
 
@@ -662,8 +669,8 @@ def ignore_case(val, defaults: dict) -> bool:
 def format(val: str | None, defaults: dict) -> str:
     """f-string formatting for conversions to strings.
     
-    A `format specifier <https://docs.python.org/3/library/string.html#formatspec>`_
-    to use for conversions to string.
+    A :ref:`format specifier <python:formatspec>` to use for conversions to
+    string.
     """
     if val is not None and not isinstance(val, str):
         raise TypeError(f"`format` must be a string, not {val}")
@@ -683,9 +690,10 @@ def base(val: int, defaults: dict) -> int:
 def call(val: Callable | None, defaults: dict) -> Callable:
     """Apply a callable over the input data, producing the desired output.
 
-    This is only used for conversions from :class:`ObjectType`.  It allows
-    users to specify a custom endpoint to perform this conversion, rather
-    than relying exclusively on special methods (which is the default).
+    This is only used for conversions from
+    :class:`ObjectType <pdcast.ObjectType>`.  It allows users to specify a
+    custom endpoint to perform this conversion, rather than relying exclusively
+    on special methods (which is the default).
     """
     if val is not None and not callable(val):
         raise TypeError(f"`call` must be callable, not {val}")

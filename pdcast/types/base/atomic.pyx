@@ -146,9 +146,9 @@ cdef class AtomicType(ScalarType):
 
     :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
     ``pdcast`` type system.  They are used to describe scalar values of a
-    particular type (i.e. ``int``, ``numpy.float32``, etc.), and are responsible
-    for defining all the necessary implementation logic for
-    :doc:`dispatched </content/api/attach>` methods,
+    particular type (i.e. :class:`int <python:int>`, :class:`numpy.float32`,
+    etc.), and are responsible for defining all the necessary implementation
+    logic for :doc:`dispatched </content/api/attach>` methods,
     :doc:`conversions </content/api/cast>`, and
     :ref:`type-related <atomic_type.required>` functionality at the scalar
     level.
@@ -160,8 +160,7 @@ cdef class AtomicType(ScalarType):
         subclass accepts arguments in its ``__init__`` method, they should
         always be passed here via ``super().__init__(**kwargs)``.  This is
         conceptually equivalent to the ``_metadata`` field of pandas
-        `ExtensionDtype <https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.api.extensions.ExtensionDtype.html>`_
-        objects.
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` objects.
 
     Examples
     --------
@@ -244,7 +243,7 @@ cdef class AtomicType(ScalarType):
 
         Returns
         -------
-        set[str | type | np.dtype]
+        set[str | type | numpy.dtype]
             A set containing all the aliases that are associated with this
             type.
 
@@ -255,20 +254,22 @@ cdef class AtomicType(ScalarType):
             *   Strings are used by the :ref:`type specification mini-language
                 <resolve_type.mini_language>` to trigger :meth:`resolution
                 <AtomicType.resolve>` of the associated type.
-            *   Numpy/pandas ``dtype``\ /\ ``ExtensionDtype`` objects are used
-                by :func:`detect_type` for *O(1)* type inference.  In both
-                cases, parametrized dtypes can be handled by adding a root
-                dtype to ``aliases``.  For numpy ``dtypes``, this will be the
-                root of their ``np.issubdtype()`` hierarchy.  For pandas
-                ``ExtensionDtypes``, it is its ``type()`` directly.  When
-                either of these are encountered, they will invoke
-                :class:`AtomicType`'s
+            *   Numpy/pandas :class:`dtype <numpy.dtype>`\ /\
+                :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
+                objects are used by :func:`detect_type` for *O(1)* type
+                inference.  In both cases, parametrized dtypes can be handled
+                by adding a root dtype to :attr:`aliases <AtomicType.aliases>`.
+                For numpy :class:`dtypes <numpy.dtype>`, this will be the
+                root of their :func:`numpy.issubdtype` hierarchy.  For pandas
+                :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`,
+                it is its :class:`type() <python:type>` directly.  When either
+                of these are encountered, they will invoke the type's
                 :meth:`from_dtype() <AtomicType.from_dtype>` constructor.
             *   Raw Python types are used by :func:`detect_type` for scalar or
                 unlabeled vector inference.  If the type of a scalar element
-                appears in ``aliases``, then the associated type's
-                :meth:`detect() <AtomicType.detect>` method will be called on
-                it.
+                appears in :attr:`aliases <AtomicType.aliases>`, then the
+                associated type's :meth:`detect() <AtomicType.detect>` method
+                will be called on it.
 
         All aliases are recognized by :func:`resolve_type` and the set always
         includes the :class:`AtomicType` itself.
@@ -291,22 +292,27 @@ cdef class AtomicType(ScalarType):
 
     @property
     def dtype(self) -> np.dtype | ExtensionDtype:
-        """The numpy ``dtype`` or pandas ``ExtensionDtype`` to use for arrays
-        of this type.
+        """The numpy :class:`dtype <numpy.dtype>` or pandas
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to use
+        for arrays of this type.
 
         Returns
         -------
-        np.dtype | ExtensionDtype
-            The dtype to use for arrays of this type.  ``ExtensionDtypes`` are
+        numpy.dtype | pandas.api.extensions.ExtensionDtype
+            The dtype to use for arrays of this type.
+            :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>` are
             free to define their own storage backends for objects of this type.
 
         Notes
         -----
-        By default, this will automatically create a new ``ExtensionDtype`` to
+        By default, this will automatically create a new
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
         encapsulate data of this type, storing them internally as a
         ``dtype: object`` array, which may not be the most efficient.  If there
         is a more compact representation for a particular data type, users can
-        provide their own ``ExtensionDtypes`` instead.
+        :ref:`provide <pandas:extending>` their own
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
+        instead.
         """
         if not self._dtype:
             return array.construct_extension_dtype(
@@ -325,13 +331,14 @@ cdef class AtomicType(ScalarType):
         Returns
         -------
         int | None
-            If not ``None``, a positive integer describing the size of each
+            If not :data:`None`, a positive integer describing the size of each
             element in bytes.  If this would be hard to compute, use
-            ``sys.getsizeof`` or give an approximate lower bound here.
+            :func:`sys.getsizeof() <python:sys.getsizeof>` or give an
+            approximate lower bound here.
 
         Notes
         -----
-        ``None`` is interpreted as being resizable/unlimited.
+        :data:`None` is interpreted as being resizable/unlimited.
         """
         return None
 
@@ -383,8 +390,8 @@ cdef class AtomicType(ScalarType):
         leakage occurs with the flyweight cache, which could result in
         uncontrollable memory consumption.
 
-        Users should use this method in place of ``__init__`` to ensure that
-        the `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_
+        Users should use this method in place of :class:`__init__ <AtomicType>`
+        to ensure that the `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_
         pattern is observed.  One can manually check the cache that is used for
         this method under a type's ``.flyweights`` attribute.
         """
@@ -456,8 +463,9 @@ cdef class AtomicType(ScalarType):
         for objects that are stored in a base Python list or ``dtype: object``
         array, for instance.
 
-        In order for this method to be called, the output of ``type()`` on the
-        example must be registered as one of this type's aliases.
+        In order for this method to be called, the output of
+        :class:`type() <python:type>` on the example must be registered as one
+        of this type's :attr:`aliases <AtomicType.aliases>`.
 
         If the input to :func:`detect_type` is vectorized, then this method
         will be called at each index.
@@ -468,15 +476,19 @@ cdef class AtomicType(ScalarType):
     @classmethod
     def from_dtype(cls, dtype: np.dtype | ExtensionDtype) -> AtomicType:
         """Construct an :class:`AtomicType` from a corresponding numpy/pandas
-        ``dtype`` object.
+        :class:`dtype <numpy.dtype>`\ /\
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
 
         Override this if a type must parse the attributes of an associated
-        ``dtype`` or ``ExtensionDtype``.
+        :class:`dtype <numpy.dtype>` or
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`.
 
         Parameters
         ----------
         dtype : np.dtype | ExtensionDtype
-            The numpy ``dtype`` or pandas ``ExtensionDtype`` to parse.
+            The numpy :class:`dtype <numpy.dtype>` or pandas
+            :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
+            parse.
 
         Returns
         -------
@@ -491,12 +503,15 @@ cdef class AtomicType(ScalarType):
 
         Notes
         -----
-        For numpy ``dtype``\s, the input to this function must be a member of
-        the type's ``.aliases`` attribute.
+        For numpy :class:`dtypes <numpy.dtype>`, the input to this function
+        must be a member of the type's :attr:`aliases <AtomicType.aliases>`
+        attribute.
 
-        For pandas ``ExtensionDtype``\s, the input's **type** must be a member
-        of ``.aliases``, not the dtype itself.  This asymmetry allows pandas
-        dtypes to be arbitrarily parameterized when passed to this method.
+        For pandas :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`,
+        the input's **type** must be a member of
+        :attr:`aliases <AtomicType.aliases>`, not the dtype itself.  This
+        asymmetry allows pandas dtypes to be arbitrarily parameterized when
+        passed to this method.
         """
         return cls.instance()  # NOTE: most types disregard dtype metadata
 
@@ -530,10 +545,11 @@ cdef class AtomicType(ScalarType):
     def slugify(cls) -> str:
         """Generate a string representation of a type.
 
-        This method must have the same arguments as a type's ``__init__()``
-        method, and its output determines how flyweights are identified.  If a
-        type is not parameterized and does not implement a custom
-        ``__init__()`` method, this can be safely omitted in subclasses.
+        This method must have the same arguments as a type's
+        :class:`__init__() <AtomicType>` method, and its output determines how
+        flyweights are identified.  If a type is not parameterized and does not
+        implement a custom :class:`__init__() <AtomicType>` method, this can be
+        safely omitted in subclasses.
 
         Returns
         -------

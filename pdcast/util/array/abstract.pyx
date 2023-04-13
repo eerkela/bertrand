@@ -117,10 +117,10 @@ class AbstractDtype(ExtensionDtype):
 
     This class allows :class:`AtomicType` definitions that do not define an
     explicit ``.dtype`` field to automatically generate one according to
-    `existing pandas guidelines <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
-    The resulting arrays are essentially identical to ``dtype: object`` arrays,
-    but are explicitly labeled and have better integration with base pandas.
-    They may also be slightly more performant in some cases.
+    :ref:`existing pandas guidelines <pandas:extending>`.  The resulting arrays
+    are essentially identical to ``dtype: object`` arrays, but are explicitly
+    labeled and have better integration with base pandas.  They may also be
+    slightly more performant in some cases.
     """
 
     def __init__(self):
@@ -205,10 +205,10 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
 
     This class allows :class:`AtomicType` definitions that do not define an
     explicit ``.dtype`` field to automatically generate one according to the
-    `existing pandas guidelines <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
-    The resulting arrays are essentially identical to ``dtype: object`` arrays,
-    but are explicitly labeled and have better integration with base pandas.
-    They may also be slightly more performant in some cases.
+    :ref:`existing pandas guidelines <pandas:extending>`.  The resulting arrays
+    are essentially identical to ``dtype: object`` arrays, but are explicitly
+    labeled and have better integration with base pandas.  They may also be
+    slightly more performant in some cases.
     """
 
     __array_priority__ = 1000  # this is used in pandas test code
@@ -610,12 +610,11 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
 
     def __array_ufunc__(self, ufunc: np.ufunc, method: str, *inputs, **kwargs):
         """Allows AbstractArrays to utilize numpy ufuncs natively, without
-        being coerced to dtype: object.
+        being coerced to ``dtype: object``.
 
-        This implementation is adapted from the example given by numpy.  It
-        might require further modifications.
-
-        https://numpy.org/doc/stable/reference/generated/numpy.lib.mixins.NDArrayOperatorsMixin.html
+        This implementation is adapted from the
+        :class:`example <numpy.lib.mixins.NDArrayOperatorsMixin>` given by
+        numpy.  It might require further modifications.
         """
         # pandas unboxes these so we don't need to implement them ourselves
         if any(

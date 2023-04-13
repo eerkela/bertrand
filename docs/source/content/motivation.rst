@@ -593,8 +593,8 @@ And support for several different datetime representations:
 Type Checks
 -----------
 Another area where pandas could be improved is in runtime type checking.
-Baseline, it includes a number of `utility functions <https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.api.types.is_string_dtype.html>`_
-under ``pd.api.types`` that are meant to do this, but each of them essentially
+Baseline, it includes a number of `utility functions <https://pandas.pydata.org/pandas-docs/stable/reference/arrays.html#utilities>`_
+under :mod:`pandas.api.types` that are meant to do this, but each of them essentially
 boils down to a naive ``.dtype`` check.  This leads to questionable (and even
 inaccurate) results, such as:
 

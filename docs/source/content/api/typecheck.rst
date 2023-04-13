@@ -15,8 +15,9 @@ pdcast.typecheck
 
 Hierarchical checks
 -------------------
-:func:`typecheck` can be used to perform ``isinstance()``-like type checks,
-with many of the same semantics as its built-in equivalent.
+:func:`typecheck` can be used to perform
+:func:`isinstance() <python:isinstance>`\-like type checks, with many of the
+same semantics as its built-in equivalent.
 
 Generic types
 ^^^^^^^^^^^^^
@@ -77,7 +78,7 @@ These can be ignored by setting ``ignore_adapters=True``, which strips
 
 Composite checks
 ----------------
-Just like ``isinstance()``, multiple
+Just like :func:`isinstance() <python:isinstance>`, multiple
 :ref:`type specifiers <resolve_type.type_specifiers>` can be given to compare
 against.  This returns ``True`` if **any** of them match the example data.
 
@@ -104,7 +105,7 @@ comparison type(s).
 Pandas integration
 ------------------
 If :func:`pdcast.attach() <attach>` is invoked, this function is attached
-directly to ``pandas.Series`` objects, allowing users to omit the ``data``
+directly to :class:`pandas.Series` objects, allowing users to omit the ``data``
 argument.  It is accessible under :meth:`pandas.Series.typecheck`.
 
 .. doctest::

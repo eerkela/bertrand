@@ -1,3 +1,5 @@
+.. currentmodule:: pdcast
+
 pandas.Series.element_type
 ==========================
 

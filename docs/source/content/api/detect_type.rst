@@ -16,7 +16,7 @@ pdcast.detect_type
 Scalar data
 --------------
 :func:`detect_type` can be used to parse scalar objects, similar to the
-built-in ``type()`` function.
+built-in :class:`type() <python:type>` function.
 
 .. doctest::
 
@@ -25,9 +25,9 @@ built-in ``type()`` function.
     >>> pdcast.detect_type(pd.Timestamp(0, tz="US/Pacific"))
     PandasTimestampType(tz=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
 
-If the ``type()`` of an object has not been registered as an
-:class:`AtomicType` :attr:`alias <AtomicType.aliases>`, then a new
-:class:`ObjectType` will be built around it.
+If the :class:`type() <python:type>` of an object has not been registered as an
+:attr:`alias <AtomicType.aliases>`, then a new :class:`ObjectType` will be
+built around it.
 
 .. doctest::
 
@@ -110,7 +110,7 @@ Which is space-efficient thanks to :class:`AtomicType`\'s
 Pandas integration
 ------------------
 If :func:`pdcast.attach() <attach>` is invoked, the output from this function
-is attached directly to ``pandas.Series`` objects under
+is attached directly to :class:`pandas.Series` objects under
 :attr:`pandas.Series.element_type`.
 
 .. doctest::
@@ -119,7 +119,7 @@ is attached directly to ``pandas.Series`` objects under
     >>> pd.Series([1, 2, 3]).element_type
     NumpyInt64Type()
 
-A similar attribute is attached to ``pandas.DataFrame`` objects under
+A similar attribute is attached to :class:`pandas.DataFrame` objects under
 :attr:`pandas.DataFrame.element_type`, except that it returns a dictionary
 mapping column names to their inferred type(s).
 
