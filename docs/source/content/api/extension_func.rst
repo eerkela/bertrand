@@ -289,3 +289,17 @@ Internals
     ExtensionFunc.reset_defaults
     ExtensionFunc.attach_to
     ExtensionMethod
+
+.. _extension_func.source:
+
+Source
+------
+:func:`@extension_func <extension_func>` is implemented as a standard recipe in
+base Python.  It does not require any special ``pdcast``\-specific
+functionality to work, and is available as a generic
+:doc:`recipe <source/extension_func>`.
+
+.. toctree::
+    :hidden:
+
+    source <source/extension_func>

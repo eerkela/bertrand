@@ -695,6 +695,9 @@ class VirtualMethod:
 
 
 
+# TODO: delete this
+
+
 if __name__ == "__main__":
 
     @extension_func

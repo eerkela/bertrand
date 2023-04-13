@@ -50,10 +50,10 @@ sidebar.
     pdcast.detect_type <detect_type>
     pdcast.typecheck <typecheck>
     pdcast.cast <cast>
+    pdcast.extension_func <extension_func>
     pdcast.attach <attach>
     pdcast.detach <detach>
     pdcast.dispatch <dispatch>
-    pdcast.extension_func <extension_func>
     pdcast.register <register>
     pdcast.subtype <subtype>
     pdcast.generic <generic>
