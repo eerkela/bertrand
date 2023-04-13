@@ -3,15 +3,13 @@ from __future__ import annotations
 import pandas as pd
 
 from pdcast.check import typecheck as typecheck_standalone
-from pdcast.convert import cast as cast_standalone
+from pdcast.convert import cast
 from pdcast.detect import detect_type
 from pdcast.types import AdapterType, AtomicType, CompositeType
 
+from pdcast.util.structs import VirtualMethod
+
 from .virtual import Namespace, DispatchMethod
-
-
-# TODO: if this is a .pyx file, then there is no need for _ignore_object_frame
-# -> this causes a headache with bound/unbound methods though.
 
 
 # ignore this file when doing string-based object lookups in resolve_type()
@@ -26,7 +24,7 @@ _ignore_frame_objects = True
 def attach() -> None:
     """Attach all dispatched methods to pd.Series objects"""
     pd.Series.__getattribute__ = new_getattribute
-    pd.Series.cast = cast
+    pd.Series.cast = VirtualMethod(cast, "pandas.Series.cast")
     pd.Series.typecheck = typecheck
     pd.Series.element_type = property(element_type)
 
@@ -69,11 +67,6 @@ def new_getattribute(self, name: str):
 
     # fall back to pandas
     return orig_getattribute(self, name)
-
-
-def cast(self, *args, **kwargs) -> pd.Series:
-    """An attached version of :func:`cast` """
-    return cast_standalone(self, *args, **kwargs)
 
 
 def typecheck(self, *args, **kwargs) -> bool:

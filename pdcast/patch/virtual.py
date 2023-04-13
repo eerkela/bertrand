@@ -1,5 +1,5 @@
 from __future__ import annotations
-from functools import partial
+from functools import partial, update_wrapper
 import inspect
 from typing import Any, Callable
 
@@ -14,7 +14,12 @@ from pdcast.types import (
 )
 
 
-# TODO: if this is a .pyx file, then there is no need for _ignore_object_frame
+# TODO: SeriesExtensionMethod seems to have an argument mismatch.
+# -> the issue is passing self to self._ext_func in __call__.  This doesn't
+# give a pandas Series, it gives the ExtensionMethod itself.
+# -> probably have to use a decorator function here rather than a class.  Just
+# attach __getattr__, etc to the function.
+# -> maybe inherit from functools.partial?
 
 
 # ignore this file when doing string-based object lookups in resolve_type()
@@ -272,3 +277,79 @@ class DispatchMethod:
             except OverflowError:
                 pass
         return SeriesWrapper(result, hasnans=series._hasnans)
+
+
+class ExtensionMethod:
+    """An interface for a :class:`ExtensionFunc` object that implicitly inserts
+    a class instance as the first argument while retaining full attribute
+    access.
+
+    Parameters
+    ----------
+    instance : Any
+        An instance to be inserted.  This is typically inserted from
+        :meth:`VirtualMethod.__get__`, using Python's descriptor protocol.
+    ext_func : Callable
+        Usually an :class:`ExtensionFunc` object, but can be any Python
+        callable.
+    ext_name : str
+        The name to use when ``repr()`` is called on this object.  Setting this
+        to something like ``"pandas.Series.cast"`` makes the output a bit
+        cleaner.
+
+    Notes
+    -----
+    This is meant to be used in combination with a :class:`VirtualMethod`
+    descriptor.  Users should never need to instantiate one themselves.
+    """
+
+    def __init__(self, instance: Any, ext_func: Callable, ext_name: str):
+        self._ext_func = ext_func
+        self._ext_name = ext_name
+        self._instance = instance
+        update_wrapper(self, ext_func)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.__dict__["_ext_func"], name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in {"_ext_func", "_ext_name", "_instance"}:
+            self.__dict__[name] = value
+        else:
+            setattr(self.__dict__["_ext_func"], name, value)
+
+    def __delattr__(self, name: str) -> None:
+        delattr(self.__dict__["_ext_func"], name)
+
+    def __iter__(self):
+        return iter(self._ext_func)
+
+    def __len__(self) -> int:
+        return len(self._ext_func)
+
+    def __call__(self, *args, **kwargs):
+        return self._ext_func(self._instance, *args, **kwargs)
+
+    def __repr__(self) -> str:
+        sig = self._ext_func._reconstruct_signature()
+        return f"{self._ext_name}({', '.join(sig[1:])})"
+
+
+class VirtualMethod:
+    """A descriptor that can be added to an arbitrary Python class to enable
+    :class:`ExtensionFuncs <ExtensionFunc>` to act as instance methods.
+
+    Parameters
+    ----------
+    ext_func : Callable
+    """
+
+    def __init__(self, ext_func: ExtensionFunc, ext_name: str = None):
+        update_wrapper(self, ext_func)
+        self._ext_func = ext_func
+        if ext_name is None:
+            ext_name = self._ext_func.__name__
+        self._ext_name = ext_name
+
+    def __get__(self, instance, owner=None) -> Callable:
+        return VirtualMethod(instance, self._ext_func, self._ext_name)

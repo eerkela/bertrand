@@ -157,6 +157,8 @@ def tol(val: numeric, defaults: dict) -> Tolerance:
         :attr:`rounding <cast.rounding>` to ``"half_even"``, with additional
         clipping around the minimum and maximum values.
     """
+    if isinstance(val, Tolerance):
+        return val
     return Tolerance(val)
 
 
@@ -374,7 +376,7 @@ def step_size(val: int, defaults: dict) -> int:
 
 
 @standalone.cast.register_arg(default="utc")
-def since(val: str | datetime_like, defaults: dict) -> Epoch:
+def since(val: str | datetime_like | Epoch, defaults: dict) -> Epoch:
     """The epoch to use for datetime/timedelta conversions.
 
     Returns
@@ -504,6 +506,9 @@ def since(val: str | datetime_like, defaults: dict) -> Epoch:
         0   2022-03-27 00:00:01
         dtype: datetime64[ns]
     """
+    if isinstance(val, Epoch):
+        return val
+
     if isinstance(val, str) and val not in epoch_aliases:
         val = standalone.cast(val, "datetime")
         if len(val) != 1:
@@ -694,6 +699,8 @@ def downcast(
 ) -> types.CompositeType:
     """Losslessly reduce the precision of numeric data after converting.
     """
+    if val is None:
+        return val
     if isinstance(val, bool):  # empty set is truthy, `None` is falsy
         return types.CompositeType() if val else None
     return resolve.resolve_type([val])

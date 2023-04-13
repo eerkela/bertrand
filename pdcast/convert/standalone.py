@@ -59,6 +59,17 @@ def cast(
     --------
     This function can be used as an alternative to ``astype()``.
     """
+    # DataFrame recursive case
+    if isinstance(data, pd.DataFrame):
+        dtype = validate_typespec_map(dtype, columns=data.columns)
+
+        # cast selected columns
+        result = data.copy()
+        for k, v in dtype.items():
+            result[k] = cast(result[k], v, **kwargs)
+        return result
+ 
+    # scalar or 1D iterable
     series = as_series(data)
 
     # if no target is given, default to series type
@@ -285,3 +296,30 @@ def validate_dtype(
             )
 
     return dtype
+
+
+def validate_typespec_map(
+    mapping: type_specifier | dict[str, type_specifier] | None,
+    columns: pd.Index,
+    supertype: type_specifier = None
+) -> dict:
+    """Given a user-defined map from columns to type specifiers, ensure that
+    each column name is present in the DataFrame and resolve the associated
+    type specifier.
+    """
+    # if a mapping is provided, check that all columns are valid
+    if isinstance(mapping, dict):
+        bad = [col_name for col_name in mapping if col_name not in columns]
+        if bad:
+            if len(bad) == 1:  # singular
+                err_msg = f"could not find column {repr(bad[0])}"
+            else:
+                err_msg = f"could not find columns {repr(bad)}"
+            raise ValueError(err_msg)
+
+        return {k: validate_dtype(v, supertype) for k, v in mapping.items()}
+
+    # broadcast across columns
+    if mapping is not None:
+        mapping = validate_dtype(mapping, supertype=supertype)
+    return dict.fromkeys(columns, mapping)
