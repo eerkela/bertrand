@@ -1,3 +1,6 @@
+"""This module describes an ``AdapterType`` object, which can be subclassed
+to create a dynamic wrapper around an ``AtomicType``.
+"""
 from types import MappingProxyType
 from typing import Any, Iterator
 

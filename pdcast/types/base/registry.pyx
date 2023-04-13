@@ -1,3 +1,6 @@
+"""This module describes a ``TypeRegistry`` object, which tracks registered
+types and the relationships between them.
+"""
 import inspect
 import regex as re  # using alternate regex
 from types import MappingProxyType

@@ -1,9 +1,13 @@
 .. currentmodule:: pdcast
 
+.. _adapter_type:
+
 pdcast.AdapterType
 ==================
 
 .. autoclass:: AdapterType
+
+.. _adapter_type.constructors:
 
 Constructors
 ------------
@@ -17,6 +21,8 @@ These are used by
     AdapterType.replace
     AdapterType.slugify
 
+.. _adapter_type.aliases:
+
 Aliases
 -------
 
@@ -27,6 +33,8 @@ Aliases
     AdapterType.register_alias <ScalarType.register_alias>
     AdapterType.remove_alias <ScalarType.remove_alias>
 
+.. _adapter_type.hierarchy:
+
 Subtypes/Supertypes
 -------------------
 
@@ -34,6 +42,8 @@ Subtypes/Supertypes
     :toctree: ../../generated/
 
     AdapterType.contains
+
+.. _adapter_type.adapters:
 
 Adapters
 --------
@@ -47,6 +57,8 @@ Adapters
     AdapterType.adapters
     AdapterType.transform
     AdapterType.inverse_transform
+
+.. _adapter_type.special:
 
 Special Methods
 ---------------

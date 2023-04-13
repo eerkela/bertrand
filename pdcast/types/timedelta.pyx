@@ -1,3 +1,6 @@
+"""This module contains all the prepackaged timedelta types for the ``pdcast``
+type system.
+"""
 import datetime
 
 import numpy as np

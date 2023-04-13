@@ -1,17 +1,5 @@
-"""Defines integer type hierarchy:
-
-                     +--------------------------------+
-                     |               int              |
-                     +--------------------------------+
-                    /                                  \
-        +----------------------+            +----------------------+
-        |        signed        |            |       unsigned       |
-        +----------------------+            +----------------------+
-       /       |        |       \          /       |        |       \
-    +----+   +----+   +----+   +----+   +----+   +----+   +----+   +----+
-    | i1 |   | i2 |   | i4 |   | i8 |   | u1 |   | u2 |   | u4 |   | u8 |
-    +----+   +----+   +----+   +----+   +----+   +----+   +----+   +----+
-
+"""This module contains all the prepackaged integer types for the ``pdcast``
+type system.
 """
 from functools import partial
 import sys

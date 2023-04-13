@@ -1,3 +1,6 @@
+"""This module contains all the prepackaged datetime types for the ``pdcast``
+type system.
+"""
 import datetime
 import decimal
 from functools import partial

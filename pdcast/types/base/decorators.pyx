@@ -1,3 +1,7 @@
+"""This type describes a suite of class decorators that can be applied to
+``AtomicType`` subclasses in order to customize their behavior and link them
+to other types.
+"""
 import inspect
 from functools import wraps
 from typing import Any, Callable, Iterable
@@ -14,10 +18,7 @@ from .atomic import ScalarType, AtomicType
 from .composite import CompositeType
 
 
-# TODO: dispatch should have an option to allow length changes?
-
-
-# TODO: move this alongside detect, resolve, check
+# TODO: dispatch goes in patch, ideally.
 
 
 ######################
@@ -39,7 +40,8 @@ def dispatch(
     ----------
     namespace : str, default None
         Hide the dispatched method behind a virtual namespace, similar to
-        :attr:`pandas.Series.dt`, :attr:`pandas.Series.str`, etc.  The
+        :ref:`pandas.Series.dt <pandas:api.series.dt>`,
+        :ref:`pandas.Series.str <pandas:api.series.str>`, etc.  The
         attribute will only be accessible from this extended namespace.  This
         is useful for preventing conflicts with existing pandas functionality.
     types : type specifier | Iterable[type specifier], default None
@@ -107,7 +109,8 @@ def dispatch(
         ...
 
     The second is to define a function at the module level and use the
-    ``types`` argument to broadcast it to a selection of types.
+    ``types`` argument to broadcast it to a selection of
+    :doc:`types </content/types/types>`.
 
     .. code::
 

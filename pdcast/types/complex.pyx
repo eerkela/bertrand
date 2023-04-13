@@ -1,3 +1,6 @@
+"""This module contains all the prepackaged complex types for the ``pdcast``
+type system.
+"""
 import sys
 
 import numpy as np

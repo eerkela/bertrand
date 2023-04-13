@@ -1,3 +1,6 @@
+"""This module describes a ``SparseType`` object, which can be used to
+dynamically wrap other types.
+"""
 from types import MappingProxyType
 from typing import Any
 

@@ -1,3 +1,6 @@
+"""This module describes a ``CompositeType`` object, which can be used to
+group types into a set-like container.
+"""
 cimport numpy as np
 import numpy as np
 

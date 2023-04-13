@@ -1,3 +1,6 @@
+"""This module contains all the prepackaged float types for the ``pdcast``
+type system.
+"""
 import decimal
 import sys
 

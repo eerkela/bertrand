@@ -1,3 +1,38 @@
+"""This package defines the structure and contents of the ``pdcast`` type
+system, including abstract base classes that can be used to extend it to
+arbitrary data.
+
+Base Classes
+------------
+AtomicType
+    Base unit of the ``pdcast`` type system.  This describes the type of a
+    scalar element of the associated type.
+
+AdapterType
+    A type that acts as a wrapper for another type.  Common examples of this
+    are for sparse or categorical data, which can be in any type.
+
+CompositeType
+    A set-like container for types, which allows grouped membership checks and
+    split-apply-combine series decomposition.
+
+TypeRegistry
+    A global registry that tracks registered types and manages the
+    relationships between them.
+
+Decorators
+----------
+register
+    Add a subclass of ``AtomicType`` or ``AdapterType`` to the ``pdcast`` type
+    system.
+
+subtype
+    Register a subclass of ``AtomicType`` as a subtype of another type.
+
+generic
+    Transform a subclass of ``AtomicType`` into a generic type, which can
+    reference other types as backends.
+"""
 from .base import (
     AdapterType, AtomicType, BaseType, CompositeType, dispatch, generic,
     register, ScalarType, subtype, TypeRegistry

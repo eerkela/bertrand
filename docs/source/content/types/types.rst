@@ -126,7 +126,7 @@ retrieve the type in question.
       - 
     * - :class:`string <StringType>`
       - :class:`python <PythonStringType>`,
-        :class:`pyarrow <PyArrowStringType>` [#pyarrow]_
+        :class:`pyarrow <PyArrowStringType>` [#depends_pyarrow]_
       - 
     * - :class:`object <ObjectType>`
       - [#object]_
@@ -140,20 +140,23 @@ retrieve the type in question.
 
 .. [#longdouble] This is an alias for an `x86 extended precision float (long double) <https://en.wikipedia.org/wiki/Extended_precision#x86_extended_precision_format>`_ 
     and may not be exposed on every system.  Numpy defines this as either a
-    ``float96`` or ``float128`` object, but neither is technically accurate and
-    only one of them is ever exposed at a time, depending on system configuration
-    (``float96`` for 32-bit systems, ``float128`` for 64-bit).  ``float80`` was
-    chosen to reflect the actual number of significant bits in the specification,
-    rather than the length it occupies in memory.  The type's ``itemsize`` differs
-    from this, and is always accurate for the system in question.
+    :class:`float96 <numpy.float96>` or :class:`float128 <numpy.float128>`
+    object, but neither is technically accurate and only one of them is ever
+    exposed at a time, depending on system configuration
+    (:class:`float96 <numpy.float96>` for 32-bit systems,
+    :class:`float128 <numpy.float128>` for 64-bit).
+    :class:`float80 <Float80Type>` was chosen to reflect the actual number of
+    significant bits in the specification, rather than the length it occupies
+    in memory.  The type's :attr:`itemsize <AtomicType.itemsize>` differs from
+    this, and is always accurate for the system in question.
 .. [#complex_longdouble] Complex equivalent of [1]
-.. [#pyarrow] "pyarrow" backend requires PyArrow>=1.0.0.
-.. [#object] by default, object types describe *any* raw python type.  See
-    the API docs for more information.
-.. [#adapter] These are types that modify other types.  They can be provided
-    with another type as their first argument.  See the API docs for more
-    information.
-
+.. [#depends_pyarrow] "pyarrow" backend requires `PyArrow
+    <https://arrow.apache.org/docs/python/index.html>`_\>=1.0.0.
+.. [#object] by default, :class:`ObjectTypes <ObjectType>` describe *any* raw
+    python type, storing instances internally as a ``dtype: object`` array.
+.. [#adapter] These are :class:`AdapterTypes <AdapterType>`, which can be used
+    modify the behavior of other types.  See the :ref:`API docs <adapter_type>`
+    for more information.
 
 .. toctree::
     :hidden:

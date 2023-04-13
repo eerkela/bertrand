@@ -1,3 +1,6 @@
+"""This module contains all the prepackaged string types for the ``pdcast``
+type system.
+"""
 import decimal
 from functools import partial
 import re  # normal python regex for compatibility with pd.Series.str.extract

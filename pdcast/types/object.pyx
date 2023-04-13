@@ -1,3 +1,6 @@
+"""This module describes an ``ObjectType`` object, which can be used to
+represent arbitrary Python data.
+"""
 import inspect
 from typing import Any, Callable
 

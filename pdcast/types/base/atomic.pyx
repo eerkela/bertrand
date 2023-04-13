@@ -1,3 +1,6 @@
+"""This module describes an ``AtomicType`` object, which serves as the base
+of the ``pdcast`` type system.
+"""
 import decimal
 from types import MappingProxyType
 from typing import Any, Callable, Iterator
