@@ -32,178 +32,6 @@ def extension_func(func: Callable) -> Callable:
     TypeError
         If the decorated function does not accept variable-length keyword
         arguments.
-
-    Examples
-    --------
-    By default, the decorated function behaves exactly like the original.
-
-    .. doctest::
-
-        >>> @extension_func
-        ... def foo(bar, baz=2, **kwargs):
-        ...     return bar, baz
-
-        >>> foo
-        foo(bar, baz = 2, **kwargs)
-        >>> foo(1)
-        (1, 2)
-        >>> foo(1, 3)
-        (1, 3)
-        >>> foo(1, 3, qux=4)
-        (1, 3)
-        >>> foo()
-        Traceback (most recent call last):
-            ...
-        TypeError: foo() missing 1 required positional argument: 'bar'
-
-    We can manage the values that are supplied to it by defining
-    :meth:`validators <ExtensionFunc.register_arg>` for one or more of its
-    arguments.
-
-    .. doctest::
-
-        >>> @foo.register_arg
-        ... def bar(val: int, defaults: dict) -> int:
-        ...     return int(val)
-
-    This validator will be implicitly executed whenever ``bar`` is supplied to
-    ``foo()``.
-
-    .. doctest::
-
-        >>> foo("a", 2)
-        Traceback (most recent call last):
-            ...
-        ValueError: invalid literal for int() with base 10: 'a'
-
-    :class:`ExtensionFunc` also allows us to programmatically assign/modify
-    default values for our managed arguments.
-
-    .. doctest::
-
-        >>> foo.bar = 1
-        >>> foo
-        foo(bar = 1, baz = 2, **kwargs)
-        >>> foo.bar
-        1
-        >>> foo()
-        (1, 2)
-
-    We can also do this by supplying a ``default`` argument to the
-    :func:`@register_arg <ExtensionFunc.register_arg>` decorator.
-
-    .. testsetup::
-
-        foo.remove_arg("bar")
-
-    .. doctest::
-
-        >>> @foo.register_arg(default=1)
-        ... def bar(val: int, defaults: dict) -> int:
-        ...     return int(val)
-
-        >>> foo.bar
-        1
-
-    Or by assigning a default value in the signature of ``foo()`` itself, as
-    with ``baz``:
-
-    .. doctest::
-
-        >>> @foo.register_arg
-        ... def baz(val: int, defaults: dict) -> int:
-        ...     return int(val)
-
-        >>> foo.baz
-        2
-
-    Defaults can be updated at run time to globally change the behavior of
-    ``foo()``.
-
-    .. doctest::
-
-        >>> foo.bar = 24
-        >>> foo.baz = -17
-        >>> foo()
-        (24, -17)
-
-    These values are thread-local:
-
-    .. doctest::
-
-        >>> import random
-        >>> random.seed(5)
-        >>> values = list(np.arange(-50, 50))
-
-        >>> def worker():
-        ...     foo.bar, foo.baz = random.sample(values, 2)
-        ...     print(foo())
-
-        >>> import threading
-        >>> threads = [threading.Thread(target=worker) for _ in range(3)]
-        >>> for t in threads:
-        ...     t.start()
-        (79, 32)
-        (94, 45)
-        (88, 94)
-        >>> foo()
-        (24, -17)
-
-    Additionally, each argument can be reset to its default value by simply
-    deleting the attribute:
-
-    .. doctest::
-
-        >>> foo
-        foo(bar = 24, baz = -17, **kwargs)
-        >>> del foo.bar, foo.baz
-        >>> foo
-        foo(bar, baz = 2, **kwargs)
-        >>> foo(1)
-        (1, 2)
-
-    .. note::
-
-        Unless a default is assigned in
-        :meth:`@register_arg <ExtensionFunc.register_arg>` or the signature
-        of ``foo()`` itself, deleting the argument will make it required
-        whenever ``foo()`` is invoked.
-
-        .. doctest::
-
-            >>> foo()
-            Traceback (most recent call last):
-                ...
-            TypeError: foo() missing 1 required positional argument: 'bar'
-
-        Note that this does not remove the underlying validator.
-
-        .. doctest::
-
-            >>> foo("a")
-            Traceback (most recent call last):
-                ...
-            ValueError: invalid literal for int() with base 10: 'a'
-
-        To purge a managed argument entirely, use
-        :meth:`@remove_arg <ExtensionFunc.remove_arg>`
-
-    :func:`@register_arg <ExtensionFunc.register_arg>` also allows us to
-    dynamically add new arguments to ``foo()`` at run time, with the same
-    validation logic as the others.
-
-    .. doctest::
-
-        >>> @foo.register_arg(default=3)
-        ... def qux(val: int, defaults: dict) -> int:
-        ...     return int(val)
-
-        >>> foo
-        foo(bar, baz = 2, qux = 3, **kwargs)
-        >>> foo(1, qux="a")
-        Traceback (most recent call last):
-            ...
-        ValueError: invalid literal for int() with base 10: 'a'
     """
     main_thread = []  # using a list bypasses UnboundLocalError
 
@@ -310,24 +138,6 @@ class ExtensionFunc(threading.local):
     ####################
 
     @property
-    def default_values(self) -> MappingProxyType:
-        """A mapping of all argument names to their associated default values
-        for this :class:`ExtensionFunc`.
-
-        Returns
-        -------
-        MappingProxyType
-            A read-only dictionary suitable for use as the ``**kwargs`` input
-            to the decorated function.
-
-        Notes
-        -----
-        If no default value is associated with an argument, then it will be
-        excluded from this dictionary.
-        """
-        return MappingProxyType({**self._defaults, **self._vals})
-
-    @property
     def validators(self) -> MappingProxyType:
         """A mapping of argument names to their respective validators.
 
@@ -353,6 +163,24 @@ class ExtensionFunc(threading.local):
             mappingproxy({'bar': <function bar at 0x7ff5ad9c6e60>})
         """
         return MappingProxyType(self._validators)
+
+    @property
+    def default_values(self) -> MappingProxyType:
+        """A mapping of all argument names to their associated default values
+        for this :class:`ExtensionFunc`.
+
+        Returns
+        -------
+        MappingProxyType
+            A read-only dictionary suitable for use as the ``**kwargs`` input
+            to the decorated function.
+
+        Notes
+        -----
+        If no default value is associated with an argument, then it will be
+        excluded from this dictionary.
+        """
+        return MappingProxyType({**self._defaults, **self._vals})
 
     def register_arg(
         self,
@@ -570,6 +398,103 @@ class ExtensionFunc(threading.local):
 
         return signature 
 
+    def attach_to(self, _class: type, name: str | None = None) -> None:
+        """Attach the :class:`ExtensionFunc` as an instance method for the
+        given class.
+
+        Parameters
+        ----------
+        _class : type
+            A Python class to attach this function to.  The function will be
+            available to all instances of the class under the given
+            ``name``.
+        name : str | None, default None
+            The name under which to attach this :class:`ExtensionFunc`.  This
+            is used as an alias when the :class:`ExtensionFunc` is called from
+            the associated type.  If it is left empty, the name of the
+            :class:`ExtensionFunc` will be used directly.
+
+        Notes
+        -----
+        This method attaches a :class:`VirtualMethod` descriptor to the
+        associated class that serves as a factory for :class:`ExtensionMethod`
+        objects.  These are bound to individual instances via ``__get__()``.
+
+        Examples
+        --------
+        Converting an :class:`ExtensionFunc` into an :class:`ExtensionMethod`
+        is a straightforward operation.
+
+        .. doctest::
+
+            >>> class MyClass:
+            ...     def __repr__(self):  return "MyClass()"
+
+            >>> @extension_func
+            ... def foo(bar, baz=2, **kwargs):
+            ...     return bar, baz
+
+            >>> foo.attach_to(MyClass)
+
+        This creates a new attribute of ``MyClass`` under ``MyClass.foo``,
+        which references our original :class:`ExtensionFunc`.  Whenever we
+        invoke it this way, an instance of ``MyClass`` will be implicitly
+        passed into the :class:`ExtensionFunc` as its first argument, mirroring
+        the traditional notion of ``self`` in ordinary Python.
+
+        .. doctest::
+
+            >>> MyClass.foo
+            MyClass.foo(baz = 2, **kwargs)
+            >>> MyClass().foo()
+            (MyClass(), 2)
+
+        In this case, this takes the place of the ``bar`` argument.  If we
+        invoke ``MyClass.foo`` as a class method (i.e. without instantiating
+        ``MyClass`` first), then we get the same behavior as the naked ``foo``
+        function.
+
+        .. doctest::
+
+            >>> MyClass.foo()
+            Traceback (most recent call last):
+                ...
+            TypeError: foo() missing 1 required positional argument: 'bar'
+        
+        We can also modify defaults and add arguments to our
+        :class:`ExtensionMethod` just like normal.
+
+        .. doctest::
+
+            >>> @MyClass.foo.register_arg
+            ... def baz(val: int, defaults: dict) -> int:
+            ...     return int(val)
+
+            >>> MyClass.foo.baz
+            2
+            >>> MyClass.foo.baz = 3
+            >>> MyClass().foo()
+            (MyClass(), 3)
+
+        .. warning::
+
+            Any arguments (as well as their default values) will be shared between
+            the :class:`ExtensionMethod` and its base :class:`ExtensionFunc`.
+
+            .. doctest::
+
+                >>> foo.baz
+                3
+
+            This might lead to unexpected changes in behavior if not properly
+            accounted for.
+        """
+        if name is None:
+            name = self._func.__name__
+
+        descriptor = VirtualMethod(self, f"{_class.__qualname__}.{name}")
+        setattr(_class, name, descriptor)
+
     ###############################
     ####    SPECIAL METHODS    ####
     ###############################
@@ -621,7 +546,7 @@ class ExtensionMethod:
     Parameters
     ----------
     instance : Any
-        An instance to be inserted.  This is typically inserted from
+        An instance to be inserted.  This is typically passed from
         :meth:`VirtualMethod.__get__`, using Python's descriptor protocol.
     ext_func : Callable
         Usually an :class:`ExtensionFunc` object, but can be any Python
@@ -633,13 +558,14 @@ class ExtensionMethod:
 
     Notes
     -----
-    This is meant to be used in combination with a :class:`VirtualMethod`
-    descriptor.  Users should never need to instantiate one themselves.
+    This is meant to be used in combination with
+    :meth:`ExtensionFunc.attach_to`.  Users should never need to instantiate
+    one of these themselves.
 
     Examples
     --------
-    See the docs for :class:`VirtualMethod` for examples on how to use this
-    interface.
+    See the docs for :meth:`ExtensionFunc.attach_to` for examples on how to use
+    this interface.
     """
 
     def __init__(self, instance: Any, ext_func: Callable, ext_name: str):
@@ -660,12 +586,6 @@ class ExtensionMethod:
     def __delattr__(self, name: str) -> None:
         delattr(self.__dict__["_ext_func"], name)
 
-    def __iter__(self):
-        return iter(self._ext_func)
-
-    def __len__(self) -> int:
-        return len(self._ext_func)
-
     def __call__(self, *args, **kwargs):
         # from class
         if self._instance is None:
@@ -673,6 +593,15 @@ class ExtensionMethod:
 
         # from instance
         return self._ext_func(self._instance, *args, **kwargs)
+
+    def __contains__(self, item: str) -> bool:
+        return item in self._ext_func
+
+    def __iter__(self):
+        return iter(self._ext_func)
+
+    def __len__(self) -> int:
+        return len(self._ext_func)
 
     def __repr__(self) -> str:
         sig = self._ext_func._reconstruct_signature()
@@ -682,81 +611,44 @@ class ExtensionMethod:
 class VirtualMethod:
     """A descriptor that can be added to an arbitrary Python class to enable
     :class:`ExtensionFuncs <ExtensionFunc>` to act as instance methods.
-
-    Parameters
-    ----------
-    ext_func : Callable
-        An :class:`ExtensionFunc` or other callable object to be attached as
-        an instance method.
-    ext_name : str
-        The name to use when ``repr()`` is called on the
-        :class:`ExtensionMethod`.  Setting this to something like
-        ``"pandas.Series.cast"`` makes the output a bit cleaner, but doesn't
-        affect any other functionality.
-
-    Notes
-    -----
-    This descriptor serves as a factory for :class:`ExtensionMethod` objects,
-    which are bound to individual instances via ``__get__()``.
-
-    Examples
-    --------
-    This is meant to be patched in as an attribute of a Python class.
-
-    .. doctest::
-
-        >>> class MyClass:
-        >>>     def __repr__(self):  return "MyClass()"
-
-        >>> @extension_func
-        ... def foo(bar, baz=2, **kwargs):
-        ...     return bar, baz
-
-        >>> MyClass.foo = VirtualMethod(foo, "MyClass.foo")
-
-    An instance of ``MyClass`` will then be passed into the
-    :class:`ExtensionFunc` as its first argument whenever it is invoked.
-
-    .. doctest::
-
-        >>> MyClass.foo
-        MyClass.foo(baz = 2, **kwargs)
-        >>> MyClass().foo()
-        (MyClass(), 2)
-
-    In this case, this takes the place of the ``bar`` argument.
-
-    We can modify defaults and add arguments just like normal.
-
-    .. doctest::
-
-        >>> @MyClass.foo.register_arg
-        ... def baz(val: int, defaults: dict) -> int:
-        ...     return int(val)
-
-        >>> MyClass.foo.baz
-        2
-        >>> MyClass.foo.baz = 3
-        >>> MyClass().foo()
-        (MyClass(), 3)
-
-    .. note::
-
-        Any arguments will be shared between the base :class:`ExtensionFunc`
-        and its :class:`ExtensionMethods <ExtensionMethod>`.
-
-        .. doctest::
-
-            >>> foo.baz
-            3
     """
 
-    def __init__(self, ext_func: ExtensionFunc, ext_name: str = None):
+    def __init__(self, ext_func: ExtensionFunc, ext_name: str):
         update_wrapper(self, ext_func)
         self._ext_func = ext_func
-        if ext_name is None:
-            ext_name = self._ext_func.__name__
         self._ext_name = ext_name
 
     def __get__(self, instance, owner=None) -> Callable:
         return ExtensionMethod(instance, self._ext_func, self._ext_name)
+
+
+
+@extension_func
+def foo(bar, baz=2, **kwargs):
+    return bar, baz
+
+
+@foo.register_arg(default=1)
+def bar(val: int, defaults: dict) -> int:
+    return int(val)
+
+
+@foo.register_arg
+def baz(val: int, defaults: dict) -> int:
+    return int(val)
+
+
+@foo.register_arg(default=3)
+def qux(val: int, defaults: dict) -> int:
+    return int(val)
+
+
+class MyClass:
+
+    def __int__(self) -> int:
+        print("Hello, World!")
+        return 4
+
+
+foo.attach_to(MyClass)
+

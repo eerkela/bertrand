@@ -7,7 +7,6 @@ from pdcast.convert import cast
 from pdcast.detect import detect_type
 from pdcast.types import AdapterType, AtomicType, CompositeType
 
-from pdcast.util.structs import VirtualMethod
 from pdcast.util.type_hints import type_specifier
 
 
@@ -21,7 +20,7 @@ _ignore_frame_objects = True
 
 
 def attach() -> None:
-    pd.DataFrame.cast = VirtualMethod(cast, "pandas.DataFrame.cast")
+    cast.attach_to(pd.DataFrame)
     pd.DataFrame.typecheck = typecheck
     pd.DataFrame.element_type = property(element_type)
 

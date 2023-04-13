@@ -23,6 +23,8 @@ sidebar.
       - TODO
     * - :func:`@dispatch <dispatch>`
       - TODO
+    * - :func:`@extension_func <extension_func>`
+      - TODO
     * - :func:`@register <register>`
       - TODO
     * - :func:`@subtype <subtype>`
@@ -51,6 +53,7 @@ sidebar.
     pdcast.attach <attach>
     pdcast.detach <detach>
     pdcast.dispatch <dispatch>
+    pdcast.extension_func <extension_func>
     pdcast.register <register>
     pdcast.subtype <subtype>
     pdcast.generic <generic>

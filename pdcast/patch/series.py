@@ -7,8 +7,6 @@ from pdcast.convert import cast
 from pdcast.detect import detect_type
 from pdcast.types import AdapterType, AtomicType, CompositeType
 
-from pdcast.util.structs import VirtualMethod
-
 from .virtual import Namespace, DispatchMethod
 
 
@@ -24,7 +22,7 @@ _ignore_frame_objects = True
 def attach() -> None:
     """Attach all dispatched methods to pd.Series objects"""
     pd.Series.__getattribute__ = new_getattribute
-    pd.Series.cast = VirtualMethod(cast, "pandas.Series.cast")
+    cast.attach_to(pd.Series)
     pd.Series.typecheck = typecheck
     pd.Series.element_type = property(element_type)
 
