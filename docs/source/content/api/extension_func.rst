@@ -13,6 +13,8 @@ to its arguments and default values.
 
 .. autodecorator:: extension_func
 
+.. _extension_func.basic:
+
 Creating extension functions
 ----------------------------
 By default, the decorated function behaves exactly like the original.
@@ -35,6 +37,8 @@ By default, the decorated function behaves exactly like the original.
     Traceback (most recent call last):
         ...
     TypeError: foo() missing 1 required positional argument: 'bar'
+
+.. _extension_func.validator:
 
 Managed arguments
 -----------------
@@ -59,6 +63,8 @@ This validator will be implicitly executed whenever ``bar`` is supplied to
     ValueError: invalid literal for int() with base 10: 'a'
     >>> foo("1", 2)
     (1, 2)
+
+.. _extension_func.default:
 
 Default Values
 --------------
@@ -115,7 +121,8 @@ These default values can be updated at run time to change the behavior of
     >>> foo()
     (24, -17)
 
-They can be reset to their default by simply deleting the attribute:
+They can be reset to their default using :meth:`ExtensionFunc.reset_defaults`
+or by simply deleting the attribute:
 
 .. doctest::
 
@@ -177,6 +184,8 @@ instance can then be modified without affecting the behavior of other threads.
     >>> foo()
     (1, 2)
 
+.. _extension_func.dynamic:
+
 Dynamic arguments
 -----------------
 :func:`@register_arg <ExtensionFunc.register_arg>` also allows us to
@@ -203,6 +212,8 @@ These are passed dynamically into the base function's ``**kwargs`` attribute.
     If a dynamic argument does not specify a default value, then it will
     **not** be passed through to ``**kwargs`` unless it is explicitly
     specified.
+
+.. _extension_func.method:
 
 Extension methods
 -----------------
@@ -240,6 +251,8 @@ function.
     >>> MyClass.foo()
     (1, 2)
 
+.. _extension_func.internal:
+
 Internals
 ---------
 
@@ -251,5 +264,6 @@ Internals
     ExtensionFunc.default_values
     ExtensionFunc.register_arg
     ExtensionFunc.remove_arg
+    ExtensionFunc.reset_defaults
     ExtensionFunc.attach_to
     ExtensionMethod

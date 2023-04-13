@@ -159,6 +159,9 @@ The behavior of this function can be customized using the following arguments.
 
 Stand-alone conversions
 -----------------------
+:func:`cast` is fully generic and can handle conversions from any data type to
+any data type.  
+
 Internally, :func:`cast` calls a selection of stand-alone conversion functions,
 similar to ``pandas.to_datetime()``, ``pandas.to_numeric()``, etc.  These are
 available for use under the ``pdcast`` namespace if desired, mirroring their

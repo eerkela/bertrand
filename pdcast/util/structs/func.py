@@ -240,7 +240,8 @@ class ExtensionFunc(threading.local):
 
         Examples
         --------
-        See the docs for :func:`extension_func` for example usage.
+        See the docs for :func:`extension_func` for
+        :ref:`example <extension_func.validator>` usage.
         """
 
         def argument(validator: Callable) -> Callable:
@@ -352,51 +353,73 @@ class ExtensionFunc(threading.local):
             self._defaults.pop(name, None)
             self._validators.pop(name)
 
-    def _validate_args(self, *args, **kwargs: dict) -> dict:
-        """Format the input to the decorated function and ensure it is valid
-        according to the validators registered to this ExtensionFunc.
+    def reset_defaults(self, *args: str) -> None:
+        """Reset one or more arguments to their default values.
+
+        Parameters
+        ----------
+        *args
+            The names of one or more arguments that are being actively managed
+            by this object.
+
+        Raises
+        ------
+        AttributeError
+            If any of the referenced arguments are not being actively managed
+            by this :class:`ExtensionFunc`.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> @extension_func
+            ... def foo(bar, baz, **kwargs):
+            ...     return bar, baz
+
+            >>> @foo.register_arg(default=1)
+            ... def bar(val: int, defaults: dict) -> int:
+            ...     return int(val)
+
+            >>> @foo.register_arg(default=2)
+            ... def baz(val: int, defaults: dict) -> int:
+            ...     return int(val)
+
+            >>> foo.bar, foo.baz
+            (1, 2)
+            >>> foo.bar, foo.baz = 18, -34
+            >>> foo.bar, foo.baz
+            (12, -34)
+            >>> foo.reset_defaults("bar", "baz")
+            >>> foo.bar, foo.baz
+            (1, 2)
+
+        If no arguments are supplied to this method, then all arguments will
+        be reset to their internal defaults.
+
+        .. doctest::
+
+            >>> foo.bar, foo.baz = -86, 17
+            >>> foo.bar, foo.baz
+            (-86, 17)
+            >>> foo.reset_defaults()
+            >>> foo.bar, foo.baz
+            (1, 2)
         """
-        # bind *args, **kwargs
-        result = self._signature.bind_partial(*args, **kwargs).arguments
+        # reset all
+        if not args:
+            for name in self._validators:
+                delattr(self, name)
 
-        # flatten remaining **kwargs
-        if self._kwargs_name in result:
-            result.update(result[self._kwargs_name])
-            del result[self._kwargs_name]
+        # reset some
+        else:
+            # ensure each argument is being actively managed
+            for name in args:
+                if name not in self:
+                    raise AttributeError(f"'{name}' is not a managed argument")
 
-        # apply validators 
-        for k, v in result.items():
-            if k in self._validators:
-                result[k] = self._validators[k](v, defaults=result)
-
-        return result
-
-    def _reconstruct_signature(self) -> list[str]:
-        """Reconstruct the original function's signature in string form,
-        incorporating the default values from this ExtensionFunc.
-        """
-        # get vals for default arguments
-        keywords = self._signature.bind_partial(**self.default_values)
-        keywords.apply_defaults()
-        keywords = keywords.arguments
-        if self._kwargs_name in keywords:  # flatten **kwargs
-            keywords.update(keywords[self._kwargs_name])
-            del keywords[self._kwargs_name]
-
-        # reconstruct signature
-        signature = []
-        for p in self._signature.parameters.values():
-            if p.name in keywords:
-                signature.append(f"{p.name} = {keywords[p.name]}")
-            elif p.name == self._kwargs_name:
-                pars = self._signature.parameters
-                kwargs = {k: v for k, v in keywords.items() if k not in pars}
-                signature.extend(f"{k} = {v}" for k, v in kwargs.items())
-                signature.append(f"**{self._kwargs_name}")
-            else:
-                signature.append(p.name)
-
-        return signature 
+            # commit
+            for name in args:
+                delattr(self, name)
 
     def attach_to(self, _class: type, name: str | None = None) -> None:
         """Attach the :class:`ExtensionFunc` as an instance method for the
@@ -495,6 +518,52 @@ class ExtensionFunc(threading.local):
         descriptor = VirtualMethod(self, f"{_class.__qualname__}.{name}")
         setattr(_class, name, descriptor)
 
+    def _validate_args(self, *args, **kwargs: dict) -> dict:
+        """Format the input to the decorated function and ensure it is valid
+        according to the validators registered to this ExtensionFunc.
+        """
+        # bind *args, **kwargs
+        result = self._signature.bind_partial(*args, **kwargs).arguments
+
+        # flatten remaining **kwargs
+        if self._kwargs_name in result:
+            result.update(result[self._kwargs_name])
+            del result[self._kwargs_name]
+
+        # apply validators 
+        for k, v in result.items():
+            if k in self._validators:
+                result[k] = self._validators[k](v, defaults=result)
+
+        return result
+
+    def _reconstruct_signature(self) -> list[str]:
+        """Reconstruct the original function's signature in string form,
+        incorporating the default values from this ExtensionFunc.
+        """
+        # get vals for default arguments
+        keywords = self._signature.bind_partial(**self.default_values)
+        keywords.apply_defaults()
+        keywords = keywords.arguments
+        if self._kwargs_name in keywords:  # flatten **kwargs
+            keywords.update(keywords[self._kwargs_name])
+            del keywords[self._kwargs_name]
+
+        # reconstruct signature
+        signature = []
+        for p in self._signature.parameters.values():
+            if p.name in keywords:
+                signature.append(f"{p.name} = {keywords[p.name]}")
+            elif p.name == self._kwargs_name:
+                pars = self._signature.parameters
+                kwargs = {k: v for k, v in keywords.items() if k not in pars}
+                signature.extend(f"{k} = {v}" for k, v in kwargs.items())
+                signature.append(f"**{self._kwargs_name}")
+            else:
+                signature.append(p.name)
+
+        return signature 
+
     ###############################
     ####    SPECIAL METHODS    ####
     ###############################
@@ -564,8 +633,8 @@ class ExtensionMethod:
 
     Examples
     --------
-    See the docs for :meth:`ExtensionFunc.attach_to` for examples on how to use
-    this interface.
+    See the docs for :meth:`ExtensionFunc.attach_to` for
+    :ref:`examples <extension_func.method>` on how to use this interface.
     """
 
     def __init__(self, instance: Any, ext_func: Callable, ext_name: str):
@@ -620,35 +689,3 @@ class VirtualMethod:
 
     def __get__(self, instance, owner=None) -> Callable:
         return ExtensionMethod(instance, self._ext_func, self._ext_name)
-
-
-
-@extension_func
-def foo(bar, baz=2, **kwargs):
-    return bar, baz
-
-
-@foo.register_arg(default=1)
-def bar(val: int, defaults: dict) -> int:
-    return int(val)
-
-
-@foo.register_arg
-def baz(val: int, defaults: dict) -> int:
-    return int(val)
-
-
-@foo.register_arg(default=3)
-def qux(val: int, defaults: dict) -> int:
-    return int(val)
-
-
-class MyClass:
-
-    def __int__(self) -> int:
-        print("Hello, World!")
-        return 4
-
-
-foo.attach_to(MyClass)
-
