@@ -1,3 +1,32 @@
+"""Flexible type extensions for pandas.
+
+Subpackages
+-----------
+convert
+    Extendable conversions between types in the ``pdcast`` type system.
+
+patch
+    Direct ``pdcast`` integration and type-aware attribute dispatch for
+    ``pandas.Series`` and ``pandas.DataFrame`` objects.
+
+types
+    Defines the structure and contents of the ``pdcast`` type system.
+
+util
+    Utilities for ``pdcast``-related functionality.
+
+Modules
+-------
+check
+    Fast type checks within the ``pdcast`` type system.
+
+detect
+    Type inference for arbitrary, vectorized data.
+
+resolve
+    Easy construction of data types from type specifiers, including a
+    domain-specific mini-language for referring to types.
+"""
 from .patch import attach, detach, DispatchMethod, Namespace
 
 from .check import typecheck

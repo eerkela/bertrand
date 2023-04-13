@@ -32,6 +32,10 @@ subtype
 generic
     Transform a subclass of ``AtomicType`` into a generic type, which can
     reference other types as backends.
+
+dispatch
+    Mark an ``AtomicType``/``AdapterType`` method or naked python function
+    as a dispatch method for pandas Series of the associated type.
 """
 from .base import (
     AdapterType, AtomicType, BaseType, CompositeType, dispatch, generic,

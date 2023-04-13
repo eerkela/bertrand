@@ -1,3 +1,6 @@
+"""This module defines the ``cast()`` function, as well as several stand-alone
+equivalents that allow quick conversion to predefined data types.
+"""
 from __future__ import annotations
 from typing import Any, Optional
 
@@ -10,7 +13,7 @@ import pdcast.types as types
 
 import pdcast.convert.wrapper as wrapper
 
-from pdcast.util.structs import as_series, extension_func
+from pdcast.util.structs import extension_func
 from pdcast.util.type_hints import type_specifier
 
 
@@ -70,7 +73,7 @@ def cast(
         return result
  
     # scalar or 1D iterable
-    series = as_series(data)
+    series = detect.as_series(data)
 
     # if no target is given, default to series type
     if dtype is None:

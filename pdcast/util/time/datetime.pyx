@@ -1,3 +1,46 @@
+"""This module contains utility functions for manipulating datetime-like data
+in a variety of formats.
+
+Functions
+---------
+pandas_timestamp_to_ns()
+    Convert ``pandas.Timestamp`` objects into an integer number of nanoseconds
+    from the utc epoch.
+
+localize_pydatetime()
+    Localize a python ``datetime.datetime`` object to the specified time zone.
+
+ns_to_pydatetime()
+    Convert an integer vector of nanoseconds from the utc epoch into
+    corresponding ``datetime.datetime`` objects.
+
+pydatetime_to_ns()
+    Convert python ``datetime.datetime`` objects into an integer number of
+    nanoseconds from the utc epoch.
+
+numpy_datetime64_to_ns()
+    Convert ``numpy.datetime64`` objects into an integer number of nanoseconds
+    from the utc epoch.
+
+is_iso_8601_format_string()
+    Check whether an ``strftime()``-compliant format string is ISO
+    8601-compliant.
+
+iso_8601_to_ns()
+    Convert a vector of ISO 8601 datetime strings into an integer number of
+    nanoseconds from the utc epoch.
+
+string_to_pydatetime()
+    Convert datetime strings into python ``datetime.datetime`` objects using
+    ``dateutil``.
+
+filter_dateutil_parser_error()
+    Distinguish between malformed values and overflow in ``dateutil`` parser
+    errors.
+
+timezone()
+    Resolve a time zone specifier, returning a corresponding ``pytz`` timezone.
+"""
 import datetime
 import re
 

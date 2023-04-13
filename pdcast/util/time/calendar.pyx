@@ -1,146 +1,25 @@
-"""Gregorian calendar utility functions.
-
-This module allows users to do efficient math around the Gregorian calendar.
-It contains functionality to convert calendar dates both to and from day
-offsets from the UTC epoch ('1971-01-01 00:00:00+0000'), as well as track the
-passage of leap years and obtain the length of each month within a year.
+"""This module contains various utility functions for interacting with the
+proleptic Gregorian calendar.
 
 Functions
 ---------
-    date_to_days(
-        year: int | np.ndarray | pd.Series,
-        month: int | np.ndarray | pd.Series,
-        day: int | np.ndarray | pd.Series
-    ) -> int | np.ndarray | pd.Series:
-        Convert proleptic Gregorian calendar dates into day offsets from the
-        utc epoch.
+date_to_days()
+    Convert proleptic Gregorian calendar dates into day offsets from the utc
+    epoch.
 
-    days_in_month(
-        month: int | np.ndarray | pd.Series,
-        year: int | np.ndarray | pd.Series = 2001
-    ) -> int | np.ndarray | pd.Series:
-        Get the length in days of a given month, taking leap years into
-        account.
+days_in_month()
+    Get the length (in days) of vector of months, accounting for leap years.
 
-    days_to_date(
-        days: int | np.ndarray | pd.Series
-    ) -> dict[str, int | np.ndarray | pd.Series]:
-        Convert day offsets from the utc epoch ('1970-01-01 00:00:00+0000')
-        into proleptic Gregorian calendar dates.
+days_to_date()
+    Convert a vector of day offsets from the utc epoch into proleptic Gregorian
+    calendar dates.
 
-    is_leap_year(
-        year: int | np.ndarray | pd.Series
-    ) -> bool | np.ndarray | pd.Series:
-        Check if the given year is a leap year according to the proleptic
-        Gregorian calendar.
+is_leap_year()
+    Check if a vector of years are leap years according to the proleptic
+    Gregorian calendar.
 
-    leaps_between(
-        lower: int | np.ndarray | pd.Series,
-        upper: int | np.ndarray | pd.Series
-    ) -> int | np.ndarray | pd.Series:
-        Return the number of leap days between the years `lower` and `upper`.
-
-Examples
---------
-Converting Gregorian dates into UTC day offsets:
-
->>> date_to_days(1970, 1, -1)
--2
->>> date_to_days(1970, 1, 0)
--1
->>> date_to_days(1970, 1, 1)
-0
->>> date_to_days(1970, 1, 2)
-1
->>> date_to_days(1970, -1, 1)
--61
->>> date_to_days(1970, 0, 1)
--31
->>> date_to_days(1970, 2, 1)
-31
->>> date_to_days(1970, 3, 1)
-59
->>> date_to_days(1968, 1, 1)
--731
->>> date_to_days(1969, 1, 1)
--365
->>> date_to_days(1971, 1, 1)
-365
->>> date_to_days(1972, 1, 1)
-730
->>> date_to_days(1970, 1, np.arange(-1, 3))
-array([-2, -1,  0,  1])
->>> date_to_days(1970, np.arange(-1, 3), 1)
-array([-61, -31,   0,  31])
->>> date_to_days(np.arange(1968, 1973), 1, 1)
-array([-731, -365,    0,  365,  730])
-
-Getting month lengths:
-
->>> days_in_month(1, 2001)
-31
->>> days_in_month(2, 2001)
-28
->>> days_in_month(2, 2000)
-29
->>> days_in_month(np.arange(-2, 3), 2001)
-array([31, 30, 31, 31, 28], dtype=uint8)
-
-Converting UTC day offsets into Gregorian dates:
-
->>> days_to_date(0)
-{'year': 1970, 'month': 1, 'day': 1}
->>> days_to_date(1)
-{'year': 1970, 'month': 1, 'day': 2}
->>> days_to_date(-1)
-{'year': 1969, 'month': 12, 'day': 31}
->>> days_to_date(31)
-{'year': 1970, 'month': 2, 'day': 1}
->>> days_to_date(31 + 28)
-{'year': 1970, 'month': 3, 'day': 1}
->>> days_to_date(365 + 365 + 31 + 28)  # leap day
-{'year': 1972, 'month': 2, 'day': 29}
->>> days_to_date(365)
-{'year': 1971, 'month': 1, 'day': 1}
->>> days_to_date(365 + 365)
-{'year': 1972, 'month': 1, 'day': 1}
->>> days_to_date(365 + 365 + 365)  # leap year
-{'year': 1972, 'month': 12, 'day': 31}
->>> days_to_date(np.arange(-1, 2))
-{'year': array([1969, 1970, 1970]), 'month': array([12,  1,  1]), 'day': array([31,  1,  2])}
-
-Getting date dictionaries from datetime objects:
-
->>> decompose_date(pd.Timestamp("2022-10-15"))
-{'year': 2022, 'month': 10, 'day': 15}
->>> decompose_date(datetime.datetime.fromisoformat("2022-10-15 12:37:00"))
-{'year': 2022, 'month': 10, 'day': 15}
->>> decompose_date(np.datetime64("2022-10-15 20:12:34.235678"))
-{'year': 2022, 'month': 10, 'day': 15}
->>> decompose_date(datetime.date(2022, 10, 15))
-{'year': 2022, 'month': 10, 'day': 15}
->>> decompose_date(np.arange(0, 3, dtype="M8[D]"))
-{'year': array([1970, 1970, 1970], dtype=object), 'month': array([1, 1, 1], dtype=object), 'day': array([1, 2, 3], dtype=object)}
-
-Identifying leap years:
-
->>> is_leap_year(1971)
-False
->>> is_leap_year(1972)
-True
->>> is_leap_year(np.arange(1968, 1973))
-array([ True, False, False, False,  True])
-
-Counting leap years:
-
->>> leaps_between(1968, 1970)  # 1968 was a leap year
-1
->>> leaps_between(1968, 1974)  # 1972 was also a leap year
-2
->>> leaps_between(0, 2022)
-491
->>> leaps_between(1970 + np.arange(-6, 6), 2000)
-array([9, 8, 8, 8, 8, 7, 7, 7, 7, 6, 6, 6])
+leaps_between()
+    Return the number of leap days between 2 years.
 """
 import cython
 import numpy as np

@@ -1,3 +1,6 @@
+"""This module describes the logic necessary to patch ``pdcast`` functionality
+into ``pandas.Series`` objects.
+"""
 from __future__ import annotations
 
 import pandas as pd

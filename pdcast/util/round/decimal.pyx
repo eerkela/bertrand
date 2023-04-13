@@ -1,5 +1,6 @@
-"""Implements a single function `round_decimal`, which performs customizable
-rounding on arbitrary-precision decimal numbers and vectors.
+"""This module describes a single function (``round_decimal()``), which
+performs customizable, vectorized rounding on arbitrary-precision ``Decimal``
+values.
 """
 import decimal
 

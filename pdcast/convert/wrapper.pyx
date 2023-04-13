@@ -1,3 +1,8 @@
+"""This module describes a ``SeriesWrapper`` object, which offers a type-aware
+view into a pandas Series that automatically handles missing values, non-unique
+indices, and other common problems, as well as offering convenience methods for
+conversions and ``@dispatch`` methods.
+"""
 from functools import wraps
 import inspect
 from typing import Any, Callable, Iterator

@@ -1,5 +1,6 @@
-"""Implements a single function `round_div`, which mimics the integer division
-operator `//`, but with customizable rounding behavior.
+"""This module describes a single function (``round_div()``), which mimics the
+integer division operator `//` for vectorized data, with customizable rounding
+behavior.
 """
 import numpy as np
 import pandas as pd

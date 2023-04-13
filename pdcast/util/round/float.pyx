@@ -1,5 +1,5 @@
-"""Implements a single function `round_float`, which performs customizable
-rounding on floating point numbers and vectors.
+"""This module describes a single function (``round_float()``), which performs
+customizable, vectorized rounding on floating point numbers.
 """
 cimport numpy as np
 import numpy as np

@@ -1,3 +1,10 @@
+"""This module describes the ``detect_type()`` function, which can infer types
+from vectorized example data.
+
+The classes that are recognized by this function can be managed via the
+``register_alias()``, ``remove_alias()``, and ``clear_aliases()`` methods that
+are attached to every ``AtomicType`` and ``AdapterType`` definition.
+"""
 from typing import Any
 
 cimport cython
@@ -9,8 +16,6 @@ cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 cimport pdcast.types as types
 import pdcast.types as types
-
-from pdcast.util.structs import as_series
 
 
 ######################
@@ -103,6 +108,17 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType:
 #######################
 ####    PRIVATE    ####
 #######################  
+
+
+def as_series(data: Any) -> pd.Series:
+    """Convert arbitrary data into a corresponding pd.Series object."""
+    if isinstance(data, pd.Series):
+        return data.copy()
+
+    if isinstance(data, np.ndarray):
+        return pd.Series(np.atleast_1d(data))
+
+    return pd.Series(data, dtype="O")
 
 
 cdef types.AtomicType detect_scalar_type(object example):

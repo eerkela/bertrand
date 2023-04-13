@@ -1,3 +1,7 @@
+"""This module describes the internal workings of the ``@dispatch`` decorator.
+The decorator itself is not included here in order to avoid a circular import
+error.
+"""
 from __future__ import annotations
 from functools import partial, update_wrapper
 import inspect
@@ -12,14 +16,6 @@ from pdcast.types import (
     CompositeType, ObjectType, PandasUnsignedIntegerType, SignedIntegerType,
     UnsignedIntegerType
 )
-
-
-# TODO: SeriesExtensionMethod seems to have an argument mismatch.
-# -> the issue is passing self to self._ext_func in __call__.  This doesn't
-# give a pandas Series, it gives the ExtensionMethod itself.
-# -> probably have to use a decorator function here rather than a class.  Just
-# attach __getattr__, etc to the function.
-# -> maybe inherit from functools.partial?
 
 
 # ignore this file when doing string-based object lookups in resolve_type()

@@ -1,26 +1,22 @@
-"""Utilities for converting to, from, and between various datetime and
-timedelta representations.
-
-This library encapsulates all the required functionality to convert each of
-the default types that are recognized by `pdcast` into datetime or timedelta
-format, or to do the reverse.
+"""This package provides utilities for converting to, from, and between various
+datetime and timedelta representations.
 
 Modules
 -------
-    calendar
-        Gregorian calendar utility functions.
+calendar
+    Vectorized math for conversions involving the proleptic Gregorian calendar.
 
-    datetime
-        Utilities for converting to and from various datetime representations.
+datetime
+    Utilities for converting to and from various datetime representations.
 
-    epoch
-        Customizable epochs for datetime/timedelta calculations.
+epoch
+    Customizable epochs for datetime/timedelta calculations.
 
-    timedelta
-        Utilities for converting to and from various timedelta representations.
+timedelta
+    Utilities for converting to and from various timedelta representations.
 
-    unit
-        Datetime and timedelta unit conversions.
+unit
+    Datetime and timedelta unit conversions.
 """
 from .calendar import (
     date_to_days, days_in_month, days_to_date, is_leap_year, leaps_between

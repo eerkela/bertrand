@@ -1,3 +1,7 @@
+"""This module describes an ``@extension_func`` decorator that transforms an
+ordinary Python function into one that can accept dynamic, managed arguments
+with custom validators and default values.
+"""
 from __future__ import annotations
 from functools import update_wrapper, wraps
 import inspect

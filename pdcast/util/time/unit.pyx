@@ -1,88 +1,28 @@
-"""Datetime and timedelta unit conversions.
+"""This module provides calendar-accurate unit conversions for datetime and
+timedelta data.
 
-The units covered in this module are the same as implemented in the
-`numpy.datetime64`/`numpy.timedelta64` interface.
+The units covered in this module are the same as those implemented in the
+``numpy.datetime64``/``numpy.timedelta64`` interface.
 
 Functions
 ---------
-    convert_unit_float(
-        arg: float | complex | decimal.Decimal | np.ndarray | pd.Series,
-        from_unit: str,
-        to_unit: str,
-        rounding: str | None = "down",
-        since: datetime_like = pd.Timestamp("2001-01-01 00:00:00+0000")
-    ) -> int | float | complex | decimal.Decimal | np.ndarray | pd.Series:
-        Convert fractional quantities of a given time unit into a different
-        unit.
+convert_unit
+    Arbitrary unit conversions.
 
-    convert_unit_integer(
-        arg: int | np.ndarray | pd.Series,
-        from_unit: str,
-        to_unit: str,
-        rounding: str | None = "down",
-        since: datetime_like = pd.Timestamp("2001-01-01 00:00:00+0000")
-    ) -> int | float | np.ndarray | pd.Series:
-        Convert integer quantities of a given time unit into a different unit.
+round_years_to_ns
+    Round a vector of (possibly fractional) years to the nearest nanosecond.
 
-Examples
---------
-For converting fractional values (`float`, `complex`, `decimal.Decimal`):
+round_months_to_ns
+    Round a vector of (possibly fractional) months to the nearest nanosecond.
 
->>> convert_unit_float(1.0, "s", "ns")
-1000000000
->>> convert_unit_float(0.123, "s", "ns")
-123000000
->>> convert_unit_float(10.3864, "D", "s")
-897384
->>> convert_unit_float(1.0, "Y", "M")
-12
->>> convert_unit_float(42.3, "M", "Y")
-3
->>> convert_unit_float(1.0, "Y", "D")
-365
->>> convert_unit_float(1.0, "Y", "D", since=pd.Timestamp("2000-01-01"))
-366
->>> convert_unit_float(32.4928, "M", "s")
-85344537
->>> convert_unit_float(365.0, "D", "Y")
-1
->>> convert_unit_float(365.0, "D", "Y", since=pd.Timestamp("2000-01-01"))
-0
->>> convert_unit_float(0.12345678910, "s", "ns")
-123456789
->>> convert_unit_float(1.11111111, "Y", "ns")
-35039999964959996
->>> convert_unit_float(0.12345678910, "s", "ns", rounding=None)
-123456789.10000001
->>> convert_unit_float(365.0, "D", "Y", rounding=None, since=pd.Timestamp("2000-01-01"))
-0.9972677595628415
+Constants
+---------
+as_ns
+    Conversion factors from each of the regular units (i.e. not "M" or "Y") to
+    nanoseconds.
 
-And for integers:
-
->>> convert_unit_integer(1, "s", "ns")
-1000000000
->>> convert_unit_integer(123, "s", "ns")
-123000000000
->>> convert_unit_integer(10, "D", "s")
-864000
->>> convert_unit_integer(1, "Y", "M")
-12
->>> convert_unit_integer(42, "M", "Y")
-3
->>> convert_unit_integer(1, "Y", "D")
-365
->>> convert_unit_integer(1, "Y", "D", since=pd.Timestamp("2000-01-01"))
-366
->>> convert_unit_integer(32, "M", "s")
-84067200
->>> convert_unit_integer(365, "D", "Y")
-1
->>> convert_unit_integer(365, "D", "Y", since=pd.Timestamp("2000-01-01"))
-0
->>> convert_unit_integer(1, "s", "m", rounding=None)
-0.016666666666666666
->>> convert_unit_integer(365, "D", "Y", rounding=None, since=pd.Timestamp("2000-01-01"))
-0.9972677595628415
+valid_units
+    A list of units that are recognized by this package.
 """
 import datetime
 import decimal

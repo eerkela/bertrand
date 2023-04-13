@@ -1,3 +1,25 @@
+"""This module describes a mechanism for automatically generating pandas
+``ExtensionDtype`` and ``ExtensionArray`` objects from an associated
+``AtomicType``.
+
+Classes
+-------
+AbstractDtype
+    A pandas ``ExtensionDtype`` that delegates certain functionality to its
+    associated ``AtomicType`` and comes with its own ``ExtensionArray``.
+
+AbstractArray
+    A pandas ``ExtensionArray`` that stores arbitrary objects in an
+    explicitly-labeled ``dtype: object`` array.
+
+Functions
+---------
+construct_extension_dtype()
+    A factory for ``AbstractDtype`` definitions.
+
+construct_array_type()
+    A factory for ``AbstractArray`` definitions.
+"""
 from collections import Counter
 import numbers
 import sys
@@ -16,9 +38,6 @@ from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
 import pdcast.convert as convert
 
 from pdcast.util.type_hints import type_specifier
-
-
-# TODO: move this into util/structs
 
 
 ######################
@@ -49,7 +68,7 @@ def construct_extension_dtype(
     )
 
     @register_extension_dtype
-    class ImplementationDtype(AbstractDtype):
+    class _AbstractDtype(AbstractDtype):
 
         _atomic_type = atomic_type
         name = str(atomic_type)
@@ -73,8 +92,8 @@ def construct_extension_dtype(
                 return self
             return common_dtype
 
-    ImplementationDtype.__doc__ = class_doc
-    return ImplementationDtype()
+    _AbstractDtype.__doc__ = class_doc
+    return _AbstractDtype()
 
 
 def construct_array_type(
@@ -90,7 +109,7 @@ def construct_array_type(
         f"{str(atomic_type)} objects."
     )
 
-    class ImplementationArray(AbstractArray):
+    class _AbstractArray(AbstractArray):
         
         def __init__(self, *args, **kwargs):
             self._atomic_type = atomic_type
@@ -98,13 +117,13 @@ def construct_array_type(
 
     # add scalar operations from ExtensionScalarOpsMixin
     if add_arithmetic_ops:
-        ImplementationArray._add_arithmetic_ops()
+        _AbstractArray._add_arithmetic_ops()
     if add_comparison_ops:
-        ImplementationArray._add_comparison_ops()
+        _AbstractArray._add_comparison_ops()
 
     # replace docstring
-    ImplementationArray.__doc__ = class_doc
-    return ImplementationArray
+    _AbstractArray.__doc__ = class_doc
+    return _AbstractArray
 
 
 #######################

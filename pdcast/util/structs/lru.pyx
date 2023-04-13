@@ -1,10 +1,11 @@
-"""Rudimentary data structures used in `pdcast`.
+"""This module describes a fixed-size dictionary object that implements a
+Least-Recently-Used (LRU) caching strategy.
 
 Classes
 -------
-LRUDict(dict)
-    A fixed-size dictionary subclass implementing the Least Recently Used
-    (LRU) caching strategy.
+LRUDict
+    A dictionary subclass that evicts the least recently used key when its
+    length exceeds a fixed value.
 """
 cimport cython
 

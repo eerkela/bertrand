@@ -1,3 +1,6 @@
+"""This module describes a ``Tolerance`` object, which stores a positive
+complex value as two separate ``Decimal`` values.
+"""
 import decimal
 
 import numpy as np

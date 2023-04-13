@@ -1,3 +1,8 @@
+"""Experimental support for numpy.datetime64-backed extension arrays.
+
+It is not currently possible to support these due to limitations in the way
+pandas formats repr() strings for M8 arrays.
+"""
 import numbers
 from typing import Any, Iterator
 

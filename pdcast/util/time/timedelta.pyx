@@ -1,3 +1,23 @@
+"""This module contains utility functions for manipulating timedelta-like data
+in a variety of formats.
+
+Functions
+---------
+pandas_timedelta_to_ns()
+    Convert ``pandas.Timedelta`` objects into an integer number of nanoseconds.
+
+pytimedelta_to_ns()
+    Convert python ``datetime.timedelta`` objects into an integer number of
+    nanoseconds.
+
+numpy_timedelta64_to_ns()
+    Convert ``numpy.timedelta64`` objects into an integer number of nanoseconds
+    from the given epoch.
+
+timedelta_string_to_ns()
+    Convert a vector of timedelta strings into an integer number of nanoseconds
+    from the given epoch.
+"""
 import datetime
 import decimal
 import re
@@ -13,9 +33,51 @@ from .unit cimport as_ns
 from .unit import convert_unit, round_months_to_ns, round_years_to_ns
 
 
-#########################
-####    CONSTANTS    ####
-#########################
+################################
+####    PANDAS TIMEDELTA    ####
+################################
+
+
+def pandas_timedelta_to_ns(object delta) -> int:
+    """Convert a pandas Timedelta into an integer number of nanoseconds."""
+    return delta.value
+
+
+###############################
+####    PYTHON DATETIME    ####
+###############################
+
+
+def pytimedelta_to_ns(object delta) -> int:
+    """Convert a python timedelta into an integer number of nanoseconds."""
+    return (
+        delta.days * as_ns["D"] +
+        delta.seconds * as_ns["s"] +
+        delta.microseconds * as_ns["us"]
+    )
+
+
+################################
+####    NUMPY DATETIME64    ####
+################################
+
+
+def numpy_timedelta64_to_ns(
+    object delta,
+    epoch.Epoch since,
+    str unit = None,
+    long int step_size = -1
+) -> int:
+    """Convert a numpy timedelta64 into an integer number of nanoseconds."""
+    if unit is None or step_size < 0:
+        unit, step_size = np.datetime_data(delta)
+    result = int(delta.view(np.int64)) * step_size
+    return convert_unit(result, unit, "ns", since=since)
+
+
+######################
+####    STRING    ####
+######################
 
 
 cdef dict timedelta_formats_regex():
@@ -64,38 +126,6 @@ cdef dict timedelta_formats_regex():
 
 # compiled timedelta string regex
 cdef dict timedelta_regex = timedelta_formats_regex()
-
-
-######################
-####    PUBLIC    ####
-######################
-
-
-def numpy_timedelta64_to_ns(
-    object delta,
-    epoch.Epoch since,
-    str unit = None,
-    long int step_size = -1
-) -> int:
-    """Convert a numpy timedelta64 into an integer number of nanoseconds."""
-    if unit is None or step_size < 0:
-        unit, step_size = np.datetime_data(delta)
-    result = int(delta.view(np.int64)) * step_size
-    return convert_unit(result, unit, "ns", since=since)
-
-
-def pandas_timedelta_to_ns(object delta) -> int:
-    """Convert a pandas Timedelta into an integer number of nanoseconds."""
-    return delta.value
-
-
-def pytimedelta_to_ns(object delta) -> int:
-    """Convert a python timedelta into an integer number of nanoseconds."""
-    return (
-        delta.days * as_ns["D"] +
-        delta.seconds * as_ns["s"] +
-        delta.microseconds * as_ns["us"]
-    )
 
 
 def timedelta_string_to_ns(

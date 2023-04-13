@@ -1,3 +1,6 @@
+"""This module describes the ``typecheck()`` function, which enables fast,
+``isinstance()``-like type checks for data in the ``pdcast`` type system.
+"""
 from typing import Any
 
 from pdcast.detect import detect_type

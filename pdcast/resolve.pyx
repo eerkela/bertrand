@@ -1,16 +1,15 @@
-"""Dynamic resolution of AtomicType/CompositeType specifiers.
+"""This module describes the ``resolve_type()`` function, which can parse
+type specifiers in any of the following types:
+    * Numpy/pandas dtype objects.
+    * Raw python types (e.g. ``int``, ``float``, etc.).
+    * Strings that conform to the type resolution mini-language.
+    * Other AtomicType/CompositeType objects.
+    * An iterable containing any of the above.
 
-Exports only a single function `resolve_type()`, which can parse type
-specifiers of any of the following types:
-    * numpy/pandas dtype objects.
-    * raw type definitions (e.g. `int`, `float`, etc.).
-    * strings that conform to the type resolution mini-language.
-    * other AtomicType/CompositeType objects.
-
-Custom aliases can be added or removed from the pool recognized by this
-function through the `register_alias()`, `remove_alias()`, and
-`clear_aliases()` classmethods attached to each respective AtomicType
-definition.
+Custom aliases can be added or removed from the pool that is recognized by this
+function through the ``register_alias()``, ``remove_alias()``, and
+``clear_aliases()`` methods that are attached to every ``AtomicType`` and
+``AdapterType`` definition.
 """
 import regex as re  # alternate (PCRE-style) python regex engine
 from typing import Iterable

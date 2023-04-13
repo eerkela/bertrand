@@ -1,3 +1,6 @@
+"""This module holds argument validators for the ``cast()`` extension_func.
+See the API docs for ``@extension_func`` for more details.
+"""
 from __future__ import annotations
 from typing import Any, Callable
 
