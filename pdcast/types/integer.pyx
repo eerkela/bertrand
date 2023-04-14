@@ -896,7 +896,7 @@ cdef str int_to_base(object val, unsigned char base):
 
     cdef list chars = []
     while val:
-        chars.append(base_lookup[<unsigned char> val % base])
+        chars.append(base_lookup[val % base])
         val //= base
 
     cdef str result = "".join(chars[::-1])

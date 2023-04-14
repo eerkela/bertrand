@@ -26,6 +26,7 @@ cdef dict epoch_aliases = {  # earliest - latest
     "reduced julian":   np.datetime64("1858-11-16 12:00:00"),
     "lotus":            np.datetime64("1899-12-30 00:00:00"),
     "ntp":              np.datetime64("1900-01-01 00:00:00"),
+    "risc":             np.datetime64("1900-01-01 00:00:00"),  # alias
     "labview":          np.datetime64("1904-01-01 00:00:00"),
     "sas":              np.datetime64("1960-01-01 00:00:00"),
     "utc":              np.datetime64("1970-01-01 00:00:00"),
@@ -48,30 +49,19 @@ epoch_aliases_public = epoch_aliases
 
 
 cdef class Epoch:
-    """Convert an epoch specifier into a corresponding datetime object.
-
-    If a string input can be interpreted as a datetime (of any kind), then it
-    will be returned as such.  Additionally, a number of alias strings are
-    allowed, as shown in ``epoch_aliases``.
+    """Convert an epoch specifier into an integer nanosecond offset from the
+    UTC epoch (1970-01-01 00:00:00).
 
     Parameters
     ----------
     arg : str | datetime-like
         The epoch specifier to use.  Can be one of the shorthand specifiers
-        given in ``epoch_aliases``, a direct datetime object, or a datetime
-        string that can be parsed by :func:`to_datetime`.
+        given in ``epoch_aliases`` or a direct datetime object.
 
     Returns
     -------
-    datetime-like
-        A datetime object that corresponds to the given epoch.
-
-    Raises
-    ------
-    ValueError
-        If `arg` is vectorized.
-    TypeError
-        If `arg` is not a string or datetime object.
+    Epoch
+        An integer nanosecond offset from the UTC epoch.
     """
 
     def __init__(self, date: str | datetime_like):
@@ -113,3 +103,12 @@ cdef class Epoch:
 
     def __str__(self) -> str:
         return f"{np.datetime64(self.offset // 10**9, 's')}"
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, Epoch) and self.offset == other.offset
+
+    def __lt__(self, other) -> bool:
+        return isinstance(other, Epoch) and self.offset < other.offset
+
+    def __gt__(self, other) -> bool:
+        return isinstance(other, Epoch) and self.offset > other.offset

@@ -46,29 +46,34 @@ The behavior of this function can be customized using the following arguments.
       - The assumed time zone when localizing naive datetimes.
       - ``None``
     * - :attr:`day_first <convert.arguments.day_first>`
-      - TODO
+      - Indicates whether to interpret the first value in an ambiguous
+        3-integer date (e.g. 01/05/09) as the day (``True``) or month
+        (``False``).
       - ``False``
     * - :attr:`year_first <convert.arguments.year_first>`
-      - TODO
+      - Indicates whether to interpret the first value in an ambiguous
+        3-integer date (e.g. 01/05/09) as the year.
       - ``False``
     * - :attr:`as_hours <convert.arguments.as_hours>`
-      - TODO
+      - Indicates whether to interpret ambiguous MM:SS timedeltas as HH:MM.
       - ``False``
     * - :attr:`true <convert.arguments.true>`
-      - TODO
+      - A set of truthy strings to use for boolean conversions.
       - ``{"true", "t", "yes", "y", "on", "1"}``
     * - :attr:`false <convert.arguments.false>`
-      - TODO
+      - A set of falsy strings to use for boolean conversions.
       - ``{"false", "f", "no", "n", "off", "0"}``
     * - :attr:`ignore_case <convert.arguments.ignore_case>`
-      - TODO
+      - Indicates whether to ignore differences in case during string
+        conversions.
       - ``True``
     * - :attr:`format <convert.arguments.format>`
-      - TODO
+      - A :ref:`format specifier <python:formatspec>` to use for string
+        conversions.
       - ``None``
     * - :attr:`base <convert.arguments.base>`
-      - TODO
-      - ``0`` [#base]_
+      - Base to use for integer <-> string conversions. [#base]_
+      - ``0``
     * - :attr:`call <convert.arguments.call>`
       - TODO
       - ``None``

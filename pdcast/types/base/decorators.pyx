@@ -18,7 +18,17 @@ from .atomic import ScalarType, AtomicType
 from .composite import CompositeType
 
 
-# TODO: dispatch goes in patch, ideally.
+# TODO: dispatch should be placed on a naked function, which searches for a
+# method of the same name that is attached to the detected series type.  This
+# avoids the need for a complicated dispatch map.  The decorated function must
+# take a series as the first argument, and can be attached to pandas in a way
+# similar to extension_func.  I can then centralize docs in this function
+# definition, rather than making separate abstract docs.
+
+# This also allows dispatched functions to act in a standalone manner (i.e. not
+# attached to pandas).  Plus it offers a fast fail for mixed data where one
+# or more types do not implement the required method.  It might also clean up
+# some of the code for cast().
 
 
 ######################

@@ -202,7 +202,7 @@ class StringMixin:
         series = series.apply_with_errors(
             partial(timedelta_string_to_ns, as_hours=as_hours, since=since),
             errors=errors,
-            dtype=transfer_type
+            element_type=transfer_type
         )
         return transfer_type.to_timedelta(
             series,
@@ -311,8 +311,25 @@ cdef char boolean_apply(
     bint ignore_case,
     char fill
 ) except -1:
+    """Convert a scalar string into a boolean value using the given lookup
+    dictionary.
+
+    Notes
+    -----
+    The ``fill`` argument is implemented as an 8-bit integer as an optimization,
+    which allows us to lower this function into pure Cython.  The values this
+    variable can take are as follows:
+
+        *   ``1``, which signals that ``KeyErrors`` should be taken as ``True``
+        *   ``0``, which signals that ``KeyErrors`` should be taken as ``False``
+        *   ``-1``, which signals that ``KeyErrors`` should be raised up the
+            stack.
+    """
     if ignore_case:
         val = val.lower()
     if fill == -1:
-        return lookup[val]
+        try:
+            return lookup[val]
+        except:
+            raise ValueError(f"encountered non-boolean value: '{val}'")
     return lookup.get(val, fill)

@@ -52,6 +52,10 @@ arguments.
     ... def bar(val: int, defaults: dict) -> int:
     ...     return int(val)
 
+.. note::
+
+    The name of the validator must match the name of the argument it validates.
+
 This validator will be implicitly executed whenever ``bar`` is supplied to
 ``foo()``, and its output will then be passed into the body of ``foo()``.
 

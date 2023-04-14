@@ -9,6 +9,8 @@ new data type into the ``pdcast`` ecosystem.  By the end of it, you should be
 able to build arbitrary object types to use with :func:`cast`,
 :func:`typecheck`, and other dispatched methods as you see fit.
 
+.. _tutorial.description:
+
 "Brain" floats
 --------------
 The ``bfloat16`` data type was `developed by Google <https://arxiv.org/pdf/1905.12322.pdf>`_
@@ -37,7 +39,7 @@ Python:
 This tutorial will describe the process of exposing these objects to pandas via
 ``pdcast``.
 
-.. _new_type_defition:
+.. _tutorial.new_type:
 
 Creating a new type definition
 ------------------------------
@@ -111,6 +113,8 @@ objects.
     >>> pdcast.detect_type(bfloat16(1.2)) is pdcast.resolve_type("bfloat16")
     True
 
+.. _tutorial.subtypes:
+
 Registering subtypes
 --------------------
 Theoretically, if all we wanted to do was detect and resolve our new
@@ -167,6 +171,8 @@ take us from this:
 To this:
 
 .. image:: ../images/bfloat16_tutorial_after_subtyping.svg
+
+.. _tutorial.backends:
 
 Allowing multiple backends
 --------------------------
@@ -268,6 +274,8 @@ This updates our type hierarchy as follows:
 
 .. image:: ../images/bfloat16_tutorial_backends.svg
 
+.. _tutorial.conditional:
+
 Conditional types
 -----------------
 Our current ``BFloat16Type`` definitions assume that both TensorFlow and
@@ -337,6 +345,8 @@ Note that whenever you define a conditional type, each of its *subtypes* and
 *implementation types* must inherit the same condition.  If this is not
 observed, then the subsequent definitions will raise a ``TypeError`` indicating
 that the parent type could not be found.
+
+.. _tutorial.conversions:
 
 Adding conversions
 ------------------
@@ -531,6 +541,8 @@ majority of cases, one can fully integrate a new type by simply inheriting from
 one of these mixins, rather than writing your own.  If we wanted to apply this
 to our ``BFloat16Type`` objects, we would simply replace the ``BFloat16Mixin``
 class we just defined with ``pdcast.types.float.FloatMixin`` where applicable.
+
+.. _tutorial.dispatch:
 
 Adding custom dispatch methods
 ------------------------------
@@ -768,6 +780,8 @@ like without risk of collision.
     the original implementation, and all the same risks with name collisions
     apply as above.
 
+.. _tutorial.modifying:
+
 Appendix: modifying existing types
 ----------------------------------
 In the previous section, we saw how new dispatch methods can be dynamically
@@ -789,6 +803,8 @@ type attributes like ``name``, ``type``, ``dtype``, ``na_value``, etc.
     .. code::
 
         pdcast.AtomicType.registry.flush()
+
+.. _tutorial.abstract:
 
 Appendix: integrating with custom ExtensionDtypes
 -------------------------------------------------

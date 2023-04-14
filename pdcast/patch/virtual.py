@@ -3,7 +3,7 @@ The decorator itself is not included here in order to avoid a circular import
 error.
 """
 from __future__ import annotations
-from functools import partial, update_wrapper
+from functools import partial
 import inspect
 from typing import Any, Callable
 

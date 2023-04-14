@@ -10,6 +10,10 @@ from types import MappingProxyType
 from typing import Any, Callable
 
 
+# TODO: add __getattr__/__setattr__ to ExtensionFunc to allow cooperative
+# decoration.  This could be a base class.
+
+
 ######################
 ####    PUBLIC    ####
 ######################
@@ -125,12 +129,12 @@ class ExtensionFunc(threading.local):
 
         # assert function accepts **kwargs
         self._kwargs_name = None
-        for p in self._signature.parameters.values():
-            if p.kind == p.VAR_KEYWORD:
-                self._kwargs_name = p.name
+        for par in self._signature.parameters.values():
+            if par.kind == par.VAR_KEYWORD:
+                self._kwargs_name = par.name
                 break
         if self._kwargs_name is None:
-            raise TypeError(f"func must accept **kwargs")
+            raise TypeError("func must accept **kwargs")
 
         update_wrapper(self, _func)
         self._func = _func
@@ -536,10 +540,10 @@ class ExtensionFunc(threading.local):
             result.update(result[self._kwargs_name])
             del result[self._kwargs_name]
 
-        # apply validators 
-        for k, v in result.items():
-            if k in self._validators:
-                result[k] = self._validators[k](v, defaults=result)
+        # apply validators
+        for name, value in result.items():
+            if name in self._validators:
+                result[name] = self._validators[name](value, defaults=result)
 
         return result
 
@@ -557,18 +561,18 @@ class ExtensionFunc(threading.local):
 
         # reconstruct signature
         signature = []
-        for p in self._signature.parameters.values():
-            if p.name in keywords:
-                signature.append(f"{p.name} = {keywords[p.name]}")
-            elif p.name == self._kwargs_name:
+        for par in self._signature.parameters.values():
+            if par.name in keywords:
+                signature.append(f"{par.name} = {keywords[par.name]}")
+            elif par.name == self._kwargs_name:  # flatten **kwargs
                 pars = self._signature.parameters
                 kwargs = {k: v for k, v in keywords.items() if k not in pars}
                 signature.extend(f"{k} = {v}" for k, v in kwargs.items())
                 signature.append(f"**{self._kwargs_name}")
             else:
-                signature.append(p.name)
+                signature.append(par.name)  # no default
 
-        return signature 
+        return signature
 
     ###############################
     ####    SPECIAL METHODS    ####
@@ -600,7 +604,7 @@ class ExtensionFunc(threading.local):
         """Return the total number of arguments that are being managed by this
         ExtensionFunc
         """
-        return len(self.default_values)
+        return len(self._validators)
 
     def __repr__(self) -> str:
         """Return a string representation of the decorated function with a
@@ -695,56 +699,3 @@ class VirtualMethod:
 
     def __get__(self, instance, owner=None) -> Callable:
         return ExtensionMethod(instance, self._ext_func, self._ext_name)
-
-
-
-
-# TODO: delete this
-
-
-if __name__ == "__main__":
-
-    @extension_func
-    def foo(bar, baz=2, **kwargs):
-        return (bar, baz)
-
-
-    @foo.register_arg(default=1)
-    def bar(val: int, defaults: dict) -> int:
-        return int(val)
-
-
-    @foo.register_arg
-    def baz(val: int, defaults: dict) -> int:
-        return int(val)
-
-
-    @foo.register_arg(default=3)
-    def qux(val: int, defaults: dict) -> int:
-        return int(val)
-
-
-    class MyClass:
-        def __int__(self) -> int:
-            print("Hello, World!")
-            return 4
-
-
-    foo.attach_to(MyClass)
-
-
-
-
-    from pdcast import *
-    from pdcast.util.type_hints import datetime_like
-
-
-    @extension_func
-    def my_func(foo: Any, **kwargs) -> int:
-        return cast(foo, int, **kwargs)
-
-    @my_func.register_arg
-    def foo(val: Any, defaults: dict) -> datetime_like:
-        return cast(val, "datetime")
-
-    my_func("today", unit="D", since="April 5th, 2022")

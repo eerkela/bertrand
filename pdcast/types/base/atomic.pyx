@@ -199,7 +199,7 @@ cdef class AtomicType(ScalarType):
 
     # INTERNAL FIELDS.  These should never be overridden.
     _family = "object"   # used to determine conversion to this type
-    _is_boolean = None   # used to autogenerete ExtensionDtypes
+    _is_boolean = None   # used to autogenerate ExtensionDtypes
     _is_numeric = None   # used to autogenerate ExtensionDtypes
     _is_generic = None   # marker for @generic, @register_backend
     _backend = None   # marker for @register_backend
