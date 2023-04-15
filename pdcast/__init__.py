@@ -37,8 +37,8 @@ from .convert import (
 from .detect import detect_type
 from .resolve import resolve_type
 from .types import *
-from .util.structs import (
-    extension_func, no_default, ExtensionFunc, ExtensionMethod
+from .func import (
+    extension_func, no_default, ExtensionFunc
 )
 
 

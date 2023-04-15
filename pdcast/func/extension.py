@@ -9,9 +9,8 @@ import threading
 from types import MappingProxyType
 from typing import Any, Callable
 
-
-# TODO: add __getattr__/__setattr__ to ExtensionFunc to allow cooperative
-# decoration.  This could be a base class.
+from .base import Cooperative
+from .virtual import Attachable
 
 
 ######################
@@ -88,7 +87,7 @@ class NoDefault:
 no_default = NoDefault()
 
 
-class ExtensionFunc(threading.local):
+class ExtensionFunc(Attachable, threading.local):
     """A callable object that can be dynamically extended with custom
     arguments.
 
@@ -430,103 +429,103 @@ class ExtensionFunc(threading.local):
             for name in args:
                 delattr(self, name)
 
-    def attach_to(self, _class: type, name: str | None = None) -> None:
-        """Attach the :class:`ExtensionFunc` as an instance method for the
-        given class.
+    # def attach_to(self, _class: type, name: str | None = None) -> None:
+    #     """Attach the :class:`ExtensionFunc` as an instance method for the
+    #     given class.
 
-        Parameters
-        ----------
-        _class : type
-            A Python class to attach this function to.  The function will be
-            available to all instances of the class under the given
-            ``name``.
-        name : str | None, default None
-            The name under which to attach this :class:`ExtensionFunc`.  This
-            is used as an alias when the :class:`ExtensionFunc` is called from
-            the associated type.  If it is left empty, the name of the
-            :class:`ExtensionFunc` will be used directly.
+    #     Parameters
+    #     ----------
+    #     _class : type
+    #         A Python class to attach this function to.  The function will be
+    #         available to all instances of the class under the given
+    #         ``name``.
+    #     name : str | None, default None
+    #         The name under which to attach this :class:`ExtensionFunc`.  This
+    #         is used as an alias when the :class:`ExtensionFunc` is called from
+    #         the associated type.  If it is left empty, the name of the
+    #         :class:`ExtensionFunc` will be used directly.
 
-        Notes
-        -----
-        This method attaches a :class:`VirtualMethod` descriptor to the
-        associated class that serves as a factory for :class:`ExtensionMethod`
-        objects.  These are bound to individual instances via
-        :meth:`__get__() <object.__get__>`.
+    #     Notes
+    #     -----
+    #     This method attaches a :class:`VirtualMethod` descriptor to the
+    #     associated class that serves as a factory for :class:`ExtensionMethod`
+    #     objects.  These are bound to individual instances via
+    #     :meth:`__get__() <object.__get__>`.
 
-        Examples
-        --------
-        Converting an :class:`ExtensionFunc` into an :class:`ExtensionMethod`
-        is a straightforward operation.
+    #     Examples
+    #     --------
+    #     Converting an :class:`ExtensionFunc` into an :class:`ExtensionMethod`
+    #     is a straightforward operation.
 
-        .. doctest::
+    #     .. doctest::
 
-            >>> class MyClass:
-            ...     def __repr__(self):  return "MyClass()"
+    #         >>> class MyClass:
+    #         ...     def __repr__(self):  return "MyClass()"
 
-            >>> @extension_func
-            ... def foo(bar, baz=2, **kwargs):
-            ...     return bar, baz
+    #         >>> @extension_func
+    #         ... def foo(bar, baz=2, **kwargs):
+    #         ...     return bar, baz
 
-            >>> foo.attach_to(MyClass)
+    #         >>> foo.attach_to(MyClass)
 
-        This creates a new attribute of ``MyClass`` under ``MyClass.foo``,
-        which references our original :class:`ExtensionFunc`.  Whenever we
-        invoke it this way, an instance of ``MyClass`` will be implicitly
-        passed into the :class:`ExtensionFunc` as its first argument, mirroring
-        the traditional notion of ``self`` in ordinary Python.
+    #     This creates a new attribute of ``MyClass`` under ``MyClass.foo``,
+    #     which references our original :class:`ExtensionFunc`.  Whenever we
+    #     invoke it this way, an instance of ``MyClass`` will be implicitly
+    #     passed into the :class:`ExtensionFunc` as its first argument, mirroring
+    #     the traditional notion of ``self`` in ordinary Python.
 
-        .. doctest::
+    #     .. doctest::
 
-            >>> MyClass.foo
-            MyClass.foo(baz = 2, **kwargs)
-            >>> MyClass().foo()
-            (MyClass(), 2)
+    #         >>> MyClass.foo
+    #         MyClass.foo(baz = 2, **kwargs)
+    #         >>> MyClass().foo()
+    #         (MyClass(), 2)
 
-        In this case, this takes the place of the ``bar`` argument.  If we
-        invoke ``MyClass.foo`` as a class method (i.e. without instantiating
-        ``MyClass`` first), then we get the same behavior as the naked ``foo``
-        function.
+    #     In this case, this takes the place of the ``bar`` argument.  If we
+    #     invoke ``MyClass.foo`` as a class method (i.e. without instantiating
+    #     ``MyClass`` first), then we get the same behavior as the naked ``foo``
+    #     function.
 
-        .. doctest::
+    #     .. doctest::
 
-            >>> MyClass.foo()
-            Traceback (most recent call last):
-                ...
-            TypeError: foo() missing 1 required positional argument: 'bar'
+    #         >>> MyClass.foo()
+    #         Traceback (most recent call last):
+    #             ...
+    #         TypeError: foo() missing 1 required positional argument: 'bar'
         
-        We can also modify defaults and add arguments to our
-        :class:`ExtensionMethod` just like normal.
+    #     We can also modify defaults and add arguments to our
+    #     :class:`ExtensionMethod` just like normal.
 
-        .. doctest::
+    #     .. doctest::
 
-            >>> @MyClass.foo.register_arg
-            ... def baz(val: int, defaults: dict) -> int:
-            ...     return int(val)
+    #         >>> @MyClass.foo.register_arg
+    #         ... def baz(val: int, defaults: dict) -> int:
+    #         ...     return int(val)
 
-            >>> MyClass.foo.baz
-            2
-            >>> MyClass.foo.baz = 3
-            >>> MyClass().foo()
-            (MyClass(), 3)
+    #         >>> MyClass.foo.baz
+    #         2
+    #         >>> MyClass.foo.baz = 3
+    #         >>> MyClass().foo()
+    #         (MyClass(), 3)
 
-        .. warning::
+    #     .. warning::
 
-            Any arguments (as well as their default values) will be shared between
-            the :class:`ExtensionMethod` and its base :class:`ExtensionFunc`.
+    #         Any arguments (as well as their default values) will be shared between
+    #         the :class:`ExtensionMethod` and its base :class:`ExtensionFunc`.
 
-            .. doctest::
+    #         .. doctest::
 
-                >>> foo.baz
-                3
+    #             >>> foo.baz
+    #             3
 
-            This might lead to unexpected changes in behavior if not properly
-            accounted for.
-        """
-        if name is None:
-            name = self._func.__name__
+    #         This might lead to unexpected changes in behavior if not properly
+    #         accounted for.
+    #     """
+    #     if name is None:
+    #         name = self._func.__name__
 
-        descriptor = VirtualMethod(self, f"{_class.__qualname__}.{name}")
-        setattr(_class, name, descriptor)
+    #     descriptor = VirtualMethod(self, f"{_class.__qualname__}.{name}")
+    #     setattr(_class, name, descriptor)
 
     def _validate_args(self, *args, **kwargs: dict) -> dict:
         """Format the input to the decorated function and ensure it is valid
@@ -615,87 +614,116 @@ class ExtensionFunc(threading.local):
         return f"{self._func.__qualname__}({', '.join(sig)})"
 
 
-class ExtensionMethod:
-    """An interface for an :class:`ExtensionFunc` object that allows it to act
-    as an instance method while retaining full attribute access.
+# class ExtensionMethod:
+#     """An interface for an :class:`ExtensionFunc` object that allows it to act
+#     as an instance method while retaining full attribute access.
 
-    This implicitly inserts a class instance as the first argument to the
-    :class:`ExtensionFunc`.
+#     This implicitly inserts a class instance as the first argument to the
+#     :class:`ExtensionFunc`.
 
-    Parameters
-    ----------
-    instance : Any
-        An instance to be inserted.  This is typically passed from
-        :meth:`VirtualMethod.__get__`, using Python's descriptor protocol.
-    ext_func : Callable
-        Usually an :class:`ExtensionFunc` object, but can be any Python
-        callable.
-    ext_name : str
-        The name to use when ``repr()`` is called on this object.  Setting this
-        to something like ``"pandas.Series.cast"`` makes the output a bit
-        cleaner, but doesn't affect any other functionality.
+#     Parameters
+#     ----------
+#     instance : Any
+#         An instance to be inserted.  This is typically passed from
+#         :meth:`VirtualMethod.__get__`, using Python's descriptor protocol.
+#     ext_func : Callable
+#         Usually an :class:`ExtensionFunc` object, but can be any Python
+#         callable.
+#     ext_name : str
+#         The name to use when ``repr()`` is called on this object.  Setting this
+#         to something like ``"pandas.Series.cast"`` makes the output a bit
+#         cleaner, but doesn't affect any other functionality.
 
-    Notes
-    -----
-    This is meant to be used in combination with
-    :meth:`ExtensionFunc.attach_to`.  Users should never need to instantiate
-    one of these themselves.
+#     Notes
+#     -----
+#     This is meant to be used in combination with
+#     :meth:`ExtensionFunc.attach_to`.  Users should never need to instantiate
+#     one of these themselves.
 
-    Examples
-    --------
-    See the docs for :meth:`ExtensionFunc.attach_to` for
-    :ref:`examples <extension_func.method>` on how to use this interface.
-    """
+#     Examples
+#     --------
+#     See the docs for :meth:`ExtensionFunc.attach_to` for
+#     :ref:`examples <extension_func.method>` on how to use this interface.
+#     """
 
-    def __init__(self, instance: Any, ext_func: Callable, ext_name: str):
-        self._ext_func = ext_func
-        self._ext_name = ext_name
-        self._instance = instance
-        update_wrapper(self, ext_func)
+#     def __init__(self, instance: Any, ext_func: Callable, ext_name: str):
+#         self._ext_func = ext_func
+#         self._ext_name = ext_name
+#         self._instance = instance
+#         update_wrapper(self, ext_func)
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.__dict__["_ext_func"], name)
+#     def __getattr__(self, name: str) -> Any:
+#         return getattr(self.__dict__["_ext_func"], name)
 
-    def __setattr__(self, name: str, value: Any) -> None:
-        if name in {"_ext_func", "_ext_name", "_instance"}:
-            self.__dict__[name] = value
-        else:
-            setattr(self.__dict__["_ext_func"], name, value)
+#     def __setattr__(self, name: str, value: Any) -> None:
+#         if name in {"_ext_func", "_ext_name", "_instance"}:
+#             self.__dict__[name] = value
+#         else:
+#             setattr(self.__dict__["_ext_func"], name, value)
 
-    def __delattr__(self, name: str) -> None:
-        delattr(self.__dict__["_ext_func"], name)
+#     def __delattr__(self, name: str) -> None:
+#         delattr(self.__dict__["_ext_func"], name)
 
-    def __call__(self, *args, **kwargs):
-        # from class
-        if self._instance is None:
-            return self._ext_func(*args, **kwargs)
+#     def __call__(self, *args, **kwargs):
+#         # from class
+#         if self._instance is None:
+#             return self._ext_func(*args, **kwargs)
 
-        # from instance
-        return self._ext_func(self._instance, *args, **kwargs)
+#         # from instance
+#         return self._ext_func(self._instance, *args, **kwargs)
 
-    def __contains__(self, item: str) -> bool:
-        return item in self._ext_func
+#     def __contains__(self, item: str) -> bool:
+#         return item in self._ext_func
 
-    def __iter__(self):
-        return iter(self._ext_func)
+#     def __iter__(self):
+#         return iter(self._ext_func)
 
-    def __len__(self) -> int:
-        return len(self._ext_func)
+#     def __len__(self) -> int:
+#         return len(self._ext_func)
 
-    def __repr__(self) -> str:
-        sig = self._ext_func._reconstruct_signature()
-        return f"{self._ext_name}({', '.join(sig[1:])})"
+#     def __repr__(self) -> str:
+#         sig = self._ext_func._reconstruct_signature()
+#         return f"{self._ext_name}({', '.join(sig[1:])})"
 
 
-class VirtualMethod:
-    """A descriptor that can be added to an arbitrary Python class to enable
-    :class:`ExtensionFuncs <ExtensionFunc>` to act as instance methods.
-    """
+# class VirtualMethod:
+#     """A descriptor that can be added to an arbitrary Python class to enable
+#     :class:`ExtensionFuncs <ExtensionFunc>` to act as instance methods.
+#     """
 
-    def __init__(self, ext_func: ExtensionFunc, ext_name: str):
-        update_wrapper(self, ext_func)
-        self._ext_func = ext_func
-        self._ext_name = ext_name
+#     def __init__(self, ext_func: ExtensionFunc, ext_name: str):
+#         update_wrapper(self, ext_func)
+#         self._ext_func = ext_func
+#         self._ext_name = ext_name
 
-    def __get__(self, instance, owner=None) -> Callable:
-        return ExtensionMethod(instance, self._ext_func, self._ext_name)
+#     def __get__(self, instance, owner=None) -> Callable:
+#         return ExtensionMethod(instance, self._ext_func, self._ext_name)
+
+
+
+
+
+@extension_func
+def foo(bar, baz=2, **kwargs):
+    print("Hello, World!")
+    return bar, baz
+
+
+@foo.register_arg(default=1)
+def bar(val: int, defaults: dict) -> int:
+    return int(val)
+
+
+@foo.register_arg
+def baz(val: int, defaults: dict) -> int:
+    return int(val)
+
+
+class MyClass:
+
+    def foo(self, baz = 2, **kwargs):
+        print("Goodbye, World!")
+        return self, baz
+
+
+foo.attach_to(MyClass, namespace="test")

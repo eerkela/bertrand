@@ -9,5 +9,4 @@ func
 lru
     A Least-Recently Used (LRU) dictionary with a fixed size.
 """
-from .func import extension_func, no_default, ExtensionFunc, ExtensionMethod
 from .lru import LRUDict

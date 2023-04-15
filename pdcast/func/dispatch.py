@@ -18,7 +18,8 @@ from pdcast.util.type_hints import type_specifier
 # broadcasts to a math operator.
 
 # TODO: cooperative decorators with extension_func and dispatch would involve
-# ensuring there is never a naming conflict.
+# giving DispatchFunc a __getattr__ that delegates to func, and then stacking
+# them such that: 
 
 
 """Example:

@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from pdcast.func import extension_func
 import pdcast.resolve as resolve
 import pdcast.detect as detect
 import pdcast.patch as patch
@@ -13,7 +14,6 @@ import pdcast.types as types
 
 import pdcast.convert.wrapper as wrapper
 
-from pdcast.util.structs import extension_func
 from pdcast.util.type_hints import type_specifier
 
 
