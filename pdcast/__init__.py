@@ -38,7 +38,9 @@ from .detect import detect_type
 from .resolve import resolve_type
 from .types import *
 from .func import (
-    extension_func, no_default, ExtensionFunc
+    extension_func, no_default, ExtensionFunc, VirtualDescriptor,
+    VirtualAttribute, NamespaceDescriptor, Namespace, MethodDescriptor,
+    VirtualMethod
 )
 
 

@@ -13,6 +13,9 @@ from .base import Cooperative
 from .virtual import Attachable
 
 
+# TODO: offer a pure python version of this as a recipe for docs.
+
+
 ######################
 ####    PUBLIC    ####
 ######################
@@ -20,7 +23,7 @@ from .virtual import Attachable
 
 def extension_func(func: Callable) -> Callable:
     """A decorator that transforms a Python function into a thread-local
-    :class:`ExtensionFunc` object.
+    :class:`ExtensionFunc <pdcast.ExtensionFunc>` object.
 
     Parameters
     ----------
@@ -31,8 +34,9 @@ def extension_func(func: Callable) -> Callable:
     Returns
     -------
     Callable
-        A callable :class:`ExtensionFunc` object, which manages default values
-        and argument validators for the decorated function.
+        A callable :class:`ExtensionFunc <pdcast.ExtensionFunc>` object, which
+        manages default values and argument validators for the decorated
+        function.
 
     Raises
     ------
@@ -43,8 +47,9 @@ def extension_func(func: Callable) -> Callable:
     main_thread = []  # using a list bypasses UnboundLocalError
 
     class _ExtensionFunc(ExtensionFunc):
-        """A subclass of :class:`ExtensionFunc` that supports dynamic
-        assignment of ``@properties`` without affecting other instances.
+        """A subclass of :class:`ExtensionFunc <pdcast.ExtensionFunc>` that
+        supports dynamic assignment of ``@properties`` without affecting other
+        instances.
         """
 
         def __init__(self, _func: Callable):
@@ -122,9 +127,12 @@ class ExtensionFunc(Attachable, threading.local):
     usage.
     """
 
-    def __init__(self, _func: Callable):
+    _reserved = {"_signature", "_vals", "_defaults", "_validators"}
+
+    def __init__(self, func: Callable):
         super().__init__()
-        self._signature = inspect.signature(_func)
+        self._func = func
+        self._signature = inspect.signature(func)
 
         # assert function accepts **kwargs
         self._kwargs_name = None
@@ -135,11 +143,10 @@ class ExtensionFunc(Attachable, threading.local):
         if self._kwargs_name is None:
             raise TypeError("func must accept **kwargs")
 
-        update_wrapper(self, _func)
-        self._func = _func
         self._vals = {}
         self._defaults = {}
         self._validators = {}
+        update_wrapper(self, func)
 
     ####################
     ####    BASE    ####
@@ -175,7 +182,7 @@ class ExtensionFunc(Attachable, threading.local):
     @property
     def default_values(self) -> MappingProxyType:
         """A mapping of all argument names to their associated default values
-        for this :class:`ExtensionFunc`.
+        for this :class:`ExtensionFunc <pdcast.ExtensionFunc>`.
 
         Returns
         -------
@@ -197,7 +204,7 @@ class ExtensionFunc(Attachable, threading.local):
         default: Any = no_default
     ) -> Callable:
         """A decorator that transforms a naked validation function into a
-        managed argument for :class:`ExtensionFunc`.
+        managed argument for :class:`ExtensionFunc <pdcast.ExtensionFunc>`.
 
         Parameters
         ----------
@@ -213,8 +220,8 @@ class ExtensionFunc(Attachable, threading.local):
         Callable
             A decorated version of the validation function that automatically
             fills out its ``defaults`` argument.  This function will
-            implicitly be called whenever the :class:`ExtensionFunc` is
-            executed.
+            implicitly be called whenever the
+            :class:`ExtensionFunc <pdcast.ExtensionFunc>` is executed.
 
         Raises
         ------
@@ -314,8 +321,8 @@ class ExtensionFunc(Attachable, threading.local):
         return argument(_func)
 
     def remove_arg(self, *args: str) -> None:
-        """Remove a registered argument from an :class:`ExtensionFunc`
-        instance.
+        """Remove a registered argument from an
+        :class:`ExtensionFunc <pdcast.ExtensionFunc>` instance.
 
         Parameters
         ----------
@@ -327,7 +334,7 @@ class ExtensionFunc(Attachable, threading.local):
         ------
         AttributeError
             If any of the referenced arguments are not being actively managed
-            by this :class:`ExtensionFunc`.
+            by this :class:`ExtensionFunc <pdcast.ExtensionFunc>`.
 
         Examples
         --------
@@ -374,7 +381,7 @@ class ExtensionFunc(Attachable, threading.local):
         ------
         AttributeError
             If any of the referenced arguments are not being actively managed
-            by this :class:`ExtensionFunc`.
+            by this :class:`ExtensionFunc <pdcast.ExtensionFunc>`.
 
         Examples
         --------
@@ -428,104 +435,6 @@ class ExtensionFunc(Attachable, threading.local):
             # commit
             for name in args:
                 delattr(self, name)
-
-    # def attach_to(self, _class: type, name: str | None = None) -> None:
-    #     """Attach the :class:`ExtensionFunc` as an instance method for the
-    #     given class.
-
-    #     Parameters
-    #     ----------
-    #     _class : type
-    #         A Python class to attach this function to.  The function will be
-    #         available to all instances of the class under the given
-    #         ``name``.
-    #     name : str | None, default None
-    #         The name under which to attach this :class:`ExtensionFunc`.  This
-    #         is used as an alias when the :class:`ExtensionFunc` is called from
-    #         the associated type.  If it is left empty, the name of the
-    #         :class:`ExtensionFunc` will be used directly.
-
-    #     Notes
-    #     -----
-    #     This method attaches a :class:`VirtualMethod` descriptor to the
-    #     associated class that serves as a factory for :class:`ExtensionMethod`
-    #     objects.  These are bound to individual instances via
-    #     :meth:`__get__() <object.__get__>`.
-
-    #     Examples
-    #     --------
-    #     Converting an :class:`ExtensionFunc` into an :class:`ExtensionMethod`
-    #     is a straightforward operation.
-
-    #     .. doctest::
-
-    #         >>> class MyClass:
-    #         ...     def __repr__(self):  return "MyClass()"
-
-    #         >>> @extension_func
-    #         ... def foo(bar, baz=2, **kwargs):
-    #         ...     return bar, baz
-
-    #         >>> foo.attach_to(MyClass)
-
-    #     This creates a new attribute of ``MyClass`` under ``MyClass.foo``,
-    #     which references our original :class:`ExtensionFunc`.  Whenever we
-    #     invoke it this way, an instance of ``MyClass`` will be implicitly
-    #     passed into the :class:`ExtensionFunc` as its first argument, mirroring
-    #     the traditional notion of ``self`` in ordinary Python.
-
-    #     .. doctest::
-
-    #         >>> MyClass.foo
-    #         MyClass.foo(baz = 2, **kwargs)
-    #         >>> MyClass().foo()
-    #         (MyClass(), 2)
-
-    #     In this case, this takes the place of the ``bar`` argument.  If we
-    #     invoke ``MyClass.foo`` as a class method (i.e. without instantiating
-    #     ``MyClass`` first), then we get the same behavior as the naked ``foo``
-    #     function.
-
-    #     .. doctest::
-
-    #         >>> MyClass.foo()
-    #         Traceback (most recent call last):
-    #             ...
-    #         TypeError: foo() missing 1 required positional argument: 'bar'
-        
-    #     We can also modify defaults and add arguments to our
-    #     :class:`ExtensionMethod` just like normal.
-
-    #     .. doctest::
-
-    #         >>> @MyClass.foo.register_arg
-    #         ... def baz(val: int, defaults: dict) -> int:
-    #         ...     return int(val)
-
-    #         >>> MyClass.foo.baz
-    #         2
-    #         >>> MyClass.foo.baz = 3
-    #         >>> MyClass().foo()
-    #         (MyClass(), 3)
-
-    #     .. warning::
-
-    #         Any arguments (as well as their default values) will be shared between
-    #         the :class:`ExtensionMethod` and its base :class:`ExtensionFunc`.
-
-    #         .. doctest::
-
-    #             >>> foo.baz
-    #             3
-
-    #         This might lead to unexpected changes in behavior if not properly
-    #         accounted for.
-    #     """
-    #     if name is None:
-    #         name = self._func.__name__
-
-    #     descriptor = VirtualMethod(self, f"{_class.__qualname__}.{name}")
-    #     setattr(_class, name, descriptor)
 
     def _validate_args(self, *args, **kwargs: dict) -> dict:
         """Format the input to the decorated function and ensure it is valid
@@ -614,91 +523,6 @@ class ExtensionFunc(Attachable, threading.local):
         return f"{self._func.__qualname__}({', '.join(sig)})"
 
 
-# class ExtensionMethod:
-#     """An interface for an :class:`ExtensionFunc` object that allows it to act
-#     as an instance method while retaining full attribute access.
-
-#     This implicitly inserts a class instance as the first argument to the
-#     :class:`ExtensionFunc`.
-
-#     Parameters
-#     ----------
-#     instance : Any
-#         An instance to be inserted.  This is typically passed from
-#         :meth:`VirtualMethod.__get__`, using Python's descriptor protocol.
-#     ext_func : Callable
-#         Usually an :class:`ExtensionFunc` object, but can be any Python
-#         callable.
-#     ext_name : str
-#         The name to use when ``repr()`` is called on this object.  Setting this
-#         to something like ``"pandas.Series.cast"`` makes the output a bit
-#         cleaner, but doesn't affect any other functionality.
-
-#     Notes
-#     -----
-#     This is meant to be used in combination with
-#     :meth:`ExtensionFunc.attach_to`.  Users should never need to instantiate
-#     one of these themselves.
-
-#     Examples
-#     --------
-#     See the docs for :meth:`ExtensionFunc.attach_to` for
-#     :ref:`examples <extension_func.method>` on how to use this interface.
-#     """
-
-#     def __init__(self, instance: Any, ext_func: Callable, ext_name: str):
-#         self._ext_func = ext_func
-#         self._ext_name = ext_name
-#         self._instance = instance
-#         update_wrapper(self, ext_func)
-
-#     def __getattr__(self, name: str) -> Any:
-#         return getattr(self.__dict__["_ext_func"], name)
-
-#     def __setattr__(self, name: str, value: Any) -> None:
-#         if name in {"_ext_func", "_ext_name", "_instance"}:
-#             self.__dict__[name] = value
-#         else:
-#             setattr(self.__dict__["_ext_func"], name, value)
-
-#     def __delattr__(self, name: str) -> None:
-#         delattr(self.__dict__["_ext_func"], name)
-
-#     def __call__(self, *args, **kwargs):
-#         # from class
-#         if self._instance is None:
-#             return self._ext_func(*args, **kwargs)
-
-#         # from instance
-#         return self._ext_func(self._instance, *args, **kwargs)
-
-#     def __contains__(self, item: str) -> bool:
-#         return item in self._ext_func
-
-#     def __iter__(self):
-#         return iter(self._ext_func)
-
-#     def __len__(self) -> int:
-#         return len(self._ext_func)
-
-#     def __repr__(self) -> str:
-#         sig = self._ext_func._reconstruct_signature()
-#         return f"{self._ext_name}({', '.join(sig[1:])})"
-
-
-# class VirtualMethod:
-#     """A descriptor that can be added to an arbitrary Python class to enable
-#     :class:`ExtensionFuncs <ExtensionFunc>` to act as instance methods.
-#     """
-
-#     def __init__(self, ext_func: ExtensionFunc, ext_name: str):
-#         update_wrapper(self, ext_func)
-#         self._ext_func = ext_func
-#         self._ext_name = ext_name
-
-#     def __get__(self, instance, owner=None) -> Callable:
-#         return ExtensionMethod(instance, self._ext_func, self._ext_name)
-
 
 
 
@@ -721,9 +545,16 @@ def baz(val: int, defaults: dict) -> int:
 
 class MyClass:
 
+    def __int__(self):
+        return 4
+
+    def __repr__(self):
+        return "MyClass()"
+
     def foo(self, baz = 2, **kwargs):
         print("Goodbye, World!")
         return self, baz
 
 
+foo.attach_to(MyClass)
 foo.attach_to(MyClass, namespace="test")

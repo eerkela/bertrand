@@ -593,7 +593,9 @@ class VirtualMethod(Cooperative, VirtualAttribute):
         self._func = descriptor._func
         super().__init__(descriptor=descriptor, instance=instance)
         self._namespace = namespace
-        update_wrapper(self, self._func)
+
+        # NOTE: this changes the type of self._func for some reason
+        # update_wrapper(self, self._func)
 
     @property
     def original(self) -> VirtualMethod:
