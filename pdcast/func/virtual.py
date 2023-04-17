@@ -37,7 +37,7 @@ from __future__ import annotations
 from functools import update_wrapper
 from typing import Any, Callable
 
-from .base import Cooperative
+from .base import BaseDecorator
 
 
 #####################
@@ -499,7 +499,7 @@ class Namespace(VirtualAttribute):
 ######################
 
 
-class MethodDescriptor(Cooperative, VirtualDescriptor):
+class MethodDescriptor(BaseDecorator, VirtualDescriptor):
     """A descriptor that spawns :class:`VirtualMethod <pdcast.VirtualMethod>`
     objects on access, which can be used to transform Python functions into
     self-binding instance methods.
@@ -554,7 +554,7 @@ class MethodDescriptor(Cooperative, VirtualDescriptor):
         return VirtualMethod(self, instance)
 
 
-class VirtualMethod(Cooperative, VirtualAttribute):
+class VirtualMethod(BaseDecorator, VirtualAttribute):
     """A self-binding virtual method.
 
     Parameters

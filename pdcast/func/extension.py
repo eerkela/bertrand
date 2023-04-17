@@ -3,13 +3,13 @@ ordinary Python function into one that can accept dynamic, managed arguments
 with custom validators and default values.
 """
 from __future__ import annotations
-from functools import update_wrapper, wraps
+from functools import partial, update_wrapper, wraps
 import inspect
 import threading
 from types import MappingProxyType
 from typing import Any, Callable
 
-from .base import Cooperative
+from .base import BaseDecorator
 from .virtual import Attachable
 
 
@@ -54,7 +54,7 @@ def extension_func(func: Callable) -> Callable:
 
         def __init__(self, _func: Callable):
             super().__init__(_func)
-            update_wrapper(self, _func)
+            # update_wrapper(self, _func)
 
             # store attributes from main thread
             if threading.current_thread() == threading.main_thread():
@@ -74,6 +74,7 @@ def extension_func(func: Callable) -> Callable:
                 self._defaults = main["_defaults"].copy()
                 self._validators = main["_validators"].copy()
 
+    # print(func)
     return _ExtensionFunc(func)
 
 
@@ -92,7 +93,7 @@ class NoDefault:
 no_default = NoDefault()
 
 
-class ExtensionFunc(Attachable, threading.local):
+class ExtensionFunc(BaseDecorator, Attachable, threading.local):
     """A callable object that can be dynamically extended with custom
     arguments.
 
@@ -127,14 +128,13 @@ class ExtensionFunc(Attachable, threading.local):
     usage.
     """
 
-    _reserved = {"_signature", "_vals", "_defaults", "_validators"}
+    _reserved = BaseDecorator._reserved | {"_signature", "_vals", "_defaults", "_validators"}
 
     def __init__(self, func: Callable):
-        super().__init__()
-        self._func = func
-        self._signature = inspect.signature(func)
+        super().__init__(func=func)
 
         # assert function accepts **kwargs
+        self._signature = inspect.signature(func)
         self._kwargs_name = None
         for par in self._signature.parameters.values():
             if par.kind == par.VAR_KEYWORD:
@@ -146,7 +146,6 @@ class ExtensionFunc(Attachable, threading.local):
         self._vals = {}
         self._defaults = {}
         self._validators = {}
-        update_wrapper(self, func)
 
     ####################
     ####    BASE    ####
@@ -451,6 +450,7 @@ class ExtensionFunc(Attachable, threading.local):
         # apply validators
         for name, value in result.items():
             if name in self._validators:
+                print(f"validating {name}")
                 result[name] = self._validators[name](value, defaults=result)
 
         return result
@@ -495,7 +495,39 @@ class ExtensionFunc(Attachable, threading.local):
         """
         kwargs = self._validate_args(*args, **kwargs)
         kwargs = {**self.default_values, **kwargs}
-        return self._func(**kwargs)
+
+        # recover *args
+        args = [
+            kwargs.pop(a) for a in [x for x in self._signature.parameters][:len(args)]
+        ]
+
+        return self.__wrapped__(*args, **kwargs)
+
+    # def __call__(self, *args, **kwargs):
+    #     """Execute the decorated function with the default arguments stored in
+    #     this ExtensionFunc.
+
+    #     This also validates the input to each argument using the attached
+    #     validators.
+    #     """
+    #     # bind arguments with bind_partial()
+    #     bound_args = self._signature.bind_partial(*args, **kwargs)
+    #     bound_args.apply_defaults()
+    #     final_args = bound_args.args
+    #     final_kwargs = bound_args.kwargs
+
+    #     # flatten remaining **kwargs
+    #     if self._kwargs_name in final_kwargs:
+    #         final_kwargs.update(final_kwargs[self._kwargs_name])
+    #         del final_kwargs[self._kwargs_name]
+
+    #     # apply validators
+    #     for name, value in final_kwargs.items():
+    #         if name in self._validators:
+    #             final_kwargs[name] = self._validators[name](value, defaults=final_kwargs)
+
+    #     # call the decorated function with both positional and keyword arguments
+    #     return self.__wrapped__(*final_args, **{**self.default_values, **final_kwargs})
 
     def __contains__(self, item: str) -> bool:
         """Check if the named argument is being managed by this ExtensionFunc.
@@ -520,41 +552,41 @@ class ExtensionFunc(Attachable, threading.local):
         ExtensionFunc.
         """
         sig = self._reconstruct_signature()
-        return f"{self._func.__qualname__}({', '.join(sig)})"
+        return f"{self.__wrapped__.__qualname__}({', '.join(sig)})"
 
 
 
 
 
 
-@extension_func
-def foo(bar, baz=2, **kwargs):
-    print("Hello, World!")
-    return bar, baz
+# @extension_func
+# def foo(bar, baz=2, **kwargs):
+#     print("Hello, World!")
+#     return bar, baz
 
 
-@foo.register_arg(default=1)
-def bar(val: int, defaults: dict) -> int:
-    return int(val)
+# @foo.register_arg(default=1)
+# def bar(val: int, defaults: dict) -> int:
+#     return int(val)
 
 
-@foo.register_arg
-def baz(val: int, defaults: dict) -> int:
-    return int(val)
+# @foo.register_arg
+# def baz(val: int, defaults: dict) -> int:
+#     return int(val)
 
 
-class MyClass:
+# class MyClass:
 
-    def __int__(self):
-        return 4
+#     def __int__(self):
+#         return 4
 
-    def __repr__(self):
-        return "MyClass()"
+#     def __repr__(self):
+#         return "MyClass()"
 
-    def foo(self, baz = 2, **kwargs):
-        print("Goodbye, World!")
-        return self, baz
+#     def foo(self, baz = 2, **kwargs):
+#         print("Goodbye, World!")
+#         return self, baz
 
 
-foo.attach_to(MyClass)
-foo.attach_to(MyClass, namespace="test")
+# foo.attach_to(MyClass)
+# foo.attach_to(MyClass, namespace="test")

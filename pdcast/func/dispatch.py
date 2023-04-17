@@ -19,13 +19,12 @@ import pdcast.types as base_types
 
 from pdcast.util.type_hints import type_specifier
 
-from .base import Cooperative
+from .base import BaseDecorator
 from .virtual import Attachable
 
 
 # TODO: can probably support an ``operator`` argument that takes a string and
 # broadcasts to a math operator.
-
 
 # TODO: currently, the SeriesWrapper __enter__ statement is executed multiple
 # times for composite data.  This is expensive and should only occur once.
@@ -71,13 +70,13 @@ def dispatch(func: Callable) -> Callable:
 #######################
 
 
-class DispatchFunc(Cooperative, Attachable):
+class DispatchFunc(BaseDecorator, Attachable):
     """"""
 
-    _reserved = {"_signature", "_dispatched", "_wrap_adapters"}
+    _reserved = BaseDecorator._reserved | {"_signature", "_dispatched", "_wrap_adapters"}
 
     def __init__(self, func: Callable, wrap_adapters: bool):
-        self._func = func
+        super().__init__(func=func)
 
         # ensure function accepts at least 1 argument
         self._signature = inspect.signature(func)
@@ -87,7 +86,6 @@ class DispatchFunc(Cooperative, Attachable):
         # initialize
         self._dispatched = {}
         self._wrap_adapters = wrap_adapters
-        # update_wrapper(self, func)
 
 
     @property
@@ -180,19 +178,20 @@ class DispatchFunc(Cooperative, Attachable):
 
         # fall back to generic implementation
         if result is None:
-            result = self._func(series, *args, **kwargs)
+            result = self.__wrapped__(series, *args, **kwargs)
 
         # ensure result is a SeriesWrapper
         if not isinstance(result, convert.SeriesWrapper):
             raise TypeError(
-                f"dispatched implementation of {self._func.__name__}() did "
-                f"not return a SeriesWrapper for type: {series.element_type}"
+                f"dispatched implementation of {self.__wrapped__.__name__}() "
+                f"did not return a SeriesWrapper for type: "
+                f"{series.element_type}"
             )
 
         # ensure final index is a subset of original index
         if not series.index.difference(result.index).empty:
             raise RuntimeError(
-                f"index mismatch in {self._func.__name__}(): dispatched "
+                f"index mismatch in {self.__wrapped__.__name__}(): dispatched "
                 f"implementation for type {series.element_type} must return "
                 f"a series with the same index as the original"
             )
@@ -313,6 +312,7 @@ from .extension import *
 @extension_func
 @dispatch
 def foo(bar, baz=2, **kwargs):
+    """doc for foo()"""
     print("generic")
     return bar
 
@@ -342,7 +342,7 @@ class MyClass:
         return self
 
 
-foo.attach_to(MyClass)
+# foo.attach_to(MyClass)
 
 
 # @dispatch
