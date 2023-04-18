@@ -19,12 +19,11 @@ class BaseDecorator:
     attribute to store the callable they decorate.
     """
 
-    _reserved = {"__wrapped__"}
+    _reserved = set(WRAPPER_ASSIGNMENTS) | {"__wrapped__"}
 
     def __init__(self, func: Callable, **kwargs):
         super().__init__(**kwargs)
-        update_wrapper(self, func, assigned=(), updated=())
-        # self.__wrapped__ = func
+        update_wrapper(self, func)
 
     ################################
     ####    ATTRIBUTE ACCESS    ####

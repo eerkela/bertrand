@@ -20,7 +20,7 @@ import pdcast.types as base_types
 from pdcast.util.type_hints import type_specifier
 
 from .base import BaseDecorator
-from .virtual import Attachable
+from .virtual import attachable
 
 
 # TODO: can probably support an ``operator`` argument that takes a string and
@@ -70,7 +70,7 @@ def dispatch(func: Callable) -> Callable:
 #######################
 
 
-class DispatchFunc(BaseDecorator, Attachable):
+class DispatchFunc(BaseDecorator):
     """"""
 
     _reserved = BaseDecorator._reserved | {"_signature", "_dispatched", "_wrap_adapters"}
@@ -86,7 +86,6 @@ class DispatchFunc(BaseDecorator, Attachable):
         # initialize
         self._dispatched = {}
         self._wrap_adapters = wrap_adapters
-
 
     @property
     def dispatched(self) -> MappingProxyType:
@@ -295,26 +294,17 @@ class DispatchFunc(BaseDecorator, Attachable):
 
 
 
-# TODO: dispatched implementations don't get default values for extension
-# arguments.  Need to pass in extension_func arguments before dispatching.
-# -> extension_func needs to be **above** dispatch in call stack.  This means
-# it needs to be cooperative.  When this was tried, it caused us to be unable
-# to change default values.
-
-# Maybe the solution is to just unify ExtensionFunc and DispatchFunc.  Only
-# allow the addition of new arguments if the function allows a **kwargs
-# argument.
-
 
 from .extension import *
 
 
+@attachable
 @extension_func
 @dispatch
 def foo(bar, baz=2, **kwargs):
     """doc for foo()"""
     print("generic")
-    return bar
+    return bar + baz
 
 
 @foo.register_arg
@@ -322,27 +312,26 @@ def baz(val, others):
     return int(val)
 
 
-
 @foo.register_type(types="bool")
 def boolean_foo(bar, baz, **kwargs):
     print("boolean")
-    return bar
+    return bar + baz
 
 
 @foo.register_type(types="int, float")
 def numeric_foo(bar, baz, **kwargs):
     print("int or float")
-    return bar
+    return bar + baz
 
 
 class MyClass:
 
     def foo(self, baz, **kwargs):
         print("MyClass.foo")
-        return self
+        return self, baz
 
 
-# foo.attach_to(MyClass)
+foo.attach_to(MyClass)
 
 
 # @dispatch

@@ -10,10 +10,6 @@ from types import MappingProxyType
 from typing import Any, Callable
 
 from .base import BaseDecorator
-from .virtual import Attachable
-
-
-# TODO: offer a pure python version of this as a recipe for docs.
 
 
 ######################
@@ -93,7 +89,7 @@ class NoDefault:
 no_default = NoDefault()
 
 
-class ExtensionFunc(BaseDecorator, Attachable, threading.local):
+class ExtensionFunc(BaseDecorator, threading.local):
     """A callable object that can be dynamically extended with custom
     arguments.
 

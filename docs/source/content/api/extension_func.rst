@@ -4,7 +4,7 @@
 
     import numpy as np
     import pandas as pd
-    from pdcast.util.structs.func import *
+    from pdcast.func import *
 
 pdcast.extension_func
 =====================
@@ -217,43 +217,46 @@ These are passed dynamically into the base function's ``**kwargs`` attribute.
     **not** be passed through to ``**kwargs`` unless it is explicitly
     specified.
 
-.. _extension_func.method:
 
-Extension methods
------------------
-:class:`ExtensionFuncs <ExtensionFunc>` can also be dynamically patched into
-other Python objects as :class:`ExtensionMethods <ExtensionMethod>`.  This
-can be done via :meth:`ExtensionFunc.attach_to`.
+.. 
 
-.. doctest::
+    .. _extension_func.method:
 
-    >>> class MyClass:
-    ...     def __int__(self) -> int:
-    ...         print("Hello, World!")
-    ...         return 4
+    Extension methods
+    -----------------
+    :class:`ExtensionFuncs <ExtensionFunc>` can also be dynamically patched into
+    other Python objects as :class:`ExtensionMethods <ExtensionMethod>`.  This
+    can be done via :meth:`ExtensionFunc.attach_to`.
 
-    >>> foo.attach_to(MyClass)
+    .. doctest::
 
-This creates a new attribute of ``MyClass`` under ``MyClass.foo``, which
-references our original extension function.  Whenever we invoke it this way, an
-instance of ``MyClass`` will be implicitly passed as its first argument.
+        >>> class MyClass:
+        ...     def __int__(self) -> int:
+        ...         print("Hello, World!")
+        ...         return 4
 
-.. doctest::
+        >>> foo.attach_to(MyClass)
 
-    >>> MyClass.foo
-    MyClass.foo(baz = 2, qux = 3, **kwargs)
-    >>> MyClass().foo()
-    Hello, World!
-    (4, 2)
+    This creates a new attribute of ``MyClass`` under ``MyClass.foo``, which
+    references our original extension function.  Whenever we invoke it this way, an
+    instance of ``MyClass`` will be implicitly passed as its first argument.
 
-If we invoke ``MyClass.foo`` as a class method (i.e. without instantiating
-``MyClass`` first), then we get the same behavior as the naked ``foo``
-function.
+    .. doctest::
 
-.. doctest::
+        >>> MyClass.foo
+        MyClass.foo(baz = 2, qux = 3, **kwargs)
+        >>> MyClass().foo()
+        Hello, World!
+        (4, 2)
 
-    >>> MyClass.foo()
-    (1, 2)
+    If we invoke ``MyClass.foo`` as a class method (i.e. without instantiating
+    ``MyClass`` first), then we get the same behavior as the naked ``foo``
+    function.
+
+    .. doctest::
+
+        >>> MyClass.foo()
+        (1, 2)
 
 .. _extension_func.application:
 
@@ -291,7 +294,6 @@ Internals
     ExtensionFunc.register_arg
     ExtensionFunc.remove_arg
     ExtensionFunc.reset_defaults
-    ExtensionFunc.attach_to
     ExtensionMethod
 
 .. _extension_func.source:

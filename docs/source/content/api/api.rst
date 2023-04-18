@@ -17,6 +17,8 @@ sidebar.
       - Check whether example data contains elements of a specified type.
     * - :func:`cast`
       - Cast arbitrary data to the specified type.
+    * - :func:`@attachable <attachable>`
+      - TODO
     * - :func:`@extension_func <extension_func>`
       - TODO
     * - :func:`@dispatch <dispatch>`
@@ -50,6 +52,7 @@ sidebar.
     pdcast.detect_type <detect_type>
     pdcast.typecheck <typecheck>
     pdcast.cast <cast>
+    pdcast.attachable <attachable>
     pdcast.extension_func <extension_func>
     pdcast.dispatch <dispatch>
     pdcast.attach <attach>

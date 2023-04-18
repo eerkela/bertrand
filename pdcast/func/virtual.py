@@ -1,116 +1,168 @@
 """This module describes a mechanism for binding naked Python functions to
-existing objects using virtual descriptors.
-
-The resulting virtual attributes can be used just like normal instance methods,
-and can be optionally hidden behind virtual namespaces.  If an attribute or
-namespace masks an existing attribute of the object, it will be remembered, and
-is accessible under the attribute's ``.original`` property.
+existing classes using virtual descriptors.
 
 Classes
 -------
 Attachable
-    A mixin class for other decorators that allows them to be attached directly
-    to Python objects.
-
-VirtualDescriptor
-    Base class for all virtual attribute descriptors.
-
-VirtualAttribute
-    Base class for all virtual attributes.
-
-NamespaceDescriptor
-    A descriptor that spawns :class:`Namespace <pdcast.Namespace>` objects on
-    access.
+    A cooperative decorator that allows the wrapped function to be dynamically
+    attached to existing Python classes.
 
 Namespace
-    A virtual namespace that allows for separation from the base object.
+    A virtual namespace that acts as a bridge separating virtual attributes
+    from the base class's existing interface.
 
-MethodDescriptor
-    A descriptor that spawns :class:`VirtualMethod <pdcast.VirtualMethod>`
-    objects on access.
-
-VirtualMethod
-    A method-like object that implicitly passes a class instance as the first
-    argument to the decorated function.
+BoundMethod
+    A method-like descriptor that implicitly passes a class instance as the
+    first argument to the decorated function.
 """
 from __future__ import annotations
-from functools import update_wrapper
+from types import MappingProxyType, MethodType
 from typing import Any, Callable
 
 from .base import BaseDecorator
 
 
-#####################
-####    MIXIN    ####
-#####################
+######################
+####    PUBLIC    ####
+######################
 
 
-class Attachable:
-    """A mixin class that allows class-based function decorators to be attached
-    to other objects as instance methods, potentially behind a virtual
-    namespace.
+def attachable(func: Callable) -> Callable:
+    """A decorator that allows naked Python functions to be dynamically
+    attached to class objects as bound methods.
+
+    Parameters
+    ----------
+    func : Callable
+        A python function or other callable to be decorated.  When this is
+        :meth:`attached <pdcast.Attachable.attach_to>` to a class, a ``self``
+        reference will be implicitly passed as its first positional argument.
+
+    Returns
+    -------
+    Attachable
+        A cooperative decorator that allows full attribute access down the
+        decorator stack.  This object behaves exactly like the original
+        function when called, but exposes additional methods for
+        :meth:`attaching <pdcast.Attachable.attach_to>` it to existing classes
+        in a variety of ways.
     """
+    return Attachable(func)
+
+
+#######################
+####    PRIVATE    ####
+#######################
+
+
+class Attachable(BaseDecorator):
+    """Holds implementation for :func:`@attachable <pdcast.attachable>`."""
+
+    _reserved = BaseDecorator._reserved | {"_attached"}
+
+    def __init__(self, func: Callable):
+        super().__init__(func=func)
+        self._attached = {}
+
+    @property
+    def attached(self) -> MappingProxyType:
+        """A mapping of all the classes that this function has been attached
+        to.
+
+        Returns
+        -------
+        MappingProxyType
+            A read-only dictionary mapping class objects to their associated
+            descriptors.
+        """
+        return MappingProxyType(self._attached)  # {class: descriptor}
 
     def attach_to(
         self,
-        _class: type,
+        class_: type,
         name: str | None = None,
-        namespace: str | None = None
+        namespace: str | None = None,
+        pattern: str = "method"
     ) -> None:
         """Attach the decorated callable to the given class definition.
 
         Parameters
         ----------
-        _class : type
+        class_ : type
             A Python class to attach this callable to.  The callable will be
             available to all instances of the class under the given
             ``name``.
         name : str | None, default None
             The name under which to attach the decorated callable.  This is
-            used as an alias when it is called from the associated class.  If
-            this is left empty, the name of the decorated callable will be used
-            directly.
+            used as an alias when it is called from the given class.  If empty,
+            the name of the callable will be used directly.
         namespace : str | None, default None
-            If given, a string name specifying a
+            If given, a string specifying a
             :class:`Namespace <pdcast.Namespace>` to attach the decorated
             callable to.  The callable will only be accessible through this
             virtual namespace.
+        pattern : str, default "method"
+            The pattern to use for accessing this callable.  The options are
+            ``"property"``, ``"method"``, and ``"classmethod"``.  
 
         Notes
         -----
-        This method attaches a
-        :class:`MethodDescriptor <pdcast.MethodDescriptor>` to
-        the associated class, which serves as a factory for
-        :class:`VirtualMethod <pdcast.VirtualMethod>` objects.  These are
-        callable interfaces for the decorator that this method was invoked on,
-        implicitly inserting a reference to ``self`` as the first argument to
-        its call signature.  In this way, the decorated function acts
-        identically to a normal bound method of the attached class.
+                
+        is added
+        as a non-data :ref:`descriptor <python:descriptorhowto>`, which
+        implicitly passes a ``self`` reference as its first argument.
+
+
+        This method uses the
+        :ref:`descriptor protocol <python:invoking-descriptors>` to transform
+        the first argument of the decorated callable into an implicit ``self``
+        reference.  It works by attaching a
+        :class:`BoundMethod <pdcast.BoundMethod>` descriptor to the parent
+        class, which is a cooperative decorator for the original function.
+        When the descriptor is accessed from an instance of the class, its
+        :meth:`__get__() <python:object.get>` method is invoked, which binds
+        the instance to the method.  Then, when the method is called, the
+        instance will be implicitly passed as the first argument of the
+        function.  This is actually identical to the way that ordinary Python
+        handles instance methods internally, except that here we have direct
+        control over the descriptor itself.
+
+        If a ``namespace`` is given, then the process is somewhat different.
+        Rather than attaching a :class:`BoundMethod <pdcast.BoundMethod>` to
+        the class directly, we first attach a
+        :class:`Namespace <pdcast.Namespace>` descriptor instead.  We then add
+        our :class:`BoundMethods <pdcast.BoundMethod>` to this
+        :class:`Namespace <pdcast.Namespace>`, which passes along the bound
+        instance for us.  This acts as a bridge, allowing us to separate our
+        methods from the class's base namespace.  The methods we add in this
+        way are thus free to take on whatever names they'd like, without
+        interfering with the object's existing functionality.  They retain all
+        the same functionality as their non-``namespace`` equivalents.
+
+        In both cases, accessing the descriptor from the class itself (i.e.
+        without instantiating it) will 
 
         Examples
         --------
-        This method makes converting a :class:`DispatchFunc <pdcast.DispatchFunc>`
-        or :class:`ExtensionFunc <pdcast.ExtensionFunc>` into a
-        :class:`VirtualMethod <pdcast.VirtualMethod>` as straightforward as
-        possible.
+        This method allows users to attach any python function as an instance
+        method of a given class.
 
         .. doctest::
 
             >>> class MyClass:
             ...     def __repr__(self):  return "MyClass()"
 
-            >>> @extension_func
-            ... def foo(bar, baz=2, **kwargs):
-            ...     return bar, baz
+            >>> @attachable
+            ... def foo(bar):
+            ...     return bar
 
             >>> foo.attach_to(MyClass)
 
         This creates a new attribute of ``MyClass`` under ``MyClass.foo``,
-        which references our original
-        :class:`ExtensionFunc <pdcast.ExtensionFunc>`.  Whenever we invoke it
-        this way, an instance of ``MyClass`` will be implicitly passed into the
-        :class:`ExtensionFunc <pdcast.ExtensionFunc>` as its first argument,
-        mirroring the traditional notion of ``self`` in ordinary Python.
+        which references the original function.  Whenever we invoke it this
+        way, an instance of ``MyClass`` will be implicitly passed into the
+        decorated function as its first argument, mirroring the ``self``
+        parameter in ordinary Python.
 
         .. doctest::
 
@@ -132,7 +184,7 @@ class Attachable:
             TypeError: foo() missing 1 required positional argument: 'bar'
 
         We can also modify defaults and add arguments to our
-        :class:`VirtualMethod <pdcast.VirtualMethod>` just like normal.
+        :class:`BoundMethod <pdcast.BoundMethod>` just like normal.
 
         .. doctest::
 
@@ -149,7 +201,7 @@ class Attachable:
         .. warning::
 
             Any arguments (as well as their default values) will be shared
-            between the :class:`VirtualMethod <pdcast.VirtualMethod>` and its
+            between the :class:`BoundMethod <pdcast.BoundMethod>` and its
             base :class:`ExtensionFunc <pdcast.ExtensionFunc>`.
 
             .. doctest::
@@ -165,7 +217,6 @@ class Attachable:
         .. doctest::
 
             >>> @MyClass.foo.register_type(types="int")
-            ... @extension_func
             ... def boolean_foo(bar: bool, baz: bool = True, **kwargs):
             ...     return (bar, baz)
 
@@ -182,139 +233,61 @@ class Attachable:
             >>> MyClass().abc.foo()
             (MyClass(), 3)
         """
-        # default to decorated function name
+                # default to decorated function name
+        # default to name of wrapped callable
         if not name:
-            name = self._func.__name__
+            name = self.__wrapped__.__name__
 
-        # if a namespace is given, hide the function behind it.
+        # check pattern is valid
+        valid_patterns = ("property", "method", "classmethod")
+        if pattern not in valid_patterns:
+            raise ValueError(
+                f"`pattern` must be one of {valid_patterns}, not "
+                f"{repr(pattern)}"
+            )
+
+        # check func is not already attached to class
+        if class_ in self._attached:
+            existing = self._attached[class_]
+            raise AttributeError(
+                f"'{self.__qualname__}' is already attached to "
+                f"'{class_.__qualname__}' as '{existing.__qualname__}'"
+            )
+
+        parent = class_
+
+        # (optionally) generate namespace
         if namespace:
-            # generate NamespaceDescriptor and attach it to class
-            descriptor = NamespaceDescriptor(_class, namespace)
-            setattr(_class, namespace, descriptor)
+            existing = getattr(class_, namespace, None)
+            if isinstance(existing, Namespace):
+                parent = existing
+            else:
+                parent = Namespace(
+                    parent=class_,
+                    name=namespace,
+                    attrs={},
+                    instance=None,
+                    original=getattr(parent, namespace, None)
+                )
+                setattr(class_, parent.__name__, parent)
 
-            # generate MethodDescriptor and attach it to namespace
-            method_descriptor = MethodDescriptor(
-                descriptor,
-                name,
-                self
+        # generate pattern-specific descriptor
+        if pattern == "property":
+            raise NotImplementedError()
+        elif pattern == "method":
+            descriptor = BoundMethod(
+                parent=parent,
+                name=name,
+                func=self,
+                instance=None,
+                original=getattr(parent, name, None)
             )
-            setattr(descriptor, name, method_descriptor)
-
-        # attach directly to class
         else:
-            setattr(_class, name, MethodDescriptor(_class, name, self))
+            raise NotImplementedError()
 
-
-####################
-####    BASE    ####
-####################
-
-
-class VirtualDescriptor:
-    """Base class for all virtual accessors.
-
-    These descriptors can be dynamically attached to a class definition to
-    allow :class:`VirtualAttributes <pdcast.VirtualAttribute>` access to
-    instances of the class as if they were bound to it.
-
-    Parameters
-    ----------
-    parent : type | VirtualDescriptor
-        A Python class or another
-        :class:`VirtualDescriptor <pdcast.VirtualDescriptor>` that this
-        descriptor is attached to.  Examples of descriptor chaining include
-        :class:`NamespaceDescriptors <pdcast.NamespaceDescriptor>` and the
-        :class:`VirtualMethods <pdcast.VirtualMethod>` that spawn from them.
-    name : str
-        The name of this descriptor as supplied to
-        :func:`setattr <python:setattr>`.
-
-    Attributes
-    ----------
-    _parent : type | VirtualDescriptor
-        See the ``parent`` parameter above.
-    _name : str
-        See the ``name`` parameter above.
-    _original : Any | None
-        The original attribute being masked by this descriptor, if one exists.
-    """
-
-    _reserved = {"_parent", "_name", "_original"}
-
-    def __init__(
-        self,
-        parent: type | VirtualDescriptor,
-        name: str
-    ):
-        self._parent = parent
-        self._name = name
-        self._original = getattr(self._parent, self._name, None)
-
-    @property
-    def original(self) -> Any:
-        """The original attribute this descriptor is masking, if one exists."""
-        # no original implementation
-        if self._original is None:
-            raise TypeError(
-                f"{repr(self._parent)}' has no attribute '{self._name}'"
-            )
-
-        return self._original
-
-    def detach(self) -> None:
-        """Remove the attribute from the object and replace the original, if
-        one exists.
-        """
-        if self._original is None:
-            delattr(self._parent, self._name)
-        else:
-            setattr(self._parent, self._name, self._original)
-
-    def __repr__(self) -> str:
-        if isinstance(self._parent, type):
-            return f"{self._parent.__qualname__}.{self._name}"
-        return f"{repr(self._parent)}.{self._name}"
-
-
-class VirtualAttribute:
-    """Base class for all virtual attributes, as returned by a
-    :class:`VirtualDescriptor <pdcast.func.virtual.VirtualDescriptor>` object.
-
-    These are spawned whenever a
-    :class:`VirtualDescriptor <pdcast.func.virtual.VirtualDescriptor>` is
-    accessed from one of the attached class's instances.
-
-    Parameters
-    ----------
-    descriptor : VirtualDescriptor
-        The :class:`VirtualDescriptor <pdcast.func.virtual.VirtualDescriptor>`
-        that spawned this attribute.  This contains information about the
-        attribute like its name, original equivalent (if it has one), and the
-        parent object that it is attached to.
-    instance : Any
-        An instance of the attached class from which this attribute was
-        accessed.
-
-    Attributes
-    ----------
-    _descriptor : VirtualDescriptor
-        See the ``descriptor`` parameter above.
-    _instance : Any
-        See the ``instance`` parameter above.
-    """
-
-    _reserved = {"_descriptor", "_instance"}
-
-    def __init__(
-        self,
-        descriptor: VirtualDescriptor,
-        instance: Any
-    ):
-        self._descriptor = descriptor
-        self._instance = instance
-
-    def __repr__(self) -> str:
-        return repr(self._descriptor)
+        # attach descriptor
+        setattr(parent, name, descriptor)
+        self._attached[class_] = descriptor
 
 
 #########################
@@ -322,7 +295,7 @@ class VirtualAttribute:
 #########################
 
 
-class NamespaceDescriptor(VirtualDescriptor):
+class Namespace:
     """A descriptor that spawns :class:`Namespace <pdcast.Namespace>` objects
     on access, which can be used to hide other
     :class:`VirtualAttributes <pdcast.VirtualAttribute>`.
@@ -335,7 +308,7 @@ class NamespaceDescriptor(VirtualDescriptor):
         this descriptor is attached to.  Examples of descriptor chaining
         include
         :class:`NamespaceDescriptors <pdcast.func.virtual.NamespaceDescriptor>`
-        and the :class:`VirtualMethods <pdcast.VirtualMethod>` that spawn from
+        and the :class:`BoundMethods <pdcast.BoundMethod>` that spawn from
         them.
     name : str
         The name of this descriptor as supplied to
@@ -349,26 +322,66 @@ class NamespaceDescriptor(VirtualDescriptor):
         See the ``name`` parameter above.
     _original : Any | None
         The original attribute being masked by this descriptor, if one exists.
-    _lookup : dict[str, pdcast.func.virtual.VirtualDescriptor]
+    _attrs : dict[str, pdcast.func.virtual.VirtualDescriptor]
         A dictionary mapping attributes that are associated with this
         :class:`Namespace <pdcast.Namespace>` to their respective descriptors.
     """
 
-    _reserved = VirtualDescriptor._reserved | {"_lookup"}
+    _reserved = {
+        "_parent", "_instance", "_original", "_attrs", "__name__",
+        "__qualname__"
+    }
 
     def __init__(
         self,
         parent: type,
-        name: str
+        name: str,
+        attrs: dict,
+        instance: Any | None,
+        original: Any | None
     ):
-        super().__init__(parent=parent, name=name)
-        self._lookup = {}
+        self._parent = parent
+        self._instance = instance
+        self.__name__ = name
+        self.__qualname__ = f"{self._parent.__qualname__}.{self.__name__}"
+        self._attrs = attrs
+        self._original = original
+
+    @property
+    def original(self) -> Any:
+        """Get the original implementation of the namespace, if one exists."""
+        if self._original is None:
+            raise AttributeError(
+                f"'{self._parent.__qualname__}' has no attribute "
+                f"'{self.__name__}'"
+            )
+
+        # from class
+        if self._instance is None:
+            return self._original
+
+        # from instance
+        return self._original(self._instance)
+
+    def detach(self) -> None:
+        """Remove the attribute from the object and replace the original, if
+        one exists.
+        """
+        # replace original implementation
+        if self._original is None or isinstance(self._parent, Namespace):
+            delattr(self._parent, self.__name__, self._original)
+        else:
+            setattr(self._parent, self.__name__, self._original)
+
+        # delete namespace if empty
+        if isinstance(self._parent, Namespace) and not self._parent._attrs:
+            self._parent.detach()
 
     def __get__(
         self,
         instance,
         owner=None
-    ) -> NamespaceDescriptor | Namespace:
+    ) -> Namespace | Namespace:
         """Spawn a new :class:`Namespace` object if accessing from an instance,
         otherwise return the descriptor itself.
         """
@@ -377,23 +390,28 @@ class NamespaceDescriptor(VirtualDescriptor):
             return self
 
         # from instance
-        return Namespace(self, instance)
-
-    ############################
-    ####    CLASS ACCESS    ####
-    ############################
-
-    # NOTE: everything below this line is only accessible from the raw class
-    # that this descriptor is attached to, not any of its instances.  Those
-    # receive whole Namespaces instead.
+        return Namespace(
+            parent=self._parent,
+            name=self.__name__,
+            attrs=self._attrs,
+            instance=instance,
+            original=self._original
+        )
 
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the original implementation, if one
         exists.
         """
         # name is a virtual attribute associated with this namespace
-        if name in self._lookup:
-            return self._lookup[name]
+        if name in self._attrs:
+            unbound = self._attrs[name]
+            return BoundMethod(
+                parent=self,
+                name=unbound.__name__,
+                func=unbound.__wrapped__,
+                instance=self._instance,
+                original=unbound._original
+            )
 
         # delegate to original
         return getattr(self._original, name)
@@ -404,94 +422,19 @@ class NamespaceDescriptor(VirtualDescriptor):
             self.__dict__[name] = value
 
         # name is a virtual method to associate with this namespace
-        elif isinstance(value, MethodDescriptor):
-            self.__dict__["_lookup"][value._name] = value
+        elif isinstance(value, BoundMethod):
+            self.__dict__["_attrs"][value.__name__] = value
 
         # delegate to original
         else:
             setattr(self.original, name, value)
 
     def __delattr__(self, name: str) -> None:
-        if name in self._lookup:
-            del self._lookup[name]
+        if name in self._attrs:
+            del self._attrs[name]
 
         # delegate to original
         return delattr(self.original, name)
-
-
-class Namespace(VirtualAttribute):
-    """A virtual name space that can be attached to arbitrary Python objects,
-    and can store its own virtual attributes.
-
-    Parameters
-    ----------
-    descriptor : VirtualDescriptor
-        The :class:`NamespaceDescriptor <pdcast.func.virtual.NamespaceDescriptor>`
-        that spawned this attribute.  This contains information about the
-        namespace like its name, original equivalent (if it has one), the
-        parent object that it is attached to, and a map of all the other
-        :class:`VirtualAttributes <pdcast.VirtualAttribute>` that have been
-        assigned to it.
-    instance : Any
-        An instance of the attached class from which this attribute was
-        accessed.
-
-    Attributes
-    ----------
-    _descriptor : VirtualDescriptor
-        See the ``descriptor`` parameter above.
-    _instance : Any
-        See the ``instance`` parameter above.
-    """
-
-    def __init__(
-        self,
-        descriptor: NamespaceDescriptor,
-        instance: Any
-    ):
-        super().__init__(descriptor=descriptor, instance=instance)
-
-    @property
-    def original(self) -> Any:
-        """The original attribute this namespace is masking, if one exists."""
-        return self._descriptor.original(self._instance)
-
-    def __getattr__(self, name: str) -> Any:
-        """Delegate attribute access to the original implementation, if one
-        exists.
-        """
-        lookup = self._descriptor._lookup
-
-        # name is a virtual attribute associated with this namespace
-        if name in lookup:
-            descriptor = lookup[name]
-
-            # virtual method
-            if isinstance(descriptor, MethodDescriptor):
-                return VirtualMethod(
-                    descriptor,
-                    self._instance,
-                    namespace=self
-                )
-
-            # TODO: at some point, this could be extended to support properties
-            raise NotImplementedError()
-
-        # delegate to original
-        return getattr(self.original, name)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        # name is internal
-        if name in self._reserved:
-            self.__dict__[name] = value
-
-        # name is a virtual method to associate with this namespace
-        elif isinstance(value, MethodDescriptor):
-            self.__dict__["_lookup"][name] = value
-
-        # delegate to original
-        else:
-            setattr(self.original, name, value)
 
 
 ######################
@@ -499,8 +442,8 @@ class Namespace(VirtualAttribute):
 ######################
 
 
-class MethodDescriptor(BaseDecorator, VirtualDescriptor):
-    """A descriptor that spawns :class:`VirtualMethod <pdcast.VirtualMethod>`
+class BoundMethod(BaseDecorator):
+    """A descriptor that spawns :class:`BoundMethod <pdcast.BoundMethod>`
     objects on access, which can be used to transform Python functions into
     self-binding instance methods.
 
@@ -512,7 +455,7 @@ class MethodDescriptor(BaseDecorator, VirtualDescriptor):
         this descriptor is attached to.  Examples of descriptor chaining
         include
         :class:`NamespaceDescriptors <pdcast.func.virtual.NamespaceDescriptor>`
-        and the :class:`VirtualMethods <pdcast.VirtualMethod>` that spawn from
+        and the :class:`BoundMethods <pdcast.BoundMethod>` that spawn from
         them.
     name : str
         The name of this descriptor as supplied to
@@ -528,136 +471,137 @@ class MethodDescriptor(BaseDecorator, VirtualDescriptor):
         See the ``name`` parameter above.
     _original : Any | None
         The original attribute being masked by this descriptor, if one exists.
-    _func : Callable
+    __wrapped__ : Callable
         See the ``func`` parameter above.
     """
 
+    _reserved = BaseDecorator._reserved | {
+        "_parent", "_instance", "_original", "__name__", "__qualname__"
+    }
+
     def __init__(
         self,
-        parent: type | NamespaceDescriptor,
+        parent: type | Namespace,
         name: str,
-        func: Callable
+        func: Callable,
+        instance: Any | None,
+        original: Any | None
     ):
-        self._func = func
-        super().__init__(parent=parent, name=name)
+        super().__init__(func=func)
+        self._parent = parent  # either a class or namespace
+        self.__name__ = name
+        self.__qualname__ = f"{self._parent.__qualname__}.{self.__name__}"
+        self._instance = instance
+        self._original = original
+
+    @property
+    def original(self) -> Callable:
+        """Get the original implementation of the method, if one exists."""
+        if self._original is None:
+            raise AttributeError(
+                f"'{self._parent.__qualname__}' has no attribute "
+                f"'{self.__name__}'"
+            )
+
+        # from namespace
+        if isinstance(self._parent, Namespace):
+            return MethodType(self._original, self._parent.original)
+
+        # from class
+        if self._instance is None:
+            return self._original
+
+        # from instance
+        return MethodType(self._original, self._instance)
+
+    def detach(self) -> None:
+        """Remove the attribute from the object and replace the original, if
+        one exists.
+        """
+        # replace original implementation
+        if self._original is None or isinstance(self._parent, Namespace):
+            delattr(self._parent, self.__name__, self._original)
+        else:
+            setattr(self._parent, self.__name__, self._original)
+
+        # delete namespace if empty
+        if isinstance(self._parent, Namespace):
+            class_ = self._parent._parent
+            if not self._parent._attrs:
+                self._parent.detach()
+        else:
+            class_ = self._parent
+
+        # remove from Attachable.attached
+        del self.__wrapped__._attached[class_]
+
+    def __call__(self, *args, **kwargs):
+        # from class
+        if self._instance is None:
+            return self.__wrapped__(*args, **kwargs)
+
+        # from instance
+        return self.__wrapped__(self._instance, *args, **kwargs)
 
     def __get__(
         self,
         instance,
         owner=None
-    ) -> MethodDescriptor | VirtualMethod:
+    ) -> BoundMethod:
         # from class
         if instance is None:
             return self
 
         # from instance
-        return VirtualMethod(self, instance)
-
-
-class VirtualMethod(BaseDecorator, VirtualAttribute):
-    """A self-binding virtual method.
-
-    Parameters
-    ----------
-    descriptor : MethodDescriptor
-        The :class:`MethodDescriptor <pdcast.func.virtual.MethodDescriptor>`
-        that spawned this attribute.  This contains information about the
-        method like its name, original equivalent (if it has one), the
-        parent object that it is attached to, and the namespace it comes from,
-        if any.
-    instance : Any
-        An instance of the attached class from which this attribute was
-        accessed.
-    namespace : Namespace | None
-        The namespace this method was accessed from, if one was provided to
-        :meth:`Attachable.attach_to() <pdcast.func.virtual.Attachable.attach_to>`.
-
-    Attributes
-    ----------
-    _descriptor : MethodDescriptor
-        See the ``descriptor`` parameter above.
-    _instance : Any
-        See the ``instance`` parameter above.
-    _func : Callable
-        A reference to the function being decorated.
-    """
-
-    _reserved = VirtualAttribute._reserved | {"_namespace"}
-
-    def __init__(
-        self,
-        descriptor: MethodDescriptor,
-        instance: Any,
-        namespace: Namespace | None = None
-    ):
-        self._func = descriptor._func
-        super().__init__(descriptor=descriptor, instance=instance)
-        self._namespace = namespace
-
-        # NOTE: this changes the type of self._func for some reason
-        # update_wrapper(self, self._func)
-
-    @property
-    def original(self) -> VirtualMethod:
-        """Get the original implementation of the method, if one exists."""
-        return VirtualMethod(
-            descriptor=MethodDescriptor(
-                parent=self._descriptor,
-                name=self._descriptor._name,
-                func=self._descriptor.original
-            ),
-            instance=self._instance
+        return BoundMethod(
+            parent=self._parent,
+            name=self.__name__,
+            func=self,
+            instance=instance,
+            original=self._original
         )
 
-    def __call__(self, *args, **kwargs):
-        # from class
-        if self._instance is None:
-            return self._func(*args, **kwargs)
-
-        # pipe original namespace into .original call
-        if (
-            self._namespace is not None and
-            isinstance(self._descriptor._parent, MethodDescriptor)
-        ):
-            return self._func(self._namespace.original, *args, **kwargs)
-
-        # from instance
-        return self._func(self._instance, *args, **kwargs)
-
-    def __repr__(self) -> str:
-        parent = self._descriptor._parent
-        if isinstance(parent, type):
-            return f"{parent.__qualname__}.{self._descriptor._name}"
-        return f"{repr(parent)}.{repr(self._func)}"
 
 
 
 
-# class MyClass:
+class MyClass:
 
-#     def foo(self):
-#         print("Goodbye, World!")
-#         return self
+    def foo(self):
+        print("Goodbye, World!")
+        return self
 
-#     class bar:
+    class bar:
 
-#         def __init__(self, vals):
-#             self._vals = vals
+        def __init__(self, vals):
+            self._vals = vals
 
-#         def foo(self):
-#             print("Goodbye, World!")
-#             return self._vals
-
-
-# def foo(self):
-#     print("Hello, World!")
-#     return self
+        def foo(self):
+            print("Goodbye, World!")
+            return self._vals
 
 
-# MyClass.foo = MethodDescriptor(MyClass, "foo", foo)
+@attachable
+def foo(self):
+    print("Hello, World!")
+    return self
 
 
-# MyClass.bar = NamespaceDescriptor(MyClass, "bar")
-# MyClass.bar.foo = MethodDescriptor(MyClass.bar, "foo", foo)
+foo.attach_to(MyClass)
+# foo.attach_to(MyClass, namespace="bar")
 
-# MyClass.baz = NamespaceDescriptor(MyClass, "baz")
+
+# MyClass.foo  # MethodDescriptor
+# MyClass().foo  # BoundMethod
+# MyClass.foo.original  # function
+# MyClass().foo.original  # method
+
+# MyClass.bar  # NamespaceDescriptor
+# MyClass().bar  # Namespace
+# MyClass.bar.original  # type
+# MyClass().bar.original  # MyClass.bar
+
+# MyClass.bar.foo  # MethodDescriptor
+# MyClass().bar.foo  # BoundMethod
+# MyClass.bar.foo.original  # function
+# MyClass().bar.foo.original  # method
