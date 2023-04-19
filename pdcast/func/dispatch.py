@@ -73,7 +73,10 @@ def dispatch(func: Callable) -> Callable:
 class DispatchFunc(BaseDecorator):
     """"""
 
-    _reserved = BaseDecorator._reserved | {"_signature", "_dispatched", "_wrap_adapters"}
+    _reserved = (
+        BaseDecorator._reserved |
+        {"_signature", "_dispatched", "_wrap_adapters"}
+    )
 
     def __init__(self, func: Callable, wrap_adapters: bool):
         super().__init__(func=func)
@@ -295,43 +298,43 @@ class DispatchFunc(BaseDecorator):
 
 
 
-from .extension import *
+# from .extension import *
 
 
-@attachable
-@extension_func
-@dispatch
-def foo(bar, baz=2, **kwargs):
-    """doc for foo()"""
-    print("generic")
-    return bar + baz
+# @attachable
+# @extension_func
+# @dispatch
+# def foo(bar, baz=2, **kwargs):
+#     """doc for foo()"""
+#     print("generic")
+#     return bar + baz
 
 
-@foo.register_arg
-def baz(val, others):
-    return int(val)
+# @foo.register_arg
+# def baz(val, others):
+#     return int(val)
 
 
-@foo.register_type(types="bool")
-def boolean_foo(bar, baz, **kwargs):
-    print("boolean")
-    return bar + baz
+# @foo.register_type(types="bool")
+# def boolean_foo(bar, baz, **kwargs):
+#     print("boolean")
+#     return bar + baz
 
 
-@foo.register_type(types="int, float")
-def numeric_foo(bar, baz, **kwargs):
-    print("int or float")
-    return bar + baz
+# @foo.register_type(types="int, float")
+# def numeric_foo(bar, baz, **kwargs):
+#     print("int or float")
+#     return bar + baz
 
 
-class MyClass:
+# class MyClass:
 
-    def foo(self, baz, **kwargs):
-        print("MyClass.foo")
-        return self, baz
+#     def foo(self, baz, **kwargs):
+#         print("MyClass.foo")
+#         return self, baz
 
 
-foo.attach_to(MyClass)
+# foo.attach_to(MyClass)
 
 
 # @dispatch

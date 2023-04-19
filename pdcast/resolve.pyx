@@ -46,9 +46,6 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
     """Interpret types from manual
     :ref:`type specifiers <resolve_type.type_specifiers>`.
 
-    This is the preferred constructor for ``pdcast`` type objects and is
-    called implicitly wherever type specifiers are accepted.
-
     Arguments
     ---------
     typespec : type specifier

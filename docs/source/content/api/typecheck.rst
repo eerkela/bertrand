@@ -36,7 +36,7 @@ Generic types
 Subtypes
 ^^^^^^^^
 If ``include_subtypes=True`` (the default), then :func:`subtypes <subtype>`
-will also be included in membership checks.
+will be included in membership checks.
 
 .. doctest::
 
@@ -77,7 +77,7 @@ These can be ignored by setting ``ignore_adapters=True``, which strips
 .. _typecheck.composite:
 
 Composite checks
-----------------
+^^^^^^^^^^^^^^^^
 Just like :func:`isinstance() <python:isinstance>`, multiple
 :ref:`type specifiers <resolve_type.type_specifiers>` can be given to compare
 against.  This returns ``True`` if **any** of them match the example data.

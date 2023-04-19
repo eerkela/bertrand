@@ -23,9 +23,6 @@ from weakref import WeakKeyDictionary
 from .base import BaseDecorator
 
 
-# TODO: replace _instance with __self__
-
-
 ######################
 ####    PUBLIC    ####
 ######################
@@ -33,7 +30,7 @@ from .base import BaseDecorator
 
 def attachable(func: Callable) -> Callable:
     """A decorator that allows naked Python functions to be dynamically
-    attached to class objects as bound methods.
+    attached to class objects at run time.
 
     Parameters
     ----------
@@ -50,6 +47,13 @@ def attachable(func: Callable) -> Callable:
         function when called, but exposes additional methods for
         :meth:`attaching <pdcast.Attachable.attach_to>` it to existing classes
         in a variety of ways.
+
+    See Also
+    --------
+    Attachable.attach_to :
+        bind the decorated function to an external class.
+    Attachable.attached :
+        a map of all the classes that this function has been attached to.
     """
     return Attachable(func)
 
@@ -235,8 +239,8 @@ class Namespace:
     """
 
     _reserved = {
-        "_parent", "_instance", "_original", "_attrs", "__name__",
-        "__qualname__"
+        "_parent", "_original", "_attrs", "__name__", "__qualname__",
+        "__self__"
     }
 
     def __init__(
@@ -248,11 +252,16 @@ class Namespace:
         original: Any | None
     ):
         self._parent = parent
-        self._instance = instance
+        self.__self__ = instance
         self.__name__ = name
         self.__qualname__ = f"{self._parent.__qualname__}.{self.__name__}"
         self._attrs = attrs
         self._original = original
+
+    @property
+    def attached(self) -> MappingProxyType:
+        """TODO"""
+        return MappingProxyType(self._attrs)
 
     @property
     def original(self) -> Any:
@@ -264,11 +273,11 @@ class Namespace:
             )
 
         # from class
-        if self._instance is None:
+        if self.__self__ is None:
             return self._original
 
         # from instance
-        return self._original(self._instance)
+        return self._original(self.__self__)
 
     def detach(self) -> None:
         """Remove the attribute from the object and replace the original, if
@@ -316,7 +325,7 @@ class Namespace:
                 parent=self,
                 name=unbound.__name__,
                 func=unbound.__wrapped__,
-                instance=self._instance,
+                instance=self.__self__,
                 original=unbound._original
             )
 
@@ -385,7 +394,7 @@ class BoundMethod(BaseDecorator):
     """
 
     _reserved = BaseDecorator._reserved | {
-        "_parent", "_instance", "_original", "__name__", "__qualname__"
+        "_parent", "_original", "__name__", "__qualname__", "__self__"
     }
 
     def __init__(
@@ -400,7 +409,7 @@ class BoundMethod(BaseDecorator):
         self._parent = parent  # either a class or namespace
         self.__name__ = name
         self.__qualname__ = f"{self._parent.__qualname__}.{self.__name__}"
-        self._instance = instance
+        self.__self__ = instance
         self._original = original
 
     @property
@@ -417,11 +426,11 @@ class BoundMethod(BaseDecorator):
             return MethodType(self._original, self._parent.original)
 
         # from class
-        if self._instance is None:
+        if self.__self__ is None:
             return self._original
 
         # from instance
-        return MethodType(self._original, self._instance)
+        return MethodType(self._original, self.__self__)
 
     def detach(self) -> None:
         """Remove the attribute from the object and replace the original, if
@@ -446,11 +455,11 @@ class BoundMethod(BaseDecorator):
 
     def __call__(self, *args, **kwargs):
         # from class
-        if self._instance is None:
+        if self.__self__ is None:
             return self.__wrapped__(*args, **kwargs)
 
         # from instance
-        return self.__wrapped__(self._instance, *args, **kwargs)
+        return self.__wrapped__(self.__self__, *args, **kwargs)
 
     def __get__(
         self,
@@ -506,31 +515,31 @@ class BoundMethod(BaseDecorator):
 
 
 
-class MyClass:
+# class MyClass:
 
-    def foo(self):
-        print("Goodbye, World!")
-        return self
+#     def foo(self):
+#         print("Goodbye, World!")
+#         return self
 
-    class bar:
+#     class bar:
 
-        def __init__(self, vals):
-            self._vals = vals
+#         def __init__(self, vals):
+#             self._vals = vals
 
-        def foo(self):
-            print("Goodbye, World!")
-            return self._vals
-
-
-@attachable
-def foo(self):
-    print("Hello, World!")
-    return self
+#         def foo(self):
+#             print("Goodbye, World!")
+#             return self._vals
 
 
-# foo.attach_to(MyClass)
-foo.attach_to(MyClass, namespace="bar")
-MyClass.bar.foo.detach()  # TODO: this drops foo to MyClass rather than MyClass.bar
+# @attachable
+# def foo(self):
+#     print("Hello, World!")
+#     return self
+
+
+# # foo.attach_to(MyClass)
+# foo.attach_to(MyClass, namespace="bar")
+# MyClass.bar.foo.detach()  # TODO: this drops foo to MyClass rather than MyClass.bar
 
 
 # MyClass.foo  # MethodDescriptor

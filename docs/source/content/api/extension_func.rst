@@ -15,8 +15,25 @@ to its arguments and default values.
 
 .. _extension_func.basic:
 
-Creating extension functions
-----------------------------
+Extension functions
+-------------------
+:func:`@extension_func <extension_func>` transforms the decorated callable into
+an :class:`ExtensionFunc` object, which supports arbitrary arguments and
+default values.  This adds the following attributes to the decorated function's
+interface, in addition to any that are present on the function itself (see
+:ref:`nested decorators <attachable.nested>`).
+
+.. autosummary::
+    :toctree: ../../generated
+
+    ExtensionFunc
+    ExtensionFunc.validators
+    ExtensionFunc.default_values
+    ExtensionFunc.register_arg
+    ExtensionFunc.remove_arg
+    ExtensionFunc.reset_defaults
+    ExtensionMethod
+
 By default, the decorated function behaves exactly like the original.
 
 .. doctest::
@@ -71,7 +88,7 @@ This validator will be implicitly executed whenever ``bar`` is supplied to
 .. _extension_func.default:
 
 Default Values
---------------
+^^^^^^^^^^^^^^
 :class:`ExtensionFunc` also allows us to programmatically assign and/or modify
 default values for our managed arguments.
 
@@ -191,7 +208,7 @@ instance can then be modified without affecting the behavior of other threads.
 .. _extension_func.dynamic:
 
 Dynamic arguments
------------------
+^^^^^^^^^^^^^^^^^
 :func:`@register_arg <ExtensionFunc.register_arg>` also allows us to
 dynamically add new arguments to ``foo()`` at run time, with the same
 validation logic as before.
@@ -217,51 +234,10 @@ These are passed dynamically into the base function's ``**kwargs`` attribute.
     **not** be passed through to ``**kwargs`` unless it is explicitly
     specified.
 
-
-.. 
-
-    .. _extension_func.method:
-
-    Extension methods
-    -----------------
-    :class:`ExtensionFuncs <ExtensionFunc>` can also be dynamically patched into
-    other Python objects as :class:`ExtensionMethods <ExtensionMethod>`.  This
-    can be done via :meth:`ExtensionFunc.attach_to`.
-
-    .. doctest::
-
-        >>> class MyClass:
-        ...     def __int__(self) -> int:
-        ...         print("Hello, World!")
-        ...         return 4
-
-        >>> foo.attach_to(MyClass)
-
-    This creates a new attribute of ``MyClass`` under ``MyClass.foo``, which
-    references our original extension function.  Whenever we invoke it this way, an
-    instance of ``MyClass`` will be implicitly passed as its first argument.
-
-    .. doctest::
-
-        >>> MyClass.foo
-        MyClass.foo(baz = 2, qux = 3, **kwargs)
-        >>> MyClass().foo()
-        Hello, World!
-        (4, 2)
-
-    If we invoke ``MyClass.foo`` as a class method (i.e. without instantiating
-    ``MyClass`` first), then we get the same behavior as the naked ``foo``
-    function.
-
-    .. doctest::
-
-        >>> MyClass.foo()
-        (1, 2)
-
 .. _extension_func.application:
 
 Where to go from here?
-----------------------
+^^^^^^^^^^^^^^^^^^^^^^
 Imagine you have a whole package's worth of :doc:`robust <detect_type>` and
 :doc:`extendable <AtomicType>` data :doc:`conversions <cast>` and a full 
 :doc:`type system <../types/types>` at your disposal.
@@ -279,22 +255,6 @@ Imagine you have a whole package's worth of :doc:`robust <detect_type>` and
     >>> my_func("today", unit="D", since="April 5th, 2022")   # doctest: +SKIP
     0   373
     dtype: int[python]
-
-.. _extension_func.internal:
-
-Internals
----------
-
-.. autosummary::
-    :toctree: ../../generated
-
-    ExtensionFunc
-    ExtensionFunc.validators
-    ExtensionFunc.default_values
-    ExtensionFunc.register_arg
-    ExtensionFunc.remove_arg
-    ExtensionFunc.reset_defaults
-    ExtensionMethod
 
 .. _extension_func.source:
 

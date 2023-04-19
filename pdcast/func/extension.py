@@ -489,41 +489,15 @@ class ExtensionFunc(BaseDecorator, threading.local):
         This also validates the input to each argument using the attached
         validators.
         """
+        # TODO: merge with _validate_args
         kwargs = self._validate_args(*args, **kwargs)
         kwargs = {**self.default_values, **kwargs}
 
         # recover *args
-        args = [
-            kwargs.pop(a) for a in [x for x in self._signature.parameters][:len(args)]
-        ]
+        pars = self._signature.parameters
+        args = [kwargs.pop(a) for a in list(pars)[:len(args)]]
 
         return self.__wrapped__(*args, **kwargs)
-
-    # def __call__(self, *args, **kwargs):
-    #     """Execute the decorated function with the default arguments stored in
-    #     this ExtensionFunc.
-
-    #     This also validates the input to each argument using the attached
-    #     validators.
-    #     """
-    #     # bind arguments with bind_partial()
-    #     bound_args = self._signature.bind_partial(*args, **kwargs)
-    #     bound_args.apply_defaults()
-    #     final_args = bound_args.args
-    #     final_kwargs = bound_args.kwargs
-
-    #     # flatten remaining **kwargs
-    #     if self._kwargs_name in final_kwargs:
-    #         final_kwargs.update(final_kwargs[self._kwargs_name])
-    #         del final_kwargs[self._kwargs_name]
-
-    #     # apply validators
-    #     for name, value in final_kwargs.items():
-    #         if name in self._validators:
-    #             final_kwargs[name] = self._validators[name](value, defaults=final_kwargs)
-
-    #     # call the decorated function with both positional and keyword arguments
-    #     return self.__wrapped__(*final_args, **{**self.default_values, **final_kwargs})
 
     def __contains__(self, item: str) -> bool:
         """Check if the named argument is being managed by this ExtensionFunc.

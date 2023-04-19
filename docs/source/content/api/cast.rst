@@ -187,20 +187,26 @@ within its expanded type system.  They inherit the same
     to_string
     to_object
 
+.. _cast.special_cases:
+
+Special cases
+-------------
+
+
 .. _cast.mixed:
 
 Mixed data
-----------
+^^^^^^^^^^
 
 .. _cast.adapters:
 
 Adapters
---------
+^^^^^^^^
 
 .. _cast.anonymous:
 
 Anonymous conversions
----------------------
+^^^^^^^^^^^^^^^^^^^^^
 :func:`cast` can be used without an explicit ``dtype`` argument.  In this case,
 the :func:`inferred <detect_type>` type of the data will be used instead,
 allowing users to seamlessly convert existing data structures into the

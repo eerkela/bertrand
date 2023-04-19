@@ -33,8 +33,7 @@ class BaseDecorator:
         return getattr(self.__wrapped__, name)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        # breakpoint()
-        if name in self._reserved or hasattr(self, name):
+        if name in self._reserved or hasattr(type(self), name):
             super().__setattr__(name, value)
         else:
             setattr(self.__wrapped__, name, value)

@@ -20,8 +20,8 @@ A type specifier can be any of the following:
     #.  A :ref:`numpy <resolve_type.type_specifiers.numpy>`\ /\ 
         :ref:`pandas <resolve_type.type_specifiers.pandas>`
         :class:`dtype <numpy.dtype>`\ /
-        :class:`ExtensionDtype <pandas.api.extension.ExtensionDtype>` object.
-    #.  A :ref:`python <resolve_type.type_specifiers.python>` class object.
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
+    #.  A :ref:`python <resolve_type.type_specifiers.python>` class.
     #.  A string in the
         :ref:`type specification mini-language <resolve_type.mini_language>`.
     #.  An :ref:`iterable <resolve_type.composite>` containing any combination
@@ -31,17 +31,10 @@ A type specifier can be any of the following:
 
 Numpy dtypes
 ^^^^^^^^^^^^
-:ref:`Numpy <numpy:arrays.dtypes>` uses :class:`dtype <numpy.dtype>` objects to
-describe the contents of :ref:`packed arrays <numpy:memory-layout>`.  These are
-closely related to their `C equivalents
-<https://en.wikipedia.org/wiki/C_data_types>`_ and have all the same
-constraints, including limited support for missing values, fixed-width
-overflow, and restriction to numeric data.  Conversely, they are by far the
-most efficient for both computation and storage, and pandas uses them by
-default wherever possible.
-
-:func:`resolve_type` can parse these data types directly, returning 1:1
-equivalents in the ``pdcast`` type system.
+Numpy uses :class:`dtype <numpy.dtype>` :ref:`objects <numpy:arrays.dtypes>` to
+describe the contents of :ref:`packed arrays <numpy:memory-layout>`.
+:func:`resolve_type` can parse these directly, returning 1:1 equivalents in the
+``pdcast`` type system.
 
 .. doctest::
 
@@ -76,29 +69,16 @@ equivalents in the ``pdcast`` type system.
             ...
         ValueError: numpy dtype not recognized: |V0
 
-.. note::
-
-    The behavior of :func:`resolve_type` on numpy :class:`dtype <numpy.dtype>`
-    objects can be customized by overloading a type's
-    :meth:`from_dtype() <AtomicType.from_dtype>` method.
-
 .. _resolve_type.type_specifiers.pandas:
 
 Pandas ExtensionDtypes
 ^^^^^^^^^^^^^^^^^^^^^^
-Pandas also exposes its own
-:class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` objects.  These
-are conceptually identical to their
-:ref:`numpy <resolve_type.type_specifiers.numpy>` equivalents, but are free to
-define their own :class:`ExtensionArray <pandas.api.extensions.ExtensionArray>`
-backends without being restricted to the numpy ecosystem.
-
-Pandas uses these :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`
-to support :ref:`nullable integers <pandas:integer_na>` and
-:ref:`booleans <pandas:boolean>`, as well as :ref:`sparse <pandas:sparse>`\  /\ 
-:ref:`categorical <pandas:categorical>` data structures and
+Pandas exposes its own :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
+objects, which are used to support :ref:`nullable integers <pandas:integer_na>`
+and :ref:`booleans <pandas:boolean>`, as well as :ref:`sparse <pandas:sparse>`\ 
+/\ :ref:`categorical <pandas:categorical>` data structures and direct 
 :ref:`pyarrow integration <pandas:pyarrow>`.  :func:`resolve_type` can parse
-these the same way as their numpy equivalents.
+these these same way as their numpy counterparts.
 
 .. doctest::
 
@@ -111,19 +91,12 @@ these the same way as their numpy equivalents.
     >>> pdcast.resolve_type(pd.SparseDtype(np.float32))
     SparseType(wrapped=NumpyFloat32Type(), fill_value=nan)
 
-.. note::
-
-    The behavior of :func:`resolve_type` on pandas
-    :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` objects can
-    be customized by overloading a type's
-    :meth:`from_dtype() <AtomicType.from_dtype>` method.
-
 .. _resolve_type.type_specifiers.python:
 
 Python classes
 ^^^^^^^^^^^^^^
 :func:`resolve_type` can also be used to interpret arbitrary Python classes,
-which are translated as literally as possible into the ``pdcast`` type system.
+which are directly translated into the ``pdcast`` type system.
 
 .. doctest::
 
@@ -137,7 +110,8 @@ which are translated as literally as possible into the ``pdcast`` type system.
     PythonDecimalType()
 
 This differs slightly from the numpy convention, which maps built-in Python
-types to :class:`numpy.dtype` objects that may not be entirely compatible.
+types to :class:`dtype <numpy.dtype>` objects that may not be entirely
+compatible.
 
 .. doctest::
 
@@ -164,11 +138,11 @@ In contrast, the ``pdcast`` equivalents are guaranteed to be valid.
 
 Type specification mini-language
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-``pdcast`` provides its own `domain-specific language
-<https://en.wikipedia.org/wiki/Domain-specific_language>`_ for parsing
-string-based type specifiers.  This language is a generalization of the
+Finally, ``pdcast`` provides its own `domain-specific language
+<https://en.wikipedia.org/wiki/Domain-specific_language>`_ for parsing type
+specifier strings.  This language is a generalization of the
 existing :ref:`numpy <numpy:arrays.dtypes>`\ /\ 
-:ref:`pandas <pandas:basics.dtypes>` keywords and syntax, which can be
+:ref:`pandas <pandas:basics.dtypes>` aliases and syntax, which can be
 customized on a per-type basis.  Here's how it works:
 
 A ``typespec`` string is composed of 2 parts:
@@ -183,14 +157,13 @@ customized to alter its behavior.  This leaves each type free to assign its own
 meaning to the optional arguments and parse them accordingly.
 
 When a type specifier is parsed, its alias is compared against a shared
-:attr:`table <TypeRegistry.aliases>` representing the current
-:class:`state <TypeRegistry>` of the ``pdcast`` type system.  This is
-done via `PCRE <https://pcre.org/>`_\-style `recursive regular expressions
-<https://perldoc.perl.org/perlre#(?PARNO)-(?-PARNO)-(?+PARNO)-(?R)-(?0)>`_,
+:attr:`registry <TypeRegistry.aliases>` representing the current
+state of the ``pdcast`` type system.  This is done via `recursive regular
+expressions <https://perldoc.perl.org/perlre#(?PARNO)-(?-PARNO)-(?+PARNO)-(?R)-(?0)>`_,
 which allow the arguments to include nested sequences or even other type
 specifiers of arbitrary depth.  These are then tokenized and passed as
-positional arguments to the type's :meth:`resolve <AtomicType.resolve>` method,
-which parses them and returns an instance of the associated type.
+arguments to the type's :meth:`resolve <AtomicType.resolve>` method, which
+parses them and returns an instance of the associated type.
 
 Most types don't accept any arguments at all.  The exceptions are
 :doc:`datetimes <../types/datetime>`, :doc:`timedeltas <../types/timedelta>`,
@@ -216,56 +189,47 @@ associated meanings.
     >>> pdcast.resolve_type("sparse[categorical[int]]")
     SparseType(wrapped=CategoricalType(wrapped=IntegerType(), levels=None), fill_value=<NA>)
 
-.. note::
-
-    :func:`resolve_type()` accepts a **superset** of the existing
-    ``np.sctypeDict`` type codes.  Therefore, any specifier that is accepted
-    by numpy is also accepted by ``pdcast`` on a 1:1 basis.  This is also the
-    case for pandas ``ExtensionDtype`` codes such as ``"Int64"``, ``"Sparse"``,
-    etc.
-
 .. _resolve_type.platform_specific:
 
-Platform-specific aliases
--------------------------
-Some aliases (such as ``"char"``, ``"short"``, ``"long"``, etc.) may be
-`platform-specific <https://www.learnc.net/c-tutorial/c-integer/>`_.  These are
-interpreted as if they were literal `C types
-<https://en.wikipedia.org/wiki/C_data_types>`_,
-which can be used interchangeably with their fixed-width alternatives to
-reflect current system configuration.  For example, on a `64-bit
-<https://en.wikipedia.org/wiki/64-bit_computing>`_ `x86-64
-<https://en.wikipedia.org/wiki/X86-64>`_ platform:
+.. note::
 
-.. doctest::
+    Some aliases (such as ``"char"``, ``"short"``, ``"long"``, etc.) may be
+    `platform-specific <https://www.learnc.net/c-tutorial/c-integer/>`_.  These
+    are interpreted as if they were literal `C types
+    <https://en.wikipedia.org/wiki/C_data_types>`_,
+    which can be used interchangeably with their fixed-width alternatives.  For
+    example, on a `64-bit <https://en.wikipedia.org/wiki/64-bit_computing>`_
+    `x86-64 <https://en.wikipedia.org/wiki/X86-64>`_ platform:
 
-    >>> pdcast.resolve_type("char")  # C char
-    Int8Type()
-    >>> pdcast.resolve_type("short int")  # C short
-    Int16Type()
-    >>> pdcast.resolve_type("signed intc")  # C int
-    Int32Type()
-    >>> pdcast.resolve_type("unsigned long integer")  # C unsigned long
-    UInt64Type()
-    >>> pdcast.resolve_type("longlong")  # C long long
-    Int64Type()
-    >>> pdcast.resolve_type("ssize_t")  # C pointer size
-    Int64Type()
+    .. doctest::
 
-These might be different on `32-bit
-<https://en.wikipedia.org/wiki/32-bit_computing>`_ platforms, or on those that
-do not use the `x86-64 <https://en.wikipedia.org/wiki/X86-64>`_ instruction
-set, such as `ARM <https://en.wikipedia.org/wiki/ARM_architecture_family>`_,
-`RISC-V <https://en.wikipedia.org/wiki/RISC-V>`_, etc.
+        >>> pdcast.resolve_type("char")  # C char
+        Int8Type()
+        >>> pdcast.resolve_type("short int")  # C short
+        Int16Type()
+        >>> pdcast.resolve_type("signed intc")  # C int
+        Int32Type()
+        >>> pdcast.resolve_type("unsigned long integer")  # C unsigned long
+        UInt64Type()
+        >>> pdcast.resolve_type("longlong")  # C long long
+        Int64Type()
+        >>> pdcast.resolve_type("ssize_t")  # C pointer size
+        Int64Type()
 
-When in doubt, always prefer the fixed-width alternatives.
+    These might be different on `32-bit
+    <https://en.wikipedia.org/wiki/32-bit_computing>`_ platforms, or on those
+    that do not use the `x86-64 <https://en.wikipedia.org/wiki/X86-64>`_
+    instruction set, such as `ARM
+    <https://en.wikipedia.org/wiki/ARM_architecture_family>`_, `RISC-V
+    <https://en.wikipedia.org/wiki/RISC-V>`_, etc.  When in doubt, always
+    prefer the fixed-width alternatives.
 
 .. _resolve_type.composite:
 
-Composite types
----------------
-:func:`resolve_type` also supports easy :class:`CompositeType` creation.  This
-can be done by providing an iterable as input:
+Composite specifiers
+--------------------
+:class:`CompositeTypes <CompositeType>` can be created by providing an iterable
+as input to :func:`resolve_type`:
 
 .. doctest::
 

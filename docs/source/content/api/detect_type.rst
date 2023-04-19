@@ -25,27 +25,27 @@ built-in :class:`type() <python:type>` function.
     >>> pdcast.detect_type(pd.Timestamp(0, tz="US/Pacific"))
     PandasTimestampType(tz=<DstTzInfo 'US/Pacific' PST-1 day, 16:00:00 STD>)
 
-If the :class:`type() <python:type>` of an object has not been registered as an
-:attr:`alias <AtomicType.aliases>`, then a new :class:`ObjectType` will be
-built around it.
+.. note::
 
-.. doctest::
+    If the :class:`type() <python:type>` of an object has not been registered
+    as an :attr:`alias <AtomicType.aliases>`, then a new :class:`ObjectType`
+    will be built around it.
 
-    >>> class CustomObj:
-    ...     def __init__(self, x): self.x = x
+    .. doctest::
 
-    >>> pdcast.detect_type(CustomObj("abc"))
-    ObjectType(type_def=<class 'CustomObj'>)
+        >>> class CustomObj:
+        ...     def __init__(self, x): self.x = x
+
+        >>> pdcast.detect_type(CustomObj("abc"))
+        ObjectType(type_def=<class 'CustomObj'>)
 
 .. _detect_type.vector:
 
 Vectorized data
 ---------------
-:func:`detect_type` can also accept one-dimensional examples in a variety of
-formats.
-
-If an input vector has an appropriate ``.dtype`` field, then
-:func:`detect_type` will attempt to :func:`resolve <resolve_type>` it directly.
+:func:`detect_type` can also accept 1D examples in a variety of formats.  If an
+input vector has an appropriate ``.dtype`` field, then :func:`detect_type` will
+attempt to :func:`resolve <resolve_type>` it directly.
 
 .. doctest::
 
@@ -65,7 +65,7 @@ array.
     >>> timeit.timeit(lambda: pdcast.detect_type(vals), number=10**3)   # doctest: +SKIP
     0.0040021560052991845
 
-If the input to is a ``dtype: object`` array or other iterable, then its type
+If the input is a ``dtype: object`` array or other iterable, then its type
 will be inferred by iterating elementwise.
 
 .. doctest::
@@ -102,8 +102,10 @@ This also tracks the type that was observed at each
     array([PythonFloatType(), PythonComplexType(),
            PandasTimestampType(tz=None)], dtype=object)
 
-Which is space-efficient thanks to :class:`AtomicType`\'s
-:ref:`flyweight construction <atomic_type.allocation>`.
+.. note::
+
+    This is space-efficient thanks to :class:`AtomicType`\'s
+    :ref:`flyweight construction <atomic_type.allocation>`.
 
 .. _detect_type.pandas:
 
