@@ -18,8 +18,12 @@ BoundMethod
 from __future__ import annotations
 from types import MappingProxyType, MethodType
 from typing import Any, Callable
+from weakref import WeakKeyDictionary
 
 from .base import BaseDecorator
+
+
+# TODO: replace _instance with __self__
 
 
 ######################
@@ -62,7 +66,7 @@ class Attachable(BaseDecorator):
 
     def __init__(self, func: Callable):
         super().__init__(func=func)
-        self._attached = {}
+        self._attached = WeakKeyDictionary()
 
     @property
     def attached(self) -> MappingProxyType:
@@ -75,7 +79,7 @@ class Attachable(BaseDecorator):
             A read-only dictionary mapping class objects to their associated
             descriptors.
         """
-        return MappingProxyType(self._attached)  # {class: descriptor}
+        return MappingProxyType(dict(self._attached))  # {class: descriptor}
 
     def attach_to(
         self,
@@ -99,22 +103,17 @@ class Attachable(BaseDecorator):
         namespace : str | None, default None
             If given, a string specifying a
             :class:`Namespace <pdcast.Namespace>` to attach the decorated
-            callable to.  The callable will only be accessible through this
+            callable under.  The callable will only be accessible through this
             virtual namespace.
         pattern : str, default "method"
-            The pattern to use for accessing this callable.  The options are
-            ``"property"``, ``"method"``, and ``"classmethod"``.  
+            The pattern to use for accessing this callable.  The available
+            options are ``"property"``, ``"method"``, ``"classmethod"``, and
+            ``"staticmethod"``.
 
         Notes
         -----
-                
-        is added
-        as a non-data :ref:`descriptor <python:descriptorhowto>`, which
-        implicitly passes a ``self`` reference as its first argument.
-
-
         This method uses the
-        :ref:`descriptor protocol <python:invoking-descriptors>` to transform
+        :ref:`descriptor protocol <python:descriptor-invocation>` to transform
         the first argument of the decorated callable into an implicit ``self``
         reference.  It works by attaching a
         :class:`BoundMethod <pdcast.BoundMethod>` descriptor to the parent
@@ -122,10 +121,10 @@ class Attachable(BaseDecorator):
         When the descriptor is accessed from an instance of the class, its
         :meth:`__get__() <python:object.get>` method is invoked, which binds
         the instance to the method.  Then, when the method is called, the
-        instance will be implicitly passed as the first argument of the
-        function.  This is actually identical to the way that ordinary Python
-        handles instance methods internally, except that here we have direct
-        control over the descriptor itself.
+        instance is implicitly passed as the first argument of the function.
+        This is exactly identical to Python's ordinary
+        :ref:`instance binding <python:descriptorhowto>` mechanism for methods
+        and other attributes.
 
         If a ``namespace`` is given, then the process is somewhat different.
         Rather than attaching a :class:`BoundMethod <pdcast.BoundMethod>` to
@@ -133,107 +132,15 @@ class Attachable(BaseDecorator):
         :class:`Namespace <pdcast.Namespace>` descriptor instead.  We then add
         our :class:`BoundMethods <pdcast.BoundMethod>` to this
         :class:`Namespace <pdcast.Namespace>`, which passes along the bound
-        instance for us.  This acts as a bridge, allowing us to separate our
-        methods from the class's base namespace.  The methods we add in this
-        way are thus free to take on whatever names they'd like, without
-        interfering with the object's existing functionality.  They retain all
-        the same functionality as their non-``namespace`` equivalents.
-
-        In both cases, accessing the descriptor from the class itself (i.e.
-        without instantiating it) will 
+        instance for us.  This allows us to separate our methods from the
+        class's base namespace, leaving them free to take on whatever names
+        we'd like without interfering with the object's existing functionality.
 
         Examples
         --------
-        This method allows users to attach any python function as an instance
-        method of a given class.
-
-        .. doctest::
-
-            >>> class MyClass:
-            ...     def __repr__(self):  return "MyClass()"
-
-            >>> @attachable
-            ... def foo(bar):
-            ...     return bar
-
-            >>> foo.attach_to(MyClass)
-
-        This creates a new attribute of ``MyClass`` under ``MyClass.foo``,
-        which references the original function.  Whenever we invoke it this
-        way, an instance of ``MyClass`` will be implicitly passed into the
-        decorated function as its first argument, mirroring the ``self``
-        parameter in ordinary Python.
-
-        .. doctest::
-
-            >>> MyClass.foo
-            MyClass.foo(baz = 2, **kwargs)
-            >>> MyClass().foo()
-            (MyClass(), 2)
-
-        In this case, the implicit ``self`` reference takes the place of the
-        ``bar`` argument.  If we invoke ``MyClass.foo`` as a class method (i.e.
-        without instantiating ``MyClass`` first), then we get the same behavior
-        as the naked ``foo`` function.
-
-        .. doctest::
-
-            >>> MyClass.foo()
-            Traceback (most recent call last):
-                ...
-            TypeError: foo() missing 1 required positional argument: 'bar'
-
-        We can also modify defaults and add arguments to our
-        :class:`BoundMethod <pdcast.BoundMethod>` just like normal.
-
-        .. doctest::
-
-            >>> @MyClass.foo.register_arg
-            ... def baz(val: int, defaults: dict) -> int:
-            ...     return int(val)
-
-            >>> MyClass.foo.baz
-            2
-            >>> MyClass.foo.baz = 3
-            >>> MyClass().foo()
-            (MyClass(), 3)
-
-        .. warning::
-
-            Any arguments (as well as their default values) will be shared
-            between the :class:`BoundMethod <pdcast.BoundMethod>` and its
-            base :class:`ExtensionFunc <pdcast.ExtensionFunc>`.
-
-            .. doctest::
-
-                >>> foo.baz
-                3
-
-            This might lead to unexpected changes in behavior if not properly
-            accounted for.
-
-        And can register dispatched implementations without much fuss.
-
-        .. doctest::
-
-            >>> @MyClass.foo.register_type(types="int")
-            ... def boolean_foo(bar: bool, baz: bool = True, **kwargs):
-            ...     return (bar, baz)
-
-            >>> foo(False)
-            (False, True)
-
-        Finally, we can hide our attribute behind a virtual
-        :class:`Namespace <pdcast.Namespace>` to avoid conflicts with existing
-        attributes.
-
-        .. doctest::
-
-            >>> foo.attach_to(MyClass, namespace="abc")
-            >>> MyClass().abc.foo()
-            (MyClass(), 3)
+        See the :ref:`API docs <attachable.example>` for examples on how to use
+        this method.
         """
-                # default to decorated function name
         # default to name of wrapped callable
         if not name:
             name = self.__wrapped__.__name__
@@ -367,15 +274,15 @@ class Namespace:
         """Remove the attribute from the object and replace the original, if
         one exists.
         """
+        # detach bound attributes
+        for _, attr in self._attrs.items():
+            attr.detach()
+
         # replace original implementation
-        if self._original is None or isinstance(self._parent, Namespace):
-            delattr(self._parent, self.__name__, self._original)
+        if self._original is None:
+            delattr(self._parent, self.__name__)
         else:
             setattr(self._parent, self.__name__, self._original)
-
-        # delete namespace if empty
-        if isinstance(self._parent, Namespace) and not self._parent._attrs:
-            self._parent.detach()
 
     def __get__(
         self,
@@ -430,11 +337,13 @@ class Namespace:
             setattr(self.original, name, value)
 
     def __delattr__(self, name: str) -> None:
+        # check if name is a virtual attribute of this namespace
         if name in self._attrs:
             del self._attrs[name]
 
         # delegate to original
-        return delattr(self.original, name)
+        else:
+            delattr(self.original, name)
 
 
 ######################
@@ -520,7 +429,7 @@ class BoundMethod(BaseDecorator):
         """
         # replace original implementation
         if self._original is None or isinstance(self._parent, Namespace):
-            delattr(self._parent, self.__name__, self._original)
+            delattr(self._parent, self.__name__)
         else:
             setattr(self._parent, self.__name__, self._original)
 
@@ -562,6 +471,38 @@ class BoundMethod(BaseDecorator):
         )
 
 
+############################
+####    CLASS METHOD    ####
+############################
+
+
+# class ClassMethod(object):
+#     "Emulate PyClassMethod_Type() in Objects/funcobject.c"
+#     def __init__(self, f):
+#         self.f = f
+
+#     def __get__(self, obj, klass=None):
+#         if klass is None:
+#             klass = type(obj)
+#         def newfunc(*args):
+#             return self.f(klass, *args)
+#         return newfunc
+
+
+#############################
+####    STATIC METHOD    ####
+#############################
+
+
+# class StaticMethod(object):
+#     "Emulate PyStaticMethod_Type() in Objects/funcobject.c"
+#     def __init__(self, f):
+#         self.f = f
+
+#     def __get__(self, obj, objtype=None):
+#         return self.f
+
+
 
 
 
@@ -587,8 +528,9 @@ def foo(self):
     return self
 
 
-foo.attach_to(MyClass)
-# foo.attach_to(MyClass, namespace="bar")
+# foo.attach_to(MyClass)
+foo.attach_to(MyClass, namespace="bar")
+MyClass.bar.foo.detach()  # TODO: this drops foo to MyClass rather than MyClass.bar
 
 
 # MyClass.foo  # MethodDescriptor
