@@ -72,7 +72,8 @@ The behavior of this function can be customized using the following arguments.
         conversions.
       - ``None``
     * - :attr:`base <convert.arguments.base>`
-      - Base to use for integer <-> string conversions. [#base]_
+      - Base to use for integer <-> string conversions, as supplied to
+        :class:`int() <python:int>`.
       - ``0``
     * - :attr:`call <convert.arguments.call>`
       - TODO
@@ -105,8 +106,6 @@ The behavior of this function can be customized using the following arguments.
     call <abstract/cast/call>
     downcast <abstract/cast/downcast>
     errors <abstract/cast/errors>
-
-.. [#base] as supplied to python :class:`int() <python:int>`.
 
 .. note::
 
@@ -157,7 +156,7 @@ The behavior of this function can be customized using the following arguments.
     :func:`extension_func <extension_func>` ensures that ``foo`` is always
     passed to the conversion method, either with the default value specified in
     :meth:`register_arg <ExtensionFunc.register_arg>` or a dynamic value from
-    the global configuration or signature of :func:`cast` itself.
+    the global configuration.
 
 .. _cast.stand_alone:
 
@@ -171,7 +170,7 @@ convenience of writing a :func:`to_datetime <pandas.to_datetime>` call is hard
 to beat.
 
 To this end, ``pdcast`` exposes its own suite of analogous methods that operate
-within its expanded type system.  They inherit the same
+within its expanded :doc:`type system <../types/types>`.  They inherit the same
 :ref:`arguments <cast.arguments>` as above.
 
 .. autosummary::

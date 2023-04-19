@@ -440,7 +440,7 @@ Case study: datetimes
 Now let's look at a different case: converting to and from **datetimes**.  You
 could slowly go insane doing this in pandas:
 
-.. figure:: ../images/pandas_time_conversions_naive.png
+.. figure:: /images/pandas_time_conversions_naive.png
     :align: center
 
     (And this doesn't even consider timezones)

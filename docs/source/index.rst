@@ -26,9 +26,7 @@
    :hidden:
    :maxdepth: 3
 
-   Motivation <content/motivation>
-   Usage <content/usage>
+   Quickstart <content/quickstart/quickstart>
    Type Index <content/types/types>
-   Tutorial: bfloat16 <content/tutorial>
    API <content/api/api>
    Changelog <content/changelog>

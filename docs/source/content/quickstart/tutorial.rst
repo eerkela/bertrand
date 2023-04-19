@@ -166,11 +166,11 @@ added to the :class:`FloatType` hierarchy.
 If we were to visualize this, the :func:`@subtype <subtype>` decorator would
 take us from this:
 
-.. image:: ../images/bfloat16_tutorial_before_subtyping.svg
+.. image:: /images/bfloat16_tutorial_before_subtyping.svg
 
 To this:
 
-.. image:: ../images/bfloat16_tutorial_after_subtyping.svg
+.. image:: /images/bfloat16_tutorial_after_subtyping.svg
 
 .. _tutorial.backends:
 
@@ -272,7 +272,7 @@ implementations.
 
 This updates our type hierarchy as follows:
 
-.. image:: ../images/bfloat16_tutorial_backends.svg
+.. image:: /images/bfloat16_tutorial_backends.svg
 
 .. _tutorial.conditional:
 

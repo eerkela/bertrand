@@ -30,7 +30,7 @@ from .base import BaseDecorator
 
 def attachable(func: Callable) -> Callable:
     """A decorator that allows naked Python functions to be dynamically
-    attached to class objects at run time.
+    attached to external class objects.
 
     Parameters
     ----------
@@ -50,10 +50,10 @@ def attachable(func: Callable) -> Callable:
 
     See Also
     --------
-    Attachable.attach_to :
-        bind the decorated function to an external class.
     Attachable.attached :
         a map of all the classes that this function has been attached to.
+    Attachable.attach_to :
+        bind the decorated function to an external class.
     """
     return Attachable(func)
 

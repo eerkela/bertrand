@@ -39,7 +39,7 @@ another.
 
 The following data structures define the standard interface for the ``pdcast``
 :doc:`type system <../types/types>` and allow users to easily
-:doc:`extend <../tutorial>` it to arbitrary data.
+:doc:`extend <../quickstart/tutorial>` it to arbitrary data.
 
 .. list-table::
 
@@ -79,15 +79,15 @@ to Pandas data structures based on their inferred type.
 
 .. list-table::
 
-    * - :func:`attach`
-      - TODO
-    * - :func:`detach`
-      - TODO
     * - :func:`@attachable <attachable>`
       - TODO
     * - :func:`@extension_func <extension_func>`
       - TODO
     * - :func:`@dispatch <dispatch>`
+      - TODO
+    * - :func:`attach`
+      - TODO
+    * - :func:`detach`
       - TODO
     * - :class:`SeriesWrapper`
       - TODO
@@ -96,11 +96,11 @@ to Pandas data structures based on their inferred type.
     :hidden:
     :maxdepth: 1
 
-    pdcast.attach <attach>
-    pdcast.detach <detach>
     pdcast.attachable <attachable>
     pdcast.extension_func <extension_func>
     pdcast.dispatch <dispatch>
+    pdcast.attach <attach>
+    pdcast.detach <detach>
     pdcast.SeriesWrapper <SeriesWrapper>
 
 ``pdcast`` uses these tools to add the following methods to Pandas data
@@ -120,6 +120,3 @@ structures when :func:`attach` is invoked.
       - TODO
     * - :meth:`pandas.Series.dt.tz_convert`
       - TODO
-
-
-

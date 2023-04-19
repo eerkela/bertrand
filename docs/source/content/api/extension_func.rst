@@ -32,7 +32,6 @@ interface, in addition to any that are present on the function itself (see
     ExtensionFunc.register_arg
     ExtensionFunc.remove_arg
     ExtensionFunc.reset_defaults
-    ExtensionMethod
 
 By default, the decorated function behaves exactly like the original.
 

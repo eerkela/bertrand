@@ -6,9 +6,9 @@
 Types
 =====
 Below is a complete list of all the types that come prepackaged with
-``pdcast``.  Each can be supplied to ``pdcast.resolve_type()`` via the
-:ref:`type specification mini-language <resolve_type.mini_language>` to
-retrieve the type in question.
+``pdcast``.  Each can be constructed via :func:`resolve_type` using the
+:ref:`type specification mini-language <resolve_type.mini_language>` or a
+related :ref:`type specifier <resolve_type.type_specifiers>`.
 
 .. list-table::
     :header-rows: 1

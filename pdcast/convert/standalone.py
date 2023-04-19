@@ -52,15 +52,9 @@ def cast(
     -----
     This function dispatches to one of the
     :ref:`delegated <atomic_type.conversions>` conversion methods that are
-    attached to each :class:`AtomicType` definition.  Types can override these
-    methods to change the behavior of :func:`cast`.  The method that is chosen
-    is based on the :attr:`family <AtomicType.family>` of its ``dtype``
-    argument.
-
-    Examples
-    --------
-    This function can be used as an alternative to
-    :meth:`astype() <pandas.Series.astype>`.
+    attached to each :class:`AtomicType`.  Types can override these methods to
+    change the behavior of :func:`cast`.  The method that is chosen is based on
+    the :attr:`family <AtomicType.family>` of its ``dtype`` argument.
     """
     # DataFrame recursive case
     if isinstance(data, pd.DataFrame):

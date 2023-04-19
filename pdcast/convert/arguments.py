@@ -1231,7 +1231,8 @@ def format(val: str | None, defaults: dict) -> str:
 
 @standalone.cast.register_arg(default=0)
 def base(val: int, defaults: dict) -> int:
-    """Base to use for integer <-> string conversions.
+    """Base to use for integer <-> string conversions, as supplied to
+    :class:`int() <python:int>`.
 
     Parameters
     ----------
