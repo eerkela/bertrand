@@ -38,8 +38,8 @@ from .detect import detect_type
 from .resolve import resolve_type
 from .types import *
 from .func import (
-    attachable, extension_func, no_default,
-    Attachable, BoundMethod, ExtensionFunc, Namespace
+    attachable, extension_func, no_default, Attachable, ClassMethod,
+    ExtensionFunc, InstanceMethod, Namespace, StaticMethod, VirtualAttribute
 )
 
 
