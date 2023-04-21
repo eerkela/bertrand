@@ -163,7 +163,7 @@ class Attachable(BaseDecorator):
         ------
         ValueError
             If the given ``pattern`` is not recognized.
-        AttributeError
+        RuntimeError
             If the callable is already attached to the class.
 
         Notes
@@ -240,36 +240,22 @@ class Attachable(BaseDecorator):
         # check func is not already attached to class
         if class_ in self._attached:
             existing = self._attached[class_]()
-            raise AttributeError(
+            raise RuntimeError(
                 f"'{self.__qualname__}' is already attached to "
                 f"'{class_.__qualname__}' as '{existing.__qualname__}'"
             )
 
-        # (optionally) generate namespace
+        # generate namespace
         if namespace:
-            existing = getattr(class_, namespace, None)
-            if isinstance(existing, Namespace):
-                namespace = existing
-            else:
-                # NOTE: we need to create a unique subclass of Namespace to
-                # isolate any descriptors that are attached to it at run time.
-                class _Namespace(Namespace):
-                    pass
-
-                namespace = _Namespace(
-                    parent=class_,
-                    name=namespace,
-                    instance=None,
-                    original=getattr(class_, namespace, None)
-                )
-                setattr(class_, namespace.__name__, namespace)
+            parent, original = _generate_namespace(class_, name, namespace)
+        else:  # attach to class itself
+            parent = class_
+            try:
+                original = object.__getattribute__(class_, name)
+            except AttributeError:
+                original = None
 
         # generate kwargs for descriptor
-        parent = namespace or class_
-        try:
-            original = getattr(parent, name, None)
-        except AttributeError:
-            original = None
         kwargs = {
             "parent": parent,
             "name": name,
@@ -359,7 +345,7 @@ class VirtualAttribute(BaseDecorator):
 
         Raises
         ------
-        AttributeError
+        RuntimeError
             If no original implementation could be found.
 
         Examples
@@ -413,31 +399,19 @@ class VirtualAttribute(BaseDecorator):
             namespace static method
         """
         if self._original is None:
-            raise AttributeError(
+            raise RuntimeError(
                 f"'{self._parent.__qualname__}' has no attribute "
                 f"'{self.__name__}'"
             )
 
         def bind(instance: Any, owner: type):
             """Bind the original attribute according to its configuration."""
-            original = self._original
-            if callable(original) and not isinstance(original, type):
-                # static or class method
-                if (
-                    not hasattr(original, "__self__") or
-                    isinstance(self.__self__, type)
-                ):
-                    return original
-
-                # instance method
-                return MethodType(original, instance)
-
-            # descriptor (property, inner class, etc.)
-            if hasattr(original, "__get__"):
-                return original.__get__(instance, owner)
+            # descriptor
+            if hasattr(self._original, "__get__"):
+                return self._original.__get__(instance, owner)
 
             # raw data
-            return original
+            return self._original
 
         # from namespace
         if isinstance(self._parent, Namespace):
@@ -475,7 +449,7 @@ class VirtualAttribute(BaseDecorator):
             >>> MyClass.foo
             Traceback (most recent call last):
                 ...
-            AttributeError: type object 'MyClass' has no attribute 'foo'
+            RuntimeError: type object 'MyClass' has no attribute 'foo'
 
         If the attribute has an
         :attr:`original <pdcast.VirtualAttribute.original>` implementation, it
@@ -510,7 +484,7 @@ class VirtualAttribute(BaseDecorator):
             >>> MyClass.bar.foo
             Traceback (most recent call last):
                 ...
-            AttributeError: type object 'MyClass' has no attribute 'bar'
+            RuntimeError: type object 'MyClass' has no attribute 'bar'
         """
         # replace original implementation
         if isinstance(self._parent, Namespace):
@@ -550,6 +524,47 @@ class VirtualAttribute(BaseDecorator):
         raise NotImplementedError(
             f"'{type(self).__qualname__}' objects do not implement '.__get__()'"
         )
+
+
+def _generate_namespace(
+    class_: type,
+    name: str,
+    namespace: str
+) -> tuple:
+    """Get an existing namespace or generate a new one."""
+    # get existing attribute (bypassing __get__)
+    try:
+        existing = object.__getattribute__(class_, namespace)
+    except AttributeError:
+        existing = None
+
+    # use existing namespace
+    if isinstance(existing, Namespace):
+        parent = existing
+        try:
+            original = object.__getattribute__(existing._original, name)
+        except AttributeError:
+            original = None
+
+    else:
+        # NOTE: we need to create a unique subclass of Namespace to
+        # isolate any descriptors that are attached at run time.
+        class _Namespace(Namespace):
+            pass
+
+        parent = _Namespace(
+            parent=class_,
+            name=namespace,
+            instance=None,
+            original=existing
+        )
+        setattr(class_, parent.__name__, parent)
+        try:
+            original = object.__getattribute__(existing, name)
+        except AttributeError:
+            original = None
+
+    return parent, original
 
 
 #########################
@@ -616,36 +631,21 @@ class Namespace:
     def original(self) -> Any:
         """Get the original implementation of the namespace, if one exists."""
         if self._original is None:
-            raise AttributeError(
+            raise RuntimeError(
                 f"'{self._parent.__qualname__}' has no attribute "
                 f"'{self.__name__}'"
             )
 
-        original = self._original
-        if callable(original) and not isinstance(original, type):
-            # static or class method
-            if (
-                not hasattr(original, "__self__") or
-                isinstance(self.__self__, type)
-            ):
-                return original
+        # descriptor
+        if hasattr(self._original, "__get__"):
+            return self._original.__get__(self.__self__, self._parent)    
 
-            # instance method
-            return MethodType(original, self.__self__)
-
-        # descriptor (property, inner class, etc.)
-        if hasattr(original, "__get__"):
-            return original.__get__(self.__self__, self._parent)
-
-        # raw data
-        return original
-
-        # from class
-        if self.__self__ is None:
+        # raw data or from class
+        if self.__self__ is None or not isinstance(self._original, type):
             return self._original
 
-        # from instance
-        return self._original(self.__self__)
+        # inner class
+        return self._original(self.__self__)  # NOTE: implicitly passes self
 
     def detach(self) -> None:
         """Remove the attribute from the object and replace the original, if
@@ -685,13 +685,6 @@ class Namespace:
         """Delegate attribute access to the original implementation, if one
         exists.
         """
-        # NOTE: we can't rely on the AttributeError raised in .original because
-        # __getattribute__ silently catches them, causing infinite recursion.
-        if not self._original:
-            raise AttributeError(
-                f"'{self._parent.__qualname__}' has no attribute "
-                f"'{self.__name__}'"
-            )
         return getattr(self.original, name)  # delegate to original
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -887,25 +880,32 @@ class Property(VirtualAttribute):
 
 
 
+class MyClass:
+
+    @property
+    def foo(self):
+        return self
+
+    @staticmethod
+    def bar():
+        return 1
+
+    class baz:
+
+        def __init__(self, instance):
+            self.instance = instance
+
+        def foo(self):
+            return self
+
+        @staticmethod
+        def bar():
+            return 1
 
 
-
-    # def __get__(self, instance, owner=None):
-    #     if instance is None:
-    #         return self
-    #     return baz(instance)
+@attachable
+def foo(data):
+    return data
 
 
-
-# class MyClass:
-
-#     def foo(self):
-#         return self
-
-
-# @attachable
-# def bar(data):
-#     return data
-
-
-# bar.attach_to(MyClass, namespace="foo")
+foo.attach_to(MyClass, name="baz")
