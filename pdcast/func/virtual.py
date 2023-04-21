@@ -7,6 +7,9 @@ Attachable
     A cooperative decorator that allows the wrapped function to be dynamically
     attached to existing Python classes.
 
+VirtualAttribute
+    Base class for all virtual attributes (other than Namespaces).
+
 Namespace
     A virtual namespace that acts as a bridge separating virtual attributes
     from the base class's existing interface.
@@ -14,9 +17,19 @@ Namespace
 InstanceMethod
     A method-like descriptor that implicitly passes a class instance as the
     first argument to the decorated function.
+
+ClassMethod
+    A class method descriptor that implicitly passes the class itself as the
+    first argument to the decorated function.
+
+StaticMethod
+    A static method descriptor that has no binding behavior.
+
+Property
+    A property-like descriptor that uses the Attachable function as a getter.
 """
 from __future__ import annotations
-from types import MappingProxyType, MethodType
+from types import MappingProxyType
 from typing import Any, Callable
 import weakref
 
@@ -312,6 +325,11 @@ class VirtualAttribute(BaseDecorator):
     -----
     See the :ref:`descriptor tutorial <python:descriptorhowto>` for more
     information on how these work.
+
+    Examples
+    --------
+    See the :ref:`API docs <attachable.attributes>` for examples of virtual
+    attributes and their uses.
     """
 
     _reserved = BaseDecorator._reserved | {
@@ -334,12 +352,12 @@ class VirtualAttribute(BaseDecorator):
         self._original = original
 
     @property
-    def original(self) -> Callable:
+    def original(self) -> Any:
         """Recover the original implementation, if one exists.
 
         Returns
         -------
-        Callable
+        Any
             The same attribute that would have been accessed if this descriptor
             did not exist.
 
@@ -356,6 +374,7 @@ class VirtualAttribute(BaseDecorator):
         .. doctest::
 
             >>> class MyClass:
+            ... 
             ...     def foo(self):
             ...         print("method")
             ... 
@@ -364,6 +383,7 @@ class VirtualAttribute(BaseDecorator):
             ...         print("class method")
             ... 
             ...     class baz:
+            ... 
             ...         def __init__(self, instance):
             ...             self._instance = instance
             ... 
@@ -573,32 +593,33 @@ def _generate_namespace(
 
 
 class Namespace:
-    """A descriptor that spawns :class:`Namespace <pdcast.Namespace>` objects
-    on access, which can be used to hide other
-    :class:`VirtualAttributes <pdcast.VirtualAttribute>`.
+    """A descriptor that can be used to hide
+    :class:`VirtualAttributes <pdcast.VirtualAttribute>` behind a shared
+    namespace.
 
     Parameters
     ----------
-    parent : type | VirtualDescriptor
-        A Python class or another
-        :class:`VirtualDescriptor <pdcast.func.virtual.VirtualDescriptor>` that
-        this descriptor is attached to.  Examples of descriptor chaining
-        include
-        :class:`NamespaceDescriptors <pdcast.func.virtual.NamespaceDescriptor>`
-        and the :class:`InstanceMethods <pdcast.InstanceMethod>` that spawn from
-        them.
+    parent : type
+        The Python class to attach this namespace to.
     name : str
         The name of this descriptor as supplied to
         :func:`setattr <python:setattr>`.
+    original : Any | None
+        The original (unbound) attribute that is being masked by this
+        :class:`Namespace <pdcast.Namespace>`, if one exists.
+    instance : Any | None
+        An instance of the ``parent`` class to pass along to bound attributes,
+        or :data:`None <python:None>`.
 
-    Attributes
-    ----------
-    _parent : type | VirtualDescriptor
-        See the ``parent`` parameter above.
-    _name : str
-        See the ``name`` parameter above.
-    _original : Any | None
-        The original attribute being masked by this descriptor, if one exists.
+    Notes
+    -----
+    See the :ref:`descriptor tutorial <python:descriptorhowto>` for more
+    information on how these work.
+
+    Examples
+    --------
+    See the :ref:`API docs <attachable.namespace>` for examples of namespaces
+    and their benefits.
     """
 
     _reserved = {
@@ -609,8 +630,8 @@ class Namespace:
         self,
         parent: type,
         name: str,
-        instance: Any | None,
-        original: Any | None
+        original: Any | None,
+        instance: Any | None
     ):
         self._parent = parent
         self._original = original
@@ -620,7 +641,31 @@ class Namespace:
 
     @property
     def attached(self) -> MappingProxyType:
-        """TODO"""
+        """A mapping of all the attributes that are being managed by this
+        :class:`Namespace <pdcast.Namespace>`.
+
+        Returns
+        -------
+        MappingProxyType
+            A read-only dictionary mapping attribute names to their associated
+            descriptors.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> class MyClass:
+            ...     pass
+
+            >>> @attachable
+            ... def foo(data):
+            ...     print("Hello, World!")
+            ...     return data
+
+            >>> foo.attach_to(MyClass, namespace="bar")
+            >>> foo.bar.attached
+            mappingproxy({"foo": <function foo at 0x7f7a265684c0>})
+        """
         attrs = type(self).__dict__
         result = {
             k: v for k, v in attrs.items() if isinstance(v, VirtualAttribute)
@@ -629,7 +674,66 @@ class Namespace:
 
     @property
     def original(self) -> Any:
-        """Get the original implementation of the namespace, if one exists."""
+        """Recover the original implementation, if one exists.
+
+        Returns
+        -------
+        Any
+            The same attribute that would have been accessed if this descriptor
+            did not exist.
+
+        Raises
+        ------
+        RuntimeError
+            If no original implementation could be found.
+
+        Examples
+        --------
+        The returned attribute will be bound according to its original
+        definition.
+
+        .. doctest::
+
+            >>> class MyClass:
+            ... 
+            ...     def foo(self):
+            ...         print("method")
+            ... 
+            ...     @classmethod
+            ...     def bar(cls):
+            ...         print("class method")
+            ... 
+            ...     class baz:
+            ... 
+            ...         def __init__(self, instance):
+            ...             self._instance = instance
+            ... 
+            ...         @property
+            ...         def foo(self):
+            ...             return "namespace property"
+            ... 
+            ...         @staticmethod
+            ...         def bar():
+            ...             print("namespace static method")
+
+            >>> @attachable
+            ... def foo(data):
+            ...     print("virtual method")
+
+            >>> foo.attach_to(MyClass, namespace="foo")
+            >>> MyClass().foo.original()
+            method
+
+            >>> MyClass.foo.detach()
+            >>> foo.attach_to(MyClass, namespace="bar")
+            >>> MyClass.bar.original()
+            class method
+
+            >>> MyClass.bar.detach()
+            >>> foo.attach_to(MyClass, namespace="baz")
+            >>> MyClass.baz.original
+            <class 'pdcast.func.virtual.MyClass.baz'>
+        """
         if self._original is None:
             raise RuntimeError(
                 f"'{self._parent.__qualname__}' has no attribute "
@@ -648,26 +752,95 @@ class Namespace:
         return self._original(self.__self__)  # NOTE: implicitly passes self
 
     def detach(self) -> None:
-        """Remove the attribute from the object and replace the original, if
-        one exists.
+        """Remove the namespace from the object and replace the
+        :attr:`original <pdcast.Namespace.original>`, if one exists.
+
+        Examples
+        --------
+        This method resets an attribute back to its original state, as it was
+        before :meth:`Attachable.attach_to() <pdcast.Attachable.attach_to>`
+        created it.
+
+        .. doctest::
+
+            >>> class MyClass:
+            ...     pass
+
+            >>> @attachable
+            ... def foo(data):
+            ...     return data
+
+            >>> foo.attach_to(MyClass, namespace="foo")
+            >>> MyClass.foo   # doctest: +SKIP
+            <pdcast.func.virtual._generate_namespace.<locals>._Namespace object at 0x7fbd591adba0>
+            >>> MyClass.foo.detach()
+            >>> MyClass.foo
+            Traceback (most recent call last):
+                ...
+            AttributeError: type object 'MyClass' has no attribute 'foo'
+
+        If the attribute has an
+        :attr:`original <pdcast.VirtualAttribute.original>` implementation, it
+        will be gracefully replaced.
+
+        .. doctest::
+
+            >>> class MyClass:
+            ...     def foo(self):
+            ...         return self
+
+            >>> foo.attach_to(MyClass)
+            >>> MyClass.foo   # doctest: +SKIP
+            <function foo at 0x7f1f230944c0>
+            >>> MyClass.foo.detach()
+            >>> MyClass.foo   # doctest: +SKIP
+            <function MyClass.foo at 0x7f1eeee9cd30>
+
+        This method also removes all attributes that are being managed by this
+        :class:`Namespace <pdcast.Namespace>`.
+
+        .. doctest::
+
+            >>> class MyClass:
+            ...     pass
+
+            >>> @attachable
+            ... def bar(data):
+            ...     return data
+
+            >>> foo.attach_to(MyClass, namespace="baz")
+            >>> bar.attach_to(MyClass, namespace="baz")
+            >>> MyClass.baz.attached   # doctest: +SKIP
+            mappingproxy({'foo': <function foo at 0x7f1f230944c0>, 'bar': <function bar at 0x7f3f5dcac4c0>})
+            >>> MyClass.baz.detach()
+            >>> MyClass.baz.foo
+            Traceback (most recent call last):
+                ...
+            AttributeError: type object 'MyClass' has no attribute 'baz'
+            >>> foo.attached
+            mappingproxy({})
+            >>> bar.attached
+            mappingproxy({})
         """
         # detach bound attributes
         for _, attr in self.attached.items():
             attr.detach()
 
         # replace original implementation
-        if self._original is None:
-            delattr(self._parent, self.__name__)
-        else:
+        if self._original:
             setattr(self._parent, self.__name__, self._original)
+        elif hasattr(self._parent, self.__name__):  # might already be deleted
+            delattr(self._parent, self.__name__)
 
     def __get__(
         self,
         instance: Any,
         owner: type = None
     ) -> Namespace:
-        """Spawn a new :class:`Namespace` object if accessing from an instance,
-        otherwise return the descriptor itself.
+        """Access the namespace via a dotted lookup.
+
+        See the Python :ref:`descriptor tutorial <python:descriptorhowto>` for
+        more information on how this works.
         """
         # from class
         if instance is None:
@@ -685,9 +858,12 @@ class Namespace:
         """Delegate attribute access to the original implementation, if one
         exists.
         """
-        return getattr(self.original, name)  # delegate to original
+        return getattr(self.original, name)
 
     def __setattr__(self, name: str, value: Any) -> None:
+        """Delegate attribute access to the original implementation, if one
+        exists.
+        """
         # name is internal
         if name in self._reserved:
             self.__dict__[name] = value
@@ -701,7 +877,10 @@ class Namespace:
             setattr(self.original, name, value)
 
     def __delattr__(self, name: str) -> None:
-        delattr(self.original, name)  # delegate to original
+        """Delegate attribute access to the original implementation, if one
+        exists.
+        """
+        delattr(self.original, name)
 
 
 ######################
@@ -877,35 +1056,3 @@ class Property(VirtualAttribute):
         """Analogue of `@prop.deleter` for virtual properties."""
         self._property = self._property.deleter(fdel)
         return self
-
-
-
-class MyClass:
-
-    @property
-    def foo(self):
-        return self
-
-    @staticmethod
-    def bar():
-        return 1
-
-    class baz:
-
-        def __init__(self, instance):
-            self.instance = instance
-
-        def foo(self):
-            return self
-
-        @staticmethod
-        def bar():
-            return 1
-
-
-@attachable
-def foo(data):
-    return data
-
-
-foo.attach_to(MyClass, name="baz")

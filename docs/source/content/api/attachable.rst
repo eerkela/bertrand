@@ -302,13 +302,12 @@ managing any additional attributes.
 
 .. _attachable.nested:
 
-Nesting decorators
-------------------
-.. TODO: attributes are accessible both on the original function, as well as
-    its attached attributes.
+Cooperative decorators
+----------------------
+.. TODO: confirm these
 
 :func:`@attachable <attachable>` can be nested cooperatively with other
-``pdcast`` function decorators.  For example:
+function decorators.  For example:
 
 .. doctest::
 
@@ -325,11 +324,22 @@ Nesting decorators
     ...     return int(val)
 
     >>> @foo.register_type(types="int")
-    ... def integer_foo(bar, baz=2, **kwargs):
+    ... def integer_foo(bar, baz, **kwargs):
     ...     print("Hello, World!")
     ...     return bar + baz
 
     >>> foo.attach_to(pd.Series)
+
+This gives the following order of operations:
+
+    #.  If ``foo()`` is invoked from a :class:`pandas.Series` instance, insert
+        it as the ``bar`` argument.
+    #.  Validate the registered arguments (``baz``) and apply default values.
+    #.  Dispatch to ``integer_foo()`` if ``bar`` contains integers, otherwise
+        raise a :class:`NotImplementedError <python:NotImplementedError>`.
+
+.. doctest::
+
     >>> pd.Series([1, 2, 3]).foo()
     Hello, World!
     0    3
@@ -348,25 +358,24 @@ Nesting decorators
         ...
     NotImplementedError: foo() has no implementation for type: float64[numpy]
 
-This is exactly how the :func:`cast` function is implemented under the hood.
-
 .. note::
 
-    The arrangement of the above decorators is significant.  As shown, the
-    order of operations is as follows:
+    This is how :func:`cast` is implemented under the hood.
 
-        #.  If invoking from a :class:`pandas.Series` instance, insert it as
-            the ``bar`` argument of ``foo()``.
-        #.  Validate the registered arguments (``baz``) and apply default
-            values.
-        #.  Dispatch to ``integer_foo()`` if ``bar`` contains integers,
-            otherwise raise a
-            :class:`NotImplementedError <python:NotImplementedError>`.
+All attribute accesses will be passed down the decorator stack, combining the
+interfaces of each decorator.
+
+.. doctest::
+
+    >>> foo.attached
+    >>> foo.default_values
+    >>> foo.dispatched
 
 .. warning::
 
-    Any arguments (as well as their default values) will be shared between the
-    :class:`InstanceMethod` and its decorated :class:`ExtensionFunc`.
+    Any :class:`ExtensionFunc` arguments (as well as their default values) will
+    be shared between the :class:`Attachable` and its
+    :ref:`bound attributes <attachable.attributes>`.
 
     .. doctest::
 
