@@ -39,7 +39,8 @@ from .resolve import resolve_type
 from .types import *
 from .func import (
     attachable, extension_func, no_default, Attachable, ClassMethod,
-    ExtensionFunc, InstanceMethod, Namespace, StaticMethod, VirtualAttribute
+    ExtensionFunc, InstanceMethod, Namespace, Property, StaticMethod,
+    VirtualAttribute
 )
 
 

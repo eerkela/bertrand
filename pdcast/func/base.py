@@ -22,7 +22,7 @@ class BaseDecorator:
     _reserved = set(WRAPPER_ASSIGNMENTS) | {"__wrapped__"}
 
     def __init__(self, func: Callable, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(**kwargs)  # allow multiple inheritance
         update_wrapper(self, func)
 
     ################################

@@ -57,9 +57,8 @@ def attachable(func: Callable) -> Callable:
 
 
 class Attachable(BaseDecorator):
-    """Returned by the :func:`@attachable <pdcast.attachable>` decorator.
-
-    Users should never need to create these objects themselves.
+    """A wrapper for the decorated function that manages its attached
+    endpoints.
 
     Parameters
     ----------
@@ -90,7 +89,7 @@ class Attachable(BaseDecorator):
 
     @property
     def attached(self) -> MappingProxyType:
-        """A mapping of all the classes that this function has been attached
+        """A mapping of all the classes that this callable has been attached
         to.
 
         Returns
@@ -115,7 +114,7 @@ class Attachable(BaseDecorator):
             >>> foo.attached   # doctest: +SKIP
             mappingproxy({<class '__main__.MyClass'>: <function foo at 0x7f7a265684c0>})
 
-        The actual mapping is stored as a
+        The actual map is stored as a
         :class:`WeakKeyDictionary <weakref.WeakKeyDictionary>`, which evicts
         entries if the attached type is garbage collected.
 
@@ -149,47 +148,82 @@ class Attachable(BaseDecorator):
             ``name``.
         name : str | None, default None
             The name under which to attach the decorated callable.  This is
-            used as an alias when it is called from the given class.  If empty,
-            the name of the callable will be used directly.
+            used as an alias when it is accessed from the given class.  If
+            empty, the name of the callable will be used directly.
         namespace : str | None, default None
             If given, a string specifying a
             :class:`Namespace <pdcast.Namespace>` to attach the decorated
             callable to.
         pattern : str, default "method"
             The pattern to use for accessing this callable.  The available
-            options are ``"property"``, ``"method"``, ``"classmethod"``, and
-            ``"staticmethod"``.
+            options are ``"method"``, ``"classmethod"``, ``"staticmethod"``,
+            and ``"property"``.
+
+        Raises
+        ------
+        ValueError
+            If the given ``pattern`` is not recognized.
+        AttributeError
+            If the callable is already attached to the class.
 
         Notes
         -----
         This method uses the
         :ref:`descriptor protocol <python:descriptor-invocation>` to transform
-        the first argument of the decorated callable into an implicit ``self``
-        reference.  It works by attaching a
-        :class:`InstanceMethod <pdcast.InstanceMethod>` descriptor to the parent
-        class, which is a cooperative decorator for the original function.
-        When the descriptor is accessed from an instance of the class, its
-        :meth:`__get__() <python:object.get>` method is invoked, which binds
-        the instance to the method.  Then, when the method is called, the
-        instance is implicitly passed as the first argument of the function.
-        This is exactly identical to Python's ordinary
-        :ref:`instance binding <python:descriptorhowto>` mechanism for methods
-        and other attributes.
+        the first argument of the decorated callable into an implicit reference
+        to the specified class.  The style in which these references are passed
+        depends on the ``pattern`` argument:
+
+            *   ``"method"`` - attaches the callable as an **instance** method
+                of the specified class.  When it is called, an instance will be
+                passed as the first argument.
+            *   ``"classmethod"`` - attaches the callable as a **class** method
+                of the specified class.  When called, the class itself will be
+                passed as the first argument.
+            *   ``"staticmethod"`` - attaches the callable as a **static**
+                method of the specified class.  It can be invoked via a dotted
+                look up from the specified class, but no arguments will be
+                forwarded.
+            *   ``"property"`` - attaches the callable as a managed
+                **property** of the specified class.  The callable itself will
+                be used as the property's getter, and it will be passed an
+                instance of the class as its first argument.  Setters and
+                deleters can be added using the standard
+                :class:`@property <python:property>` interface (e.g.
+                ``@class_.name.setter`` and ``@class_.name.deleter``,
+                respectively).
+
+        On an implementation level, this method works by attaching a
+        :class:`VirtualAttribute <pdcast.VirtualAttribute>` descriptor to the
+        parent class, which is a cooperative decorator for the original
+        function.  When the descriptor is accessed via a dotted lookup, its
+        :meth:`__get__() <python:object.__get__>` method is invoked, which
+        binds an object to the attribute according to the specified
+        ``pattern``.  When the attribute is invoked, the bound object is
+        implicitly passed as the first argument of the function.
+
+        .. note::
+
+            This is exactly identical to Python's ordinary
+            :ref:`instance binding <python:descriptorhowto>` mechanism for
+            methods and other attributes.
 
         If a ``namespace`` is given, then the process is somewhat different.
-        Rather than attaching a :class:`InstanceMethod <pdcast.InstanceMethod>` to
-        the class directly, we first attach a
-        :class:`Namespace <pdcast.Namespace>` descriptor instead.  We then add
-        our :class:`InstanceMethods <pdcast.InstanceMethod>` to this
-        :class:`Namespace <pdcast.Namespace>`, which passes along the bound
-        instance for us.  This allows us to separate our methods from the
-        class's base namespace, leaving them free to take on whatever names
-        we'd like without interfering with the object's existing functionality.
+        Rather than attaching a
+        :class:`VirtualAttribute <pdcast.VirtualAttribute>` to the class
+        directly, we first attach a :class:`Namespace <pdcast.Namespace>`
+        descriptor to it instead.  We then add our
+        :class:`VirtualAttributes <pdcast.VirtualAttribute>` to this
+        :class:`Namespace <pdcast.Namespace>` descriptor, which passes along
+        the bound object for us.  This allows us to separate our virtual
+        attributes from the class's base namespace, leaving them free to take
+        on whatever names we'd like without interfering with the object's
+        existing functionality.
 
         Examples
         --------
-        See the :ref:`API docs <attachable.example>` for examples on how to use
-        this method.
+        See the :doc:`API docs </content/api/attachable>` for examples on how
+        to use this method.
         """
         # default to name of wrapped callable
         if not name:
@@ -230,35 +264,29 @@ class Attachable(BaseDecorator):
                 )
                 setattr(class_, namespace.__name__, namespace)
 
+        # generate kwargs for descriptor
         parent = namespace or class_
+        try:
+            original = getattr(parent, name, None)
+        except AttributeError:
+            original = None
+        kwargs = {
+            "parent": parent,
+            "name": name,
+            "func": self,
+            "instance": None,
+            "original": original
+        }
 
         # generate pattern-specific descriptor
         if pattern == "property":
-            raise NotImplementedError()
+            descriptor = Property(**kwargs)
         elif pattern == "method":
-            descriptor = InstanceMethod(
-                parent=parent,
-                name=name,
-                func=self,
-                instance=None,
-                original=getattr(parent, name, None)
-            )
+            descriptor = InstanceMethod(**kwargs)
         elif pattern == "classmethod":
-            descriptor = ClassMethod(
-                parent=parent,
-                name=name,
-                func=self,
-                instance=None,
-                original=getattr(parent, name, None)
-            )
+            descriptor = ClassMethod(**kwargs)
         else:  # staticmethod
-            descriptor = StaticMethod(
-                parent=parent,
-                name=name,
-                func=self,
-                instance=None,
-                original=getattr(parent, name, None)
-            )
+            descriptor = StaticMethod(**kwargs)
 
         # attach descriptor
         if namespace:  # attach to unique namespace type
@@ -271,7 +299,33 @@ class Attachable(BaseDecorator):
 
 
 class VirtualAttribute(BaseDecorator):
-    """Base class for all :ref:`bound attributes <attachable.attributes>`.
+    """Base class for all :ref:`virtual attributes <attachable.attributes>`.
+
+    These rely on the :meth:`__get__() <python:object.__get__>` implementations
+    defined in subclasses and should never be instantiated directly.
+
+    Parameters
+    ----------
+    parent : type | Namespace
+        The type or :class:`Namespace <pdcast.Namespace>` that spawned this
+        attribute.
+    name : str
+        The name of the attribute as attached to ``parent``.
+    func : Attachable
+        An :class:`Attachable <pdcast.Attachable>` wrapper for the decorated
+        function.
+    original : Callable | None
+        The original (unbound) implementation that this attribute is masking,
+        if one exists.
+    instance : Any | None
+        An instance of the class that spawned this attribute, or
+        :data:`None <python:None>` if it was invoked from the class itself
+        (without instantiation).
+
+    Notes
+    -----
+    See the :ref:`descriptor tutorial <python:descriptorhowto>` for more
+    information on how these work.
     """
 
     _reserved = BaseDecorator._reserved | {
@@ -282,9 +336,9 @@ class VirtualAttribute(BaseDecorator):
         self,
         parent: type | Namespace,
         name: str,
-        func: Callable,
-        instance: Any | None,
-        original: Any | None
+        func: Attachable,
+        original: Callable | None,
+        instance: Any | None
     ):
         super().__init__(func=func)
         self._parent = parent  # either a class or namespace
@@ -295,34 +349,168 @@ class VirtualAttribute(BaseDecorator):
 
     @property
     def original(self) -> Callable:
-        """Get the original implementation, if one exists."""
+        """Recover the original implementation, if one exists.
+
+        Returns
+        -------
+        Callable
+            The same attribute that would have been accessed if this descriptor
+            did not exist.
+
+        Raises
+        ------
+        AttributeError
+            If no original implementation could be found.
+
+        Examples
+        --------
+        The returned attribute will be bound according to its original
+        definition.
+
+        .. doctest::
+
+            >>> class MyClass:
+            ...     def foo(self):
+            ...         print("method")
+            ... 
+            ...     @classmethod
+            ...     def bar(cls):
+            ...         print("class method")
+            ... 
+            ...     class baz:
+            ...         def __init__(self, instance):
+            ...             self._instance = instance
+            ... 
+            ...         @property
+            ...         def foo(self):
+            ...             return "namespace property"
+            ... 
+            ...         @staticmethod
+            ...         def bar():
+            ...             print("namespace static method")
+
+            >>> @attachable
+            ... def foo(data):
+            ...     print("virtual method")
+
+            >>> foo.attach_to(MyClass)
+            >>> MyClass().foo.original()
+            method
+
+            >>> MyClass.foo.detach()
+            >>> foo.attach_to(MyClass, name="bar")
+            >>> MyClass.bar.original()
+            class method
+
+            >>> MyClass.bar.detach()
+            >>> foo.attach_to(MyClass, namespace="baz")
+            >>> MyClass().baz.foo.original
+            namespace property
+
+            >>> MyClass.baz.foo.detach()
+            >>> foo.attach_to(MyClass, namespace="baz", name="bar")
+            >>> MyClass().baz.bar.original()
+            namespace static method
+        """
         if self._original is None:
             raise AttributeError(
                 f"'{self._parent.__qualname__}' has no attribute "
                 f"'{self.__name__}'"
             )
 
-        # NOTE: @classmethod pre-binds the original class.
+        def bind(instance: Any, owner: type):
+            """Bind the original attribute according to its configuration."""
+            original = self._original
+            if callable(original) and not isinstance(original, type):
+                # static or class method
+                if (
+                    not hasattr(original, "__self__") or
+                    isinstance(self.__self__, type)
+                ):
+                    return original
+
+                # instance method
+                return MethodType(original, instance)
+
+            # descriptor (property, inner class, etc.)
+            if hasattr(original, "__get__"):
+                return original.__get__(instance, owner)
+
+            # raw data
+            return original
 
         # from namespace
         if isinstance(self._parent, Namespace):
-            # original is instance method of original namespace
-            if not isinstance(self._parent.original, type):
-                return MethodType(self._original, self._parent.original)
-
-            # original is class or static method
-            return self._original
+            instance = self._parent.original
+            if isinstance(instance, type):
+                return bind(None, instance)
+            return bind(instance, type(instance))
 
         # from class
-        if self.__self__ is None or isinstance(self.__self__, type):
-            return self._original
-
-        # from instance
-        return MethodType(self._original, self.__self__)
+        return bind(self.__self__, self._parent)
 
     def detach(self) -> None:
-        """Remove the attribute from the object and replace the original, if
-        one exists.
+        """Remove the attribute from the object and replace the
+        :attr:`original <pdcast.VirtualAttribute.original>`, if one exists.
+
+        Examples
+        --------
+        This method resets the attribute back to its original state, as it was
+        before :meth:`Attachable.attach_to() <pdcast.Attachable.attach_to>`
+        created it.
+
+        .. doctest::
+
+            >>> class MyClass:
+            ...     pass
+
+            >>> @attachable
+            ... def foo(data):
+            ...     return data
+
+            >>> foo.attach_to(MyClass)
+            >>> MyClass.foo   # doctest: +SKIP
+            <function foo at 0x7f1f230944c0>
+            >>> MyClass.foo.detach()
+            >>> MyClass.foo
+            Traceback (most recent call last):
+                ...
+            AttributeError: type object 'MyClass' has no attribute 'foo'
+
+        If the attribute has an
+        :attr:`original <pdcast.VirtualAttribute.original>` implementation, it
+        will be gracefully replaced.
+
+        .. doctest::
+
+            >>> class MyClass:
+            ...     def foo(self):
+            ...         return self
+
+            >>> foo.attach_to(MyClass)
+            >>> MyClass.foo   # doctest: +SKIP
+            <function foo at 0x7f1f230944c0>
+            >>> MyClass.foo.detach()
+            >>> MyClass.foo   # doctest: +SKIP
+            <function MyClass.foo at 0x7f1eeee9cd30>
+
+        This method also automatically cleans up
+        :class:`Namespaces <pdcast.Namespace>` if they are no longer managing
+        any attributes.
+
+        .. doctest::
+
+            >>> class MyClass:
+            ...     pass
+
+            >>> foo.attach_to(MyClass, namespace="bar")
+            >>> MyClass.bar.foo   # doctest: +SKIP
+            <function foo at 0x7f1f230944c0>
+            >>> MyClass.bar.foo.detach()
+            >>> MyClass.bar.foo
+            Traceback (most recent call last):
+                ...
+            AttributeError: type object 'MyClass' has no attribute 'bar'
         """
         # replace original implementation
         if isinstance(self._parent, Namespace):
@@ -354,7 +542,11 @@ class VirtualAttribute(BaseDecorator):
         instance: Any,
         owner: type = None
     ) -> VirtualAttribute:
-        """TODO"""
+        """Access the attribute via a dotted lookup.
+
+        See the Python :ref:`descriptor tutorial <python:descriptorhowto>` for
+        more information on how this works.
+        """
         raise NotImplementedError(
             f"'{type(self).__qualname__}' objects do not implement '.__get__()'"
         )
@@ -406,10 +598,10 @@ class Namespace:
         original: Any | None
     ):
         self._parent = parent
-        self.__self__ = instance
+        self._original = original
         self.__name__ = name
         self.__qualname__ = f"{self._parent.__qualname__}.{self.__name__}"
-        self._original = original
+        self.__self__ = instance
 
     @property
     def attached(self) -> MappingProxyType:
@@ -428,6 +620,25 @@ class Namespace:
                 f"'{self._parent.__qualname__}' has no attribute "
                 f"'{self.__name__}'"
             )
+
+        original = self._original
+        if callable(original) and not isinstance(original, type):
+            # static or class method
+            if (
+                not hasattr(original, "__self__") or
+                isinstance(self.__self__, type)
+            ):
+                return original
+
+            # instance method
+            return MethodType(original, self.__self__)
+
+        # descriptor (property, inner class, etc.)
+        if hasattr(original, "__get__"):
+            return original.__get__(self.__self__, self._parent)
+
+        # raw data
+        return original
 
         # from class
         if self.__self__ is None:
@@ -454,7 +665,7 @@ class Namespace:
         self,
         instance: Any,
         owner: type = None
-    ) -> Namespace | Namespace:
+    ) -> Namespace:
         """Spawn a new :class:`Namespace` object if accessing from an instance,
         otherwise return the descriptor itself.
         """
@@ -474,6 +685,13 @@ class Namespace:
         """Delegate attribute access to the original implementation, if one
         exists.
         """
+        # NOTE: we can't rely on the AttributeError raised in .original because
+        # __getattribute__ silently catches them, causing infinite recursion.
+        if not self._original:
+            raise AttributeError(
+                f"'{self._parent.__qualname__}' has no attribute "
+                f"'{self.__name__}'"
+            )
         return getattr(self.original, name)  # delegate to original
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -499,36 +717,13 @@ class Namespace:
 
 
 class InstanceMethod(VirtualAttribute):
-    """A descriptor that spawns :class:`InstanceMethod <pdcast.InstanceMethod>`
-    objects on access, which can be used to transform Python functions into
-    self-binding instance methods.
+    """Transforms an :class:`Attachable <pdcast.Attachable>` function into a
+    self-binding instance method.
 
-    Parameters
-    ----------
-    parent : type | VirtualDescriptor
-        A Python class or another
-        :class:`VirtualDescriptor <pdcast.func.virtual.VirtualDescriptor>` that
-        this descriptor is attached to.  Examples of descriptor chaining
-        include
-        :class:`NamespaceDescriptors <pdcast.func.virtual.NamespaceDescriptor>`
-        and the :class:`InstanceMethods <pdcast.InstanceMethod>` that spawn from
-        them.
-    name : str
-        The name of this descriptor as supplied to
-        :func:`setattr <python:setattr>`.
-    func : Callable
-        A function to bind as an instance method of the attached class.
-
-    Attributes
-    ----------
-    _parent : type | VirtualDescriptor
-        See the ``parent`` parameter above.
-    _name : str
-        See the ``name`` parameter above.
-    _original : Any | None
-        The original attribute being masked by this descriptor, if one exists.
-    __wrapped__ : Callable
-        See the ``func`` parameter above.
+    These descriptors are returned by
+    :meth:`Attachable.attach_to <pdcast.Attachable.attach_to>` with
+    ``pattern="method"`` (the default).  They behave exactly like ordinary
+    Python instance methods.
     """
 
     def __get__(
@@ -536,7 +731,8 @@ class InstanceMethod(VirtualAttribute):
         instance: Any,
         owner: type = None
     ) -> InstanceMethod:
-        """See :meth:`VirtualAttribute.__get__() <pdcast.VirtualAttribute.__get__>`.
+        """See
+        :meth:`VirtualAttribute.__get__() <pdcast.VirtualAttribute.__get__>`.
         """
         parent = self._parent
 
@@ -565,36 +761,13 @@ class InstanceMethod(VirtualAttribute):
 
 
 class ClassMethod(VirtualAttribute):
-    """A descriptor that spawns :class:`InstanceMethod <pdcast.InstanceMethod>`
-    objects on access, which can be used to transform Python functions into
-    self-binding instance methods.
+    """Transforms an :class:`Attachable <pdcast.Attachable>` function into a
+    self-binding class method.
 
-    Parameters
-    ----------
-    parent : type | VirtualDescriptor
-        A Python class or another
-        :class:`VirtualDescriptor <pdcast.func.virtual.VirtualDescriptor>` that
-        this descriptor is attached to.  Examples of descriptor chaining
-        include
-        :class:`NamespaceDescriptors <pdcast.func.virtual.NamespaceDescriptor>`
-        and the :class:`InstanceMethods <pdcast.InstanceMethod>` that spawn from
-        them.
-    name : str
-        The name of this descriptor as supplied to
-        :func:`setattr <python:setattr>`.
-    func : Callable
-        A function to bind as an instance method of the attached class.
-
-    Attributes
-    ----------
-    _parent : type | VirtualDescriptor
-        See the ``parent`` parameter above.
-    _name : str
-        See the ``name`` parameter above.
-    _original : Any | None
-        The original attribute being masked by this descriptor, if one exists.
-    __wrapped__ : Callable
-        See the ``func`` parameter above.
+    These descriptors are returned by
+    :meth:`Attachable.attach_to <pdcast.Attachable.attach_to>` with
+    ``pattern="classmethod"``.  They behave exactly like
+    :func:`@classmethod <python:classmethod>` decorators in normal Python.
     """
 
     def __get__(
@@ -602,7 +775,8 @@ class ClassMethod(VirtualAttribute):
         instance: Any,
         owner: type = None
     ) -> ClassMethod:
-        """See :meth:`VirtualAttribute.__get__() <pdcast.VirtualAttribute.__get__>`.
+        """See
+        :meth:`VirtualAttribute.__get__() <pdcast.VirtualAttribute.__get__>`.
         """
         parent = self._parent
 
@@ -631,13 +805,84 @@ class ClassMethod(VirtualAttribute):
 
 
 class StaticMethod(VirtualAttribute):
-    "Emulate PyStaticMethod_Type() in Objects/funcobject.c"
+    """Transforms an :class:`Attachable <pdcast.Attachable>` function into a
+    static method bound to the attached class.
+
+    These descriptors are returned by
+    :meth:`Attachable.attach_to <pdcast.Attachable.attach_to>` with
+    ``pattern="staticmethod"``.  They behave exactly like
+    :func:`@staticmethod <python:staticmethod>` decorators in normal Python.
+    """
 
     def __get__(
         self,
         instance: Any,
         owner: type = None
     ) -> StaticMethod:
+        """See
+        :meth:`VirtualAttribute.__get__() <pdcast.VirtualAttribute.__get__>`.
+        """
+        return self
+
+
+########################
+####    PROPERTY    ####
+########################
+
+
+class Property(VirtualAttribute):
+    """Transforms an :class:`Attachable <pdcast.Attachable>` function into a
+    managed property of the attached class.
+
+    These descriptors are returned by
+    :meth:`Attachable.attach_to <pdcast.Attachable.attach_to>` with
+    ``pattern="property"``.  They behave exactly like
+    :class:`@property <python:property>` decorators in normal Python.
+    """
+
+    _reserved = VirtualAttribute._reserved | {"_property"}
+
+    def __init__(
+        self,
+        parent: type | Namespace,
+        name: str,
+        func: Attachable,
+        original: Callable | None,
+        instance: Any | None
+    ):
+        super().__init__(
+            parent=parent,
+            name=name,
+            func=func,
+            original=original,
+            instance=instance
+        )
+        self._property = property(fget=func)
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        return self._property.__get__(instance, owner)
+
+    def __set__(self, instance, value):
+        return self._property.__set__(instance, value)
+
+    def __delete__(self, instance):
+        return self._property.__delete__(instance)
+
+    def getter(self, fget):
+        """Analogue of `@prop.getter` for virtual properties."""
+        self._property = self._property.getter(fget)
+        return self
+
+    def setter(self, fset):
+        """Analogue of `@prop.setter` for virtual properties."""
+        self._property = self._property.setter(fset)
+        return self
+
+    def deleter(self, fdel):
+        """Analogue of `@prop.deleter` for virtual properties."""
+        self._property = self._property.deleter(fdel)
         return self
 
 
@@ -645,39 +890,22 @@ class StaticMethod(VirtualAttribute):
 
 
 
-class MyClass:
-
-    def foo(self):
-        print("Goodbye, World!")
-        return self
-
-    @classmethod
-    def baz(cls):
-        print("classmethod")
-        return cls
-
-    class bar:
-
-        def __init__(self, vals):
-            self._vals = vals
-
-        def foo(self):
-            print("Goodbye, World!")
-            return self._vals
+    # def __get__(self, instance, owner=None):
+    #     if instance is None:
+    #         return self
+    #     return baz(instance)
 
 
-@attachable
-def foo(data):
-    print("Hello, World!")
-    return data
+
+# class MyClass:
+
+#     def foo(self):
+#         return self
 
 
-# foo.attach_to(MyClass)
-# foo.attach_to(MyClass, namespace="bar")
-foo.attach_to(MyClass, namespace="bar", pattern="classmethod")
-# foo.attach_to(MyClass, namespace="bar", pattern="method")
+# @attachable
+# def bar(data):
+#     return data
 
 
-# TODO: classmethod:
-# MyClass().bar.foo() returns an object, wheras
-# MyClass().baz() returns a type
+# bar.attach_to(MyClass, namespace="foo")
