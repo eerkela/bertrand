@@ -3,10 +3,10 @@
 pdcast/util/structs/func.py
 ===========================
 
-Content of **pdcast/func/base.py**
+Content of ``pdcast/func/base.py``
 
 .. literalinclude:: ../../../../../pdcast/func/base.py
 
-Content of **pdcast/func/extension.py**
+Content of ``pdcast/func/attachable.py``
 
-.. literalinclude:: ../../../../../pdcast/func/extension.py
+.. literalinclude:: ../../../../../pdcast/func/attachable.py

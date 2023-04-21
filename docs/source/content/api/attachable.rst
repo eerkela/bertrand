@@ -384,3 +384,14 @@ interfaces of each decorator.
 
     This might lead to unexpected changes in behavior if not properly accounted
     for.
+
+Source
+------
+:func:`@attachable <attachable>` is implemented in pure Python and does not
+require any ``pdcast``-specific functionality to work.  It is available as a
+generic :doc:`recipe <source/attachable>`.
+
+.. toctree::
+    :hidden:
+
+    source <source/attachable>

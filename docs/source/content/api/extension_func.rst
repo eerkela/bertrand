@@ -259,10 +259,9 @@ Imagine you have a whole package's worth of :doc:`robust <detect_type>` and
 
 Source
 ------
-:func:`@extension_func <extension_func>` is implemented as a standard recipe in
-base Python.  It does not require any special ``pdcast``\-specific
-functionality to work, and is available as a generic
-:doc:`recipe <source/extension_func>`.
+:func:`@extension_func <extension_func>` is implemented in pure Python and does
+not require any ``pdcast``\-specific functionality to work.  It is available as
+a generic :doc:`recipe <source/extension_func>`.
 
 .. toctree::
     :hidden:

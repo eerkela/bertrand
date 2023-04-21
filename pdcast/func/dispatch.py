@@ -5,7 +5,6 @@ ordinary Python function into one that dispatches to a method attached to the
 inferred type of its first argument.
 """
 from __future__ import annotations
-from functools import update_wrapper
 import inspect
 from types import MappingProxyType
 from typing import Any, Callable, Iterable
@@ -20,7 +19,6 @@ import pdcast.types as base_types
 from pdcast.util.type_hints import type_specifier
 
 from .base import BaseDecorator
-from .virtual import attachable
 
 
 # TODO: can probably support an ``operator`` argument that takes a string and
