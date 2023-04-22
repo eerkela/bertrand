@@ -1,12 +1,12 @@
 .. currentmodule:: pdcast
 
-pdcast/util/structs/func.py
-===========================
+pdcast/decorators/extension.py
+==============================
 
 Content of **pdcast/func/base.py**
 
-.. literalinclude:: ../../../../../pdcast/func/base.py
+.. literalinclude:: ../../../../../pdcast/decorators/base.py
 
 Content of **pdcast/func/extension.py**
 
-.. literalinclude:: ../../../../../pdcast/func/extension.py
+.. literalinclude:: ../../../../../pdcast/decorators/extension.py

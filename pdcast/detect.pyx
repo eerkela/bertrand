@@ -12,6 +12,7 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
+from pdcast.decorators.attachable import attachable
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 cimport pdcast.types as types
@@ -23,6 +24,7 @@ import pdcast.types as types
 ######################
 
 
+@attachable
 def detect_type(data: Any, skip_na: bool = True) -> types.BaseType:
     """Infer types from example data.
 

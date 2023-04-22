@@ -4,12 +4,10 @@
 
     import numpy as np
     import pandas as pd
-    from pdcast.func import *
+    from pdcast.decorators.extension import *
 
 pdcast.extension_func
 =====================
-An extension function is a normal Python function that supports dynamic writes
-to its arguments and default values.
 
 .. autodecorator:: extension_func
 
@@ -18,9 +16,9 @@ to its arguments and default values.
 Extension functions
 -------------------
 :func:`@extension_func <extension_func>` transforms the decorated callable into
-an :class:`ExtensionFunc` object, which supports arbitrary arguments and
-default values.  This adds the following attributes to the decorated function's
-interface, in addition to any that are present on the function itself (see
+an :class:`ExtensionFunc` object, which supports dynamic arguments and default
+values.  This adds the following attributes to the decorated function's
+interface, in addition to any that are present on the callable itself (see
 :ref:`nested decorators <attachable.nested>`).
 
 .. autosummary::
@@ -33,7 +31,7 @@ interface, in addition to any that are present on the function itself (see
     ExtensionFunc.remove_arg
     ExtensionFunc.reset_defaults
 
-By default, the decorated function behaves exactly like the original.
+The behavior of the original function is otherwise unchanged.
 
 .. doctest::
 
@@ -42,7 +40,7 @@ By default, the decorated function behaves exactly like the original.
     ...     return bar, baz
 
     >>> foo
-    foo(bar, baz = 2, **kwargs)
+    foo(bar, baz=2, **kwargs)
     >>> foo(1)
     (1, 2)
     >>> foo(1, 3)
@@ -65,7 +63,7 @@ arguments.
 .. doctest::
 
     >>> @foo.register_arg
-    ... def bar(val: int, defaults: dict) -> int:
+    ... def bar(val: int, state: dict) -> int:
     ...     return int(val)
 
 .. note::
@@ -73,7 +71,7 @@ arguments.
     The name of the validator must match the name of the argument it validates.
 
 This validator will be implicitly executed whenever ``bar`` is supplied to
-``foo()``, and its output will then be passed into the body of ``foo()``.
+``foo()``, before it is passed into the body of the function itself.
 
 .. doctest::
 
@@ -87,8 +85,8 @@ This validator will be implicitly executed whenever ``bar`` is supplied to
 .. _extension_func.default:
 
 Default Values
-^^^^^^^^^^^^^^
-:class:`ExtensionFunc` also allows us to programmatically assign and/or modify
+--------------
+:class:`ExtensionFunc` also allows us to programmatically assign and modify
 default values for our managed arguments.
 
 .. doctest::
@@ -113,19 +111,19 @@ default values for our managed arguments.
     .. doctest::
 
         >>> @foo.register_arg(default=1)
-        ... def bar(val: int, defaults: dict) -> int:
+        ... def bar(val: int, state: dict) -> int:
         ...     return int(val)
 
         >>> foo.bar
         1
 
-    Or by assigning a default value in the signature of ``foo()`` itself, as with
-    ``baz``:
+    Or by assigning a default value in the signature of ``foo()`` itself, as
+    with ``baz``:
 
     .. doctest::
 
         >>> @foo.register_arg
-        ... def baz(val: int, defaults: dict) -> int:
+        ... def baz(val: int, state: dict) -> int:
         ...     return int(val)
 
         >>> foo.baz
@@ -179,9 +177,9 @@ or by simply deleting the attribute:
 
     To purge a managed argument entirely, use :meth:`ExtensionFunc.remove_arg`.
 
-Additionally, the values themselves are **thread-local**.  If the
+The values themselves are **thread-local**.  This means that if the
 :class:`ExtensionFunc` is referenced from a child thread, a new instance will
-be dynamically created with arguments and defaults from the main thread.  This
+be dynamically created with arguments and defaults from the main thread.  That
 instance can then be modified without affecting the behavior of other threads.
 
 .. doctest::
@@ -207,15 +205,16 @@ instance can then be modified without affecting the behavior of other threads.
 .. _extension_func.dynamic:
 
 Dynamic arguments
-^^^^^^^^^^^^^^^^^
-:func:`@register_arg <ExtensionFunc.register_arg>` also allows us to
-dynamically add new arguments to ``foo()`` at run time, with the same
-validation logic as before.
+-----------------
+If the decorated callable allows variable-length keyword arguments
+(``**kwargs``), then :class:`@register_arg <pdcast.ExtensionFunc.register_arg>`
+allows us to add new arguments dynamically at run time. These use the same
+validation and default value logic as above. 
 
 .. doctest::
 
     >>> @foo.register_arg(default=3)
-    ... def qux(val: int, defaults: dict) -> int:
+    ... def qux(val: int, state: dict) -> int:
     ...     return int(val)
 
     >>> foo
@@ -225,7 +224,7 @@ validation logic as before.
         ...
     ValueError: invalid literal for int() with base 10: 'a'
 
-These are passed dynamically into the base function's ``**kwargs`` attribute.
+They are passed dynamically into the base function's ``**kwargs`` attribute.
 
 .. note::
 
@@ -235,11 +234,11 @@ These are passed dynamically into the base function's ``**kwargs`` attribute.
 
 .. _extension_func.application:
 
-Where to go from here?
-^^^^^^^^^^^^^^^^^^^^^^
-Imagine you have a whole package's worth of :doc:`robust <detect_type>` and
-:doc:`extendable <AtomicType>` data :doc:`conversions <cast>` and a full 
-:doc:`type system <../types/types>` at your disposal.
+Applications
+------------
+Imagine you have a whole :doc:`type system's <../types/types>` worth of
+:doc:`robust <detect_type>` and :doc:`extendable <AtomicType>` type
+:doc:`checks <typecheck>` and :doc:`conversions <cast>` at your disposal.
 
 .. doctest::
 
@@ -248,7 +247,7 @@ Imagine you have a whole package's worth of :doc:`robust <detect_type>` and
     ...     return cast(foo, int, **kwargs)
 
     >>> @my_func.register_arg
-    ... def foo(val: Any, defaults: dict) -> datetime_like:
+    ... def foo(val: Any, state: dict) -> datetime_like:
     ...     return cast(val, "datetime")
 
     >>> my_func("today", unit="D", since="April 5th, 2022")   # doctest: +SKIP

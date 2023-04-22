@@ -16,7 +16,7 @@ from pdcast.util.type_hints import numeric, datetime_like, type_specifier
 
 
 # ignore this file when doing string-based object lookups in resolve_type()
-_ignore_frame_objects = True
+IGNORE_FRAME_OBJECTS = True
 
 
 #######################
@@ -67,7 +67,7 @@ def assert_sets_are_disjoint(set_1: set, set_2: set) -> None:
 
 
 @standalone.cast.register_arg(default=1e-6)
-def tol(val: numeric, defaults: dict) -> Tolerance:
+def tol(val: numeric, state: dict) -> Tolerance:
     """The maximum amount of precision loss that can occur before an error
     is raised.
 
@@ -185,7 +185,7 @@ def tol(val: numeric, defaults: dict) -> Tolerance:
 
 
 @standalone.cast.register_arg(default=None)
-def rounding(val: str | None, defaults: dict) -> str:
+def rounding(val: str | None, state: dict) -> str:
     """The rounding rule to use for numeric conversions.
 
     Parameters
@@ -300,7 +300,7 @@ def rounding(val: str | None, defaults: dict) -> str:
 
 
 @standalone.cast.register_arg(default="ns")
-def unit(val: str, defaults: dict) -> str:
+def unit(val: str, state: dict) -> str:
     """The unit to use for numeric <-> datetime/timedelta conversions.
 
     Parameters
@@ -406,7 +406,7 @@ def unit(val: str, defaults: dict) -> str:
 
 
 @standalone.cast.register_arg(default=1)
-def step_size(val: int, defaults: dict) -> int:
+def step_size(val: int, state: dict) -> int:
     """The step size to use for each
     :func:`unit <pdcast.convert.arguments.unit>`.
 
@@ -455,7 +455,7 @@ def step_size(val: int, defaults: dict) -> int:
 
 
 @standalone.cast.register_arg(default="utc")
-def since(val: str | datetime_like | Epoch, defaults: dict) -> Epoch:
+def since(val: str | datetime_like | Epoch, state: dict) -> Epoch:
     """The epoch to use for datetime/timedelta conversions.
 
     Parameters
@@ -614,7 +614,7 @@ def since(val: str | datetime_like | Epoch, defaults: dict) -> Epoch:
 @standalone.cast.register_arg(default=None)
 def tz(
     val: str | pytz.BaseTzInfo | None,
-    defaults: dict
+    state: dict
 ) -> pytz.BaseTzInfo:
     """Specifies a time zone to use for datetime conversions.
 
@@ -724,7 +724,7 @@ def tz(
 @standalone.cast.register_arg(default=None)
 def naive_tz(
     val: str | pytz.BaseTzInfo | None,
-    defaults: dict
+    state: dict
 ) -> pytz.BaseTzInfo:
     """The assumed time zone when localizing naive datetimes.
 
@@ -764,7 +764,7 @@ def naive_tz(
 
 
 @standalone.cast.register_arg(default=False)
-def day_first(val: bool, defaults: dict) -> bool:
+def day_first(val: bool, state: dict) -> bool:
     """Indicates whether to interpret the first value in an ambiguous
     3-integer date (e.g. 01/05/09) as the day (``True``) or month
     (``False``).
@@ -826,7 +826,7 @@ def day_first(val: bool, defaults: dict) -> bool:
 
 
 @standalone.cast.register_arg(default=False)
-def year_first(val: bool, defaults: dict) -> bool:
+def year_first(val: bool, state: dict) -> bool:
     """Indicates whether to interpret the first value in an ambiguous
     3-integer date (e.g. 01/05/09) as the year.
 
@@ -878,7 +878,7 @@ def year_first(val: bool, defaults: dict) -> bool:
 
 
 @standalone.cast.register_arg(default=False)
-def as_hours(val: bool, defaults: dict) -> bool:
+def as_hours(val: bool, state: dict) -> bool:
     """Indicates whether to interpret ambiguous MM:SS timedeltas as HH:MM.
 
     Parameters
@@ -918,7 +918,7 @@ def as_hours(val: bool, defaults: dict) -> bool:
 
 
 @standalone.cast.register_arg(default={"true", "t", "yes", "y", "on", "1"})
-def true(val: str | Iterable[str] | None, defaults: dict) -> set[str]:
+def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
     """A set of truthy strings to use for boolean conversions.
 
     Parameters
@@ -929,7 +929,7 @@ def true(val: str | Iterable[str] | None, defaults: dict) -> set[str]:
         strings are converted into sets of length 1.  This can also include the
         special character ``"*"`` as a catch-all wildcard.  Defaults to
         ``{"true", "t", "yes", "y", "on", "1"}``.
-    defaults : dict
+    state : dict
         A dictionary containing the values of other arguments, for comparison
         with :func:`false <pdcast.convert.arguments.false>`.
 
@@ -1050,7 +1050,7 @@ def true(val: str | Iterable[str] | None, defaults: dict) -> set[str]:
     """
     # convert to string sets
     true_set = set() if val is None else as_string_set(val)
-    false_set = as_string_set(defaults.get("false", set()))
+    false_set = as_string_set(state.get("false", set()))
 
     # ensure sets are disjoint
     try:
@@ -1059,13 +1059,13 @@ def true(val: str | Iterable[str] | None, defaults: dict) -> set[str]:
         raise ValueError("`true` and `false` must be disjoint") from err
 
     # apply ignore_case
-    if bool(defaults.get("ignore_case", True)):
+    if bool(state.get("ignore_case", True)):
         true_set = {x.lower() for x in true_set}
     return true_set
 
 
 @standalone.cast.register_arg(default={"false", "f", "no", "n", "off", "0"})
-def false(val, defaults: dict) -> set[str]:
+def false(val, state: dict) -> set[str]:
     """A set of falsy strings to use for boolean conversions.
 
     Parameters
@@ -1076,7 +1076,7 @@ def false(val, defaults: dict) -> set[str]:
         strings are converted into sets of length 1.  This can also include the
         special character ``"*"`` as a catch-all wildcard.  Defaults to
         ``{"false", "f", "no", "n", "off", "0"}``.
-    defaults : dict
+    state : dict
         A dictionary containing the values of other arguments, for comparison
         with :func:`true <pdcast.convert.arguments.true>`.
 
@@ -1109,7 +1109,7 @@ def false(val, defaults: dict) -> set[str]:
     for examples on how to customize boolean conversions using these arguments.
     """
     # convert to string sets
-    true_set = as_string_set(defaults.get("true", set()))
+    true_set = as_string_set(state.get("true", set()))
     false_set = set() if val is None else as_string_set(val)
 
     # ensure sets are disjoint
@@ -1119,13 +1119,13 @@ def false(val, defaults: dict) -> set[str]:
         raise ValueError("`true` and `false` must be disjoint") from err
 
     # apply ignore_case
-    if bool(defaults.get("ignore_case", True)):
+    if bool(state.get("ignore_case", True)):
         false_set = {x.lower() for x in false_set}
     return false_set
 
 
 @standalone.cast.register_arg(default=True)
-def ignore_case(val: bool, defaults: dict) -> bool:
+def ignore_case(val: bool, state: dict) -> bool:
     """Indicates whether to ignore differences in case during string
     conversions.
 
@@ -1169,7 +1169,7 @@ def ignore_case(val: bool, defaults: dict) -> bool:
 
 
 @standalone.cast.register_arg(default=None)
-def format(val: str | None, defaults: dict) -> str:
+def format(val: str | None, state: dict) -> str:
     """A :ref:`format specifier <python:formatspec>` to use for string
     conversions.
 
@@ -1230,7 +1230,7 @@ def format(val: str | None, defaults: dict) -> str:
 
 
 @standalone.cast.register_arg(default=0)
-def base(val: int, defaults: dict) -> int:
+def base(val: int, state: dict) -> int:
     """Base to use for integer <-> string conversions, as supplied to
     :class:`int() <python:int>`.
 
@@ -1329,7 +1329,7 @@ def base(val: int, defaults: dict) -> int:
 
 
 @standalone.cast.register_arg(default=None)
-def call(val: Callable | None, defaults: dict) -> Callable:
+def call(val: Callable | None, state: dict) -> Callable:
     """Apply a callable over the input data, producing the desired output.
 
     This is only used for conversions from
@@ -1345,7 +1345,7 @@ def call(val: Callable | None, defaults: dict) -> Callable:
 @standalone.cast.register_arg(default=False)
 def downcast(
     val: bool | type_specifier,
-    defaults: dict
+    state: dict
 ) -> types.CompositeType:
     """Losslessly reduce the precision of numeric data after converting.
     """
@@ -1357,7 +1357,7 @@ def downcast(
 
 
 @standalone.cast.register_arg(default="raise")
-def errors(val: str, defaults: dict) -> str:
+def errors(val: str, state: dict) -> str:
     """The rule to apply if/when errors are encountered during conversion.
     """
     if val not in valid_errors:

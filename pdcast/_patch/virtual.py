@@ -19,7 +19,7 @@ from pdcast.types import (
 
 
 # ignore this file when doing string-based object lookups in resolve_type()
-_ignore_frame_objects = True
+IGNORE_FRAME_OBJECTS = True
 
 
 class Namespace:

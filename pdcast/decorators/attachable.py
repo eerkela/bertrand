@@ -49,8 +49,9 @@ def attachable(func: Callable) -> Callable:
     ----------
     func : Callable
         A python function or other callable to be decorated.  When this is
-        :meth:`attached <pdcast.Attachable.attach_to>` to a class, a ``self``
-        reference will be implicitly passed as its first positional argument.
+        :meth:`attached <pdcast.Attachable.attach_to>` to a class, an
+        appropriate reference will be implicitly passed as its first positional
+        argument.
 
     Returns
     -------
@@ -70,7 +71,7 @@ def attachable(func: Callable) -> Callable:
 
 
 class Attachable(BaseDecorator):
-    """A wrapper for the decorated function that manages its attached
+    """A wrapper for the decorated callable that manages its attached
     endpoints.
 
     Parameters
@@ -732,7 +733,7 @@ class Namespace:
             >>> MyClass.bar.detach()
             >>> foo.attach_to(MyClass, namespace="baz")
             >>> MyClass.baz.original
-            <class 'pdcast.func.virtual.MyClass.baz'>
+            <class 'MyClass.baz'>
         """
         if self._original is None:
             raise RuntimeError(
@@ -772,7 +773,7 @@ class Namespace:
 
             >>> foo.attach_to(MyClass, namespace="foo")
             >>> MyClass.foo   # doctest: +SKIP
-            <pdcast.func.virtual._generate_namespace.<locals>._Namespace object at 0x7fbd591adba0>
+            <pdcast.decorators.attachable._generate_namespace.<locals>._Namespace object at 0x7fbd591adba0>
             >>> MyClass.foo.detach()
             >>> MyClass.foo
             Traceback (most recent call last):

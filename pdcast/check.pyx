@@ -3,12 +3,14 @@
 """
 from typing import Any
 
+from pdcast.decorators.attachable import attachable
 from pdcast.detect import detect_type
 from pdcast.resolve import resolve_type
 from pdcast.types cimport BaseType, CompositeType
 from pdcast.util.type_hints import type_specifier
 
 
+@attachable
 def typecheck(
     data: Any,
     dtype: type_specifier ,

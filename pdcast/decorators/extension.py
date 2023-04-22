@@ -18,27 +18,30 @@ from .base import BaseDecorator
 
 
 def extension_func(func: Callable) -> Callable:
-    """A decorator that transforms a Python function into a thread-local
-    :class:`ExtensionFunc <pdcast.ExtensionFunc>` object.
+    """A decorator that allows Python functions to accept managed arguments
+    and default values.
 
     Parameters
     ----------
     func : Callable
-        A function to decorate.  This must accept a ``**kwargs`` dict or
-        similar variable-length keyword argument.
+        A python function or other callable to be decorated.  If this accepts a
+        ``**kwargs`` dict or similar variable-length keyword argument, then it
+        will be allowed to take on
+        :ref:`dynamic arguments <extension_func.dynamic>`.
 
     Returns
     -------
-    Callable
-        A callable :class:`ExtensionFunc <pdcast.ExtensionFunc>` object, which
-        manages default values and argument validators for the decorated
-        function.
+    ExtensionFunc
+        A cooperative :class:`ExtensionFunc <pdcast.ExtensionFunc>` decorator,
+        which manages default values and argument validators for the decorated
+        callable.
 
-    Raises
-    ------
-    TypeError
-        If the decorated function does not accept variable-length keyword
-        arguments.
+    Notes
+    -----
+    The returned :class:`ExtensionFunc <pdcast.ExtensionFunc>` inherits from
+    :class:`threading.local <python:threading.local>`, which isolates its
+    default values to the current thread.  Each instance inherits the default
+    values of the main thread at the time it is constructed.
     """
     main_thread = []  # using a list bypasses UnboundLocalError
 
@@ -70,7 +73,6 @@ def extension_func(func: Callable) -> Callable:
                 self._defaults = main["_defaults"].copy()
                 self._validators = main["_validators"].copy()
 
-    # print(func)
     return _ExtensionFunc(func)
 
 
@@ -96,14 +98,7 @@ class ExtensionFunc(BaseDecorator, threading.local):
     Parameters
     ----------
     _func : Callable
-        A function to decorate.  This must accept a ``**kwargs`` dict or
-        similar variable-length keyword argument.
-
-    Raises
-    ------
-    TypeError
-        If the decorated function does not accept variable-length keyword
-        arguments.
+        A function to decorate.
 
     Notes
     -----
@@ -124,20 +119,21 @@ class ExtensionFunc(BaseDecorator, threading.local):
     usage.
     """
 
-    _reserved = BaseDecorator._reserved | {"_signature", "_vals", "_defaults", "_validators"}
+    _reserved = (
+        BaseDecorator._reserved |
+        {"_signature", "_vals", "_defaults", "_validators"}
+    )
 
     def __init__(self, func: Callable):
         super().__init__(func=func)
 
-        # assert function accepts **kwargs
+        # check if function accepts **kwargs
         self._signature = inspect.signature(func)
         self._kwargs_name = None
         for par in self._signature.parameters.values():
             if par.kind == par.VAR_KEYWORD:
                 self._kwargs_name = par.name
                 break
-        if self._kwargs_name is None:
-            raise TypeError("func must accept **kwargs")
 
         self._vals = {}
         self._defaults = {}
@@ -166,7 +162,7 @@ class ExtensionFunc(BaseDecorator, threading.local):
             ...     return bar, baz
 
             >>> @foo.register_arg
-            ... def bar(val: int, defaults: dict) -> int:
+            ... def bar(val: int, state: dict) -> int:
             ...     return int(val)
 
             >>> foo.validators   # doctest: +SKIP
@@ -214,14 +210,17 @@ class ExtensionFunc(BaseDecorator, threading.local):
         -------
         Callable
             A decorated version of the validation function that automatically
-            fills out its ``defaults`` argument.  This function will
+            fills out its ``values`` argument.  This function will
             implicitly be called whenever the
             :class:`ExtensionFunc <pdcast.ExtensionFunc>` is executed.
 
         Raises
         ------
         TypeError
-            If the decorator is applied to a non-function argument.
+            If the decorator is applied to a non-function argument, or if the
+            argument does not appear in the signature of the
+            :class:`ExtensionFunc <pdcast.ExtensionFunc>` (or its
+            ``**kwargs``).
         KeyError
             If a managed property of the same name already exists.
 
@@ -231,14 +230,13 @@ class ExtensionFunc(BaseDecorator, threading.local):
 
         .. code:: python
 
-            def validator(val, defaults):
+            def validator(val, state):
                 ...
 
-        Where ``val`` can be an arbitrary input to the argument and
-        ``defaults`` is a dictionary containing the current parameter space for
-        each argument.  If the validator interacts with other arguments (via
-        mutual exclusivity, for instance), then they can be obtained from
-        ``defaults``.
+        Where ``val`` is an arbitrary input to the argument and ``state`` is a
+        dictionary containing the current value of each argument.  If the
+        validator interacts with other arguments (via mutual exclusivity, for
+        instance), then they can be obtained from the ``state`` dictionary.
 
         .. note::
 
@@ -269,16 +267,22 @@ class ExtensionFunc(BaseDecorator, threading.local):
             if name in self._validators:
                 raise KeyError(f"default argument '{name}' already exists.")
 
+            # check name exists in signature or **kwargs
+            pars = self._signature.parameters
+            if self._kwargs_name is None and name not in pars:
+                raise TypeError(
+                    f"'{self.__qualname__}()' has no argument '{name}'"
+                )
+
             # wrap validator to accept default arguments
             @wraps(validator)
-            def accept_default(val, defaults=self.default_values):
-                return validator(val, defaults)
+            def accept_default(val, state=self.default_values):
+                return validator(val, state)
 
-            # compute and validate default value
-            if default is no_default:
-                pars = self._signature.parameters
+            # get default value and validate
+            if default is no_default:  # check for annotation
                 if name in pars and pars[name].default is not inspect._empty:
-                    self._defaults[name] = pars[name].default
+                    self._defaults[name] = accept_default(pars[name].default)
             else:
                 self._defaults[name] = accept_default(default)
 
@@ -307,7 +311,7 @@ class ExtensionFunc(BaseDecorator, threading.local):
             )
             setattr(type(self), name, prop)
 
-            # make decorated validator available from ExtensionFunc and return
+            # remember validator
             self._validators[name] = accept_default
             return accept_default
 
@@ -340,7 +344,7 @@ class ExtensionFunc(BaseDecorator, threading.local):
             ...     return bar, baz
 
             >>> @foo.register_arg(default=1)
-            ... def bar(val: int, defaults: dict) -> int:
+            ... def bar(val: int, state: dict) -> int:
             ...     return int(val)
 
             >>> foo.bar
@@ -387,11 +391,11 @@ class ExtensionFunc(BaseDecorator, threading.local):
             ...     return bar, baz
 
             >>> @foo.register_arg(default=1)
-            ... def bar(val: int, defaults: dict) -> int:
+            ... def bar(val: int, state: dict) -> int:
             ...     return int(val)
 
             >>> @foo.register_arg(default=2)
-            ... def baz(val: int, defaults: dict) -> int:
+            ... def baz(val: int, state: dict) -> int:
             ...     return int(val)
 
             >>> foo.bar, foo.baz
@@ -431,50 +435,41 @@ class ExtensionFunc(BaseDecorator, threading.local):
             for name in args:
                 delattr(self, name)
 
-    def _validate_args(self, *args, **kwargs: dict) -> dict:
-        """Format the input to the decorated function and ensure it is valid
-        according to the validators registered to this ExtensionFunc.
-        """
-        # bind *args, **kwargs
-        result = self._signature.bind_partial(*args, **kwargs).arguments
-
-        # flatten remaining **kwargs
-        if self._kwargs_name in result:
-            result.update(result[self._kwargs_name])
-            del result[self._kwargs_name]
-
-        # apply validators
-        for name, value in result.items():
-            if name in self._validators:
-                print(f"validating {name}")
-                result[name] = self._validators[name](value, defaults=result)
-
-        return result
-
     def _reconstruct_signature(self) -> list[str]:
         """Reconstruct the original function's signature in string form,
         incorporating the default values from this ExtensionFunc.
         """
-        # get vals for default arguments
-        keywords = self._signature.bind_partial(**self.default_values)
-        keywords.apply_defaults()
-        keywords = keywords.arguments
-        if self._kwargs_name in keywords:  # flatten **kwargs
-            keywords.update(keywords[self._kwargs_name])
-            del keywords[self._kwargs_name]
+        # bind managed defaults
+        defaults = self._signature.bind_partial(**self.default_values)
 
-        # reconstruct signature
+        # apply defaults from annotations
+        defaults.apply_defaults()
+
+        # flatten extension arguments
+        defaults = defaults.arguments
+        if self._kwargs_name in defaults:
+            defaults.update(defaults[self._kwargs_name])
+            del defaults[self._kwargs_name]
+
+        # insert args
         signature = []
-        for par in self._signature.parameters.values():
-            if par.name in keywords:
-                signature.append(f"{par.name} = {keywords[par.name]}")
-            elif par.name == self._kwargs_name:  # flatten **kwargs
-                pars = self._signature.parameters
-                kwargs = {k: v for k, v in keywords.items() if k not in pars}
-                signature.extend(f"{k} = {v}" for k, v in kwargs.items())
+        parameters = self._signature.parameters
+        for par in parameters.values():
+            # display default value
+            if par.name in defaults:
+                signature.append(f"{par.name}={defaults[par.name]}")
+
+            # display extension arguments if they have default values
+            elif par.name == self._kwargs_name:
+                kwargs = {
+                    k: v for k, v in defaults.items() if k not in parameters
+                }
+                signature.extend(f"{k}={v}" for k, v in kwargs.items())
                 signature.append(f"**{self._kwargs_name}")
+
+            # arg has no default
             else:
-                signature.append(par.name)  # no default
+                signature.append(par.name)
 
         return signature
 
@@ -489,14 +484,27 @@ class ExtensionFunc(BaseDecorator, threading.local):
         This also validates the input to each argument using the attached
         validators.
         """
-        # TODO: merge with _validate_args
-        kwargs = self._validate_args(*args, **kwargs)
+        # bind *args to **kwargs
+        kwargs = self._signature.bind_partial(*args, **kwargs).arguments
+
+        # flatten **kwargs
+        if self._kwargs_name in kwargs:
+            kwargs.update(kwargs[self._kwargs_name])
+            del kwargs[self._kwargs_name]
+
+        # apply validator for each argument
+        for name, value in kwargs.items():
+            if name in self._validators:
+                kwargs[name] = self._validators[name](value, kwargs)
+
+        # merge with pre-validated defaults
         kwargs = {**self.default_values, **kwargs}
 
         # recover *args
         pars = self._signature.parameters
         args = [kwargs.pop(a) for a in list(pars)[:len(args)]]
 
+        # pass to wrapped
         return self.__wrapped__(*args, **kwargs)
 
     def __contains__(self, item: str) -> bool:
@@ -536,27 +544,15 @@ class ExtensionFunc(BaseDecorator, threading.local):
 
 
 # @foo.register_arg(default=1)
-# def bar(val: int, defaults: dict) -> int:
+# def bar(val: int, state: dict) -> int:
 #     return int(val)
 
 
 # @foo.register_arg
-# def baz(val: int, defaults: dict) -> int:
+# def baz(val: int, state: dict) -> int:
 #     return int(val)
 
 
-# class MyClass:
-
-#     def __int__(self):
-#         return 4
-
-#     def __repr__(self):
-#         return "MyClass()"
-
-#     def foo(self, baz = 2, **kwargs):
-#         print("Goodbye, World!")
-#         return self, baz
-
-
-# foo.attach_to(MyClass)
-# foo.attach_to(MyClass, namespace="test")
+# @foo.register_arg(default=3)
+# def qux(val: int, state: dict) -> int:
+#     return int(val)

@@ -132,7 +132,7 @@ The behavior of this function can be customized using the following arguments.
     .. doctest::
 
         >>> @pdcast.cast.register_arg(default="bar")
-        ... def foo(val: str, defaults: dict) -> str:
+        ... def foo(val: str, state: dict) -> str:
         ...     '''docstring for `foo`.'''
         ...     if val not in ("bar", "baz"):
         ...         raise ValueError(f"`foo` must be one of ('bar', 'baz')")

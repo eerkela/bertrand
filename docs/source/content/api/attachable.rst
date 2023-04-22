@@ -273,7 +273,7 @@ existing attributes of ``MyClass``.
 
     >>> foo.attach_to(MyClass, namespace="baz")
     >>> MyClass.baz   # doctest: +SKIP
-    <pdcast.func.virtual.Namespace object at 0x7fe73dd10af0>
+    <pdcast.decorators.attachable.Namespace object at 0x7fe73dd10af0>
     >>> MyClass.baz.foo   # doctest: +SKIP
     <function foo at 0x7fe73dd1c4c0>
     >>> MyClass().baz.foo()

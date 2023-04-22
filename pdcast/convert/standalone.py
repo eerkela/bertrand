@@ -6,19 +6,19 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from pdcast.func import extension_func
 import pdcast.resolve as resolve
 import pdcast.detect as detect
-import pdcast.patch as patch
+from pdcast.decorators.attachable import attachable
+from pdcast.decorators.extension import extension_func
+import pdcast._patch as _patch
 import pdcast.types as types
 
 import pdcast.convert.wrapper as wrapper
 
 from pdcast.util.type_hints import type_specifier
 
-
 # ignore this file when doing string-based object lookups in resolve_type()
-_ignore_frame_objects = True
+IGNORE_FRAME_OBJECTS = True
 
 
 ######################
@@ -26,6 +26,7 @@ _ignore_frame_objects = True
 ######################
 
 
+@attachable
 @extension_func
 def cast(
     data: Any,
@@ -65,7 +66,7 @@ def cast(
         for k, v in dtype.items():
             result[k] = cast(result[k], v, **kwargs)
         return result
- 
+
     # scalar or 1D iterable
     series = detect.as_series(data)
 
@@ -236,7 +237,7 @@ def do_conversion(
     )
 
     # create manual dispatch method
-    dispatch = patch.DispatchMethod(
+    dispatch = _patch.DispatchMethod(
         series,
         name="",  # passing empty string causes us to never fall back to pandas
         submap=submap,

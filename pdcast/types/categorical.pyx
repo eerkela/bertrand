@@ -1,5 +1,5 @@
 """This module describes a ``CategoricalType`` object, which can be used to
-wrap other types.
+dynamically wrap other types.
 """
 from types import MappingProxyType
 from typing import Any

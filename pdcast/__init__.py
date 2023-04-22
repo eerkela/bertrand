@@ -27,7 +27,7 @@ resolve
     Easy construction of data types from type specifiers, including a
     domain-specific mini-language for referring to types.
 """
-from .patch import attach, detach, DispatchMethod, Namespace
+from .patch import attach, detach
 
 from .check import typecheck
 from .convert import (
@@ -37,10 +37,12 @@ from .convert import (
 from .detect import detect_type
 from .resolve import resolve_type
 from .types import *
-from .func import (
-    attachable, extension_func, no_default, Attachable, ClassMethod,
-    ExtensionFunc, InstanceMethod, Namespace, Property, StaticMethod,
-    VirtualAttribute
+from .decorators.attachable import (
+    attachable, Attachable, ClassMethod, InstanceMethod, Namespace, Property,
+    StaticMethod, VirtualAttribute
+)
+from .decorators.extension import (
+    extension_func, ExtensionFunc, no_default
 )
 
 

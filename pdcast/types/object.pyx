@@ -359,7 +359,7 @@ cdef object from_caller(str name, int stack_index = 0):
     cdef list full_path = name.split(".")
     cdef object frame = inspect.stack()[stack_index].frame
 
-    while "_ignore_frame_objects" in frame.f_globals:
+    while "IGNORE_FRAME_OBJECTS" in frame.f_globals:
         frame = frame.f_back
 
     # get first component of full path from calling context
