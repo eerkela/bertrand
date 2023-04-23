@@ -3,7 +3,7 @@ ordinary Python function into one that can accept dynamic, managed arguments
 with custom validators and default values.
 """
 from __future__ import annotations
-from functools import partial, update_wrapper, wraps
+from functools import wraps
 import inspect
 import threading
 from types import MappingProxyType
@@ -24,10 +24,11 @@ def extension_func(func: Callable) -> Callable:
     Parameters
     ----------
     func : Callable
-        A python function or other callable to be decorated.  If this accepts a
+        A Python function or other callable to be decorated.  If this accepts a
         ``**kwargs`` dict or similar variable-length keyword argument, then it
-        will be allowed to take on
-        :ref:`dynamic arguments <extension_func.dynamic>`.
+        will be allowed to take on arbitrary
+        :ref:`extension arguments <extension_func.extension>` defined at run
+        time.
 
     Returns
     -------
@@ -92,13 +93,13 @@ no_default = NoDefault()
 
 
 class ExtensionFunc(BaseDecorator, threading.local):
-    """A callable object that can be dynamically extended with custom
-    arguments.
+    """A wrapper for the decorated callable that can be dynamically extended
+    with custom arguments.
 
     Parameters
     ----------
     _func : Callable
-        A function to decorate.
+        The decorated function or other callable.
 
     Notes
     -----
@@ -115,8 +116,8 @@ class ExtensionFunc(BaseDecorator, threading.local):
 
     Examples
     --------
-    See the docs for :func:`@extension_func <extension_func>` for example
-    usage.
+    See the docs for :func:`@extension_func <pdcast.extension_func>` for
+    example usage.
     """
 
     _reserved = (
@@ -137,7 +138,7 @@ class ExtensionFunc(BaseDecorator, threading.local):
 
         self._vals = {}
         self._defaults = {}
-        self._validators = {}
+        self._validators = {}  # TODO: make this a WeakValueDictionary
 
     ####################
     ####    BASE    ####
@@ -145,7 +146,7 @@ class ExtensionFunc(BaseDecorator, threading.local):
 
     @property
     def validators(self) -> MappingProxyType:
-        """A mapping of argument names to their respective validators.
+        """A mapping of all managed arguments to their respective validators.
 
         Returns
         -------
@@ -172,8 +173,7 @@ class ExtensionFunc(BaseDecorator, threading.local):
 
     @property
     def default_values(self) -> MappingProxyType:
-        """A mapping of all argument names to their associated default values
-        for this :class:`ExtensionFunc <pdcast.ExtensionFunc>`.
+        """A mapping of all managed arguments to their default values.
 
         Returns
         -------
@@ -195,7 +195,8 @@ class ExtensionFunc(BaseDecorator, threading.local):
         default: Any = no_default
     ) -> Callable:
         """A decorator that transforms a naked validation function into a
-        managed argument for :class:`ExtensionFunc <pdcast.ExtensionFunc>`.
+        managed argument for this
+        :class:`ExtensionFunc <pdcast.ExtensionFunc>`.
 
         Parameters
         ----------
@@ -234,7 +235,7 @@ class ExtensionFunc(BaseDecorator, threading.local):
                 ...
 
         Where ``val`` is an arbitrary input to the argument and ``state`` is a
-        dictionary containing the current value of each argument.  If the
+        dictionary containing the current values for each argument.  If the
         validator interacts with other arguments (via mutual exclusivity, for
         instance), then they can be obtained from the ``state`` dictionary.
 
@@ -248,8 +249,8 @@ class ExtensionFunc(BaseDecorator, threading.local):
 
         Examples
         --------
-        See the docs for :func:`extension_func` for
-        :ref:`example <extension_func.validator>` usage.
+        See the :func:`extension_func`
+        :ref:`API docs <extension_func.validator>` for example usage.
         """
 
         def argument(validator: Callable) -> Callable:
@@ -531,28 +532,3 @@ class ExtensionFunc(BaseDecorator, threading.local):
         """
         sig = self._reconstruct_signature()
         return f"{self.__wrapped__.__qualname__}({', '.join(sig)})"
-
-
-
-
-
-
-# @extension_func
-# def foo(bar, baz=2, **kwargs):
-#     print("Hello, World!")
-#     return bar, baz
-
-
-# @foo.register_arg(default=1)
-# def bar(val: int, state: dict) -> int:
-#     return int(val)
-
-
-# @foo.register_arg
-# def baz(val: int, state: dict) -> int:
-#     return int(val)
-
-
-# @foo.register_arg(default=3)
-# def qux(val: int, state: dict) -> int:
-#     return int(val)

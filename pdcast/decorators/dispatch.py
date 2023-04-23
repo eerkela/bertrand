@@ -30,35 +30,49 @@ from .base import BaseDecorator
 # SeriesWrapper as input?
 
 
+# TODO: check if output is series or serieswrapper and wrap.  otherwise return
+# as-is.  Maybe include a replace NA flag in @dispatch itself?  If this is
+# disabled, then name and index will be preserved, but NAs will be excluded.
+
+
+# TODO: maybe @dispatch should take additional arguments, like wrap_adapters,
+# remove_na, replace_na, etc.
+
+
 ######################
 ####    PUBLIC    ####
 ######################
 
 
-
 def dispatch(func: Callable) -> Callable:
-    """A decorator that transforms a Python function into a thread-local
-    :class:`Dispatch` object.
+    """A decorator that allows a Python function to dispatch to multiple
+    implementations based on the type of its first argument.
 
     Parameters
     ----------
     func : Callable
-        A function to decorate.
-    arg : str
-        The argument to dispatch on.  This must match an argument in the
-        function's signature.
+        A Python function or other callable to be decorated.  This serves as a
+        generic implementation and is only called if no overloaded
+        implementation is found for the dispatched data.
 
     Returns
     -------
-    Callable
-        A callable :class:`ExtensionFunc` object, which manages default values
-        and argument validators for the decorated function.
+    DispatchFunc
+        A cooperative :class:`DispatchFunc` decorator, which manages dispatched
+        implementations for the decorated callable.
 
     Raises
     ------
     TypeError
-        If the decorated function does not accept variable-length keyword
-        arguments.
+        If the decorated function does not accept at least one positional
+        argument.
+
+    Notes
+    -----
+    This decorator works just like
+    :func:`@functools.singledispatch <python:functools.singledispatch>`,
+    except that it is extended to handle vectorized data in the ``pdcast``
+    :doc:`type system </content/types/types>`.
     """
     return DispatchFunc(func, wrap_adapters=True)
 
@@ -69,7 +83,18 @@ def dispatch(func: Callable) -> Callable:
 
 
 class DispatchFunc(BaseDecorator):
-    """"""
+    """A wrapper for the decorated callable that manages its dispatched
+    implementations.
+
+    Parameters
+    ----------
+    func : Callable
+        The decorated function or other callable.
+
+    Examples
+    --------
+    See the docs for :func:`@dispatch <pdcast.dispatch>` for example usage.
+    """
 
     _reserved = (
         BaseDecorator._reserved |
@@ -80,18 +105,40 @@ class DispatchFunc(BaseDecorator):
         super().__init__(func=func)
 
         # ensure function accepts at least 1 argument
-        self._signature = inspect.signature(func)
-        if len(self._signature.parameters) < 1:
+        if len(inspect.signature(func).parameters) < 1:
             raise TypeError("func must accept at least one argument")
 
-        # initialize
-        self._dispatched = {}
         self._wrap_adapters = wrap_adapters
+        self._dispatched = {}  # TODO: make this a WeakKeyDictionary
 
     @property
     def dispatched(self) -> MappingProxyType:
-        """A mapping from registered type specifiers to their dispatched
-        implementations for this callable.
+        """A mapping from :doc:`types </content/types/types>` to their
+        dispatched implementations.
+
+        Returns
+        -------
+        MappingProxyType
+            A read-only dictionary mapping types to their associated dispatch
+            functions.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> @dispatch
+            ... def foo(bar):
+            ...     print("generic implementation")
+            ...     return bar
+
+            >>> @foo.register_type(types="int")
+            ... def integer_foo(bar):
+            ...     print("integer implementation")
+            ...     return bar
+
+            >>> foo.dispatched
+
+        .. TODO: check
         """
         return MappingProxyType(self._dispatched)
 
@@ -101,16 +148,43 @@ class DispatchFunc(BaseDecorator):
         *,
         types: type_specifier | Iterable[type_specifier] | None = None
     ) -> Callable:
-        """Register a callable as a dispatched implementation of this callable.
+        """A decorator that transforms a naked function into a dispatched
+        implementation for this :class:`DispatchFunc`.
 
         Parameters
         ----------
-        _func : Callable
-            The function to be registered.
-        types : type_specifier | Iterable[type_specifier] | None
-            The types to dispatch to this implementation.
-        **kwargs : dict
-            Keywords to be passed to .contains.
+        types : type_specifier | Iterable[type_specifier] | None, default None
+            The type(s) to dispatch to this implementation.  See notes for
+            handling of :data:`None <python:None>`.
+
+        Returns
+        -------
+        Callable
+            The original undecorated function.
+
+        Raises
+        ------
+        TypeError
+            If the decorated function is not callable with at least one
+            argument.
+
+        Notes
+        -----
+        This decorator works just like the :meth:`register` method of
+        :func:`singledispatch <python:functools.singledispatch>` objects,
+        except that it does not interact with type annotations in any way.
+        Instead, if a type is not provided as an argument to this method, it
+        will be disregarded during dispatch lookups, unless the decorated
+        callable is a method of an :class:`AtomicType <pdcast.AtomicType>` or
+        :class:`AdapterType <pdcast.AdapterType>` subclass.  In that case, the
+        attached type will be automatically bound to the dispatched
+        implementation during
+        :meth:`__init_subclass__() <AtomicType.__init_subclass__>`.
+
+        Examples
+        --------
+        See the :func:`dispatch` :ref:`API docs <dispatch.dispatched>` for
+        example usage.
         """
         if types is None:
             types = base_types.CompositeType()
@@ -151,8 +225,7 @@ class DispatchFunc(BaseDecorator):
         *args,
         **kwargs
     ) -> convert.SeriesWrapper:
-        """Dispatch a homogenous series
-        """
+        """Dispatch a homogenous series to the appropriate implementation."""
         # search for a dispatched implementation
         result = None
         for typ, implementation in self._dispatched.items():
@@ -204,8 +277,7 @@ class DispatchFunc(BaseDecorator):
         *args,
         **kwargs
     ) -> convert.SeriesWrapper:
-        """Dispatch a non-homogenous series
-        """
+        """Dispatch a mixed-type series to the appropriate implementation."""
         groups = series.series.groupby(series.element_type.index, sort=False)
 
         # NOTE: SeriesGroupBy.transform() cannot reconcile mixed int64/uint64
@@ -296,63 +368,22 @@ class DispatchFunc(BaseDecorator):
 
 
 
-# from .extension import *
 
 
-# @attachable
-# @extension_func
 # @dispatch
-# def foo(bar, baz=2, **kwargs):
+# def foo(bar):
 #     """doc for foo()"""
 #     print("generic")
-#     return bar + baz
-
-
-# @foo.register_arg
-# def baz(val, others):
-#     return int(val)
+#     return bar
 
 
 # @foo.register_type(types="bool")
-# def boolean_foo(bar, baz, **kwargs):
+# def boolean_foo(bar):
 #     print("boolean")
-#     return bar + baz
+#     return bar
 
 
 # @foo.register_type(types="int, float")
-# def numeric_foo(bar, baz, **kwargs):
+# def numeric_foo(bar):
 #     print("int or float")
-#     return bar + baz
-
-
-# class MyClass:
-
-#     def foo(self, baz, **kwargs):
-#         print("MyClass.foo")
-#         return self, baz
-
-
-# foo.attach_to(MyClass)
-
-
-# @dispatch
-# def round(
-#     series: pdcast.SeriesWrapper,
-#     decimals: int = 0,
-#     rule: str = "half_even"
-# ) -> pdcast.SeriesWrapper:
-#     # this defines a generic implementation, which may not actually be chosen
-#     # if an overloaded one exists somewhere else.
-#     raise NotImplementedError(
-#         f"`round()` could not find a dispatched implementation for data of "
-#         f"type '{series.element_type}'"
-#     )
-
-
-# @round.register(types="float")
-# def round_float(
-#     series: pdcast.SeriesWrapper,
-#     decimals: int = 0,
-#     rule: str = "half_even"
-# ) -> pdcast.SeriesWrapper:
-#     ...
+#     return bar

@@ -48,7 +48,7 @@ def attachable(func: Callable) -> Callable:
     Parameters
     ----------
     func : Callable
-        A python function or other callable to be decorated.  When this is
+        A Python function or other callable to be decorated.  When this is
         :meth:`attached <pdcast.Attachable.attach_to>` to a class, an
         appropriate reference will be implicitly passed as its first positional
         argument.

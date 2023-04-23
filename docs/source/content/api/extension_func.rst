@@ -202,10 +202,10 @@ instance can then be modified without affecting the behavior of other threads.
     >>> foo()
     (1, 2)
 
-.. _extension_func.dynamic:
+.. _extension_func.extension:
 
-Dynamic arguments
------------------
+Extension arguments
+-------------------
 If the decorated callable allows variable-length keyword arguments
 (``**kwargs``), then :class:`@register_arg <pdcast.ExtensionFunc.register_arg>`
 allows us to add new arguments dynamically at run time. These use the same
