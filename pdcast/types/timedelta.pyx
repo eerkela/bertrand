@@ -9,11 +9,11 @@ import pandas as pd
 import regex as re  # using alternate python regex engine
 import pytz
 
-cimport pdcast.convert as convert
-import pdcast.convert as convert
+from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
+from pdcast.util cimport wrapper
 from pdcast.util.round cimport Tolerance
 from pdcast.util.round import round_div
 from pdcast.util.time cimport Epoch
@@ -38,13 +38,15 @@ from .base import generic, register
 
 class TimedeltaMixin:
 
+    conversion_func = convert.to_timedelta
+
     ##############################
     ####    SERIES METHODS    ####
     ##############################
 
     def to_boolean(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         rounding: str,
@@ -53,7 +55,7 @@ class TimedeltaMixin:
         since: Epoch,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert timedelta data to a boolean data type."""
         # 2-step conversion: timedelta -> decimal, decimal -> bool
         transfer_type = resolve.resolve_type("decimal")
@@ -81,7 +83,7 @@ class TimedeltaMixin:
 
     def to_float(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -91,7 +93,7 @@ class TimedeltaMixin:
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert timedelta data to a floating point data type."""
         # convert to nanoseconds, then from nanoseconds to final unit
         transfer_type = resolve.resolve_type("int")
@@ -132,7 +134,7 @@ class TimedeltaMixin:
 
     def to_complex(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -142,7 +144,7 @@ class TimedeltaMixin:
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert timedelta data to a complex data type."""
         # 2-step conversion: timedelta -> float, float -> complex
         transfer_type = dtype.equiv_float
@@ -171,7 +173,7 @@ class TimedeltaMixin:
 
     def to_decimal(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -180,7 +182,7 @@ class TimedeltaMixin:
         rounding: str,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert timedelta data to a decimal data type."""
         # 2-step conversion: timedelta -> ns, ns -> decimal
         transfer_type = resolve.resolve_type("int")
@@ -220,7 +222,7 @@ class TimedeltaMixin:
 
     def to_datetime(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -229,7 +231,7 @@ class TimedeltaMixin:
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert datetime data to another datetime representation."""
         # 2-step conversion: datetime -> ns, ns -> datetime
         transfer_type = resolve.resolve_type("int")
@@ -257,7 +259,7 @@ class TimedeltaMixin:
 
     def to_timedelta(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -265,7 +267,7 @@ class TimedeltaMixin:
         since: Epoch,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert timedelta data to a timedelta representation."""
         # trivial case
         if dtype == self:
@@ -469,11 +471,11 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
 
     def from_ns(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         rounding: str,
         since: Epoch,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert nanosecond offsets from the given epoch into numpy
         timedelta64s with this type's unit and step size.
         """
@@ -492,7 +494,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
                 rule=rounding or "down"
             )
         m8_str = f"m8[{self.step_size}{self.unit}]"
-        return convert.SeriesWrapper(
+        return wrapper.SeriesWrapper(
             pd.Series(
                 list(series.series.to_numpy(m8_str)),
                 index=series.series.index,
@@ -504,7 +506,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
 
     def to_integer(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -513,7 +515,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert numpy timedelta64s into an integer data type."""
         # NOTE: using numpy m8 array is ~2x faster than looping through series
         m8_str = f"m8[{self.step_size}{self.unit}]"
@@ -526,7 +528,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
             rounding=rounding or "down",
             since=since
         )
-        series = convert.SeriesWrapper(
+        series = wrapper.SeriesWrapper(
             pd.Series(arr, index=series.series.index),
             hasnans=series.hasnans,
             element_type=resolve.resolve_type("int[python]")
@@ -564,12 +566,12 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
 
     def from_ns(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert nanosecond offsets into pandas Timedeltas."""
         # convert using pd.to_timedelta()
-        return convert.SeriesWrapper(
+        return wrapper.SeriesWrapper(
             pd.to_timedelta(series.series, unit="ns"),
             hasnans=series.hasnans,
             element_type=self
@@ -577,7 +579,7 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
 
     def to_integer(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -586,7 +588,7 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert pandas Timedeltas to an integer data type."""
         series = series.rectify().astype(np.int64)
         if unit != "ns" or step_size != 1:
@@ -628,16 +630,16 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
 
     def from_ns(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         rounding: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert nanosecond offsets into python timedeltas."""
         # convert to us
         result = round_div(series.series, as_ns["us"], rule=rounding or "down")
 
         # NOTE: m8[us].astype("O") implicitly converts to datetime.timedelta
-        return convert.SeriesWrapper(
+        return wrapper.SeriesWrapper(
             pd.Series(
                 result.to_numpy("m8[us]").astype("O"),
                 index=series.series.index,
@@ -649,7 +651,7 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
 
     def to_integer(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -658,7 +660,7 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert python timedeltas to an integer data type."""
         series = series.apply_with_errors(
             pytimedelta_to_ns,
@@ -694,7 +696,7 @@ cdef object m8_pattern = re.compile(
 
 
 def convert_ns_to_unit(
-    series: convert.SeriesWrapper,
+    series: wrapper.SeriesWrapper,
     unit: str,
     step_size: int,
     rounding: str,

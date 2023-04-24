@@ -8,14 +8,13 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-cimport pdcast.convert as convert
-import pdcast.convert as convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
 cimport pdcast.types.base.atomic as atomic
 cimport pdcast.types.base.composite as composite
 
+from pdcast.util cimport wrapper
 from pdcast.util.type_hints import type_specifier
 
 
@@ -341,16 +340,16 @@ cdef class AdapterType(atomic.ScalarType):
 
     def inverse_transform(
         self,
-        series: convert.SeriesWrapper
-    ) -> convert.SeriesWrapper:
+        series: wrapper.SeriesWrapper
+    ) -> wrapper.SeriesWrapper:
         """Remove an adapter from an example series."""
         series.element_type = self.wrapped
         return series.rectify()
 
     def transform(
         self,
-        series: convert.SeriesWrapper
-    ) -> convert.SeriesWrapper:
+        series: wrapper.SeriesWrapper
+    ) -> wrapper.SeriesWrapper:
         """Given an unwrapped conversion result, apply all the necessary logic
         to bring it into alignment with this AdapterType and all its children.
 

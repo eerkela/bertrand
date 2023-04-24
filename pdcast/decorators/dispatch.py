@@ -16,6 +16,7 @@ import pdcast.detect as detect
 import pdcast.resolve as resolve
 import pdcast.types as base_types
 
+from pdcast.util import wrapper
 from pdcast.util.type_hints import type_specifier
 
 from .base import BaseDecorator
@@ -37,6 +38,9 @@ from .base import BaseDecorator
 
 # TODO: maybe @dispatch should take additional arguments, like wrap_adapters,
 # remove_na, replace_na, etc.
+
+
+# TODO: when dispatching to a method, have to account for self argument
 
 
 ######################
@@ -187,7 +191,7 @@ class DispatchFunc(BaseDecorator):
         example usage.
         """
         if types is None:
-            types = base_types.CompositeType()
+            types = ()
         else:
             types = resolve.resolve_type([types])
 
@@ -201,6 +205,8 @@ class DispatchFunc(BaseDecorator):
                     f"decorated function must be callable: {target}"
                 )
 
+            # ensure implementation accepts at least one non-self parameter
+
             # broadcast to selected types
             if types:
                 for typ in types:
@@ -210,8 +216,10 @@ class DispatchFunc(BaseDecorator):
                 # subclass.  These can still be discovered without explicit
                 # types through __init_subclass__.  We just mark the functions
                 # that are requesting it here so we can bind them later.
-                _dispatch = getattr(target, "_dispatch", frozenset())
-                target._dispatch = _dispatch | {self}
+                # if target in naked:
+                #     naked[target].add(self)
+                # else:
+                naked[target] = self
 
             return target
 
@@ -221,10 +229,10 @@ class DispatchFunc(BaseDecorator):
 
     def _dispatch_scalar(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         *args,
         **kwargs
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Dispatch a homogenous series to the appropriate implementation."""
         # search for a dispatched implementation
         result = None
@@ -234,27 +242,26 @@ class DispatchFunc(BaseDecorator):
                 break
 
         # recursively unwrap adapters and retry.
-        # NOTE: This operates like a recursive stack.  Adapters are popped off
-        # the stack in FIFO order before recurring, and then each adapter is
-        # pushed back onto the stack in the same order.  If no error is
-        # encountered in this process, then the result is guaranteed to have
-        # the same adapters as the original.
-        for _ in getattr(series.element_type, "adapters", ()):  # acts as `if`
-            series = series.element_type.inverse_transform(series)
-            series = self._dispatch_scalar(series, *args, **kwargs)
-            if (
-                self._wrap_adapters and
-                series.element_type == series.element_type.wrapped
-            ):
-                series = series.element_type.transform(series)
-            return series
+        if result is None:
+            # NOTE: This operates like a recursive stack.  Adapters are popped
+            # off the stack in FIFO order before recurring, and then each
+            # adapter is pushed back onto the stack in the same order.
+            for before in getattr(series.element_type, "adapters", ()):
+                series = series.element_type.inverse_transform(series)
+                series = self._dispatch_scalar(series, *args, **kwargs)
+                if (
+                    self._wrap_adapters and
+                    series.element_type == before.wrapped
+                ):
+                    series = series.element_type.transform(series)
+                return series
 
         # fall back to generic implementation
         if result is None:
             result = self.__wrapped__(series, *args, **kwargs)
 
         # ensure result is a SeriesWrapper
-        if not isinstance(result, convert.SeriesWrapper):
+        if not isinstance(result, wrapper.SeriesWrapper):
             raise TypeError(
                 f"dispatched implementation of {self.__wrapped__.__name__}() "
                 f"did not return a SeriesWrapper for type: "
@@ -273,10 +280,10 @@ class DispatchFunc(BaseDecorator):
 
     def _dispatch_composite(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         *args,
         **kwargs
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Dispatch a mixed-type series to the appropriate implementation."""
         groups = series.series.groupby(series.element_type.index, sort=False)
 
@@ -292,7 +299,7 @@ class DispatchFunc(BaseDecorator):
 
         def transform(grp) -> pd.Series:
             """Groupwise transformation."""
-            grp = convert.SeriesWrapper(
+            grp = wrapper.SeriesWrapper(
                 grp,
                 hasnans=series.hasnans,
                 element_type=grp.name
@@ -337,18 +344,18 @@ class DispatchFunc(BaseDecorator):
                 pass  # keep as dtype: object
 
         # re-wrap result
-        return convert.SeriesWrapper(result, hasnans=series.hasnans)
+        return wrapper.SeriesWrapper(result, hasnans=series.hasnans)
 
     def __call__(self, data: Any, *args, **kwargs):
         """Execute the decorated function, dispatching to an overloaded
         implementation if one exists.
         """
         # convert data to series
-        if not isinstance(data, (pd.Series, convert.SeriesWrapper)):
+        if not isinstance(data, (pd.Series, wrapper.SeriesWrapper)):
             data = detect.as_series(data)
 
         # enter SeriesWrapper context block
-        with convert.SeriesWrapper(data) as series:
+        with wrapper.SeriesWrapper(data) as series:
 
             # dispatch based on inferred type
             if isinstance(series.element_type, base_types.CompositeType):
@@ -364,6 +371,8 @@ class DispatchFunc(BaseDecorator):
 
         # return as pandas Series
         return series.series
+
+
 
 
 

@@ -11,8 +11,7 @@ import pandas as pd
 from pandas.api.extensions import ExtensionDtype, register_extension_dtype
 import pytz
 
-cimport pdcast.convert as convert
-import pdcast.convert as convert
+from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -21,7 +20,8 @@ import pdcast.types.base.registry as registry
 cimport pdcast.types.base.adapter as adapter
 cimport pdcast.types.base.composite as composite
 
-import pdcast.util.array as array
+from pdcast.util import array
+from pdcast.util cimport wrapper
 from pdcast.util.round cimport Tolerance
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.time cimport Epoch
@@ -359,6 +359,11 @@ cdef class AtomicType(ScalarType):
         AtomicType.is_na : for comparisons against this value.
         """
         return pd.NA
+
+    @property
+    def conversion_func(self) -> Callable:
+        """The conversion function to use when targeting this type."""
+        return convert.to_object
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -889,9 +894,9 @@ cdef class AtomicType(ScalarType):
 
     def make_categorical(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         levels: list = None
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Transform a series of the associated type into a categorical format
         with the given levels.
 
@@ -925,7 +930,7 @@ cdef class AtomicType(ScalarType):
                 pd.Index(levels, dtype=self.dtype)
             )
 
-        return convert.SeriesWrapper(
+        return wrapper.SeriesWrapper(
             series.series.astype(categorical_type),
             hasnans=series.hasnans
             # element_type is set in AdapterType.transform()
@@ -933,9 +938,9 @@ cdef class AtomicType(ScalarType):
 
     def make_sparse(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         fill_value: Any = None
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Transform a series of the associated type into a sparse format with
         the given fill value.
 
@@ -965,7 +970,7 @@ cdef class AtomicType(ScalarType):
             fill_value = self.na_value
         sparse_type = pd.SparseDtype(series.dtype, fill_value)
 
-        return convert.SeriesWrapper(
+        return wrapper.SeriesWrapper(
             series.series.astype(sparse_type),
             hasnans=series.hasnans
             # element_type is set in AdapterType.transform()
@@ -977,11 +982,11 @@ cdef class AtomicType(ScalarType):
 
     def to_boolean(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert generic data to a boolean data type.
 
         Note: this method does not do any cleaning/pre-processing of the
@@ -997,12 +1002,12 @@ cdef class AtomicType(ScalarType):
 
     def to_integer(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         downcast: composite.CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert generic data to an integer data type.
 
         Note: this method does not do any cleaning/pre-processing of the
@@ -1022,13 +1027,13 @@ cdef class AtomicType(ScalarType):
 
     def to_float(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         downcast: composite.CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert boolean data to a floating point data type."""
         series = series.astype(dtype, errors=errors)
         if downcast is not None:
@@ -1037,13 +1042,13 @@ cdef class AtomicType(ScalarType):
 
     def to_complex(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         downcast: composite.CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert boolean data to a complex data type."""
         series = series.astype(dtype, errors=errors)
         if downcast is not None:
@@ -1052,17 +1057,17 @@ cdef class AtomicType(ScalarType):
 
     def to_decimal(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert boolean data to a decimal data type."""
         return series.astype(dtype, errors=errors)
 
     def to_datetime(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -1071,7 +1076,7 @@ cdef class AtomicType(ScalarType):
         since: Epoch,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
         # 2-step conversion: X -> decimal, decimal -> datetime
         transfer_type = resolve.resolve_type(decimal.Decimal)
@@ -1094,7 +1099,7 @@ cdef class AtomicType(ScalarType):
 
     def to_timedelta(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -1102,7 +1107,7 @@ cdef class AtomicType(ScalarType):
         since: Epoch,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
         # 2-step conversion: X -> decimal, decimal -> timedelta
         transfer_type = resolve.resolve_type(decimal.Decimal)
@@ -1124,12 +1129,12 @@ cdef class AtomicType(ScalarType):
 
     def to_string(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         format: str,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert arbitrary data to a string data type.
 
         Override this to change the behavior of the generic `to_string()` and
@@ -1145,12 +1150,12 @@ cdef class AtomicType(ScalarType):
 
     def to_object(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert arbitrary data to an object data type."""
         direct = call is None
         if direct:
@@ -1210,7 +1215,7 @@ cdef class AtomicType(ScalarType):
         Candidate types will always be tested in order.
         """
 
-    def upcast(self, series: convert.SeriesWrapper) -> AtomicType:
+    def upcast(self, series: wrapper.SeriesWrapper) -> AtomicType:
         """Upcast an :class:`AtomicType` to fit the observed range of a series.
 
         Parameters
@@ -1263,7 +1268,7 @@ cdef class AtomicType(ScalarType):
 
     def downcast(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         tol: Tolerance,
         smallest: composite.CompositeType = None
     ) -> AtomicType:

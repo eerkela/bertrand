@@ -9,11 +9,11 @@ cimport numpy as np
 import pandas as pd
 import pytz
 
-cimport pdcast.convert as convert
-import pdcast.convert as convert
+from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
+from pdcast.util cimport wrapper
 from pdcast.util.error import shorten_list
 from pdcast.util.round cimport Tolerance
 from pdcast.util.round import round_decimal
@@ -35,6 +35,8 @@ from .base import dispatch, generic, register
 
 class DecimalMixin:
 
+    conversion_func = convert.to_decimal
+
     ##############################
     ####    SERIES METHODS    ####
     ##############################
@@ -42,15 +44,14 @@ class DecimalMixin:
     @dispatch
     def round(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         decimals: int = 0,
         rule: str = "half_even"
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Round a decimal series to the given number of decimal places using
         the specified rounding rule.
         """
-        rule = convert.defaults.validators["rounding"](rule)
-        return convert.SeriesWrapper(
+        return wrapper.SeriesWrapper(
             round_decimal(series.series, rule=rule, decimals=decimals),
             hasnans=series.hasnans,
             element_type=series.element_type
@@ -59,9 +60,9 @@ class DecimalMixin:
     @dispatch
     def snap(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         tol: numeric = 1e-6
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Snap each element of the series to the nearest integer if it is
         within the specified tolerance.
         """
@@ -70,7 +71,7 @@ class DecimalMixin:
             return series.copy()
 
         rounded = self.round(series, rule="half_even")
-        return convert.SeriesWrapper(
+        return wrapper.SeriesWrapper(
             series.series.where((
                 (series.series - rounded).abs() > tol.real),
                 rounded.series
@@ -81,11 +82,11 @@ class DecimalMixin:
 
     def snap_round(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         tol: numeric,
         rule: str,
         errors: str
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Snap a series to the nearest integer within `tol`, and then round
         any remaining results according to the given rule.  Rejects any outputs
         that are not integer-like by the end of this process.
@@ -117,13 +118,13 @@ class DecimalMixin:
 
     def to_boolean(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert decimal data to a boolean data type."""
         series = self.snap_round(
             series,
@@ -136,14 +137,14 @@ class DecimalMixin:
 
     def to_integer(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert decimal data to an integer data type."""
         series = self.snap_round(
             series,
@@ -161,13 +162,13 @@ class DecimalMixin:
 
     def to_float(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert decimal data to a floating point data type."""
         # do naive conversion
         if dtype.itemsize > 8:
@@ -210,13 +211,13 @@ class DecimalMixin:
 
     def to_complex(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         tol: numeric,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert decimal data to a complex data type."""
         # 2-step conversion: decimal -> float, float -> complex
         transfer_type = dtype.equiv_float
@@ -238,20 +239,20 @@ class DecimalMixin:
 
     def to_decimal(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert boolean data to a decimal data type."""
         return series.astype(dtype, errors=errors)
 
     def to_decimal(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert decimal data to another decimal type."""
         # trivial case
         if dtype == self:
@@ -260,7 +261,7 @@ class DecimalMixin:
 
     def to_datetime(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -268,7 +269,7 @@ class DecimalMixin:
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert integer data to a datetime data type."""
         # round fractional inputs to the nearest nanosecond
         if unit == "Y":
@@ -283,7 +284,7 @@ class DecimalMixin:
         if since:
             ns += since.offset
 
-        series = convert.SeriesWrapper(
+        series = wrapper.SeriesWrapper(
             ns,
             hasnans=series.hasnans,
             element_type=resolve.resolve_type("int[python]")
@@ -306,14 +307,14 @@ class DecimalMixin:
 
     def to_timedelta(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
         since: Epoch,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert integer data to a timedelta data type."""
         # round fractional inputs to the nearest nanosecond
         if unit == "Y":  # account for leap days
@@ -324,7 +325,7 @@ class DecimalMixin:
             cast_to_int = np.frompyfunc(int, 1, 1)
             ns = cast_to_int(series.series * step_size * as_ns[unit])
 
-        series = convert.SeriesWrapper(
+        series = wrapper.SeriesWrapper(
             ns,
             hasnans=series.hasnans,
             element_type=resolve.resolve_type("int[python]")

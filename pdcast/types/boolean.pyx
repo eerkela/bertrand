@@ -8,15 +8,20 @@ cimport numpy as np
 import pandas as pd
 import pytz
 
-cimport pdcast.convert as convert
-import pdcast.convert as convert
+from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
 from pdcast.util.time cimport Epoch
+from pdcast.util cimport wrapper
 
 from .base cimport AtomicType
 from .base import generic, register
+
+
+def test(data: wrapper.SeriesWrapper):
+    return data
+
 
 
 ######################
@@ -29,6 +34,8 @@ class BooleanMixin:
     for boolean types.
     """
 
+    conversion_func = convert.to_boolean
+
     max = 1
     min = 0
 
@@ -38,10 +45,10 @@ class BooleanMixin:
 
     def to_decimal(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert boolean data to a decimal format."""
         series = series + dtype.type_def(0)  # ~2x faster than loop
         series.element_type = dtype
@@ -49,7 +56,7 @@ class BooleanMixin:
 
     def to_datetime(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -58,7 +65,7 @@ class BooleanMixin:
         tz: pytz.BaseTzInfo,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert boolean data to a datetime format."""
         # 2-step conversion: bool -> int, int -> datetime
         transfer_type = resolve.resolve_type("int")
@@ -82,7 +89,7 @@ class BooleanMixin:
 
     def to_timedelta(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -90,7 +97,7 @@ class BooleanMixin:
         since: Epoch,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert boolean data to a timedelta format."""
         transfer_type = resolve.resolve_type("int")
         series = self.to_integer(

@@ -6,29 +6,16 @@ import inspect
 from functools import wraps
 from typing import Any, Callable, Iterable
 
-cimport pdcast.convert as convert
-import pdcast.convert as convert
+from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
+from pdcast.util cimport wrapper
 from pdcast.util.type_hints import type_specifier
 
 from .adapter import AdapterType
 from .atomic import ScalarType, AtomicType
 from .composite import CompositeType
-
-
-# TODO: dispatch should be placed on a naked function, which searches for a
-# method of the same name that is attached to the detected series type.  This
-# avoids the need for a complicated dispatch map.  The decorated function must
-# take a series as the first argument, and can be attached to pandas in a way
-# similar to extension_func.  I can then centralize docs in this function
-# definition, rather than making separate abstract docs.
-
-# This also allows dispatched functions to act in a standalone manner (i.e. not
-# attached to pandas).  Plus it offers a fast fail for mixed data where one
-# or more types do not implement the required method.  It might also clean up
-# some of the code for cast().
 
 
 ######################
@@ -169,6 +156,27 @@ def dispatch(
     return dispatch_decorator(_method)
 
 
+def register(class_: type = None, *, cond: bool = True):
+    """Validate an AtomicType definition and add it to the registry.
+
+    Note: Any decorators above this one will be ignored during validation.
+    """
+    def register_decorator(_class_):
+        if not issubclass(_class_, ScalarType):
+            raise TypeError(
+                "`@register` can only be applied to AtomicType and "
+                "AdapterType subclasses"
+            )
+        if cond:
+            AtomicType.registry.add(_class_)
+
+        return _class_
+
+    if class_ is None:
+        return register_decorator
+    return register_decorator(class_)
+
+
 def generic(_class: type):
     """Class decorator to mark generic AtomicType definitions.
 
@@ -273,24 +281,7 @@ def generic(_class: type):
     return _class
 
 
-def register(_class=None, *, cond=True):
-    """Validate an AtomicType definition and add it to the registry.
 
-    Note: Any decorators above this one will be ignored during validation.
-    """
-    def register_decorator(_class_):
-        if not issubclass(_class_, ScalarType):
-            raise TypeError(
-                f"`@register` can only be applied to AtomicType and "
-                f"AdapterType definitions"
-            )
-        if cond:
-            AtomicType.registry.add(_class_)
-        return _class_
-
-    if _class is None:
-        return register_decorator
-    return register_decorator(_class)
 
 
 def subtype(supertype: type):
@@ -341,7 +332,7 @@ def subtype(supertype: type):
 
 
 # NOTE: cython stores type hints as strings; python stores them as references.
-cdef set valid_series_annotations = {"SeriesWrapper", convert.SeriesWrapper}
+cdef set valid_series_annotations = {"SeriesWrapper", wrapper.SeriesWrapper}
 
 
 def validate_dispatch_signature(call: Callable) -> bool:

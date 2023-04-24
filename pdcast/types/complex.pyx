@@ -6,20 +6,19 @@ import sys
 import numpy as np
 cimport numpy as np
 import pandas as pd
-
 import pytz
 
-cimport pdcast.convert as convert
-import pdcast.convert as convert
+from pdcast import convert
 
-import pdcast.util.array as array
+from pdcast.util import array
+from pdcast.util cimport wrapper
 from pdcast.util.error import shorten_list
 from pdcast.util.round cimport Tolerance
 from pdcast.util.time cimport Epoch
 from pdcast.util.type_hints import numeric
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, generic, register, subtype
+from .base import dispatch, generic, subtype, register
 import pdcast.types.float as float_types
 
 
@@ -35,16 +34,18 @@ cdef bint has_clongdouble = (np.dtype(np.clongdouble).itemsize > 16)
 
 class ComplexMixin:
 
+    conversion_func = convert.to_complex
+
     ############################
     ####    TYPE METHODS    ####
     ############################
 
     def downcast(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         tol: Tolerance,
         smallest: CompositeType = None
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Reduce the itemsize of a complex type to fit the observed range."""
         equiv_float = self.equiv_float
         real = equiv_float.downcast(
@@ -93,10 +94,10 @@ class ComplexMixin:
     @dispatch
     def round(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         decimals: int = 0,
         rule: str = "half_even"
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Round a complex series to the given number of decimal places using
         the specified rounding rule.
         """
@@ -108,9 +109,9 @@ class ComplexMixin:
     @dispatch
     def snap(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         tol: numeric = 1e-6
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Snap each element of the series to the nearest integer if it is
         within the specified tolerance.
         """
@@ -125,13 +126,13 @@ class ComplexMixin:
 
     def to_boolean(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert complex data to a boolean data type."""
         # 2-step conversion: complex -> float, float -> bool
         transfer_type = self.equiv_float
@@ -153,14 +154,14 @@ class ComplexMixin:
 
     def to_integer(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         rounding: str,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert complex data to an integer data type."""
         # 2-step conversion: complex -> float, float -> int
         transfer_type = self.equiv_float
@@ -183,13 +184,13 @@ class ComplexMixin:
 
     def to_float(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         downcast: CompositeType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert complex data to a float data type."""
         transfer_type = self.equiv_float
         real = series.real
@@ -215,12 +216,12 @@ class ComplexMixin:
 
     def to_decimal(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert complex data to a decimal data type."""
         # 2-step conversion: complex -> float, float -> decimal
         transfer_type = self.equiv_float
@@ -410,9 +411,9 @@ class PythonComplexType(ComplexMixin, AtomicType):
 #######################
 
 
-cdef convert.SeriesWrapper combine_real_imag(
-    convert.SeriesWrapper real,
-    convert.SeriesWrapper imag
+cdef wrapper.SeriesWrapper combine_real_imag(
+    wrapper.SeriesWrapper real,
+    wrapper.SeriesWrapper imag
 ):
     """Merge separate real, imaginary components into a complex series."""
     largest = max(

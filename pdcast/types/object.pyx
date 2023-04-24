@@ -8,11 +8,11 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-cimport pdcast.convert as convert
-import pdcast.convert as convert
+from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
+from pdcast.util cimport wrapper
 from pdcast.util.type_hints import type_specifier
 
 from .base cimport AtomicType, CompositeType
@@ -29,12 +29,12 @@ class ObjectType(AtomicType, cache_size=64):
 
     # internal root fields - all subtypes/backends inherit these
     _family = "object"
+    conversion_func = convert.to_object
 
     name = "object"
     aliases = {
         "object", "obj", "O", "pyobject", "object_", "object0", np.dtype("O")
     }
-    # dtype = np.dtype("O")
 
     def __init__(self, type_def: type = object):
         super().__init__(type_def=type_def)
@@ -110,7 +110,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_boolean(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -128,7 +128,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_integer(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -146,7 +146,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_float(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -164,7 +164,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_complex(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -182,7 +182,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_decimal(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -200,7 +200,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_datetime(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -218,7 +218,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_timedelta(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -236,7 +236,7 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_string(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         call: Callable,
         errors: str,
@@ -254,10 +254,10 @@ class ObjectType(AtomicType, cache_size=64):
 
     def to_object(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert arbitrary data to an object data type."""
         # trivial case
         if dtype == self:
@@ -321,7 +321,7 @@ class Test2:
 
 
 def two_step_conversion(
-    series: convert.SeriesWrapper,
+    series: wrapper.SeriesWrapper,
     dtype: AtomicType,
     call: Callable,
     errors: str,

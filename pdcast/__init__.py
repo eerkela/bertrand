@@ -27,16 +27,14 @@ resolve
     Easy construction of data types from type specifiers, including a
     domain-specific mini-language for referring to types.
 """
-from .patch import attach, detach
-
+from .types import *
 from .check import typecheck
 from .convert import (
     cast, to_boolean, to_integer, to_float, to_complex, to_decimal,
-    to_datetime, to_timedelta, to_string, to_object, SeriesWrapper
+    to_datetime, to_timedelta, to_string, to_object
 )
 from .detect import detect_type
 from .resolve import resolve_type
-from .types import *
 from .decorators.attachable import (
     attachable, Attachable, ClassMethod, InstanceMethod, Namespace, Property,
     StaticMethod, VirtualAttribute
@@ -44,6 +42,11 @@ from .decorators.attachable import (
 from .decorators.extension import (
     extension_func, ExtensionFunc, no_default
 )
+from .util.wrapper import SeriesWrapper
+
+
+# public
+from .patch import attach, detach
 
 
 # importing * from types also masks module names, which can be troublesome

@@ -7,6 +7,7 @@ from typing import Callable, Iterable
 import pytz
 
 import pdcast.convert.standalone as standalone
+import pdcast.detect as detect
 import pdcast.resolve as resolve
 import pdcast.types as types
 
@@ -61,12 +62,162 @@ def assert_sets_are_disjoint(set_1: set, set_2: set) -> None:
         raise ValueError(err_msg)
 
 
+######################
+####    DTYPES    ####
+######################
+
+
+@standalone.cast.register_arg
+def dtype(
+    val: type_specifier,
+    state: dict,
+    supertype: type_specifier = None
+) -> types.AtomicType | types.AdapterType:
+    """Resolve a type specifier and reject it if it is composite or not a
+    subtype of the given supertype.
+    """
+    if val is None:
+        if "data" in state:
+            data = state["data"]
+            val = detect.detect_type(data)
+            if val is None:  # data is empty or contains only NAs
+                raise ValueError(
+                    "cannot interpret empty series without an explicit "
+                    "`dtype` argument"
+                )
+    else:
+        val = resolve.resolve_type(val)
+        if val.unwrap() is None:
+            val.atomic_type = detect.detect_type(data)
+
+    # reject composite
+    if isinstance(val, types.CompositeType):
+        raise ValueError(
+            f"`dtype` cannot be composite (received: {val})"
+        )
+
+    # reject improper subtype
+    if supertype is not None and val.unwrap() is not None:
+        supertype = resolve.resolve_type(supertype)
+        if not val.unwrap().is_subtype(supertype):
+            raise ValueError(
+                f"`dtype` must be {supertype}-like, not {val}"
+            )
+
+    return val
+
+
+@standalone.to_boolean.register_arg(name="dtype")
+def boolean_dtype(
+    val: type_specifier,
+    state: dict
+) -> types.AtomicType | types.AdapterType:
+    """Resolve a type specifier and assert that it is boolean-like."""
+    return dtype(val, state, supertype=types.BooleanType)
+
+
+@standalone.to_integer.register_arg(name="dtype")
+def integer_dtype(
+    val: type_specifier,
+    state: dict
+) -> types.AtomicType | types.AdapterType:
+    """Resolve a type specifier and assert that it is integer-like."""
+    return dtype(val, state, supertype=types.IntegerType)
+
+
+@standalone.to_float.register_arg(name="dtype")
+def float_dtype(
+    val: type_specifier,
+    state: dict
+) -> types.AtomicType | types.AdapterType:
+    """Resolve a type specifier and assert that it is float-like."""
+    return dtype(val, state, supertype=types.FloatType)
+
+
+@standalone.to_complex.register_arg(name="dtype")
+def complex_dtype(
+    val: type_specifier,
+    state: dict
+) -> types.AtomicType | types.AdapterType:
+    """Resolve a type specifier and assert that it is complex-like."""
+    return dtype(val, state, supertype=types.ComplexType)
+
+
+@standalone.to_decimal.register_arg(name="dtype")
+def decimal_dtype(
+    val: type_specifier,
+    state: dict
+) -> types.AtomicType | types.AdapterType:
+    """Resolve a type specifier and assert that it is decimal-like."""
+    return dtype(val, state, supertype=types.DecimalType)
+
+
+@standalone.to_datetime.register_arg(name="dtype")
+def datetime_dtype(
+    val: type_specifier,
+    state: dict
+) -> types.AtomicType | types.AdapterType:
+    """Resolve a type specifier and assert that it is datetime-like."""
+    return dtype(val, state, supertype=types.DatetimeType)
+
+
+@standalone.to_timedelta.register_arg(name="dtype")
+def timedelta_dtype(
+    val: type_specifier,
+    state: dict
+) -> types.AtomicType | types.AdapterType:
+    """Resolve a type specifier and assert that it is timedelta-like."""
+    return dtype(val, state, supertype=types.TimedeltaType)
+
+
+@standalone.to_string.register_arg(name="dtype")
+def string_dtype(
+    val: type_specifier,
+    state: dict
+) -> types.AtomicType | types.AdapterType:
+    """Resolve a type specifier and assert that it is string-like."""
+    return dtype(val, state, supertype=types.StringType)
+
+
+@standalone.to_object.register_arg(name="dtype")
+def object_dtype(
+    val: type_specifier,
+    state: dict
+) -> types.AtomicType | types.AdapterType:
+    """Resolve a type specifier and assert that it is object-like."""
+    return dtype(val, state, supertype=types.ObjectType)
+
+
 #########################
 ####    ARGUMENTS    ####
 #########################
 
 
-@standalone.cast.register_arg(default=1e-6)
+# initial defaults for all conversion arguments
+defaults = {
+    "tol": 1e-6,
+    "rounding": None,
+    "unit": "ns",
+    "step_size": 1,
+    "since": "utc",
+    "tz": None,
+    "naive_tz": None,
+    "day_first": False,
+    "year_first": False,
+    "as_hours": False,
+    "true": {"true", "t", "yes", "y", "on", "1"},
+    "false": {"false", "f", "no", "n", "off", "0"},
+    "ignore_case": True,
+    "format": None,
+    "base": 0,
+    "call": None,
+    "downcast": False,
+    "errors": "raise"
+}
+
+
+@standalone.cast.register_arg(default=defaults["tol"])
+@standalone.to_boolean.register_arg(default=defaults["tol"])
 def tol(val: numeric, state: dict) -> Tolerance:
     """The maximum amount of precision loss that can occur before an error
     is raised.
@@ -184,7 +335,8 @@ def tol(val: numeric, state: dict) -> Tolerance:
     return Tolerance(val)
 
 
-@standalone.cast.register_arg(default=None)
+@standalone.cast.register_arg(default=defaults["rounding"])
+@standalone.to_boolean.register_arg(default=defaults["rounding"])
 def rounding(val: str | None, state: dict) -> str:
     """The rounding rule to use for numeric conversions.
 
@@ -299,7 +451,8 @@ def rounding(val: str | None, state: dict) -> str:
     return val
 
 
-@standalone.cast.register_arg(default="ns")
+@standalone.cast.register_arg(default=defaults["unit"])
+@standalone.to_boolean.register_arg(default=defaults["unit"])
 def unit(val: str, state: dict) -> str:
     """The unit to use for numeric <-> datetime/timedelta conversions.
 
@@ -405,7 +558,8 @@ def unit(val: str, state: dict) -> str:
     return val
 
 
-@standalone.cast.register_arg(default=1)
+@standalone.cast.register_arg(default=defaults["step_size"])
+@standalone.to_boolean.register_arg(default=defaults["step_size"])
 def step_size(val: int, state: dict) -> int:
     """The step size to use for each
     :func:`unit <pdcast.convert.arguments.unit>`.
@@ -454,7 +608,8 @@ def step_size(val: int, state: dict) -> int:
     return val
 
 
-@standalone.cast.register_arg(default="utc")
+@standalone.cast.register_arg(default=defaults["since"])
+@standalone.to_boolean.register_arg(default=defaults["since"])
 def since(val: str | datetime_like | Epoch, state: dict) -> Epoch:
     """The epoch to use for datetime/timedelta conversions.
 
@@ -611,7 +766,8 @@ def since(val: str | datetime_like | Epoch, state: dict) -> Epoch:
         raise TypeError(f"`since` must be datetime-like: {val}") from err
 
 
-@standalone.cast.register_arg(default=None)
+@standalone.cast.register_arg(default=defaults["tz"])
+@standalone.to_boolean.register_arg(default=defaults["tz"])
 def tz(
     val: str | pytz.BaseTzInfo | None,
     state: dict
@@ -721,7 +877,8 @@ def tz(
     return timezone(val)
 
 
-@standalone.cast.register_arg(default=None)
+@standalone.cast.register_arg(default=defaults["naive_tz"])
+@standalone.to_boolean.register_arg(default=defaults["naive_tz"])
 def naive_tz(
     val: str | pytz.BaseTzInfo | None,
     state: dict
@@ -763,7 +920,8 @@ def naive_tz(
     return timezone(val)
 
 
-@standalone.cast.register_arg(default=False)
+@standalone.cast.register_arg(default=defaults["day_first"])
+@standalone.to_boolean.register_arg(default=defaults["day_first"])
 def day_first(val: bool, state: dict) -> bool:
     """Indicates whether to interpret the first value in an ambiguous
     3-integer date (e.g. 01/05/09) as the day (``True``) or month
@@ -825,7 +983,8 @@ def day_first(val: bool, state: dict) -> bool:
     return bool(val)
 
 
-@standalone.cast.register_arg(default=False)
+@standalone.cast.register_arg(default=defaults["year_first"])
+@standalone.to_boolean.register_arg(default=defaults["year_first"])
 def year_first(val: bool, state: dict) -> bool:
     """Indicates whether to interpret the first value in an ambiguous
     3-integer date (e.g. 01/05/09) as the year.
@@ -877,7 +1036,8 @@ def year_first(val: bool, state: dict) -> bool:
     return bool(val)
 
 
-@standalone.cast.register_arg(default=False)
+@standalone.cast.register_arg(default=defaults["as_hours"])
+@standalone.to_boolean.register_arg(default=defaults["as_hours"])
 def as_hours(val: bool, state: dict) -> bool:
     """Indicates whether to interpret ambiguous MM:SS timedeltas as HH:MM.
 
@@ -917,7 +1077,8 @@ def as_hours(val: bool, state: dict) -> bool:
     return bool(val)
 
 
-@standalone.cast.register_arg(default={"true", "t", "yes", "y", "on", "1"})
+@standalone.cast.register_arg(default=defaults["true"])
+@standalone.to_boolean.register_arg(default=defaults["true"])
 def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
     """A set of truthy strings to use for boolean conversions.
 
@@ -1064,7 +1225,8 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
     return true_set
 
 
-@standalone.cast.register_arg(default={"false", "f", "no", "n", "off", "0"})
+@standalone.cast.register_arg(default=defaults["false"])
+@standalone.to_boolean.register_arg(default=defaults["false"])
 def false(val, state: dict) -> set[str]:
     """A set of falsy strings to use for boolean conversions.
 
@@ -1124,7 +1286,8 @@ def false(val, state: dict) -> set[str]:
     return false_set
 
 
-@standalone.cast.register_arg(default=True)
+@standalone.cast.register_arg(default=defaults["ignore_case"])
+@standalone.to_boolean.register_arg(default=defaults["ignore_case"])
 def ignore_case(val: bool, state: dict) -> bool:
     """Indicates whether to ignore differences in case during string
     conversions.
@@ -1168,7 +1331,8 @@ def ignore_case(val: bool, state: dict) -> bool:
     return bool(val)
 
 
-@standalone.cast.register_arg(default=None)
+@standalone.cast.register_arg(default=defaults["format"])
+@standalone.to_boolean.register_arg(default=defaults["format"])
 def format(val: str | None, state: dict) -> str:
     """A :ref:`format specifier <python:formatspec>` to use for string
     conversions.
@@ -1229,7 +1393,8 @@ def format(val: str | None, state: dict) -> str:
     return val
 
 
-@standalone.cast.register_arg(default=0)
+@standalone.cast.register_arg(default=defaults["base"])
+@standalone.to_boolean.register_arg(default=defaults["base"])
 def base(val: int, state: dict) -> int:
     """Base to use for integer <-> string conversions, as supplied to
     :class:`int() <python:int>`.
@@ -1328,7 +1493,8 @@ def base(val: int, state: dict) -> int:
     return val
 
 
-@standalone.cast.register_arg(default=None)
+@standalone.cast.register_arg(default=defaults["call"])
+@standalone.to_boolean.register_arg(default=defaults["call"])
 def call(val: Callable | None, state: dict) -> Callable:
     """Apply a callable over the input data, producing the desired output.
 
@@ -1342,7 +1508,8 @@ def call(val: Callable | None, state: dict) -> Callable:
     return val
 
 
-@standalone.cast.register_arg(default=False)
+@standalone.cast.register_arg(default=defaults["downcast"])
+@standalone.to_boolean.register_arg(default=defaults["downcast"])
 def downcast(
     val: bool | type_specifier,
     state: dict
@@ -1356,7 +1523,8 @@ def downcast(
     return resolve.resolve_type([val])
 
 
-@standalone.cast.register_arg(default="raise")
+@standalone.cast.register_arg(default=defaults["errors"])
+@standalone.to_boolean.register_arg(default=defaults["errors"])
 def errors(val: str, state: dict) -> str:
     """The rule to apply if/when errors are encountered during conversion.
     """

@@ -7,13 +7,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-cimport pdcast.convert as convert
+from pdcast import convert
 import pdcast.convert as convert
 cimport pdcast.detect as detect
 import pdcast.detect as detect
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
+
 from pdcast.util.type_hints import type_specifier
+from pdcast.util cimport wrapper
 
 from .base cimport AtomicType, AdapterType, CompositeType, ScalarType
 from .base import register
@@ -166,8 +168,8 @@ class CategoricalType(AdapterType):
 
     def transform(
         self,
-        series: convert.SeriesWrapper
-    ) -> convert.SeriesWrapper:
+        series: wrapper.SeriesWrapper
+    ) -> wrapper.SeriesWrapper:
         """Convert an unwrapped series into a categorical representation."""
         # discover levels automatically
         series = self.atomic_type.make_categorical(series, levels=self.levels)

@@ -9,11 +9,11 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-cimport pdcast.convert as convert
-import pdcast.convert as convert
+from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
+from pdcast.util cimport wrapper
 from pdcast.util.round cimport Tolerance
 from pdcast.util.time cimport Epoch
 from pdcast.util.time import timedelta_string_to_ns
@@ -43,20 +43,22 @@ except ImportError:
 
 class StringMixin:
 
+    conversion_func = convert.to_string
+
     #############################
     ####    SERIES METHODS   ####
     #############################
 
     def to_boolean(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         true: set,
         false: set,
         errors: str,
         ignore_case: bool,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert string data to a boolean data type."""
         # configure lookup dict
         cdef dict lookup = dict.fromkeys(true, 1) | dict.fromkeys(false, 0)
@@ -82,12 +84,12 @@ class StringMixin:
 
     def to_integer(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         base: int,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert string data to an integer data type with the given base."""
         transfer_type = resolve.resolve_type("int[python]")
         series = series.apply_with_errors(
@@ -105,12 +107,12 @@ class StringMixin:
 
     def to_float(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert string data to a floating point data type."""
         transfer_type = resolve.resolve_type("decimal")
         series = self.to_decimal(series, transfer_type, errors=errors)
@@ -124,13 +126,13 @@ class StringMixin:
 
     def to_complex(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         tol: Tolerance,
         downcast: bool | BaseType,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert string data to a complex data type."""
         # NOTE: this is technically a 3-step conversion: (1) str -> str,
         # (2) str -> float, (3) float -> complex.  This allows for full
@@ -138,12 +140,12 @@ class StringMixin:
 
         # (1) separate real, imaginary components via regex
         components = series.str.extract(complex_pattern)
-        real = convert.SeriesWrapper(
+        real = wrapper.SeriesWrapper(
             components["real"],
             hasnans=series.hasnans,
             element_type=self
         )
-        imag = convert.SeriesWrapper(
+        imag = wrapper.SeriesWrapper(
             components["imag"],
             hasnans=series.hasnans,
             element_type=self
@@ -178,16 +180,16 @@ class StringMixin:
 
     def to_datetime(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert string data into a datetime data type."""
         return dtype.from_string(series, dtype=dtype, **unused)
 
     def to_timedelta(
         self,
-        series: convert.SeriesWrapper,
+        series: wrapper.SeriesWrapper,
         dtype: AtomicType,
         unit: str,
         step_size: int,
@@ -195,7 +197,7 @@ class StringMixin:
         as_hours: bool,
         errors: str,
         **unused
-    ) -> convert.SeriesWrapper:
+    ) -> wrapper.SeriesWrapper:
         """Convert string data into a timedelta representation."""
         # 2-step conversion: str -> int, int -> timedelta
         transfer_type = resolve.resolve_type("int[python]")

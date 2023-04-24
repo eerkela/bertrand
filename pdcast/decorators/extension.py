@@ -192,6 +192,7 @@ class ExtensionFunc(BaseDecorator, threading.local):
         self,
         _func: Callable = None,
         *,
+        name: str = None,
         default: Any = no_default
     ) -> Callable:
         """A decorator that transforms a naked validation function into a
@@ -200,6 +201,10 @@ class ExtensionFunc(BaseDecorator, threading.local):
 
         Parameters
         ----------
+        name : Optional[str]
+            The name of the argument that the validator validates.  If this is
+            left as :data:`None <python:None>` (the default), then the name of
+            the validator will be used instead.
         default : Optional[Any]
             The default value to use for this argument.  This is implicitly
             passed to the validator itself, so any custom logic that is
@@ -257,51 +262,37 @@ class ExtensionFunc(BaseDecorator, threading.local):
             """Attach a validation function to the ExtensionFunc as a managed
             property.
             """
-            # ensure validator is callable
-            if not callable(validator):
-                raise TypeError(
-                    f"decorated function must be callable: {validator}"
-                )
-
-            # use name of validation function as argument name
-            name = validator.__name__
-            if name in self._validators:
-                raise KeyError(f"default argument '{name}' already exists.")
-
-            # check name exists in signature or **kwargs
-            pars = self._signature.parameters
-            if self._kwargs_name is None and name not in pars:
-                raise TypeError(
-                    f"'{self.__qualname__}()' has no argument '{name}'"
-                )
+            _name = self._check_validator(validator, name)
 
             # wrap validator to accept default arguments
             @wraps(validator)
-            def accept_default(val, state=self.default_values):
-                return validator(val, state)
+            def accept_default(val, state=self.default_values, *args, **kwargs):
+                return validator(val, state, *args, **kwargs)
 
             # get default value and validate
+            pars = self._signature.parameters
             if default is no_default:  # check for annotation
-                if name in pars and pars[name].default is not inspect._empty:
-                    self._defaults[name] = accept_default(pars[name].default)
+                if _name in pars and pars[_name].default is not inspect._empty:
+                    # self._defaults[_name] = accept_default(pars[_name].default)
+                    self._defaults[_name] = pars[_name].default
             else:
-                self._defaults[name] = accept_default(default)
+                self._defaults[_name] = accept_default(default)
 
             # generate getter, setter, and deleter attributes for @property
             def getter(self) -> Any:
-                if name in self._vals:
-                    return self._vals[name]
-                if name in self._defaults:
-                    return self._defaults[name]
-                raise AttributeError(f"'{name}' has no default value")
+                if _name in self._vals:
+                    return self._vals[_name]
+                if _name in self._defaults:
+                    return self._defaults[_name]
+                raise AttributeError(f"'{_name}' has no default value")
 
             def setter(self, val: Any) -> None:
-                self._vals[name] = accept_default(val)
+                self._vals[_name] = accept_default(val)
 
             def deleter(self) -> None:
-                if name in self._defaults:
-                    accept_default(self._defaults[name])
-                self._vals.pop(name, None)
+                if _name in self._defaults:
+                    accept_default(self._defaults[_name])
+                self._vals.pop(_name, None)
 
             # attach @property to DefaultFunc
             prop = property(
@@ -310,10 +301,10 @@ class ExtensionFunc(BaseDecorator, threading.local):
                 deleter,
                 doc=validator.__doc__
             )
-            setattr(type(self), name, prop)
+            setattr(type(self), _name, prop)
 
             # remember validator
-            self._validators[name] = accept_default
+            self._validators[_name] = accept_default
             return accept_default
 
         if _func is None:
@@ -436,6 +427,40 @@ class ExtensionFunc(BaseDecorator, threading.local):
             for name in args:
                 delattr(self, name)
 
+    def _check_validator(self, validator: Callable, name: str) -> str:
+        """Ensure that an argument validation function is of the expected form.
+        """
+        # ensure validator is callable
+        if not callable(validator):
+            raise TypeError(f"validator must be callable: {validator}")
+
+        # ensure validator accepts at least 2 arguments
+        if len(inspect.signature(validator).parameters) < 2:
+            raise TypeError(
+                f"validator must accept at least 2 arguments: {validator}"
+            )
+
+        # get name of validated argument
+        if name is None:
+            name = validator.__name__
+        elif not isinstance(name, str):
+            raise TypeError(f"name must be a string, not {type(name)}")
+
+        # check name is not duplicate
+        if name in self._validators:
+            raise KeyError(
+                f"default argument '{name}' already exists."
+            )
+
+        # check name exists in signature or **kwargs
+        pars = self._signature.parameters
+        if self._kwargs_name is None and name not in pars:
+            raise TypeError(
+                f"'{self.__qualname__}()' has no argument '{name}'"
+            )
+
+        return name
+
     def _reconstruct_signature(self) -> list[str]:
         """Reconstruct the original function's signature in string form,
         incorporating the default values from this ExtensionFunc.
@@ -458,14 +483,14 @@ class ExtensionFunc(BaseDecorator, threading.local):
         for par in parameters.values():
             # display default value
             if par.name in defaults:
-                signature.append(f"{par.name}={defaults[par.name]}")
+                signature.append(f"{par.name}={repr(defaults[par.name])}")
 
             # display extension arguments if they have default values
             elif par.name == self._kwargs_name:
                 kwargs = {
                     k: v for k, v in defaults.items() if k not in parameters
                 }
-                signature.extend(f"{k}={v}" for k, v in kwargs.items())
+                signature.extend(f"{k}={repr(v)}" for k, v in kwargs.items())
                 signature.append(f"**{self._kwargs_name}")
 
             # arg has no default

@@ -1057,3 +1057,7 @@ class Property(VirtualAttribute):
         """Analogue of `@prop.deleter` for virtual properties."""
         self._property = self._property.deleter(fdel)
         return self
+
+    def __call__(self, *args, **kwargs):
+        """Call the property, producing an identical error to python."""
+        return self._property(*args, **kwargs)  # raises TypeError
