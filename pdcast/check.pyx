@@ -3,6 +3,8 @@
 """
 from typing import Any
 
+import pandas as pd
+
 from pdcast.decorators.attachable import attachable
 from pdcast.detect import detect_type
 from pdcast.resolve import resolve_type
@@ -53,6 +55,27 @@ def typecheck(
     AtomicType.contains : Customizable membership checks.
     AdapterType.contains : Customizable membership checks.
     """
+    # DataFrame (columnwise) case
+    if isinstance(data, pd.DataFrame):
+        columns = data.columns
+        if isinstance(dtype, dict):
+            bad = [col for col in dtype if col not in columns]
+            if bad:
+                raise ValueError(f"column not found: {repr(bad)}")
+        else:
+            dtype = dict.fromkeys(columns, dtype)
+
+        # pass each column individually
+        return all(
+            typecheck(
+                data[col],
+                typespec,
+                include_subtypes=include_subtypes,
+                ignore_adapters=ignore_adapters
+            )
+            for col, typespec in dtype.items()
+        )
+
     cdef CompositeType data_type = CompositeType(detect_type(data))
     cdef CompositeType target_type = resolve_type([dtype])
 

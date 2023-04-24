@@ -25,7 +25,7 @@ import pdcast.types as types
 
 
 @attachable
-def detect_type(data: Any, skip_na: bool = True) -> types.BaseType:
+def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
     """Infer types from example data.
 
     Arguments
@@ -58,6 +58,13 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType:
     # trivial case: example is already a type object
     if isinstance(data, types.BaseType):
         return data
+
+    # DataFrame (columnwise) case
+    if isinstance(data, pd.DataFrame):
+        columnwise = {}
+        for col in data.columns:
+            columnwise[col] = detect_type(data[col], skip_na=skip_na)
+        return columnwise
 
     cdef object fill_value = None
     cdef types.BaseType result = None

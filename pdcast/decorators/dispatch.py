@@ -148,9 +148,7 @@ class DispatchFunc(BaseDecorator):
 
     def register_type(
         self,
-        _func: Callable = None,
-        *,
-        types: type_specifier | Iterable[type_specifier] | None = None
+        types: type_specifier | Iterable[type_specifier]
     ) -> Callable:
         """A decorator that transforms a naked function into a dispatched
         implementation for this :class:`DispatchFunc`.
@@ -190,10 +188,7 @@ class DispatchFunc(BaseDecorator):
         See the :func:`dispatch` :ref:`API docs <dispatch.dispatched>` for
         example usage.
         """
-        if types is None:
-            types = ()
-        else:
-            types = resolve.resolve_type([types])
+        types = resolve.resolve_type([types])
 
         def implementation(target: Callable) -> Callable:
             """Attach a dispatched implementation to the DispatchFunc with the
@@ -202,30 +197,18 @@ class DispatchFunc(BaseDecorator):
             # ensure target is callable
             if not callable(target):
                 raise TypeError(
-                    f"decorated function must be callable: {target}"
+                    f"decorated function must be callable: {repr(target)}"
                 )
 
-            # ensure implementation accepts at least one non-self parameter
+            # TODO: ensure implementation accepts at least one non-self parameter
 
             # broadcast to selected types
-            if types:
-                for typ in types:
-                    self._dispatched[typ] = target
-            else:
-                # NOTE: callable might be a method of an AtomicType/AdapterType
-                # subclass.  These can still be discovered without explicit
-                # types through __init_subclass__.  We just mark the functions
-                # that are requesting it here so we can bind them later.
-                # if target in naked:
-                #     naked[target].add(self)
-                # else:
-                naked[target] = self
+            for typ in types:
+                self._dispatched[typ] = target
 
             return target
 
-        if _func is None:
-            return implementation
-        return implementation(_func)
+        return implementation
 
     def _dispatch_scalar(
         self,

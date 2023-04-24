@@ -111,7 +111,6 @@ class FloatMixin:
     ####    SERIES METHODS    ####
     ##############################
 
-    @dispatch
     def round(
         self,
         series: wrapper.SeriesWrapper,

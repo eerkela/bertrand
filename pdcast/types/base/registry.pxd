@@ -8,7 +8,6 @@ cdef class CacheValue:
 cdef class TypeRegistry:
     cdef:
         CacheValue _aliases
-        CacheValue _dispatch_map
         CacheValue _regex
         CacheValue _resolvable
         list atomic_types

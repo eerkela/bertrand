@@ -6,7 +6,7 @@ from typing import Callable, Iterable
 
 import pytz
 
-import pdcast.convert.standalone as standalone
+from . import standalone
 import pdcast.detect as detect
 import pdcast.resolve as resolve
 import pdcast.types as types
@@ -88,7 +88,11 @@ def dtype(
     else:
         val = resolve.resolve_type(val)
         if val.unwrap() is None:
-            val.atomic_type = detect.detect_type(data)
+            if "data" not in state:
+                raise ValueError(
+                    "cannot perform anonymous conversion without data"
+                )
+            val.atomic_type = detect.detect_type(state["data"])
 
     # reject composite
     if isinstance(val, types.CompositeType):
@@ -193,6 +197,33 @@ def object_dtype(
 #########################
 
 
+def conversion_argument(default):
+    """Convenience decorator to broadcast a conversion argument across all
+    conversions simultaneously.
+    """
+    conversion_funcs = (
+        standalone.cast,
+        standalone.to_boolean,
+        standalone.to_integer,
+        standalone.to_float,
+        standalone.to_complex,
+        standalone.to_decimal,
+        standalone.to_datetime,
+        standalone.to_timedelta,
+        standalone.to_string,
+        standalone.to_object
+    )
+
+    def decorator(func):
+        """"""
+        result = func
+        for conv in conversion_funcs:
+            result = conv.register_arg(result, default=default)
+        return result
+
+    return decorator
+
+
 # initial defaults for all conversion arguments
 defaults = {
     "tol": 1e-6,
@@ -216,8 +247,7 @@ defaults = {
 }
 
 
-@standalone.cast.register_arg(default=defaults["tol"])
-@standalone.to_boolean.register_arg(default=defaults["tol"])
+@conversion_argument(default=defaults["tol"])
 def tol(val: numeric, state: dict) -> Tolerance:
     """The maximum amount of precision loss that can occur before an error
     is raised.
@@ -335,8 +365,7 @@ def tol(val: numeric, state: dict) -> Tolerance:
     return Tolerance(val)
 
 
-@standalone.cast.register_arg(default=defaults["rounding"])
-@standalone.to_boolean.register_arg(default=defaults["rounding"])
+@conversion_argument(default=defaults["rounding"])
 def rounding(val: str | None, state: dict) -> str:
     """The rounding rule to use for numeric conversions.
 
@@ -451,8 +480,7 @@ def rounding(val: str | None, state: dict) -> str:
     return val
 
 
-@standalone.cast.register_arg(default=defaults["unit"])
-@standalone.to_boolean.register_arg(default=defaults["unit"])
+@conversion_argument(default=defaults["unit"])
 def unit(val: str, state: dict) -> str:
     """The unit to use for numeric <-> datetime/timedelta conversions.
 
@@ -558,8 +586,7 @@ def unit(val: str, state: dict) -> str:
     return val
 
 
-@standalone.cast.register_arg(default=defaults["step_size"])
-@standalone.to_boolean.register_arg(default=defaults["step_size"])
+@conversion_argument(default=defaults["step_size"])
 def step_size(val: int, state: dict) -> int:
     """The step size to use for each
     :func:`unit <pdcast.convert.arguments.unit>`.
@@ -608,8 +635,7 @@ def step_size(val: int, state: dict) -> int:
     return val
 
 
-@standalone.cast.register_arg(default=defaults["since"])
-@standalone.to_boolean.register_arg(default=defaults["since"])
+@conversion_argument(default=defaults["since"])
 def since(val: str | datetime_like | Epoch, state: dict) -> Epoch:
     """The epoch to use for datetime/timedelta conversions.
 
@@ -766,8 +792,7 @@ def since(val: str | datetime_like | Epoch, state: dict) -> Epoch:
         raise TypeError(f"`since` must be datetime-like: {val}") from err
 
 
-@standalone.cast.register_arg(default=defaults["tz"])
-@standalone.to_boolean.register_arg(default=defaults["tz"])
+@conversion_argument(default=defaults["tz"])
 def tz(
     val: str | pytz.BaseTzInfo | None,
     state: dict
@@ -877,8 +902,7 @@ def tz(
     return timezone(val)
 
 
-@standalone.cast.register_arg(default=defaults["naive_tz"])
-@standalone.to_boolean.register_arg(default=defaults["naive_tz"])
+@conversion_argument(default=defaults["naive_tz"])
 def naive_tz(
     val: str | pytz.BaseTzInfo | None,
     state: dict
@@ -920,8 +944,7 @@ def naive_tz(
     return timezone(val)
 
 
-@standalone.cast.register_arg(default=defaults["day_first"])
-@standalone.to_boolean.register_arg(default=defaults["day_first"])
+@conversion_argument(default=defaults["day_first"])
 def day_first(val: bool, state: dict) -> bool:
     """Indicates whether to interpret the first value in an ambiguous
     3-integer date (e.g. 01/05/09) as the day (``True``) or month
@@ -983,8 +1006,7 @@ def day_first(val: bool, state: dict) -> bool:
     return bool(val)
 
 
-@standalone.cast.register_arg(default=defaults["year_first"])
-@standalone.to_boolean.register_arg(default=defaults["year_first"])
+@conversion_argument(default=defaults["year_first"])
 def year_first(val: bool, state: dict) -> bool:
     """Indicates whether to interpret the first value in an ambiguous
     3-integer date (e.g. 01/05/09) as the year.
@@ -1036,8 +1058,7 @@ def year_first(val: bool, state: dict) -> bool:
     return bool(val)
 
 
-@standalone.cast.register_arg(default=defaults["as_hours"])
-@standalone.to_boolean.register_arg(default=defaults["as_hours"])
+@conversion_argument(default=defaults["as_hours"])
 def as_hours(val: bool, state: dict) -> bool:
     """Indicates whether to interpret ambiguous MM:SS timedeltas as HH:MM.
 
@@ -1077,8 +1098,7 @@ def as_hours(val: bool, state: dict) -> bool:
     return bool(val)
 
 
-@standalone.cast.register_arg(default=defaults["true"])
-@standalone.to_boolean.register_arg(default=defaults["true"])
+@conversion_argument(default=defaults["true"])
 def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
     """A set of truthy strings to use for boolean conversions.
 
@@ -1225,8 +1245,7 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
     return true_set
 
 
-@standalone.cast.register_arg(default=defaults["false"])
-@standalone.to_boolean.register_arg(default=defaults["false"])
+@conversion_argument(default=defaults["false"])
 def false(val, state: dict) -> set[str]:
     """A set of falsy strings to use for boolean conversions.
 
@@ -1286,8 +1305,7 @@ def false(val, state: dict) -> set[str]:
     return false_set
 
 
-@standalone.cast.register_arg(default=defaults["ignore_case"])
-@standalone.to_boolean.register_arg(default=defaults["ignore_case"])
+@conversion_argument(default=defaults["ignore_case"])
 def ignore_case(val: bool, state: dict) -> bool:
     """Indicates whether to ignore differences in case during string
     conversions.
@@ -1331,8 +1349,7 @@ def ignore_case(val: bool, state: dict) -> bool:
     return bool(val)
 
 
-@standalone.cast.register_arg(default=defaults["format"])
-@standalone.to_boolean.register_arg(default=defaults["format"])
+@conversion_argument(default=defaults["format"])
 def format(val: str | None, state: dict) -> str:
     """A :ref:`format specifier <python:formatspec>` to use for string
     conversions.
@@ -1393,8 +1410,7 @@ def format(val: str | None, state: dict) -> str:
     return val
 
 
-@standalone.cast.register_arg(default=defaults["base"])
-@standalone.to_boolean.register_arg(default=defaults["base"])
+@conversion_argument(default=defaults["base"])
 def base(val: int, state: dict) -> int:
     """Base to use for integer <-> string conversions, as supplied to
     :class:`int() <python:int>`.
@@ -1493,8 +1509,7 @@ def base(val: int, state: dict) -> int:
     return val
 
 
-@standalone.cast.register_arg(default=defaults["call"])
-@standalone.to_boolean.register_arg(default=defaults["call"])
+@conversion_argument(default=defaults["call"])
 def call(val: Callable | None, state: dict) -> Callable:
     """Apply a callable over the input data, producing the desired output.
 
@@ -1508,8 +1523,7 @@ def call(val: Callable | None, state: dict) -> Callable:
     return val
 
 
-@standalone.cast.register_arg(default=defaults["downcast"])
-@standalone.to_boolean.register_arg(default=defaults["downcast"])
+@conversion_argument(default=defaults["downcast"])
 def downcast(
     val: bool | type_specifier,
     state: dict
@@ -1523,8 +1537,7 @@ def downcast(
     return resolve.resolve_type([val])
 
 
-@standalone.cast.register_arg(default=defaults["errors"])
-@standalone.to_boolean.register_arg(default=defaults["errors"])
+@conversion_argument(default=defaults["errors"])
 def errors(val: str, state: dict) -> str:
     """The rule to apply if/when errors are encountered during conversion.
     """

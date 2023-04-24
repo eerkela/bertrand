@@ -35,7 +35,7 @@ clean:
 	@rm -r build/
 
 #	clear __pycache__
-	@find . | grep -E "(/__pycache__$|\.pyc$|\.pyo$)" | xargs rm -rf
+	@find . | grep -E '(/__pycache__$|\.pyc$|\.pyo$)' | xargs rm -rf
 
 #	remove documentation stubs
 	@rm -r docs/build

@@ -33,6 +33,11 @@ from pdcast.util.type_hints import array_like, type_specifier
 # TODO: IntegerType.downcast should accept a tolerance argument
 
 
+# TODO: what if to_x methods are completely decoupled from type definitions
+# convert/ would store all of them, and could use decorators freely.
+# Generic case contains current logic for AtomicType itself.
+
+
 # conversions
 # +------------------------------------------------
 # |           | b | i | f | c | d | d | t | s | o |

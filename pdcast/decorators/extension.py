@@ -272,9 +272,13 @@ class ExtensionFunc(BaseDecorator, threading.local):
             # get default value and validate
             pars = self._signature.parameters
             if default is no_default:  # check for annotation
-                if _name in pars and pars[_name].default is not inspect._empty:
+                if _name in pars:
+                    annotation = pars[_name].default
+                else:
+                    annotation = inspect._empty
+                if annotation is not inspect._empty:
                     # self._defaults[_name] = accept_default(pars[_name].default)
-                    self._defaults[_name] = pars[_name].default
+                    self._defaults[_name] = annotation
             else:
                 self._defaults[_name] = accept_default(default)
 
@@ -557,3 +561,20 @@ class ExtensionFunc(BaseDecorator, threading.local):
         """
         sig = self._reconstruct_signature()
         return f"{self.__wrapped__.__qualname__}({', '.join(sig)})"
+
+
+
+# from .attachable import attachable
+# from .dispatch import dispatch
+
+
+# @attachable
+# @extension_func
+# @dispatch
+# def foo(bar, baz, qux=2):
+#     return bar, baz
+
+
+# @foo.register_arg
+# def qux(val, state):
+#     return int(val)

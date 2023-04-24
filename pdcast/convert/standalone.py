@@ -6,22 +6,13 @@ from typing import Any, Optional
 
 import pandas as pd
 
-import pdcast.resolve as resolve
-import pdcast.detect as detect
 from pdcast.decorators.attachable import attachable
 from pdcast.decorators.base import BaseDecorator
 from pdcast.decorators.extension import extension_func
 from pdcast.decorators.dispatch import dispatch
-import pdcast._patch as _patch
-import pdcast.types as types
 
-import pdcast.util.wrapper as wrapper
-
+from pdcast.util import wrapper
 from pdcast.util.type_hints import type_specifier
-
-
-# TODO: generic implementations just call series.element_type.to_x
-
 
 
 # ignore this file when doing string-based object lookups in resolve_type()

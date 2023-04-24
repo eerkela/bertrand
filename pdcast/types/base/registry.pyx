@@ -115,9 +115,9 @@ cdef class TypeRegistry:
         self.atomic_types.clear()
         self.update_hash()
 
-    ###################################
-    ####    REGULAR EXPRESSIONS    ####
-    ###################################
+    #####################
+    ####    REGEX    ####
+    #####################
 
     @property
     def aliases(self) -> dict:
@@ -199,68 +199,6 @@ cdef class TypeRegistry:
 
         # return cached value
         return self._resolvable.value
-
-    ########################
-    ####    DISPATCH    ####
-    ########################
-
-    @property
-    def dispatch_map(self) -> dict[str, dict[atomic.AtomicType, Callable]]:
-        """Return an up-to-date dictionary of all methods that are currently
-        being dispatched to Series objects based on their type.
-
-        The structure of this dictionary reflects the calling signature of
-        the methods it contains.  It goes as follows:
-
-        .. code::
-
-            {
-                namespace1 (str): {
-                    method1_name (str): {
-                        atomic_type1 (type): method1 (Callable),
-                        atomic_type2 (type): method1 (Callable),
-                        ...
-                    },
-                    method2_name (str): {
-                        atomic_type1 (type): method2 (Callable),
-                        atomic_type2 (type): method2 (Callable),
-                        ...
-                    },
-                    ...
-                },
-                ...
-                None: {
-                    method3_name (str): {
-                        atomic_type1 (type): method3 (Callable),
-                        atomic_type2 (type): method3 (Callable),
-                        ...
-                    },
-                    ...
-                }
-            }
-
-        """
-        # check if cache is out of date
-        if self.needs_updating(self._dispatch_map):
-            # building a dispatch map consists of 4 steps:
-            # 1) For each type held in registry, check for @dispatch methods.
-            # 2) For each @dispatch method, setdefault(namespace, {}).
-            # 3) namespace.setdefault(method_name, {}).
-            # 4) method_name |= {atomic_type: method_def}.
-            result = {}
-            for atomic_type in self.atomic_types:
-                for method_name in dir(atomic_type):
-                    method_def = getattr(atomic_type, method_name)
-                    if hasattr(method_def, "_dispatch"):
-                        namespace = method_def._namespace
-                        submap = result.setdefault(namespace, {})
-                        submap = submap.setdefault(method_name, {})
-                        submap[atomic_type] = method_def
-
-            self._dispatch_map = self.remember(result)
-
-        # return cached value
-        return self._dispatch_map.value
 
     #######################
     ####    PRIVATE    ####
