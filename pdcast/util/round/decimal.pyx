@@ -11,16 +11,19 @@ import pandas as pd
 
 from pdcast.util.type_hints import array_like
 
+from .round import round, snap
+
 
 ######################
 ####    PUBLIC    ####
 ######################
 
 
+@round.overload("decimal")
 def round_decimal(
     val: decimal.Decimal | array_like,
-    str rule = "half_even",
-    int decimals = 0
+    str rule,
+    int decimals
 ) -> decimal.Decimal | array_like:
     """Performs fast, elementwise rounding on a decimal scalars and arrays,
     according to the given rounding rule.
@@ -54,11 +57,6 @@ def round_decimal(
         'ceiling', 'down', 'up', 'half_floor', 'half_ceiling', 'half_down',
         'half_up', 'half_even').
     """
-    if rule not in rounding_rules:
-        raise ValueError(
-            f"`rule` must be one of {tuple(rounding_rules)}, not {repr(rule)}"
-        )
-
     # array
     if isinstance(val, np.ndarray):
         return _round_decimal_array(

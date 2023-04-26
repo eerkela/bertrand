@@ -6,7 +6,7 @@ from typing import Callable, Iterable
 
 import pytz
 
-from . import standalone
+from . import base
 import pdcast.detect as detect
 import pdcast.resolve as resolve
 import pdcast.types as types
@@ -67,7 +67,7 @@ def assert_sets_are_disjoint(set_1: set, set_2: set) -> None:
 ######################
 
 
-@standalone.cast.register_arg
+@base.cast.register_arg
 def dtype(
     val: type_specifier,
     state: dict,
@@ -111,7 +111,7 @@ def dtype(
     return val
 
 
-@standalone.to_boolean.register_arg(name="dtype")
+@base.to_boolean.register_arg(name="dtype", default="bool")
 def boolean_dtype(
     val: type_specifier,
     state: dict
@@ -120,7 +120,7 @@ def boolean_dtype(
     return dtype(val, state, supertype=types.BooleanType)
 
 
-@standalone.to_integer.register_arg(name="dtype")
+@base.to_integer.register_arg(name="dtype", default="int")
 def integer_dtype(
     val: type_specifier,
     state: dict
@@ -129,7 +129,7 @@ def integer_dtype(
     return dtype(val, state, supertype=types.IntegerType)
 
 
-@standalone.to_float.register_arg(name="dtype")
+@base.to_float.register_arg(name="dtype", default="float")
 def float_dtype(
     val: type_specifier,
     state: dict
@@ -138,7 +138,7 @@ def float_dtype(
     return dtype(val, state, supertype=types.FloatType)
 
 
-@standalone.to_complex.register_arg(name="dtype")
+@base.to_complex.register_arg(name="dtype", default="complex")
 def complex_dtype(
     val: type_specifier,
     state: dict
@@ -147,7 +147,7 @@ def complex_dtype(
     return dtype(val, state, supertype=types.ComplexType)
 
 
-@standalone.to_decimal.register_arg(name="dtype")
+@base.to_decimal.register_arg(name="dtype", default="decimal")
 def decimal_dtype(
     val: type_specifier,
     state: dict
@@ -156,7 +156,7 @@ def decimal_dtype(
     return dtype(val, state, supertype=types.DecimalType)
 
 
-@standalone.to_datetime.register_arg(name="dtype")
+@base.to_datetime.register_arg(name="dtype", default="datetime")
 def datetime_dtype(
     val: type_specifier,
     state: dict
@@ -165,7 +165,7 @@ def datetime_dtype(
     return dtype(val, state, supertype=types.DatetimeType)
 
 
-@standalone.to_timedelta.register_arg(name="dtype")
+@base.to_timedelta.register_arg(name="dtype", default="timedelta")
 def timedelta_dtype(
     val: type_specifier,
     state: dict
@@ -174,7 +174,7 @@ def timedelta_dtype(
     return dtype(val, state, supertype=types.TimedeltaType)
 
 
-@standalone.to_string.register_arg(name="dtype")
+@base.to_string.register_arg(name="dtype", default="string")
 def string_dtype(
     val: type_specifier,
     state: dict
@@ -183,7 +183,7 @@ def string_dtype(
     return dtype(val, state, supertype=types.StringType)
 
 
-@standalone.to_object.register_arg(name="dtype")
+@base.to_object.register_arg(name="dtype", default="object")
 def object_dtype(
     val: type_specifier,
     state: dict
@@ -202,16 +202,16 @@ def conversion_argument(default):
     conversions simultaneously.
     """
     conversion_funcs = (
-        standalone.cast,
-        standalone.to_boolean,
-        standalone.to_integer,
-        standalone.to_float,
-        standalone.to_complex,
-        standalone.to_decimal,
-        standalone.to_datetime,
-        standalone.to_timedelta,
-        standalone.to_string,
-        standalone.to_object
+        base.cast,
+        base.to_boolean,
+        base.to_integer,
+        base.to_float,
+        base.to_complex,
+        base.to_decimal,
+        base.to_datetime,
+        base.to_timedelta,
+        base.to_string,
+        base.to_object
     )
 
     def decorator(func):
@@ -781,7 +781,7 @@ def since(val: str | datetime_like | Epoch, state: dict) -> Epoch:
         return val
 
     if isinstance(val, str) and val not in epoch_aliases:
-        val = standalone.cast(val, "datetime")
+        val = base.cast(val, "datetime")
         if len(val) != 1:
             raise ValueError(f"`since` must be scalar")
         val = val[0]

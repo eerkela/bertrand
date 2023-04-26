@@ -3,13 +3,6 @@ in a variety of formats.
 
 Functions
 ---------
-pandas_timestamp_to_ns()
-    Convert ``pandas.Timestamp`` objects into an integer number of nanoseconds
-    from the utc epoch.
-
-localize_pydatetime()
-    Localize a python ``datetime.datetime`` object to the specified time zone.
-
 ns_to_pydatetime()
     Convert an integer vector of nanoseconds from the utc epoch into
     corresponding ``datetime.datetime`` objects.
@@ -51,23 +44,20 @@ import pandas as pd
 import pytz
 import tzlocal
 
+from pdcast.decorators import attachable
+from pdcast.decorators import dispatch
+from pdcast.decorators import extension
+
+from pdcast.util import wrapper
 from pdcast.util.type_hints import datetime_like
 
 from .calendar import date_to_days, days_in_month
 from .timedelta import pytimedelta_to_ns
+from .timezone import localize_pydatetime_scalar
 from .unit cimport as_ns
 
 
-################################
-####    PANDAS TIMESTAMP    ####
-################################
 
-
-def pandas_timestamp_to_ns(object date, object tz = None) -> int:
-    """Convert a pandas Timestamp into a nanosecond offset from UTC."""
-    if tz and not date.tzinfo:
-        date = date.tz_localize(tz)
-    return date.value
 
 ###############################
 ####    PYTHON DATETIME    ####
@@ -76,35 +66,6 @@ def pandas_timestamp_to_ns(object date, object tz = None) -> int:
 
 cdef object py_naive_utc = datetime.datetime.utcfromtimestamp(0)
 cdef object py_aware_utc = pytz.timezone("UTC").localize(py_naive_utc)
-
-
-def localize_pydatetime(
-    date: datetime.datetime,
-    tz: pytz.BaseTzInfo,
-    naive_tz: pytz.BaseTzInfo
-) -> datetime.datetime:
-    """Localize a scalar python datetime to the given timezone."""
-    if not date.tzinfo:
-        # NOTE: datetime is naive - 4 cases
-        # (1) naive_tz is None and tz is None: do nothing
-        # (2) naive_tz is None and tz is not None: localize directly
-        # (3) naive_tz is not None and tz is None: convert to utc and strip
-        # (4) naive_tz is not None and tz is not None: localize, then convert
-        if naive_tz is None:
-            if tz is None:
-                return date  # (1)
-            return tz.localize(date)  # (2)
-        date = naive_tz.localize(date)
-        if tz is None:
-            return date.astimezone(pytz.utc).replace(tzinfo=None)  # (3)
-        return date.astimezone(tz)  # (4)
-
-    # NOTE: datetime is aware - 2 cases
-    # (5) tz is None: convert to utc and strip
-    # (6) tz is not None: convert to final tz
-    if tz is None:
-        return date.astimezone(pytz.utc).replace(tzinfo=None)  # (5)
-    return date.astimezone(tz)  # (6)
 
 
 def ns_to_pydatetime(object ns, object tz = None) -> datetime.datetime:
@@ -317,7 +278,7 @@ def string_to_pydatetime(
             raise filter_dateutil_parser_error(err) from None
 
     # apply timezone
-    return localize_pydatetime(result, tz=tz, naive_tz=naive_tz)
+    return localize_pydatetime_scalar(result, tz=tz, naive_tz=naive_tz)
 
 
 ####################
@@ -336,20 +297,3 @@ def filter_dateutil_parser_error(err) -> Exception:
     if parser_overflow_pattern.search(err_msg):
         return OverflowError(err_msg)
     return ValueError(err_msg)
-
-
-def timezone(tz: str | datetime.tzinfo | None) -> pytz.BaseTzInfo:
-    """Convert a time zone specifier into a ``datetime.tzinfo`` object."""
-    if tz is None:
-        return None
-
-    # trivial case
-    if isinstance(tz, pytz.BaseTzInfo):
-        return tz
-
-    # local specifier
-    if isinstance(tz, str) and tz.lower() == "local":
-        return pytz.timezone(tzlocal.get_localzone_name())
-
-    # IANA string
-    return pytz.timezone(tz)

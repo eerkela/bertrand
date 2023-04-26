@@ -1,0 +1,209 @@
+from __future__ import annotations
+import datetime
+from functools import partial
+
+import pandas as pd
+import pytz
+import tzlocal
+
+from pdcast.decorators import attachable
+from pdcast.decorators import dispatch
+from pdcast.decorators import extension
+
+from pdcast.util import wrapper
+
+
+######################
+####    PUBLIC    ####
+######################
+
+
+@extension.extension_func
+@dispatch.dispatch
+def localize(
+    series: wrapper.SeriesWrapper,
+    tz: str | pytz.BaseTzInfo | None,
+    naive_tz: str | pytz.BaseTzInfo | None = None,
+) -> wrapper.SeriesWrapper:
+    """
+    """
+    raise NotImplementedError(
+        f"{series.element_type} objects do not carry timezone information"
+    )
+
+
+@attachable.attachable
+@extension.extension_func
+def tz_localize(
+    series: wrapper.SeriesWrapper,
+    tz: str | pytz.BaseTzInfo | None,
+    **unused
+) -> wrapper.SeriesWrapper:
+    """TODO"""
+    # emulate pandas tz_localize limitation
+    if series.element_type.tz:
+        raise TypeError("Already tz-aware, use tz_convert to convert.")
+
+    return localize(series, tz=tz, naive_tz=None)
+
+
+@attachable.attachable
+@extension.extension_func
+def tz_convert(
+    series: wrapper.SeriesWrapper,
+    tz: str | pytz.BaseTzInfo | None,
+    **unused
+) -> wrapper.SeriesWrapper:
+    """TODO"""
+    # emulate pandas tz_convert limitation
+    if not series.element_type.tz:
+        raise TypeError(
+            "Cannot convert tz-naive Timestamp, use tz_localize to localize"
+        )
+
+    return localize(series, tz=tz, naive_tz=None)
+
+
+#########################
+####    ARGUMENTS    ####
+#########################
+
+
+@localize.register_arg(name="tz")
+@localize.register_arg(name="naive_tz")
+@tz_localize.register_arg
+@tz_convert.register_arg
+def tz(tz: str | pytz.BaseTzInfo | None) -> pytz.BaseTzInfo:
+    """Convert a time zone specifier into a ``datetime.tzinfo`` object."""
+    if tz is None:
+        return None
+
+    # trivial case
+    if isinstance(tz, pytz.BaseTzInfo):
+        return tz
+
+    # local specifier
+    if isinstance(tz, str) and tz.lower() == "local":
+        return pytz.timezone(tzlocal.get_localzone_name())
+
+    # IANA string
+    return pytz.timezone(tz)
+
+
+######################
+####    PANDAS    ####
+######################
+
+
+@localize.overload("datetime[pandas]")
+def localize_pandas_timestamp(
+    series: wrapper.SeriesWrapper,
+    tz: pytz.BaseTzInfo | None,
+    naive_tz: pytz.BaseTzInfo | None
+) -> wrapper.SeriesWrapper:
+    """TODO"""
+    series_type = series.element_type
+    series = series.rectify()
+
+    # delegate to original pandas tz_localize, tz_convert
+    loc = series.dt.tz_localize
+    conv = series.dt.tz_convert
+    if isinstance(loc, attachable.VirtualAttribute):
+        loc = loc.original
+    if isinstance(conv, attachable.VirtualAttribute):
+        conv = conv.original
+
+    # series is naive
+    if series_type.tz is None:
+        if naive_tz is None:
+            if tz is None:  # do nothing
+                result = series.series.copy()
+            else:  # localize to tz
+                result = loc(series.series, tz)
+        else:
+            result = conv(loc(series.series, naive_tz), tz)
+
+    # series is aware
+    else:
+        result = conv(series.series, tz)
+
+    return wrapper.SeriesWrapper(
+        result,
+        hasnans=series.hasnans,
+        element_type=series_type.replace(tz=tz)
+    )
+
+
+def localize_pandas_timestamp_scalar(
+    dt: pd.Timestamp,
+    tz: pytz.BaseTzInfo | None,
+    naive_tz: pytz.BaseTzInfo | None
+) -> datetime.datetime:
+    """Localize a scalar datetime.datetime object to the given tz."""
+    # datetime is naive - apply naive_tz
+    if not dt.tzinfo:
+        if naive_tz is None:
+            if tz is None:
+                return dt  # do nothing
+            return dt.tz_localize(tz)  # localize directly to final tz
+
+        dt = dt.tz_localize(naive_tz)  # localize to naive_tz
+
+    # datetime is aware
+    return dt.tz_convert(tz)
+
+
+######################
+####    PYTHON    ####
+######################
+
+
+@localize.overload("datetime[python]")
+def localize_pydatetime(
+    series: wrapper.SeriesWrapper,
+    tz: pytz.BaseTzInfo | None,
+    naive_tz: pytz.BaseTzInfo | None,
+) -> wrapper.SeriesWrapper:
+    """TODO"""
+    # trivial case
+    if all(x is None for x in (series.element_type.tz, naive_tz, tz)):
+        return series.copy()
+
+    return series.apply_with_errors(
+        partial(
+            localize_pydatetime_scalar,
+            tz=tz,
+            naive_tz=naive_tz
+        ),
+        errors="raise",
+        element_type=series.element_type.replace(tz=tz)
+    )
+
+
+def localize_pydatetime_scalar(
+    dt: datetime.datetime,
+    tz: pytz.BaseTzInfo | None,
+    naive_tz: pytz.BaseTzInfo | None
+) -> datetime.datetime:
+    """Localize a scalar datetime.datetime object to the given tz."""
+    # datetime is naive - apply naive_tz
+    if not dt.tzinfo:
+        if naive_tz is None:
+            if tz is None:
+                return dt  # do nothing
+            return tz.localize(dt)  # localize directly to final tz
+
+        dt = naive_tz.localize(dt)  # localize to naive_tz
+
+    # datetime is aware
+    if tz is None:  # convert to utc, then strip tzinfo
+        return dt.astimezone(utc).replace(tzinfo=None)
+    return dt.astimezone(tz)  # convert to final tz
+
+
+#######################
+####    PRIVATE    ####
+#######################
+
+
+utc = datetime.timezone.utc

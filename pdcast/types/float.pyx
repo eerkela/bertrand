@@ -13,11 +13,6 @@ from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
-from pdcast.util cimport wrapper
-from pdcast.util.error import shorten_list
-from pdcast.util.round cimport Tolerance
-from pdcast.util.round import round_float
-from pdcast.util.time cimport Epoch
 from pdcast.util.type_hints import numeric
 
 from .base cimport AtomicType, CompositeType
@@ -46,40 +41,6 @@ class FloatMixin:
     ####    TYPE METHODS    ####
     ############################
 
-    def downcast(
-        self,
-        series: wrapper.SeriesWrapper,
-        tol: Tolerance,
-        smallest: CompositeType = None
-    ) -> wrapper.SeriesWrapper:
-        """Reduce the itemsize of a float type to fit the observed range."""
-        # get downcast candidates
-        smaller = self.smaller
-        if smallest is not None:
-            filtered = []
-            for t in reversed(smaller):
-                filtered.append(t)
-                if t in smallest:
-                    break  # stop at largest type contained in `smallest`
-            smaller = reversed(filtered)
-
-        for s in smaller:
-            try:
-                attempt = super().to_float(
-                    series,
-                    dtype=s,
-                    tol=tol,
-                    downcast=None,
-                    errors="raise"
-                )
-            except Exception:
-                # NOTE: if this method mysteriously fails to downcast for some
-                # reason, check that it does not enter this block
-                continue
-            if attempt.within_tol(series, tol=tol.real).all():
-                return attempt
-        return series
-
     @property
     def equiv_complex(self) -> AtomicType:
         c_root = complex_types.ComplexType.instance()
@@ -106,153 +67,6 @@ class FloatMixin:
         # sort by itemsize
         result.sort(key=lambda x: x.itemsize)
         return result
-
-    ##############################
-    ####    SERIES METHODS    ####
-    ##############################
-
-    def round(
-        self,
-        series: wrapper.SeriesWrapper,
-        decimals: int = 0,
-        rule: str = "half_even"
-    ) -> wrapper.SeriesWrapper:
-        """Round a floating point series to the given number of decimal places
-        using the specified rounding rule.
-        """
-        return wrapper.SeriesWrapper(
-            round_float(series.rectify().series, rule=rule, decimals=decimals),
-            hasnans=series.hasnans,
-            element_type=series.element_type
-        )
-
-    @dispatch
-    def snap(
-        self,
-        series: wrapper.SeriesWrapper,
-        tol: numeric = 1e-6
-    ) -> wrapper.SeriesWrapper:
-        """Snap each element of the series to the nearest integer if it is
-        within the specified tolerance.
-        """
-        tol = Tolerance(tol)
-        if not tol:  # trivial case, tol=0
-            return series.copy()
-
-        rounded = self.round(series, rule="half_even")
-        return wrapper.SeriesWrapper(
-            series.series.where((
-                (series.series - rounded).abs() > tol.real),
-                rounded.series
-            ),
-            hasnans=series.hasnans,
-            element_type=series.element_type
-        )
-
-    def snap_round(
-        self,
-        series: wrapper.SeriesWrapper,
-        tol: numeric,
-        rule: str,
-        errors: str
-    ) -> wrapper.SeriesWrapper:
-        """Snap a series to the nearest integer within `tol`, and then round
-        any remaining results according to the given rule.  Rejects any outputs
-        that are not integer-like by the end of this process.
-        """
-        # apply tolerance, then check for non-integers if not rounding
-        if tol or rule is None:
-            rounded = self.round(series, rule="half_even")  # compute once
-            outside = ~series.within_tol(rounded, tol=tol)
-            if tol:
-                element_type = series.element_type
-                series = series.where(outside.series, rounded.series)
-                series.element_type = element_type
-
-            # check for non-integer (ignore if rounding)
-            if rule is None and outside.any():
-                if errors == "coerce":
-                    series = self.round(series, "down")
-                else:
-                    raise ValueError(
-                        f"precision loss exceeds tolerance {float(tol):g} at "
-                        f"index {shorten_list(outside[outside].index.values)}"
-                    )
-
-        # round according to specified rule
-        if rule:
-            series = self.round(series, rule=rule)
-
-        return series
-
-    def to_boolean(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        rounding: str,
-        tol: Tolerance,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert floating point data to a boolean data type."""
-        series = self.snap_round(
-            series,
-            tol=tol.real,
-            rule=rounding,
-            errors=errors
-        )
-        series, dtype = series.boundscheck(dtype, errors=errors)
-        return super().to_boolean(series, dtype=dtype, errors=errors)
-
-    def to_integer(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        rounding: str,
-        tol: Tolerance,
-        downcast: CompositeType,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert floating point data to an integer data type."""
-        series = self.snap_round(
-            series,
-            tol=tol.real,
-            rule=rounding,
-            errors=errors
-        )
-        series, dtype = series.boundscheck(dtype, errors=errors)
-        return super().to_integer(
-            series,
-            dtype=dtype,
-            downcast=downcast,
-            errors=errors
-        )
-
-
-class LongDoubleSpecialCase:
-    """Special cases of the above conversions for longdouble types."""
-
-    def to_decimal(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """A special case of FloatMixin.to_decimal() that bypasses `TypeError:
-        conversion from numpy.float128 to Decimal is not supported`.
-        """
-        # convert longdouble to integer ratio and then to decimal
-        def call(x):
-            n, d = x.as_integer_ratio()
-            return dtype.type_def(n) / d
-
-        return series.apply_with_errors(
-            call=call,
-            errors=errors,
-            element_type=dtype
-        )
 
 
 #######################
@@ -331,7 +145,7 @@ class Float64Type(FloatMixin, AtomicType):
 @register(cond=has_longdouble)
 @generic
 @subtype(FloatType)
-class Float80Type(LongDoubleSpecialCase, AtomicType):
+class Float80Type(FloatMixin, AtomicType):
 
     name = "float80"
     aliases = {

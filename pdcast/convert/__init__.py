@@ -42,4 +42,4 @@ SeriesWrapper
     convenience methods for conversions and ``@dispatch`` methods.
 """
 from .arguments import *
-from .standalone import *
+from .base import *

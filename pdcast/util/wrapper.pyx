@@ -18,10 +18,8 @@ cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 cimport pdcast.types as types
 import pdcast.types as types
+import pdcast.types.array.abstract as abstract
 
-import pdcast.convert.standalone as standalone
-
-import pdcast.util.array as array
 from pdcast.util.error import shorten_list
 from pdcast.util.type_hints import array_like, numeric, type_specifier
 
@@ -213,7 +211,7 @@ cdef class SeriesWrapper:
         # contain complex values.  In this case, we reduce it to a loop.
         if self.series.dtype.kind == "O":
             result = np.frompyfunc(np.imag, 1, 1)(self.series)
-            if isinstance(target.dtype, array.AbstractDtype):
+            if isinstance(target.dtype, abstract.AbstractDtype):
                 result = result.astype(target.dtype)
         else:
             result = pd.Series(np.imag(self.series), index=self.index)
@@ -261,7 +259,7 @@ cdef class SeriesWrapper:
         # contain complex values.  In this case, we reduce it to a loop.
         if self.series.dtype.kind == "O":
             result = np.frompyfunc(np.real, 1, 1)(self.series)
-            if isinstance(target.dtype, array.AbstractDtype):
+            if isinstance(target.dtype, abstract.AbstractDtype):
                 result = result.astype(target.dtype)
         else:
             result = pd.Series(np.real(self.series), index=self.index)

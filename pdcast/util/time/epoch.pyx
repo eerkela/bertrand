@@ -11,6 +11,13 @@ cimport pdcast.util.time.unit as unit
 import pdcast.util.time.unit as unit
 from pdcast.util.type_hints import datetime_like
 
+# from pdcast import convert
+
+
+# TODO: replace pandas_timestamp_to_ns, etc. with raw convert.to_integer
+# calls.
+# -> convert all times into numpy datetime64s, then just get the integer value.
+
 
 #########################
 ####    CONSTANTS    ####
@@ -112,3 +119,12 @@ cdef class Epoch:
 
     def __gt__(self, other) -> bool:
         return isinstance(other, Epoch) and self.offset > other.offset
+
+
+
+def pandas_timestamp_to_ns(object date, object tz = None) -> int:
+    """Convert a pandas Timestamp into a nanosecond offset from UTC."""
+    if tz and not date.tzinfo:
+        date = date.tz_localize(tz)
+    return date.value
+

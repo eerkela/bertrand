@@ -22,8 +22,8 @@ cimport pdcast.detect as detect
 import pdcast.detect as detect
 import pdcast.types as types
 cimport pdcast.types as types
+import pdcast.types.array.abstract as abstract
 
-import pdcast.util.array as array 
 from pdcast.util.type_hints import type_specifier
 
 
@@ -197,7 +197,7 @@ cdef types.ScalarType resolve_typespec_dtype_pandas(object input_dtype):
     AtomicType.
     """
     # fastpath for AbstractDtypes
-    if isinstance(input_dtype, array.AbstractDtype):
+    if isinstance(input_dtype, abstract.AbstractDtype):
         return input_dtype._atomic_type
 
     cdef types.TypeRegistry registry = types.AtomicType.registry

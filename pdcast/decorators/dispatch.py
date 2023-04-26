@@ -43,12 +43,35 @@ from .base import BaseDecorator
 # TODO: when dispatching to a method, have to account for self argument
 
 
+# TODO: include optional targetable: bool argument to @dispatch
+# this forces the function to accept a second argument, `dtype`, which must be
+# a type specifier.  For these functions, implementations can be dispatched
+# based on both the first and second arguments, rather than just the first.
+
+# @to_datetime.overload("string", target="datetime[python]")
+# @to_datetime.overload("int", target="datetime[pandas]")
+
+
+
+# TODO: __getitem__ allows users to check which implementation will be used
+# for a given data type
+# cast["int"]["datetime"]
+# round["int"]
+
+# __getitem__ returns a TypeDict struct that automatically resolves its keys
+# during lookup.
+
+
 ######################
 ####    PUBLIC    ####
 ######################
 
 
-def dispatch(func: Callable) -> Callable:
+def dispatch(
+    _func: Callable = None,
+    *,
+    wrap_adapters: bool = True
+) -> Callable:
     """A decorator that allows a Python function to dispatch to multiple
     implementations based on the type of its first argument.
 
@@ -78,7 +101,13 @@ def dispatch(func: Callable) -> Callable:
     except that it is extended to handle vectorized data in the ``pdcast``
     :doc:`type system </content/types/types>`.
     """
-    return DispatchFunc(func, wrap_adapters=True)
+    def decorator(func: Callable):
+        """Convert a callable into a DispatchFunc object."""
+        return DispatchFunc(func, wrap_adapters=wrap_adapters)
+
+    if _func is None:
+        return decorator
+    return decorator(_func)
 
 
 #######################
@@ -105,14 +134,18 @@ class DispatchFunc(BaseDecorator):
         {"_signature", "_dispatched", "_wrap_adapters"}
     )
 
-    def __init__(self, func: Callable, wrap_adapters: bool):
+    def __init__(
+        self,
+        func: Callable,
+        wrap_adapters: bool
+    ):
         super().__init__(func=func)
+        self._wrap_adapters = bool(wrap_adapters)
 
-        # ensure function accepts at least 1 argument
+        # validate signature
         if len(inspect.signature(func).parameters) < 1:
             raise TypeError("func must accept at least one argument")
 
-        self._wrap_adapters = wrap_adapters
         self._dispatched = {}  # TODO: make this a WeakKeyDictionary
 
     @property
@@ -135,7 +168,7 @@ class DispatchFunc(BaseDecorator):
             ...     print("generic implementation")
             ...     return bar
 
-            >>> @foo.register_type(types="int")
+            >>> @foo.overload("int")
             ... def integer_foo(bar):
             ...     print("integer implementation")
             ...     return bar
@@ -144,9 +177,9 @@ class DispatchFunc(BaseDecorator):
 
         .. TODO: check
         """
-        return MappingProxyType(self._dispatched)
+        return MappingProxyType(self._dispatched.copy())
 
-    def register_type(
+    def overload(
         self,
         types: type_specifier | Iterable[type_specifier]
     ) -> Callable:
@@ -190,25 +223,34 @@ class DispatchFunc(BaseDecorator):
         """
         types = resolve.resolve_type([types])
 
-        def implementation(target: Callable) -> Callable:
+        def implementation(call: Callable) -> Callable:
             """Attach a dispatched implementation to the DispatchFunc with the
             associated types.
             """
-            # ensure target is callable
-            if not callable(target):
+            # ensure call is callable
+            if not callable(call):
                 raise TypeError(
-                    f"decorated function must be callable: {repr(target)}"
+                    f"decorated function must be callable: {repr(call)}"
                 )
 
             # TODO: ensure implementation accepts at least one non-self parameter
 
             # broadcast to selected types
             for typ in types:
-                self._dispatched[typ] = target
+                self._dispatched[typ] = call
 
-            return target
+            return call
 
         return implementation
+
+    def generic(
+        self,
+        *args,
+        **kwargs
+    ) -> pd.Series | wrapper.SeriesWrapper:
+        """A reference to the generic implementation of the decorated function.
+        """
+        return self.__wrapped__(*args, **kwargs)
 
     def _dispatch_scalar(
         self,
@@ -216,7 +258,7 @@ class DispatchFunc(BaseDecorator):
         *args,
         **kwargs
     ) -> wrapper.SeriesWrapper:
-        """Dispatch a homogenous series to the appropriate implementation."""
+        """Dispatch a homogenous series to the correct implementation."""
         # search for a dispatched implementation
         result = None
         for typ, implementation in self._dispatched.items():
@@ -329,23 +371,29 @@ class DispatchFunc(BaseDecorator):
         # re-wrap result
         return wrapper.SeriesWrapper(result, hasnans=series.hasnans)
 
-    def __call__(self, data: Any, *args, **kwargs):
+    def __call__(
+        self,
+        data: Any,
+        *args,
+        **kwargs
+    ) -> pd.Series | wrapper.SeriesWrapper:
         """Execute the decorated function, dispatching to an overloaded
         implementation if one exists.
         """
-        # convert data to series
-        if not isinstance(data, (pd.Series, wrapper.SeriesWrapper)):
-            data = detect.as_series(data)
+        # fastpath for pre-wrapped data (internal use)
+        if isinstance(data, wrapper.SeriesWrapper):
+            if isinstance(data.element_type, base_types.CompositeType):
+                return self._dispatch_composite(data, *args, **kwargs)
+            return self._dispatch_scalar(data, *args, **kwargs)
 
         # enter SeriesWrapper context block
-        with wrapper.SeriesWrapper(data) as series:
+        with wrapper.SeriesWrapper(detect.as_series(data)) as series:
 
             # dispatch based on inferred type
             if isinstance(series.element_type, base_types.CompositeType):
                 result = self._dispatch_composite(series, *args, **kwargs)
             else:
                 result = self._dispatch_scalar(series, *args, **kwargs)
-                result = result.rectify()
 
             # finalize
             series.series = result.series
@@ -356,7 +404,151 @@ class DispatchFunc(BaseDecorator):
         return series.series
 
 
+class DoubleDispatchFunc(DispatchFunc):
 
+    def __init__(
+        self,
+        func: Callable,
+        wrap_adapters: bool
+    ):
+        super().__init__(func=func, wrap_adapters=wrap_adapters)
+
+        # validate signature
+        if len(inspect.signature(func).parameters) < 2:
+            raise TypeError(
+                "double dispatch function must accept at least 2 arguments"
+            )
+
+    def overload(
+        self,
+        types: type_specifier | Iterable[type_specifier] | None,
+        target: type_specifier
+    ) -> Callable:
+        """A decorator that transforms a naked function into a dispatched
+        implementation for this :class:`DispatchFunc`.
+
+        Parameters
+        ----------
+        types : type_specifier | Iterable[type_specifier] | None, default None
+            The type(s) to dispatch to this implementation.  See notes for
+            handling of :data:`None <python:None>`.
+
+        Returns
+        -------
+        Callable
+            The original undecorated function.
+
+        Raises
+        ------
+        TypeError
+            If the decorated function is not callable with at least one
+            argument.
+
+        Notes
+        -----
+        This decorator works just like the :meth:`register` method of
+        :func:`singledispatch <python:functools.singledispatch>` objects,
+        except that it does not interact with type annotations in any way.
+        Instead, if a type is not provided as an argument to this method, it
+        will be disregarded during dispatch lookups, unless the decorated
+        callable is a method of an :class:`AtomicType <pdcast.AtomicType>` or
+        :class:`AdapterType <pdcast.AdapterType>` subclass.  In that case, the
+        attached type will be automatically bound to the dispatched
+        implementation during
+        :meth:`__init_subclass__() <AtomicType.__init_subclass__>`.
+
+        Examples
+        --------
+        See the :func:`dispatch` :ref:`API docs <dispatch.dispatched>` for
+        example usage.
+        """
+        types = resolve.resolve_type([types])
+
+        # process target
+        if target:
+            target = resolve.resolve_type(target)
+            if isinstance(target, base_types.CompositeType):
+                raise TypeError(f"`target` must not be composite: {target}")
+
+        def implementation(call: Callable) -> Callable:
+            """Attach a dispatched implementation to the DispatchFunc with the
+            associated types.
+            """
+            # ensure call is callable
+            if not callable(call):
+                raise TypeError(
+                    f"decorated function must be callable: {repr(call)}"
+                )
+
+            # TODO: ensure implementation accepts at least one non-self parameter
+
+            # broadcast to selected types
+            for typ in types:
+                self._dispatched[typ][target] = call
+
+            return call
+
+        return implementation
+
+    def _dispatch_scalar(
+        self,
+        series: wrapper.SeriesWrapper,
+        dtype: base_types.ScalarType,
+        *args,
+        **kwargs
+    ) -> wrapper.SeriesWrapper:
+        """Dispatch without targeting any specific data type."""
+        # search for a dispatched implementation
+        result = None
+        for typ, targets in self._dispatched.items():
+            if typ.contains(series.element_type):
+                # search for target match
+                for target, implementation in targets.items():
+                    if target and target.contains(dtype):
+                        result = implementation(series, *args, **kwargs)
+                        break
+                else:
+                    if None in targets:
+                        result = targets[None](series, *args, **kwargs)
+
+                break
+
+        # recursively unwrap adapters and retry.
+        if result is None:
+            # NOTE: This operates like a recursive stack.  Adapters are popped
+            # off the stack in FIFO order before recurring, and then each
+            # adapter is pushed back onto the stack in the same order.
+            for before in getattr(series.element_type, "adapters", ()):
+                series = series.element_type.inverse_transform(series)
+                series = self._dispatch_scalar(series, *args, **kwargs)
+                if (
+                    self._wrap_adapters and
+                    series.element_type == before.wrapped
+                ):
+                    series = series.element_type.transform(series)
+                return series
+
+        # fall back to generic implementation
+        if result is None:
+            result = self.__wrapped__(series, *args, **kwargs)
+
+        # ensure result is a SeriesWrapper
+        if not isinstance(result, wrapper.SeriesWrapper):
+            raise TypeError(
+                f"dispatched implementation of {self.__wrapped__.__name__}() "
+                f"did not return a SeriesWrapper for type: "
+                f"{series.element_type}"
+            )
+
+        # ensure final index is a subset of original index
+        if not series.index.difference(result.index).empty:
+            raise RuntimeError(
+                f"index mismatch in {self.__wrapped__.__name__}(): dispatched "
+                f"implementation for type {series.element_type} must return "
+                f"a series with the same index as the original"
+            )
+
+        return result
 
 
 
@@ -369,13 +561,13 @@ class DispatchFunc(BaseDecorator):
 #     return bar
 
 
-# @foo.register_type(types="bool")
+# @foo.overload("bool")
 # def boolean_foo(bar):
 #     print("boolean")
 #     return bar
 
 
-# @foo.register_type(types="int, float")
+# @foo.overload("int, float")
 # def numeric_foo(bar):
 #     print("int or float")
 #     return bar

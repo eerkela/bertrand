@@ -10,11 +10,6 @@ import pytz
 
 from pdcast import convert
 
-from pdcast.util import array
-from pdcast.util cimport wrapper
-from pdcast.util.error import shorten_list
-from pdcast.util.round cimport Tolerance
-from pdcast.util.time cimport Epoch
 from pdcast.util.type_hints import numeric
 
 from .base cimport AtomicType, CompositeType
@@ -39,26 +34,6 @@ class ComplexMixin:
     ############################
     ####    TYPE METHODS    ####
     ############################
-
-    def downcast(
-        self,
-        series: wrapper.SeriesWrapper,
-        tol: Tolerance,
-        smallest: CompositeType = None
-    ) -> wrapper.SeriesWrapper:
-        """Reduce the itemsize of a complex type to fit the observed range."""
-        equiv_float = self.equiv_float
-        real = equiv_float.downcast(
-            series.real,
-            smallest=smallest,
-            tol=tol
-        )
-        imag = equiv_float.downcast(
-            series.imag,
-            smallest=smallest,
-            tol=Tolerance(tol.imag)
-        )
-        return combine_real_imag(real, imag)
 
     @property
     def equiv_float(self) -> AtomicType:
@@ -86,159 +61,6 @@ class ComplexMixin:
         # sort by itemsize
         result.sort(key=lambda x: x.itemsize)
         return result
-
-    ##############################
-    ####    SERIES METHODS    ####
-    ##############################
-
-    @dispatch
-    def round(
-        self,
-        series: wrapper.SeriesWrapper,
-        decimals: int = 0,
-        rule: str = "half_even"
-    ) -> wrapper.SeriesWrapper:
-        """Round a complex series to the given number of decimal places using
-        the specified rounding rule.
-        """
-        equiv_float = self.equiv_float
-        real = equiv_float.round(series.real, decimals=decimals, rule=rule)
-        imag = equiv_float.round(series.imag, decimals=decimals, rule=rule)
-        return combine_real_imag(real, imag)
-
-    @dispatch
-    def snap(
-        self,
-        series: wrapper.SeriesWrapper,
-        tol: numeric = 1e-6
-    ) -> wrapper.SeriesWrapper:
-        """Snap each element of the series to the nearest integer if it is
-        within the specified tolerance.
-        """
-        tol = Tolerance(tol)
-        if not tol:  # trivial case, tol=0
-            return series.copy()
-
-        equiv_float = self.equiv_float
-        real = equiv_float.snap(series.real, tol=tol.real)
-        imag = equiv_float.snap(series.imag, tol=tol.imag)
-        return combine_real_imag(real, imag)
-
-    def to_boolean(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        rounding: str,
-        tol: Tolerance,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert complex data to a boolean data type."""
-        # 2-step conversion: complex -> float, float -> bool
-        transfer_type = self.equiv_float
-        series = self.to_float(
-            series,
-            dtype=transfer_type,
-            tol=tol,
-            downcast=None,
-            errors=errors
-        )
-        return transfer_type.to_boolean(
-            series,
-            dtype=dtype,
-            rounding=rounding,
-            tol=tol,
-            errors=errors,
-            **unused
-        )
-
-    def to_integer(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        rounding: str,
-        tol: Tolerance,
-        downcast: CompositeType,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert complex data to an integer data type."""
-        # 2-step conversion: complex -> float, float -> int
-        transfer_type = self.equiv_float
-        series = self.to_float(
-            series,
-            dtype=transfer_type,
-            tol=tol,
-            downcast=None,
-            errors=errors
-        )
-        return transfer_type.to_integer(
-            series,
-            dtype=dtype,
-            rounding=rounding,
-            tol=tol,
-            downcast=downcast,
-            errors=errors,
-            **unused
-        )
-
-    def to_float(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        tol: Tolerance,
-        downcast: CompositeType,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert complex data to a float data type."""
-        transfer_type = self.equiv_float
-        real = series.real
-
-        # check for nonzero imag
-        if errors != "coerce":  # ignore if coercing
-            bad = ~series.imag.within_tol(0, tol=tol.imag)
-            if bad.any():
-                raise ValueError(
-                    f"imaginary component exceeds tolerance "
-                    f"{float(tol.imag):g} at index "
-                    f"{shorten_list(bad[bad].index.values)}"
-                )
-
-        return transfer_type.to_float(
-            real,
-            dtype=dtype,
-            tol=tol,
-            downcast=downcast,
-            errors=errors,
-            **unused
-        )
-
-    def to_decimal(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        tol: Tolerance,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert complex data to a decimal data type."""
-        # 2-step conversion: complex -> float, float -> decimal
-        transfer_type = self.equiv_float
-        series = self.to_float(
-            series,
-            dtype=transfer_type,
-            tol=tol,
-            downcast=None,
-            errors=errors
-        )
-        return transfer_type.to_decimal(
-            series,
-            dtype=dtype,
-            tol=tol,
-            errors=errors,
-            **unused
-        )
 
 
 #######################
@@ -404,25 +226,3 @@ class PythonComplexType(ComplexMixin, AtomicType):
     max = 2**53
     min = -2**53
     _equiv_float = "PythonFloatType"
-
-
-#######################
-####    PRIVATE    ####
-#######################
-
-
-cdef wrapper.SeriesWrapper combine_real_imag(
-    wrapper.SeriesWrapper real,
-    wrapper.SeriesWrapper imag
-):
-    """Merge separate real, imaginary components into a complex series."""
-    largest = max(
-        [real.element_type, imag.element_type],
-        key=lambda x: x.itemsize or np.inf
-    )
-    target = largest.equiv_complex
-    result = real + imag * 1j
-    result.series = result.series.astype(target.dtype, copy=False)
-    result.element_type = target
-    result.hasnans = real.hasnans or imag.hasnans
-    return result

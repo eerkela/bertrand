@@ -7,16 +7,19 @@ import pandas as pd
 
 from pdcast.util.type_hints import array_like
 
+from .round import round, snap
+
 
 ######################
 ####    PUBLIC    ####
 ######################
 
 
+@round.overload("float")
 def round_float(
     val: float | array_like,
-    rule: str = "half_even",
-    decimals: int = 0
+    decimals: int,
+    rule: str
 ) -> float | array_like:
     """Round a float or array of floats according to the specified `rule`.
 

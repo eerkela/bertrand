@@ -15,12 +15,12 @@ from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
+from pdcast.types.array import abstract
 cimport pdcast.types.base.registry as registry
 import pdcast.types.base.registry as registry
 cimport pdcast.types.base.adapter as adapter
 cimport pdcast.types.base.composite as composite
 
-from pdcast.util import array
 from pdcast.util cimport wrapper
 from pdcast.util.round cimport Tolerance
 from pdcast.util.structs cimport LRUDict
@@ -31,11 +31,6 @@ from pdcast.util.type_hints import array_like, type_specifier
 # TODO: add examples/raises for each method
 
 # TODO: IntegerType.downcast should accept a tolerance argument
-
-
-# TODO: what if to_x methods are completely decoupled from type definitions
-# convert/ would store all of them, and could use decorators freely.
-# Generic case contains current logic for AtomicType itself.
 
 
 # conversions
@@ -323,7 +318,7 @@ cdef class AtomicType(ScalarType):
         instead.
         """
         if not self._dtype:
-            return array.construct_extension_dtype(
+            return abstract.construct_extension_dtype(
                 self,
                 is_boolean=self._is_boolean,
                 is_numeric=self._is_numeric,
@@ -981,213 +976,6 @@ cdef class AtomicType(ScalarType):
             # element_type is set in AdapterType.transform()
         )
 
-    ###########################
-    ####    CONVERSIONS    ####
-    ###########################
-
-    def to_boolean(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert generic data to a boolean data type.
-
-        Note: this method does not do any cleaning/pre-processing of the
-        incoming data.  If a type definition requires this, then it should be
-        implemented in its own `to_boolean()` equivalent before delegating
-        to this method in the return statement.  Any changes made to this
-        method will be propagated to the top-level `to_boolean()` and `cast()`
-        functions when they are called on objects of the given type.
-        """
-        if series.hasnans:
-            dtype = dtype.make_nullable()
-        return series.astype(dtype, errors=errors)
-
-    def to_integer(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        downcast: composite.CompositeType,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert generic data to an integer data type.
-
-        Note: this method does not do any cleaning/pre-processing of the
-        incoming data.  If a type definition requires this, then it should be
-        implemented in its own `to_integer()` equivalent before delegating
-        to this method in the return statement.  Any changes made to this
-        method will be propagated to the top-level `to_integer()` and `cast()`
-        functions when they are called on objects of the given type.
-        """
-        if series.hasnans:
-            dtype = dtype.make_nullable()
-
-        series = series.astype(dtype, errors=errors)
-        if downcast is not None:
-            return dtype.downcast(series, smallest=downcast)
-        return series
-
-    def to_float(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        tol: Tolerance,
-        downcast: composite.CompositeType,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert boolean data to a floating point data type."""
-        series = series.astype(dtype, errors=errors)
-        if downcast is not None:
-            return dtype.downcast(series, smallest=downcast, tol=tol)
-        return series
-
-    def to_complex(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        tol: Tolerance,
-        downcast: composite.CompositeType,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert boolean data to a complex data type."""
-        series = series.astype(dtype, errors=errors)
-        if downcast is not None:
-            return dtype.downcast(series, smallest=downcast, tol=tol)
-        return series
-
-    def to_decimal(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert boolean data to a decimal data type."""
-        return series.astype(dtype, errors=errors)
-
-    def to_datetime(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        unit: str,
-        step_size: int,
-        rounding: str,
-        tz: pytz.BaseTzInfo,
-        since: Epoch,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert integer data to a timedelta data type."""
-        # 2-step conversion: X -> decimal, decimal -> datetime
-        transfer_type = resolve.resolve_type(decimal.Decimal)
-        series = self.to_decimal(
-            series,
-            dtype=transfer_type,
-            errors="raise"
-        )
-        return transfer_type.to_datetime(
-            series,
-            dtype=dtype,
-            unit=unit,
-            step_size=step_size,
-            rounding=rounding,
-            tz=tz,
-            since=since,
-            errors=errors,
-            **unused
-        )
-
-    def to_timedelta(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        unit: str,
-        step_size: int,
-        rounding: str,
-        since: Epoch,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert integer data to a timedelta data type."""
-        # 2-step conversion: X -> decimal, decimal -> timedelta
-        transfer_type = resolve.resolve_type(decimal.Decimal)
-        series = self.to_decimal(
-            series,
-            dtype=transfer_type,
-            errors="raise"
-        )
-        return transfer_type.to_timedelta(
-            series,
-            dtype=dtype,
-            unit=unit,
-            step_size=step_size,
-            rounding=rounding,
-            since=since,
-            errors=errors,
-            **unused
-        )
-
-    def to_string(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        format: str,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert arbitrary data to a string data type.
-
-        Override this to change the behavior of the generic `to_string()` and
-        `cast()` functions on objects of the given type.
-        """
-        if format:
-            series = series.apply_with_errors(
-                lambda x: f"{x:{format}}",
-                errors=errors,
-                element_type=resolve.resolve_type(str)
-            )
-        return series.astype(dtype, errors=errors)
-
-    def to_object(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: AtomicType,
-        call: Callable,
-        errors: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert arbitrary data to an object data type."""
-        direct = call is None
-        if direct:
-            call = dtype.type_def
-
-        # object root type
-        if call is object:
-            return series.astype("O")
-
-        def wrapped_call(object val):
-            cdef object result = call(val)
-            if direct:
-                return result
-
-            cdef type output_type = type(result)
-            if output_type != dtype.type_def:
-                raise ValueError(
-                    f"`call` must return an object of type {dtype.type_def}"
-                )
-            return result
-
-        return series.apply_with_errors(
-            call=dtype.type_def,
-            errors=errors,
-            element_type=dtype
-        )
-
     ###############################
     ####    UPCAST/DOWNCAST    ####
     ###############################
@@ -1270,41 +1058,6 @@ cdef class AtomicType(ScalarType):
 
         # series fits type
         return self
-
-    def downcast(
-        self,
-        series: wrapper.SeriesWrapper,
-        tol: Tolerance,
-        smallest: composite.CompositeType = None
-    ) -> AtomicType:
-        """Downcast an :class:`AtomicType` to compress an observed series.
-
-        Parameters
-        ----------
-        series : SeriesWrapper
-            The series to be fitted.  This is always provided as a
-            :class:`SeriesWrapper` object.
-        tol : Tolerance
-            The tolerance to use for downcasting.  This sets an upper bound on
-            the amount of precision loss that can occur during this operation.
-        smallest : CompositeType, default None
-            Forbids downcasting past the specified types.  If this is omitted,
-            then downcasting will proceed to the smallest possible type rather
-            than stopping early.
-
-        Returns
-        -------
-        SeriesWrapper
-            The transformed series, returned as a :class:`SeriesWrapper`.
-
-        Notes
-        -----
-        Downcasting allows users to losslessly compress numeric data by
-        reducing the precision or range of a data type.
-        """
-        raise NotImplementedError(
-            f"'{type(self).__name__}' objects cannot be downcasted."
-        )
 
     ##############################
     ####    MISSING VALUES    ####

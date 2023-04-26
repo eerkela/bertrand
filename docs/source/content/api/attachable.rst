@@ -323,7 +323,7 @@ function decorators.  For example:
     ... def baz(val, defaults):
     ...     return int(val)
 
-    >>> @foo.register_type(types="int")
+    >>> @foo.overload("int")
     ... def integer_foo(bar, baz, **kwargs):
     ...     print("Hello, World!")
     ...     return bar + baz

@@ -39,7 +39,7 @@ def round(
     )
 
 
-@round.register_type("int")
+@round.overload("int")
 def integer_round(
     series: SeriesWrapper,
     decimals: int,
@@ -60,7 +60,7 @@ def integer_round(
     return series.copy()
 
 
-@round.register_type("float")
+@round.overload("float")
 def float_round(
     series: SeriesWrapper,
     decimals: int,
@@ -76,7 +76,7 @@ def float_round(
     )
 
 
-@round.register_type("complex")
+@round.overload("complex")
 def complex_round(
     series: SeriesWrapper,
     decimals: int,
@@ -91,7 +91,7 @@ def complex_round(
     return real + imag * 1j
 
 
-@round.register_type("decimal")
+@round.overload("decimal")
 def decimal_round(
     series: SeriesWrapper,
     decimals: int,
