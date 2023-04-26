@@ -405,7 +405,7 @@ cdef class SeriesWrapper:
             self.element_type = detect.detect_type(self.series, skip_na=False)
 
         # enter context block
-        return self
+        return self.rectify()
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit a :class:`SeriesWrapper`'s context block.

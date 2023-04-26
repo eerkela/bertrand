@@ -35,8 +35,6 @@ from pandas.core.arrays import ExtensionArray, ExtensionScalarOpsMixin
 from pandas.core.dtypes.base import ExtensionDtype
 from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
 
-import pdcast.convert as convert
-
 from pdcast.util.type_hints import type_specifier
 
 
@@ -344,6 +342,8 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
         -------
         None
         """
+        from pdcast import convert
+
         if pd.api.types.is_list_like(value):
             if pd.api.types.is_scalar(key):
                 raise ValueError(

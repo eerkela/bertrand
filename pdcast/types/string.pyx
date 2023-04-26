@@ -1,22 +1,15 @@
 """This module contains all the prepackaged string types for the ``pdcast``
 type system.
 """
-import decimal
-from functools import partial
 import re  # normal python regex for compatibility with pd.Series.str.extract
+from typing import Callable
 
 import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
-
-from pdcast.util cimport wrapper
-from pdcast.util.round cimport Tolerance
-from pdcast.util.time cimport Epoch
-from pdcast.util.time import timedelta_string_to_ns
 
 from .base cimport AtomicType, BaseType
 from .base import generic, register
@@ -43,7 +36,11 @@ except ImportError:
 
 class StringMixin:
 
-    conversion_func = convert.to_string
+    @property
+    def conversion_func(self) -> Callable:
+        from pdcast import convert
+
+        return convert.to_string
 
 
 #######################

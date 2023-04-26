@@ -11,7 +11,6 @@ import pandas as pd
 from pandas.api.extensions import ExtensionDtype, register_extension_dtype
 import pytz
 
-from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -22,9 +21,7 @@ cimport pdcast.types.base.adapter as adapter
 cimport pdcast.types.base.composite as composite
 
 from pdcast.util cimport wrapper
-from pdcast.util.round cimport Tolerance
 from pdcast.util.structs cimport LRUDict
-from pdcast.util.time cimport Epoch
 from pdcast.util.type_hints import array_like, type_specifier
 
 
@@ -363,6 +360,8 @@ cdef class AtomicType(ScalarType):
     @property
     def conversion_func(self) -> Callable:
         """The conversion function to use when targeting this type."""
+        from pdcast import convert
+
         return convert.to_object
 
     ############################

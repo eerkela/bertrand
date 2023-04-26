@@ -76,6 +76,10 @@ class BaseDecorator:
         result += [k for k in dir(self.__wrapped__) if k not in result]
         return result
 
+    def __call__(self, *args, **kwargs):
+        """Invoke the wrapped object's ``__call__()`` method."""
+        return self.__wrapped__(*args, **kwargs)
+
     def __str__(self) -> str:
         """Pass ``str()`` calls to wrapped object."""
         return str(self.__wrapped__)
@@ -92,10 +96,17 @@ class BaseDecorator:
         """Pass ``iter()`` calls to wrapped object."""
         return iter(self.__wrapped__)
 
-    def __len__(self):
+    def __len__(self) -> int:
         """Pass ``len()`` calls to wrapped object."""
         return len(self.__wrapped__)
 
-    def __call__(self, *args, **kwargs):
-        """Invoke the wrapped object's ``__call__()`` method."""
-        return self.__wrapped__(*args, **kwargs)
+    def __getitem__(self, key) -> Any:
+        """Pass indexing to wrapped object."""
+        return self.__wrapped__.__getitem__(key)
+
+    def __setitem__(self, key, value) -> None:
+        """Pass index assignment to wrapped object."""
+        return self.__wrapped__.__setitem__(key, value)
+
+    def __delitem__(self, key) -> None:
+        return self.__wrapped__.__delitem__(key)

@@ -3,20 +3,18 @@ type system.
 """
 import decimal
 import sys
+from typing import Callable
 
 import numpy as np
 cimport numpy as np
-import pandas as pd
-import pytz
 
-from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
 from pdcast.util.type_hints import numeric
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, generic, subtype, register
+from .base import generic, subtype, register
 import pdcast.types.complex as complex_types
 
 
@@ -35,7 +33,11 @@ cdef bint has_longdouble = (np.dtype(np.longdouble).itemsize > 8)
 
 class FloatMixin:
 
-    conversion_func = convert.to_float
+    @property
+    def conversion_func(self) -> Callable:
+        from pdcast import convert
+
+        return convert.to_float
 
     ############################
     ####    TYPE METHODS    ####
@@ -228,7 +230,7 @@ class NumpyFloat64Type(FloatMixin, AtomicType):
 @register(cond=has_longdouble)
 @subtype(NumpyFloatType)
 @Float80Type.register_backend("numpy")
-class NumpyFloat80Type(LongDoubleSpecialCase, AtomicType):
+class NumpyFloat80Type(FloatMixin, AtomicType):
 
     aliases = {np.longdouble, np.dtype(np.longdouble)}
     dtype = np.dtype(np.longdouble)

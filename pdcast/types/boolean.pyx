@@ -2,13 +2,12 @@
 type system.
 """
 import sys
+from typing import Callable
 
 import numpy as np
 cimport numpy as np
 import pandas as pd
-import pytz
 
-from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -26,9 +25,14 @@ class BooleanMixin:
     for boolean types.
     """
 
-    conversion_func = convert.to_boolean
     max = 1
     min = 0
+
+    @property
+    def conversion_func(self) -> Callable:
+        from pdcast import convert
+
+        return convert.to_boolean
 
 
 class NumpyBooleanMixin:

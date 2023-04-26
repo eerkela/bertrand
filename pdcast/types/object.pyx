@@ -8,7 +8,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdcast import convert
+
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
@@ -29,7 +29,6 @@ class ObjectType(AtomicType, cache_size=64):
 
     # internal root fields - all subtypes/backends inherit these
     _family = "object"
-    conversion_func = convert.to_object
 
     name = "object"
     aliases = {
@@ -48,6 +47,12 @@ class ObjectType(AtomicType, cache_size=64):
     @property
     def type_def(self) -> type:
         return self.kwargs["type_def"]
+
+    @property
+    def conversion_func(self) -> Callable:
+        from pdcast import convert
+
+        return convert.to_object
 
     ############################
     ####    TYPE METHODS    ####
@@ -141,34 +146,6 @@ class Test2:
 
     def __str__(self) -> str:
         return self.x
-
-
-def two_step_conversion(
-    series: wrapper.SeriesWrapper,
-    dtype: AtomicType,
-    call: Callable,
-    errors: str,
-    conv_func: Callable,
-    **unused
-) -> pd.Series:
-    """A conversion in two parts."""
-    def safe_call(object val):
-        cdef object result = call(val)
-        cdef type output_type = type(result)
-
-        if output_type != dtype.type_def:
-            raise TypeError(
-                f"`call` must return an object of type {dtype.type_def}"
-            )
-        return result
-
-    # apply `safe_call` over series and pass to delegated conversion
-    series = series.apply_with_errors(
-        call=safe_call,
-        errors=errors,
-        element_type=dtype
-    )
-    return conv_func(series, dtype=dtype, errors=errors, **unused)
 
 
 cdef object from_caller(str name, int stack_index = 0):

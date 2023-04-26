@@ -5,6 +5,7 @@ ordinary Python function into one that dispatches to a method attached to the
 inferred type of its first argument.
 """
 from __future__ import annotations
+from collections import OrderedDict
 import inspect
 from types import MappingProxyType
 from typing import Any, Callable, Iterable
@@ -70,6 +71,7 @@ from .base import BaseDecorator
 def dispatch(
     _func: Callable = None,
     *,
+    depth: int = 1,
     wrap_adapters: bool = True
 ) -> Callable:
     """A decorator that allows a Python function to dispatch to multiple
@@ -103,26 +105,134 @@ def dispatch(
     """
     def decorator(func: Callable):
         """Convert a callable into a DispatchFunc object."""
-        return DispatchFunc(func, wrap_adapters=wrap_adapters)
+        return DispatchFunc(func, depth=depth, wrap_adapters=wrap_adapters)
 
     if _func is None:
         return decorator
     return decorator(_func)
 
 
-def double_dispatch(
-    _func: Callable = None,
-    *,
-    wrap_adapters: bool = True
-) -> Callable:
-    """A decorator that implements a double dispatch mechanism based on the
-    types of its first 2 arguments.
-    """
-
-
 #######################
 ####    PRIVATE    ####
 #######################
+
+
+# TODO: contents of dispatch table:
+# table[arg1][arg2][arg3]...
+
+# each level but the last can hold the special value None as wildcard.
+# @overload(None, "int") would take in any data so long as it outputs integers.
+
+
+no_default = object()  # dummy for optional arguments in DispatchDict methods
+
+
+class DispatchDict(OrderedDict):
+    """An :class:`OrderedDict <python:collections.OrderedDict>` that stores
+    types and their dispatched implementations for :class:`DispatchFunc`
+    operations.
+    """
+
+    def __init__(self, mapping: dict | None = None):
+        super().__init__()
+        if mapping:
+            for key, val in mapping.items():
+                self.__setitem__(key, val)
+
+    @classmethod
+    def fromkeys(cls, iterable: Iterable, value: Any = None) -> DispatchDict:
+        """Implement :meth:`dict.fromkeys` for DispatchDict objects."""
+        result = DispatchDict()
+        for key in iterable:
+            result[key] = value
+        return result
+
+    def get(self, key: type_specifier, default: Any = None) -> Any:
+        """Implement :meth:`dict.get` for DispatchDict objects."""
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def pop(self, key: type_specifier, default: Any = no_default) -> Any:
+        """Implement :meth:`dict.pop` for DispatchDict objects."""
+        key_type = resolve.resolve_type(key)
+        try:
+            result = self[key_type]
+            del self[key_type]
+            return result
+        except KeyError as err:
+            if default is no_default:
+                raise err
+            return default
+
+    def setdefault(self, key: type_specifier, default: Any = None) -> Any:
+        """Implement :meth:`dict.setdefault` for DispatchDict objects."""
+        key_type = resolve.resolve_type(key)
+        try:
+            return self[key_type]
+        except KeyError:
+            self[key_type] = default
+            return default
+
+    def update(self, other) -> None:
+        """Implement :meth:`dict.update` for DispatchDict objects."""
+        for key, val in DispatchDict(other).items():
+            self[key] = val
+
+    def __or__(self, other) -> DispatchDict:
+        result = self.copy()
+        result.update(other)
+        return result
+
+    def __ior__(self, other) -> DispatchDict:
+        self.update(other)
+        return self
+
+    def __getitem__(self, key: type_specifier) -> Any:
+        # resolve key type
+        key_type = resolve.resolve_type(key)
+        if isinstance(key_type, base_types.CompositeType):
+            raise TypeError(f"key must not be composite: {repr(key)}")
+
+        # search for first match that contains key
+        for typ, val in self.items():
+            if typ.contains(key_type):
+                return val
+
+        # no match found
+        raise KeyError(str(key_type))
+
+    def __setitem__(self, key: type_specifier, value: Any) -> None:
+        # resolve key type
+        key_type = resolve.resolve_type(key)
+        if isinstance(key_type, base_types.CompositeType):
+            raise TypeError(f"key must not be composite: {repr(key)}")
+
+        # insert value in LIFO order.
+        super().__setitem__(key_type, value)
+        self.move_to_end(key_type, last=False)
+
+    def __delitem__(self, key: type_specifier) -> None:
+        # resolve key type
+        key_type = resolve.resolve_type(key)
+        if isinstance(key_type, base_types.CompositeType):
+            raise TypeError(f"key must not be composite: {repr(key)}")
+
+        # delete first match that contains key
+        for typ in self:
+            if typ.contains(key_type):
+                super().__delitem__(typ)
+                break
+        else:  # no match found
+            raise KeyError(str(key_type))
+
+    def __contains__(self, key: type_specifier):
+        try:
+            self.__getitem__(key)
+            return True
+        except KeyError:
+            return False
 
 
 class DispatchFunc(BaseDecorator):
@@ -141,22 +251,35 @@ class DispatchFunc(BaseDecorator):
 
     _reserved = (
         BaseDecorator._reserved |
-        {"_signature", "_dispatched", "_wrap_adapters"}
+        {"_signature", "_dispatched", "_depth", "_wrap_adapters"}
     )
 
     def __init__(
         self,
         func: Callable,
+        depth: int,
         wrap_adapters: bool
     ):
         super().__init__(func=func)
+        self._signature = inspect.signature(func)
+
+        # validate depth
+        if depth < 1:
+            raise ValueError(
+                f"@dispatch depth must be >= 1 for function: "
+                f"'{func.__qualname__}'"
+            )
+        if len(self._signature.parameters) < depth:
+            err_msg = f"'{func.__qualname__}' must accept at least "
+            if depth == 1:  # singular
+                err_msg += f"{depth} argument"
+            else:
+                err_msg += f"{depth} arguments"
+            raise TypeError(err_msg)
+
+        self._dispatched = DispatchDict()
         self._wrap_adapters = bool(wrap_adapters)
-
-        # validate signature
-        if len(inspect.signature(func).parameters) < 1:
-            raise TypeError("func must accept at least one argument")
-
-        self._dispatched = {}  # TODO: make this a WeakKeyDictionary
+        self._depth = depth
 
     @property
     def dispatched(self) -> MappingProxyType:
@@ -168,6 +291,12 @@ class DispatchFunc(BaseDecorator):
         MappingProxyType
             A read-only dictionary mapping types to their associated dispatch
             functions.
+
+        Notes
+        -----
+        The mapping that is returned by this method is sorted according to the
+        order in which implementations are searched when dispatching is
+        performed.  If no match is found for any of the 
 
         Examples
         --------
@@ -187,12 +316,9 @@ class DispatchFunc(BaseDecorator):
 
         .. TODO: check
         """
-        return MappingProxyType(self._dispatched.copy())
+        return MappingProxyType(self._dispatched)
 
-    def overload(
-        self,
-        types: type_specifier | Iterable[type_specifier]
-    ) -> Callable:
+    def overload(self, *args) -> Callable:
         """A decorator that transforms a naked function into a dispatched
         implementation for this :class:`DispatchFunc`.
 
@@ -231,7 +357,11 @@ class DispatchFunc(BaseDecorator):
         See the :func:`dispatch` :ref:`API docs <dispatch.dispatched>` for
         example usage.
         """
-        types = resolve.resolve_type([types])
+        if len(args) > self._depth:
+            raise TypeError(f"too many arguments to dispatch: {repr(args)}")
+
+        # TODO: the following implementation only works for depth=1.  Need to
+        # find an algorithm that works in the generic case.
 
         def implementation(call: Callable) -> Callable:
             """Attach a dispatched implementation to the DispatchFunc with the
@@ -246,8 +376,9 @@ class DispatchFunc(BaseDecorator):
             # TODO: ensure implementation accepts at least one non-self parameter
 
             # broadcast to selected types
-            for typ in types:
-                self._dispatched[typ] = call
+            for typespec in args:
+                for typ in resolve.resolve_type([typespec]):
+                    self._dispatched[typ] = call
 
             return call
 
@@ -270,11 +401,11 @@ class DispatchFunc(BaseDecorator):
     ) -> wrapper.SeriesWrapper:
         """Dispatch a homogenous series to the correct implementation."""
         # search for a dispatched implementation
-        result = None
-        for typ, implementation in self._dispatched.items():
-            if typ.contains(series.element_type):
-                result = implementation(series, *args, **kwargs)
-                break
+        try:
+            implementation = self._dispatched[series.element_type]
+            result = implementation(series, *args, **kwargs)
+        except KeyError:
+            result = None
 
         # recursively unwrap adapters and retry.
         if result is None:
@@ -311,7 +442,7 @@ class DispatchFunc(BaseDecorator):
                 f"a series with the same index as the original"
             )
 
-        return result
+        return result.rectify()
 
     def _dispatch_composite(
         self,
@@ -413,199 +544,63 @@ class DispatchFunc(BaseDecorator):
         # return as pandas Series
         return series.series
 
-    def __getitem__(self, val: type_specifier) -> Callable:
-        val_type = resolve.resolve_type(val)
-        if isinstance(val_type, base_types.CompositeType):
-            raise KeyError(f"key must not be composite: {val}")
+    def __getitem__(self, key: type_specifier) -> Callable:
+        """Get the dispatched implementation for objects of a given type.
+
+        This method searches the implementation space being managed by this
+        :class:`DispatchFunc`.  It always returns the same implementation that
+        is used when the function is invoked.
+        """
+        # resolve key
+        key_type = resolve.resolve_type(key)
 
         # search for a dispatched implementation
-        for origin, implementation in reversed(self._dispatched.items()):
-            if origin.contains(val_type):
-                return implementation
+        try:
+            return self._dispatched[key_type]
+        except KeyError:
+            pass
 
         # unwrap adapters
-        for _ in val_type.adapters:
-            return self[val_type.wrapped]  # recur
+        for _ in key_type.adapters:
+            return self[key_type.wrapped]  # recur
 
         # return generic
         return self.__wrapped__
 
-
-
-class DoubleDispatchFunc(DispatchFunc):
-
-    def __init__(
-        self,
-        func: Callable,
-        wrap_adapters: bool
-    ):
-        super().__init__(func=func, wrap_adapters=wrap_adapters)
-
-        # validate signature
-        if len(inspect.signature(func).parameters) < 2:
-            raise TypeError(
-                "double dispatch function must accept at least 2 arguments"
-            )
-
-        # maintain a separate _fallback dict
-        self._fallback = {}
-
-        # TODO: maintain separate _double and _single dictionaries.
-        # _double contains targets as its first entry
-        
-
-
-
-    def overload(
-        self,
-        origin: type_specifier | Iterable[type_specifier] | None,
-        target: type_specifier
-    ) -> Callable:
-        """A decorator that transforms a naked function into a dispatched
-        implementation for this :class:`DispatchFunc`.
-
-        Parameters
-        ----------
-        types : type_specifier | Iterable[type_specifier] | None, default None
-            The type(s) to dispatch to this implementation.  See notes for
-            handling of :data:`None <python:None>`.
-
-        Returns
-        -------
-        Callable
-            The original undecorated function.
-
-        Raises
-        ------
-        TypeError
-            If the decorated function is not callable with at least one
-            argument.
-
-        Notes
-        -----
-        This decorator works just like the :meth:`register` method of
-        :func:`singledispatch <python:functools.singledispatch>` objects,
-        except that it does not interact with type annotations in any way.
-        Instead, if a type is not provided as an argument to this method, it
-        will be disregarded during dispatch lookups, unless the decorated
-        callable is a method of an :class:`AtomicType <pdcast.AtomicType>` or
-        :class:`AdapterType <pdcast.AdapterType>` subclass.  In that case, the
-        attached type will be automatically bound to the dispatched
-        implementation during
-        :meth:`__init_subclass__() <AtomicType.__init_subclass__>`.
-
-        Examples
-        --------
-        See the :func:`dispatch` :ref:`API docs <dispatch.dispatched>` for
-        example usage.
+    def __delitem__(self, key: type_specifier) -> None:
+        """Remove an implementation from the pool.
         """
-        
-        types = resolve.resolve_type([types])
+        # resolve key
+        key_type = resolve.resolve_type(key)
 
-        # process target
-        if target:
-            target = resolve.resolve_type(target)
-            if isinstance(target, base_types.CompositeType):
-                raise TypeError(f"`target` must not be composite: {target}")
-
-        def implementation(call: Callable) -> Callable:
-            """Attach a dispatched implementation to the DispatchFunc with the
-            associated types.
-            """
-            # ensure call is callable
-            if not callable(call):
-                raise TypeError(
-                    f"decorated function must be callable: {repr(call)}"
-                )
-
-            # TODO: ensure implementation accepts at least one non-self parameter
-
-            # broadcast to selected types
-            for typ in types:
-                self._dispatched[typ][target] = call
-
-            return call
-
-        return implementation
-
-    def _dispatch_scalar(
-        self,
-        series: wrapper.SeriesWrapper,
-        dtype: base_types.ScalarType,
-        *args,
-        **kwargs
-    ) -> wrapper.SeriesWrapper:
-        """Dispatch without targeting any specific data type."""
-        # search for a dispatched implementation
-        result = None
-        for typ, targets in self._dispatched.items():
-            if typ.contains(series.element_type):
-                # search for target match
-                for target, implementation in targets.items():
-                    if target and target.contains(dtype):
-                        result = implementation(series, *args, **kwargs)
-                        break
-                else:
-                    if None in targets:
-                        result = targets[None](series, *args, **kwargs)
-
-                break
-
-        # recursively unwrap adapters and retry.
-        if result is None:
-            # NOTE: This operates like a recursive stack.  Adapters are popped
-            # off the stack in FIFO order before recurring, and then each
-            # adapter is pushed back onto the stack in the same order.
-            for before in getattr(series.element_type, "adapters", ()):
-                series = series.element_type.inverse_transform(series)
-                series = self._dispatch_scalar(series, *args, **kwargs)
-                if (
-                    self._wrap_adapters and
-                    series.element_type == before.wrapped
-                ):
-                    series = series.element_type.transform(series)
-                return series
-
-        # fall back to generic implementation
-        if result is None:
-            result = self.__wrapped__(series, *args, **kwargs)
-
-        # ensure result is a SeriesWrapper
-        if not isinstance(result, wrapper.SeriesWrapper):
-            raise TypeError(
-                f"dispatched implementation of {self.__wrapped__.__name__}() "
-                f"did not return a SeriesWrapper for type: "
-                f"{series.element_type}"
-            )
-
-        # ensure final index is a subset of original index
-        if not series.index.difference(result.index).empty:
-            raise RuntimeError(
-                f"index mismatch in {self.__wrapped__.__name__}(): dispatched "
-                f"implementation for type {series.element_type} must return "
-                f"a series with the same index as the original"
-            )
-
-        return result
+        # pass to TypeDict
+        if key_type in self._dispatched:
+            self._dispatched.__delitem__(key_type)
 
 
 
 
-
-# @dispatch
-# def foo(bar):
-#     """doc for foo()"""
-#     print("generic")
-#     return bar
-
-
-# @foo.overload("bool")
-# def boolean_foo(bar):
-#     print("boolean")
-#     return bar
+@dispatch
+def foo(bar):
+    """doc for foo()"""
+    print("generic")
+    return bar
 
 
-# @foo.overload("int, float")
-# def numeric_foo(bar):
-#     print("int or float")
-#     return bar
+@foo.overload("bool")
+def boolean_foo(bar):
+    print("boolean")
+    return bar
+
+
+@foo.overload("int")
+def integer_foo(bar):
+    print("int")
+    return bar
+
+
+@foo.overload("int8")
+def int8_foo(bar):
+    print("int8")
+    return bar
+

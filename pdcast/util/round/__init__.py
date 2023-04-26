@@ -21,7 +21,7 @@ valid_rules
     A tuple listing the various rounding rules that are accepted by this
     package.
 """
-from .round import round
+from .base import round
 from .decimal import round_decimal
 from .float import round_float
 from .integer import round_div

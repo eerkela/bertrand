@@ -32,14 +32,10 @@ subtype
 generic
     Transform a subclass of ``AtomicType`` into a generic type, which can
     reference other types as backends.
-
-dispatch
-    Mark an ``AtomicType``/``AdapterType`` method or naked python function
-    as a dispatch method for pandas Series of the associated type.
 """
 from .base import (
-    AdapterType, AtomicType, BaseType, CompositeType, dispatch, generic,
-    register, ScalarType, subtype, TypeRegistry
+    AdapterType, AtomicType, BaseType, CompositeType, generic, register,
+    ScalarType, subtype, TypeRegistry
 )
 from .boolean import (
     BooleanType, NumpyBooleanType, PandasBooleanType, PythonBooleanType
@@ -64,17 +60,17 @@ from .complex import (
     NumpyComplex64Type, NumpyComplex128Type, PythonComplexType
 )
 from .decimal import DecimalType, PythonDecimalType
-from .datetime import (
-    DatetimeType, NumpyDatetime64Type, PandasTimestampType, PythonDatetimeType
-)
-from .timedelta import (
-    TimedeltaType, NumpyTimedelta64Type, PandasTimedeltaType,
-    PythonTimedeltaType
-)
+# from .datetime import (
+#     DatetimeType, NumpyDatetime64Type, PandasTimestampType, PythonDatetimeType
+# )
+# from .timedelta import (
+#     TimedeltaType, NumpyTimedelta64Type, PandasTimedeltaType,
+#     PythonTimedeltaType
+# )
 from .string import StringType, PythonStringType
 from .object import ObjectType
-from .sparse import SparseType
-from .categorical import CategoricalType
+# from .sparse import SparseType
+# from .categorical import CategoricalType
 
 
 # conditional imports
@@ -82,7 +78,7 @@ try:
     from .float import Float80Type, NumpyFloat80Type
 except ImportError:
     pass
-try: 
+try:
     from .complex import Complex160Type, NumpyComplex160Type
 except ImportError:
     pass

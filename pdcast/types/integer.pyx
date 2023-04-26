@@ -1,20 +1,18 @@
 """This module contains all the prepackaged integer types for the ``pdcast``
 type system.
 """
-from functools import partial
 import sys
+from typing import Callable
 
 import numpy as np
 cimport numpy as np
 import pandas as pd
-import pytz
 
-from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, generic, subtype, register
+from .base import generic, subtype, register
 
 
 ######################
@@ -24,7 +22,11 @@ from .base import dispatch, generic, subtype, register
 
 class IntegerMixin:
 
-    conversion_func = convert.to_integer
+    @property
+    def conversion_func(self) -> Callable:
+        from pdcast import convert
+
+        return convert.to_integer
 
     ############################
     ####    TYPE METHODS    ####

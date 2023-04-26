@@ -68,7 +68,7 @@ def snap(
 
 
 @extension.extension_func
-@dispatch
+@dispatch.dispatch
 def snap_round(
     series: wrapper.SeriesWrapper,
     tol: numeric,
@@ -128,7 +128,7 @@ def decimals(val: int, state: dict) -> int:
     return int(val)
 
 
-@round.register_arg
+@round.register_arg(name="rule")
 def rounding(val: str | None, state: dict) -> str:
     """The rounding rule to use for numeric conversions.
 
@@ -243,7 +243,7 @@ def rounding(val: str | None, state: dict) -> str:
     return val
 
 
-@round.register_arg
+@snap.register_arg
 def tol(val: numeric, state: dict) -> Tolerance:
     """The maximum amount of precision loss that can occur before an error
     is raised.

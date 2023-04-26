@@ -3,26 +3,14 @@ type system.
 """
 import decimal
 import sys
+from typing import Callable
 
-import numpy as np
-cimport numpy as np
-import pandas as pd
-import pytz
-
-from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
-
-from pdcast.util cimport wrapper
-from pdcast.util.error import shorten_list
-from pdcast.util.round cimport Tolerance
-from pdcast.util.round import round_decimal
-from pdcast.util.time cimport Epoch
-from pdcast.util.time import as_ns, round_months_to_ns, round_years_to_ns
 from pdcast.util.type_hints import numeric
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, generic, register
+from .base import generic, register
 
 
 # https://github.com/pandas-dev/pandas/blob/e246c3b05924ac1fe083565a765ce847fcad3d91/pandas/tests/extension/decimal/array.py
@@ -35,7 +23,11 @@ from .base import dispatch, generic, register
 
 class DecimalMixin:
 
-    conversion_func = convert.to_decimal
+    @property
+    def conversion_func(self) -> Callable:
+        from pdcast import convert
+
+        return convert.to_decimal
 
 
 #######################

@@ -7,7 +7,7 @@ import pandas as pd
 
 from pdcast.util.type_hints import array_like
 
-from .round import round, snap
+from .base import round, snap
 
 
 ######################

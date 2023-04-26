@@ -2,18 +2,15 @@
 type system.
 """
 import sys
+from typing import Callable
 
 import numpy as np
 cimport numpy as np
-import pandas as pd
-import pytz
-
-from pdcast import convert
 
 from pdcast.util.type_hints import numeric
 
 from .base cimport AtomicType, CompositeType
-from .base import dispatch, generic, subtype, register
+from .base import generic, subtype, register
 import pdcast.types.float as float_types
 
 
@@ -29,7 +26,11 @@ cdef bint has_clongdouble = (np.dtype(np.clongdouble).itemsize > 16)
 
 class ComplexMixin:
 
-    conversion_func = convert.to_complex
+    @property
+    def conversion_func(self) -> Callable:
+        from pdcast import convert
+
+        return convert.to_complex
 
     ############################
     ####    TYPE METHODS    ####
