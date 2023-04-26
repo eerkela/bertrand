@@ -11,7 +11,7 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 
-import pdcast.convert as convert
+# import pdcast.convert as convert
 import pdcast.detect as detect
 import pdcast.resolve as resolve
 import pdcast.types as base_types
@@ -108,6 +108,16 @@ def dispatch(
     if _func is None:
         return decorator
     return decorator(_func)
+
+
+def double_dispatch(
+    _func: Callable = None,
+    *,
+    wrap_adapters: bool = True
+) -> Callable:
+    """A decorator that implements a double dispatch mechanism based on the
+    types of its first 2 arguments.
+    """
 
 
 #######################
@@ -403,6 +413,24 @@ class DispatchFunc(BaseDecorator):
         # return as pandas Series
         return series.series
 
+    def __getitem__(self, val: type_specifier) -> Callable:
+        val_type = resolve.resolve_type(val)
+        if isinstance(val_type, base_types.CompositeType):
+            raise KeyError(f"key must not be composite: {val}")
+
+        # search for a dispatched implementation
+        for origin, implementation in reversed(self._dispatched.items()):
+            if origin.contains(val_type):
+                return implementation
+
+        # unwrap adapters
+        for _ in val_type.adapters:
+            return self[val_type.wrapped]  # recur
+
+        # return generic
+        return self.__wrapped__
+
+
 
 class DoubleDispatchFunc(DispatchFunc):
 
@@ -419,9 +447,18 @@ class DoubleDispatchFunc(DispatchFunc):
                 "double dispatch function must accept at least 2 arguments"
             )
 
+        # maintain a separate _fallback dict
+        self._fallback = {}
+
+        # TODO: maintain separate _double and _single dictionaries.
+        # _double contains targets as its first entry
+        
+
+
+
     def overload(
         self,
-        types: type_specifier | Iterable[type_specifier] | None,
+        origin: type_specifier | Iterable[type_specifier] | None,
         target: type_specifier
     ) -> Callable:
         """A decorator that transforms a naked function into a dispatched
@@ -462,6 +499,7 @@ class DoubleDispatchFunc(DispatchFunc):
         See the :func:`dispatch` :ref:`API docs <dispatch.dispatched>` for
         example usage.
         """
+        
         types = resolve.resolve_type([types])
 
         # process target
