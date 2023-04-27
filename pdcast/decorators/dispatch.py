@@ -19,18 +19,10 @@ import pdcast.resolve as resolve
 import pdcast.types as base_types
 
 from pdcast.util import wrapper
+from pdcast.util.structs import LRUDict
 from pdcast.util.type_hints import type_specifier
 
 from .base import BaseDecorator
-
-
-# TODO: can probably support an ``operator`` argument that takes a string and
-# broadcasts to a math operator.
-
-# TODO: currently, the SeriesWrapper __enter__ statement is executed multiple
-# times for composite data.  This is expensive and should only occur once.
-# -> Maybe apply a different rule if SeriesWrapper is given another
-# SeriesWrapper as input?
 
 
 # TODO: check if output is series or serieswrapper and wrap.  otherwise return
@@ -38,30 +30,13 @@ from .base import BaseDecorator
 # disabled, then name and index will be preserved, but NAs will be excluded.
 
 
-# TODO: maybe @dispatch should take additional arguments, like wrap_adapters,
-# remove_na, replace_na, etc.
+# TODO: maybe @dispatch should take additional arguments, remove_na,
+# replace_na, etc.
 
 
 # TODO: when dispatching to a method, have to account for self argument
 
 
-# TODO: include optional targetable: bool argument to @dispatch
-# this forces the function to accept a second argument, `dtype`, which must be
-# a type specifier.  For these functions, implementations can be dispatched
-# based on both the first and second arguments, rather than just the first.
-
-# @to_datetime.overload("string", target="datetime[python]")
-# @to_datetime.overload("int", target="datetime[pandas]")
-
-
-
-# TODO: __getitem__ allows users to check which implementation will be used
-# for a given data type
-# cast["int"]["datetime"]
-# round["int"]
-
-# __getitem__ returns a TypeDict struct that automatically resolves its keys
-# during lookup.
 
 
 ######################
@@ -73,7 +48,7 @@ def dispatch(
     _func: Callable = None,
     *,
     depth: int = 1,
-    wrap_adapters: bool = True
+    wrap_adapters: bool = True  # TODO: maybe not necessary, see below
 ) -> Callable:
     """A decorator that allows a Python function to dispatch to multiple
     implementations based on the type of its first argument.
@@ -118,13 +93,6 @@ def dispatch(
 #######################
 
 
-# TODO: contents of dispatch table:
-# table[arg1][arg2][arg3]...
-
-# each level but the last can hold the special value None as wildcard.
-# @overload(None, "int") would take in any data so long as it outputs integers.
-
-
 no_default = object()  # dummy for optional arguments in DispatchDict methods
 
 
@@ -134,19 +102,23 @@ class DispatchDict(OrderedDict):
     operations.
     """
 
-    def __init__(self, mapping: dict | None = None):
+    def __init__(
+        self,
+        mapping: dict | None = None,
+        cache_size: int = 64
+    ):
         super().__init__()
         if mapping:
             for key, val in mapping.items():
-                self.__setitem__(key, val)
+                self[key] = val
+
+        self.reorder()
+        self._cache = LRUDict(maxsize=cache_size)
 
     @classmethod
     def fromkeys(cls, iterable: Iterable, value: Any = None) -> DispatchDict:
         """Implement :meth:`dict.fromkeys` for DispatchDict objects."""
-        result = DispatchDict()
-        for key in iterable:
-            result[key] = value
-        return result
+        return DispatchDict(super().fromkeys(iterable, value))
 
     def get(self, key: type_specifier, default: Any = None) -> Any:
         """Implement :meth:`dict.get` for DispatchDict objects."""
@@ -157,52 +129,59 @@ class DispatchDict(OrderedDict):
 
     def pop(self, key: type_specifier, default: Any = no_default) -> Any:
         """Implement :meth:`dict.pop` for DispatchDict objects."""
-        key_type = resolve.resolve_type(key)
+        key = _resolve_key(key)
         try:
-            result = self[key_type]
-            del self[key_type]
+            result = self[key]
+            del self[key]
             return result
         except KeyError as err:
             if default is no_default:
                 raise err
             return default
 
-    def setdefault(self, key: type_specifier, default: Any = None) -> Any:
+    def setdefault(self, key: type_specifier, default: Callable = None) -> Any:
         """Implement :meth:`dict.setdefault` for DispatchDict objects."""
-        key_type = resolve.resolve_type(key)
+        key = _resolve_key(key)
+
         try:
-            return self[key_type]
+            return self[key]
         except KeyError:
-            self[key_type] = default
+            self[key] = default
             return default
 
     def update(self, other) -> None:
         """Implement :meth:`dict.update` for DispatchDict objects."""
-        for key, val in DispatchDict(other).items():
-            self[key] = val
+        super().update(DispatchDict(other))
+        self.reorder()
+
+    def _validate_implementation(self, call: Callable) -> None:
+        """Ensure that an overloaded implementation is valid."""
+        if not callable(call):
+            raise TypeError(
+                f"overloaded implementation must be callable: {repr(call)}"
+            )
 
     def reorder(self) -> None:
         """Sort the dictionary into topological order, with most specific
         keys first.
         """
-        # get edges
-        signatures = list(self)
-        edges = [(a, b) for a in signatures for b in signatures if _edge(a, b)]
+        sigs = list(self)
+        edges = {}
 
         # group edges by first node
-        edges = groupby(lambda x: x[0], edges)
-
-        # drop first node
-        edges = {k: [b for _, b in v] for k, v in edges.items()}
+        for edge in [(a, b) for a in sigs for b in sigs if _edge(a, b)]:
+            edges.setdefault(edge[0], []).append(edge[1])
 
         # add signatures not contained in edges
-        for sig in signatures:
+        for sig in sigs:
             if sig not in edges:
                 edges[sig] = []
 
         # sort according to edges
         for sig in _sort(edges):
             super().move_to_end(sig)
+
+        # TODO: check for ambiguities?
 
     def __or__(self, other) -> DispatchDict:
         result = self.copy()
@@ -221,39 +200,42 @@ class DispatchDict(OrderedDict):
             return super().__getitem__(key)
 
         # search for first (sorted) match that fully contains key
-        while key:
+        temp = key
+        while temp:
+            # check for cached result
+            if temp in self._cache:
+                return self._cache[temp]
+
             # search for match of same length
             for sig, val in self.items():
                 if (
-                    len(sig) == len(key) and
-                    all(x.contains(y) for x, y in zip(sig, key))
+                    len(sig) == len(temp) and  # TODO: no need for length check
+                    all(x.contains(y) for x, y in zip(sig, temp))
                 ):
+                    self._cache[temp] = val
                     return val
 
             # back off and retry
-            key = key[:-1]
+            temp = temp[:-1]
 
         # no match found
-        raise KeyError(str(key))
+        raise KeyError(tuple(str(x) for x in key))
 
-    def __setitem__(self, key: type_specifier, value: Any) -> None:
+    def __setitem__(self, key: type_specifier, value: Callable) -> None:
         key = _resolve_key(key)
+        self._validate_implementation(value)
         super().__setitem__(key, value)
         self.reorder()
 
     def __delitem__(self, key: type_specifier) -> None:
-        # resolve key type
-        key_type = resolve.resolve_type(key)
-        if isinstance(key_type, base_types.CompositeType):
-            raise TypeError(f"key must not be composite: {repr(key)}")
+        key = _resolve_key(key)
 
-        # delete first match that contains key
-        for typ in self:
-            if typ.contains(key_type):
-                super().__delitem__(typ)
-                break
-        else:  # no match found
-            raise KeyError(str(key_type))
+        # require exact match
+        if super().__contains__(key):
+            return super().__delitem__(key)
+
+        # no match found
+        raise KeyError(tuple(str(x) for x in key))
 
     def __contains__(self, key: type_specifier):
         try:
@@ -390,12 +372,6 @@ class DispatchFunc(BaseDecorator):
             """Attach a dispatched implementation to the DispatchFunc with the
             associated types.
             """
-            # ensure call is callable
-            if not callable(call):
-                raise TypeError(
-                    f"overloaded implementation must be callable: {repr(call)}"
-                )
-
             # ensure at least one arg is given
             if not args:
                 raise TypeError(
@@ -435,6 +411,8 @@ class DispatchFunc(BaseDecorator):
             result = implementation(series, *args, **kwargs)
         except KeyError:
             result = None
+
+        # TODO: adapters might be handled by their own cast() overloads.
 
         # recursively unwrap adapters and retry.
         if result is None:
@@ -581,7 +559,7 @@ class DispatchFunc(BaseDecorator):
         is used when the function is invoked.
         """
         # resolve key
-        key_type = resolve.resolve_type(key)
+        key_type = resolve.resolve_type(key)  # TODO: should use _resolve_key
 
         # search for a dispatched implementation
         try:
@@ -589,7 +567,11 @@ class DispatchFunc(BaseDecorator):
         except KeyError:
             pass
 
-        # unwrap adapters
+        # TODO: maybe adapter unwrapping should be implemented in generic
+        # implementation?  Either that or convert @dispatch wrap_adapters into
+        # ignore_adapters.  Or just use **kwargs for contains() operations.
+
+        # unwrap adapters  # TODO: breaks multiple dispatch
         for _ in key_type.adapters:
             return self[key_type.wrapped]  # recur
 
@@ -599,12 +581,7 @@ class DispatchFunc(BaseDecorator):
     def __delitem__(self, key: type_specifier) -> None:
         """Remove an implementation from the pool.
         """
-        # resolve key
-        key_type = resolve.resolve_type(key)
-
-        # pass to TypeDict
-        if key_type in self._dispatched:
-            self._dispatched.__delitem__(key_type)
+        self._dispatched.__delitem__(key)
 
 
 #######################
@@ -754,29 +731,35 @@ def _sort(edges: dict) -> list:
 
 
 
+# TODO: DispatchFunc needs to bind based on inspect signature, up to a given
+# depth.
+# overload() must always accept ``depth`` arguments.  The special value None
+# signifies a wildcard.  This eliminates length checks in __getitem__, etc.
 
 
-def groupby(func, seq):
-    """ Group a collection by a key function
+# @cast.overload("sparse", None)
+# def densify()
+# -> return cast(dense series, dtype)  # recursive
 
-    >>> names = ['Alice', 'Bob', 'Charlie', 'Dan', 'Edith', 'Frank']
-    >>> groupby(len, names)  # doctest: +SKIP
-    {3: ['Bob', 'Dan'], 5: ['Alice', 'Edith', 'Frank'], 7: ['Charlie']}
-    >>> iseven = lambda x: x % 2 == 0
-    >>> groupby(iseven, [1, 2, 3, 4, 5, 6, 7, 8])  # doctest: +SKIP
-    {False: [1, 3, 5, 7], True: [2, 4, 6, 8]}
 
-    See Also:
-        ``countby``
-    """
-    d = OrderedDict()
-    for item in seq:
-        key = func(item)
-        if key not in d:
-            d[key] = []
-        d[key].append(item)
-    return d
+# @cast.overload(None, "sparse")
+# def sparsify()
+# -> result = cast(series, wrapped dtype)  # recursive
+# -> return sparse result
 
+
+# @cast.overload("int", "sparse")
+# def integer_sparsify()
+#    overloaded specifically for integers
+
+
+
+# TODO: @overload should accept *args, **kwargs, which it binds to the
+# signature.  This allows keyword dispatch.
+
+# @cast.overload(series="int", dtype="float")
+
+# These always match the generic implementation's signature.
 
 
 
@@ -800,7 +783,7 @@ def foo(bar, baz):
     return bar
 
 
-@foo.overload("int", "int")
+@foo.overload("int")
 def integer_foo(bar, baz):
     print("int")
     return bar
