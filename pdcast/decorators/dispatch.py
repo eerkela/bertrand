@@ -7,6 +7,7 @@ inferred type of its first argument.
 from __future__ import annotations
 from collections import OrderedDict
 import inspect
+import itertools
 from types import MappingProxyType
 from typing import Any, Callable, Iterable
 
@@ -180,6 +181,29 @@ class DispatchDict(OrderedDict):
         for key, val in DispatchDict(other).items():
             self[key] = val
 
+    def reorder(self) -> None:
+        """Sort the dictionary into topological order, with most specific
+        keys first.
+        """
+        # get edges
+        signatures = list(self)
+        edges = [(a, b) for a in signatures for b in signatures if _edge(a, b)]
+
+        # group edges by first node
+        edges = groupby(lambda x: x[0], edges)
+
+        # drop first node
+        edges = {k: [b for _, b in v] for k, v in edges.items()}
+
+        # add signatures not contained in edges
+        for sig in signatures:
+            if sig not in edges:
+                edges[sig] = []
+
+        # sort according to edges
+        for sig in _sort(edges):
+            super().move_to_end(sig)
+
     def __or__(self, other) -> DispatchDict:
         result = self.copy()
         result.update(other)
@@ -189,29 +213,33 @@ class DispatchDict(OrderedDict):
         self.update(other)
         return self
 
-    def __getitem__(self, key: type_specifier) -> Any:
-        # resolve key type
-        key_type = resolve.resolve_type(key)
-        if isinstance(key_type, base_types.CompositeType):
-            raise TypeError(f"key must not be composite: {repr(key)}")
+    def __getitem__(self, key: type_specifier | tuple[type_specifier]) -> Any:
+        key = _resolve_key(key)
 
-        # search for first match that contains key
-        for typ, val in self.items():
-            if typ.contains(key_type):
-                return val
+        # trivial case: key has exact match
+        if super().__contains__(key):
+            return super().__getitem__(key)
+
+        # search for first (sorted) match that fully contains key
+        while key:
+            # search for match of same length
+            for sig, val in self.items():
+                if (
+                    len(sig) == len(key) and
+                    all(x.contains(y) for x, y in zip(sig, key))
+                ):
+                    return val
+
+            # back off and retry
+            key = key[:-1]
 
         # no match found
-        raise KeyError(str(key_type))
+        raise KeyError(str(key))
 
     def __setitem__(self, key: type_specifier, value: Any) -> None:
-        # resolve key type
-        key_type = resolve.resolve_type(key)
-        if isinstance(key_type, base_types.CompositeType):
-            raise TypeError(f"key must not be composite: {repr(key)}")
-
-        # insert value in LIFO order.
-        super().__setitem__(key_type, value)
-        self.move_to_end(key_type, last=False)
+        key = _resolve_key(key)
+        super().__setitem__(key, value)
+        self.reorder()
 
     def __delitem__(self, key: type_specifier) -> None:
         # resolve key type
@@ -357,11 +385,6 @@ class DispatchFunc(BaseDecorator):
         See the :func:`dispatch` :ref:`API docs <dispatch.dispatched>` for
         example usage.
         """
-        if len(args) > self._depth:
-            raise TypeError(f"too many arguments to dispatch: {repr(args)}")
-
-        # TODO: the following implementation only works for depth=1.  Need to
-        # find an algorithm that works in the generic case.
 
         def implementation(call: Callable) -> Callable:
             """Attach a dispatched implementation to the DispatchFunc with the
@@ -370,15 +393,21 @@ class DispatchFunc(BaseDecorator):
             # ensure call is callable
             if not callable(call):
                 raise TypeError(
-                    f"decorated function must be callable: {repr(call)}"
+                    f"overloaded implementation must be callable: {repr(call)}"
                 )
 
-            # TODO: ensure implementation accepts at least one non-self parameter
+            # ensure at least one arg is given
+            if not args:
+                raise TypeError(
+                    f"'{call.__qualname__}()' must dispatch on at least one "
+                    f"argument"
+                )
 
             # broadcast to selected types
-            for typespec in args:
-                for typ in resolve.resolve_type([typespec]):
-                    self._dispatched[typ] = call
+            composites = [resolve.resolve_type([spec]) for spec in args]
+            paths = list(itertools.product(*composites))
+            for path in paths:
+                self._dispatched[path] = call
 
             return call
 
@@ -578,29 +607,218 @@ class DispatchFunc(BaseDecorator):
             self._dispatched.__delitem__(key_type)
 
 
+#######################
+####    PRIVATE    ####
+#######################
+
+
+def _resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
+    """Convert arbitrary type specifiers into a valid key for DispatchDict
+    lookups.
+    """
+    if not isinstance(key, tuple):
+        key = (key,)
+
+    key_type = []
+    for spec in key:
+        spec_type = resolve.resolve_type(spec)
+        if isinstance(spec_type, base_types.CompositeType):
+            raise TypeError(f"key must not be composite: {repr(spec)}")
+        key_type.append(spec_type)
+
+    return tuple(key_type)
+
+
+def _consistent(sig1: tuple, sig2: tuple) -> bool:
+    """Check for an overlap between two signatures.
+
+    If this returns ``True``, then it is possible for a signature to satisfy
+    both sig1 and sig2.
+    """
+    # check for empty signatures
+    if not sig1:
+        return not sig2
+    if not sig2:
+        return not sig1
+
+    # lengths match
+    if len(sig1) == len(sig2):
+        return all(x.contains(y) or y.contains(x) for x, y in zip(sig1, sig2))
+
+    return False  # not considering variadics
+
+    # lengths do not match
+    # idx1 = idx2 = 0
+    # while idx1 < len(sig1) and idx2 < len(sig2):
+    #     type1 = sig1[idx1]
+    #     type2 = sig2[idx2]
+    #     if not type1.contains(type2) and not type2.contains(type1):
+    #         return False
+    #     idx1 += 1
+    #     idx2 += 1
+
+    # return True
+
+
+def _supercedes(sig1: tuple, sig2: tuple) -> bool:
+    """Check if sig1 is consistent with and strictly more specific than sig2.
+    """
+    # same length
+    if len(sig1) == len(sig2):
+        return all(x.contains(y) for x, y in zip(sig2, sig1))
+
+    return False  # not considering variadics
+
+    # # longer
+    # idx1 = idx2 = 0
+    # while idx1 < len(sig1) and idx2 < len(sig2):
+    #     type1 = sig1[idx1]
+    #     type2 = sig2[idx2]
+    #     if not type2.contains(type1):
+    #         return False
+    #     idx1 += 1
+    #     idx2 += 1
+
+    # return True
+
+
+def _ambiguous(sig1: tuple, sig2: tuple) -> bool:
+    """Signatures are consistent, but neither is strictly more specific.
+    """
+    return (
+        _consistent(sig1, sig2) and
+        not (_supercedes(sig1, sig2) or _supercedes(sig2, sig1))
+    )
+
+
+def _edge(sig1: tuple, sig2: tuple, tie_breaker: Callable = hash) -> bool:
+    """If ``True``, check sig1 before sig2.
+
+    Ties are broken by the ``tie_breaker``, which defaults to ``hash()``
+    (psuedo-random).
+    """
+    return _supercedes(sig1, sig2) and (
+        not _supercedes(sig2, sig1) or tie_breaker(sig1) > tie_breaker(sig2)
+    )
+
+
+def _sort(edges: dict) -> list:
+    """Topological sort algorithm by Kahn (1962).
+
+    Parameters
+    ----------
+    edges : dict
+        a dict of the form {A: {B, C}} where B and C depend on A
+
+    Returns
+    -------
+    list
+        an ordered list of nodes that satisfy the dependencies of edges
+
+    Examples
+    --------
+    >>> _sort({1: (2, 3), 2: (3, )})
+    [1, 2, 3]
+
+    References
+    ----------    
+    Kahn, Arthur B. (1962), "Topological sorting of large networks",
+    Communications of the ACM
+    """
+    # invert edges: {A: {B, C}} -> {B: {A}, C: {A}}
+    inverted = OrderedDict()
+    for key, val in edges.items():
+        for item in val:
+            inverted[item] = inverted.get(item, set()) | {key}
+
+    # Proceed with Kahn topological sort algorithm
+    S = OrderedDict.fromkeys(v for v in edges if v not in inverted)
+    L = []
+    while S:
+        n, _ = S.popitem()
+        L.append(n)
+        for m in edges.get(n, ()):
+            assert n in inverted[m]
+            inverted[m].remove(n)
+            if not inverted[m]:
+                S[m] = None
+
+    # check for cycles
+    if any(inverted.get(v, None) for v in edges):
+        cycles = [v for v in edges if inverted.get(v, None)]
+        raise ValueError(f"edges are cyclic: {cycles}")
+
+    return L
+
+
+
+
+
+
+
+def groupby(func, seq):
+    """ Group a collection by a key function
+
+    >>> names = ['Alice', 'Bob', 'Charlie', 'Dan', 'Edith', 'Frank']
+    >>> groupby(len, names)  # doctest: +SKIP
+    {3: ['Bob', 'Dan'], 5: ['Alice', 'Edith', 'Frank'], 7: ['Charlie']}
+    >>> iseven = lambda x: x % 2 == 0
+    >>> groupby(iseven, [1, 2, 3, 4, 5, 6, 7, 8])  # doctest: +SKIP
+    {False: [1, 3, 5, 7], True: [2, 4, 6, 8]}
+
+    See Also:
+        ``countby``
+    """
+    d = OrderedDict()
+    for item in seq:
+        key = func(item)
+        if key not in d:
+            d[key] = []
+        d[key].append(item)
+    return d
+
+
+
+
+
+# def ambiguities(signatures):
+#     """ All signature pairs such that A is ambiguous with B """
+#     signatures = list(map(tuple, signatures))
+#     return set((a, b) for a in signatures for b in signatures
+#                if hash(a) < hash(b)
+#                and ambiguous(a, b)
+#                and not any(supercedes(c, a) and supercedes(c, b)
+#                            for c in signatures))
+
+
 
 
 @dispatch
-def foo(bar):
+def foo(bar, baz):
     """doc for foo()"""
     print("generic")
     return bar
 
 
-@foo.overload("bool")
-def boolean_foo(bar):
-    print("boolean")
-    return bar
-
-
-@foo.overload("int")
-def integer_foo(bar):
+@foo.overload("int", "int")
+def integer_foo(bar, baz):
     print("int")
     return bar
 
 
-@foo.overload("int8")
-def int8_foo(bar):
+@foo.overload("bool", "bool")
+def boolean_foo(bar, baz):
+    print("boolean")
+    return bar
+
+
+@foo.overload("int8", "int")
+def int8_foo(bar, baz):
     print("int8")
     return bar
 
+
+@foo.overload("int8[numpy]")
+def numpy_int8_foo(bar, baz):
+    print("np.int8")
+    return bar
