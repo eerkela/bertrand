@@ -14,10 +14,9 @@ from typing import Any, Callable, Iterable
 import pandas as pd
 
 # import pdcast.convert as convert
-import pdcast.detect as detect
-import pdcast.resolve as resolve
-import pdcast.types as base_types
-
+from pdcast import detect
+from pdcast import resolve
+from pdcast import types
 from pdcast.util import wrapper
 from pdcast.util.structs import LRUDict
 from pdcast.util.type_hints import type_specifier
@@ -25,18 +24,29 @@ from pdcast.util.type_hints import type_specifier
 from .base import BaseDecorator
 
 
-# TODO: check if output is series or serieswrapper and wrap.  otherwise return
-# as-is.  Maybe include a replace NA flag in @dispatch itself?  If this is
-# disabled, then name and index will be preserved, but NAs will be excluded.
+
+# TODO: None wildcard value?
 
 
-# TODO: maybe @dispatch should take additional arguments, remove_na,
-# replace_na, etc.
+# TODO: figure out a way to unwrap adapters and retry if no match is found.
+# -> this might be handled in their own overloaded implementations of
+
+# @cast.overload("sparse", None)
+# def densify()
+# -> return cast(dense series, dtype)  # recursive
+
+# @cast.overload(None, "sparse")
+# def sparsify()
+# -> result = cast(series, wrapped dtype)  # recursive
+# -> return sparse result
+
+# @cast.overload("int", "sparse")
+# def integer_sparsify()
+#    overloaded specifically for integers
 
 
-# TODO: when dispatching to a method, have to account for self argument
-
-
+# TODO: ambiguities are always solved from left to right?
+# -> seems to be default behavior
 
 
 ######################
@@ -48,7 +58,8 @@ def dispatch(
     _func: Callable = None,
     *,
     depth: int = 1,
-    wrap_adapters: bool = True  # TODO: maybe not necessary, see below
+    wrap_adapters: bool = True,
+    cache_size: int = 64
 ) -> Callable:
     """A decorator that allows a Python function to dispatch to multiple
     implementations based on the type of its first argument.
@@ -59,6 +70,10 @@ def dispatch(
         A Python function or other callable to be decorated.  This serves as a
         generic implementation and is only called if no overloaded
         implementation is found for the dispatched data.
+    wrap_adapters : bool
+        TODO
+    cache_size : int
+        TODO
 
     Returns
     -------
@@ -81,7 +96,12 @@ def dispatch(
     """
     def decorator(func: Callable):
         """Convert a callable into a DispatchFunc object."""
-        return DispatchFunc(func, depth=depth, wrap_adapters=wrap_adapters)
+        return DispatchFunc(
+            func,
+            depth=depth,
+            wrap_adapters=wrap_adapters,
+            cache_size=cache_size
+        )
 
     if _func is None:
         return decorator
@@ -112,8 +132,8 @@ class DispatchDict(OrderedDict):
             for key, val in mapping.items():
                 self[key] = val
 
-        self.reorder()
         self._cache = LRUDict(maxsize=cache_size)
+        self._ordered = False
 
     @classmethod
     def fromkeys(cls, iterable: Iterable, value: Any = None) -> DispatchDict:
@@ -152,7 +172,7 @@ class DispatchDict(OrderedDict):
     def update(self, other) -> None:
         """Implement :meth:`dict.update` for DispatchDict objects."""
         super().update(DispatchDict(other))
-        self.reorder()
+        self._ordered = False
 
     def _validate_implementation(self, call: Callable) -> None:
         """Ensure that an overloaded implementation is valid."""
@@ -181,7 +201,7 @@ class DispatchDict(OrderedDict):
         for sig in _sort(edges):
             super().move_to_end(sig)
 
-        # TODO: check for ambiguities?
+        self._ordered = True
 
     def __or__(self, other) -> DispatchDict:
         result = self.copy()
@@ -199,24 +219,20 @@ class DispatchDict(OrderedDict):
         if super().__contains__(key):
             return super().__getitem__(key)
 
+        # sort dict
+        if not self._ordered:
+            self._cache.clear()
+            self.reorder()
+
+        # check for cached result
+        if key in self._cache:
+            return self._cache[key]
+
         # search for first (sorted) match that fully contains key
-        temp = key
-        while temp:
-            # check for cached result
-            if temp in self._cache:
-                return self._cache[temp]
-
-            # search for match of same length
-            for sig, val in self.items():
-                if (
-                    len(sig) == len(temp) and  # TODO: no need for length check
-                    all(x.contains(y) for x, y in zip(sig, temp))
-                ):
-                    self._cache[temp] = val
-                    return val
-
-            # back off and retry
-            temp = temp[:-1]
+        for sig, val in self.items():
+            if all(x.contains(y) for x, y in zip(sig, key)):
+                self._cache[key] = val
+                return val
 
         # no match found
         raise KeyError(tuple(str(x) for x in key))
@@ -225,7 +241,7 @@ class DispatchDict(OrderedDict):
         key = _resolve_key(key)
         self._validate_implementation(value)
         super().__setitem__(key, value)
-        self.reorder()
+        self._ordered = False
 
     def __delitem__(self, key: type_specifier) -> None:
         key = _resolve_key(key)
@@ -261,17 +277,18 @@ class DispatchFunc(BaseDecorator):
 
     _reserved = (
         BaseDecorator._reserved |
-        {"_signature", "_dispatched", "_depth", "_wrap_adapters"}
+        {"_arguments", "_depth", "_dispatched", "_signature", "_wrap_adapters"}
     )
 
     def __init__(
         self,
         func: Callable,
         depth: int,
-        wrap_adapters: bool
+        wrap_adapters: bool,
+        cache_size: int
     ):
         super().__init__(func=func)
-        self._signature = inspect.signature(func)
+        self._wrap_adapters = bool(wrap_adapters)
 
         # validate depth
         if depth < 1:
@@ -279,17 +296,23 @@ class DispatchFunc(BaseDecorator):
                 f"@dispatch depth must be >= 1 for function: "
                 f"'{func.__qualname__}'"
             )
-        if len(self._signature.parameters) < depth:
+        self._depth = depth
+
+        # validate signature
+        self._signature = inspect.signature(func)
+        if len(self._signature.parameters) < self._depth:
             err_msg = f"'{func.__qualname__}' must accept at least "
             if depth == 1:  # singular
-                err_msg += f"{depth} argument"
+                err_msg += f"{self._depth} argument"
             else:
-                err_msg += f"{depth} arguments"
+                err_msg += f"{self._depth} arguments"
             raise TypeError(err_msg)
 
-        self._dispatched = DispatchDict()
-        self._wrap_adapters = bool(wrap_adapters)
-        self._depth = depth
+        # get arguments up to depth
+        self._arguments = list(self._signature.parameters.keys())[:self._depth]
+
+        # init dispatch table
+        self._dispatched = DispatchDict(cache_size=cache_size)
 
     @property
     def dispatched(self) -> MappingProxyType:
@@ -372,14 +395,26 @@ class DispatchFunc(BaseDecorator):
             """Attach a dispatched implementation to the DispatchFunc with the
             associated types.
             """
-            # ensure at least one arg is given
-            if not args:
+            # validate implementation signature
+            params = list(inspect.signature(call).parameters.keys())
+            if params[:self._depth] != self._arguments:
                 raise TypeError(
-                    f"'{call.__qualname__}()' must dispatch on at least one "
-                    f"argument"
+                    f"'{call.__module__}.{call.__qualname__}()' must accept "
+                    f"dispatched arguments {self._arguments} (observed: "
+                    f"{params[:self._depth]})"
                 )
 
-            # broadcast to selected types
+            # validate overloaded arguments
+            if len(args) != self._depth:
+                err_msg = (
+                    f"'{call.__module__}.{call.__qualname__}()' must dispatch "
+                    f"on exactly {self._depth} "
+                )
+                err_msg += "argument: " if self._depth == 1 else "arguments: "
+                err_msg += f"{self._arguments}"
+                raise TypeError(err_msg)
+
+            # broadcast to selected types (including composites)
             composites = [resolve.resolve_type([spec]) for spec in args]
             paths = list(itertools.product(*composites))
             for path in paths:
@@ -405,33 +440,45 @@ class DispatchFunc(BaseDecorator):
         **kwargs
     ) -> wrapper.SeriesWrapper:
         """Dispatch a homogenous series to the correct implementation."""
+        # rectify series
+        series = series.rectify()
+
+        # bind *args, **kwargs
+        bound = self._signature.bind(series, *args, **kwargs)
+        bound.apply_defaults()
+        key = (series.element_type,)
+        key += tuple(
+            detect.detect_type(bound.arguments[param])
+            for param in self._arguments[1:]
+        )
+
         # search for a dispatched implementation
         try:
-            implementation = self._dispatched[series.element_type]
-            result = implementation(series, *args, **kwargs)
+            implementation = self._dispatched[key]
+            result = implementation(*bound.args, **bound.kwargs)
         except KeyError:
             result = None
 
-        # TODO: adapters might be handled by their own cast() overloads.
+        # # TODO: adapters might be handled by their own cast() overloads.
 
-        # recursively unwrap adapters and retry.
-        if result is None:
-            # NOTE: This operates like a recursive stack.  Adapters are popped
-            # off the stack in FIFO order before recurring, and then each
-            # adapter is pushed back onto the stack in the same order.
-            for before in getattr(series.element_type, "adapters", ()):
-                series = series.element_type.inverse_transform(series)
-                series = self._dispatch_scalar(series, *args, **kwargs)
-                if (
-                    self._wrap_adapters and
-                    series.element_type == before.wrapped
-                ):
-                    series = series.element_type.transform(series)
-                return series
+        # # recursively unwrap adapters and retry.
+        # if result is None:
+        #     # NOTE: This operates like a recursive stack.  Adapters are popped
+        #     # off the stack in FIFO order before recurring, and then each
+        #     # adapter is pushed back onto the stack in the same order.
+        #     for before in getattr(series.element_type, "adapters", ()):
+        #         series = series.element_type.inverse_transform(series)
+        #         series = self._dispatch_scalar(series, *args, **kwargs)
+        #         if (
+        #             self._wrap_adapters and
+        #             series.element_type == before.wrapped
+        #         ):
+        #             series = series.element_type.transform(series)
+        #         return series
 
         # fall back to generic implementation
         if result is None:
-            result = self.__wrapped__(series, *args, **kwargs)
+            result = self.__wrapped__(**bound.arguments)
 
         # ensure result is a SeriesWrapper
         if not isinstance(result, wrapper.SeriesWrapper):
@@ -467,8 +514,8 @@ class DispatchFunc(BaseDecorator):
         # reconsider afterwards.
         observed = set()
         check_uint = [False]  # using a list avoids UnboundLocalError
-        signed = base_types.SignedIntegerType
-        unsigned = base_types.UnsignedIntegerType
+        signed = types.SignedIntegerType
+        unsigned = types.UnsignedIntegerType
 
         def transform(grp) -> pd.Series:
             """Groupwise transformation."""
@@ -530,7 +577,7 @@ class DispatchFunc(BaseDecorator):
         """
         # fastpath for pre-wrapped data (internal use)
         if isinstance(data, wrapper.SeriesWrapper):
-            if isinstance(data.element_type, base_types.CompositeType):
+            if isinstance(data.element_type, types.CompositeType):
                 return self._dispatch_composite(data, *args, **kwargs)
             return self._dispatch_scalar(data, *args, **kwargs)
 
@@ -538,7 +585,7 @@ class DispatchFunc(BaseDecorator):
         with wrapper.SeriesWrapper(detect.as_series(data)) as series:
 
             # dispatch based on inferred type
-            if isinstance(series.element_type, base_types.CompositeType):
+            if isinstance(series.element_type, types.CompositeType):
                 result = self._dispatch_composite(series, *args, **kwargs)
             else:
                 result = self._dispatch_scalar(series, *args, **kwargs)
@@ -558,22 +605,19 @@ class DispatchFunc(BaseDecorator):
         :class:`DispatchFunc`.  It always returns the same implementation that
         is used when the function is invoked.
         """
-        # resolve key
-        key_type = resolve.resolve_type(key)  # TODO: should use _resolve_key
-
         # search for a dispatched implementation
         try:
-            return self._dispatched[key_type]
+            return self._dispatched[key]
         except KeyError:
-            pass
+            return self.__wrapped__
 
         # TODO: maybe adapter unwrapping should be implemented in generic
         # implementation?  Either that or convert @dispatch wrap_adapters into
         # ignore_adapters.  Or just use **kwargs for contains() operations.
 
-        # unwrap adapters  # TODO: breaks multiple dispatch
-        for _ in key_type.adapters:
-            return self[key_type.wrapped]  # recur
+        # # unwrap adapters  # TODO: breaks multiple dispatch
+        # for _ in key_type.adapters:
+        #     return self[key_type.wrapped]  # recur
 
         # return generic
         return self.__wrapped__
@@ -582,6 +626,52 @@ class DispatchFunc(BaseDecorator):
         """Remove an implementation from the pool.
         """
         self._dispatched.__delitem__(key)
+
+    # @property
+    # def __doc__(self) -> str:
+    #     """Run time docstring."""
+    #     # header
+    #     doc = (
+    #         f"A wrapper for {self.__module__}.{self.__qualname__}() that\n"
+    #         f"dispatches to one of the following virtual methods based on the\n"
+    #         f"type of its "
+    #     )
+    #     if self._depth == 1:
+    #         doc += f"'{self._arguments[0]}' argument (in order):\n\n"
+    #     else:
+    #         doc += f"{self._arguments} arguments (in order):\n\n"
+
+    #     # dispatch table
+    #     if self._depth == 1:
+    #         docmap = {
+    #             str(k[0]): f"{v.__module__}.{v.__qualname__}()"
+    #             for k, v in self.dispatched.items()
+    #         }
+    #     else:
+    #         docmap = {
+    #             tuple(str(x) for x in k): f"{v.__module__}.{v.__qualname__}()"
+    #             for k, v in self.dispatched.items()
+    #         }
+    #     docmap["..."] = f"{self.__module__}.{self.__qualname__}.generic()"
+    #     sep = "\n    "
+    #     doc += (
+    #         f"{{"
+    #         f"{sep}{sep.join(f'{k}: {v}' for k, v in docmap.items())}\n"
+    #         f"}}\n\n"
+    #     )
+
+    #     # footer
+    #     doc += (
+    #         "The map above is available under this function's ``.dispatched``\n"
+    #         "attribute, and individual implementations can be queried using\n"
+    #         "normal dictionary indexing:\n\n"
+    #     )
+    #     query = ", ".join("int" for _ in range(self._depth))
+    #     doc += (
+    #         f">>> {self.__qualname__}[{query}]\n"
+    #         f"{self[query]}\n"
+    #     )
+    #     return doc
 
 
 #######################
@@ -599,7 +689,7 @@ def _resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
     key_type = []
     for spec in key:
         spec_type = resolve.resolve_type(spec)
-        if isinstance(spec_type, base_types.CompositeType):
+        if isinstance(spec_type, types.CompositeType):
             raise TypeError(f"key must not be composite: {repr(spec)}")
         key_type.append(spec_type)
 
@@ -619,44 +709,13 @@ def _consistent(sig1: tuple, sig2: tuple) -> bool:
         return not sig1
 
     # lengths match
-    if len(sig1) == len(sig2):
-        return all(x.contains(y) or y.contains(x) for x, y in zip(sig1, sig2))
-
-    return False  # not considering variadics
-
-    # lengths do not match
-    # idx1 = idx2 = 0
-    # while idx1 < len(sig1) and idx2 < len(sig2):
-    #     type1 = sig1[idx1]
-    #     type2 = sig2[idx2]
-    #     if not type1.contains(type2) and not type2.contains(type1):
-    #         return False
-    #     idx1 += 1
-    #     idx2 += 1
-
-    # return True
+    return all(x.contains(y) or y.contains(x) for x, y in zip(sig1, sig2))
 
 
 def _supercedes(sig1: tuple, sig2: tuple) -> bool:
     """Check if sig1 is consistent with and strictly more specific than sig2.
     """
-    # same length
-    if len(sig1) == len(sig2):
-        return all(x.contains(y) for x, y in zip(sig2, sig1))
-
-    return False  # not considering variadics
-
-    # # longer
-    # idx1 = idx2 = 0
-    # while idx1 < len(sig1) and idx2 < len(sig2):
-    #     type1 = sig1[idx1]
-    #     type2 = sig2[idx2]
-    #     if not type2.contains(type1):
-    #         return False
-    #     idx1 += 1
-    #     idx2 += 1
-
-    # return True
+    return all(x.contains(y) for x, y in zip(sig2, sig1))
 
 
 def _ambiguous(sig1: tuple, sig2: tuple) -> bool:
@@ -728,42 +787,6 @@ def _sort(edges: dict) -> list:
     return L
 
 
-
-
-
-# TODO: DispatchFunc needs to bind based on inspect signature, up to a given
-# depth.
-# overload() must always accept ``depth`` arguments.  The special value None
-# signifies a wildcard.  This eliminates length checks in __getitem__, etc.
-
-
-# @cast.overload("sparse", None)
-# def densify()
-# -> return cast(dense series, dtype)  # recursive
-
-
-# @cast.overload(None, "sparse")
-# def sparsify()
-# -> result = cast(series, wrapped dtype)  # recursive
-# -> return sparse result
-
-
-# @cast.overload("int", "sparse")
-# def integer_sparsify()
-#    overloaded specifically for integers
-
-
-
-# TODO: @overload should accept *args, **kwargs, which it binds to the
-# signature.  This allows keyword dispatch.
-
-# @cast.overload(series="int", dtype="float")
-
-# These always match the generic implementation's signature.
-
-
-
-
 # def ambiguities(signatures):
 #     """ All signature pairs such that A is ambiguous with B """
 #     signatures = list(map(tuple, signatures))
@@ -776,32 +799,33 @@ def _sort(edges: dict) -> list:
 
 
 
-@dispatch
-def foo(bar, baz):
-    """doc for foo()"""
-    print("generic")
-    return bar
+
+# @dispatch(depth=2)
+# def foo(bar, baz=2):
+#     """doc for foo()"""
+#     print("generic")
+#     return bar
 
 
-@foo.overload("int")
-def integer_foo(bar, baz):
-    print("int")
-    return bar
+# @foo.overload("int", "int8")
+# def integer_foo(bar, baz):
+#     print("int")
+#     return bar
 
 
-@foo.overload("bool", "bool")
-def boolean_foo(bar, baz):
-    print("boolean")
-    return bar
+# @foo.overload("int8", "int")
+# def int8_foo(bar, baz):
+#     print("int8")
+#     return bar
 
 
-@foo.overload("int8", "int")
-def int8_foo(bar, baz):
-    print("int8")
-    return bar
+# @foo.overload("bool", "bool")
+# def boolean_foo(bar, baz):
+#     print("boolean")
+#     return bar
 
 
-@foo.overload("int8[numpy]")
-def numpy_int8_foo(bar, baz):
-    print("np.int8")
-    return bar
+# @foo.overload("int8[numpy]")
+# def numpy_int8_foo(bar, baz):
+#     print("np.int8")
+#     return bar

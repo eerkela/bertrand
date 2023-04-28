@@ -11,15 +11,12 @@ import pandas as pd
 
 from pdcast.util.type_hints import array_like
 
-from .base import round, snap
-
 
 ######################
 ####    PUBLIC    ####
 ######################
 
 
-@round.overload("decimal")
 def round_decimal(
     val: decimal.Decimal | array_like,
     str rule,

@@ -78,7 +78,7 @@ cdef class LRUDict(dict):
 
     def clear(self):
         """Extends dict.clear() to also clear priority register."""
-        super().__clear__()
+        super().clear()
         self.priority.clear()
 
     def copy(self):

@@ -4,7 +4,6 @@ from functools import partial
 
 import pandas as pd
 import pytz
-import tzlocal
 
 from pdcast.decorators import attachable
 from pdcast.decorators import dispatch
@@ -64,38 +63,12 @@ def tz_convert(
     return localize(series, tz=tz, naive_tz=None)
 
 
-#########################
-####    ARGUMENTS    ####
-#########################
-
-
-@localize.register_arg(name="tz")
-@localize.register_arg(name="naive_tz")
-@tz_localize.register_arg
-@tz_convert.register_arg
-def tz(tz: str | pytz.BaseTzInfo | None) -> pytz.BaseTzInfo:
-    """Convert a time zone specifier into a ``datetime.tzinfo`` object."""
-    if tz is None:
-        return None
-
-    # trivial case
-    if isinstance(tz, pytz.BaseTzInfo):
-        return tz
-
-    # local specifier
-    if isinstance(tz, str) and tz.lower() == "local":
-        return pytz.timezone(tzlocal.get_localzone_name())
-
-    # IANA string
-    return pytz.timezone(tz)
-
-
 ######################
 ####    PANDAS    ####
 ######################
 
 
-@localize.overload("datetime[pandas]")
+# @localize.overload("datetime[pandas]")
 def localize_pandas_timestamp(
     series: wrapper.SeriesWrapper,
     tz: pytz.BaseTzInfo | None,
@@ -153,12 +126,12 @@ def localize_pandas_timestamp_scalar(
     return dt.tz_convert(tz)
 
 
-######################
-####    PYTHON    ####
-######################
+# ######################
+# ####    PYTHON    ####
+# ######################
 
 
-@localize.overload("datetime[python]")
+# @localize.overload("datetime[python]")
 def localize_pydatetime(
     series: wrapper.SeriesWrapper,
     tz: pytz.BaseTzInfo | None,

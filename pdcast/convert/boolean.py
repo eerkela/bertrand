@@ -3,7 +3,7 @@
 from pdcast import types
 from pdcast.util import wrapper
 
-from .base import to_integer, to_decimal, to_datetime, to_timedelta
+from .base import cast
 
 
 #######################
@@ -11,7 +11,7 @@ from .base import to_integer, to_decimal, to_datetime, to_timedelta
 #######################
 
 
-@to_decimal.overload("bool")
+@cast.overload("bool", "decimal")
 def boolean_to_decimal(
     series: wrapper.SeriesWrapper,
     dtype: types.ScalarType,
@@ -28,30 +28,30 @@ def boolean_to_decimal(
 ########################
 
 
-@to_datetime.overload("bool")
-def boolean_to_datetime(
-    series: wrapper.SeriesWrapper,
-    dtype: types.ScalarType,
-    **unused
-) -> wrapper.SeriesWrapper:
-    """Convert boolean data to a datetime format."""
-    # 2-step conversion: bool -> int, int -> datetime
-    series = to_integer(series, "int", downcast=False, errors="raise")
-    return to_datetime(series, dtype, **unused)
+# @cast.overload("bool", "datetime")
+# def boolean_to_datetime(
+#     series: wrapper.SeriesWrapper,
+#     dtype: types.ScalarType,
+#     **unused
+# ) -> wrapper.SeriesWrapper:
+#     """Convert boolean data to a datetime format."""
+#     # 2-step conversion: bool -> int, int -> datetime
+#     series = cast(series, "int", downcast=False, errors="raise")
+#     return cast(series, dtype, **unused)
 
 
-#########################
-####    TIMEDELTA    ####
-#########################
+# #########################
+# ####    TIMEDELTA    ####
+# #########################
 
 
-@to_timedelta.overload("bool")
-def boolean_to_timedelta(
-    series: wrapper.SeriesWrapper,
-    dtype: types.ScalarType,
-    **unused
-) -> wrapper.SeriesWrapper:
-    """Convert boolean data to a timedelta format."""
-    # 2-step conversion: bool -> int, int -> timedelta
-    series = to_integer(series, "int", downcast=False, errors="raise")
-    return to_timedelta(series, dtype=dtype, **unused)
+# @cast.overload("bool", "timedelta")
+# def boolean_to_timedelta(
+#     series: wrapper.SeriesWrapper,
+#     dtype: types.ScalarType,
+#     **unused
+# ) -> wrapper.SeriesWrapper:
+#     """Convert boolean data to a timedelta format."""
+#     # 2-step conversion: bool -> int, int -> timedelta
+#     series = cast(series, "int", downcast=False, errors="raise")
+#     return cast(series, dtype=dtype, **unused)

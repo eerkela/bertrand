@@ -275,8 +275,8 @@ class ExtensionFunc(BaseDecorator, threading.local):
                 if _name in pars:
                     annotation = pars[_name].default
                 else:
-                    annotation = inspect._empty
-                if annotation is not inspect._empty:
+                    annotation = inspect.Parameter.empty
+                if annotation is not inspect.Parameter.empty:
                     # self._defaults[_name] = accept_default(pars[_name].default)
                     self._defaults[_name] = annotation
             else:

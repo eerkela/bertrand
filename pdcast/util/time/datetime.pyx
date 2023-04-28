@@ -57,8 +57,6 @@ from .timezone import localize_pydatetime_scalar
 from .unit cimport as_ns
 
 
-
-
 ###############################
 ####    PYTHON DATETIME    ####
 ###############################

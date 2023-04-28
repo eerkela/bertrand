@@ -43,3 +43,4 @@ SeriesWrapper
 """
 from .arguments import *
 from .base import *
+from .boolean import *

@@ -8,9 +8,6 @@ import pandas as pd
 from pdcast.util.type_hints import array_like
 from pdcast.util import wrapper
 
-from .base import round, snap
-from .tolerance import Tolerance
-
 
 ######################
 ####    PUBLIC    ####
@@ -82,40 +79,6 @@ def round_div(
         raise ValueError(err_msg) from err
 
     return (numerator + bias) // denominator
-
-
-@round.overload("int")
-def round_integer(
-    data: wrapper.SeriesWrapper,
-    decimals: int,
-    rule: str
-) -> wrapper.SeriesWrapper:
-    """Round an integer series to the given number of decimals.
-
-    NOTE: this implementation does nothing unless the input to `decimals` is
-    negative.
-    """
-    if decimals < 0:
-        scale = 10**(-1 * decimals)
-        return wrapper.SeriesWrapper(
-            round_div(data.series, scale, rule=rule) * scale,
-            hasnans=data.hasnans,
-            element_type=data.element_type
-        )
-    return data.copy()
-
-
-@snap.overload("int")
-def snap_integer(
-    data: wrapper.SeriesWrapper,
-    tol: Tolerance
-) -> wrapper.SeriesWrapper:
-    """Snap each element of the series to the nearest integer if it is
-    within the specified tolerance.
-
-    For integers, this is an identity function.
-    """
-    return data.copy()
 
 
 #######################

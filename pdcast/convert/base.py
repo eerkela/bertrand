@@ -6,14 +6,13 @@ from typing import Any, Callable, Optional
 
 import pandas as pd
 
+from pdcast import types
 from pdcast.decorators.attachable import attachable
 from pdcast.decorators.base import BaseDecorator
 from pdcast.decorators.extension import extension_func
 from pdcast.decorators.dispatch import dispatch
-
-from pdcast.util import wrapper
 from pdcast.type_hints import type_specifier
-
+from pdcast.util import wrapper
 from pdcast.util.round import Tolerance
 
 # ignore this file when doing string-based object lookups in resolve_type()
@@ -106,8 +105,9 @@ class catch_ignore(BaseDecorator):
 @attachable
 @columnwise
 @extension_func
+@dispatch(depth=2)  # dispatch on data and dtype
 def cast(
-    data: Any,
+    series: Any,
     dtype: Optional[type_specifier] = None,
     **kwargs
 ) -> pd.Series:
@@ -135,179 +135,152 @@ def cast(
     change the behavior of :func:`cast`.  The method that is chosen is based on
     the :attr:`family <AtomicType.family>` of its ``dtype`` argument.
     """
-    return dtype.conversion_func(data, dtype, **kwargs)
+    return dtype.conversion_func(series, dtype, **kwargs)
 
 
-##########################
-####    STANDALONE    ####
-##########################
+#######################
+####    GENERIC    ####
+#######################
 
 
-@columnwise
-@extension_func
-@catch_ignore
-@dispatch(targetable=True)
-def to_boolean(
-    data: wrapper.SeriesWrapper,
-    dtype: type_specifier,
+# NOTE: the following are base conversions for each of the major data types.
+# They are used if no specific implementation is explicitly given for the
+# observed data
+
+
+# wildcard = (
+#     "bool, int, float, complex, decimal, datetime, timedelta, string, object"
+# )
+
+
+wildcard = (
+    "bool, int, float, complex, decimal, string, object"
+)
+
+
+@cast.overload(wildcard, "bool")
+def generic_to_boolean(
+    series: wrapper.SeriesWrapper,
+    dtype: types.AtomicType,
     errors: str,
     **unused
 ) -> pd.Series:
     """Convert a to boolean representation."""
-    if data.hasnans:
+    if series.hasnans:
         dtype = dtype.make_nullable()
-    return data.astype(dtype, errors=errors)
+    return series.astype(dtype, errors=errors)
 
 
-@columnwise
-@extension_func
-@catch_ignore
-@dispatch(targetable=True)
-def to_integer(
-    data: wrapper.SeriesWrapper,
-    dtype: type_specifier,
+@cast.overload(wildcard, "int")
+def generic_to_integer(
+    series: wrapper.SeriesWrapper,
+    dtype: types.AtomicType,
     errors: str,
-    downcast: bool,
-    **kwargs
+    downcast: types.CompositeType,
+    **unused
 ) -> pd.Series:
     """Convert arbitrary data to integer representation."""
-    if data.hasnans:
+    if series.hasnans:
         dtype = dtype.make_nullable()
 
-    data = data.astype(dtype, errors=errors)
+    series = series.astype(dtype, errors=errors)
     if downcast is not None:
-        return dtype.downcast(data, smallest=downcast)
-    return data
+        return dtype.downcast(series, smallest=downcast)
+    return series
 
 
-@columnwise
-@extension_func
-@catch_ignore
-@dispatch(targetable=True)
-def to_float(
-    data: wrapper.SeriesWrapper,
-    dtype: type_specifier,
+@cast.overload(wildcard, "float")
+def generic_to_float(
+    series: wrapper.SeriesWrapper,
+    dtype: types.AtomicType,
     tol: Tolerance,
-    downcast: bool,
+    downcast: types.CompositeType,
     errors: str,
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to float representation."""
-    data = data.astype(dtype, errors=errors)
+    series = series.astype(dtype, errors=errors)
     if downcast is not None:
-        return dtype.downcast(data, smallest=downcast, tol=tol)
-    return data
+        return dtype.downcast(series, smallest=downcast, tol=tol)
+    return series
 
 
-@columnwise
-@extension_func
-@catch_ignore
-@dispatch(targetable=True)
-def to_complex(
-    data: wrapper.SeriesWrapper,
-    dtype: type_specifier,
+@cast.overload(wildcard, "complex")
+def generic_to_complex(
+    series: wrapper.SeriesWrapper,
+    dtype: types.AtomicType,
     tol: Tolerance,
-    downcast: bool,
+    downcast: types.CompositeType,
     errors: str,
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to complex representation."""
-    data = data.astype(dtype, errors=errors)
+    series = series.astype(dtype, errors=errors)
     if downcast is not None:
-        return dtype.downcast(data, smallest=downcast, tol=tol)
-    return data
+        return dtype.downcast(series, smallest=downcast, tol=tol)
+    return series
 
 
-@columnwise
-@extension_func
-@catch_ignore
-@dispatch(targetable=True)
-def to_decimal(
-    data: wrapper.SeriesWrapper,
-    dtype: type_specifier,
+@cast.overload(wildcard, "decimal")
+def generic_to_decimal(
+    series: wrapper.SeriesWrapper,
+    dtype: types.AtomicType,
     errors: str,
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to decimal representation."""
-    return data.astype(dtype, errors=errors)
+    return series.astype(dtype, errors=errors)
 
 
-@columnwise
-@extension_func
-@catch_ignore
-@dispatch(targetable=True)
-def to_datetime(
-    data: wrapper.SeriesWrapper,
-    dtype: type_specifier,
-    **unused
-) -> pd.Series:
-    """Convert arbitrary data to datetime representation."""
-    # 2-step conversion: X -> decimal, decimal -> datetime
-    data = to_decimal(
-        data,
-        dtype="decimal",
-        errors="raise"
-    )
-    return to_datetime(
-        data,
-        dtype=dtype,
-        **unused
-    )
+# @cast.overload(wildcard, "datetime")
+# def generic_to_datetime(
+#     series: wrapper.SeriesWrapper,
+#     dtype: types.AtomicType,
+#     **unused
+# ) -> pd.Series:
+#     """Convert arbitrary data to datetime representation."""
+#     # 2-step conversion: X -> decimal, decimal -> datetime
+#     series = cast(series, "decimal", errors="raise")
+#     return cast(series, dtype, **unused)
 
 
-@columnwise
-@extension_func
-@catch_ignore
-@dispatch(targetable=True)
-def to_timedelta(
-    data: wrapper.SeriesWrapper,
-    dtype: type_specifier,
-    **unused
-) -> pd.Series:
-    """Convert arbitrary data to timedelta representation."""
-    # 2-step conversion: X -> decimal, decimal -> timedelta
-    data = to_decimal(
-        data,
-        dtype="decimal",
-        errors="raise"
-    )
-    return to_timedelta(
-        data,
-        dtype=dtype,
-        **unused
-    )
+# @cast.overload(wildcard, "timedelta")
+# def generic_to_timedelta(
+#     series: wrapper.SeriesWrapper,
+#     dtype: types.AtomicType,
+#     **unused
+# ) -> pd.Series:
+#     """Convert arbitrary data to timedelta representation."""
+#     # 2-step conversion: X -> decimal, decimal -> timedelta
+#     series = cast(series, "decimal", errors="raise")
+#     return cast(series, dtype=dtype, **unused)
 
 
-@columnwise
-@extension_func
-@catch_ignore
-@dispatch(targetable=True)
-def to_string(
-    data: wrapper.SeriesWrapper,
-    dtype: type_specifier,
+@cast.overload(wildcard, "string")
+def generic_to_string(
+    series: wrapper.SeriesWrapper,
+    dtype: types.AtomicType,
+    format: str,
     errors: str,
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
     if format:
-        data = data.apply_with_errors(
+        series = series.apply_with_errors(
             lambda x: f"{x:{format}}",
             errors=errors,
             element_type=str
         )
-    return data.astype(dtype, errors=errors)
+    return series.astype(dtype, errors=errors)
 
 
-@columnwise
-@extension_func
-@catch_ignore
-@dispatch(targetable=True)
-def to_object(
-    data: wrapper.SeriesWrapper,
-    dtype: type_specifier,
+@cast.overload(wildcard, "object")
+def generic_to_object(
+    series: wrapper.SeriesWrapper,
+    dtype: types.AtomicType,
     call: Callable,
     errors: str,
-    **kwargs
+    **unused
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
     direct = call is None
@@ -316,7 +289,7 @@ def to_object(
 
     # object root type
     if call is object:
-        return data.astype("O")
+        return series.astype("O")
 
     def wrapped_call(val):
         result = call(val)
@@ -329,7 +302,7 @@ def to_object(
             )
         return result
 
-    return data.apply_with_errors(
+    return series.apply_with_errors(
         call=wrapped_call,
         errors=errors,
         element_type=dtype

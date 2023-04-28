@@ -6,14 +6,16 @@ from typing import Callable, Iterable
 
 import pytz
 
-from . import base
 import pdcast.detect as detect
 import pdcast.resolve as resolve
 import pdcast.types as types
 
-from pdcast.util.round import Tolerance, valid_rules
+from pdcast.util.round.arguments import tol, rounding
+from pdcast.util.time.arguments import tz
 from pdcast.util.time import timezone, valid_units, Epoch, epoch_aliases
-from pdcast.util.type_hints import numeric, datetime_like, type_specifier
+from pdcast.util.type_hints import datetime_like, type_specifier
+
+from .base import cast
 
 
 # ignore this file when doing string-based object lookups in resolve_type()
@@ -67,7 +69,7 @@ def assert_sets_are_disjoint(set_1: set, set_2: set) -> None:
 ######################
 
 
-@base.cast.register_arg
+@cast.register_arg
 def dtype(
     val: type_specifier,
     state: dict,
@@ -111,117 +113,90 @@ def dtype(
     return val
 
 
-@base.to_boolean.register_arg(name="dtype", default="bool")
-def boolean_dtype(
-    val: type_specifier,
-    state: dict
-) -> types.AtomicType | types.AdapterType:
-    """Resolve a type specifier and assert that it is boolean-like."""
-    return dtype(val, state, supertype=types.BooleanType)
+# @base.to_boolean.register_arg(name="dtype", default="bool")
+# def boolean_dtype(
+#     val: type_specifier,
+#     state: dict
+# ) -> types.AtomicType | types.AdapterType:
+#     """Resolve a type specifier and assert that it is boolean-like."""
+#     return dtype(val, state, supertype=types.BooleanType)
 
 
-@base.to_integer.register_arg(name="dtype", default="int")
-def integer_dtype(
-    val: type_specifier,
-    state: dict
-) -> types.AtomicType | types.AdapterType:
-    """Resolve a type specifier and assert that it is integer-like."""
-    return dtype(val, state, supertype=types.IntegerType)
+# @base.to_integer.register_arg(name="dtype", default="int")
+# def integer_dtype(
+#     val: type_specifier,
+#     state: dict
+# ) -> types.AtomicType | types.AdapterType:
+#     """Resolve a type specifier and assert that it is integer-like."""
+#     return dtype(val, state, supertype=types.IntegerType)
 
 
-@base.to_float.register_arg(name="dtype", default="float")
-def float_dtype(
-    val: type_specifier,
-    state: dict
-) -> types.AtomicType | types.AdapterType:
-    """Resolve a type specifier and assert that it is float-like."""
-    return dtype(val, state, supertype=types.FloatType)
+# @base.to_float.register_arg(name="dtype", default="float")
+# def float_dtype(
+#     val: type_specifier,
+#     state: dict
+# ) -> types.AtomicType | types.AdapterType:
+#     """Resolve a type specifier and assert that it is float-like."""
+#     return dtype(val, state, supertype=types.FloatType)
 
 
-@base.to_complex.register_arg(name="dtype", default="complex")
-def complex_dtype(
-    val: type_specifier,
-    state: dict
-) -> types.AtomicType | types.AdapterType:
-    """Resolve a type specifier and assert that it is complex-like."""
-    return dtype(val, state, supertype=types.ComplexType)
+# @base.to_complex.register_arg(name="dtype", default="complex")
+# def complex_dtype(
+#     val: type_specifier,
+#     state: dict
+# ) -> types.AtomicType | types.AdapterType:
+#     """Resolve a type specifier and assert that it is complex-like."""
+#     return dtype(val, state, supertype=types.ComplexType)
 
 
-@base.to_decimal.register_arg(name="dtype", default="decimal")
-def decimal_dtype(
-    val: type_specifier,
-    state: dict
-) -> types.AtomicType | types.AdapterType:
-    """Resolve a type specifier and assert that it is decimal-like."""
-    return dtype(val, state, supertype=types.DecimalType)
+# @base.to_decimal.register_arg(name="dtype", default="decimal")
+# def decimal_dtype(
+#     val: type_specifier,
+#     state: dict
+# ) -> types.AtomicType | types.AdapterType:
+#     """Resolve a type specifier and assert that it is decimal-like."""
+#     return dtype(val, state, supertype=types.DecimalType)
 
 
-@base.to_datetime.register_arg(name="dtype", default="datetime")
-def datetime_dtype(
-    val: type_specifier,
-    state: dict
-) -> types.AtomicType | types.AdapterType:
-    """Resolve a type specifier and assert that it is datetime-like."""
-    return dtype(val, state, supertype=types.DatetimeType)
+# @base.to_datetime.register_arg(name="dtype", default="datetime")
+# def datetime_dtype(
+#     val: type_specifier,
+#     state: dict
+# ) -> types.AtomicType | types.AdapterType:
+#     """Resolve a type specifier and assert that it is datetime-like."""
+#     return dtype(val, state, supertype=types.DatetimeType)
 
 
-@base.to_timedelta.register_arg(name="dtype", default="timedelta")
-def timedelta_dtype(
-    val: type_specifier,
-    state: dict
-) -> types.AtomicType | types.AdapterType:
-    """Resolve a type specifier and assert that it is timedelta-like."""
-    return dtype(val, state, supertype=types.TimedeltaType)
+# @base.to_timedelta.register_arg(name="dtype", default="timedelta")
+# def timedelta_dtype(
+#     val: type_specifier,
+#     state: dict
+# ) -> types.AtomicType | types.AdapterType:
+#     """Resolve a type specifier and assert that it is timedelta-like."""
+#     return dtype(val, state, supertype=types.TimedeltaType)
 
 
-@base.to_string.register_arg(name="dtype", default="string")
-def string_dtype(
-    val: type_specifier,
-    state: dict
-) -> types.AtomicType | types.AdapterType:
-    """Resolve a type specifier and assert that it is string-like."""
-    return dtype(val, state, supertype=types.StringType)
+# @base.to_string.register_arg(name="dtype", default="string")
+# def string_dtype(
+#     val: type_specifier,
+#     state: dict
+# ) -> types.AtomicType | types.AdapterType:
+#     """Resolve a type specifier and assert that it is string-like."""
+#     return dtype(val, state, supertype=types.StringType)
 
 
-@base.to_object.register_arg(name="dtype", default="object")
-def object_dtype(
-    val: type_specifier,
-    state: dict
-) -> types.AtomicType | types.AdapterType:
-    """Resolve a type specifier and assert that it is object-like."""
-    return dtype(val, state, supertype=types.ObjectType)
+# @base.to_object.register_arg(name="dtype", default="object")
+# def object_dtype(
+#     val: type_specifier,
+#     state: dict
+# ) -> types.AtomicType | types.AdapterType:
+#     """Resolve a type specifier and assert that it is object-like."""
+#     return dtype(val, state, supertype=types.ObjectType)
 
 
 #########################
 ####    ARGUMENTS    ####
 #########################
-
-
-def conversion_argument(default):
-    """Convenience decorator to broadcast a conversion argument across all
-    conversions simultaneously.
-    """
-    conversion_funcs = (
-        base.cast,
-        base.to_boolean,
-        base.to_integer,
-        base.to_float,
-        base.to_complex,
-        base.to_decimal,
-        base.to_datetime,
-        base.to_timedelta,
-        base.to_string,
-        base.to_object
-    )
-
-    def decorator(func):
-        """"""
-        result = func
-        for conv in conversion_funcs:
-            result = conv.register_arg(result, default=default)
-        return result
-
-    return decorator
 
 
 # initial defaults for all conversion arguments
@@ -247,240 +222,245 @@ defaults = {
 }
 
 
-@conversion_argument(default=defaults["tol"])
-def tol(val: numeric, state: dict) -> Tolerance:
-    """The maximum amount of precision loss that can occur before an error
-    is raised.
+cast.register_arg(tol, default=defaults["tol"])
+cast.register_arg(rounding, default=defaults["rounding"])
+cast.register_arg(tz, default=defaults["tz"])
+cast.register_arg(tz, default=defaults["naive_tz"], name="naive_tz")
 
-    Parameters
-    ----------
-    val : numeric
-        A scalar numeric that is coercible to
-        :class:`Decimal <python:decimal.Decimal>`.  In the case of complex
-        values, their real and imaginary components are considered separately.
-        Defaults to ``1e-6``
+# @cast.register_arg(default=defaults["tol"])
+# def tol(val: numeric, state: dict) -> Tolerance:
+#     """The maximum amount of precision loss that can occur before an error
+#     is raised.
 
-    Returns
-    -------
-    Tolerance
-        A ``Tolerance`` object that consists of two
-        :class:`Decimal <python:decimal.Decimal>` values, one for both the real
-        and imaginary components.  This maintains the highest possible
-        precision in both cases.
+#     Parameters
+#     ----------
+#     val : numeric
+#         A scalar numeric that is coercible to
+#         :class:`Decimal <python:decimal.Decimal>`.  In the case of complex
+#         values, their real and imaginary components are considered separately.
+#         Defaults to ``1e-6``
 
-    Raises
-    ------
-    TypeError
-        If ``val`` could not be coerced into a
-        :class:`Decimal <python:decimal.Decimal>` representation.
-    ValueError
-        If the real or imaginary component of ``val`` is not positive.
+#     Returns
+#     -------
+#     Tolerance
+#         A ``Tolerance`` object that consists of two
+#         :class:`Decimal <python:decimal.Decimal>` values, one for both the real
+#         and imaginary components.  This maintains the highest possible
+#         precision in both cases.
 
-    Notes
-    -----
-    Precision loss is defined using a 2-sided window around each of the
-    observed values.  The size of this window is directly controlled by
-    this argument.  If a conversion causes any value to be coerced outside
-    this window, then a :class:`ValueError <python:ValueError>` will be raised.
+#     Raises
+#     ------
+#     TypeError
+#         If ``val`` could not be coerced into a
+#         :class:`Decimal <python:decimal.Decimal>` representation.
+#     ValueError
+#         If the real or imaginary component of ``val`` is not positive.
 
-    This argument only affects numeric conversions.
+#     Notes
+#     -----
+#     Precision loss is defined using a 2-sided window around each of the
+#     observed values.  The size of this window is directly controlled by
+#     this argument.  If a conversion causes any value to be coerced outside
+#     this window, then a :class:`ValueError <python:ValueError>` will be raised.
 
-    Examples
-    --------
-    The input to this argument must be a positive numeric that is
-    coercible to :class:`Decimal <python:decimal.Decimal>`.
+#     This argument only affects numeric conversions.
 
-    .. doctest::
+#     Examples
+#     --------
+#     The input to this argument must be a positive numeric that is
+#     coercible to :class:`Decimal <python:decimal.Decimal>`.
 
-        >>> pdcast.cast(1.001, "int", tol=0.01)
-        0    1
-        dtype: int64
-        >>> pdcast.cast(1.001, "int", tol=0)
-        Traceback (most recent call last):
-            ...
-        ValueError: precision loss exceeds tolerance 0 at index [0]
+#     .. doctest::
 
-    If a complex value is given, then its real and imaginary components
-    will be considered separately.
+#         >>> pdcast.cast(1.001, "int", tol=0.01)
+#         0    1
+#         dtype: int64
+#         >>> pdcast.cast(1.001, "int", tol=0)
+#         Traceback (most recent call last):
+#             ...
+#         ValueError: precision loss exceeds tolerance 0 at index [0]
 
-    .. doctest::
+#     If a complex value is given, then its real and imaginary components
+#     will be considered separately.
 
-        >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0.01j)
-        0    1
-        dtype: int64
-        >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0j)
-        Traceback (most recent call last):
-            ...
-        ValueError: imaginary component exceeds tolerance 0 at index [0]
+#     .. doctest::
 
-    This argument also has special behavior around the min/max of bounded
-    numerics, like integers and booleans.  If a value would normally
-    overflow, but falls within tolerance of these bounds, then it will be
-    clipped to fit rather than raise an
-    :class:`OverflowError <python:OverflowError>`.
+#         >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0.01j)
+#         0    1
+#         dtype: int64
+#         >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0j)
+#         Traceback (most recent call last):
+#             ...
+#         ValueError: imaginary component exceeds tolerance 0 at index [0]
 
-    .. doctest::
+#     This argument also has special behavior around the min/max of bounded
+#     numerics, like integers and booleans.  If a value would normally
+#     overflow, but falls within tolerance of these bounds, then it will be
+#     clipped to fit rather than raise an
+#     :class:`OverflowError <python:OverflowError>`.
 
-        >>> pdcast.cast(129, "int8", tol=2)
-        0    127
-        dtype: int8
-        >>> pdcast.cast(129, "int8", tol=0)
-        Traceback (most recent call last):
-            ...
-        OverflowError: values exceed int8 range at index [0]
+#     .. doctest::
 
-    Additionally, this argument controls the maximum amount of precision
-    loss that can occur when
-    :func:`downcasting <pdcast.convert.arguments.downcast>` numeric values.
+#         >>> pdcast.cast(129, "int8", tol=2)
+#         0    127
+#         dtype: int8
+#         >>> pdcast.cast(129, "int8", tol=0)
+#         Traceback (most recent call last):
+#             ...
+#         OverflowError: values exceed int8 range at index [0]
 
-    .. doctest::
+#     Additionally, this argument controls the maximum amount of precision
+#     loss that can occur when
+#     :func:`downcasting <pdcast.convert.arguments.downcast>` numeric values.
 
-        >>> pdcast.cast(1.1, "float", tol=0, downcast=True)
-        0    1.1
-        dtype: float64
-        >>> pdcast.cast(1.1, "float", tol=0.001, downcast=True)
-        0    1.099609
-        dtype: float16
+#     .. doctest::
 
-    Setting this to infinity ignores precision loss entirely.
+#         >>> pdcast.cast(1.1, "float", tol=0, downcast=True)
+#         0    1.1
+#         dtype: float64
+#         >>> pdcast.cast(1.1, "float", tol=0.001, downcast=True)
+#         0    1.099609
+#         dtype: float16
 
-    .. doctest::
+#     Setting this to infinity ignores precision loss entirely.
 
-        >>> pdcast.cast(1.5, "int", tol=np.inf)
-        0    2
-        dtype: int64
-        >>> pdcast.cast(np.inf, "int64", tol=np.inf)
-        0    9223372036854775807
-        dtype: int64
+#     .. doctest::
 
-    .. note::
+#         >>> pdcast.cast(1.5, "int", tol=np.inf)
+#         0    2
+#         dtype: int64
+#         >>> pdcast.cast(np.inf, "int64", tol=np.inf)
+#         0    9223372036854775807
+#         dtype: int64
 
-        For integer conversions, this is equivalent to setting
-        :func:`rounding <pdcast.convert.arguments.rounding>` to
-        ``"half_even"``, with additional clipping around the minimum and
-        maximum values.
-    """
-    if isinstance(val, Tolerance):
-        return val
-    return Tolerance(val)
+#     .. note::
 
-
-@conversion_argument(default=defaults["rounding"])
-def rounding(val: str | None, state: dict) -> str:
-    """The rounding rule to use for numeric conversions.
-
-    Parameters
-    ----------
-    val : str | None
-        An optional string specifying the rounding rule to use, or :data:`None`
-        to indicate that no rounding will be applied.  Defaults to :data:`None`.
-
-    Returns
-    -------
-    str | None
-        A validated version of the string passed to ``val`` or :data:`None`.
-
-    Raises
-    ------
-    TypeError
-        If ``val`` is not a string or :data:`None <python:None>`.
-    ValueError
-        If ``val`` does not correspond to one of the recognized rounding rules.
-
-    Notes
-    -----
-    The available options for this argument are as follows:
-
-        *   ``None`` - do not round.
-        *   ``"floor"`` - round toward negative infinity.
-        *   ``"ceiling"`` - round toward positive infinity.
-        *   ``"down"`` - round toward zero.
-        *   ``"up"`` - round away from zero.
-        *   ``"half_floor"`` - round to nearest with ties toward positive infinity.
-        *   ``"half_ceiling"`` - round to nearest with ties toward negative
-            infinity.
-        *   ``"half_down"`` - round to nearest with ties toward zero.
-        *   ``"half_up"`` - round to nearest with ties away from zero.
-        *   ``"half_even"`` - round to nearest with ties toward the `nearest even
-            value <https://en.wikipedia.org/wiki/Rounding#Rounding_half_to_even>`_.
-            Also known as *convergent rounding*, *statistician's rounding*, or
-            *banker's rounding*.
-
-    This argument is applied **after**
-    :func:`tol <pdcast.convert.arguments.tol>`.
-
-    Examples
-    --------
-    .. doctest::
-
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="floor")
-        0   -2
-        1   -1
-        2    0
-        3    1
-        dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="ceiling")
-        0   -1
-        1    0
-        2    1
-        3    2
-        dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="down")
-        0   -1
-        1    0
-        2    0
-        3    1
-        dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="up")
-        0   -2
-        1   -1
-        2    1
-        3    2
-        dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_floor")
-        0   -2
-        1   -1
-        2    0
-        3    2
-        dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_ceiling")
-        0   -1
-        1    0
-        2    0
-        3    2
-        dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_down")
-        0   -1
-        1    0
-        2    0
-        3    2
-        dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_up")
-        0   -2
-        1   -1
-        2    0
-        3    2
-        dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_even")
-        0   -2
-        1    0
-        2    0
-        3    2
-        dtype: int64
-
-    """
-    if not (val is None or isinstance(val, str)):
-        raise TypeError(
-            f"`rounding` must be a string or None, not {repr(val)}"
-        )
-    if val is not None and val not in valid_rules:
-        raise ValueError(
-            f"`rounding` must be one of {valid_rules}, not {repr(val)}"
-        )
-    return val
+#         For integer conversions, this is equivalent to setting
+#         :func:`rounding <pdcast.convert.arguments.rounding>` to
+#         ``"half_even"``, with additional clipping around the minimum and
+#         maximum values.
+#     """
+#     if isinstance(val, Tolerance):
+#         return val
+#     return Tolerance(val)
 
 
-@conversion_argument(default=defaults["unit"])
+# @cast.register_arg(default=defaults["rounding"])
+# def rounding(val: str | None, state: dict) -> str:
+#     """The rounding rule to use for numeric conversions.
+
+#     Parameters
+#     ----------
+#     val : str | None
+#         An optional string specifying the rounding rule to use, or :data:`None`
+#         to indicate that no rounding will be applied.  Defaults to :data:`None`.
+
+#     Returns
+#     -------
+#     str | None
+#         A validated version of the string passed to ``val`` or :data:`None`.
+
+#     Raises
+#     ------
+#     TypeError
+#         If ``val`` is not a string or :data:`None <python:None>`.
+#     ValueError
+#         If ``val`` does not correspond to one of the recognized rounding rules.
+
+#     Notes
+#     -----
+#     The available options for this argument are as follows:
+
+#         *   ``None`` - do not round.
+#         *   ``"floor"`` - round toward negative infinity.
+#         *   ``"ceiling"`` - round toward positive infinity.
+#         *   ``"down"`` - round toward zero.
+#         *   ``"up"`` - round away from zero.
+#         *   ``"half_floor"`` - round to nearest with ties toward positive infinity.
+#         *   ``"half_ceiling"`` - round to nearest with ties toward negative
+#             infinity.
+#         *   ``"half_down"`` - round to nearest with ties toward zero.
+#         *   ``"half_up"`` - round to nearest with ties away from zero.
+#         *   ``"half_even"`` - round to nearest with ties toward the `nearest even
+#             value <https://en.wikipedia.org/wiki/Rounding#Rounding_half_to_even>`_.
+#             Also known as *convergent rounding*, *statistician's rounding*, or
+#             *banker's rounding*.
+
+#     This argument is applied **after**
+#     :func:`tol <pdcast.convert.arguments.tol>`.
+
+#     Examples
+#     --------
+#     .. doctest::
+
+#         >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="floor")
+#         0   -2
+#         1   -1
+#         2    0
+#         3    1
+#         dtype: int64
+#         >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="ceiling")
+#         0   -1
+#         1    0
+#         2    1
+#         3    2
+#         dtype: int64
+#         >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="down")
+#         0   -1
+#         1    0
+#         2    0
+#         3    1
+#         dtype: int64
+#         >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="up")
+#         0   -2
+#         1   -1
+#         2    1
+#         3    2
+#         dtype: int64
+#         >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_floor")
+#         0   -2
+#         1   -1
+#         2    0
+#         3    2
+#         dtype: int64
+#         >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_ceiling")
+#         0   -1
+#         1    0
+#         2    0
+#         3    2
+#         dtype: int64
+#         >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_down")
+#         0   -1
+#         1    0
+#         2    0
+#         3    2
+#         dtype: int64
+#         >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_up")
+#         0   -2
+#         1   -1
+#         2    0
+#         3    2
+#         dtype: int64
+#         >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_even")
+#         0   -2
+#         1    0
+#         2    0
+#         3    2
+#         dtype: int64
+
+#     """
+#     if not (val is None or isinstance(val, str)):
+#         raise TypeError(
+#             f"`rounding` must be a string or None, not {repr(val)}"
+#         )
+#     if val is not None and val not in valid_rules:
+#         raise ValueError(
+#             f"`rounding` must be one of {valid_rules}, not {repr(val)}"
+#         )
+#     return val
+
+
+@cast.register_arg(default=defaults["unit"])
 def unit(val: str, state: dict) -> str:
     """The unit to use for numeric <-> datetime/timedelta conversions.
 
@@ -586,7 +566,7 @@ def unit(val: str, state: dict) -> str:
     return val
 
 
-@conversion_argument(default=defaults["step_size"])
+@cast.register_arg(default=defaults["step_size"])
 def step_size(val: int, state: dict) -> int:
     """The step size to use for each
     :func:`unit <pdcast.convert.arguments.unit>`.
@@ -635,7 +615,7 @@ def step_size(val: int, state: dict) -> int:
     return val
 
 
-@conversion_argument(default=defaults["since"])
+@cast.register_arg(default=defaults["since"])
 def since(val: str | datetime_like | Epoch, state: dict) -> Epoch:
     """The epoch to use for datetime/timedelta conversions.
 
@@ -781,7 +761,7 @@ def since(val: str | datetime_like | Epoch, state: dict) -> Epoch:
         return val
 
     if isinstance(val, str) and val not in epoch_aliases:
-        val = base.cast(val, "datetime")
+        val = cast(val, "datetime")
         if len(val) != 1:
             raise ValueError(f"`since` must be scalar")
         val = val[0]
@@ -792,159 +772,159 @@ def since(val: str | datetime_like | Epoch, state: dict) -> Epoch:
         raise TypeError(f"`since` must be datetime-like: {val}") from err
 
 
-@conversion_argument(default=defaults["tz"])
-def tz(
-    val: str | pytz.BaseTzInfo | None,
-    state: dict
-) -> pytz.BaseTzInfo:
-    """Specifies a time zone to use for datetime conversions.
+# @cast.register_arg(default=defaults["tz"])
+# def tz(
+#     val: str | pytz.BaseTzInfo | None,
+#     state: dict
+# ) -> pytz.BaseTzInfo:
+#     """Specifies a time zone to use for datetime conversions.
 
-    Parameters
-    ----------
-    val : str | pytz.timezone | None
-        An IANA time zone string, a `pytz <https://pypi.org/project/pytz/>`_
-        timezone object, or :data:`None <python:None>` to indicate naive
-        output.  This can also be the special string ``"local"``, which refers
-        to the local time zone of the current system at the time of execution.
-        Defaults to :data:`None <python:None>`.
+#     Parameters
+#     ----------
+#     val : str | pytz.timezone | None
+#         An IANA time zone string, a `pytz <https://pypi.org/project/pytz/>`_
+#         timezone object, or :data:`None <python:None>` to indicate naive
+#         output.  This can also be the special string ``"local"``, which refers
+#         to the local time zone of the current system at the time of execution.
+#         Defaults to :data:`None <python:None>`.
 
-    Returns
-    -------
-    pytz.timezone | None
-        A `pytz <https://pypi.org/project/pytz/>`_ timezone object
-        corresponding to the input.  :data:`None` indicates naive output.
-        Defaults to :data:`None`.
+#     Returns
+#     -------
+#     pytz.timezone | None
+#         A `pytz <https://pypi.org/project/pytz/>`_ timezone object
+#         corresponding to the input.  :data:`None` indicates naive output.
+#         Defaults to :data:`None`.
 
-    Raises
-    ------
-    pytz.exceptions.UnknownTimeZoneError
-        If ``val`` could not be recognized as a time zone specifier.
+#     Raises
+#     ------
+#     pytz.exceptions.UnknownTimeZoneError
+#         If ``val`` could not be recognized as a time zone specifier.
 
-    See Also
-    --------
-    naive_tz <pdcast.convert.arguments.naive_tz> :
-        The intermediate time zone to localize naive inputs to.
+#     See Also
+#     --------
+#     naive_tz <pdcast.convert.arguments.naive_tz> :
+#         The intermediate time zone to localize naive inputs to.
 
-    Examples
-    --------
-    Time zone localization is a somewhat complicated process, with
-    different behavior depending on the input data type.
+#     Examples
+#     --------
+#     Time zone localization is a somewhat complicated process, with
+#     different behavior depending on the input data type.
 
-    Numerics (:doc:`boolean </content/types/boolean>`,
-    :doc:`integer </content/types/integer>`,
-    :doc:`float </content/types/float>`,
-    :doc:`complex </content/types/complex>`, and
-    :doc:`decimal </content/types/decimal>`) as well as
-    :doc:`timedeltas </content/types/timedelta>` are always computed in UTC
-    relative to the :func:`since <pdcast.convert.arguments.since>` argument.
-    When a time zone is supplied via :func:`tz <pdcast.convert.arguments.tz>`,
-    the resulting datetimes will be *converted* from UTC to the specified time
-    zone.
+#     Numerics (:doc:`boolean </content/types/boolean>`,
+#     :doc:`integer </content/types/integer>`,
+#     :doc:`float </content/types/float>`,
+#     :doc:`complex </content/types/complex>`, and
+#     :doc:`decimal </content/types/decimal>`) as well as
+#     :doc:`timedeltas </content/types/timedelta>` are always computed in UTC
+#     relative to the :func:`since <pdcast.convert.arguments.since>` argument.
+#     When a time zone is supplied via :func:`tz <pdcast.convert.arguments.tz>`,
+#     the resulting datetimes will be *converted* from UTC to the specified time
+#     zone.
 
-    .. doctest::
+#     .. doctest::
 
-        >>> pdcast.cast(0, "datetime", tz="US/Pacific")
-        0   1969-12-31 16:00:00-08:00
-        dtype: datetime64[ns, US/Pacific]
-        >>> pdcast.cast(0, "datetime", tz="US/Pacific", since="2022-03-27")
-        0   2022-03-26 17:00:00-07:00
-        dtype: datetime64[ns, US/Pacific]
+#         >>> pdcast.cast(0, "datetime", tz="US/Pacific")
+#         0   1969-12-31 16:00:00-08:00
+#         dtype: datetime64[ns, US/Pacific]
+#         >>> pdcast.cast(0, "datetime", tz="US/Pacific", since="2022-03-27")
+#         0   2022-03-26 17:00:00-07:00
+#         dtype: datetime64[ns, US/Pacific]
 
-    :doc:`Strings </content/types/string>` and
-    :doc:`datetimes </content/types/datetime>` on the other hand are
-    interpreted according to the
-    :func:`naive_tz <pdcast.convert.arguments.naive_tz>` argument.  Any naive
-    inputs will first be *localized* to
-    :func:`naive_tz <pdcast.convert.arguments.naive_tz>` and then *converted*
-    to the final :func:`tz <pdcast.convert.arguments.tz>`.
+#     :doc:`Strings </content/types/string>` and
+#     :doc:`datetimes </content/types/datetime>` on the other hand are
+#     interpreted according to the
+#     :func:`naive_tz <pdcast.convert.arguments.naive_tz>` argument.  Any naive
+#     inputs will first be *localized* to
+#     :func:`naive_tz <pdcast.convert.arguments.naive_tz>` and then *converted*
+#     to the final :func:`tz <pdcast.convert.arguments.tz>`.
 
-    .. doctest::
+#     .. doctest::
 
-        >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="US/Pacific", naive_tz="US/Eastern")
-        0   1969-12-31 21:00:00-08:00
-        dtype: datetime64[ns, US/Pacific]
-        >>> pdcast.cast("2022-03-27", "datetime", tz="US/Pacific", naive_tz="Asia/Hong_Kong")
-        0   2022-03-26 09:00:00-07:00
-        dtype: datetime64[ns, US/Pacific]
+#         >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="US/Pacific", naive_tz="US/Eastern")
+#         0   1969-12-31 21:00:00-08:00
+#         dtype: datetime64[ns, US/Pacific]
+#         >>> pdcast.cast("2022-03-27", "datetime", tz="US/Pacific", naive_tz="Asia/Hong_Kong")
+#         0   2022-03-26 09:00:00-07:00
+#         dtype: datetime64[ns, US/Pacific]
 
-    If :func:`naive_tz <pdcast.convert.arguments.naive_tz>` is left as
-    :data:`None <python:None>` (the default), then naive datetimes and datetime
-    strings will be localized directly to
-    :func:`tz <pdcast.convert.arguments.tz>`.
+#     If :func:`naive_tz <pdcast.convert.arguments.naive_tz>` is left as
+#     :data:`None <python:None>` (the default), then naive datetimes and datetime
+#     strings will be localized directly to
+#     :func:`tz <pdcast.convert.arguments.tz>`.
 
-    .. doctest::
+#     .. doctest::
 
-        >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="US/Pacific", naive_tz=None)
-        0   1970-01-01 00:00:00-08:00
-        dtype: datetime64[ns, US/Pacific]
-        >>> pdcast.cast("2022-03-27", "datetime", tz="US/Pacific", naive_tz=None)
-        0   2022-03-27 00:00:00-07:00
-        dtype: datetime64[ns, US/Pacific]
+#         >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="US/Pacific", naive_tz=None)
+#         0   1970-01-01 00:00:00-08:00
+#         dtype: datetime64[ns, US/Pacific]
+#         >>> pdcast.cast("2022-03-27", "datetime", tz="US/Pacific", naive_tz=None)
+#         0   2022-03-27 00:00:00-07:00
+#         dtype: datetime64[ns, US/Pacific]
 
-    The same behavior as for numerics can be obtained by setting
-    :func:`naive_tz <pdcast.convert.arguments.naive_tz>` to ``"utc"``.
+#     The same behavior as for numerics can be obtained by setting
+#     :func:`naive_tz <pdcast.convert.arguments.naive_tz>` to ``"utc"``.
 
-    .. doctest::
+#     .. doctest::
 
-        >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="US/Pacific", naive_tz="utc")
-        0   1969-12-31 16:00:00-08:00
-        dtype: datetime64[ns, US/Pacific]
-        >>> pdcast.cast("2022-03-27", "datetime", tz="US/Pacific", naive_tz="utc")
-        0   2022-03-26 17:00:00-07:00
-        dtype: datetime64[ns, US/Pacific]
+#         >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="US/Pacific", naive_tz="utc")
+#         0   1969-12-31 16:00:00-08:00
+#         dtype: datetime64[ns, US/Pacific]
+#         >>> pdcast.cast("2022-03-27", "datetime", tz="US/Pacific", naive_tz="utc")
+#         0   2022-03-26 17:00:00-07:00
+#         dtype: datetime64[ns, US/Pacific]
 
-    .. note::
+#     .. note::
 
-        :func:`naive_tz <pdcast.convert.arguments.naive_tz>` is similar to the
-        ``utc`` argument of :func:`pandas.to_datetime`, but allows for full
-        control over the handling of naive inputs.
-    """
-    return timezone(val)
-
-
-@conversion_argument(default=defaults["naive_tz"])
-def naive_tz(
-    val: str | pytz.BaseTzInfo | None,
-    state: dict
-) -> pytz.BaseTzInfo:
-    """The assumed time zone when localizing naive datetimes.
-
-    Parameters
-    ----------
-    val : str | pytz.timezone | None
-        An IANA time zone string, a `pytz <https://pypi.org/project/pytz/>`_
-        timezone object, or :data:`None <python:None>` to indicate direct
-        localization of naive inputs.  This can also be the special string
-        ``"local"``, which refers to the local time zone of the current system
-        at the time of execution.  Defaults to :data:`None <python:None>`.
-
-    Returns
-    -------
-    pytz.timezone | None
-        A `pytz <https://pypi.org/project/pytz/>`_ timezone object
-        corresponding to the input or :data:`None` to indicate direct
-        localization.
-
-    Raises
-    ------
-    pytz.exceptions.UnknownTimeZoneError
-        If ``val`` could not be recognized as a time zone specifier.
-
-    See Also
-    --------
-    tz <pdcast.convert.arguments.tz> :
-        The final time zone to convert to.
-
-    Examples
-    --------
-    See the docs for the :func:`tz <pdcast.convert.arguments.tz>` argument for
-    examples on the interaction between :func:`tz <pdcast.convert.arguments.tz>`
-    and :func:`naive_tz <pdcast.convert.arguments.naive_tz>`.
-    """
-    return timezone(val)
+#         :func:`naive_tz <pdcast.convert.arguments.naive_tz>` is similar to the
+#         ``utc`` argument of :func:`pandas.to_datetime`, but allows for full
+#         control over the handling of naive inputs.
+#     """
+#     return timezone(val)
 
 
-@conversion_argument(default=defaults["day_first"])
+# @cast.register_arg(default=defaults["naive_tz"])
+# def naive_tz(
+#     val: str | pytz.BaseTzInfo | None,
+#     state: dict
+# ) -> pytz.BaseTzInfo:
+#     """The assumed time zone when localizing naive datetimes.
+
+#     Parameters
+#     ----------
+#     val : str | pytz.timezone | None
+#         An IANA time zone string, a `pytz <https://pypi.org/project/pytz/>`_
+#         timezone object, or :data:`None <python:None>` to indicate direct
+#         localization of naive inputs.  This can also be the special string
+#         ``"local"``, which refers to the local time zone of the current system
+#         at the time of execution.  Defaults to :data:`None <python:None>`.
+
+#     Returns
+#     -------
+#     pytz.timezone | None
+#         A `pytz <https://pypi.org/project/pytz/>`_ timezone object
+#         corresponding to the input or :data:`None` to indicate direct
+#         localization.
+
+#     Raises
+#     ------
+#     pytz.exceptions.UnknownTimeZoneError
+#         If ``val`` could not be recognized as a time zone specifier.
+
+#     See Also
+#     --------
+#     tz <pdcast.convert.arguments.tz> :
+#         The final time zone to convert to.
+
+#     Examples
+#     --------
+#     See the docs for the :func:`tz <pdcast.convert.arguments.tz>` argument for
+#     examples on the interaction between :func:`tz <pdcast.convert.arguments.tz>`
+#     and :func:`naive_tz <pdcast.convert.arguments.naive_tz>`.
+#     """
+#     return timezone(val)
+
+
+@cast.register_arg(default=defaults["day_first"])
 def day_first(val: bool, state: dict) -> bool:
     """Indicates whether to interpret the first value in an ambiguous
     3-integer date (e.g. 01/05/09) as the day (``True``) or month
@@ -1006,7 +986,7 @@ def day_first(val: bool, state: dict) -> bool:
     return bool(val)
 
 
-@conversion_argument(default=defaults["year_first"])
+@cast.register_arg(default=defaults["year_first"])
 def year_first(val: bool, state: dict) -> bool:
     """Indicates whether to interpret the first value in an ambiguous
     3-integer date (e.g. 01/05/09) as the year.
@@ -1058,7 +1038,7 @@ def year_first(val: bool, state: dict) -> bool:
     return bool(val)
 
 
-@conversion_argument(default=defaults["as_hours"])
+@cast.register_arg(default=defaults["as_hours"])
 def as_hours(val: bool, state: dict) -> bool:
     """Indicates whether to interpret ambiguous MM:SS timedeltas as HH:MM.
 
@@ -1098,7 +1078,7 @@ def as_hours(val: bool, state: dict) -> bool:
     return bool(val)
 
 
-@conversion_argument(default=defaults["true"])
+@cast.register_arg(default=defaults["true"])
 def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
     """A set of truthy strings to use for boolean conversions.
 
@@ -1245,7 +1225,7 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
     return true_set
 
 
-@conversion_argument(default=defaults["false"])
+@cast.register_arg(default=defaults["false"])
 def false(val, state: dict) -> set[str]:
     """A set of falsy strings to use for boolean conversions.
 
@@ -1305,7 +1285,7 @@ def false(val, state: dict) -> set[str]:
     return false_set
 
 
-@conversion_argument(default=defaults["ignore_case"])
+@cast.register_arg(default=defaults["ignore_case"])
 def ignore_case(val: bool, state: dict) -> bool:
     """Indicates whether to ignore differences in case during string
     conversions.
@@ -1349,7 +1329,7 @@ def ignore_case(val: bool, state: dict) -> bool:
     return bool(val)
 
 
-@conversion_argument(default=defaults["format"])
+@cast.register_arg(default=defaults["format"])
 def format(val: str | None, state: dict) -> str:
     """A :ref:`format specifier <python:formatspec>` to use for string
     conversions.
@@ -1410,7 +1390,7 @@ def format(val: str | None, state: dict) -> str:
     return val
 
 
-@conversion_argument(default=defaults["base"])
+@cast.register_arg(default=defaults["base"])
 def base(val: int, state: dict) -> int:
     """Base to use for integer <-> string conversions, as supplied to
     :class:`int() <python:int>`.
@@ -1509,7 +1489,7 @@ def base(val: int, state: dict) -> int:
     return val
 
 
-@conversion_argument(default=defaults["call"])
+@cast.register_arg(default=defaults["call"])
 def call(val: Callable | None, state: dict) -> Callable:
     """Apply a callable over the input data, producing the desired output.
 
@@ -1523,7 +1503,7 @@ def call(val: Callable | None, state: dict) -> Callable:
     return val
 
 
-@conversion_argument(default=defaults["downcast"])
+@cast.register_arg(default=defaults["downcast"])
 def downcast(
     val: bool | type_specifier,
     state: dict
@@ -1537,7 +1517,7 @@ def downcast(
     return resolve.resolve_type([val])
 
 
-@conversion_argument(default=defaults["errors"])
+@cast.register_arg(default=defaults["errors"])
 def errors(val: str, state: dict) -> str:
     """The rule to apply if/when errors are encountered during conversion.
     """
