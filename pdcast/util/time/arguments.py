@@ -6,8 +6,8 @@ from .timezone import localize, tz_convert, tz_localize
 
 @localize.register_arg(name="tz")
 @localize.register_arg(name="naive_tz")
-# @tz_localize.register_arg
-# @tz_convert.register_arg
+@tz_localize.register_arg
+@tz_convert.register_arg
 def tz(tz: str | pytz.BaseTzInfo | None, state: dict) -> pytz.BaseTzInfo:
     """Convert a time zone specifier into a ``datetime.tzinfo`` object."""
     if tz is None:

@@ -12,6 +12,17 @@ from .adapter import AdapterType
 from .atomic import ScalarType, AtomicType
 
 
+# TODO: @backend should be an independent decorator, which resolves the given
+# type and checks that it is generic
+
+# @subtype("signed[numpy]")
+# @backend("int8", "numpy")
+
+
+# This also allows `cond` to avoid executing the class body, which might raise
+# errors.
+
+
 def register(class_: type = None, *, cond: bool = True):
     """Validate an AtomicType definition and add it to the registry.
 
@@ -113,7 +124,6 @@ def generic(_class: type):
                 )
 
             # inherit generic attributes
-            specific._family = cls._family  # TODO: check if this is already given?
             specific._is_generic = False
             specific.name = cls.name
             specific._generic = cls
@@ -167,9 +177,6 @@ def subtype(supertype: type):
                 f"time (`{class_def.__name__}` is currently registered to "
                 f"`{class_def._parent.__name__}`)"
             )
-
-        # inherit supertype attributes
-        class_def._family = supertype._family  # TODO: check if this is already given?
 
         # overwrite class attributes
         class_def._parent = supertype

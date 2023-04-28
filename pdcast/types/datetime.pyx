@@ -48,16 +48,6 @@ from .base import dispatch, generic, register
 
 
 
-######################
-####    MIXINS    ####
-######################
-
-
-class DatetimeMixin:
-
-    conversion_func = convert.to_datetime
-
-
 #######################
 ####    GENERIC    ####
 #######################
@@ -65,10 +55,7 @@ class DatetimeMixin:
 
 @register
 @generic
-class DatetimeType(DatetimeMixin, AtomicType):
-
-    # internal root fields - all subtypes/backends inherit these
-    _family = "datetime"
+class DatetimeType(AtomicType):
 
     name = "datetime"
     aliases = {"datetime"}
@@ -143,7 +130,7 @@ class DatetimeType(DatetimeMixin, AtomicType):
 
 @register
 @DatetimeType.register_backend("numpy")
-class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
+class NumpyDatetime64Type(AtomicType, cache_size=64):
 
     # NOTE: dtype is set to object due to pandas and its penchant for
     # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
@@ -339,7 +326,7 @@ class NumpyDatetime64Type(DatetimeMixin, AtomicType, cache_size=64):
 
 @register
 @DatetimeType.register_backend("pandas")
-class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
+class PandasTimestampType(AtomicType, cache_size=64):
 
     aliases = {
         pd.Timestamp,
@@ -546,7 +533,7 @@ class PandasTimestampType(DatetimeMixin, AtomicType, cache_size=64):
 
 @register
 @DatetimeType.register_backend("python")
-class PythonDatetimeType(DatetimeMixin, AtomicType, cache_size=64):
+class PythonDatetimeType(AtomicType, cache_size=64):
 
     aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
     na_value = pd.NaT

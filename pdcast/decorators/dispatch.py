@@ -24,6 +24,8 @@ from pdcast.util.type_hints import type_specifier
 from .base import BaseDecorator
 
 
+# TODO: emit a warning whenever an implementation is replaced.
+
 
 # TODO: None wildcard value?
 

@@ -7,13 +7,15 @@ from typing import Any, Callable, Optional
 import pandas as pd
 
 from pdcast import types
-from pdcast.decorators.attachable import attachable
-from pdcast.decorators.base import BaseDecorator
-from pdcast.decorators.extension import extension_func
-from pdcast.decorators.dispatch import dispatch
+from pdcast.decorators import (
+    attachable, BaseDecorator, dispatch, extension_func
+)
 from pdcast.type_hints import type_specifier
 from pdcast.util import wrapper
 from pdcast.util.round import Tolerance
+
+from . import arguments
+
 
 # ignore this file when doing string-based object lookups in resolve_type()
 IGNORE_FRAME_OBJECTS = True
@@ -135,7 +137,90 @@ def cast(
     change the behavior of :func:`cast`.  The method that is chosen is based on
     the :attr:`family <AtomicType.family>` of its ``dtype`` argument.
     """
-    return dtype.conversion_func(series, dtype, **kwargs)
+    raise NotImplementedError(
+        f"no conversion found between {str(series.element_type)} and "
+        f"{str(dtype)}"
+    )
+
+
+def to_boolean(
+    data: Any,
+    dtype: type_specifier = "bool",
+    **kwargs
+) -> pd.Series:
+    """Stand-alone conversion to boolean data types."""
+    dtype = arguments.dtype(dtype, {}, supertype="bool")
+    return cast(data, dtype, **kwargs)
+
+
+def to_integer(
+    data: Any,
+    dtype: type_specifier = "int",
+    **kwargs
+) -> pd.Series:
+    """Stand-alone conversion to integer data types."""
+    dtype = arguments.dtype(dtype, {}, supertype="int")
+    return cast(data, dtype, **kwargs)
+
+
+def to_float(
+    data: Any,
+    dtype: type_specifier = "float",
+    **kwargs
+) -> pd.Series:
+    """Stand-alone conversion to floating point data types."""
+    dtype = arguments.dtype(dtype, {}, supertype="float")
+    return cast(data, dtype, **kwargs)
+
+
+def to_complex(
+    data: Any,
+    dtype: type_specifier = "complex",
+    **kwargs
+) -> pd.Series:
+    """Stand-alone conversion to complex data types."""
+    dtype = arguments.dtype(dtype, {}, supertype="complex")
+    return cast(data, dtype, **kwargs)
+
+
+def to_decimal(
+    data: Any,
+    dtype: type_specifier = "decimal",
+    **kwargs
+) -> pd.Series:
+    """Stand-alone conversion to decimal data types."""
+    dtype = arguments.dtype(dtype, {}, supertype="decimal")
+    return cast(data, dtype, **kwargs)
+
+
+def to_datetime(
+    data: Any,
+    dtype: type_specifier = "datetime",
+    **kwargs
+) -> pd.Series:
+    """Stand-alone conversion to datetime data types."""
+    dtype = arguments.dtype(dtype, {}, supertype="datetime")
+    return cast(data, dtype, **kwargs)
+
+
+def to_timedelta(
+    data: Any,
+    dtype: type_specifier = "timedelta",
+    **kwargs
+) -> pd.Series:
+    """Stand-alone conversion to timedelta data types."""
+    dtype = arguments.dtype(dtype, {}, supertype="timedelta")
+    return cast(data, dtype, **kwargs)
+
+
+def to_string(
+    data: Any,
+    dtype: type_specifier = "string",
+    **kwargs
+) -> pd.Series:
+    """Stand-alone conversion to string data types."""
+    dtype = arguments.dtype(dtype, {}, supertype="string")
+    return cast(data, dtype, **kwargs)
 
 
 #######################

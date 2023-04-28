@@ -1,8 +1,4 @@
-
-from pdcast.decorators import attachable
-from pdcast.decorators import extension
-from pdcast.decorators import dispatch
-
+from pdcast.decorators import attachable, dispatch, extension_func
 from pdcast.util import wrapper
 from pdcast.util.type_hints import numeric
 
@@ -17,9 +13,9 @@ from .tolerance import Tolerance
 ######################
 
 
-@attachable.attachable
-@extension.extension_func
-@dispatch.dispatch
+@attachable
+@extension_func
+@dispatch
 def round(
     series: wrapper.SeriesWrapper,
     decimals: int = 0,
@@ -44,9 +40,9 @@ def round(
     )
 
 
-@attachable.attachable
-@extension.extension_func
-@dispatch.dispatch
+@attachable
+@extension_func
+@dispatch
 def snap(
     series: wrapper.SeriesWrapper,
     tol: numeric = 1e-6
@@ -70,8 +66,8 @@ def snap(
     )
 
 
-@extension.extension_func
-@dispatch.dispatch
+@extension_func
+@dispatch
 def snap_round(
     series: wrapper.SeriesWrapper,
     tol: numeric,

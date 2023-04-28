@@ -16,8 +16,8 @@ def decimals(val: int, state: dict) -> int:
     return int(val)
 
 
-@round.register_arg(name="rule")
-def rounding(val: str | None, state: dict) -> str:
+@round.register_arg
+def rule(val: str | None, state: dict) -> str:
     """The rounding rule to use for numeric conversions.
 
     Parameters

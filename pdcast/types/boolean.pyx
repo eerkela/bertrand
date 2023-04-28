@@ -28,12 +28,6 @@ class BooleanMixin:
     max = 1
     min = 0
 
-    @property
-    def conversion_func(self) -> Callable:
-        from pdcast import convert
-
-        return convert.to_boolean
-
 
 class NumpyBooleanMixin:
     """A mixin class that allows numpy booleans to automatically switch to
@@ -95,7 +89,6 @@ class BooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
     """
 
     # internal root fields - all subtypes/backends inherit these
-    _family = "boolean"
     _is_boolean = True
     _is_numeric = True
 

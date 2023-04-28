@@ -31,16 +31,6 @@ from .base import generic, register
 # probably unfixable.
 
 
-######################
-####    MIXINS    ####
-######################
-
-
-class TimedeltaMixin:
-
-    conversion_func = convert.to_timedelta
-
-
 #######################
 ####    GENERIC    ####
 #######################
@@ -48,10 +38,7 @@ class TimedeltaMixin:
 
 @register
 @generic
-class TimedeltaType(TimedeltaMixin, AtomicType):
-
-    # internal root fields - all subtypes/backends inherit these
-    _family = "timedelta"
+class TimedeltaType(AtomicType):
 
     name = "timedelta"
     aliases = {"timedelta"}
@@ -103,7 +90,7 @@ class TimedeltaType(TimedeltaMixin, AtomicType):
 
 @register
 @TimedeltaType.register_backend("numpy")
-class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
+class NumpyTimedelta64Type(AtomicType, cache_size=64):
 
     # NOTE: dtype is set to object due to pandas and its penchant for
     # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
@@ -256,7 +243,7 @@ class NumpyTimedelta64Type(TimedeltaMixin, AtomicType, cache_size=64):
 
 @register
 @TimedeltaType.register_backend("pandas")
-class PandasTimedeltaType(TimedeltaMixin, AtomicType):
+class PandasTimedeltaType(AtomicType):
 
     aliases = {pd.Timedelta, "Timedelta", "pandas.Timedelta", "pd.Timedelta"}
     dtype = np.dtype("m8[ns]")
@@ -291,7 +278,7 @@ class PandasTimedeltaType(TimedeltaMixin, AtomicType):
 
 @register
 @TimedeltaType.register_backend("python")
-class PythonTimedeltaType(TimedeltaMixin, AtomicType):
+class PythonTimedeltaType(AtomicType):
 
     aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
     na_value = pd.NaT
@@ -333,26 +320,3 @@ class PythonTimedeltaType(TimedeltaMixin, AtomicType):
 cdef object m8_pattern = re.compile(
     r"(?P<step_size>[0-9]+)?(?P<unit>ns|us|ms|s|m|h|D|W|M|Y)"
 )
-
-
-def convert_ns_to_unit(
-    series: wrapper.SeriesWrapper,
-    unit: str,
-    step_size: int,
-    rounding: str,
-    since: Epoch
-) -> None:
-    """Helper for converting between integer time units."""
-    series.series = convert_unit(
-        series.series,
-        "ns",
-        unit,
-        since=since,
-        rounding=rounding or "down",
-    )
-    if step_size != 1:
-        series.series = round_div(
-            series.series,
-            step_size,
-            rule=rounding or "down"
-        )

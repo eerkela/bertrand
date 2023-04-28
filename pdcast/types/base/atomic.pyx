@@ -29,6 +29,8 @@ from pdcast.util.type_hints import array_like, type_specifier
 
 # TODO: IntegerType.downcast should accept a tolerance argument
 
+# TODO: move upcast into convert/
+
 
 # conversions
 # +------------------------------------------------
@@ -195,7 +197,6 @@ cdef class AtomicType(ScalarType):
     """
 
     # INTERNAL FIELDS.  These should never be overridden.
-    _family = "object"   # used to determine conversion to this type
     _is_boolean = None   # used to autogenerate ExtensionDtypes
     _is_numeric = None   # used to autogenerate ExtensionDtypes
     _is_generic = None   # marker for @generic, @register_backend
@@ -356,13 +357,6 @@ cdef class AtomicType(ScalarType):
         AtomicType.is_na : for comparisons against this value.
         """
         return pd.NA
-
-    @property
-    def conversion_func(self) -> Callable:
-        """The conversion function to use when targeting this type."""
-        from pdcast import convert
-
-        return convert.to_object
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -585,26 +579,6 @@ cdef class AtomicType(ScalarType):
     ###################################
     ####    SUBTYPES/SUPERTYPES    ####
     ###################################
-
-    @property
-    def family(self) -> str:
-        """A string specifying the kind of data for this type.
-
-        Returns
-        -------
-        str
-            The family of this data type.
-
-        Notes
-        -----
-        This is analogous to numpy's ``kind`` attribute for ``dtype`` objects,
-        and is manually defined for each hierarchy's root node.  All other
-        types automatically inherit this through the :func:`@subtype <subtype>`
-        and :func:`@register_backend <AtomicType.register_backend>` decorators.
-        Users should not need to override this unless they are implementing an
-        entirely new type category beyond what is included in ``pdcast``.
-        """
-        return self._family
 
     @property
     def is_root(self) -> bool:

@@ -26,12 +26,6 @@ cdef bint has_clongdouble = (np.dtype(np.clongdouble).itemsize > 16)
 
 class ComplexMixin:
 
-    @property
-    def conversion_func(self) -> Callable:
-        from pdcast import convert
-
-        return convert.to_complex
-
     ############################
     ####    TYPE METHODS    ####
     ############################
@@ -74,7 +68,6 @@ class ComplexMixin:
 class ComplexType(ComplexMixin, AtomicType):
 
     # internal root fields - all subtypes/backends inherit these
-    _family = "complex"
     _is_numeric = True
 
     name = "complex"

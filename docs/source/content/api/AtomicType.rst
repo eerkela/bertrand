@@ -144,7 +144,6 @@ define subtypes.
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.family
     AtomicType.is_root
     AtomicType.root
     AtomicType.supertype
@@ -182,25 +181,6 @@ See :class:`AdapterType` for more information on how to wrap
     AtomicType.unwrap
     AtomicType.make_sparse
     AtomicType.make_categorical
-
-.. _atomic_type.conversions:
-
-Conversions
------------
-See the :doc:`conversion docs <cast>` for more information on type conversions.
-
-.. autosummary::
-    :toctree: ../../generated/
-
-    AtomicType.to_boolean
-    AtomicType.to_integer
-    AtomicType.to_float
-    AtomicType.to_complex
-    AtomicType.to_decimal
-    AtomicType.to_datetime
-    AtomicType.to_timedelta
-    AtomicType.to_string
-    AtomicType.to_object
 
 .. _atomic_type.downcast:
 

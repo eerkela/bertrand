@@ -16,20 +16,6 @@ from .base import generic, register
 # https://github.com/pandas-dev/pandas/blob/e246c3b05924ac1fe083565a765ce847fcad3d91/pandas/tests/extension/decimal/array.py
 
 
-######################
-####    MIXINS    ####
-######################
-
-
-class DecimalMixin:
-
-    @property
-    def conversion_func(self) -> Callable:
-        from pdcast import convert
-
-        return convert.to_decimal
-
-
 #######################
 ####    GENERIC    ####
 #######################
@@ -37,10 +23,9 @@ class DecimalMixin:
 
 @register
 @generic
-class DecimalType(DecimalMixin, AtomicType):
+class DecimalType(AtomicType):
 
     # internal root fields - all subtypes/backends inherit these
-    _family = "decimal"
     _is_numeric = True
 
     name = "decimal"
@@ -57,7 +42,7 @@ class DecimalType(DecimalMixin, AtomicType):
 
 @register
 @DecimalType.register_backend("python")
-class PythonDecimalType(DecimalMixin, AtomicType):
+class PythonDecimalType(AtomicType):
 
     aliases = {decimal.Decimal}
     type_def = decimal.Decimal

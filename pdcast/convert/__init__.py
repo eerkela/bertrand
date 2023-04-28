@@ -31,9 +31,6 @@ to_timedelta()
 to_string()
     String-specific version of cast().
 
-to_object()
-    Object-specific version of cast().
-
 Classes
 -------
 SeriesWrapper

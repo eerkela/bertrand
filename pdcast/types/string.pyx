@@ -15,9 +15,9 @@ from .base cimport AtomicType, BaseType
 from .base import generic, register
 
 
-##################################
-####    MIXINS & CONSTANTS    ####
-##################################
+#########################
+####    CONSTANTS    ####
+#########################
 
 
 cdef object default_string_dtype
@@ -34,15 +34,6 @@ except ImportError:
     pyarrow_installed = False
 
 
-class StringMixin:
-
-    @property
-    def conversion_func(self) -> Callable:
-        from pdcast import convert
-
-        return convert.to_string
-
-
 #######################
 ####    GENERIC    ####
 #######################
@@ -50,11 +41,8 @@ class StringMixin:
 
 @register
 @generic
-class StringType(StringMixin, AtomicType):
+class StringType(AtomicType):
     """String supertype."""
-
-    # internal root fields - all subtypes/backends inherit these
-    _family = "string"
 
     name = "string"
     aliases = {
@@ -94,7 +82,7 @@ class StringType(StringMixin, AtomicType):
 
 @register
 @StringType.register_backend("python")
-class PythonStringType(StringMixin, AtomicType):
+class PythonStringType(AtomicType):
 
     aliases = set()
     dtype = pd.StringDtype("python")
@@ -116,7 +104,7 @@ if pyarrow_installed:
 
     @register
     @StringType.register_backend("pyarrow")
-    class PyArrowStringType(StringMixin, AtomicType):
+    class PyArrowStringType(AtomicType):
 
         aliases = set()
         dtype = pd.StringDtype("pyarrow")

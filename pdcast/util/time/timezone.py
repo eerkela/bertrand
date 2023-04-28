@@ -5,10 +5,7 @@ from functools import partial
 import pandas as pd
 import pytz
 
-from pdcast.decorators import attachable
-from pdcast.decorators import dispatch
-from pdcast.decorators import extension
-
+from pdcast.decorators import attachable, dispatch, extension_func
 from pdcast.util import wrapper
 
 
@@ -17,8 +14,8 @@ from pdcast.util import wrapper
 ######################
 
 
-@extension.extension_func
-@dispatch.dispatch
+@extension_func
+@dispatch
 def localize(
     series: wrapper.SeriesWrapper,
     tz: str | pytz.BaseTzInfo | None,
@@ -31,8 +28,8 @@ def localize(
     )
 
 
-@attachable.attachable
-@extension.extension_func
+@attachable
+@extension_func
 def tz_localize(
     series: wrapper.SeriesWrapper,
     tz: str | pytz.BaseTzInfo | None,
@@ -46,8 +43,8 @@ def tz_localize(
     return localize(series, tz=tz, naive_tz=None)
 
 
-@attachable.attachable
-@extension.extension_func
+@attachable
+@extension_func
 def tz_convert(
     series: wrapper.SeriesWrapper,
     tz: str | pytz.BaseTzInfo | None,

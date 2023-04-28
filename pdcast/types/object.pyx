@@ -27,9 +27,6 @@ from .base import register
 @register
 class ObjectType(AtomicType, cache_size=64):
 
-    # internal root fields - all subtypes/backends inherit these
-    _family = "object"
-
     name = "object"
     aliases = {
         "object", "obj", "O", "pyobject", "object_", "object0", np.dtype("O")
@@ -47,12 +44,6 @@ class ObjectType(AtomicType, cache_size=64):
     @property
     def type_def(self) -> type:
         return self.kwargs["type_def"]
-
-    @property
-    def conversion_func(self) -> Callable:
-        from pdcast import convert
-
-        return convert.to_object
 
     ############################
     ####    TYPE METHODS    ####

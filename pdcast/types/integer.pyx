@@ -23,20 +23,6 @@ from .base import generic, subtype, register
 class IntegerMixin:
 
     @property
-    def conversion_func(self) -> Callable:
-        from pdcast import convert
-
-        return convert.to_integer
-
-    ############################
-    ####    TYPE METHODS    ####
-    ############################
-
-    @property
-    def is_signed(self) -> bool:
-        return not self.is_subtype(UnsignedIntegerType)
-
-    @property
     def larger(self) -> list:
         """Get a list of types that this type can be upcasted to."""
         # get all subtypes with range wider than self
@@ -56,10 +42,11 @@ class IntegerMixin:
     @property
     def smaller(self) -> list:
         """Get a list of types that this type can be downcasted to."""
+        is_signed = lambda x: not x.is_subtype(UnsignedIntegerType)
         result = [
             x for x in self.root.subtypes if (
                 (x.itemsize or np.inf) < (self.itemsize or np.inf) and
-                x.is_signed == self.is_signed
+                is_signed(x) == is_signed(self)
             )
         ]
         return sorted(result, key=lambda x: x.itemsize)
@@ -70,9 +57,7 @@ class NumpyIntegerMixin:
     their pandas equivalents when missing values are detected.
     """
 
-    @property
-    def is_nullable(self) -> bool:
-        return False
+    is_nullable = False
 
     def make_nullable(self) -> AtomicType:
         return self.generic.instance(backend="pandas", **self.kwargs)
@@ -89,7 +74,6 @@ class IntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic integer supertype."""
 
     # internal root fields - all subtypes/backends inherit these
-    _family = "integer"
     _is_numeric = True
 
     name = "int"

@@ -184,7 +184,6 @@ within its expanded :doc:`type system <../types/types>`.  They inherit the same
     to_datetime
     to_timedelta
     to_string
-    to_object
 
 .. _cast.special_cases:
 

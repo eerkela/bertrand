@@ -33,12 +33,6 @@ cdef bint has_longdouble = (np.dtype(np.longdouble).itemsize > 8)
 
 class FloatMixin:
 
-    @property
-    def conversion_func(self) -> Callable:
-        from pdcast import convert
-
-        return convert.to_float
-
     ############################
     ####    TYPE METHODS    ####
     ############################
@@ -82,7 +76,6 @@ class FloatType(FloatMixin, AtomicType):
     """Generic float supertype"""
 
     # internal root fields - all subtypes/backends inherit these
-    _family = "float"
     _is_numeric = True
 
     name = "float"

@@ -5,8 +5,8 @@ pdcast.TypeRegistry
 
 .. autoclass:: TypeRegistry
 
-Resolution
-----------
+Regular Expressions
+-------------------
 
 .. autosummary::
     :toctree: ../../generated/
@@ -14,14 +14,6 @@ Resolution
     TypeRegistry.aliases
     TypeRegistry.regex
     TypeRegistry.resolvable
-
-Dispatching
------------
-
-.. autosummary::
-    :toctree: ../../generated/
-
-    TypeRegistry.dispatch_map
 
 Registration
 ------------

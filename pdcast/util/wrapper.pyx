@@ -36,6 +36,21 @@ from pdcast.util.type_hints import array_like, numeric, type_specifier
 # entirely.
 
 
+# TODO: drop astype() from SeriesWrapper and put it in
+# AbstractArray.from_sequence().  Then handle the integer/boolean special case
+# in separate overloaded cast() implementations.
+
+
+# -> SeriesWrapper might be completely internal.  Apply_with_errors becomes
+# a standalone function in convert.base.  We just dump the contents of the
+# wrapper into the dispatched function.  No need for make_nullable() on dtype
+# either - these are covered in special cases of cast().
+
+# still need hasnans, min/max caching.  These might be the only functions that
+# are exposed.  Otherwise, if a dispatched function returns a Series, it will
+# simply be re-wrapped during _dispatch_scalar.
+
+
 ######################
 ####    PUBLIC    ####
 ######################
@@ -339,11 +354,13 @@ cdef class SeriesWrapper:
         target = dtype.dtype
 
         # apply dtype.type_def elementwise if not astype-compliant
-        if (
-            target.kind == "O" and
-            dtype.type_def != object and
-            not isinstance(target, pd.StringDtype)
-        ):
+        # if (
+        #     target.kind == "O" and
+        #     dtype.type_def != object and
+        #     not isinstance(target, pd.StringDtype)
+        # ):
+        
+        if isinstance(dtype, abstract.AbstractDtype):
             return self.apply_with_errors(
                 call=lambda x: (
                     x if isinstance(x, dtype.type_def) else dtype.type_def(x)
