@@ -10,10 +10,10 @@ import inspect
 import itertools
 from types import MappingProxyType
 from typing import Any, Callable, Iterable
+import warnings
 
 import pandas as pd
 
-# import pdcast.convert as convert
 from pdcast import detect
 from pdcast import resolve
 from pdcast import types
@@ -21,7 +21,7 @@ from pdcast.util import wrapper
 from pdcast.util.structs import LRUDict
 from pdcast.util.type_hints import type_specifier
 
-from .base import BaseDecorator
+from .base import BaseDecorator, no_default
 
 
 # TODO: emit a warning whenever an implementation is replaced.
@@ -113,9 +113,6 @@ def dispatch(
 #######################
 ####    PRIVATE    ####
 #######################
-
-
-no_default = object()  # dummy for optional arguments in DispatchDict methods
 
 
 class DispatchDict(OrderedDict):
@@ -419,7 +416,16 @@ class DispatchFunc(BaseDecorator):
             # broadcast to selected types (including composites)
             composites = [resolve.resolve_type([spec]) for spec in args]
             paths = list(itertools.product(*composites))
+            existing = dict(self._dispatched)
             for path in paths:
+                previous = existing.get(path, None)
+                if previous:
+                    warn_msg = (
+                        f"Replacing '{previous.__qualname__}()' with "
+                        f"'{call.__qualname__}()' for signature "
+                        f"{tuple(str(x) for x in path)}"
+                    )
+                    # warnings.warn(warn_msg, UserWarning, stacklevel=2)
                 self._dispatched[path] = call
 
             return call
@@ -507,6 +513,8 @@ class DispatchFunc(BaseDecorator):
         **kwargs
     ) -> wrapper.SeriesWrapper:
         """Dispatch a mixed-type series to the appropriate implementation."""
+        from pdcast import convert
+
         groups = series.series.groupby(series.element_type.index, sort=False)
 
         # NOTE: SeriesGroupBy.transform() cannot reconcile mixed int64/uint64
@@ -556,7 +564,7 @@ class DispatchFunc(BaseDecorator):
             # attempt conversion to uint64
             target = unsigned.make_nullable() if series.hasnans else unsigned
             try:
-                result = convert.to_integer(
+                result = convert.cast(
                     result,
                     dtype=target,
                     downcast=kwargs.get("downcast", None),
@@ -698,45 +706,25 @@ def _resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
     return tuple(key_type)
 
 
-def _consistent(sig1: tuple, sig2: tuple) -> bool:
-    """Check for an overlap between two signatures.
-
-    If this returns ``True``, then it is possible for a signature to satisfy
-    both sig1 and sig2.
-    """
-    # check for empty signatures
-    if not sig1:
-        return not sig2
-    if not sig2:
-        return not sig1
-
-    # lengths match
-    return all(x.contains(y) or y.contains(x) for x, y in zip(sig1, sig2))
-
-
 def _supercedes(sig1: tuple, sig2: tuple) -> bool:
     """Check if sig1 is consistent with and strictly more specific than sig2.
     """
     return all(x.contains(y) for x, y in zip(sig2, sig1))
 
 
-def _ambiguous(sig1: tuple, sig2: tuple) -> bool:
-    """Signatures are consistent, but neither is strictly more specific.
-    """
-    return (
-        _consistent(sig1, sig2) and
-        not (_supercedes(sig1, sig2) or _supercedes(sig2, sig1))
-    )
-
-
-def _edge(sig1: tuple, sig2: tuple, tie_breaker: Callable = hash) -> bool:
+def _edge(sig1: tuple, sig2: tuple) -> bool:
     """If ``True``, check sig1 before sig2.
 
-    Ties are broken by the ``tie_breaker``, which defaults to ``hash()``
-    (psuedo-random).
+    Ties are broken by recursively backing off the last element of both
+    signatures.  As a result, whichever one is more specific in its earlier
+    elements will always be preferred.
     """
-    return _supercedes(sig1, sig2) and (
-        not _supercedes(sig2, sig1) or tie_breaker(sig1) > tie_breaker(sig2)
+    if not sig1 or not sig2:
+        return False
+
+    return (
+        _supercedes(sig1, sig2) and
+        not _supercedes(sig2, sig1) or _edge(sig1[:-1], sig2[:-1])
     )
 
 
@@ -789,6 +777,33 @@ def _sort(edges: dict) -> list:
     return L
 
 
+
+
+# def _consistent(sig1: tuple, sig2: tuple) -> bool:
+#     """Check for an overlap between two signatures.
+
+#     If this returns ``True``, then it is possible for a signature to satisfy
+#     both sig1 and sig2.
+#     """
+#     # check for empty signatures
+#     if not sig1:
+#         return not sig2
+#     if not sig2:
+#         return not sig1
+
+#     # lengths match
+#     return all(x.contains(y) or y.contains(x) for x, y in zip(sig1, sig2))
+
+
+# def _ambiguous(sig1: tuple, sig2: tuple) -> bool:
+#     """Signatures are consistent, but neither is strictly more specific.
+#     """
+#     return (
+#         _consistent(sig1, sig2) and
+#         not (_supercedes(sig1, sig2) or _supercedes(sig2, sig1))
+#     )
+
+
 # def ambiguities(signatures):
 #     """ All signature pairs such that A is ambiguous with B """
 #     signatures = list(map(tuple, signatures))
@@ -809,16 +824,22 @@ def _sort(edges: dict) -> list:
 #     return bar
 
 
+# @foo.overload("int8", "int")
+# def int8_foo(bar, baz):
+#     print("int8")
+#     return bar
+
+
 # @foo.overload("int", "int8")
 # def integer_foo(bar, baz):
 #     print("int")
 #     return bar
 
 
-# @foo.overload("int8", "int")
-# def int8_foo(bar, baz):
-#     print("int8")
-#     return bar
+# TODO: -> foo(np.int8(1), np.int8(1)) results in ambiguity.  We resolve these
+# by backing off from the right and chosing whichever is more specific.
+
+
 
 
 # @foo.overload("bool", "bool")

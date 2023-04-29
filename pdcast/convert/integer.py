@@ -1,5 +1,4 @@
-"""This module contains overloaded conversion logic for integer data types.
-"""
+"""This module contains dispatched cast() implementations for integer data."""
 from __future__ import annotations
 from functools import partial
 
@@ -12,31 +11,12 @@ from pdcast.util.round import Tolerance
 from pdcast.util.time import Epoch, convert_unit
 
 from .base import (
-    to_boolean, to_integer, to_float, to_decimal, to_complex, to_datetime,
-    to_timedelta, to_string
+    cast, generic_to_boolean, generic_to_integer, generic_to_float,
+    generic_to_string
 )
 
 
-# with targetable conversions, maybe the whole suite could just be recreated
-# that way
-
-# cast.overload("int", "bool")
-# cast.overload("int", "float")
-# cast.overload("int", "complex")
-# cast.overload("int", "decimal")
-# cast.overload("int", "datetime")
-# cast.overload("int", "datetime[pandas]")
-# cast.overload("int", "datetime[numpy]")
-# cast.overload("int", "datetime[python]")
-# cast.overload("int", "timedelta")
-
-
-#######################
-####    BOOLEAN    ####
-#######################
-
-
-@to_boolean.overload("int")
+@cast.overload("int", "bool")
 def integer_to_boolean(
     series: wrapper.SeriesWrapper,
     dtype: types.ScalarType,
@@ -45,15 +25,10 @@ def integer_to_boolean(
 ) -> wrapper.SeriesWrapper:
     """Convert integer data to a boolean data type."""
     series, dtype = series.boundscheck(dtype, errors=errors)
-    return to_boolean.generic(series, dtype, errors=errors)
+    return generic_to_boolean(series, dtype, errors=errors)
 
 
-#######################
-####    INTEGER    ####
-#######################
-
-
-@to_integer.overload("int")
+@cast.overload("int", "int")
 def integer_to_integer(
     series: wrapper.SeriesWrapper,
     dtype: types.ScalarType,
@@ -63,7 +38,7 @@ def integer_to_integer(
 ) -> wrapper.SeriesWrapper:
     """Convert integer data to another integer data type."""
     series, dtype = series.boundscheck(dtype, errors=errors)
-    return to_integer.generic(
+    return generic_to_integer(
         series=series,
         dtype=dtype,
         downcast=downcast,
@@ -71,12 +46,7 @@ def integer_to_integer(
     )
 
 
-#####################
-####    FLOAT    ####
-#####################
-
-
-@to_float.overload("int")
+@cast.overload("int", "float")
 def integer_to_float(
     series: wrapper.SeriesWrapper,
     dtype: types.ScalarType,
@@ -86,38 +56,31 @@ def integer_to_float(
     **unused
 ) -> wrapper.SeriesWrapper:
     """Convert integer data to a float data type."""
-    # NOTE: integers can always be exactly represented as long as their
-    # width in bits fits within the significand of the specified floating
-    # point type with exponent 1 (listed in the IEEE 754 specification).
-
+    # NOTE: integers can always be exactly represented as floats as long as
+    # their width in bits fits within the significand of the specified floating
+    # point type with exponent 1 (as listed in the IEEE 754 specification).
     if int(series.min) < dtype.min or int(series.max) > dtype.max:
         # 2-step conversion: int -> decimal, decimal -> float
-        series = to_decimal(series, dtype="decimal", errors=errors)
-        return to_float(
+        series = cast(series, "decimal", errors=errors)
+        return cast(
             series,
-            dtype=dtype,
+            dtype,
             tol=tol,
             downcast=downcast,
             errors=errors,
             **unused
         )
 
-    # do naive conversion
-    return to_float.generic(
+    return generic_to_float(
         series,
-        dtype=dtype,
+        dtype,
         tol=tol,
         downcast=downcast,
         errors=errors
     )
 
 
-#######################
-####    COMPLEX    ####
-#######################
-
-
-@to_complex.overload("int")
+@cast.overload("int", "complex")
 def integer_to_complex(
     series: wrapper.SeriesWrapper,
     dtype: types.ScalarType,
@@ -127,16 +90,17 @@ def integer_to_complex(
     **unused
 ) -> wrapper.SeriesWrapper:
     """Convert integer data to a complex data type."""
-    series = to_float(
+    # 2-step conversion: int -> float, float -> complex
+    series = cast(
         series,
-        dtype="float",
+        "float",
         tol=tol,
         downcast=None,
         errors=errors
     )
-    return to_complex(
+    return cast(
         series,
-        dtype=dtype,
+        dtype,
         tol=tol,
         downcast=downcast,
         errors=errors,
@@ -144,12 +108,7 @@ def integer_to_complex(
     )
 
 
-#######################
-####    DECIMAL    ####
-#######################
-
-
-@to_decimal.overload("int")
+@cast.overload("int", "decimal")
 def integer_to_decimal(
     series: wrapper.SeriesWrapper,
     dtype: types.ScalarType,
@@ -161,86 +120,71 @@ def integer_to_decimal(
     return result
 
 
-########################
-####    DATETIME    ####
-########################
+# @cast.overload("int", "datetime")
+# def integer_to_datetime(
+#     series: wrapper.SeriesWrapper,
+#     dtype: types.ScalarType,
+#     unit: str,
+#     step_size: int,
+#     rounding: str,
+#     since: Epoch,
+#     tz: pytz.BaseTzInfo,
+#     errors: str,
+#     **unused
+# ) -> wrapper.SeriesWrapper:
+#     """Convert integer data to a datetime data type."""
+#     # convert to ns
+#     series = to_ns(series, unit=unit, step_size=step_size, since=since)
+
+#     # account for non-utc epoch
+#     if since:
+#         series.series += since.offset
+
+#     # check for overflow and upcast if applicable
+#     series, dtype = series.boundscheck(dtype, errors=errors)
+
+#     # convert to final representation
+#     return dtype.from_ns(
+#         series,
+#         unit=unit,
+#         step_size=step_size,
+#         rounding=rounding,
+#         since=since,
+#         tz=tz,
+#         errors=errors,
+#         **unused
+#     )
 
 
-@to_datetime.overload("int")
-def integer_to_datetime(
-    series: wrapper.SeriesWrapper,
-    dtype: types.ScalarType,
-    unit: str,
-    step_size: int,
-    rounding: str,
-    since: Epoch,
-    tz: pytz.BaseTzInfo,
-    errors: str,
-    **unused
-) -> wrapper.SeriesWrapper:
-    """Convert integer data to a datetime data type."""
-    # convert to ns
-    series = to_ns(series, unit=unit, step_size=step_size, since=since)
+# @to_timedelta.overload("int")
+# def integer_to_timedelta(
+#     series: wrapper.SeriesWrapper,
+#     dtype: types.ScalarType,
+#     unit: str,
+#     step_size: int,
+#     since: Epoch,
+#     errors: str,
+#     **unused
+# ) -> wrapper.SeriesWrapper:
+#     """Convert integer data to a timedelta data type."""
+#     # convert to ns
+#     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
-    # account for non-utc epoch
-    if since:
-        series.series += since.offset
+#     # check for overflow and upcast if necessary
+#     series, dtype = series.boundscheck(dtype, errors=errors)
 
-    # check for overflow and upcast if applicable
-    series, dtype = series.boundscheck(dtype, errors=errors)
-
-    # convert to final representation
-    return dtype.from_ns(
-        series,
-        unit=unit,
-        step_size=step_size,
-        rounding=rounding,
-        since=since,
-        tz=tz,
-        errors=errors,
-        **unused
-    )
+#     # convert to final representation
+#     return dtype.from_ns(
+#         series,
+#         unit=unit,
+#         step_size=step_size,
+#         since=since,
+#         errors=errors,
+#         **unused
+#     )
 
 
-#########################
-####    TIMEDELTA    ####
-#########################
-
-
-@to_timedelta.overload("int")
-def integer_to_timedelta(
-    series: wrapper.SeriesWrapper,
-    dtype: types.ScalarType,
-    unit: str,
-    step_size: int,
-    since: Epoch,
-    errors: str,
-    **unused
-) -> wrapper.SeriesWrapper:
-    """Convert integer data to a timedelta data type."""
-    # convert to ns
-    series = to_ns(series, unit=unit, step_size=step_size, since=since)
-
-    # check for overflow and upcast if necessary
-    series, dtype = series.boundscheck(dtype, errors=errors)
-
-    # convert to final representation
-    return dtype.from_ns(
-        series,
-        unit=unit,
-        step_size=step_size,
-        since=since,
-        errors=errors,
-        **unused
-    )
-
-
-######################
-####    STRING    ####
-######################
-
-
-@to_string.overload("int")
+@cast.overload("int", "string")
 def integer_to_string(
     series: wrapper.SeriesWrapper,
     dtype: types.ScalarType,
@@ -262,7 +206,7 @@ def integer_to_string(
             element_type=dtype
         )
 
-    return to_string.generic(
+    return generic_to_string(
         series=series,
         dtype=dtype,
         format=format,
@@ -282,6 +226,7 @@ base_lookup = np.array(
 
 
 def int_to_base(val: str, base: int):
+    """Convert an integer into a string with the given base."""
     if not val:
         return "0"
 

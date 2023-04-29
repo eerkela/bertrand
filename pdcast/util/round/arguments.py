@@ -118,7 +118,6 @@ def rule(val: str | None, state: dict) -> str:
         2    0
         3    2
         dtype: int64
-
     """
     if not (val is None or isinstance(val, str)):
         raise TypeError(

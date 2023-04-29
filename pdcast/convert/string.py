@@ -1,13 +1,17 @@
+"""This module contains dispatched cast() implementations for string data."""
+import re  # normal python regex for compatibility with pd.Series.str.extract
+from functools import partial
+
 from pdcast import types
 from pdcast.util import wrapper
-from pdcast.util.round import snap_round, Tolerance
+from pdcast.util.round import Tolerance
 
 from .base import (
-    to_boolean, to_integer, to_float, to_complex, to_datetime, to_timedelta
+    cast, generic_to_boolean, generic_to_complex
 )
 
 
-@to_boolean.overload("string")
+@cast.overload("string", "bool")
 def string_to_boolean(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -36,12 +40,12 @@ def string_to_boolean(
             fill=fill
         ),
         errors=errors,
-        element_type=resolve.resolve_type("bool")
+        element_type="bool"
     )
-    return super().to_boolean(series, dtype, errors=errors)
+    return generic_to_boolean(series, dtype, errors=errors)
 
 
-@to_integer.overload("string")
+@cast.overload("string", "int")
 def string_to_integer(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -50,22 +54,22 @@ def string_to_integer(
     **unused
 ) -> wrapper.SeriesWrapper:
     """Convert string data to an integer data type with the given base."""
-    transfer_type = resolve.resolve_type("int[python]")
+    # 2 step conversion: string -> int[python], int[python] -> int
     series = series.apply_with_errors(
         partial(int, base=base),
         errors=errors,
-        element_type=transfer_type
+        element_type=int
     )
-    return transfer_type.to_integer(
+    return cast(
         series,
-        dtype=dtype,
+        dtype,
         base=base,
         errors=errors,
         **unused
     )
 
 
-@to_float.overload("string")
+@cast.overload("string", "float")
 def string_to_float(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -74,29 +78,23 @@ def string_to_float(
     **unused
 ) -> wrapper.SeriesWrapper:
     """Convert string data to a floating point data type."""
-    transfer_type = resolve.resolve_type("decimal")
-    series = self.to_decimal(series, transfer_type, errors=errors)
-    return transfer_type.to_float(
-        series,
-        dtype=dtype,
-        tol=tol,
-        errors=errors,
-        **unused
-    )
+    # 2 step conversion: string -> decimal, decimal -> float
+    series = cast(series, "decimal", errors=errors)
+    return cast(series, dtype, tol=tol, errors=errors, **unused)
 
 
-@to_complex.overload("string")
+@cast.overload("string", "complex")
 def string_to_complex(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
     tol: Tolerance,
-    downcast: bool | BaseType,
+    downcast: types.CompositeType,
     errors: str,
     **unused
 ) -> wrapper.SeriesWrapper:
     """Convert string data to a complex data type."""
-    # NOTE: this is technically a 3-step conversion: (1) str -> str,
-    # (2) str -> float, (3) float -> complex.  This allows for full
+    # NOTE: this is technically a 3-step conversion: (1) str -> str (split
+    # real/imag), (2) str -> float, (3) float -> complex.  This allows for full
     # precision loss/overflow/downcast checks for both real + imag.
 
     # (1) separate real, imaginary components via regex
@@ -104,25 +102,25 @@ def string_to_complex(
     real = wrapper.SeriesWrapper(
         components["real"],
         hasnans=series.hasnans,
-        element_type=self
+        element_type=series.element_type
     )
     imag = wrapper.SeriesWrapper(
         components["imag"],
         hasnans=series.hasnans,
-        element_type=self
+        element_type=series.element_type
     )
 
     # (2) convert real, imag to float, applying checks independently
-    real = self.to_float(
+    real = cast(
         real,
-        dtype=dtype.equiv_float,
+        dtype.equiv_float,
         tol=Tolerance(tol.real),
         downcast=None,
         errors="raise"
     )
-    imag = self.to_float(
+    imag = cast(
         imag,
-        dtype=dtype.equiv_float,
+        dtype.equiv_float,
         tol=Tolerance(tol.imag),
         downcast=None,
         errors="raise"
@@ -131,7 +129,7 @@ def string_to_complex(
     # (3) combine floats into complex result
     series = real + imag * 1j
     series.element_type = dtype
-    return super().to_complex(
+    return generic_to_complex(
         series,
         dtype,
         tol=tol,
@@ -140,41 +138,51 @@ def string_to_complex(
     )
 
 
-@to_datetime.overload("string")
-def string_to_datetime(
-    series: wrapper.SeriesWrapper,
-    dtype: types.AtomicType,
-    **unused
-) -> wrapper.SeriesWrapper:
-    """Convert string data into a datetime data type."""
-    return dtype.from_string(series, dtype=dtype, **unused)
+# @cast.overload("string", "datetime")
+# def string_to_datetime(
+#     series: wrapper.SeriesWrapper,
+#     dtype: types.AtomicType,
+#     **unused
+# ) -> wrapper.SeriesWrapper:
+#     """Convert string data into a datetime data type."""
+#     return dtype.from_string(series, dtype=dtype, **unused)
 
 
-@to_timedelta.overload("string")
-def string_to_timedelta(
-    series: wrapper.SeriesWrapper,
-    dtype: types.AtomicType,
-    unit: str,
-    step_size: int,
-    since: Epoch,
-    as_hours: bool,
-    errors: str,
-    **unused
-) -> wrapper.SeriesWrapper:
-    """Convert string data into a timedelta representation."""
-    # 2-step conversion: str -> int, int -> timedelta
-    transfer_type = resolve.resolve_type("int[python]")
-    series = series.apply_with_errors(
-        partial(timedelta_string_to_ns, as_hours=as_hours, since=since),
-        errors=errors,
-        element_type=transfer_type
-    )
-    return transfer_type.to_timedelta(
-        series,
-        dtype=dtype,
-        unit="ns",
-        step_size=1,
-        since=since,
-        errors=errors,
-        **unused
-    )
+# @cast.overload("string", "timedelta")
+# def string_to_timedelta(
+#     series: wrapper.SeriesWrapper,
+#     dtype: types.AtomicType,
+#     unit: str,
+#     step_size: int,
+#     since: Epoch,
+#     as_hours: bool,
+#     errors: str,
+#     **unused
+# ) -> wrapper.SeriesWrapper:
+#     """Convert string data into a timedelta representation."""
+#     # 2-step conversion: str -> int, int -> timedelta
+#     transfer_type = resolve.resolve_type("int[python]")
+#     series = series.apply_with_errors(
+#         partial(timedelta_string_to_ns, as_hours=as_hours, since=since),
+#         errors=errors,
+#         element_type=transfer_type
+#     )
+#     return transfer_type.to_timedelta(
+#         series,
+#         dtype=dtype,
+#         unit="ns",
+#         step_size=1,
+#         since=since,
+#         errors=errors,
+#         **unused
+#     )
+
+
+#######################
+####    PRIVATE    ####
+#######################
+
+
+complex_pattern = re.compile(
+    r"\(?(?P<real>[+-]?[0-9.]+)(?P<imag>[+-][0-9.]+)?j?\)?"
+)

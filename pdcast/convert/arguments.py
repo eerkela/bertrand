@@ -1,26 +1,24 @@
-"""This module holds argument validators for the ``cast()`` extension_func.
-See the API docs for ``@extension_func`` for more details.
+"""This module holds argument validators for ``cast()``.
+
+See the API docs for :func:`@extension_func <pdcast.extension_func>` for more
+details.
 """
 from __future__ import annotations
+import decimal
 from typing import Callable, Iterable
 
 import pytz
 
-import pdcast.detect as detect
-import pdcast.resolve as resolve
-import pdcast.types as types
+from pdcast.detect import detect_type
+from pdcast.resolve import resolve_type
+from pdcast import types
 
-import pdcast.util.round as rounding
+import pdcast.util.round as round_util
 import pdcast.util.time as time
 from pdcast.util.time import valid_units, Epoch, epoch_aliases
 from pdcast.util.type_hints import datetime_like, type_specifier
 
 from .base import cast
-
-
-# TODO: maybe imported arguments are re-implemented here to allow for separate
-# docstrings
-
 
 
 # ignore this file when doing string-based object lookups in resolve_type()
@@ -69,136 +67,6 @@ def assert_sets_are_disjoint(set_1: set, set_2: set) -> None:
         raise ValueError(err_msg)
 
 
-######################
-####    DTYPES    ####
-######################
-
-
-@cast.register_arg
-def dtype(
-    val: type_specifier,
-    state: dict,
-    supertype: type_specifier = None
-) -> types.AtomicType | types.AdapterType:
-    """Resolve a type specifier and reject it if it is composite or not a
-    subtype of the given supertype.
-    """
-    if val is None:
-        if "data" in state:
-            data = state["data"]
-            val = detect.detect_type(data)
-            if val is None:  # data is empty or contains only NAs
-                raise ValueError(
-                    "cannot interpret empty series without an explicit "
-                    "`dtype` argument"
-                )
-    else:
-        val = resolve.resolve_type(val)
-        if val.unwrap() is None:
-            if "data" not in state:
-                raise ValueError(
-                    "cannot perform anonymous conversion without data"
-                )
-            val.atomic_type = detect.detect_type(state["data"])
-
-    # reject composite
-    if isinstance(val, types.CompositeType):
-        raise ValueError(
-            f"`dtype` cannot be composite (received: {val})"
-        )
-
-    # reject improper subtype
-    if supertype is not None and val.unwrap() is not None:
-        supertype = resolve.resolve_type(supertype)
-        if not val.unwrap().is_subtype(supertype):
-            raise ValueError(
-                f"`dtype` must be {supertype}-like, not {val}"
-            )
-
-    return val
-
-
-# @base.to_boolean.register_arg(name="dtype", default="bool")
-# def boolean_dtype(
-#     val: type_specifier,
-#     state: dict
-# ) -> types.AtomicType | types.AdapterType:
-#     """Resolve a type specifier and assert that it is boolean-like."""
-#     return dtype(val, state, supertype=types.BooleanType)
-
-
-# @base.to_integer.register_arg(name="dtype", default="int")
-# def integer_dtype(
-#     val: type_specifier,
-#     state: dict
-# ) -> types.AtomicType | types.AdapterType:
-#     """Resolve a type specifier and assert that it is integer-like."""
-#     return dtype(val, state, supertype=types.IntegerType)
-
-
-# @base.to_float.register_arg(name="dtype", default="float")
-# def float_dtype(
-#     val: type_specifier,
-#     state: dict
-# ) -> types.AtomicType | types.AdapterType:
-#     """Resolve a type specifier and assert that it is float-like."""
-#     return dtype(val, state, supertype=types.FloatType)
-
-
-# @base.to_complex.register_arg(name="dtype", default="complex")
-# def complex_dtype(
-#     val: type_specifier,
-#     state: dict
-# ) -> types.AtomicType | types.AdapterType:
-#     """Resolve a type specifier and assert that it is complex-like."""
-#     return dtype(val, state, supertype=types.ComplexType)
-
-
-# @base.to_decimal.register_arg(name="dtype", default="decimal")
-# def decimal_dtype(
-#     val: type_specifier,
-#     state: dict
-# ) -> types.AtomicType | types.AdapterType:
-#     """Resolve a type specifier and assert that it is decimal-like."""
-#     return dtype(val, state, supertype=types.DecimalType)
-
-
-# @base.to_datetime.register_arg(name="dtype", default="datetime")
-# def datetime_dtype(
-#     val: type_specifier,
-#     state: dict
-# ) -> types.AtomicType | types.AdapterType:
-#     """Resolve a type specifier and assert that it is datetime-like."""
-#     return dtype(val, state, supertype=types.DatetimeType)
-
-
-# @base.to_timedelta.register_arg(name="dtype", default="timedelta")
-# def timedelta_dtype(
-#     val: type_specifier,
-#     state: dict
-# ) -> types.AtomicType | types.AdapterType:
-#     """Resolve a type specifier and assert that it is timedelta-like."""
-#     return dtype(val, state, supertype=types.TimedeltaType)
-
-
-# @base.to_string.register_arg(name="dtype", default="string")
-# def string_dtype(
-#     val: type_specifier,
-#     state: dict
-# ) -> types.AtomicType | types.AdapterType:
-#     """Resolve a type specifier and assert that it is string-like."""
-#     return dtype(val, state, supertype=types.StringType)
-
-
-# @base.to_object.register_arg(name="dtype", default="object")
-# def object_dtype(
-#     val: type_specifier,
-#     state: dict
-# ) -> types.AtomicType | types.AdapterType:
-#     """Resolve a type specifier and assert that it is object-like."""
-#     return dtype(val, state, supertype=types.ObjectType)
-
-
 #########################
 ####    ARGUMENTS    ####
 #########################
@@ -206,7 +74,7 @@ def dtype(
 
 # initial defaults for all conversion arguments
 defaults = {
-    "tol": 1e-6,
+    "tol": decimal.Decimal(1) / 10**6,
     "rounding": None,
     "unit": "ns",
     "step_size": 1,
@@ -227,8 +95,270 @@ defaults = {
 }
 
 
-cast.register_arg(rounding.tol, default=defaults["tol"])
-cast.register_arg(rounding.rule, default=defaults["rounding"])
+@cast.register_arg
+def dtype(
+    val: type_specifier,
+    state: dict,
+    supertype: type_specifier = None
+) -> types.AtomicType | types.AdapterType:
+    """Resolve a type specifier and reject it if it is composite or not a
+    subtype of the given supertype.
+    """
+    if val is None:
+        if "data" in state:
+            data = state["data"]
+            val = detect_type(data)
+            if val is None:  # data is empty or contains only NAs
+                raise ValueError(
+                    "cannot interpret empty series without an explicit "
+                    "`dtype` argument"
+                )
+    else:
+        val = resolve_type(val)
+        if val.unwrap() is None:
+            if "data" not in state:
+                raise ValueError(
+                    "cannot perform anonymous conversion without data"
+                )
+            val.atomic_type = detect_type(state["data"])
+
+    # reject composite
+    if isinstance(val, types.CompositeType):
+        raise ValueError(
+            f"`dtype` cannot be composite (received: {val})"
+        )
+
+    # reject improper subtype
+    if supertype is not None and val.unwrap() is not None:
+        supertype = resolve_type(supertype)
+        if not val.unwrap().is_subtype(supertype):
+            raise ValueError(
+                f"`dtype` must be {supertype}-like, not {val}"
+            )
+
+    return val
+
+
+@cast.register_arg(default=defaults["tol"])
+def tol(val: str, state: dict) -> round_util.Tolerance:
+    """The maximum amount of precision loss that can occur before an error
+    is raised.
+
+    Parameters
+    ----------
+    val : numeric
+        A scalar numeric that is coercible to
+        :class:`Decimal <python:decimal.Decimal>`.  In the case of complex
+        values, their real and imaginary components are considered separately.
+        Defaults to ``1e-6``
+
+    Returns
+    -------
+    Tolerance
+        A ``Tolerance`` object that consists of two
+        :class:`Decimal <python:decimal.Decimal>` values, one for both the real
+        and imaginary components.  This maintains the highest possible
+        precision in both cases.
+
+    Raises
+    ------
+    TypeError
+        If ``val`` could not be coerced into a
+        :class:`Decimal <python:decimal.Decimal>` representation.
+    ValueError
+        If the real or imaginary component of ``val`` is not positive.
+
+    Notes
+    -----
+    Precision loss is defined using a 2-sided window around each of the
+    observed values.  The size of this window is directly controlled by
+    this argument.  If a conversion causes any value to be coerced outside
+    this window, then a :class:`ValueError <python:ValueError>` will be raised.
+
+    This argument only affects numeric conversions.
+
+    Examples
+    --------
+    The input to this argument must be a positive numeric that is
+    coercible to :class:`Decimal <python:decimal.Decimal>`.
+
+    .. doctest::
+
+        >>> pdcast.cast(1.001, "int", tol=0.01)
+        0    1
+        dtype: int64
+        >>> pdcast.cast(1.001, "int", tol=0)
+        Traceback (most recent call last):
+            ...
+        ValueError: precision loss exceeds tolerance 0 at index [0]
+
+    If a complex value is given, then its real and imaginary components
+    will be considered separately.
+
+    .. doctest::
+
+        >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0.01j)
+        0    1
+        dtype: int64
+        >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0j)
+        Traceback (most recent call last):
+            ...
+        ValueError: imaginary component exceeds tolerance 0 at index [0]
+
+    This argument also has special behavior around the min/max of bounded
+    numerics, like integers and booleans.  If a value would normally
+    overflow, but falls within tolerance of these bounds, then it will be
+    clipped to fit rather than raise an
+    :class:`OverflowError <python:OverflowError>`.
+
+    .. doctest::
+
+        >>> pdcast.cast(129, "int8", tol=2)
+        0    127
+        dtype: int8
+        >>> pdcast.cast(129, "int8", tol=0)
+        Traceback (most recent call last):
+            ...
+        OverflowError: values exceed int8 range at index [0]
+
+    Additionally, this argument controls the maximum amount of precision
+    loss that can occur when
+    :func:`downcasting <pdcast.convert.arguments.downcast>` numeric values.
+
+    .. doctest::
+
+        >>> pdcast.cast(1.1, "float", tol=0, downcast=True)
+        0    1.1
+        dtype: float64
+        >>> pdcast.cast(1.1, "float", tol=0.001, downcast=True)
+        0    1.099609
+        dtype: float16
+
+    Setting this to infinity ignores precision loss entirely.
+
+    .. doctest::
+
+        >>> pdcast.cast(1.5, "int", tol=np.inf)
+        0    2
+        dtype: int64
+        >>> pdcast.cast(np.inf, "int64", tol=np.inf)
+        0    9223372036854775807
+        dtype: int64
+
+    .. note::
+
+        For integer conversions, this is equivalent to setting
+        :func:`rounding <pdcast.convert.arguments.rounding>` to
+        ``"half_even"``, with additional clipping around the minimum and
+        maximum values.
+    """
+    return round_util.tol(val, state)
+
+
+@cast.register_arg(default=defaults["rounding"])
+def rounding(val: str, state: dict) -> str:
+    """The rounding rule to use for numeric conversions.
+
+    Parameters
+    ----------
+    val : str | None
+        An optional string specifying the rounding rule to use, or :data:`None`
+        to indicate that no rounding will be applied.  Defaults to :data:`None`.
+
+    Returns
+    -------
+    str | None
+        A validated version of the string passed to ``val`` or :data:`None`.
+
+    Raises
+    ------
+    TypeError
+        If ``val`` is not a string or :data:`None <python:None>`.
+    ValueError
+        If ``val`` does not correspond to one of the recognized rounding rules.
+
+    Notes
+    -----
+    The available options for this argument are as follows:
+
+        *   ``None`` - do not round.
+        *   ``"floor"`` - round toward negative infinity.
+        *   ``"ceiling"`` - round toward positive infinity.
+        *   ``"down"`` - round toward zero.
+        *   ``"up"`` - round away from zero.
+        *   ``"half_floor"`` - round to nearest with ties toward positive infinity.
+        *   ``"half_ceiling"`` - round to nearest with ties toward negative
+            infinity.
+        *   ``"half_down"`` - round to nearest with ties toward zero.
+        *   ``"half_up"`` - round to nearest with ties away from zero.
+        *   ``"half_even"`` - round to nearest with ties toward the `nearest even
+            value <https://en.wikipedia.org/wiki/Rounding#Rounding_half_to_even>`_.
+            Also known as *convergent rounding*, *statistician's rounding*, or
+            *banker's rounding*.
+
+    This argument is applied **after**
+    :func:`tol <pdcast.convert.arguments.tol>`.
+
+    Examples
+    --------
+    .. doctest::
+
+        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="floor")
+        0   -2
+        1   -1
+        2    0
+        3    1
+        dtype: int64
+        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="ceiling")
+        0   -1
+        1    0
+        2    1
+        3    2
+        dtype: int64
+        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="down")
+        0   -1
+        1    0
+        2    0
+        3    1
+        dtype: int64
+        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="up")
+        0   -2
+        1   -1
+        2    1
+        3    2
+        dtype: int64
+        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_floor")
+        0   -2
+        1   -1
+        2    0
+        3    2
+        dtype: int64
+        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_ceiling")
+        0   -1
+        1    0
+        2    0
+        3    2
+        dtype: int64
+        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_down")
+        0   -1
+        1    0
+        2    0
+        3    2
+        dtype: int64
+        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_up")
+        0   -2
+        1   -1
+        2    0
+        3    2
+        dtype: int64
+        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_even")
+        0   -2
+        1    0
+        2    0
+        3    2
+        dtype: int64
+    """
+    return round_util.rule(val, state)
 
 
 @cast.register_arg(default=defaults["unit"])
@@ -1285,7 +1415,7 @@ def downcast(
         return val
     if isinstance(val, bool):  # empty set is truthy, `None` is falsy
         return types.CompositeType() if val else None
-    return resolve.resolve_type([val])
+    return resolve_type([val])
 
 
 @cast.register_arg(default=defaults["errors"])

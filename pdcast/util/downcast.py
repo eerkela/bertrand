@@ -1,7 +1,7 @@
 from pdcast import convert
 from pdcast import types
-from pdcast.decorators import dispatch
-from pdcast.decorators import extension
+from pdcast.decorators.dispatch import dispatch
+from pdcast.decorators.extension import extension
 
 from pdcast.util import wrapper
 from pdcast.util.round import Tolerance

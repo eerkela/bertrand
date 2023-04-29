@@ -7,9 +7,10 @@ from typing import Any, Callable, Optional
 import pandas as pd
 
 from pdcast import types
-from pdcast.decorators import (
-    attachable, BaseDecorator, dispatch, extension_func
-)
+from pdcast.decorators.base import BaseDecorator
+from pdcast.decorators.attachable import attachable
+from pdcast.decorators.dispatch import dispatch
+from pdcast.decorators.extension import extension_func
 from pdcast.type_hints import type_specifier
 from pdcast.util import wrapper
 from pdcast.util.round import Tolerance
@@ -131,6 +132,8 @@ def cast(
 
     Notes
     -----
+    This function uses `multiple dispatch <https://en.wikipedia.org/wiki/Multiple_dispatch>`
+    
     This function dispatches to one of the
     :ref:`delegated <atomic_type.conversions>` conversion methods that are
     attached to each :class:`AtomicType`.  Types can override these methods to

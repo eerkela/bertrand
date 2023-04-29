@@ -27,19 +27,20 @@ resolve
     Easy construction of data types from type specifiers, including a
     domain-specific mini-language for referring to types.
 """
+from .types import *
 from .check import typecheck
 from .convert import (
     cast, to_boolean, to_integer, to_float, to_complex, to_decimal,
     to_datetime, to_timedelta, to_string
 )
-from .decorators import (
-    attachable, Attachable, ClassMethod, dispatch, DispatchDict, DispatchFunc,
-    extension_func, ExtensionFunc, InstanceMethod, Namespace, Property,
+from .decorators.attachable import (
+    attachable, Attachable, ClassMethod, InstanceMethod, Namespace, Property,
     StaticMethod, VirtualAttribute
 )
+from .decorators.extension import extension_func, ExtensionFunc
+from .decorators.dispatch import dispatch, DispatchFunc
 from .detect import detect_type
 from .resolve import resolve_type
-from .types import *
 from .util.wrapper import SeriesWrapper
 
 

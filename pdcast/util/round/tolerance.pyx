@@ -38,7 +38,10 @@ cdef class Tolerance:
     def __init__(self, tol: numeric):
         # extract real, imaginary components
         real = np.real(tol)
-        imag = np.imag(tol) if hasattr(tol, "imag") else real
+        if isinstance(tol, (complex, np.complexfloating)):
+            imag = np.imag(tol)
+        else:
+            imag = real
 
         # coerce to decimal
         try:

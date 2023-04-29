@@ -1,4 +1,6 @@
-from pdcast.decorators import attachable, dispatch, extension_func
+from pdcast.decorators.attachable import attachable
+from pdcast.decorators.dispatch import dispatch
+from pdcast.decorators.extension import extension_func
 from pdcast.util import wrapper
 from pdcast.util.type_hints import numeric
 

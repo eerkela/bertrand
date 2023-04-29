@@ -351,20 +351,12 @@ cdef class SeriesWrapper:
         dtype = resolve.resolve_type(dtype)
         if isinstance(dtype, types.CompositeType):
             raise ValueError(f"`dtype` must be atomic, not {repr(dtype)}")
-        target = dtype.dtype
 
         # apply dtype.type_def elementwise if not astype-compliant
-        # if (
-        #     target.kind == "O" and
-        #     dtype.type_def != object and
-        #     not isinstance(target, pd.StringDtype)
-        # ):
-        
-        if isinstance(dtype, abstract.AbstractDtype):
+        target = dtype.dtype
+        if isinstance(target, abstract.AbstractDtype):
             return self.apply_with_errors(
-                call=lambda x: (
-                    x if isinstance(x, dtype.type_def) else dtype.type_def(x)
-                ),
+                dtype.type_def,
                 errors=errors,
                 element_type=dtype
             )
@@ -483,7 +475,7 @@ cdef class SeriesWrapper:
         self,
         call: Callable,
         errors: str = "raise",
-        element_type: types.ScalarType = None
+        element_type: type_specifier = None
     ) -> SeriesWrapper:
         """Apply a callable over the series using the specified error handling
         rule at each index.
@@ -533,6 +525,11 @@ cdef class SeriesWrapper:
                 dtype=object
             )
         else:
+            element_type = resolve.resolve_type(element_type)
+            if isinstance(element_type, types.CompositeType):
+                raise ValueError(
+                    f"`dtype` must be atomic, not {repr(element_type)}"
+                )
             result = pd.Series(
                 result,
                 index=series_index,

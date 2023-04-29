@@ -44,9 +44,9 @@ import pandas as pd
 import pytz
 import tzlocal
 
-from pdcast.decorators import attachable
-from pdcast.decorators import dispatch
-from pdcast.decorators import extension
+from pdcast.decorators.attachable import attachable
+from pdcast.decorators.dispatch import dispatch
+from pdcast.decorators.extension import extension_func
 
 from pdcast.util import wrapper
 from pdcast.util.type_hints import datetime_like

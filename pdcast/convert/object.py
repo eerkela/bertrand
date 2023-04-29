@@ -1,15 +1,15 @@
+"""This module contains dispatched cast() implementations for data stored as
+raw Python objects.
+"""
 from typing import Callable
 
 from pdcast import types
 from pdcast.util import wrapper
 
-from .base import (
-    to_boolean, to_integer, to_float, to_decimal, to_complex, to_datetime,
-    to_timedelta, to_string, to_object
-)
+from .base import cast
 
 
-@to_boolean.overload(object)
+@cast.overload("object", "bool")
 def object_to_boolean(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -28,7 +28,7 @@ def object_to_boolean(
     )
 
 
-@to_integer.overload(object)
+@cast.overload("object", "int")
 def object_to_integer(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -47,7 +47,7 @@ def object_to_integer(
     )
 
 
-@to_float.overload(object)
+@cast.overload("object", "float")
 def object_to_float(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -66,7 +66,7 @@ def object_to_float(
     )
 
 
-@to_complex.overload(object)
+@cast.overload("object", "complex")
 def object_to_complex(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -85,7 +85,7 @@ def object_to_complex(
     )
 
 
-@to_decimal.overload(object)
+@cast.overload("object", "decimal")
 def object_to_decimal(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -104,7 +104,7 @@ def object_to_decimal(
     )
 
 
-@to_datetime.overload(object)
+@cast.overload("object", "datetime")
 def object_to_datetime(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -123,7 +123,7 @@ def object_to_datetime(
     )
 
 
-@to_timedelta.overload(object)
+@cast.overload("object", "timedelta")
 def object_to_timedelta(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -142,7 +142,7 @@ def object_to_timedelta(
     )
 
 
-@to_string.overload(object)
+@cast.overload("object", "string")
 def object_to_string(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -161,7 +161,7 @@ def object_to_string(
     )
 
 
-@to_object.overload(object)
+@cast.overload("object", "object")
 def object_to_object(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,

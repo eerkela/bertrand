@@ -9,7 +9,7 @@ import threading
 from types import MappingProxyType
 from typing import Any, Callable
 
-from .base import BaseDecorator
+from .base import BaseDecorator, no_default
 
 
 ######################
@@ -80,16 +80,6 @@ def extension_func(func: Callable) -> Callable:
 #######################
 ####    PRIVATE    ####
 #######################
-
-
-class NoDefault:
-    """Signals that an argument does not have an associated default value."""
-
-    def __repr__(self) -> str:
-        return "<no default>"
-
-
-no_default = NoDefault()
 
 
 class ExtensionFunc(BaseDecorator, threading.local):
@@ -269,16 +259,12 @@ class ExtensionFunc(BaseDecorator, threading.local):
             def accept_default(val, state=self.default_values, *args, **kwargs):
                 return validator(val, state, *args, **kwargs)
 
-            # get default value and validate
-            pars = self._signature.parameters
-            if default is no_default:  # check for annotation
-                if _name in pars:
-                    annotation = pars[_name].default
-                else:
-                    annotation = inspect.Parameter.empty
-                if annotation is not inspect.Parameter.empty:
-                    # self._defaults[_name] = accept_default(pars[_name].default)
-                    self._defaults[_name] = annotation
+            # get default value and pass through validator
+            if default is no_default:
+                pars = self._signature.parameters
+                empty = inspect.Parameter.empty
+                if getattr(pars.get(_name), "default", empty) is not empty:
+                    self._defaults[_name] = accept_default(pars[_name].default)
             else:
                 self._defaults[_name] = accept_default(default)
 
@@ -561,20 +547,3 @@ class ExtensionFunc(BaseDecorator, threading.local):
         """
         sig = self._reconstruct_signature()
         return f"{self.__wrapped__.__qualname__}({', '.join(sig)})"
-
-
-
-# from .attachable import attachable
-# from .dispatch import dispatch
-
-
-# @attachable
-# @extension_func
-# @dispatch
-# def foo(bar, baz, qux=2):
-#     return bar, baz
-
-
-# @foo.register_arg
-# def qux(val, state):
-#     return int(val)

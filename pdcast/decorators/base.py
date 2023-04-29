@@ -110,3 +110,13 @@ class BaseDecorator:
 
     def __delitem__(self, key) -> None:
         return self.__wrapped__.__delitem__(key)
+
+
+class NoDefault:
+    """Signals that an argument does not have an associated default value."""
+
+    def __repr__(self) -> str:
+        return "<no default>"
+
+
+no_default = NoDefault()

@@ -1,8 +1,9 @@
 from pdcast import types
 from pdcast.util import wrapper
+from pdcast.util.error import shorten_list
 from pdcast.util.round import Tolerance
 
-from .base import to_boolean, to_integer, to_float, to_decimal
+from .base import cast, generic_to_float
 
 
 #######################
@@ -10,7 +11,7 @@ from .base import to_boolean, to_integer, to_float, to_decimal
 #######################
 
 
-@to_boolean.overload("complex")
+@cast.overload("complex", "bool")
 def complex_to_boolean(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -21,16 +22,16 @@ def complex_to_boolean(
 ) -> wrapper.SeriesWrapper:
     """Convert complex data to a boolean data type."""
     # 2-step conversion: complex -> float, float -> bool
-    series = to_float(
+    series = cast(
         series,
-        dtype="float",
+        "float",
         tol=tol,
         downcast=None,
         errors=errors
     )
-    return to_boolean(
+    return cast(
         series,
-        dtype=dtype,
+        dtype,
         rounding=rounding,
         tol=tol,
         errors=errors,
@@ -43,7 +44,7 @@ def complex_to_boolean(
 #######################
 
 
-@to_integer.overload("complex")
+@cast.overload("complex", "int")
 def complex_to_integer(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -55,16 +56,16 @@ def complex_to_integer(
 ) -> wrapper.SeriesWrapper:
     """Convert complex data to an integer data type."""
     # 2-step conversion: complex -> float, float -> int
-    series = to_float(
+    series = cast(
         series,
-        dtype="float",
+        "float",
         tol=tol,
         downcast=None,
         errors=errors
     )
-    return to_integer(
+    return cast(
         series,
-        dtype=dtype,
+        dtype,
         rounding=rounding,
         tol=tol,
         downcast=downcast,
@@ -78,7 +79,7 @@ def complex_to_integer(
 #####################
 
 
-@to_float.overload("complex")
+@cast.overload("complex", "float")
 def complex_to_float(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -100,9 +101,9 @@ def complex_to_float(
                 f"{shorten_list(bad[bad].index.values)}"
             )
 
-    return to_float(
+    return generic_to_float(
         real,
-        dtype=dtype,
+        dtype,
         tol=tol,
         downcast=downcast,
         errors=errors,
@@ -115,7 +116,7 @@ def complex_to_float(
 #######################
 
 
-@to_decimal.overload("complex")
+@cast.overload("complex", "decimal")
 def complex_to_decimal(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -125,16 +126,16 @@ def complex_to_decimal(
 ) -> wrapper.SeriesWrapper:
     """Convert complex data to a decimal data type."""
     # 2-step conversion: complex -> float, float -> decimal
-    series = to_float(
+    series = cast(
         series,
-        dtype="float",
+        "float",
         tol=tol,
         downcast=None,
         errors=errors
     )
-    return to_decimal(
+    return cast(
         series,
-        dtype=dtype,
+        dtype,
         tol=tol,
         errors=errors,
         **unused

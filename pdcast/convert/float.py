@@ -1,16 +1,16 @@
+"""This module contains dispatched cast() implementations for floating point
+data.
+"""
 from pdcast import types
 from pdcast.util import wrapper
 from pdcast.util.round import snap_round, Tolerance
 
-from .base import to_boolean, to_integer, to_decimal
+from .base import (
+    cast, generic_to_boolean, generic_to_integer
+)
 
 
-#######################
-####    BOOLEAN    ####
-#######################
-
-
-@to_boolean.overload("float")
+@cast.overload("float", "bool")
 def float_to_boolean(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -27,19 +27,10 @@ def float_to_boolean(
         errors=errors
     )
     series, dtype = series.boundscheck(dtype, errors=errors)
-    return to_boolean.generic(
-        series,
-        dtype=dtype,
-        errors=errors
-    )
+    return generic_to_boolean(series, dtype, errors=errors)
 
 
-#######################
-####    INTEGER    ####
-#######################
-
-
-@to_integer.overload("float")
+@cast.overload("float", "int")
 def float_to_integer(
     series: wrapper.SeriesWrapper,
     dtype: types.AtomicType,
@@ -57,30 +48,20 @@ def float_to_integer(
         errors=errors
     )
     series, dtype = series.boundscheck(dtype, errors=errors)
-    return to_integer.generic(
-        series,
-        dtype=dtype,
-        downcast=downcast,
-        errors=errors
-    )
+    return generic_to_integer(series, dtype, downcast=downcast, errors=errors)
 
 
-#######################
-####    DECIMAL    ####
-#######################
+try:  # float80 might not be defined on all systems
 
-
-try:  # float80 might not be defined
-
-    @to_decimal.overload("float80")
+    @cast.overload("float80", "decimal")
     def longdouble_to_decimal(
         series: wrapper.SeriesWrapper,
         dtype: types.AtomicType,
         errors: str,
         **unused
     ) -> wrapper.SeriesWrapper:
-        """A special case of FloatMixin.to_decimal() that bypasses `TypeError:
-        conversion from numpy.float128 to Decimal is not supported`.
+        """A special case of float_to_decimal() that bypasses
+        `TypeError: conversion from numpy.float128 to Decimal is not supported`.
         """
         # convert longdouble to integer ratio and then to decimal
         def call(element):

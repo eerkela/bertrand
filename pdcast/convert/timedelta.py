@@ -1,3 +1,4 @@
+"""This module contains dispatched cast() implementations for timedelta data."""
 from pdcast import types
 from pdcast.util import wrapper
 from pdcast.util.round import Tolerance
