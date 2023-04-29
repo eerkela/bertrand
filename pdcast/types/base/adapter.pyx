@@ -14,7 +14,7 @@ import pdcast.resolve as resolve
 cimport pdcast.types.base.atomic as atomic
 cimport pdcast.types.base.composite as composite
 
-from pdcast.util cimport wrapper
+from pdcast.decorators cimport wrapper
 from pdcast.util.type_hints import type_specifier
 
 

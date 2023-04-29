@@ -20,7 +20,7 @@ import pdcast.types.base.registry as registry
 cimport pdcast.types.base.adapter as adapter
 cimport pdcast.types.base.composite as composite
 
-from pdcast.util cimport wrapper
+from pdcast.decorators cimport wrapper
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import array_like, type_specifier
 

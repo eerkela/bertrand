@@ -16,9 +16,9 @@ from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
-from pdcast.util cimport wrapper
-from pdcast.util.round cimport Tolerance
-from pdcast.util.round import round_div
+from pdcast.decorators cimport wrapper
+from pdcast.patch.round cimport Tolerance
+from pdcast.patch.round import round_div
 from pdcast.util.time cimport Epoch
 from pdcast.util.time import (
     as_ns, convert_unit, filter_dateutil_parser_error, 

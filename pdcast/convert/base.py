@@ -7,13 +7,13 @@ from typing import Any, Callable, Optional
 import pandas as pd
 
 from pdcast import types
-from pdcast.decorators.base import BaseDecorator
 from pdcast.decorators.attachable import attachable
+from pdcast.decorators.base import BaseDecorator
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
-from pdcast.type_hints import type_specifier
-from pdcast.util import wrapper
-from pdcast.util.round import Tolerance
+from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.patch.round import Tolerance
+from pdcast.util.type_hints import type_specifier
 
 from . import arguments
 
@@ -248,7 +248,7 @@ wildcard = (
 
 @cast.overload(wildcard, "bool")
 def generic_to_boolean(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     errors: str,
     **unused
@@ -261,8 +261,9 @@ def generic_to_boolean(
 
 @cast.overload(wildcard, "int")
 def generic_to_integer(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
+    tol: Tolerance,
     errors: str,
     downcast: types.CompositeType,
     **unused
@@ -273,13 +274,13 @@ def generic_to_integer(
 
     series = series.astype(dtype, errors=errors)
     if downcast is not None:
-        return dtype.downcast(series, smallest=downcast)
+        return downcast_integer(series, tol=tol, smallest=downcast)
     return series
 
 
 @cast.overload(wildcard, "float")
 def generic_to_float(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     tol: Tolerance,
     downcast: types.CompositeType,
@@ -289,13 +290,13 @@ def generic_to_float(
     """Convert arbitrary data to float representation."""
     series = series.astype(dtype, errors=errors)
     if downcast is not None:
-        return dtype.downcast(series, smallest=downcast, tol=tol)
+        return downcast_float(series, tol=tol, smallest=downcast)
     return series
 
 
 @cast.overload(wildcard, "complex")
 def generic_to_complex(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     tol: Tolerance,
     downcast: types.CompositeType,
@@ -305,13 +306,13 @@ def generic_to_complex(
     """Convert arbitrary data to complex representation."""
     series = series.astype(dtype, errors=errors)
     if downcast is not None:
-        return dtype.downcast(series, smallest=downcast, tol=tol)
+        return downcast_complex(series, tol=tol, smallest=downcast)
     return series
 
 
 @cast.overload(wildcard, "decimal")
 def generic_to_decimal(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     errors: str,
     **unused
@@ -322,7 +323,7 @@ def generic_to_decimal(
 
 # @cast.overload(wildcard, "datetime")
 # def generic_to_datetime(
-#     series: wrapper.SeriesWrapper,
+#     series: SeriesWrapper,
 #     dtype: types.AtomicType,
 #     **unused
 # ) -> pd.Series:
@@ -334,7 +335,7 @@ def generic_to_decimal(
 
 # @cast.overload(wildcard, "timedelta")
 # def generic_to_timedelta(
-#     series: wrapper.SeriesWrapper,
+#     series: SeriesWrapper,
 #     dtype: types.AtomicType,
 #     **unused
 # ) -> pd.Series:
@@ -346,7 +347,7 @@ def generic_to_decimal(
 
 @cast.overload(wildcard, "string")
 def generic_to_string(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     format: str,
     errors: str,
@@ -364,7 +365,7 @@ def generic_to_string(
 
 @cast.overload(wildcard, "object")
 def generic_to_object(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
@@ -394,4 +395,121 @@ def generic_to_object(
         call=wrapped_call,
         errors=errors,
         element_type=dtype
+    )
+
+
+#######################
+####    PRIVATE    ####
+#######################
+
+
+def downcast_integer(
+    series: SeriesWrapper,
+    tol: Tolerance,
+    smallest: types.CompositeType = None
+) -> SeriesWrapper:
+    """Reduce the itemsize of an integer type to fit the observed range."""
+    series_type = series.element_type
+
+    # get downcast candidates
+    smaller = series_type.smaller
+    if smallest is not None:
+        if series_type in smallest:
+            smaller = []
+        else:
+            filtered = []
+            for typ in reversed(smaller):
+                filtered.append(typ)
+                if typ in smallest:
+                    break
+            smaller = reversed(filtered)
+
+    # convert range to python int for consistent comparison
+    if series_type.is_na(series.min):
+        min_val = series_type.max  # NOTE: we swap these to maintain upcast()
+        max_val = series_type.min  # behavior for upcast-only types
+    else:
+        min_val = int(series.min)
+        max_val = int(series.max)
+
+    # search for smaller data type that fits observed range
+    for small in smaller:
+        if min_val < small.min or max_val > small.max:
+            continue
+        return cast(
+            series,
+            dtype=small,
+            downcast=None,
+            errors="raise"
+        )
+
+    return series
+
+
+def downcast_float(
+    series: SeriesWrapper,
+    tol: Tolerance,
+    smallest: types.CompositeType
+) -> SeriesWrapper:
+    """Reduce the itemsize of a float type to fit the observed range."""
+    # get downcast candidates
+    smaller = series.element_type.smaller
+    if smallest is not None:
+        filtered = []
+        for typ in reversed(smaller):
+            filtered.append(typ)
+            if typ in smallest:
+                break  # stop at largest type contained in `smallest`
+        smaller = reversed(filtered)
+
+    # try each candidate in order
+    for small in smaller:
+        try:
+            attempt = cast(
+                series,
+                dtype=small,
+                tol=tol,
+                downcast=None,
+                errors="raise"
+            )
+        except Exception:
+            continue
+
+        # candidate is valid
+        if attempt.within_tol(series, tol=tol.real).all():
+            return attempt
+
+    # return original
+    return series
+
+
+def downcast_complex(
+    series: SeriesWrapper,
+    tol: Tolerance,
+    smallest: types.CompositeType
+) -> SeriesWrapper:
+    """Reduce the itemsize of a complex type to fit the observed range."""
+    # downcast real and imaginary component separately
+    real = downcast_float(
+        series.real,
+        tol=tol,
+        smallest=smallest
+    )
+    imag = downcast_float(
+        series.imag,
+        tol=Tolerance(tol.imag),
+        smallest=smallest
+    )
+
+    # use whichever type is larger
+    largest = max(
+        [real.element_type, imag.element_type],
+        key=lambda x: x.itemsize or np.inf
+    )
+    target = largest.equiv_complex
+    result = real + imag * 1j
+    return SeriesWrapper(
+        result.series.astype(target.dtype, copy=False),
+        hasnans=real.hasnans or imag.hasnans,
+        element_type=target
     )

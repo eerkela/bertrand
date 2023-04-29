@@ -16,7 +16,7 @@ from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
 import pdcast.convert as convert
 
 import pdcast.util.time as time
-from pdcast.util.type_hints import type_specifier
+from pdcast.type_hints import type_specifier
 
 
 # NOTE: it is currently not possible to store np.datetime64 objects in a

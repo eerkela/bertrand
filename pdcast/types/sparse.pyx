@@ -11,7 +11,7 @@ from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
-from pdcast.util cimport wrapper
+from pdcast.decorators cimport wrapper
 from pdcast.util.type_hints import type_specifier
 
 from .base cimport AtomicType, AdapterType, CompositeType, ScalarType

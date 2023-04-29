@@ -8,7 +8,10 @@ import pytz
 from pdcast.decorators.attachable import attachable
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
-from pdcast.util import wrapper
+from pdcast.decorators.wrapper import SeriesWrapper
+
+
+# TODO: move tz_convert, tz_localize into patch/dt
 
 
 ######################
@@ -19,10 +22,10 @@ from pdcast.util import wrapper
 @extension_func
 @dispatch
 def localize(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     tz: str | pytz.BaseTzInfo | None,
     naive_tz: str | pytz.BaseTzInfo | None = None,
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """
     """
     raise NotImplementedError(
@@ -33,10 +36,10 @@ def localize(
 @attachable
 @extension_func
 def tz_localize(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     tz: str | pytz.BaseTzInfo | None,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """TODO"""
     # emulate pandas tz_localize limitation
     if series.element_type.tz:
@@ -48,10 +51,10 @@ def tz_localize(
 @attachable
 @extension_func
 def tz_convert(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     tz: str | pytz.BaseTzInfo | None,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """TODO"""
     # emulate pandas tz_convert limitation
     if not series.element_type.tz:
@@ -69,10 +72,10 @@ def tz_convert(
 
 # @localize.overload("datetime[pandas]")
 def localize_pandas_timestamp(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     tz: pytz.BaseTzInfo | None,
     naive_tz: pytz.BaseTzInfo | None
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """TODO"""
     series_type = series.element_type
     series = series.rectify()
@@ -99,7 +102,7 @@ def localize_pandas_timestamp(
     else:
         result = conv(series.series, tz)
 
-    return wrapper.SeriesWrapper(
+    return SeriesWrapper(
         result,
         hasnans=series.hasnans,
         element_type=series_type.replace(tz=tz)
@@ -132,10 +135,10 @@ def localize_pandas_timestamp_scalar(
 
 # @localize.overload("datetime[python]")
 def localize_pydatetime(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     tz: pytz.BaseTzInfo | None,
     naive_tz: pytz.BaseTzInfo | None,
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """TODO"""
     # trivial case
     if all(x is None for x in (series.element_type.tz, naive_tz, tz)):

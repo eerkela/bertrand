@@ -4,19 +4,19 @@ raw Python objects.
 from typing import Callable
 
 from pdcast import types
-from pdcast.util import wrapper
+from pdcast.decorators.wrapper import SeriesWrapper
 
 from .base import cast
 
 
 @cast.overload("object", "bool")
 def object_to_boolean(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert unstructured objects to a boolean data type."""
     return two_step_conversion(
         series=series,
@@ -30,12 +30,12 @@ def object_to_boolean(
 
 @cast.overload("object", "int")
 def object_to_integer(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert unstructured objects to an integer data type."""
     return two_step_conversion(
         series=series,
@@ -49,12 +49,12 @@ def object_to_integer(
 
 @cast.overload("object", "float")
 def object_to_float(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert unstructured objects to a float data type."""
     return two_step_conversion(
         series=series,
@@ -68,12 +68,12 @@ def object_to_float(
 
 @cast.overload("object", "complex")
 def object_to_complex(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert unstructured objects to a complex data type."""
     return two_step_conversion(
         series=series,
@@ -87,12 +87,12 @@ def object_to_complex(
 
 @cast.overload("object", "decimal")
 def object_to_decimal(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert unstructured objects to a decimal data type."""
     return two_step_conversion(
         series=series,
@@ -106,12 +106,12 @@ def object_to_decimal(
 
 @cast.overload("object", "datetime")
 def object_to_datetime(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert unstructured objects to a datetime data type."""
     return two_step_conversion(
         series=series,
@@ -125,12 +125,12 @@ def object_to_datetime(
 
 @cast.overload("object", "timedelta")
 def object_to_timedelta(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert unstructured objects to a timedelta data type."""
     return two_step_conversion(
         series=series,
@@ -144,12 +144,12 @@ def object_to_timedelta(
 
 @cast.overload("object", "string")
 def object_to_string(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert unstructured objects to a string data type."""
     return two_step_conversion(
         series=series,
@@ -163,10 +163,10 @@ def object_to_string(
 
 @cast.overload("object", "object")
 def object_to_object(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert arbitrary data to an object data type."""
     # trivial case
     if dtype == series.element_type:
@@ -180,13 +180,13 @@ def object_to_object(
 
 
 def two_step_conversion(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     conv_func: Callable,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """A conversion in two parts."""
     def safe_call(val):
         result = call(val)

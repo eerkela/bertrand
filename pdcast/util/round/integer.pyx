@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 
 from pdcast.util.type_hints import array_like
-from pdcast.util import wrapper
 
 
 ######################

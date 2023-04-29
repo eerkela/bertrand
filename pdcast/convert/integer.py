@@ -6,8 +6,8 @@ import numpy as np
 import pytz
 
 from pdcast import types
-from pdcast.util import wrapper
-from pdcast.util.round import Tolerance
+from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.patch.round import Tolerance
 from pdcast.util.time import Epoch, convert_unit
 
 from .base import (
@@ -18,11 +18,11 @@ from .base import (
 
 @cast.overload("int", "bool")
 def integer_to_boolean(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.ScalarType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert integer data to a boolean data type."""
     series, dtype = series.boundscheck(dtype, errors=errors)
     return generic_to_boolean(series, dtype, errors=errors)
@@ -30,17 +30,19 @@ def integer_to_boolean(
 
 @cast.overload("int", "int")
 def integer_to_integer(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.ScalarType,
+    tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert integer data to another integer data type."""
     series, dtype = series.boundscheck(dtype, errors=errors)
     return generic_to_integer(
-        series=series,
-        dtype=dtype,
+        series,
+        dtype,
+        tol=tol,
         downcast=downcast,
         errors=errors
     )
@@ -48,13 +50,13 @@ def integer_to_integer(
 
 @cast.overload("int", "float")
 def integer_to_float(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.ScalarType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert integer data to a float data type."""
     # NOTE: integers can always be exactly represented as floats as long as
     # their width in bits fits within the significand of the specified floating
@@ -82,13 +84,13 @@ def integer_to_float(
 
 @cast.overload("int", "complex")
 def integer_to_complex(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.ScalarType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert integer data to a complex data type."""
     # 2-step conversion: int -> float, float -> complex
     series = cast(
@@ -110,10 +112,10 @@ def integer_to_complex(
 
 @cast.overload("int", "decimal")
 def integer_to_decimal(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.ScalarType,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert integer data to a decimal data type."""
     result = series + dtype.type_def(0)  # ~2x faster than apply loop
     result.element_type = dtype
@@ -122,7 +124,7 @@ def integer_to_decimal(
 
 # @cast.overload("int", "datetime")
 # def integer_to_datetime(
-#     series: wrapper.SeriesWrapper,
+#     series: SeriesWrapper,
 #     dtype: types.ScalarType,
 #     unit: str,
 #     step_size: int,
@@ -131,7 +133,7 @@ def integer_to_decimal(
 #     tz: pytz.BaseTzInfo,
 #     errors: str,
 #     **unused
-# ) -> wrapper.SeriesWrapper:
+# ) -> SeriesWrapper:
 #     """Convert integer data to a datetime data type."""
 #     # convert to ns
 #     series = to_ns(series, unit=unit, step_size=step_size, since=since)
@@ -158,14 +160,14 @@ def integer_to_decimal(
 
 # @to_timedelta.overload("int")
 # def integer_to_timedelta(
-#     series: wrapper.SeriesWrapper,
+#     series: SeriesWrapper,
 #     dtype: types.ScalarType,
 #     unit: str,
 #     step_size: int,
 #     since: Epoch,
 #     errors: str,
 #     **unused
-# ) -> wrapper.SeriesWrapper:
+# ) -> SeriesWrapper:
 #     """Convert integer data to a timedelta data type."""
 #     # convert to ns
 #     series = to_ns(series, unit=unit, step_size=step_size, since=since)
@@ -186,13 +188,13 @@ def integer_to_decimal(
 
 @cast.overload("int", "string")
 def integer_to_string(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.ScalarType,
     base: int,
     format: str,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert integer data to a string data type in any base."""
     # use non-decimal base in conjunction with format
     if base and base != 10:
@@ -246,11 +248,11 @@ def int_to_base(val: str, base: int):
 
 
 def to_ns(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     unit: str,
     step_size: int,
     since: Epoch
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert an integer number of time units into nanoseconds from a given
     epoch.
     """
@@ -264,7 +266,7 @@ def to_ns(
     # convert to ns
     if step_size != 1:
         series.series *= step_size
-    return wrapper.SeriesWrapper(
+    return SeriesWrapper(
         convert_unit(series.series, unit, "ns", since=since),
         hasnans=series.hasnans,
         element_type=int

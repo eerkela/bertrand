@@ -1,9 +1,8 @@
 """This module contains dispatched cast() implementations for decimal data."""
 from pdcast import types
-from pdcast.util import wrapper
-
+from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.patch.round import snap_round, Tolerance
 from pdcast.util.error import shorten_list
-from pdcast.util.round import snap_round, Tolerance
 
 from .base import (
     cast, generic_to_boolean, generic_to_integer
@@ -12,13 +11,13 @@ from .base import (
 
 @cast.overload("decimal", "bool")
 def decimal_to_boolean(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     rounding: str,
     tol: Tolerance,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert decimal data to a boolean data type."""
     series = snap_round(
         series,
@@ -32,14 +31,14 @@ def decimal_to_boolean(
 
 @cast.overload("decimal", "integer")
 def decimal_to_integer(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     rounding: str,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert decimal data to an integer data type."""
     series = snap_round(
         series,
@@ -51,6 +50,7 @@ def decimal_to_integer(
     return generic_to_integer(
         series,
         dtype,
+        tol=tol,
         downcast=downcast,
         errors=errors
     )
@@ -58,13 +58,13 @@ def decimal_to_integer(
 
 @cast.overload("decimal", "float")
 def decimal_to_float(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert decimal data to a floating point data type."""
     # do naive conversion
     if dtype.itemsize > 8:
@@ -108,13 +108,13 @@ def decimal_to_float(
 
 @cast.overload("decimal", "complex")
 def decimal_to_complex(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert decimal data to a complex data type."""
     # 2-step conversion: decimal -> float, float -> complex
     series = cast(
@@ -136,18 +136,18 @@ def decimal_to_complex(
 
 @cast.overload("decimal", "decimal")
 def decimal_to_decimal(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert boolean data to a decimal data type."""
     return series.astype(dtype, errors=errors)
 
 
 # @cast.overload("decimal", "datetime")
 # def decimal_to_datetime(
-#     series: wrapper.SeriesWrapper,
+#     series: SeriesWrapper,
 #     dtype: types.AtomicType,
 #     unit: str,
 #     step_size: int,
@@ -155,7 +155,7 @@ def decimal_to_decimal(
 #     tz: pytz.BaseTzInfo,
 #     errors: str,
 #     **unused
-# ) -> wrapper.SeriesWrapper:
+# ) -> SeriesWrapper:
 #     """Convert integer data to a datetime data type."""
 #     # round fractional inputs to the nearest nanosecond
 #     if unit == "Y":
@@ -170,7 +170,7 @@ def decimal_to_decimal(
 #     if since:
 #         ns += since.offset
 
-#     series = wrapper.SeriesWrapper(
+#     series = SeriesWrapper(
 #         ns,
 #         hasnans=series.hasnans,
 #         element_type=resolve.resolve_type("int[python]")
@@ -194,14 +194,14 @@ def decimal_to_decimal(
 
 # @to_timedelta.overload("decimal")
 # def decimal_to_timedelta(
-#     series: wrapper.SeriesWrapper,
+#     series: SeriesWrapper,
 #     dtype: types.AtomicType,
 #     unit: str,
 #     step_size: int,
 #     since: Epoch,
 #     errors: str,
 #     **unused
-# ) -> wrapper.SeriesWrapper:
+# ) -> SeriesWrapper:
 #     """Convert integer data to a timedelta data type."""
 #     # round fractional inputs to the nearest nanosecond
 #     if unit == "Y":  # account for leap days
@@ -212,7 +212,7 @@ def decimal_to_decimal(
 #         cast_to_int = np.frompyfunc(int, 1, 1)
 #         ns = cast_to_int(series.series * step_size * as_ns[unit])
 
-#     series = wrapper.SeriesWrapper(
+#     series = SeriesWrapper(
 #         ns,
 #         hasnans=series.hasnans,
 #         element_type=resolve.resolve_type("int[python]")

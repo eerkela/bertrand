@@ -48,7 +48,6 @@ from pdcast.decorators.attachable import attachable
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
 
-from pdcast.util import wrapper
 from pdcast.util.type_hints import datetime_like
 
 from .calendar import date_to_days, days_in_month

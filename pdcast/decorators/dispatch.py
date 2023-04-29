@@ -17,11 +17,11 @@ import pandas as pd
 from pdcast import detect
 from pdcast import resolve
 from pdcast import types
-from pdcast.util import wrapper
 from pdcast.util.structs import LRUDict
 from pdcast.util.type_hints import type_specifier
 
 from .base import BaseDecorator, no_default
+from .wrapper import SeriesWrapper
 
 
 # TODO: emit a warning whenever an implementation is replaced.
@@ -436,17 +436,17 @@ class DispatchFunc(BaseDecorator):
         self,
         *args,
         **kwargs
-    ) -> pd.Series | wrapper.SeriesWrapper:
+    ) -> pd.Series | SeriesWrapper:
         """A reference to the generic implementation of the decorated function.
         """
         return self.__wrapped__(*args, **kwargs)
 
     def _dispatch_scalar(
         self,
-        series: wrapper.SeriesWrapper,
+        series: SeriesWrapper,
         *args,
         **kwargs
-    ) -> wrapper.SeriesWrapper:
+    ) -> SeriesWrapper:
         """Dispatch a homogenous series to the correct implementation."""
         # rectify series
         series = series.rectify()
@@ -489,7 +489,7 @@ class DispatchFunc(BaseDecorator):
             result = self.__wrapped__(**bound.arguments)
 
         # ensure result is a SeriesWrapper
-        if not isinstance(result, wrapper.SeriesWrapper):
+        if not isinstance(result, SeriesWrapper):
             raise TypeError(
                 f"dispatched implementation of {self.__wrapped__.__name__}() "
                 f"did not return a SeriesWrapper for type: "
@@ -508,14 +508,18 @@ class DispatchFunc(BaseDecorator):
 
     def _dispatch_composite(
         self,
-        series: wrapper.SeriesWrapper,
+        series: SeriesWrapper,
         *args,
         **kwargs
-    ) -> wrapper.SeriesWrapper:
+    ) -> SeriesWrapper:
         """Dispatch a mixed-type series to the appropriate implementation."""
         from pdcast import convert
 
-        groups = series.series.groupby(series.element_type.index, sort=False)
+        groups = series.series.groupby(
+            series.element_type.index,
+            dropna=False,  # no NAs to drop
+            sort=False
+        )
 
         # NOTE: SeriesGroupBy.transform() cannot reconcile mixed int64/uint64
         # arrays, and will attempt to convert them to float.  To avoid this, we
@@ -529,7 +533,7 @@ class DispatchFunc(BaseDecorator):
 
         def transform(grp) -> pd.Series:
             """Groupwise transformation."""
-            grp = wrapper.SeriesWrapper(
+            grp = SeriesWrapper(
                 grp,
                 hasnans=series.hasnans,
                 element_type=grp.name
@@ -574,25 +578,25 @@ class DispatchFunc(BaseDecorator):
                 pass  # keep as dtype: object
 
         # re-wrap result
-        return wrapper.SeriesWrapper(result, hasnans=series.hasnans)
+        return SeriesWrapper(result, hasnans=series.hasnans)
 
     def __call__(
         self,
         data: Any,
         *args,
         **kwargs
-    ) -> pd.Series | wrapper.SeriesWrapper:
+    ) -> pd.Series | SeriesWrapper:
         """Execute the decorated function, dispatching to an overloaded
         implementation if one exists.
         """
         # fastpath for pre-wrapped data (internal use)
-        if isinstance(data, wrapper.SeriesWrapper):
+        if isinstance(data, SeriesWrapper):
             if isinstance(data.element_type, types.CompositeType):
                 return self._dispatch_composite(data, *args, **kwargs)
             return self._dispatch_scalar(data, *args, **kwargs)
 
         # enter SeriesWrapper context block
-        with wrapper.SeriesWrapper(detect.as_series(data)) as series:
+        with SeriesWrapper(detect.as_series(data)) as series:
 
             # dispatch based on inferred type
             if isinstance(series.element_type, types.CompositeType):

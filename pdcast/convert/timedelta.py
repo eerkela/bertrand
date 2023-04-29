@@ -1,7 +1,7 @@
 """This module contains dispatched cast() implementations for timedelta data."""
 from pdcast import types
-from pdcast.util import wrapper
-from pdcast.util.round import Tolerance
+from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.patch.round import Tolerance
 
 from .base import (
     to_boolean, to_integer, to_float, to_decimal, to_complex, to_datetime,
@@ -17,7 +17,7 @@ from .base import (
 
 @to_boolean.overload("timedelta")
 def timedelta_to_boolean(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     tol: Tolerance,
     rounding: str,
@@ -26,7 +26,7 @@ def timedelta_to_boolean(
     since: Epoch,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert timedelta data to a boolean data type."""
     # 2-step conversion: timedelta -> decimal, decimal -> bool
     series = to_decimal(
@@ -59,7 +59,7 @@ def timedelta_to_boolean(
 
 @to_integer.oeverload("timedelta[numpy]")
 def numpy_datetime64_to_integer(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: AtomicType,
     unit: str,
     step_size: int,
@@ -68,7 +68,7 @@ def numpy_datetime64_to_integer(
     downcast: CompositeType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert numpy timedelta64s into an integer data type."""
     series_type = series.element_type
 
@@ -83,7 +83,7 @@ def numpy_datetime64_to_integer(
         rounding=rounding or "down",
         since=since
     )
-    series = wrapper.SeriesWrapper(
+    series = SeriesWrapper(
         pd.Series(arr, index=series.series.index),
         hasnans=series.hasnans,
         element_type=resolve.resolve_type("int[python]")
@@ -100,7 +100,7 @@ def numpy_datetime64_to_integer(
 
 @to_integer.overload("timedelta[pandas]")
 def pandas_timestamp_to_integer(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: AtomicType,
     unit: str,
     step_size: int,
@@ -109,7 +109,7 @@ def pandas_timestamp_to_integer(
     downcast: CompositeType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert pandas Timedeltas to an integer data type."""
     series = series.rectify().astype(np.int64)
     if unit != "ns" or step_size != 1:
@@ -132,7 +132,7 @@ def pandas_timestamp_to_integer(
 
 @to_integer.overload("timedelta[python]")
 def pytimedelta_to_integer(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: AtomicType,
     unit: str,
     step_size: int,
@@ -141,7 +141,7 @@ def pytimedelta_to_integer(
     downcast: CompositeType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert python timedeltas to an integer data type."""
     series = series.apply_with_errors(
         pytimedelta_to_ns,
@@ -173,7 +173,7 @@ def pytimedelta_to_integer(
 
 @to_float.overload("timedelta")
 def timedelta_to_float(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
@@ -183,7 +183,7 @@ def timedelta_to_float(
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert timedelta data to a floating point data type."""
     # convert to nanoseconds, then from nanoseconds to final unit
     series = to_integer(
@@ -229,7 +229,7 @@ def timedelta_to_float(
 
 @to_complex.overload("timedelta")
 def timedelta_to_complex(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
@@ -239,7 +239,7 @@ def timedelta_to_complex(
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert timedelta data to a complex data type."""
     # 2-step conversion: timedelta -> float, float -> complex
     series = to_float(
@@ -273,7 +273,7 @@ def timedelta_to_complex(
 
 @to_decimal.overload("timedelta")
 def timedelta_to_decimal(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
@@ -282,7 +282,7 @@ def timedelta_to_decimal(
     rounding: str,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert timedelta data to a decimal data type."""
     # 2-step conversion: timedelta -> ns, ns -> decimal
     series = to_integer(
@@ -327,7 +327,7 @@ def timedelta_to_decimal(
 
 @to_datetime.overload("timedelta")
 def timedelta_to_datetime(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
@@ -336,7 +336,7 @@ def timedelta_to_datetime(
     tz: pytz.BaseTzInfo,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert datetime data to another datetime representation."""
     # 2-step conversion: datetime -> ns, ns -> datetime
     series = to_integer(
@@ -369,7 +369,7 @@ def timedelta_to_datetime(
 
 @to_timedelta.overload("timedelta")
 def timedelta_to_timedelta(
-    series: wrapper.SeriesWrapper,
+    series: SeriesWrapper,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
@@ -377,7 +377,7 @@ def timedelta_to_timedelta(
     since: Epoch,
     errors: str,
     **unused
-) -> wrapper.SeriesWrapper:
+) -> SeriesWrapper:
     """Convert timedelta data to a timedelta representation."""
     # trivial case
     if dtype == self:
@@ -410,7 +410,7 @@ def timedelta_to_timedelta(
 
 
 # def convert_ns_to_unit(
-#     series: wrapper.SeriesWrapper,
+#     series: SeriesWrapper,
 #     unit: str,
 #     step_size: int,
 #     rounding: str,

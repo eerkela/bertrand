@@ -9,11 +9,10 @@ from typing import Callable, Iterable
 
 import pytz
 
-from pdcast.detect import detect_type
-from pdcast.resolve import resolve_type
 from pdcast import types
-
-import pdcast.util.round as round_util
+from pdcast.detect import detect_type
+import pdcast.patch.round as round_util
+from pdcast.resolve import resolve_type
 import pdcast.util.time as time
 from pdcast.util.time import valid_units, Epoch, epoch_aliases
 from pdcast.util.type_hints import datetime_like, type_specifier
