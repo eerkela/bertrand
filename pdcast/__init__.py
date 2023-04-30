@@ -47,6 +47,7 @@ from .types import *
 
 
 # importing * from types also masks module names, which can be troublesome
+del array
 del base
 del boolean
 # del categorical

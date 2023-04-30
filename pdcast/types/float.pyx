@@ -3,13 +3,9 @@ type system.
 """
 import decimal
 import sys
-from typing import Callable
 
 import numpy as np
 cimport numpy as np
-
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
 
 from pdcast.util.type_hints import numeric
 

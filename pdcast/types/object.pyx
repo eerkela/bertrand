@@ -2,14 +2,13 @@
 represent arbitrary Python data.
 """
 import inspect
-from typing import Any, Callable
 
 import numpy as np
 cimport numpy as np
 import pandas as pd
 
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
+from pdcast cimport resolve
+from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
 from .base cimport AtomicType, CompositeType

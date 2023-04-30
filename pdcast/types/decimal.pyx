@@ -3,10 +3,7 @@ type system.
 """
 import decimal
 import sys
-from typing import Callable
 
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
 from pdcast.util.type_hints import numeric
 
 from .base cimport AtomicType, CompositeType

@@ -2,7 +2,6 @@
 type system.
 """
 import sys
-from typing import Callable
 
 import numpy as np
 cimport numpy as np

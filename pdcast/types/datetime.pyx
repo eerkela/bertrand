@@ -8,11 +8,9 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
-from pdcast.util.time import (
-    as_ns, numpy_datetime64_to_ns, pydatetime_to_ns, timezone, valid_units
-)
+from pdcast cimport resolve
+from pdcast import resolve
+from pdcast.util import time
 from pdcast.util.type_hints import type_specifier
 
 from .base cimport AtomicType, CompositeType
@@ -124,8 +122,8 @@ class NumpyDatetime64Type(AtomicType, cache_size=64):
             else:
                 min_M8 = np.datetime64(-2**63 + 1, unit)
                 max_M8 = np.datetime64(2**63 - 1, unit)
-            self.min = numpy_datetime64_to_ns(min_M8)
-            self.max = numpy_datetime64_to_ns(max_M8)
+            self.min = time.numpy_datetime64_to_ns(min_M8)
+            self.max = time.numpy_datetime64_to_ns(max_M8)
 
         super().__init__(unit=unit, step_size=step_size)
 
@@ -178,7 +176,7 @@ class NumpyDatetime64Type(AtomicType, cache_size=64):
     def larger(self) -> list:
         """Get a list of types that this type can be upcasted to."""
         if self.unit is None:
-            return [self.instance(unit=u) for u in valid_units]
+            return [self.instance(unit=u) for u in time.valid_units]
         return []
 
     @classmethod
@@ -215,11 +213,11 @@ class PandasTimestampType(AtomicType, cache_size=64):
     itemsize = 8
     na_value = pd.NaT
     type_def = pd.Timestamp
-    min = pd.Timestamp.min.value + 14 * as_ns["h"]  # UTC-14 is furthest ahead
-    max = pd.Timestamp.max.value - 12 * as_ns["h"]  # UTC+12 is furthest behind
+    min = pd.Timestamp.min.value + 14 * time.as_ns["h"]  # UTC-14 most ahead
+    max = pd.Timestamp.max.value - 12 * time.as_ns["h"]  # UTC+12 most behind
 
     def __init__(self, tz: datetime.tzinfo | str = None):
-        tz = timezone(tz)
+        tz = time.tz(tz)
         super().__init__(tz=tz)
 
     ########################
@@ -273,7 +271,7 @@ class PandasTimestampType(AtomicType, cache_size=64):
     @classmethod
     def resolve(cls, context: str = None) -> AtomicType:
         if context is not None:
-            return cls.instance(tz=timezone(context))
+            return cls.instance(tz=time.tz(context))
         return cls.instance()
 
 
@@ -289,11 +287,11 @@ class PythonDatetimeType(AtomicType, cache_size=64):
     aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
     na_value = pd.NaT
     type_def = datetime.datetime
-    max = pydatetime_to_ns(datetime.datetime.max)
-    min = pydatetime_to_ns(datetime.datetime.min)
+    max = time.pydatetime_to_ns(datetime.datetime.max)
+    min = time.pydatetime_to_ns(datetime.datetime.min)
 
     def __init__(self, tz: datetime.tzinfo = None):
-        tz = timezone(tz)
+        tz = time.tz(tz)
         super().__init__(tz=tz)
 
     ############################
@@ -330,7 +328,7 @@ class PythonDatetimeType(AtomicType, cache_size=64):
     @classmethod
     def resolve(cls, context: str = None) -> AtomicType:
         if context is not None:
-            return cls.instance(tz=timezone(context))
+            return cls.instance(tz=time.tz(context))
         return cls.instance()
 
 

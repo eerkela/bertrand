@@ -2,14 +2,10 @@
 type system.
 """
 import sys
-from typing import Callable
 
 import numpy as np
 cimport numpy as np
 import pandas as pd
-
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
 
 from .base cimport AtomicType
 from .base import generic, register

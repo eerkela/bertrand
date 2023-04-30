@@ -8,13 +8,9 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
-
-from pdcast.util.time cimport Epoch
-from pdcast.util.time import (
-    convert_unit, pytimedelta_to_ns, valid_units
-)
+from pdcast cimport resolve
+from pdcast import resolve
+from pdcast.util import time
 from pdcast.util.type_hints import type_specifier
 
 from .base cimport AtomicType, CompositeType
@@ -113,17 +109,17 @@ class NumpyTimedelta64Type(AtomicType, cache_size=64):
             # NOTE: these epochs are chosen to minimize range in the event of
             # irregular units ('Y'/'M'), so that conversions work regardless of
             # leap days and irregular month lengths.
-            self.max = convert_unit(
+            self.max = time.convert_unit(
                 2**63 - 1,
                 unit,
                 "ns",
-                since=Epoch(pd.Timestamp("2001-02-01"))
+                since=time.Epoch(np.datetime64("2001-02-01"))
             )
-            self.min = convert_unit(
+            self.min = time.convert_unit(
                 -2**63 + 1,  # NOTE: -2**63 reserved for NaT
                 unit,
                 "ns",
-                since=Epoch(pd.Timestamp("2000-02-01"))
+                since=time.Epoch(np.datetime64("2000-02-01"))
             )
 
         super().__init__(unit=unit, step_size=step_size)
@@ -177,7 +173,7 @@ class NumpyTimedelta64Type(AtomicType, cache_size=64):
     def larger(self) -> list:
         """Get a list of types that this type can be upcasted to."""
         if self.unit is None:
-            return [self.instance(unit=u) for u in valid_units]
+            return [self.instance(unit=u) for u in time.valid_units]
         return []
 
     @classmethod
@@ -222,8 +218,8 @@ class PythonTimedeltaType(AtomicType):
     aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
     na_value = pd.NaT
     type_def = datetime.timedelta
-    max = pytimedelta_to_ns(datetime.timedelta.max)
-    min = pytimedelta_to_ns(datetime.timedelta.min)
+    max = time.pytimedelta_to_ns(datetime.timedelta.max)
+    min = time.pytimedelta_to_ns(datetime.timedelta.min)
 
 
 #######################
