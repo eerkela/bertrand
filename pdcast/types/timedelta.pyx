@@ -2,23 +2,18 @@
 type system.
 """
 import datetime
+import re
 
 import numpy as np
 cimport numpy as np
 import pandas as pd
-import regex as re  # using alternate python regex engine
-import pytz
 
-from pdcast import convert
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 
-from pdcast.decorators cimport wrapper
-from pdcast.patch.round cimport Tolerance
-from pdcast.patch.round import round_div
 from pdcast.util.time cimport Epoch
 from pdcast.util.time import (
-    as_ns, convert_unit, pytimedelta_to_ns, valid_units
+    convert_unit, pytimedelta_to_ns, valid_units
 )
 from pdcast.util.type_hints import type_specifier
 
@@ -196,45 +191,6 @@ class NumpyTimedelta64Type(AtomicType, cache_size=64):
             return cls.instance(unit=unit, step_size=step_size)
         return cls.instance()
 
-    ##############################
-    ####    SERIES METHODS    ####
-    ##############################
-
-    def from_ns(
-        self,
-        series: wrapper.SeriesWrapper,
-        rounding: str,
-        since: Epoch,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert nanosecond offsets from the given epoch into numpy
-        timedelta64s with this type's unit and step size.
-        """
-        # convert from ns to final unit
-        series.series = convert_unit(
-            series.series,
-            "ns",
-            self.unit,
-            rounding=rounding or "down",
-            since=since
-        )
-        if self.step_size != 1:
-            series.series = round_div(
-                series.series,
-                self.step_size,
-                rule=rounding or "down"
-            )
-        m8_str = f"m8[{self.step_size}{self.unit}]"
-        return wrapper.SeriesWrapper(
-            pd.Series(
-                list(series.series.to_numpy(m8_str)),
-                index=series.series.index,
-                dtype="O"
-            ),
-            hasnans=series.hasnans,
-            element_type=self
-        )
-
 
 ######################
 ####    PANDAS    ####
@@ -253,23 +209,6 @@ class PandasTimedeltaType(AtomicType):
     max = pd.Timedelta.max.value
     min = pd.Timedelta.min.value
 
-    ##############################
-    ####    SERIES METHODS    ####
-    ##############################
-
-    def from_ns(
-        self,
-        series: wrapper.SeriesWrapper,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert nanosecond offsets into pandas Timedeltas."""
-        # convert using pd.to_timedelta()
-        return wrapper.SeriesWrapper(
-            pd.to_timedelta(series.series, unit="ns"),
-            hasnans=series.hasnans,
-            element_type=self
-        )
-
 
 ######################
 ####    PYTHON    ####
@@ -285,31 +224,6 @@ class PythonTimedeltaType(AtomicType):
     type_def = datetime.timedelta
     max = pytimedelta_to_ns(datetime.timedelta.max)
     min = pytimedelta_to_ns(datetime.timedelta.min)
-
-    ##############################
-    ####    SERIES METHODS    ####
-    ##############################
-
-    def from_ns(
-        self,
-        series: wrapper.SeriesWrapper,
-        rounding: str,
-        **unused
-    ) -> wrapper.SeriesWrapper:
-        """Convert nanosecond offsets into python timedeltas."""
-        # convert to us
-        result = round_div(series.series, as_ns["us"], rule=rounding or "down")
-
-        # NOTE: m8[us].astype("O") implicitly converts to datetime.timedelta
-        return wrapper.SeriesWrapper(
-            pd.Series(
-                result.to_numpy("m8[us]").astype("O"),
-                index=series.series.index,
-                dtype="O"
-            ),
-            hasnans=series.hasnans,
-            element_type=self
-        )
 
 
 #######################

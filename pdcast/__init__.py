@@ -51,11 +51,11 @@ del base
 del boolean
 # del categorical
 del complex
-# del datetime
+del datetime
 del decimal
 del float
 del integer
 del object
 # del sparse
 del string
-# del timedelta
+del timedelta

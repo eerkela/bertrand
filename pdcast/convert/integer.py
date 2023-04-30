@@ -272,3 +272,201 @@ def to_ns(
         hasnans=series.hasnans,
         element_type=int
     )
+
+
+
+
+
+# TODO: NUMPY M8
+
+
+# def from_ns(
+#     self,
+#     series: wrapper.SeriesWrapper,
+#     rounding: str,
+#     tz: pytz.BaseTzInfo,
+#     **unused
+# ) -> wrapper.SeriesWrapper:
+#     """Convert nanosecond offsets from the given epoch into numpy
+#     timedelta64s with this type's unit and step size.
+#     """
+#     if tz and tz != pytz.utc:
+#         raise TypeError(
+#             "np.datetime64 objects do not carry timezone information "
+#             f"(must be UTC)"
+#         )
+
+#     # convert from nanoseconds to final unit
+#     series.series = convert_unit(
+#         series.series,
+#         "ns",
+#         self.unit,
+#         rounding=rounding or "down"
+#     )
+#     if self.step_size != 1:
+#         series.series = round_div(
+#             series.series,
+#             self.step_size,
+#             rule=rounding or "down"
+#         )
+
+#     # TODO: we get these as decimals rather than integers, but only
+#     # for units 'M' and 'Y'
+#     # pdcast.to_datetime([-13.8], "datetime[numpy]", unit="Y")
+
+#     M8_str = f"M8[{self.step_size}{self.unit}]"
+#     return wrapper.SeriesWrapper(
+#         pd.Series(
+#             list(series.series.to_numpy(M8_str)),
+#             index=series.series.index,
+#             dtype="O"
+#         ),
+#         hasnans=series.hasnans,
+#         element_type=self
+#     )
+
+
+
+# TODO: PANDAS TIMESTAMP
+
+
+# def from_ns(
+#     self,
+#     series: wrapper.SeriesWrapper,
+#     tz: pytz.BaseTzInfo,
+#     **unused
+# ) -> wrapper.SeriesWrapper:
+#     """Convert nanosecond offsets from the UTC epoch into pandas
+#     Timestamps.
+#     """
+#     # reconcile `tz` argument with timezone attached to dtype, if given
+#     dtype = self
+#     if tz:
+#         dtype = dtype.replace(tz=tz)
+
+#     # convert using pd.to_datetime, accounting for timezone
+#     if dtype.tz is None:
+#         result = pd.to_datetime(series.series, unit="ns")
+#     else:
+#         result = pd.to_datetime(series.series, unit="ns", utc=True)
+#         if dtype.tz != pytz.utc:
+#             result = result.dt.tz_convert(dtype.tz)
+
+#     return wrapper.SeriesWrapper(
+#         result,
+#         hasnans=series.hasnans,
+#         element_type=dtype
+#     )
+
+
+
+
+# TODO: PYTHON DATETIME
+
+
+# def from_ns(
+#     self,
+#     series: wrapper.SeriesWrapper,
+#     tz: pytz.BaseTzInfo,
+#     **unused
+# ) -> wrapper.SeriesWrapper:
+#     """Convert nanosecond offsets from the UTC epoch into python
+#     datetimes.
+#     """
+#     # reconcile `tz` argument with timezone attached to dtype, if given
+#     dtype = self
+#     if tz:
+#         dtype = dtype.replace(tz=tz)
+
+#     # convert elementwise
+#     call = partial(ns_to_pydatetime, tz=dtype.tz)
+#     return series.apply_with_errors(call, element_type=dtype)
+
+
+
+
+
+
+
+
+# TODO: NUMPY TIMEDELTA64
+
+
+# def from_ns(
+#     self,
+#     series: wrapper.SeriesWrapper,
+#     rounding: str,
+#     since: Epoch,
+#     **unused
+# ) -> wrapper.SeriesWrapper:
+#     """Convert nanosecond offsets from the given epoch into numpy
+#     timedelta64s with this type's unit and step size.
+#     """
+#     # convert from ns to final unit
+#     series.series = convert_unit(
+#         series.series,
+#         "ns",
+#         self.unit,
+#         rounding=rounding or "down",
+#         since=since
+#     )
+#     if self.step_size != 1:
+#         series.series = round_div(
+#             series.series,
+#             self.step_size,
+#             rule=rounding or "down"
+#         )
+#     m8_str = f"m8[{self.step_size}{self.unit}]"
+#     return wrapper.SeriesWrapper(
+#         pd.Series(
+#             list(series.series.to_numpy(m8_str)),
+#             index=series.series.index,
+#             dtype="O"
+#         ),
+#         hasnans=series.hasnans,
+#         element_type=self
+#     )
+
+
+
+# TODO: PANDAS TIMEDELTA
+
+
+# def from_ns(
+#     self,
+#     series: wrapper.SeriesWrapper,
+#     **unused
+# ) -> wrapper.SeriesWrapper:
+#     """Convert nanosecond offsets into pandas Timedeltas."""
+#     # convert using pd.to_timedelta()
+#     return wrapper.SeriesWrapper(
+#         pd.to_timedelta(series.series, unit="ns"),
+#         hasnans=series.hasnans,
+#         element_type=self
+#     )
+
+
+
+# TODO: PYTHON TIMEDELTA
+
+
+# def from_ns(
+#     self,
+#     series: wrapper.SeriesWrapper,
+#     rounding: str,
+#     **unused
+# ) -> wrapper.SeriesWrapper:
+#     """Convert nanosecond offsets into python timedeltas."""
+#     # convert to us
+#     result = round_div(series.series, as_ns["us"], rule=rounding or "down")
+
+#     # NOTE: m8[us].astype("O") implicitly converts to datetime.timedelta
+#     return wrapper.SeriesWrapper(
+#         pd.Series(
+#             result.to_numpy("m8[us]").astype("O"),
+#             index=series.series.index,
+#             dtype="O"
+#         ),
+#         hasnans=series.hasnans,
+#         element_type=self
+#     )
