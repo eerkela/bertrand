@@ -1,6 +1,7 @@
 """This module contains dispatched cast() implementations for data stored as
 raw Python objects.
 """
+# pylint: disable=unused-argument
 from typing import Callable
 
 from pdcast import types

@@ -3,6 +3,7 @@
 See the API docs for :func:`@extension_func <pdcast.extension_func>` for more
 details.
 """
+# pylint: disable=unused-argument
 from __future__ import annotations
 import decimal
 from typing import Callable, Iterable
@@ -11,10 +12,11 @@ import pytz
 
 from pdcast import types
 from pdcast.detect import detect_type
-import pdcast.patch.round as round_util
+from pdcast.patch.round import rule as rounding_rule
+from pdcast.patch.snap import tol as snap_tol
 from pdcast.resolve import resolve_type
-import pdcast.util.time as time
-from pdcast.util.time import valid_units, Epoch, epoch_aliases
+from pdcast.util.round import Tolerance
+from pdcast.util import time
 from pdcast.util.type_hints import datetime_like, type_specifier
 
 from .base import cast
@@ -104,10 +106,10 @@ def dtype(
     subtype of the given supertype.
     """
     if val is None:
-        if "data" in state:
-            data = state["data"]
-            val = detect_type(data)
-            if val is None:  # data is empty or contains only NAs
+        if "series" in state:
+            series = state["series"]
+            val = detect_type(series)
+            if val is None:  # series is empty or contains only NAs
                 raise ValueError(
                     "cannot interpret empty series without an explicit "
                     "`dtype` argument"
@@ -115,11 +117,11 @@ def dtype(
     else:
         val = resolve_type(val)
         if val.unwrap() is None:
-            if "data" not in state:
+            if "series" not in state:
                 raise ValueError(
                     "cannot perform anonymous conversion without data"
                 )
-            val.atomic_type = detect_type(state["data"])
+            val.atomic_type = detect_type(state["series"])
 
     # reject composite
     if isinstance(val, types.CompositeType):
@@ -139,7 +141,7 @@ def dtype(
 
 
 @cast.register_arg(default=defaults["tol"])
-def tol(val: str, state: dict) -> round_util.Tolerance:
+def tol(val: str, state: dict) -> Tolerance:
     """The maximum amount of precision loss that can occur before an error
     is raised.
 
@@ -251,7 +253,7 @@ def tol(val: str, state: dict) -> round_util.Tolerance:
         ``"half_even"``, with additional clipping around the minimum and
         maximum values.
     """
-    return round_util.tol(val, state)
+    return snap_tol(val, state)
 
 
 @cast.register_arg(default=defaults["rounding"])
@@ -357,7 +359,7 @@ def rounding(val: str, state: dict) -> str:
         3    2
         dtype: int64
     """
-    return round_util.rule(val, state)
+    return rounding_rule(val, state)
 
 
 @cast.register_arg(default=defaults["unit"])
@@ -459,9 +461,9 @@ def unit(val: str, state: dict) -> str:
     """
     if not isinstance(val, str):
         raise TypeError(f"`unit` must be a string, not {repr(val)}")
-    if val not in valid_units:
+    if val not in time.valid_units:
         raise ValueError(
-            f"`unit` must be one of {valid_units}, not {repr(val)}"
+            f"`unit` must be one of {time.valid_units}, not {repr(val)}"
         )
     return val
 
@@ -516,7 +518,7 @@ def step_size(val: int, state: dict) -> int:
 
 
 @cast.register_arg(default=defaults["since"])
-def since(val: str | datetime_like | Epoch, state: dict) -> Epoch:
+def since(val: str | datetime_like | time.Epoch, state: dict) -> time.Epoch:
     """The epoch to use for datetime/timedelta conversions.
 
     Parameters
@@ -657,17 +659,17 @@ def since(val: str | datetime_like | Epoch, state: dict) -> Epoch:
         0   2022-03-27 00:00:01
         dtype: datetime64[ns]
     """
-    if isinstance(val, Epoch):
+    if isinstance(val, time.Epoch):
         return val
 
-    if isinstance(val, str) and val not in epoch_aliases:
+    if isinstance(val, str) and val not in time.epoch_aliases:
         val = cast(val, "datetime")
         if len(val) != 1:
-            raise ValueError(f"`since` must be scalar")
+            raise ValueError("`since` must be scalar")
         val = val[0]
 
     try:
-        return Epoch(val)
+        return time.Epoch(val)
     except Exception as err:
         raise TypeError(f"`since` must be datetime-like: {val}") from err
 
@@ -779,7 +781,7 @@ def tz(
         ``utc`` argument of :func:`pandas.to_datetime`, but allows for full
         control over the handling of naive inputs.
     """
-    return time.tz(val)
+    return time.tz(val, state)
 
 
 @cast.register_arg(default=defaults["naive_tz"])
@@ -821,7 +823,7 @@ def naive_tz(
     examples on the interaction between :func:`tz <pdcast.convert.arguments.tz>`
     and :func:`naive_tz <pdcast.convert.arguments.naive_tz>`.
     """
-    return time.tz(val)
+    return time.tz(val, state)
 
 
 @cast.register_arg(default=defaults["day_first"])

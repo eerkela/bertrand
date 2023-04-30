@@ -1,4 +1,5 @@
 """This module contains dispatched cast() implementations for integer data."""
+# pylint: disable=unused-argument
 from __future__ import annotations
 from functools import partial
 
@@ -7,7 +8,7 @@ import pytz
 
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
-from pdcast.patch.round import Tolerance
+from pdcast.util.round import Tolerance
 from pdcast.util.time import Epoch, convert_unit
 
 from .base import (

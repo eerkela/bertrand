@@ -1,9 +1,11 @@
 """This module defines the ``cast()`` function, as well as several stand-alone
 equivalents that allow quick conversion to predefined data types.
 """
+# pylint: disable=unused-argument
 from __future__ import annotations
 from typing import Any, Callable, Optional
 
+import numpy as np
 import pandas as pd
 
 from pdcast import types
@@ -12,7 +14,7 @@ from pdcast.decorators.base import BaseDecorator
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
 from pdcast.decorators.wrapper import SeriesWrapper
-from pdcast.patch.round import Tolerance
+from pdcast.util.round import Tolerance
 from pdcast.util.type_hints import type_specifier
 
 from . import arguments
@@ -30,6 +32,7 @@ class columnwise(BaseDecorator):
     implementing this themselves, and above ``@dispatch`` allows dispatched
     implementations to always work in one dimension.
     """
+    # pylint: disable=invalid-name
 
     def __call__(
         self,
@@ -76,6 +79,7 @@ class catch_ignore(BaseDecorator):
     Placing this above ``@dispatch`` allows dispatched implementations to
     avoid implementing this themselves.
     """
+    # pylint: disable=invalid-name
 
     def __call__(
         self,

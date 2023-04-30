@@ -1,4 +1,5 @@
 """This module contains dispatched cast() implementations for boolean data."""
+# pylint: disable=unused-argument
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
 

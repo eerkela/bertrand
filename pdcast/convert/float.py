@@ -1,9 +1,11 @@
 """This module contains dispatched cast() implementations for floating point
 data.
 """
+# pylint: disable=unused-argument
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
-from pdcast.patch.round import snap_round, Tolerance
+from pdcast.patch.round import snap_round  # TODO: move to snap/make internal
+from pdcast.util.round import Tolerance
 
 from .base import (
     cast, generic_to_boolean, generic_to_integer

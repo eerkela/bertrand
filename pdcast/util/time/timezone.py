@@ -1,17 +1,16 @@
+# pylint: disable=redefined-outer-name, unused-argument
 from __future__ import annotations
 import datetime
 from functools import partial
 
 import pandas as pd
 import pytz
+import tzlocal
 
-from pdcast.decorators.attachable import attachable
+from pdcast.decorators.attachable import VirtualAttribute
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
 from pdcast.decorators.wrapper import SeriesWrapper
-
-
-# TODO: move tz_convert, tz_localize into patch/dt
 
 
 ######################
@@ -33,36 +32,28 @@ def localize(
     )
 
 
-@attachable
-@extension_func
-def tz_localize(
-    series: SeriesWrapper,
-    tz: str | pytz.BaseTzInfo | None,
-    **unused
-) -> SeriesWrapper:
-    """TODO"""
-    # emulate pandas tz_localize limitation
-    if series.element_type.tz:
-        raise TypeError("Already tz-aware, use tz_convert to convert.")
-
-    return localize(series, tz=tz, naive_tz=None)
+#########################
+####    ARGUMENTS    ####
+#########################
 
 
-@attachable
-@extension_func
-def tz_convert(
-    series: SeriesWrapper,
-    tz: str | pytz.BaseTzInfo | None,
-    **unused
-) -> SeriesWrapper:
-    """TODO"""
-    # emulate pandas tz_convert limitation
-    if not series.element_type.tz:
-        raise TypeError(
-            "Cannot convert tz-naive Timestamp, use tz_localize to localize"
-        )
+@localize.register_arg
+@localize.register_arg(name="naive_tz")
+def tz(tz: str | pytz.BaseTzInfo | None, state: dict) -> pytz.BaseTzInfo:
+    """Convert a time zone specifier into a ``datetime.tzinfo`` object."""
+    if tz is None:
+        return None
 
-    return localize(series, tz=tz, naive_tz=None)
+    # trivial case
+    if isinstance(tz, pytz.BaseTzInfo):
+        return tz
+
+    # local specifier
+    if isinstance(tz, str) and tz.lower() == "local":
+        return pytz.timezone(tzlocal.get_localzone_name())
+
+    # IANA string
+    return pytz.timezone(tz)
 
 
 ######################
@@ -83,9 +74,9 @@ def localize_pandas_timestamp(
     # delegate to original pandas tz_localize, tz_convert
     loc = series.dt.tz_localize
     conv = series.dt.tz_convert
-    if isinstance(loc, attachable.VirtualAttribute):
+    if isinstance(loc, VirtualAttribute):
         loc = loc.original
-    if isinstance(conv, attachable.VirtualAttribute):
+    if isinstance(conv, VirtualAttribute):
         conv = conv.original
 
     # series is naive

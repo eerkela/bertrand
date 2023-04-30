@@ -75,7 +75,7 @@ def round_float(
 
 
 def _generic_round_half_even(v):
-    floor_even = 2 * (v // 1 % 2) - 1
+    floor_even = (v // 1 % 2) * 2 - 1
     return floor_even * ((floor_even * v + 0.5) // 1)
 
 

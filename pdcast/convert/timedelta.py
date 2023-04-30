@@ -1,7 +1,8 @@
 """This module contains dispatched cast() implementations for timedelta data."""
+# pylint: disable=unused-argument
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
-from pdcast.patch.round import Tolerance
+from pdcast.util.round import Tolerance
 
 from .base import (
     to_boolean, to_integer, to_float, to_decimal, to_complex, to_datetime,

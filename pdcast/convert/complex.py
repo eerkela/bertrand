@@ -1,6 +1,8 @@
+"""This module contains dispatched cast() implementations for complex data."""
+# pylint: disable=unused-argument
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
-from pdcast.patch.round import Tolerance
+from pdcast.util.round import Tolerance
 from pdcast.util.error import shorten_list
 
 from .base import cast, generic_to_float

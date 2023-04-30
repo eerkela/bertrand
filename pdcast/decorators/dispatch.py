@@ -723,6 +723,7 @@ def _edge(sig1: tuple, sig2: tuple) -> bool:
     signatures.  As a result, whichever one is more specific in its earlier
     elements will always be preferred.
     """
+    # pylint: disable=arguments-out-of-order
     if not sig1 or not sig2:
         return False
 

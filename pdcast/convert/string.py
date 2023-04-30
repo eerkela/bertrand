@@ -1,10 +1,11 @@
 """This module contains dispatched cast() implementations for string data."""
+# pylint: disable=unused-argument
 import re  # normal python regex for compatibility with pd.Series.str.extract
 from functools import partial
 
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
-from pdcast.patch.round import Tolerance
+from pdcast.util.round import Tolerance
 
 from .base import (
     cast, generic_to_boolean, generic_to_complex

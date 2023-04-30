@@ -1,7 +1,8 @@
 """This module contains dispatched cast() implementations for datetime data."""
+# pylint: disable=unused-argument
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
-from pdcast.patch.round import Tolerance
+from pdcast.util.round import Tolerance
 from pdcast.util.time import Epoch
 
 from .base import (
