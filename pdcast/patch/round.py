@@ -3,8 +3,6 @@ from pdcast.decorators.attachable import attachable, VirtualAttribute
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
 from pdcast.decorators.wrapper import SeriesWrapper
-from pdcast.util.type_hints import numeric
-
 from pdcast.util.round import round_decimal, round_div, round_float
 
 
@@ -38,50 +36,6 @@ def round(
         element_type=series.element_type,
         hasnans=series.hasnans
     )
-
-
-@extension_func
-@dispatch
-def snap_round(
-    series: SeriesWrapper,
-    tol: numeric,
-    rule: str | None,
-    errors: str
-) -> SeriesWrapper:
-    """Snap a series to the nearest integer within `tol`, and then round
-    any remaining results according to the given rule.  Rejects any outputs
-    that are not integer-like by the end of this process.
-    """
-    # TODO: update this
-
-    # NOTE: this looks complicated, but it ensures that rounding is done only
-    # where necessary.  If `tol` is given and `rule` is not "half_even" or
-    # None, then we apply it.
-
-    # apply tolerance
-    if tol or rule is None:
-        rounded = round(series, rule="half_even")  # compute once
-        outside = ~series.within_tol(rounded, tol=tol)
-        if tol:
-            element_type = series.element_type
-            series = series.where(outside.series, rounded.series)
-            series.element_type = element_type
-
-        # check for non-integer (ignore if rounding)
-        if rule is None and outside.any():
-            if errors == "coerce":
-                series = round(series, "down")
-            else:
-                raise ValueError(
-                    f"precision loss exceeds tolerance {float(tol):g} at "
-                    f"index {shorten_list(outside[outside].index.values)}"
-                )
-
-    # round according to specified rule
-    if rule:
-        series = round(series, rule=rule)
-
-    return series
 
 
 #########################
@@ -220,10 +174,6 @@ def rule(val: str | None, state: dict) -> str:
 #######################
 
 
-# NOTE: we have to re-implement these because cython functions are not
-# introspectable.
-
-
 @round.overload("int")
 def _round_integer(
     series: SeriesWrapper,
@@ -253,7 +203,7 @@ def _round_decimal(
 ) -> SeriesWrapper:
     """Overloaded round() implementation for decimal data."""
     return SeriesWrapper(
-        round_decimal(series, decimals=decimals, rule=rule),
+        round_decimal(series.series, decimals=decimals, rule=rule),
         hasnans=series.hasnans,
         element_type=series.element_type
     )
@@ -267,7 +217,7 @@ def _round_float(
 ) -> SeriesWrapper:
     """Overloaded round() implementation for float data."""
     return SeriesWrapper(
-        round_float(series, decimals=decimals, rule=rule),
+        round_float(series.series, decimals=decimals, rule=rule),
         hasnans=series.hasnans,
         element_type=series.element_type
     )

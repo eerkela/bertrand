@@ -10,7 +10,7 @@ import pytz
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.util.round import round_div, Tolerance
-from pdcast.util.time import as_ns, convert_unit, Epoch, ns_to_pydatetime
+from pdcast.util import time
 
 from .base import (
     cast, generic_to_boolean, generic_to_integer, generic_to_float,
@@ -130,7 +130,7 @@ def integer_to_datetime(
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
-    since: Epoch,
+    since: time.Epoch,
     tz: pytz.BaseTzInfo,
     errors: str,
     **unused
@@ -152,7 +152,7 @@ def integer_to_datetime(
         dtype,
         unit="ns",
         step_size=1,
-        since=Epoch("utc"),
+        since=time.Epoch("utc"),
         tz=tz,
         errors=errors,
         **unused
@@ -165,7 +165,7 @@ def integer_to_pandas_timestamp(
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
-    since: Epoch,
+    since: time.Epoch,
     tz: pytz.BaseTzInfo,
     errors: str,
     **unused
@@ -206,7 +206,7 @@ def integer_to_python_datetime(
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
-    since: Epoch,
+    since: time.Epoch,
     tz: pytz.BaseTzInfo,
     errors: str,
     **unused
@@ -227,7 +227,7 @@ def integer_to_python_datetime(
         dtype = dtype.replace(tz=tz)
 
     # convert elementwise
-    call = partial(ns_to_pydatetime, tz=dtype.tz)
+    call = partial(time.ns_to_pydatetime, tz=dtype.tz)
     return series.apply_with_errors(call, element_type=dtype)
 
 
@@ -238,7 +238,7 @@ def integer_to_numpy_datetime64(
     unit: str,
     step_size: int,
     rounding: str,
-    since: Epoch,
+    since: time.Epoch,
     tz: pytz.BaseTzInfo,
     errors: str,
     **unused
@@ -261,7 +261,7 @@ def integer_to_numpy_datetime64(
     series, dtype = series.boundscheck(dtype, errors=errors)
 
     # convert from nanoseconds to final representation
-    series.series = convert_unit(
+    series.series = time.convert_unit(
         series.series,
         "ns",
         dtype.unit,
@@ -292,7 +292,7 @@ def integer_to_timedelta(
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
-    since: Epoch,
+    since: time.Epoch,
     errors: str,
     **unused
 ) -> SeriesWrapper:
@@ -321,7 +321,7 @@ def integer_to_pandas_timedelta(
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
-    since: Epoch,
+    since: time.Epoch,
     errors: str,
     **unused
 ) -> SeriesWrapper:
@@ -347,7 +347,7 @@ def integer_to_python_timedelta(
     unit: str,
     step_size: int,
     rounding: str,
-    since: Epoch,
+    since: time.Epoch,
     errors: str,
     **unused
 ) -> SeriesWrapper:
@@ -359,7 +359,7 @@ def integer_to_python_timedelta(
     series, dtype = series.boundscheck(dtype, errors=errors)
 
     # convert to us
-    result = round_div(series.series, as_ns["us"], rule=rounding or "down")
+    result = round_div(series.series, time.as_ns["us"], rule=rounding or "down")
 
     # NOTE: m8[us].astype("O") implicitly converts to datetime.timedelta
     return SeriesWrapper(
@@ -380,7 +380,7 @@ def integer_to_numpy_timedelta64(
     unit: str,
     step_size: int,
     rounding: str,
-    since: Epoch,
+    since: time.Epoch,
     errors: str,
     **unused
 ) -> SeriesWrapper:
@@ -392,7 +392,7 @@ def integer_to_numpy_timedelta64(
     series, dtype = series.boundscheck(dtype, errors=errors)
 
     # convert from ns to final unit
-    series.series = convert_unit(
+    series.series = time.convert_unit(
         series.series,
         "ns",
         dtype.unit,
@@ -482,7 +482,7 @@ def to_ns(
     series: SeriesWrapper,
     unit: str,
     step_size: int,
-    since: Epoch
+    since: time.Epoch
 ) -> SeriesWrapper:
     """Convert an integer number of time units into nanoseconds from a given
     epoch.
@@ -502,7 +502,7 @@ def to_ns(
 
     # convert to ns
     return SeriesWrapper(
-        convert_unit(series.series, unit, "ns", since=since),
+        time.convert_unit(series.series, unit, "ns", since=since),
         hasnans=series.hasnans,
         element_type=int
     )

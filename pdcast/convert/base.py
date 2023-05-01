@@ -14,6 +14,8 @@ from pdcast.decorators.base import BaseDecorator
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
 from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.patch.round import round as round_generic
+from pdcast.util.error import shorten_list
 from pdcast.util.round import Tolerance
 from pdcast.util.type_hints import type_specifier
 
@@ -512,3 +514,46 @@ def downcast_complex(
         hasnans=real.hasnans or imag.hasnans,
         element_type=target
     )
+
+
+def snap_round(
+    series: SeriesWrapper,
+    tol: Tolerance,
+    rule: str | None,
+    errors: str
+) -> SeriesWrapper:
+    """Snap a series to the nearest integer within `tol`, and then round
+    any remaining results according to the given rule.  Reject any outputs
+    that are not integer-like by the end of this process.
+    """
+    # if rounding to nearest, don't bother applying tolerance
+    nearest = (
+        "half_floor", "half_ceiling", "half_down", "half_up", "half_even"
+    )
+    if rule in nearest:
+        return round_generic(series, rule=rule)
+
+    # apply tolerance & check for non-integer results
+    if tol or rule is None:
+        rounded = round_generic(series, rule="half_even")
+        outside = ~series.within_tol(rounded, tol=tol)
+        if tol:
+            element_type = series.element_type
+            series = series.where(outside.series, rounded.series)
+            series.element_type = element_type
+
+        # check for non-integer (ignore if rounding in next step)
+        if rule is None and outside.any():
+            if errors == "coerce":
+                series = round_generic(series, "down")
+            else:
+                raise ValueError(
+                    f"precision loss exceeds tolerance {float(tol):g} at "
+                    f"index {shorten_list(outside[outside].index.values)}"
+                )
+
+    # round to final result
+    if rule:
+        series = round_generic(series, rule=rule)
+
+    return series

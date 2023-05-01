@@ -147,7 +147,7 @@ def pandas_timestamp_to_integer(
 
 
 @to_integer.overload("datetime[python]")
-def to_integer(
+def python_datetime_to_integer(
     series: SeriesWrapper,
     dtype: types.AtomicType,
     unit: str,

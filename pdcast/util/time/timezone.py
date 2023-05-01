@@ -119,9 +119,9 @@ def localize_pandas_timestamp_scalar(
     return dt.tz_convert(tz)
 
 
-# ######################
-# ####    PYTHON    ####
-# ######################
+######################
+####    PYTHON    ####
+######################
 
 
 # @localize.overload("datetime[python]")

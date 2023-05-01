@@ -3,9 +3,15 @@
 import re  # normal python regex for compatibility with pd.Series.str.extract
 from functools import partial
 
+import dateutil
+import numpy as np
+import pandas as pd
+import pytz
+
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.util.round import Tolerance
+from pdcast.util import time
 
 from .base import (
     cast, generic_to_boolean, generic_to_complex
@@ -139,44 +145,153 @@ def string_to_complex(
     )
 
 
-# @cast.overload("string", "datetime")
-# def string_to_datetime(
-#     series: SeriesWrapper,
-#     dtype: types.AtomicType,
-#     **unused
-# ) -> SeriesWrapper:
-#     """Convert string data into a datetime data type."""
-#     return dtype.from_string(series, dtype=dtype, **unused)
+@cast.overload("string", "datetime")
+def string_to_datetime(
+    series: SeriesWrapper,
+    dtype: types.AtomicType,
+    errors: str,
+    **unused
+) -> SeriesWrapper:
+    """Convert string data into a datetime data type."""
+    # NOTE: because this type has no associated scalars, it will never be given
+    # as the result of a detect_type() operation.  It can only be specified
+    # manually, as the target of a resolve_type() call.
+
+    last_err = None
+    for candidate in dtype.larger:
+        try:
+            return candidate.from_string(series, errors="raise", **unused)
+        except OverflowError as err:
+            last_err = err
+
+    # every candidate overflows - pick the last one and coerce
+    if errors == "coerce":
+        return cast(
+            series,
+            dtype,
+            errors=errors,
+            **unused
+        )
+    raise last_err
 
 
-# @cast.overload("string", "timedelta")
-# def string_to_timedelta(
-#     series: SeriesWrapper,
-#     dtype: types.AtomicType,
-#     unit: str,
-#     step_size: int,
-#     since: Epoch,
-#     as_hours: bool,
-#     errors: str,
-#     **unused
-# ) -> SeriesWrapper:
-#     """Convert string data into a timedelta representation."""
-#     # 2-step conversion: str -> int, int -> timedelta
-#     transfer_type = resolve.resolve_type("int[python]")
-#     series = series.apply_with_errors(
-#         partial(timedelta_string_to_ns, as_hours=as_hours, since=since),
-#         errors=errors,
-#         element_type=transfer_type
-#     )
-#     return transfer_type.to_timedelta(
-#         series,
-#         dtype=dtype,
-#         unit="ns",
-#         step_size=1,
-#         since=since,
-#         errors=errors,
-#         **unused
-#     )
+@cast.overload("string", "datetime[pandas]")
+def string_to_pandas_timestamp(
+    series: SeriesWrapper,
+    dtype: types.AtomicType,
+    tz: pytz.BaseTzInfo,
+    format: str,
+    naive_tz: pytz.BaseTzInfo,
+    day_first: bool,
+    year_first: bool,
+    errors: str,
+    **unused
+) -> SeriesWrapper:
+    """Convert datetime strings into pandas Timestamps."""
+    # reconcile `tz` argument with timezone attached to dtype, if given
+    if tz:
+        dtype = dtype.replace(tz=tz)
+
+    # configure kwargs for pd.to_datetime
+    utc = naive_tz == pytz.utc or naive_tz is None and dtype.tz == pytz.utc
+    kwargs = {
+        "dayfirst": day_first,
+        "yearfirst": year_first,
+        "utc": utc,
+        "errors": "raise" if errors == "ignore" else errors
+    }
+    if format:
+        kwargs |= {"format": format, "exact": False}
+
+    # NOTE: pd.to_datetime() can throw several kinds of errors, some of which
+    # are ambiguous.  For simplicity, we catch and re-raise these only as
+    # ValueErrors or OverflowErrors.
+    try:
+        result = pd.to_datetime(series.series, **kwargs)
+
+    # exception 1: outside pd.Timestamp range, but within datetime.datetime
+    except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime as err:
+        raise OverflowError(str(err)) from None  # truncate stack
+
+    # exception 2: bad string or outside datetime.datetime range
+    except dateutil.parser.ParserError as err:
+        raise time.filter_dateutil_parser_error(err) from None
+
+    # account for missing values introduced during coercion
+    if errors == "coerce":
+        isna = result.isna()
+        series.hasnans = series.hasnans or isna.any()
+        result = result[~isna]
+
+    # localize to final timezone
+    try:
+        # NOTE: if utc=False and there are mixed timezones and/or mixed
+        # aware/naive strings in the input series, the output of
+        # pd.to_datetime() could be malformed.
+        if utc:
+            if dtype.tz != pytz.utc:
+                result = result.dt.tz_convert(dtype.tz)
+        else:
+            # homogenous - either naive or consistent timezone
+            if pd.api.types.is_datetime64_ns_dtype(result):
+                if not result.dt.tz:  # naive
+                    if not naive_tz:  # localize directly
+                        result = result.dt.tz_localize(dtype.tz)
+                    else:  # localize, then convert
+                        result = result.dt.tz_localize(naive_tz)
+                        result = result.dt.tz_convert(dtype.tz)
+                else:  # aware
+                    result = result.dt.tz_convert(dtype.tz)
+
+            # non-homogenous - either mixed timezone or mixed aware/naive
+            else:  # NOTE: pd.to_datetime() sacrifices ns precision here
+                localize = partial(
+                    time.localize_pydatetime_scalar,
+                    tz=dtype.tz,
+                    naive_tz=naive_tz
+                )
+                # NOTE: np.frompyfunc() implicitly casts to pd.Timestamp
+                result = np.frompyfunc(localize, 1, 1)(result)
+
+    # exception 3: overflow induced by timezone localization
+    except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime as err:
+        raise OverflowError(str(err)) from None
+
+    return SeriesWrapper(
+        result,
+        hasnans=series.hasnans,
+        element_type=dtype
+    )
+
+
+
+@cast.overload("string", "timedelta")
+def string_to_timedelta(
+    series: SeriesWrapper,
+    dtype: types.AtomicType,
+    unit: str,
+    step_size: int,
+    since: time.Epoch,
+    as_hours: bool,
+    errors: str,
+    **unused
+) -> SeriesWrapper:
+    """Convert string data into a timedelta representation."""
+    # 2-step conversion: str -> int, int -> timedelta
+    series = series.apply_with_errors(
+        partial(time.timedelta_string_to_ns, as_hours=as_hours, since=since),
+        errors=errors,
+        element_type=int
+    )
+    return cast(
+        series,
+        dtype,
+        unit="ns",
+        step_size=1,
+        since=since,
+        errors=errors,
+        **unused
+    )
 
 
 #######################
@@ -192,37 +307,6 @@ complex_pattern = re.compile(
 
 # import regex as re  # using alternate python regex engine
 
-
-
-# TODO: DATETIME SUPERTYPE
-
-
-# # NOTE: because this type has no associated scalars, it will never be given
-# # as the result of a detect_type() operation.  It can only be specified
-# # manually, as the target of a resolve_type() call.
-
-# def from_string(
-#     self,
-#     series: wrapper.SeriesWrapper,
-#     errors: str,
-#     **unused
-# ) -> wrapper.SeriesWrapper:
-#     """Convert string data into an arbitrary datetime data type."""
-#     last_err = None
-#     for candidate in self.larger:
-#         try:
-#             return candidate.from_string(series, errors="raise", **unused)
-#         except OverflowError as err:
-#             last_err = err
-
-#     # every representation overflows - pick the last one and coerce
-#     if errors == "coerce":
-#         return candidate.from_string(
-#             series,
-#             errors=errors,
-#             **unused
-#         )
-#     raise last_err
 
 
 
@@ -260,102 +344,6 @@ complex_pattern = re.compile(
 #         tz=tz,
 #         errors=errors,
 #         **unused
-#     )
-
-
-
-# TODO: PANDAS TIMESTAMP
-
-
-# def from_string(
-#     self,
-#     series: wrapper.SeriesWrapper,
-#     tz: pytz.BaseTzInfo,
-#     format: str,
-#     naive_tz: pytz.BaseTzInfo,
-#     day_first: bool,
-#     year_first: bool,
-#     errors: str,
-#     **unused
-# ) -> wrapper.SeriesWrapper:
-#     """Convert datetime strings into pandas Timestamps."""
-#     # reconcile `tz` argument with timezone attached to dtype, if given
-#     dtype = self
-#     if tz:
-#         dtype = dtype.replace(tz=tz)
-
-#     # configure kwargs for pd.to_datetime
-#     utc = naive_tz == pytz.utc or naive_tz is None and dtype.tz == pytz.utc
-#     kwargs = {
-#         "dayfirst": day_first,
-#         "yearfirst": year_first,
-#         "utc": utc,
-#         "errors": "raise" if errors == "ignore" else errors
-#     }
-#     if format:
-#         kwargs |= {"format": format, "exact": False}
-
-#     # NOTE: pd.to_datetime() can throw lots of different exceptions, not
-#     # all of which are immediately clear.  For the sake of simplicity, we
-#     # catch and re-raise these only as ValueErrors or OverflowErrors.
-#     # Raising from None truncates stack traces, which can get quite long.
-#     try:
-#         result = pd.to_datetime(series.series, **kwargs)
-
-#     # exception 1: outside pd.Timestamp range, but within datetime.datetime
-#     except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime as err:
-#         raise OverflowError(str(err)) from None  # truncate stack
-
-#     # exception 2: bad string or outside datetime.datetime range
-#     except dateutil.parser.ParserError as err:  # ambiguous
-#         raise filter_dateutil_parser_error(err) from None  # truncate stack
-
-#     # account for missing values introduced during error coercion
-#     hasnans = series.hasnans
-#     if errors == "coerce":
-#         isna = result.isna()
-#         hasnans = isna.any()
-#         result = result[~isna]
-
-#     # localize to final timezone
-#     try:
-#         # NOTE: if utc=False and there are mixed timezones and/or mixed
-#         # aware/naive strings in the input series, the output of
-#         # pd.to_datetime() could be malformed.
-#         if utc:  # simple - convert to final tz
-#             if dtype.tz != pytz.utc:
-#                 result = result.dt.tz_convert(dtype.tz)
-#         else:
-#             # homogenous - either naive or consistent timezone
-#             if pd.api.types.is_datetime64_ns_dtype(result):
-#                 if not result.dt.tz:  # naive
-#                     if not naive_tz:  # localize directly
-#                         result = result.dt.tz_localize(dtype.tz)
-#                     else:  # localize, then convert
-#                         result = result.dt.tz_localize(naive_tz)
-#                         result = result.dt.tz_convert(dtype.tz)
-#                 else:  # aware
-#                     result = result.dt.tz_convert(dtype.tz)
-
-#             # non-homogenous - either mixed timezone or mixed aware/naive
-#             else:
-#                 # NOTE: pd.to_datetime() sacrifices ns precision here
-#                 localize = partial(
-#                     localize_pydatetime,  # TODO: use localize()
-#                     tz=dtype.tz,
-#                     naive_tz=naive_tz
-#                 )
-#                 # NOTE: np.frompyfunc() implicitly casts to pd.Timestamp
-#                 result = np.frompyfunc(localize, 1, 1)(result)
-
-#     # exception 3: overflow induced by timezone localization
-#     except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime as err:
-#         raise OverflowError(str(err)) from None
-
-#     return wrapper.SeriesWrapper(
-#         result,
-#         hasnans=hasnans,
-#         element_type=dtype
 #     )
 
 

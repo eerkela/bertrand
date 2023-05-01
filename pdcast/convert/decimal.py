@@ -5,15 +5,12 @@ import pytz
 
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
-from pdcast.patch.round import snap_round  # TODO: move to snap/make internal
 from pdcast.util.error import shorten_list
 from pdcast.util.round import Tolerance
-from pdcast.util.time import (
-    as_ns, convert_unit, Epoch, round_months_to_ns, round_years_to_ns
-)
+from pdcast.util import time
 
 from .base import (
-    cast, generic_to_boolean, generic_to_integer
+    cast, generic_to_boolean, generic_to_integer, snap_round
 )
 
 
@@ -159,7 +156,7 @@ def decimal_to_datetime(
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
-    since: Epoch,
+    since: time.Epoch,
     tz: pytz.BaseTzInfo,
     errors: str,
     **unused
@@ -182,7 +179,7 @@ def decimal_to_datetime(
         dtype,
         unit="ns",
         step_size=1,
-        since=Epoch("utc"),
+        since=time.Epoch("utc"),
         tz=tz,
         errors=errors,
         **unused
@@ -195,7 +192,7 @@ def decimal_to_timedelta(
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
-    since: Epoch,
+    since: time.Epoch,
     errors: str,
     **unused
 ) -> SeriesWrapper:
@@ -227,23 +224,23 @@ def to_ns(
     series: SeriesWrapper,
     unit: str,
     step_size: int,
-    since: Epoch
+    since: time.Epoch
 ) -> SeriesWrapper:
     """Convert an integer number of time units into nanoseconds from a given
     epoch.
     """
     # round fractional inputs to the nearest nanosecond
     if unit == "Y":
-        result = round_years_to_ns(series.series * step_size, since=since)
+        result = time.round_years_to_ns(series.series * step_size, since=since)
     elif unit == "M":
-        result = round_months_to_ns(series.series * step_size, since=since)
+        result = time.round_months_to_ns(series.series * step_size, since=since)
     else:
         as_pyint = np.frompyfunc(int, 1, 1)
         result = series.series
         if step_size != 1:
             result *= step_size
         if unit != "ns":
-            result *= as_ns[unit]
+            result *= time.as_ns[unit]
         result = as_pyint(result)
 
     return SeriesWrapper(result, hasnans=series.hasnans, element_type=int)
