@@ -112,7 +112,7 @@ class catch_ignore(BaseDecorator):
 @attachable
 @columnwise
 @extension_func
-@dispatch(depth=2)  # dispatch on data and dtype
+@dispatch(depth=2, cache_size=128, wrap_adapters=False)
 def cast(
     series: Any,
     dtype: Optional[type_specifier] = None,
@@ -240,13 +240,8 @@ def to_string(
 # observed data
 
 
-# wildcard = (
-#     "bool, int, float, complex, decimal, datetime, timedelta, string, object"
-# )
-
-
 wildcard = (
-    "bool, int, float, complex, decimal, string, object"
+    "bool, int, float, complex, decimal, datetime, timedelta, string, object"
 )
 
 
@@ -325,28 +320,28 @@ def generic_to_decimal(
     return series.astype(dtype, errors=errors)
 
 
-# @cast.overload(wildcard, "datetime")
-# def generic_to_datetime(
-#     series: SeriesWrapper,
-#     dtype: types.AtomicType,
-#     **unused
-# ) -> pd.Series:
-#     """Convert arbitrary data to datetime representation."""
-#     # 2-step conversion: X -> decimal, decimal -> datetime
-#     series = cast(series, "decimal", errors="raise")
-#     return cast(series, dtype, **unused)
+@cast.overload(wildcard, "datetime")
+def generic_to_datetime(
+    series: SeriesWrapper,
+    dtype: types.AtomicType,
+    **unused
+) -> pd.Series:
+    """Convert arbitrary data to datetime representation."""
+    # 2-step conversion: X -> decimal, decimal -> datetime
+    series = cast(series, "decimal", errors="raise")
+    return cast(series, dtype, **unused)
 
 
-# @cast.overload(wildcard, "timedelta")
-# def generic_to_timedelta(
-#     series: SeriesWrapper,
-#     dtype: types.AtomicType,
-#     **unused
-# ) -> pd.Series:
-#     """Convert arbitrary data to timedelta representation."""
-#     # 2-step conversion: X -> decimal, decimal -> timedelta
-#     series = cast(series, "decimal", errors="raise")
-#     return cast(series, dtype=dtype, **unused)
+@cast.overload(wildcard, "timedelta")
+def generic_to_timedelta(
+    series: SeriesWrapper,
+    dtype: types.AtomicType,
+    **unused
+) -> pd.Series:
+    """Convert arbitrary data to timedelta representation."""
+    # 2-step conversion: X -> decimal, decimal -> timedelta
+    series = cast(series, "decimal", errors="raise")
+    return cast(series, dtype=dtype, **unused)
 
 
 @cast.overload(wildcard, "string")

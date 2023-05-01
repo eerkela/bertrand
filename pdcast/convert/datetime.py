@@ -11,12 +11,6 @@ from .base import (
 )
 
 
-
-#######################
-####    BOOLEAN    ####
-#######################
-
-
 @to_boolean.overload("datetime")
 def datetime_to_boolean(
     series: SeriesWrapper,
@@ -52,11 +46,6 @@ def datetime_to_boolean(
         errors=errors,
         **unused
     )
-
-
-#######################
-####    INTEGER    ####
-#######################
 
 
 @to_integer.overload("datetime[numpy]")
@@ -194,11 +183,6 @@ def to_integer(
     )
 
 
-#####################
-####    FLOAT    ####
-#####################
-
-
 @to_float.overload("datetime")
 def datetime_to_float(
     series: SeriesWrapper,
@@ -250,11 +234,6 @@ def datetime_to_float(
     )
 
 
-#######################
-####    COMPLEX    ####
-#######################
-
-
 @to_complex.overload("datetime")
 def datetime_to_complex(
     series: SeriesWrapper,
@@ -293,11 +272,6 @@ def datetime_to_complex(
         errors=errors,
         **unused
     )
-
-
-#######################
-####    DECIMAL    ####
-#######################
 
 
 @to_decimal.overload("datetime")
@@ -347,11 +321,6 @@ def datetime_to_decimal(
             series.series /= step_size
 
     return series
-
-
-########################
-####    DATETIME    ####
-########################
 
 
 @to_datetime.overload("datetime")
@@ -469,11 +438,6 @@ def pydatetime_to_datetime(
             return series_type.tz_convert(series, dtype.tz)
 
     return to_datetime.generic(series, dtype=dtype, tz=tz, **unused)
-
-
-#########################
-####    TIMEDELTA    ####
-#########################
 
 
 @to_timedelta.overload("datetime")

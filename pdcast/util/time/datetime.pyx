@@ -65,16 +65,17 @@ cdef object py_naive_utc = datetime.datetime.utcfromtimestamp(0)
 cdef object py_aware_utc = pytz.timezone("UTC").localize(py_naive_utc)
 
 
-def ns_to_pydatetime(object ns, object tz = None) -> datetime.datetime:
+def ns_to_pydatetime(ns, tz: pytz.BaseTzInfo = None) -> datetime.datetime:
     """Convert a nanosecond offset from UTC into a properly-localized
     `datetime.datetime` object.
     """
-    cdef object offset = datetime.timedelta(microseconds=ns // as_ns["us"])
+    offset = datetime.timedelta(microseconds=int(ns // as_ns["us"]))
     if tz is None:
         return py_naive_utc + offset
     if tz == pytz.utc:
         return py_aware_utc + offset
     return (py_aware_utc + offset).astimezone(tz)
+
 
 def pydatetime_to_ns(object date, object tz = None) -> int:
     """Convert a python datetime into a nanosecond offset from UTC."""

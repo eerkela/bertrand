@@ -129,7 +129,7 @@ cdef class SeriesWrapper:
         self,
         series: pd.Series,
         hasnans: bool = None,
-        element_type: types.BaseType = None,
+        element_type: type_specifier = None,
     ):
         self.series = series
         self.hasnans = hasnans

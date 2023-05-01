@@ -8,11 +8,6 @@ from pdcast.util.error import shorten_list
 from .base import cast, generic_to_float
 
 
-#######################
-####    BOOLEAN    ####
-#######################
-
-
 @cast.overload("complex", "bool")
 def complex_to_boolean(
     series: SeriesWrapper,
@@ -39,11 +34,6 @@ def complex_to_boolean(
         errors=errors,
         **unused
     )
-
-
-#######################
-####    INTEGER    ####
-#######################
 
 
 @cast.overload("complex", "int")
@@ -76,11 +66,6 @@ def complex_to_integer(
     )
 
 
-#####################
-####    FLOAT    ####
-#####################
-
-
 @cast.overload("complex", "float")
 def complex_to_float(
     series: SeriesWrapper,
@@ -111,11 +96,6 @@ def complex_to_float(
         errors=errors,
         **unused
     )
-
-
-#######################
-####    DECIMAL    ####
-#######################
 
 
 @cast.overload("complex", "decimal")

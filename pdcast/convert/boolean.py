@@ -18,25 +18,25 @@ def boolean_to_decimal(
     return series
 
 
-# @cast.overload("bool", "datetime")
-# def boolean_to_datetime(
-#     series: SeriesWrapper,
-#     dtype: types.ScalarType,
-#     **unused
-# ) -> SeriesWrapper:
-#     """Convert boolean data to a datetime format."""
-#     # 2-step conversion: bool -> int, int -> datetime
-#     series = cast(series, "int", downcast=False, errors="raise")
-#     return cast(series, dtype, **unused)
+@cast.overload("bool", "datetime")
+def boolean_to_datetime(
+    series: SeriesWrapper,
+    dtype: types.ScalarType,
+    **unused
+) -> SeriesWrapper:
+    """Convert boolean data to a datetime format."""
+    # 2-step conversion: bool -> int, int -> datetime
+    series = cast(series, "int", downcast=False, errors="raise")
+    return cast(series, dtype, **unused)
 
 
-# @cast.overload("bool", "timedelta")
-# def boolean_to_timedelta(
-#     series: SeriesWrapper,
-#     dtype: types.ScalarType,
-#     **unused
-# ) -> SeriesWrapper:
-#     """Convert boolean data to a timedelta format."""
-#     # 2-step conversion: bool -> int, int -> timedelta
-#     series = cast(series, "int", downcast=False, errors="raise")
-#     return cast(series, dtype=dtype, **unused)
+@cast.overload("bool", "timedelta")
+def boolean_to_timedelta(
+    series: SeriesWrapper,
+    dtype: types.ScalarType,
+    **unused
+) -> SeriesWrapper:
+    """Convert boolean data to a timedelta format."""
+    # 2-step conversion: bool -> int, int -> timedelta
+    series = cast(series, "int", downcast=False, errors="raise")
+    return cast(series, dtype, **unused)

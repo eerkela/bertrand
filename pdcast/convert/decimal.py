@@ -1,10 +1,16 @@
 """This module contains dispatched cast() implementations for decimal data."""
 # pylint: disable=unused-argument
+import numpy as np
+import pytz
+
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.patch.round import snap_round  # TODO: move to snap/make internal
-from pdcast.util.round import Tolerance
 from pdcast.util.error import shorten_list
+from pdcast.util.round import Tolerance
+from pdcast.util.time import (
+    as_ns, convert_unit, Epoch, round_months_to_ns, round_years_to_ns
+)
 
 from .base import (
     cast, generic_to_boolean, generic_to_integer
@@ -147,89 +153,97 @@ def decimal_to_decimal(
     return series.astype(dtype, errors=errors)
 
 
-# @cast.overload("decimal", "datetime")
-# def decimal_to_datetime(
-#     series: SeriesWrapper,
-#     dtype: types.AtomicType,
-#     unit: str,
-#     step_size: int,
-#     since: Epoch,
-#     tz: pytz.BaseTzInfo,
-#     errors: str,
-#     **unused
-# ) -> SeriesWrapper:
-#     """Convert integer data to a datetime data type."""
-#     # round fractional inputs to the nearest nanosecond
-#     if unit == "Y":
-#         ns = round_years_to_ns(series.series * step_size, since=since)
-#     elif unit == "M":
-#         ns = round_months_to_ns(series.series * step_size, since=since)
-#     else:
-#         ns = series.series * step_size * as_ns[unit]
-#     ns = np.frompyfunc(int, 1, 1)(ns).astype("O", copy=False)
+@cast.overload("decimal", "datetime")
+def decimal_to_datetime(
+    series: SeriesWrapper,
+    dtype: types.AtomicType,
+    unit: str,
+    step_size: int,
+    since: Epoch,
+    tz: pytz.BaseTzInfo,
+    errors: str,
+    **unused
+) -> SeriesWrapper:
+    """Convert integer data to a datetime data type."""
+    # 2-step conversion: decimal -> ns, ns -> datetime
+    series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
-#     # account for non-utc epoch
-#     if since:
-#         ns += since.offset
+    # account for non-utc epoch
+    if since:
+        series += since.offset
+        series.element_type = int
 
-#     series = SeriesWrapper(
-#         ns,
-#         hasnans=series.hasnans,
-#         element_type=resolve.resolve_type("int[python]")
-#     )
+    # check for overflow and upcast if applicable
+    series, dtype = series.boundscheck(dtype, errors=errors)
 
-#     # check for overflow and upcast if applicable
-#     series, dtype = series.boundscheck(dtype, errors=errors)
-
-#     # convert to final representation
-#     return dtype.from_ns(
-#         series,
-#         dtype=dtype,
-#         unit=unit,
-#         step_size=step_size,
-#         since=since,
-#         tz=tz,
-#         errors=errors,
-#         **unused
-#     )
+    # convert to final representation
+    return cast(
+        series,
+        dtype,
+        unit="ns",
+        step_size=1,
+        since=Epoch("utc"),
+        tz=tz,
+        errors=errors,
+        **unused
+    )
 
 
-# @to_timedelta.overload("decimal")
-# def decimal_to_timedelta(
-#     series: SeriesWrapper,
-#     dtype: types.AtomicType,
-#     unit: str,
-#     step_size: int,
-#     since: Epoch,
-#     errors: str,
-#     **unused
-# ) -> SeriesWrapper:
-#     """Convert integer data to a timedelta data type."""
-#     # round fractional inputs to the nearest nanosecond
-#     if unit == "Y":  # account for leap days
-#         ns = round_years_to_ns(series.series * step_size, since=since)
-#     elif unit == "M":  # account for irregular lengths
-#         ns = round_months_to_ns(series.series * step_size, since=since)
-#     else:
-#         cast_to_int = np.frompyfunc(int, 1, 1)
-#         ns = cast_to_int(series.series * step_size * as_ns[unit])
+@cast.overload("decimal", "timedelta")
+def decimal_to_timedelta(
+    series: SeriesWrapper,
+    dtype: types.AtomicType,
+    unit: str,
+    step_size: int,
+    since: Epoch,
+    errors: str,
+    **unused
+) -> SeriesWrapper:
+    """Convert integer data to a timedelta data type."""
+    # 2-step conversion: decimal -> ns, ns -> timedelta
+    series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
-#     series = SeriesWrapper(
-#         ns,
-#         hasnans=series.hasnans,
-#         element_type=resolve.resolve_type("int[python]")
-#     )
+    # check for overflow and upcast if necessary
+    series, dtype = series.boundscheck(dtype, errors=errors)
 
-#     # check for overflow and upcast if necessary
-#     series, dtype = series.boundscheck(dtype, errors=errors)
+    # convert to final representation
+    return cast(
+        series,
+        dtype,
+        unit="ns",
+        step_size=1,
+        since=since,
+        errors=errors,
+        **unused,
+    )
 
-#     # convert to final representation
-#     return dtype.from_ns(
-#         series,
-#         dtype=dtype,
-#         unit=unit,
-#         step_size=step_size,
-#         since=since,
-#         errors=errors,
-#         **unused,
-#     )
+
+#######################
+####    PRIVATE    ####
+#######################
+
+
+def to_ns(
+    series: SeriesWrapper,
+    unit: str,
+    step_size: int,
+    since: Epoch
+) -> SeriesWrapper:
+    """Convert an integer number of time units into nanoseconds from a given
+    epoch.
+    """
+    # round fractional inputs to the nearest nanosecond
+    if unit == "Y":
+        result = round_years_to_ns(series.series * step_size, since=since)
+    elif unit == "M":
+        result = round_months_to_ns(series.series * step_size, since=since)
+    else:
+        as_pyint = np.frompyfunc(int, 1, 1)
+        result = series.series
+        if step_size != 1:
+            result *= step_size
+        if unit != "ns":
+            result *= as_ns[unit]
+        result = as_pyint(result)
+
+    return SeriesWrapper(result, hasnans=series.hasnans, element_type=int)
