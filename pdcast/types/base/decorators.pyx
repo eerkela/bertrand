@@ -19,32 +19,29 @@ from .atomic import ScalarType, AtomicType
 # @backend("int8", "numpy")
 
 
-# This also allows `cond` to avoid executing the class body, which might raise
-# errors.
-
 
 def register(class_: type = None, *, cond: bool = True):
     """Validate an AtomicType definition and add it to the registry.
 
     Note: Any decorators above this one will be ignored during validation.
     """
-    def register_decorator(_class_):
-        if not issubclass(_class_, ScalarType):
+    def register_decorator(class_def):
+        if not issubclass(class_def, ScalarType):
             raise TypeError(
                 "`@register` can only be applied to AtomicType and "
                 "AdapterType subclasses"
             )
         if cond:
-            AtomicType.registry.add(_class_)
+            AtomicType.registry.add(class_def)
 
-        return _class_
+        return class_def
 
     if class_ is None:
         return register_decorator
     return register_decorator(class_)
 
 
-def generic(_class: type):
+def generic(class_: type):
     """Class decorator to mark generic AtomicType definitions.
 
     Generic types are backend-agnostic and act as wildcard containers for
@@ -55,21 +52,21 @@ def generic(_class: type):
     # NOTE: something like this would normally be handled using a decorating
     # class rather than a function.  Doing it this way (patching) has the
     # advantage of preserving the original type for issubclass() checks
-    if not issubclass(_class, AtomicType):
+    if not issubclass(class_, AtomicType):
         raise TypeError(f"`@generic` can only be applied to AtomicTypes")
 
     # verify init is empty.  NOTE: cython __init__ is not introspectable.
     if (
-        _class.__init__ != AtomicType.__init__ and
-        inspect.signature(_class).parameters
+        class_.__init__ != AtomicType.__init__ and
+        inspect.signature(class_).parameters
     ):
         raise TypeError(
-            f"To be generic, {_class.__name__}.__init__() cannot "
+            f"To be generic, {class_.__qualname__}.__init__() cannot "
             f"have arguments other than self"
         )
 
     # remember original equivalents
-    cdef dict orig = {k: getattr(_class, k) for k in ("instance", "resolve")}
+    cdef dict orig = {k: getattr(class_, k) for k in ("instance", "resolve")}
 
     @classmethod
     def instance(cls, backend: str = None, *args, **kwargs) -> AtomicType:
@@ -99,7 +96,7 @@ def generic(_class: type):
 
     @classmethod
     def register_backend(cls, backend: str):
-        # NOTE: in this context, cls is an alias for _class
+        # NOTE: in this context, cls is an alias for class_
         def decorator(specific: type):
             if not issubclass(specific, AtomicType):
                 raise TypeError(
@@ -125,8 +122,8 @@ def generic(_class: type):
 
             # inherit generic attributes
             specific._is_generic = False
-            specific.name = cls.name
             specific._generic = cls
+            specific.name = cls.name
             cls._backends[backend] = specific
             specific.registry.flush()
             return specific
@@ -134,18 +131,15 @@ def generic(_class: type):
         return decorator
 
     # overwrite class attributes
-    _class._is_generic = True
-    _class._backend = None
+    class_._is_generic = True
+    class_._backend = None
 
     # patch in new methods
     loc = locals()
     for k in orig:
-        setattr(_class, k, loc[k])
-    _class.register_backend = register_backend
-    return _class
-
-
-
+        setattr(class_, k, loc[k])
+    class_.register_backend = register_backend
+    return class_
 
 
 def subtype(supertype: type):
@@ -153,8 +147,9 @@ def subtype(supertype: type):
     if not issubclass(supertype, AtomicType):
         raise TypeError(f"`supertype` must be a subclass of AtomicType")
 
-    def decorator(class_def: type):
-        if not issubclass(class_def, AtomicType):
+    def decorator(subtype_: type):
+        """Modify a subtype, linking it to a parent type."""
+        if not issubclass(subtype_, AtomicType):
             raise TypeError(
                 f"`@subtype()` can only be applied to AtomicType definitions"
             )
@@ -162,24 +157,24 @@ def subtype(supertype: type):
         # break circular references
         ref = supertype
         while ref is not None:
-            if ref is class_def:
+            if ref is subtype_:
                 raise TypeError(
                     "Type hierarchy cannot contain circular references"
                 )
             ref = ref._parent
 
         # check type is not already registered
-        if class_def._parent:
+        if subtype_._parent:
             raise TypeError(
                 f"AtomicTypes can only be registered to one supertype at a "
-                f"time (`{class_def.__name__}` is currently registered to "
-                f"`{class_def._parent.__name__}`)"
+                f"time: '{subtype_.__qualname__}'' is currently registered to "
+                f"'{subtype_._parent.__qualname__}'"
             )
 
         # overwrite class attributes
-        class_def._parent = supertype
-        supertype._children.add(class_def)
+        subtype_._parent = supertype
+        supertype._children.add(subtype_)
         AtomicType.registry.flush()
-        return class_def
+        return subtype_
 
     return decorator

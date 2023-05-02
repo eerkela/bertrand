@@ -11,7 +11,7 @@ cdef class BaseType:
 
 
 cdef class ScalarType(BaseType):
-    cdef readonly:
+    cdef:
         dict _kwargs
         str _slug
         long long _hash

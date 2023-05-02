@@ -25,11 +25,12 @@ from .base import generic, register
 # 0   2022-03-07 08:00:00
 # dtype: datetime64[ns]
 
+# -> remove naive_tz.  just have tz localize naive datetimes directly, and
+# convert those that are aware.  tz_convert() can be used from there.
+
+
 
 # TODO: PandasTimestampType.from_string cannot convert quarterly dates
-
-
-# TODO: from_ns, from_string go into util/time
 
 
 
@@ -117,8 +118,8 @@ class NumpyDatetime64Type(AtomicType, cache_size=64):
                 min_M8 = np.datetime64((-2**63 + 1 + 10956) // 7 + 1, "W")
                 max_M8 = np.datetime64((2**63 - 1 + 10956) // 7 , "W")
             elif unit == "D":
-                min_M8 = np.datetime64(-2**63 + 1 + 10956, "D")  # 10956 ??
-                max_M8 = np.datetime64(2**63 - 1, "D")  # unbiased ??
+                min_M8 = np.datetime64(-2**63 + 1 + 10956, "D")
+                max_M8 = np.datetime64(2**63 - 1, "D")
             else:
                 min_M8 = np.datetime64(-2**63 + 1, unit)
                 max_M8 = np.datetime64(2**63 - 1, unit)
@@ -213,8 +214,8 @@ class PandasTimestampType(AtomicType, cache_size=64):
     itemsize = 8
     na_value = pd.NaT
     type_def = pd.Timestamp
-    min = pd.Timestamp.min.value + 14 * time.as_ns["h"]  # UTC-14 most ahead
-    max = pd.Timestamp.max.value - 12 * time.as_ns["h"]  # UTC+12 most behind
+    min = pd.Timestamp.min.value + 14 * 3600 * 10**9  # UTC-14 most ahead
+    max = pd.Timestamp.max.value - 12 * 3600 * 10**9  # UTC+12 most behind
 
     def __init__(self, tz: datetime.tzinfo | str = None):
         tz = time.tz(tz)

@@ -10,6 +10,7 @@ import pytz
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.util.round import round_div, Tolerance
+from pdcast.util.string import int_to_base
 from pdcast.util import time
 
 from .base import (
@@ -450,32 +451,6 @@ def integer_to_string(
 #######################
 ####    PRIVATE    ####
 #######################
-
-
-base_lookup = np.array(
-    [chr(ord("0") + i) for i in range(10)] + 
-    [chr(ord("A") + i) for i in range(26)]
-)
-
-
-def int_to_base(val: str, base: int):
-    """Convert an integer into a string with the given base."""
-    if not val:
-        return "0"
-
-    negative = val < 0
-    if negative:
-        val = abs(val)
-
-    chars = []
-    while val:
-        chars.append(base_lookup[val % base])
-        val //= base
-
-    result = "".join(chars[::-1])
-    if negative:
-        result = "-" + result
-    return result
 
 
 def to_ns(

@@ -47,10 +47,6 @@ from .wrapper import SeriesWrapper
 #    overloaded specifically for integers
 
 
-# TODO: ambiguities are always solved from left to right?
-# -> seems to be default behavior
-
-
 ######################
 ####    PUBLIC    ####
 ######################
@@ -497,7 +493,7 @@ class DispatchFunc(BaseDecorator):
             )
 
         # ensure final index is a subset of original index
-        if not series.index.difference(result.index).empty:
+        if not result.index.difference(series.index).empty:
             raise RuntimeError(
                 f"index mismatch in {self.__wrapped__.__name__}(): dispatched "
                 f"implementation for type {series.element_type} must return "

@@ -11,6 +11,7 @@ import pytz
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.util.round import Tolerance
+from pdcast.util.string import boolean_match
 from pdcast.util import time
 
 from .base import (
@@ -41,7 +42,7 @@ def string_to_boolean(
     # apply lookup function with specified errors
     series = series.apply_with_errors(
         partial(
-            boolean_apply,
+            boolean_match,
             lookup=lookup,
             ignore_case=ignore_case,
             fill=fill
@@ -160,7 +161,7 @@ def string_to_datetime(
     last_err = None
     for candidate in dtype.larger:
         try:
-            return candidate.from_string(series, errors="raise", **unused)
+            return cast(series, candidate, errors="raise", **unused)
         except OverflowError as err:
             last_err = err
 
@@ -246,7 +247,7 @@ def string_to_pandas_timestamp(
             # non-homogenous - either mixed timezone or mixed aware/naive
             else:  # NOTE: pd.to_datetime() sacrifices ns precision here
                 localize = partial(
-                    time.localize_pydatetime_scalar,
+                    time.timezone.localize_pydatetime_scalar,
                     tz=dtype.tz,
                     naive_tz=naive_tz
                 )
@@ -263,6 +264,78 @@ def string_to_pandas_timestamp(
         element_type=dtype
     )
 
+
+@cast.overload("string", "datetime[python]")
+def string_to_python_datetime(
+    series: SeriesWrapper,
+    dtype: types.ScalarType,
+    tz: pytz.BaseTzInfo,
+    naive_tz: pytz.BaseTzInfo,
+    day_first: bool,
+    year_first: bool,
+    format: str,
+    errors: str,
+    **unused
+) -> SeriesWrapper:
+    """Convert strings into datetime objects."""
+    # reconcile `tz` argument with timezone attached to dtype, if given
+    if tz:
+        dtype = dtype.replace(tz=tz)
+
+    # set up dateutil parserinfo
+    parser_info = dateutil.parser.parserinfo(
+        dayfirst=day_first,
+        yearfirst=year_first
+    )
+
+    # apply elementwise
+    return series.apply_with_errors(
+        partial(
+            time.string_to_pydatetime,
+            format=format,
+            parser_info=parser_info,
+            tz=dtype.tz,
+            naive_tz=naive_tz,
+            errors=errors
+        ),
+        errors=errors,
+        element_type=dtype
+    )
+
+
+@cast.overload("string", "datetime[numpy]")
+def from_string(
+    series: SeriesWrapper,
+    dtype: types.ScalarType,
+    format: str,
+    tz: pytz.BaseTzInfo,
+    errors: str,
+    **unused
+) -> SeriesWrapper:
+    """Convert ISO 8601 strings to a numpy datetime64 data type."""
+    if format and not time.is_iso_8601_format_string(format):
+        raise TypeError(
+            "np.datetime64 strings must be in ISO 8601 format"
+        )
+    if tz and tz != pytz.utc:
+        raise TypeError(
+            "np.datetime64 objects do not carry timezone information"
+        )
+
+    # 2-step conversion: string -> ns, ns -> datetime64
+    series = series.apply_with_errors(
+        time.iso_8601_to_ns,
+        errors=errors,
+        element_type=int
+    )
+    return cast(
+        series,
+        dtype,
+        format=format,
+        tz=tz,
+        errors=errors,
+        **unused
+    )
 
 
 @cast.overload("string", "timedelta")
@@ -302,89 +375,3 @@ def string_to_timedelta(
 complex_pattern = re.compile(
     r"\(?(?P<real>[+-]?[0-9.]+)(?P<imag>[+-][0-9.]+)?j?\)?"
 )
-
-
-
-# import regex as re  # using alternate python regex engine
-
-
-
-
-# TODO: NUMPY M8
-
-
-# def from_string(
-#     self,
-#     series: wrapper.SeriesWrapper,
-#     format: str,
-#     tz: pytz.BaseTzInfo,
-#     errors: str,
-#     **unused
-# ) -> wrapper.SeriesWrapper:
-#     """Convert ISO 8601 strings to a numpy datetime64 data type."""
-#     # 2-step conversion: string -> ns, ns -> datetime64
-#     if format and not is_iso_8601_format_string(format):
-#         raise TypeError(
-#             f"np.datetime64 strings must be in ISO 8601 format"
-#         )
-#     if tz and tz != pytz.utc:
-#         raise TypeError(
-#             "np.datetime64 objects do not carry timezone information"
-#         )
-
-#     transfer_type = resolve.resolve_type("int[python]")
-#     series = series.apply_with_errors(
-#         iso_8601_to_ns,
-#         errors=errors,
-#         element_type=transfer_type
-#     )
-#     return transfer_type.to_datetime(
-#         series,
-#         format=format,
-#         tz=tz,
-#         errors=errors,
-#         **unused
-#     )
-
-
-
-
-# TODO: PYTHON DATETIME
-
-
-# def from_string(
-#     self,
-#     series: wrapper.SeriesWrapper,
-#     tz: pytz.BaseTzInfo,
-#     naive_tz: pytz.BaseTzInfo,
-#     day_first: bool,
-#     year_first: bool,
-#     format: str,
-#     errors: str,
-#     **unused
-# ) -> wrapper.SeriesWrapper:
-#     """Convert strings into datetime objects."""
-#     # reconcile `tz` argument with timezone attached to dtype, if given
-#     dtype = self
-#     if tz:
-#         dtype = dtype.replace(tz=tz)
-
-#     # set up dateutil parserinfo
-#     parser_info = dateutil.parser.parserinfo(
-#         dayfirst=day_first,
-#         yearfirst=year_first
-#     )
-
-#     # apply elementwise
-#     return series.apply_with_errors(
-#         partial(
-#             string_to_pydatetime,
-#             format=format,
-#             parser_info=parser_info,
-#             tz=dtype.tz,
-#             naive_tz=naive_tz,
-#             errors=errors
-#         ),
-#         errors=errors,
-#         element_type=dtype
-#     )

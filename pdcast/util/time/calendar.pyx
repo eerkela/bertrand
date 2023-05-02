@@ -41,7 +41,7 @@ cdef unsigned short days_per_year = 365
 
 
 # raw days per month, starting from January 1st
-cdef np.ndarray days_per_month = np.array(
+cdef np.ndarray[np.uint8_t] days_per_month = np.array(
     [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
     dtype=np.uint8
 )

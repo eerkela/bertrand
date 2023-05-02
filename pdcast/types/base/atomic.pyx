@@ -631,6 +631,8 @@ cdef class AtomicType(ScalarType):
         """An :class:`AtomicType` representing the supertype that this type is
         registered to, if one exists.
 
+        Notes
+        -----
         The result of this accessor is cached between :class:`TypeRegistry`
         updates.
         """
@@ -681,6 +683,8 @@ cdef class AtomicType(ScalarType):
         """A :class:`CompositeType` containing every subtype that is
         currently registered to this type.
 
+        Notes
+        -----
         The result of this accessor is cached between :class:`TypeRegistry`
         updates.
         """

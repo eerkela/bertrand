@@ -5,6 +5,9 @@ from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.util.round import Tolerance
 from pdcast.util.time import Epoch
 
+import numpy as np
+import pandas as pd
+
 from .base import (
     to_boolean, to_integer, to_float, to_decimal, to_complex, to_datetime,
     to_timedelta

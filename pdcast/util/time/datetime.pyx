@@ -30,10 +30,8 @@ string_to_pydatetime()
 filter_dateutil_parser_error()
     Distinguish between malformed values and overflow in ``dateutil`` parser
     errors.
-
-timezone()
-    Resolve a time zone specifier, returning a corresponding ``pytz`` timezone.
 """
+from cpython cimport datetime
 import datetime
 import re
 
@@ -41,19 +39,23 @@ import dateutil
 import numpy as np
 cimport numpy as np
 import pandas as pd
-import pytz
-import tzlocal
-
-from pdcast.decorators.attachable import attachable
-from pdcast.decorators.dispatch import dispatch
-from pdcast.decorators.extension import extension_func
-
-from pdcast.util.type_hints import datetime_like
 
 from .calendar import date_to_days, days_in_month
-from .timedelta import pytimedelta_to_ns
+from .timedelta cimport pytimedelta_to_ns
 from .timezone import localize_pydatetime_scalar
 from .unit cimport as_ns
+
+
+################################
+####    PANDAS TIMESTAMP    ####
+################################
+
+
+cpdef inline object pandas_timestamp_to_ns(object date, object tz = None):
+    """Convert a pandas Timestamp into a nanosecond offset from UTC."""
+    if tz and not date.tzinfo:
+        date = date.tz_localize(tz)
+    return date.value
 
 
 ###############################
@@ -61,28 +63,43 @@ from .unit cimport as_ns
 ###############################
 
 
-cdef object py_naive_utc = datetime.datetime.utcfromtimestamp(0)
-cdef object py_aware_utc = pytz.timezone("UTC").localize(py_naive_utc)
+cdef datetime.datetime py_naive_utc = datetime.datetime.utcfromtimestamp(0)
+cdef datetime.datetime py_aware_utc = (
+    py_naive_utc.replace(tzinfo=datetime.timezone.utc)
+)
 
 
-def ns_to_pydatetime(ns, tz: pytz.BaseTzInfo = None) -> datetime.datetime:
+cpdef inline datetime.datetime ns_to_pydatetime(
+    object ns,
+    object tz = None
+):
     """Convert a nanosecond offset from UTC into a properly-localized
     `datetime.datetime` object.
     """
+    cdef datetime.timedelta offset
+
     offset = datetime.timedelta(microseconds=int(ns // as_ns["us"]))
     if tz is None:
         return py_naive_utc + offset
-    if tz == pytz.utc:
-        return py_aware_utc + offset
-    return (py_aware_utc + offset).astimezone(tz)
+
+    cdef datetime.datetime result = py_aware_utc + offset
+
+    return result if is_utc(tz) else result.astimezone(tz)
 
 
-def pydatetime_to_ns(object date, object tz = None) -> int:
+cpdef inline object pydatetime_to_ns(datetime.datetime date, object tz = None):
     """Convert a python datetime into a nanosecond offset from UTC."""
     if tz and not date.tzinfo:
         date = tz.localize(date)
-    date -= py_aware_utc if date.tzinfo else py_naive_utc
-    return pytimedelta_to_ns(date)
+
+    cdef datetime.timedelta result
+
+    if date.tzinfo:
+        result = date - py_aware_utc
+    else:
+        result = date - py_naive_utc
+
+    return pytimedelta_to_ns(result)
 
 
 ################################
@@ -90,11 +107,11 @@ def pydatetime_to_ns(object date, object tz = None) -> int:
 ################################
 
 
-def numpy_datetime64_to_ns(
+cpdef object numpy_datetime64_to_ns(
     object date,
     str unit = None,
     long int step_size = -1
-) -> int:
+):
     """Convert a numpy datetime64 into a nanosecond offset from UTC."""
     if unit is None or step_size < 0:
         unit, step_size = np.datetime_data(date)
@@ -168,14 +185,14 @@ cdef object iso_8601_format_pattern = build_iso_8601_strptime_format_regex()
 cdef object iso_8601_pattern = build_iso_8601_regex()
 
 
-def is_iso_8601_format_string(input_string: str) -> bool:
+cpdef inline bint is_iso_8601_format_string(str input_string):
     """Returns `True` if an strftime/strptime format string complies with the
     ISO 8601 standard.
     """
     return iso_8601_format_pattern.match(input_string) is not None
 
 
-def iso_8601_to_ns(str input_string) -> int:
+cpdef object iso_8601_to_ns(str input_string):
     """Convert a scalar ISO 8601 string into a nanosecond offset from the
     utc epoch ('1970-01-01 00:00:00+0000').
 
@@ -186,6 +203,7 @@ def iso_8601_to_ns(str input_string) -> int:
     match = iso_8601_pattern.match(input_string)
     if not match:
         raise ValueError(f"Invalid isoformat string: {repr(input_string)}")
+
     cdef dict parts = match.groupdict()
 
     # extract date components
@@ -216,21 +234,23 @@ def iso_8601_to_ns(str input_string) -> int:
     ):
         raise ValueError(f"invalid isoformat string {repr(input_string)}")
 
+    cdef object result
+
     # convert date to ns, add time component, and subtract utc offset
-    cdef object result = date_to_days(sign * year, month, day) * as_ns["D"]
+    result = date_to_days(sign * year, month, day) * as_ns["D"]
     result += hour * as_ns["h"] + minute * as_ns["m"] + int(second * as_ns["s"])
     result -= utc_sign * (utc_hour * as_ns["h"] + utc_minute * as_ns["m"])
     return result
 
 
-def string_to_pydatetime(
+cpdef datetime.datetime string_to_pydatetime(
     str input_string,
     str format = None,
     object parser_info = None,
     object tz = None,
     object naive_tz = None,
     str errors = "raise"
-) -> datetime.datetime:
+):
     """Convert a string to a python datetime object."""
     input_string = input_string.strip().lower()
     if input_string.startswith("-"):
@@ -238,7 +258,7 @@ def string_to_pydatetime(
             f"datetime.datetime objects cannot represent negative years"
         )
 
-    result = None
+    cdef datetime.datetime result = None
 
     # attempt to use format string if given
     if format is not None:
@@ -287,7 +307,7 @@ def string_to_pydatetime(
 cdef object parser_overflow_pattern = re.compile(r"out of range|must be in")
 
 
-def filter_dateutil_parser_error(err) -> Exception:
+cpdef Exception filter_dateutil_parser_error(Exception err):
     """Convenience function to differentiate dateutil overflow errors from
     those that are raised due to malformed values.
     """
@@ -295,3 +315,8 @@ def filter_dateutil_parser_error(err) -> Exception:
     if parser_overflow_pattern.search(err_msg):
         return OverflowError(err_msg)
     return ValueError(err_msg)
+
+
+cpdef inline bint is_utc(datetime.tzinfo tz):
+    """Check whether a tzinfo object corresponds to UTC."""
+    return tz.utcoffset(None) == datetime.timedelta(0)

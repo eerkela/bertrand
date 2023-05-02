@@ -18,6 +18,7 @@ timedelta_string_to_ns()
     Convert a vector of timedelta strings into an integer number of nanoseconds
     from the given epoch.
 """
+from cpython cimport datetime
 import datetime
 import decimal
 import re
@@ -26,7 +27,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-cimport pdcast.util.time.epoch as epoch
+from pdcast.util.time cimport epoch
 from pdcast.util.type_hints import datetime_like
 
 from .unit cimport as_ns
@@ -38,7 +39,7 @@ from .unit import convert_unit, round_months_to_ns, round_years_to_ns
 ################################
 
 
-def pandas_timedelta_to_ns(object delta) -> int:
+cpdef inline object pandas_timedelta_to_ns(object delta):
     """Convert a pandas Timedelta into an integer number of nanoseconds."""
     return delta.value
 
@@ -48,7 +49,7 @@ def pandas_timedelta_to_ns(object delta) -> int:
 ###############################
 
 
-def pytimedelta_to_ns(object delta) -> int:
+cpdef inline object pytimedelta_to_ns(datetime.timedelta delta):
     """Convert a python timedelta into an integer number of nanoseconds."""
     return (
         delta.days * as_ns["D"] +
@@ -62,15 +63,18 @@ def pytimedelta_to_ns(object delta) -> int:
 ################################
 
 
-def numpy_timedelta64_to_ns(
+cpdef inline object numpy_timedelta64_to_ns(
     object delta,
     epoch.Epoch since,
     str unit = None,
     long int step_size = -1
-) -> int:
+):
     """Convert a numpy timedelta64 into an integer number of nanoseconds."""
+    cdef object result
+
     if unit is None or step_size < 0:
         unit, step_size = np.datetime_data(delta)
+
     result = int(delta.view(np.int64)) * step_size
     return convert_unit(result, unit, "ns", since=since)
 
@@ -128,11 +132,11 @@ cdef dict timedelta_formats_regex():
 cdef dict timedelta_regex = timedelta_formats_regex()
 
 
-def timedelta_string_to_ns(
+cpdef object timedelta_string_to_ns(
     str input_string,
     bint as_hours,
     epoch.Epoch since
-) -> int:
+):
     """Convert a timedelta string into an integer number of nanoseconds."""
     cdef object match
     cdef char sign

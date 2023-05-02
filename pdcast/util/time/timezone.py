@@ -13,6 +13,9 @@ from pdcast.decorators.extension import extension_func
 from pdcast.decorators.wrapper import SeriesWrapper
 
 
+# TODO: naive_tz should be eliminated and this file should be cythonized.
+
+
 ######################
 ####    PUBLIC    ####
 ######################
@@ -98,6 +101,9 @@ def localize_pandas_timestamp(
         hasnans=series.hasnans,
         element_type=series_type.replace(tz=tz)
     )
+
+
+# TODO: delete scalar conv and put localize_pandas_timestamp into patch/dt/
 
 
 def localize_pandas_timestamp_scalar(
