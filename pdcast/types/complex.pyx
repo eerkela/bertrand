@@ -66,9 +66,6 @@ class ComplexMixin:
 @generic
 class ComplexType(ComplexMixin, AtomicType):
 
-    # internal root fields - all subtypes/backends inherit these
-    _is_numeric = True
-
     name = "complex"
     aliases = {
         "complex", "cfloat", "complex float", "complex floating", "c"

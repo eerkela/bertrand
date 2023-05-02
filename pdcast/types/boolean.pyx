@@ -84,10 +84,6 @@ class BooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
         PythonBooleanType()
     """
 
-    # internal root fields - all subtypes/backends inherit these
-    _is_boolean = True
-    _is_numeric = True
-
     # standard type definition
     name = "bool"
     aliases = {"bool", "boolean", "bool_", "bool8", "b1", "?"}

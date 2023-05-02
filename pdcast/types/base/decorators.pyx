@@ -128,8 +128,6 @@ def generic(_class: type):
             specific.name = cls.name
             specific._generic = cls
             cls._backends[backend] = specific
-            specific._is_boolean = specific._is_boolean or cls._is_boolean
-            specific._is_numeric = specific._is_numeric or cls._is_numeric
             specific.registry.flush()
             return specific
 
@@ -181,8 +179,6 @@ def subtype(supertype: type):
         # overwrite class attributes
         class_def._parent = supertype
         supertype._children.add(class_def)
-        class_def._is_boolean = class_def._is_boolean or supertype._is_boolean
-        class_def._is_numeric = class_def._is_numeric or supertype._is_numeric
         AtomicType.registry.flush()
         return class_def
 

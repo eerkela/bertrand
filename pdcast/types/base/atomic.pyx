@@ -196,12 +196,6 @@ cdef class AtomicType(ScalarType):
     definitions that ``BackendType`` is linked to.
     """
 
-    # INTERNAL FIELDS.  These should never be overridden.
-    _is_boolean = None   # used to autogenerate ExtensionDtypes
-    _is_numeric = None   # used to autogenerate ExtensionDtypes
-    _is_generic = None   # marker for @generic, @register_backend
-    _backend = None   # marker for @register_backend
-
     def __init__(self, **kwargs):
         self._kwargs = kwargs
         self._slug = self.slugify(**kwargs)
@@ -318,8 +312,10 @@ cdef class AtomicType(ScalarType):
         if not self._dtype:
             return abstract.construct_extension_dtype(
                 self,
-                is_boolean=self._is_boolean,
-                is_numeric=self._is_numeric,
+                is_boolean=self.is_subtype("bool"),
+                is_numeric=self.is_subtype(
+                    "bool, int, float, complex, decimal"
+                ),
                 add_comparison_ops=True,
                 add_arithmetic_ops=True
             )
@@ -1147,7 +1143,9 @@ cdef class AtomicType(ScalarType):
         cls._parent = None
 
         # init fields for @generic
+        cls._is_generic = None
         cls._generic = None
+        cls._backend = None
         cls._backends = {}
 
     def __setattr__(self, name: str, value: Any) -> None:

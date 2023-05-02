@@ -22,9 +22,6 @@ from .base import generic, register
 @generic
 class DecimalType(AtomicType):
 
-    # internal root fields - all subtypes/backends inherit these
-    _is_numeric = True
-
     name = "decimal"
     aliases = {"decimal"}
     type_def = decimal.Decimal

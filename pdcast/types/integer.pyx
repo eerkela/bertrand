@@ -69,9 +69,6 @@ class NumpyIntegerMixin:
 class IntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic integer supertype."""
 
-    # internal root fields - all subtypes/backends inherit these
-    _is_numeric = True
-
     name = "int"
     aliases = {"int", "integer"}
     dtype = np.dtype(np.int64)

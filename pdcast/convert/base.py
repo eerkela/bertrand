@@ -545,14 +545,14 @@ def snap_round(
         # check for non-integer (ignore if rounding in next step)
         if rule is None and outside.any():
             if errors == "coerce":
-                series = round_generic(series, "down")
+                series = round_generic(series, "down")  # emulate int()
             else:
                 raise ValueError(
                     f"precision loss exceeds tolerance {float(tol):g} at "
                     f"index {shorten_list(outside[outside].index.values)}"
                 )
 
-    # round to final result
+    # apply final rounding
     if rule:
         series = round_generic(series, rule=rule)
 

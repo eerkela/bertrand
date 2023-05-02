@@ -71,9 +71,6 @@ class FloatMixin:
 class FloatType(FloatMixin, AtomicType):
     """Generic float supertype"""
 
-    # internal root fields - all subtypes/backends inherit these
-    _is_numeric = True
-
     name = "float"
     aliases = {"float", "floating", "f"}
     dtype = np.dtype(np.float64)
