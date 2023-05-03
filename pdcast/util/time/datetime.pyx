@@ -118,6 +118,8 @@ cpdef object numpy_datetime64_to_ns(
     if unit is None or step_size < 0:
         unit, step_size = np.datetime_data(date)
 
+    cdef object result
+
     result = int(date.view(np.int64)) * step_size
     if unit == "ns":
         return result
@@ -151,6 +153,11 @@ cpdef datetime.datetime localize_pydatetime_scalar(
     if tz is None:  # convert to utc, then strip tzinfo
         return dt.astimezone(utc).replace(tzinfo=None)
     return dt.astimezone(tz)  # convert to final tz
+
+
+cpdef inline bint is_utc(datetime.tzinfo tz):
+    """Check whether a tzinfo object corresponds to UTC."""
+    return tz.utcoffset(None) == datetime.timedelta(0)
 
 
 ######################
@@ -227,7 +234,7 @@ cpdef object iso_8601_to_ns(str input_string):
     second index contains a boolean indicating whether the string had a
     timezone specifier (either 'Z' or a valid UTC offset).
     """
-    match = iso_8601_pattern.match(input_string)
+    cdef object match = iso_8601_pattern.match(input_string)
     if not match:
         raise ValueError(f"Invalid isoformat string: {repr(input_string)}")
 
@@ -334,12 +341,7 @@ cpdef Exception filter_dateutil_parser_error(Exception err):
     """Convenience function to differentiate dateutil overflow errors from
     those that are raised due to malformed values.
     """
-    err_msg = str(err)
+    cdef str err_msg = str(err)
     if parser_overflow_pattern.search(err_msg):
         return OverflowError(err_msg)
     return ValueError(err_msg)
-
-
-cpdef inline bint is_utc(datetime.tzinfo tz):
-    """Check whether a tzinfo object corresponds to UTC."""
-    return tz.utcoffset(None) == datetime.timedelta(0)

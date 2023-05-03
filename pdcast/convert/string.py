@@ -196,7 +196,7 @@ def string_to_pandas_timestamp(
     kwargs = {
         "dayfirst": day_first,
         "yearfirst": year_first,
-        "utc": dtype.tz == pytz.utc,
+        "utc": dtype.tz is not None and time.is_utc(dtype.tz),
         "errors": "raise" if errors == "ignore" else errors
     }
     if format:

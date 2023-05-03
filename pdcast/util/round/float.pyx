@@ -5,19 +5,17 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from pdcast.util.type_hints import array_like
-
 
 ######################
 ####    PUBLIC    ####
 ######################
 
 
-def round_float(
-    val: float | array_like,
-    decimals: int,
-    rule: str
-) -> float | array_like:
+cpdef object round_float(
+    object val,
+    short decimals,
+    str rule
+):
     """Round a float or array of floats according to the specified `rule`.
 
     Parameters
@@ -48,6 +46,10 @@ def round_float(
         'ceiling', 'down', 'up', 'half_floor', 'half_ceiling', 'half_down',
         'half_up', 'half_even').
     """
+    cdef object round_func
+    cdef str err_msg
+    cdef object scale_factor
+
     # select rounding strategy
     try:
         # use numpy-accelerated rounding if available, else default to generic
@@ -74,8 +76,8 @@ def round_float(
 #######################
 
 
-def _generic_round_half_even(v):
-    floor_even = (v // 1 % 2) * 2 - 1
+cdef object _generic_round_half_even(object v):
+    cdef object floor_even = (v // 1 % 2) * 2 - 1
     return floor_even * ((floor_even * v + 0.5) // 1)
 
 

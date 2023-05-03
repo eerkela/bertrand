@@ -9,19 +9,17 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdcast.util.type_hints import array_like
-
 
 ######################
 ####    PUBLIC    ####
 ######################
 
 
-def round_decimal(
-    val: decimal.Decimal | array_like,
-    str rule,
-    int decimals
-) -> decimal.Decimal | array_like:
+cpdef object round_decimal(
+    object val,
+    short decimals,
+    str rule
+):
     """Performs fast, elementwise rounding on a decimal scalars and arrays,
     according to the given rounding rule.
 
@@ -62,6 +60,8 @@ def round_decimal(
             decimals=decimals
         )
 
+    cdef object index
+
     # series
     if isinstance(val, pd.Series):
         index = val.index
@@ -71,6 +71,9 @@ def round_decimal(
             decimals=decimals
         )
         return pd.Series(val, index=index)
+
+    cdef object quantize
+    cdef object scale_factor
 
     # scalar
     if val in decimal_inf_nan:

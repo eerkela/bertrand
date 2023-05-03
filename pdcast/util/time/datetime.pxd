@@ -22,6 +22,7 @@ cpdef datetime.datetime localize_pydatetime_scalar(
     datetime.datetime dt,
     object tz
 )
+cpdef bint is_utc(datetime.tzinfo tz)
 cpdef bint is_iso_8601_format_string(str input_string)
 cpdef object iso_8601_to_ns(str input_string)
 cpdef datetime.datetime string_to_pydatetime(

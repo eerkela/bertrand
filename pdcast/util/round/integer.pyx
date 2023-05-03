@@ -5,19 +5,17 @@ behavior.
 import numpy as np
 import pandas as pd
 
-from pdcast.util.type_hints import array_like
-
 
 ######################
 ####    PUBLIC    ####
 ######################
 
 
-def round_div(
-    numerator: int | array_like,
-    denominator: int | array_like,
-    rule: str = "floor"
-) -> int | array_like:
+cpdef object round_div(
+    object numerator,
+    object denominator,
+    str rule = "floor"
+):
     """Vectorized integer division with customizable rounding behavior.
 
     Unlike other approaches, this function does not perform float conversion
@@ -70,6 +68,10 @@ def round_div(
     if rule == "floor":  # no bias to add, just use // directly
         return numerator // denominator
 
+    cdef object bias
+    cdef tuple valid_rules
+    cdef str err_msg
+
     try:  # get numerator bias for given rounding rule
         bias = integer_rounding_bias[rule](numerator, denominator)
     except KeyError as err:
@@ -85,59 +87,59 @@ def round_div(
 #######################
 
 
-def _bias_down(n, d):
+cdef object _bias_down(object n, object d):
     """Apply floor where `n` and `d` have the same sign, and ceiling where
     they differ.  This is equivalent to:
         `((n < 0) ^ (d < 0)) * (d - sign(d))`
     """
-    d_less_than_zero = (d < 0)
-    bias = d + d_less_than_zero - (d > 0)
+    cdef object d_less_than_zero = (d < 0)
+    cdef object bias = d + d_less_than_zero - (d > 0)
     bias *= (n < 0) ^ d_less_than_zero
     return bias
 
 
-def _bias_up(n, d):
+cdef object _bias_up(object n, object d):
     """Apply ceiling where `n` and `d` have the same sign, and floor where
     they differ.  This is equivalent to:
         `((n > 0) ^ (d < 0)) * (d - sign(d))`
     """
-    d_less_than_zero = (d < 0)
-    bias = d + d_less_than_zero - (d > 0)
+    cdef object d_less_than_zero = (d < 0)
+    cdef object bias = d + d_less_than_zero - (d > 0)
     bias *= (n > 0) ^ d_less_than_zero
     return bias
 
 
-def _bias_half_down(n, d):
+cdef object _bias_half_down(object n, object d):
     """Apply half_floor where `n` and `d` have the same sign, and half_ceiling
     where they differ.  This is equivalent to:
         `(d + (d < 0) - ((n > 0) ^ (d < 0)) * sign(d)) // 2`
     """
-    d_less_than_zero = (d < 0)
-    bias = d + d_less_than_zero
+    cdef object d_less_than_zero = (d < 0)
+    cdef object bias = d + d_less_than_zero
     bias -= ((n > 0) ^ d_less_than_zero) * (-1 * d_less_than_zero + (d > 0))
     bias //= 2
     return bias
 
 
-def _bias_half_up(n, d):
+cdef object _bias_half_up(object n, object d):
     """Apply half_ceiling where `n` and `d` have the same sign, and half_floor
     where they differ.  This is equivalent to:
         `(d + (d < 0) - ((n < 0) ^ (d < 0)) * sign(d)) // 2`
     """
-    d_less_than_zero = (d < 0)
-    bias = d + d_less_than_zero
+    cdef object d_less_than_zero = (d < 0)
+    cdef object bias = d + d_less_than_zero
     bias -= ((n < 0) ^ d_less_than_zero) * (-1 * d_less_than_zero + (d > 0))
     bias //= 2
     return bias
 
 
-def _bias_half_even(n, d):
+cdef object _bias_half_even(object n, object d):
     """Apply half_ceiling where the quotient `n // d` would be odd, and
     half_floor where it would be even.  This is equivalent to:
         `(d + (d < 0) + ((n // d) % 2 - 1) * sign(d)) // 2`
     """
-    d_less_than_zero = (d < 0)
-    bias = d + d_less_than_zero
+    cdef object d_less_than_zero = (d < 0)
+    cdef object bias = d + d_less_than_zero
     bias += ((n // d) % 2 - 1) * (-1 * d_less_than_zero + (d > 0))
     bias //= 2
     return bias

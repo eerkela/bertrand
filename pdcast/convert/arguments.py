@@ -22,9 +22,6 @@ from pdcast.util.type_hints import datetime_like, type_specifier
 from .base import cast
 
 
-# TODO: remove naive_tz argument.  Use .dt.tz_convert instead.
-
-
 # ignore this file when doing string-based object lookups in resolve_type()
 IGNORE_FRAME_OBJECTS = True
 
