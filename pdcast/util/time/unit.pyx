@@ -41,9 +41,6 @@ from .calendar import (
 )
 
 
-# TODO: cythonize this with cpdef functions
-
-
 #########################
 ####    CONSTANTS    ####
 #########################
@@ -77,13 +74,13 @@ cdef object cast_to_int = np.frompyfunc(int, 1, 1)
 ######################
 
 
-def convert_unit(
-    val: numeric | array_like,
-    from_unit: str,
-    to_unit: str,
-    rounding: str | None = "down",
-    since: epoch.Epoch = None
-) -> numeric | array_like:
+cpdef object convert_unit(
+    object val,
+    str from_unit,
+    str to_unit,
+    str rounding = "down",
+    epoch.Epoch since = None
+):
     """Convert integer quantities of a given time unit into a different unit.
 
     This function performs the same operation as :func:`convert_unit_float()`,
@@ -231,10 +228,15 @@ def convert_unit(
 #######################
 
 
-def round_years_to_ns(object years, epoch.Epoch since):
+cpdef object round_years_to_ns(object years, epoch.Epoch since):
     """Convert a fractional number of years from a given epoch into an integer
     number of nanoseconds.
     """
+    cdef object diff
+    cdef object residual
+    cdef object end
+    cdef object unit_length
+
     # handle integer and fractional components separately
     diff = cast_to_int(years)
     residual = years - diff
@@ -258,10 +260,15 @@ def round_years_to_ns(object years, epoch.Epoch since):
     return diff * as_ns["D"] + cast_to_int(residual * unit_length * as_ns["D"])
 
 
-def round_months_to_ns(months, epoch.Epoch since):
+cpdef object round_months_to_ns(object months, epoch.Epoch since):
     """Convert a fractional number of months from a given epoch into an integer
     number of nanoseconds.
     """
+    cdef object diff
+    cdef object residual
+    cdef object end
+    cdef object unit_length
+
     # handle integer and fractional components separately
     diff = cast_to_int(months)
     residual = months - diff
@@ -282,13 +289,13 @@ def round_months_to_ns(months, epoch.Epoch since):
     return diff * as_ns["D"] + cast_to_int(residual * unit_length * as_ns["D"])
 
 
-def _convert_unit_irregular_to_regular(
-    val: numeric | array_like,
-    from_unit: str,
-    to_unit: str,
-    rounding: str,
-    since: epoch.Epoch
-) -> numeric | array_like:
+cdef object _convert_unit_irregular_to_regular(
+    object val,
+    str from_unit,
+    str to_unit,
+    str rounding,
+    epoch.Epoch since
+):
     """Helper to convert integer numbers of irregular units ('M', 'Y') to
     regular units ('ns', 'us', 'ms', 's', 'm', 'h', 'D', 'W').
     """
@@ -329,13 +336,13 @@ def _convert_unit_irregular_to_regular(
     return round_div(val, as_ns[to_unit], rule=rounding)
 
 
-def _convert_unit_regular_to_irregular(
-    val: numeric | array_like,
-    from_unit: str,
-    to_unit: str,
-    rounding: str,
-    since: epoch.Epoch
-) -> numeric | array_like:
+cdef object _convert_unit_regular_to_irregular(
+    object val,
+    str from_unit,
+    str to_unit,
+    str rounding,
+    epoch.Epoch since
+):
     """Helper to convert integer numbers of regular units ('ns', 'us', 'ms',
     's', 'm', 'h', 'D', 'W') to irregular units ('M', 'Y').
     """

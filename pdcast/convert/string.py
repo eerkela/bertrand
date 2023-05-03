@@ -182,7 +182,6 @@ def string_to_pandas_timestamp(
     dtype: types.AtomicType,
     tz: pytz.BaseTzInfo,
     format: str,
-    naive_tz: pytz.BaseTzInfo,
     day_first: bool,
     year_first: bool,
     errors: str,
@@ -194,15 +193,16 @@ def string_to_pandas_timestamp(
         dtype = dtype.replace(tz=tz)
 
     # configure kwargs for pd.to_datetime
-    utc = naive_tz == pytz.utc or naive_tz is None and dtype.tz == pytz.utc
     kwargs = {
         "dayfirst": day_first,
         "yearfirst": year_first,
-        "utc": utc,
+        "utc": dtype.tz == pytz.utc,
         "errors": "raise" if errors == "ignore" else errors
     }
     if format:
         kwargs |= {"format": format, "exact": False}
+    else:
+        kwargs |= {"format": "mixed"}
 
     # NOTE: pd.to_datetime() can throw several kinds of errors, some of which
     # are ambiguous.  For simplicity, we catch and re-raise these only as
@@ -229,27 +229,19 @@ def string_to_pandas_timestamp(
         # NOTE: if utc=False and there are mixed timezones and/or mixed
         # aware/naive strings in the input series, the output of
         # pd.to_datetime() could be malformed.
-        if utc:
-            if dtype.tz != pytz.utc:
-                result = result.dt.tz_convert(dtype.tz)
-        else:
+        if not kwargs["utc"]:
             # homogenous - either naive or consistent timezone
             if pd.api.types.is_datetime64_ns_dtype(result):
                 if not result.dt.tz:  # naive
-                    if not naive_tz:  # localize directly
-                        result = result.dt.tz_localize(dtype.tz)
-                    else:  # localize, then convert
-                        result = result.dt.tz_localize(naive_tz)
-                        result = result.dt.tz_convert(dtype.tz)
+                    result = result.dt.tz_localize(dtype.tz)
                 else:  # aware
                     result = result.dt.tz_convert(dtype.tz)
 
             # non-homogenous - either mixed timezone or mixed aware/naive
             else:  # NOTE: pd.to_datetime() sacrifices ns precision here
                 localize = partial(
-                    time.timezone.localize_pydatetime_scalar,
-                    tz=dtype.tz,
-                    naive_tz=naive_tz
+                    time.localize_pydatetime_scalar,
+                    tz=dtype.tz
                 )
                 # NOTE: np.frompyfunc() implicitly casts to pd.Timestamp
                 result = np.frompyfunc(localize, 1, 1)(result)
@@ -270,7 +262,6 @@ def string_to_python_datetime(
     series: SeriesWrapper,
     dtype: types.ScalarType,
     tz: pytz.BaseTzInfo,
-    naive_tz: pytz.BaseTzInfo,
     day_first: bool,
     year_first: bool,
     format: str,
@@ -295,7 +286,6 @@ def string_to_python_datetime(
             format=format,
             parser_info=parser_info,
             tz=dtype.tz,
-            naive_tz=naive_tz,
             errors=errors
         ),
         errors=errors,

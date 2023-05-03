@@ -22,6 +22,9 @@ from pdcast.util.type_hints import datetime_like, type_specifier
 from .base import cast
 
 
+# TODO: remove naive_tz argument.  Use .dt.tz_convert instead.
+
+
 # ignore this file when doing string-based object lookups in resolve_type()
 IGNORE_FRAME_OBJECTS = True
 
@@ -81,7 +84,6 @@ defaults = {
     "step_size": 1,
     "since": "utc",
     "tz": None,
-    "naive_tz": None,
     "day_first": False,
     "year_first": False,
     "as_hours": False,
@@ -702,11 +704,6 @@ def tz(
     pytz.exceptions.UnknownTimeZoneError
         If ``val`` could not be recognized as a time zone specifier.
 
-    See Also
-    --------
-    naive_tz <pdcast.convert.arguments.naive_tz> :
-        The intermediate time zone to localize naive inputs to.
-
     Examples
     --------
     Time zone localization is a somewhat complicated process, with
@@ -728,100 +725,51 @@ def tz(
         >>> pdcast.cast(0, "datetime", tz="US/Pacific")
         0   1969-12-31 16:00:00-08:00
         dtype: datetime64[ns, US/Pacific]
-        >>> pdcast.cast(0, "datetime", tz="US/Pacific", since="2022-03-27")
-        0   2022-03-26 17:00:00-07:00
-        dtype: datetime64[ns, US/Pacific]
+        >>> pdcast.cast(0, "datetime", since="2022-03-27", tz="Asia/Hong_Kong")
+        0   2022-03-27 08:00:00+08:00
+        dtype: datetime64[ns, Asia/Hong_Kong]
+        >>> pdcast.cast(0, "datetime", since="2022-03-27 00:00:00+0800", tz="Asia/Hong_Kong")
+        0   2022-03-27 00:00:00+08:00
+        dtype: datetime64[ns, Asia/Hong_Kong]
 
     :doc:`Strings </content/types/string>` and
-    :doc:`datetimes </content/types/datetime>` on the other hand are
-    interpreted according to the
-    :func:`naive_tz <pdcast.convert.arguments.naive_tz>` argument.  Any naive
-    inputs will first be *localized* to
-    :func:`naive_tz <pdcast.convert.arguments.naive_tz>` and then *converted*
-    to the final :func:`tz <pdcast.convert.arguments.tz>`.
+    :doc:`datetimes </content/types/datetime>`, on the other hand, will be
+    *localized* directly to the final :func:`tz <pdcast.convert.arguments.tz>`
+    if they are naive, or *converted* to it if they are timezone-aware.
 
     .. doctest::
 
-        >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="US/Pacific", naive_tz="US/Eastern")
-        0   1969-12-31 21:00:00-08:00
-        dtype: datetime64[ns, US/Pacific]
-        >>> pdcast.cast("2022-03-27", "datetime", tz="US/Pacific", naive_tz="Asia/Hong_Kong")
-        0   2022-03-26 09:00:00-07:00
-        dtype: datetime64[ns, US/Pacific]
-
-    If :func:`naive_tz <pdcast.convert.arguments.naive_tz>` is left as
-    :data:`None <python:None>` (the default), then naive datetimes and datetime
-    strings will be localized directly to
-    :func:`tz <pdcast.convert.arguments.tz>`.
-
-    .. doctest::
-
-        >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="US/Pacific", naive_tz=None)
+        >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="US/Pacific")
         0   1970-01-01 00:00:00-08:00
         dtype: datetime64[ns, US/Pacific]
-        >>> pdcast.cast("2022-03-27", "datetime", tz="US/Pacific", naive_tz=None)
-        0   2022-03-27 00:00:00-07:00
+        >>> pdcast.cast(pd.Timestamp(0, tz="UTC"), "datetime", tz="US/Pacific")
+        0   1969-12-31 16:00:00-08:00
         dtype: datetime64[ns, US/Pacific]
+        >>> pdcast.cast("2022-03-27", "datetime", tz="Asia/Hong_Kong")
+        0   2022-03-27 00:00:00+08:00
+        dtype: datetime64[ns, Asia/Hong_Kong]
+        >>> pdcast.cast("2022-03-27 00:00:00+0000", "datetime", tz="Asia/Hong_Kong")
+        0   2022-03-27 08:00:00+08:00
+        dtype: datetime64[ns, Asia/Hong_Kong]
 
     The same behavior as for numerics can be obtained by setting
-    :func:`naive_tz <pdcast.convert.arguments.naive_tz>` to ``"utc"``.
+    :func:`tz <pdcast.convert.arguments.tz>` to ``"utc"`` and adding an extra
+    :meth:`tz_convert() <pandas.Series.dt.tz_convert>` step, as follows:
 
     .. doctest::
 
-        >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="US/Pacific", naive_tz="utc")
+        >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="utc").dt.tz_convert("US/Pacific")
         0   1969-12-31 16:00:00-08:00
         dtype: datetime64[ns, US/Pacific]
-        >>> pdcast.cast("2022-03-27", "datetime", tz="US/Pacific", naive_tz="utc")
-        0   2022-03-26 17:00:00-07:00
-        dtype: datetime64[ns, US/Pacific]
+        >>> pdcast.cast("2022-03-27", "datetime", tz="utc").dt.tz_convert("Asia/Hong_Kong")
+        0   2022-03-27 08:00:00+08:00
+        dtype: datetime64[ns, Asia/Hong_Kong]
 
     .. note::
 
-        :func:`naive_tz <pdcast.convert.arguments.naive_tz>` is similar to the
-        ``utc`` argument of :func:`pandas.to_datetime`, but allows for full
+        In this sense, :func:`tz <pdcast.convert.arguments.tz>` is similar to
+        the ``utc`` argument of :func:`pandas.to_datetime`, but allows for full
         control over the handling of naive inputs.
-    """
-    return time.tz(val, state)
-
-
-@cast.register_arg(default=defaults["naive_tz"])
-def naive_tz(
-    val: str | pytz.BaseTzInfo | None,
-    state: dict
-) -> pytz.BaseTzInfo:
-    """The assumed time zone when localizing naive datetimes.
-
-    Parameters
-    ----------
-    val : str | pytz.timezone | None
-        An IANA time zone string, a `pytz <https://pypi.org/project/pytz/>`_
-        timezone object, or :data:`None <python:None>` to indicate direct
-        localization of naive inputs.  This can also be the special string
-        ``"local"``, which refers to the local time zone of the current system
-        at the time of execution.  Defaults to :data:`None <python:None>`.
-
-    Returns
-    -------
-    pytz.timezone | None
-        A `pytz <https://pypi.org/project/pytz/>`_ timezone object
-        corresponding to the input or :data:`None` to indicate direct
-        localization.
-
-    Raises
-    ------
-    pytz.exceptions.UnknownTimeZoneError
-        If ``val`` could not be recognized as a time zone specifier.
-
-    See Also
-    --------
-    tz <pdcast.convert.arguments.tz> :
-        The final time zone to convert to.
-
-    Examples
-    --------
-    See the docs for the :func:`tz <pdcast.convert.arguments.tz>` argument for
-    examples on the interaction between :func:`tz <pdcast.convert.arguments.tz>`
-    and :func:`naive_tz <pdcast.convert.arguments.naive_tz>`.
     """
     return time.tz(val, state)
 

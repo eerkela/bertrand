@@ -1,19 +1,71 @@
 # pylint: disable=redefined-outer-name, unused-argument
+from __future__ import annotations
+from functools import partial
+
 import pytz
 
-from pdcast.decorators.attachable import attachable
+from pdcast.decorators.attachable import attachable, VirtualAttribute
+from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
 from pdcast.decorators.wrapper import SeriesWrapper
-
-from pdcast.util.time import localize, tz
+from pdcast.util import time
 
 
 @attachable
 @extension_func
+@dispatch
 def tz_convert(
     series: SeriesWrapper,
     tz: str | pytz.BaseTzInfo | None,
     **unused
+) -> SeriesWrapper:
+    """TODO"""
+    raise NotImplementedError(
+        f"{series.element_type} objects do not carry timezone information"
+    )
+
+
+#########################
+####    ARGUMENTS    ####
+#########################
+
+
+tz_convert.register_arg(time.tz)
+
+
+#######################
+####    PRIVATE    ####
+#######################
+
+
+@tz_convert.overload("datetime[pandas]")
+def localize_pandas_timestamp(
+    series: SeriesWrapper,
+    tz: pytz.BaseTzInfo | None,
+    *args,
+    **kwargs
+) -> SeriesWrapper:
+    """TODO"""
+    series = series.rectify()
+
+    # delegate to original pandas tz_localize implementation
+    orig = series.dt.tz_convert
+    if isinstance(orig, VirtualAttribute):
+        orig = orig.original
+
+    return SeriesWrapper(
+        orig(series.series, tz, *args, **kwargs),
+        hasnans=series.hasnans,
+        element_type=series.element_type.replace(tz=tz)
+    )
+
+
+@tz_convert.overload("datetime[python]")
+def localize_python_datetime(
+    series: SeriesWrapper,
+    tz: pytz.BaseTzInfo | None,
+    *args,
+    **kwargs
 ) -> SeriesWrapper:
     """TODO"""
     # emulate pandas tz_convert limitation
@@ -22,12 +74,8 @@ def tz_convert(
             "Cannot convert tz-naive Timestamp, use tz_localize to localize"
         )
 
-    return localize(series, tz=tz, naive_tz=None)
-
-
-#########################
-####    ARGUMENTS    ####
-#########################
-
-
-tz_convert.register_arg(tz)
+    return series.apply_with_errors(
+        partial(time.localize_pydatetime_scalar, tz=tz),
+        errors="raise",
+        element_type=series.element_type.replace(tz=tz)
+    )

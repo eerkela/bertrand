@@ -17,21 +17,7 @@ from .base cimport AtomicType, CompositeType
 from .base import generic, register
 
 
-# TODO: naive_tz has inconsistent behavior.
-# >>> pdcast.cast("2022-03-07", "datetime[pandas, us/pacific]", tz=None, naive_tz=None)
-# 0   2022-03-07 00:00:00-08:00
-# dtype: datetime64[ns, US/Pacific]
-# >>> pdcast.cast(pd.Timestamp("2022-03-07"), "datetime[pandas, us/pacific]", tz=None, naive_tz=None)
-# 0   2022-03-07 08:00:00
-# dtype: datetime64[ns]
-
-# -> remove naive_tz.  just have tz localize naive datetimes directly, and
-# convert those that are aware.  tz_convert() can be used from there.
-
-
-
 # TODO: PandasTimestampType.from_string cannot convert quarterly dates
-
 
 
 #######################
@@ -218,7 +204,7 @@ class PandasTimestampType(AtomicType, cache_size=64):
     max = pd.Timestamp.max.value - 12 * 3600 * 10**9  # UTC+12 most behind
 
     def __init__(self, tz: datetime.tzinfo | str = None):
-        tz = time.tz(tz)
+        tz = time.tz(tz, {})
         super().__init__(tz=tz)
 
     ########################
@@ -272,7 +258,7 @@ class PandasTimestampType(AtomicType, cache_size=64):
     @classmethod
     def resolve(cls, context: str = None) -> AtomicType:
         if context is not None:
-            return cls.instance(tz=time.tz(context))
+            return cls.instance(tz=time.tz(context, {}))
         return cls.instance()
 
 
@@ -292,7 +278,7 @@ class PythonDatetimeType(AtomicType, cache_size=64):
     min = time.pydatetime_to_ns(datetime.datetime.min)
 
     def __init__(self, tz: datetime.tzinfo = None):
-        tz = time.tz(tz)
+        tz = time.tz(tz, {})
         super().__init__(tz=tz)
 
     ############################
@@ -329,7 +315,7 @@ class PythonDatetimeType(AtomicType, cache_size=64):
     @classmethod
     def resolve(cls, context: str = None) -> AtomicType:
         if context is not None:
-            return cls.instance(tz=time.tz(context))
+            return cls.instance(tz=time.tz(context, {}))
         return cls.instance()
 
 

@@ -36,6 +36,11 @@ import weakref
 from .base import BaseDecorator
 
 
+# TODO: .original doesn't properly expose the pandas equivalents of
+# tz_localize, tz_convert, etc.
+# -> recreate foo.bar test case and compare with pdcast.attach()
+
+
 ######################
 ####    PUBLIC    ####
 ######################
@@ -553,11 +558,14 @@ def _generate_namespace(
     namespace: str
 ) -> tuple:
     """Get an existing namespace or generate a new one."""
+    # breakpoint()
+
     # get existing attribute (bypassing __get__)
     try:
         existing = object.__getattribute__(class_, namespace)
     except AttributeError:
         existing = None
+    # existing = getattr(class_, namespace, None)
 
     # use existing namespace
     if isinstance(existing, Namespace):
@@ -566,6 +574,7 @@ def _generate_namespace(
             original = object.__getattribute__(existing._original, name)
         except AttributeError:
             original = None
+        # original = getattr(existing._original, name, None)
 
     else:
         # NOTE: we need to create a unique subclass of Namespace to
@@ -584,6 +593,7 @@ def _generate_namespace(
             original = object.__getattribute__(existing, name)
         except AttributeError:
             original = None
+        # original = getattr(existing, name, None)
 
     return parent, original
 

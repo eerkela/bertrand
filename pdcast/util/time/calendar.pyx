@@ -52,31 +52,12 @@ cdef np.ndarray[np.uint8_t] days_per_month = np.array(
 ######################
 
 
-def date_to_days(
-    year: numeric | array_like,
-    month: numeric | array_like,
-    day: numeric | array_like
-) -> numeric | array_like:
+cpdef object date_to_days(object year, object month, object day):
     """Convert proleptic Gregorian calendar dates into day offsets from the utc
     epoch ('1970-01-01 00:00:00+0000').
 
-    Each of this function's arguments can be vectorized, and any excess beyond
-    the normal range ([1-12] for `month`, [1-31] for `day`) is accurately
-    reflected in the returned day offset.  For example, to measure the length
-    (in days) of a 1 month period starting on December 31st, 2000, one can
-    simply call:
-
-        >>> date_to_days(2000, 12 + 1, 31) - date_to_days(2000, 12, 31)
-        31
-
-    .. note:: for the sake of efficiency, this function will not attempt to
-        coerce numpy integers or integer arrays into their built-in python
-        equivalents.  As such, they may silently overflow (and wrap around
-        infinity) if 64-bit limits are exceeded during conversion.  This
-        shouldn't be a problem in practice; even with day-level precision, the
-        valid 64-bit range vastly exceeds the observed age of the universe.
-        Nevertheless, this can be avoided by converting the inputs into python
-        integers (which do not overflow) beforehand.
+    This function works equally well with both scalar and vectorized data,
+    which is why it accepts ``object`` types over more specific C integers.
 
     Parameters
     ----------
@@ -106,6 +87,26 @@ def date_to_days(
     See Also
     --------
     days_to_date : UTC day offset to Gregorian calendar date.
+
+    Notes
+    -----
+    Each of this function's arguments can be vectorized, and any excess beyond
+    the normal range ([1-12] for `month`, [1-31] for `day`) is accurately
+    reflected in the returned day offset.  For example, to measure the length
+    (in days) of a 1 month period starting on December 31st, 2000, one can
+    simply call:
+
+        >>> date_to_days(2000, 12 + 1, 31) - date_to_days(2000, 12, 31)
+        31
+
+    .. note:: for the sake of efficiency, this function will not attempt to
+        coerce numpy integers or integer arrays into their built-in python
+        equivalents.  As such, they may silently overflow (and wrap around
+        infinity) if memory limits are exceeded during conversion.  This
+        shouldn't be a problem in practice: even with day-level precision, the
+        valid 64-bit range vastly exceeds the observed age of the universe.
+        Nevertheless, this can be avoided by converting the inputs into python
+        integers (which do not overflow) beforehand.
 
     References
     ----------
@@ -153,6 +154,8 @@ def date_to_days(
     >>> date_to_days(np.arange(1968, 1973), 1, 1)
     array([-731, -365,    0,  365,  730])
     """
+    cdef object result
+
     # normalize months to start with March 1st, indexed from 1 (January)
     month = month - 3
     year = year + month // 12
@@ -167,12 +170,12 @@ def date_to_days(
     return result
 
 
-def days_in_month(
-    month: int | array_like,
-    year: int | array_like = 2001
-) -> int | array_like:
+cpdef object days_in_month(object month, object year = 2001):
     """Get the length in days of a given month, taking leap years into
     account.
+
+    This function works equally well with both scalar and vectorized data,
+    which is why it accepts ``object`` types over more specific C integers.
 
     .. warning:: This should not be used with indices outside the range 1
         (January) to 12 (December).
@@ -227,21 +230,12 @@ def days_in_month(
         raise ValueError(err_msg) from err
 
 
-def days_to_date(days: int | array_like) -> dict[str, int | array_like]:
+cpdef dict days_to_date(object days):
     """Convert day offsets from the utc epoch ('1970-01-01 00:00:00+0000') into
     proleptic Gregorian calendar dates.
 
-    This is the inverse operation of :func:`date_to_days()`.  The output of
-    this function can be used as a **kwargs dict for that function.
-
-    .. note:: for the sake of efficiency, this function will not attempt to
-        coerce numpy integers or integer arrays into their built-in python
-        equivalents.  As such, they may silently overflow (and wrap around
-        infinity) if 64-bit limits are exceeded during conversion.  This
-        shouldn't be a problem in practice; even with day-level precision, the
-        valid 64-bit range vastly exceeds the observed age of the universe.
-        Nevertheless, this can be avoided by converting the inputs into python
-        integers (which do not overflow) beforehand.
+    This function works equally well with both scalar and vectorized data,
+    which is why it accepts ``object`` types over more specific C integers.
 
     Parameters
     ----------
@@ -265,6 +259,21 @@ def days_to_date(days: int | array_like) -> dict[str, int | array_like]:
     See Also
     --------
     date_to_days : Gregorian calendar date to UTC day offset.
+
+    Notes
+    -----
+    This is the inverse operation of
+    :func:`date_to_days <pdcast.util.time.date_to_days>`.  Its output can be
+    used as a **kwargs dict for that function.
+
+    .. note:: for the sake of efficiency, this function will not attempt to
+        coerce numpy integers or integer arrays into their built-in python
+        equivalents.  As such, they may silently overflow (and wrap around
+        infinity) if 64-bit limits are exceeded during conversion.  This
+        shouldn't be a problem in practice; even with day-level precision, the
+        valid 64-bit range vastly exceeds the observed age of the universe.
+        Nevertheless, this can be avoided by converting the inputs into python
+        integers (which do not overflow) beforehand.
 
     References
     ----------
@@ -305,6 +314,9 @@ def days_to_date(days: int | array_like) -> dict[str, int | array_like]:
     >>> days_to_date(np.arange(-1, 2))
     {'year': array([1969, 1970, 1970]), 'month': array([12,  1,  1]), 'day': array([31,  1,  2])}
     """
+    cdef object years
+    cdef object months
+
     # move origin from utc to March 1st, 2000 (start of 400-year cycle)
     days = days - 11017
 
@@ -335,11 +347,12 @@ def days_to_date(days: int | array_like) -> dict[str, int | array_like]:
     # return as dict
     return {"year": years, "month": months, "day": days}
 
-def is_leap_year(year: int | array_like) -> bool | array_like:
+cpdef inline object is_leap_year(object year):
     """Check if the given year is a leap year according to the proleptic
     Gregorian calendar.
 
-    Can also be used to obtain the length of a particular year.
+    This function works equally well with both scalar and vectorized data,
+    which is why it accepts ``object`` types over more specific C integers.
 
     Parameters
     ----------
@@ -348,8 +361,8 @@ def is_leap_year(year: int | array_like) -> bool | array_like:
 
     Returns
     -------
-    bool
-        `True` if `year` is a leap year.  `False` otherwise.
+    bool | array-like
+        `True` where `year` is a leap year.  `False` otherwise.
 
     Examples
     --------
@@ -364,21 +377,20 @@ def is_leap_year(year: int | array_like) -> bool | array_like:
 
     >>> is_leap_year(np.arange(1968, 1973))
     array([ True, False, False, False,  True])
+
+    This function can also be used to obtain the length of a particular year.
+
+    >>> 365 + is_leap_year(1972)
+    366
     """
     return (year % 4 == 0) & ((year % 100 != 0) | (year % 400 == 0))
 
 
-def leaps_between(
-    lower: int | array_like,
-    upper: int | array_like
-) -> int | array_like:
+cpdef inline object leaps_between(object lower, object upper):
     """Return the number of leap days between the years `lower` and `upper`.
 
-    This function counts from the beginning of each year.  This means that
-    `leaps_between(x, x + 1)` will return 1 if and only if `x` was a leap year.
-
-    Identical to `calendar.leapdays()` from the built-in `calendar` package,
-    but avoids an import and is compiled (and thus slightly faster).
+    This function works equally well with both scalar and vectorized data,
+    which is why it accepts ``object`` types over more specific C integers.
 
     Parameters
     ----------
@@ -391,6 +403,14 @@ def leaps_between(
     -------
     int
         The number of leap days between each index of `lower` and `upper`.
+
+    Notes
+    -----
+    This function counts from the beginning of each year.  This means that
+    `leaps_between(x, x + 1)` will return 1 if and only if `x` was a leap year.
+
+    Identical to `calendar.leapdays()` from the built-in `calendar` package,
+    but avoids an import and is compiled (and thus slightly faster).
 
     Examples
     --------
@@ -408,5 +428,11 @@ def leaps_between(
     >>> leaps_between(1970 + np.arange(-6, 6), 2000)
     array([9, 8, 8, 8, 8, 7, 7, 7, 7, 6, 6, 6])
     """
-    count = lambda x: x // 4 - x // 100 + x // 400
-    return count(upper - 1) - count(lower - 1)
+    # start from beginning of year
+    upper = upper - 1
+    lower = lower - 1
+
+    cdef object up = upper // 4 - upper // 100 + upper // 400
+    cdef object down = lower // 4 - lower // 100 + lower // 400
+
+    return up - down

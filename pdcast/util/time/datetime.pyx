@@ -39,10 +39,12 @@ import dateutil
 import numpy as np
 cimport numpy as np
 import pandas as pd
+import pytz
+import tzlocal
 
 from .calendar import date_to_days, days_in_month
 from .timedelta cimport pytimedelta_to_ns
-from .timezone import localize_pydatetime_scalar
+# from .timezone import localize_pydatetime_scalar
 from .unit cimport as_ns
 
 
@@ -124,6 +126,31 @@ cpdef object numpy_datetime64_to_ns(
     if unit == "M":
         return date_to_days(1970, 1 + result, 1) * as_ns["D"]
     return date_to_days(1970 + result, 1, 1) * as_ns["D"]
+
+
+########################
+####    TIMEZONE    ####
+########################
+
+
+cdef datetime.tzinfo utc = datetime.timezone.utc
+
+
+cpdef datetime.datetime localize_pydatetime_scalar(
+    datetime.datetime dt,
+    object tz
+):
+    """Localize a scalar datetime.datetime object to the given tz."""
+    # datetime is naive
+    if not dt.tzinfo:
+        if tz is None:
+            return dt  # do nothing
+        return tz.localize(dt)  # localize directly to final tz
+
+    # datetime is aware
+    if tz is None:  # convert to utc, then strip tzinfo
+        return dt.astimezone(utc).replace(tzinfo=None)
+    return dt.astimezone(tz)  # convert to final tz
 
 
 ######################
@@ -248,7 +275,6 @@ cpdef datetime.datetime string_to_pydatetime(
     str format = None,
     object parser_info = None,
     object tz = None,
-    object naive_tz = None,
     str errors = "raise"
 ):
     """Convert a string to a python datetime object."""
@@ -270,10 +296,7 @@ cpdef datetime.datetime string_to_pydatetime(
 
     # check for relative date
     if result is None and input_string in ("today", "now"):
-        if naive_tz is None:
-            result = datetime.datetime.now()
-        else:
-            result = datetime.datetime.now(naive_tz)
+        result = datetime.datetime.now()
 
     # check for quarterly date
     if result is None and "q" in input_string:
@@ -296,7 +319,7 @@ cpdef datetime.datetime string_to_pydatetime(
             raise filter_dateutil_parser_error(err) from None
 
     # apply timezone
-    return localize_pydatetime_scalar(result, tz=tz, naive_tz=naive_tz)
+    return localize_pydatetime_scalar(result, tz=tz)
 
 
 ####################

@@ -18,6 +18,10 @@ cpdef object numpy_datetime64_to_ns(
     str unit = *,
     long int step_size = *
 )
+cpdef datetime.datetime localize_pydatetime_scalar(
+    datetime.datetime dt,
+    object tz
+)
 cpdef bint is_iso_8601_format_string(str input_string)
 cpdef object iso_8601_to_ns(str input_string)
 cpdef datetime.datetime string_to_pydatetime(
@@ -25,7 +29,6 @@ cpdef datetime.datetime string_to_pydatetime(
     str format = *,
     object parser_info = *,
     object tz = *,
-    object naive_tz = *,
     str errors = *
 )
 cpdef Exception filter_dateutil_parser_error(Exception err)
