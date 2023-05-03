@@ -1,11 +1,10 @@
 """This module contains dispatched cast() implementations for integer data."""
 # pylint: disable=unused-argument
 from __future__ import annotations
+import datetime
 from functools import partial
 
-import numpy as np
 import pandas as pd
-import pytz
 
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
@@ -132,7 +131,7 @@ def integer_to_datetime(
     unit: str,
     step_size: int,
     since: time.Epoch,
-    tz: pytz.BaseTzInfo,
+    tz: datetime.tzinfo,
     errors: str,
     **unused
 ) -> SeriesWrapper:
@@ -167,7 +166,7 @@ def integer_to_pandas_timestamp(
     unit: str,
     step_size: int,
     since: time.Epoch,
-    tz: pytz.BaseTzInfo,
+    tz: datetime.tzinfo,
     errors: str,
     **unused
 ) -> SeriesWrapper:
@@ -191,7 +190,7 @@ def integer_to_pandas_timestamp(
         result = pd.to_datetime(series.series, unit="ns")
     else:
         result = pd.to_datetime(series.series, unit="ns", utc=True)
-        if dtype.tz != pytz.utc:
+        if not time.is_utc(dtype.tz):
             result = result.dt.tz_convert(dtype.tz)
 
     return SeriesWrapper(
@@ -208,7 +207,7 @@ def integer_to_python_datetime(
     unit: str,
     step_size: int,
     since: time.Epoch,
-    tz: pytz.BaseTzInfo,
+    tz: datetime.tzinfo,
     errors: str,
     **unused
 ) -> SeriesWrapper:
@@ -240,17 +239,10 @@ def integer_to_numpy_datetime64(
     step_size: int,
     rounding: str,
     since: time.Epoch,
-    tz: pytz.BaseTzInfo,
     errors: str,
     **unused
 ) -> SeriesWrapper:
     """Convert integer data to a datetime data type."""
-    if tz and tz != pytz.utc:
-        raise TypeError(
-            "np.datetime64 objects do not carry timezone information "
-            "(must be UTC)"
-        )
-
     # convert to ns
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 

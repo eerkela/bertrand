@@ -1,8 +1,7 @@
 # pylint: disable=redefined-outer-name, unused-argument
 from __future__ import annotations
+import datetime
 from functools import partial
-
-import pytz
 
 from pdcast.decorators.attachable import attachable, VirtualAttribute
 from pdcast.decorators.dispatch import dispatch
@@ -17,7 +16,7 @@ from pdcast.util import time
 @dispatch
 def tz_localize(
     series: SeriesWrapper,
-    tz: str | pytz.BaseTzInfo | None,
+    tz: str | datetime.tzinfo | None,
     **unused
 ) -> SeriesWrapper:
     """TODO"""
@@ -42,7 +41,7 @@ tz_localize.register_arg(time.tz)
 @tz_localize.overload("datetime[pandas]")
 def localize_pandas_timestamp(
     series: SeriesWrapper,
-    tz: pytz.BaseTzInfo | None,
+    tz: datetime.tzinfo | None,
     *args,
     **kwargs
 ) -> SeriesWrapper:
@@ -64,7 +63,7 @@ def localize_pandas_timestamp(
 @tz_localize.overload("datetime[python]")
 def localize_python_datetime(
     series: SeriesWrapper,
-    tz: pytz.BaseTzInfo | None,
+    tz: datetime.tzinfo | None,
     *args,
     **kwargs
 ) -> SeriesWrapper:

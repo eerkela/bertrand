@@ -1,5 +1,7 @@
 """This module contains dispatched cast() implementations for timedelta data."""
 # pylint: disable=unused-argument
+import datetime
+
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.util.round import Tolerance
@@ -334,7 +336,7 @@ def timedelta_to_datetime(
     step_size: int,
     rounding: str,
     since: Epoch,
-    tz: pytz.BaseTzInfo,
+    tz: datetime.tzinfo,
     errors: str,
     **unused
 ) -> SeriesWrapper:

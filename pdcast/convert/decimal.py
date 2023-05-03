@@ -1,7 +1,7 @@
 """This module contains dispatched cast() implementations for decimal data."""
 # pylint: disable=unused-argument
+import datetime
 import numpy as np
-import pytz
 
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
@@ -157,7 +157,7 @@ def decimal_to_datetime(
     unit: str,
     step_size: int,
     since: time.Epoch,
-    tz: pytz.BaseTzInfo,
+    tz: datetime.tzinfo,
     errors: str,
     **unused
 ) -> SeriesWrapper:

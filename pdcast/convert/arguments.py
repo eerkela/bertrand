@@ -5,6 +5,7 @@ details.
 """
 # pylint: disable=unused-argument
 from __future__ import annotations
+import datetime
 import decimal
 from typing import Callable, Iterable
 
@@ -675,9 +676,9 @@ def since(val: str | datetime_like | time.Epoch, state: dict) -> time.Epoch:
 
 @cast.register_arg(default=defaults["tz"])
 def tz(
-    val: str | pytz.BaseTzInfo | None,
+    val: str | datetime.tzinfo | None,
     state: dict
-) -> pytz.BaseTzInfo:
+) -> datetime.tzinfo:
     """Specifies a time zone to use for datetime conversions.
 
     Parameters

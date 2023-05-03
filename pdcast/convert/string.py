@@ -1,12 +1,12 @@
 """This module contains dispatched cast() implementations for string data."""
 # pylint: disable=unused-argument
+import datetime
 import re  # normal python regex for compatibility with pd.Series.str.extract
 from functools import partial
 
 import dateutil
 import numpy as np
 import pandas as pd
-import pytz
 
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
@@ -180,7 +180,7 @@ def string_to_datetime(
 def string_to_pandas_timestamp(
     series: SeriesWrapper,
     dtype: types.AtomicType,
-    tz: pytz.BaseTzInfo,
+    tz: datetime.tzinfo,
     format: str,
     day_first: bool,
     year_first: bool,
@@ -261,7 +261,7 @@ def string_to_pandas_timestamp(
 def string_to_python_datetime(
     series: SeriesWrapper,
     dtype: types.ScalarType,
-    tz: pytz.BaseTzInfo,
+    tz: datetime.tzinfo,
     day_first: bool,
     year_first: bool,
     format: str,
@@ -298,7 +298,7 @@ def from_string(
     series: SeriesWrapper,
     dtype: types.ScalarType,
     format: str,
-    tz: pytz.BaseTzInfo,
+    tz: datetime.tzinfo,
     errors: str,
     **unused
 ) -> SeriesWrapper:
@@ -307,7 +307,7 @@ def from_string(
         raise TypeError(
             "np.datetime64 strings must be in ISO 8601 format"
         )
-    if tz and tz != pytz.utc:
+    if tz and not time.is_utc(tz):
         raise TypeError(
             "np.datetime64 objects do not carry timezone information"
         )

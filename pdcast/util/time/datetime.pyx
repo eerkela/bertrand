@@ -92,7 +92,10 @@ cpdef inline datetime.datetime ns_to_pydatetime(
 cpdef inline object pydatetime_to_ns(datetime.datetime date, object tz = None):
     """Convert a python datetime into a nanosecond offset from UTC."""
     if tz and not date.tzinfo:
-        date = tz.localize(date)
+        if isinstance(tz, pytz.BaseTzInfo):  # use .localize
+            date = tz.localize(date)
+        else:  # use .replace
+            date = date.replace(tzinfo=tz)
 
     cdef datetime.timedelta result
 
@@ -147,7 +150,11 @@ cpdef datetime.datetime localize_pydatetime_scalar(
     if not dt.tzinfo:
         if tz is None:
             return dt  # do nothing
-        return tz.localize(dt)  # localize directly to final tz
+
+        # localize directly to final tz
+        if isinstance(tz, pytz.BaseTzInfo):  # use .localize
+            return tz.localize(dt)
+        return dt.replace(tzinfo=tz)
 
     # datetime is aware
     if tz is None:  # convert to utc, then strip tzinfo

@@ -1,20 +1,20 @@
 """This module contains dispatched cast() implementations for datetime data."""
 # pylint: disable=unused-argument
-from pdcast import types
-from pdcast.decorators.wrapper import SeriesWrapper
-from pdcast.util.round import Tolerance
-from pdcast.util.time import Epoch
+import datetime
+from functools import partial
 
 import numpy as np
 import pandas as pd
 
-from .base import (
-    to_boolean, to_integer, to_float, to_decimal, to_complex, to_datetime,
-    to_timedelta
-)
+from pdcast import types
+from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.util.round import round_div, Tolerance
+from pdcast.util import time
+
+from .base import cast, generic_to_integer
 
 
-@to_boolean.overload("datetime")
+@cast.overload("datetime", "bool")
 def datetime_to_boolean(
     series: SeriesWrapper,
     dtype: types.AtomicType,
@@ -22,15 +22,15 @@ def datetime_to_boolean(
     rounding: str,
     unit: str,
     step_size: int,
-    since: Epoch,
+    since: time.Epoch,
     errors: str,
     **unused
 ) -> SeriesWrapper:
     """Convert timedelta data to a boolean data type."""
     # 2-step conversion: timedelta -> decimal, decimal -> bool
-    series = to_decimal(
+    series = cast(
         series,
-        dtype="decimal",
+        "decimal",
         tol=tol,
         rounding=rounding,
         unit=unit,
@@ -38,9 +38,9 @@ def datetime_to_boolean(
         since=since,
         errors=errors
     )
-    return to_boolean(
+    return cast(
         series,
-        dtype=dtype,
+        dtype,
         tol=tol,
         rounding=rounding,
         unit=unit,
@@ -51,14 +51,133 @@ def datetime_to_boolean(
     )
 
 
-@to_integer.overload("datetime[numpy]")
+@cast.overload("datetime[pandas]", "int")
+def pandas_timestamp_to_integer(
+    series: SeriesWrapper,
+    dtype: types.AtomicType,
+    rounding: str,
+    tol: Tolerance,
+    unit: str,
+    step_size: int,
+    since: time.Epoch,
+    tz: datetime.tzinfo,
+    downcast: types.CompositeType,
+    errors: str,
+    **kwargs
+) -> SeriesWrapper:
+    """Convert pandas Timestamps into an integer data type."""
+    # apply tz if naive
+    series = series.rectify()
+    if tz and series.element_type.tz is None:
+        series.series = series.series.dt.tz_localize(tz)
+
+    # convert to ns
+    series = series.astype(np.int64)
+
+    # apply epoch
+    if since:
+        series.series = series.series.astype("O")  # overflow-safe
+        series.series -= since.offset
+
+    # convert ns to final unit, step_size
+    if unit != "ns":
+        series.series = time.convert_unit(
+            series.series,
+            "ns",
+            unit,
+            rounding=rounding or "down"
+        )
+    if step_size != 1:
+        series.series = round_div(
+            series.series,
+            step_size,
+            rule=rounding or "down"
+        )
+
+    # check for overflow
+    series, dtype = series.boundscheck(dtype, errors=errors)
+
+    # delegate to generic conversion
+    return generic_to_integer(
+        series,
+        dtype,
+        tol=tol,
+        downcast=downcast,
+        errors=errors
+    )
+
+
+@cast.overload("datetime[python]", "int")
+def python_datetime_to_integer(
+    series: SeriesWrapper,
+    dtype: types.AtomicType,
+    rounding: str,
+    tol: Tolerance,
+    unit: str,
+    step_size: int,
+    since: time.Epoch,
+    tz: datetime.tzinfo,
+    downcast: types.CompositeType,
+    errors: str,
+    **unused
+) -> SeriesWrapper:
+    """Convert python datetimes into an integer data type."""
+    # apply tz if naive
+    if tz and series.element_type.tz is None:
+        series = series.apply_with_errors(
+            partial(time.localize_pydatetime_scalar, tz=tz),
+            errors="raise",
+            element_type=series.element_type.replace(tz=tz)
+        )
+
+    # convert to ns
+    series = series.apply_with_errors(
+        time.pydatetime_to_ns,
+        errors="raise",
+        element_type=int
+    )
+
+    # apply epoch
+    if since:
+        series.series -= since.offset
+
+    # convert ns to final unit, step_size
+    if unit != "ns":
+        series.series = time.convert_unit(
+            series.series,
+            "ns",
+            unit,
+            rounding=rounding or "down"
+        )
+    if step_size != 1:
+        series.series = round_div(
+            series.series,
+            step_size,
+            rule=rounding or "down"
+        )
+
+    # check for overflow
+    series, dtype = series.boundscheck(dtype, errors=errors)
+
+    # delegate to generic conversion
+    return generic_to_integer(
+        series,
+        dtype,
+        tol=tol,
+        downcast=downcast,
+        errors=errors
+    )
+
+
+@cast.overload("datetime[numpy]", "int")
 def numpy_datetime64_to_integer(
     series: SeriesWrapper,
     dtype: types.AtomicType,
     rounding: str,
+    tol: Tolerance,
     unit: str,
     step_size: int,
-    since: Epoch,
+    since: time.Epoch,
     downcast: types.CompositeType,
     errors: str,
     **unused
@@ -69,130 +188,66 @@ def numpy_datetime64_to_integer(
     # NOTE: using numpy M8 array is ~2x faster than looping through series
     M8_str = f"M8[{series_type.step_size}{series_type.unit}]"
     arr = series.series.to_numpy(M8_str).view(np.int64).astype(object)
+
+    # correct for M8 step size
     arr *= series_type.step_size
-    if since:  # apply epoch offset if not utc
-        arr = convert_unit(
+
+    # convert to final unit
+    if since:
+        # convert to ns, subtract epoch, and then convert to final unit
+        arr = time.convert_unit(
             arr,
             series_type.unit,
             "ns"
         )
-        arr -= since.offset  # retains full ns precision from epoch
-        arr = convert_unit(
+        arr -= since.offset
+        arr = time.convert_unit(
             arr,
             "ns",
             unit,
             rounding=rounding or "down"
         )
-    else:  # skip straight to final unit
-        arr = convert_unit(
+
+    else:
+        # skip straight to final unit
+        arr = time.convert_unit(
             arr,
             series_type.unit,
             unit,
             rounding=rounding or "down"
         )
+
+    # apply final step size
+    if step_size != 1:
+        arr = round_div(arr, step_size, rule=rounding or "down")
+
+    # re-wrap as SeriesWrapper
     series = SeriesWrapper(
         pd.Series(arr, index=series.series.index),
         hasnans=series.hasnans,
-        element_type=resolve.resolve_type("int[python]")
+        element_type=int
     )
 
+    # check for overflow
     series, dtype = series.boundscheck(dtype, errors=errors)
-    return to_integer.generic(
+
+    # delegate to generic conversion
+    return generic_to_integer(
         series,
         dtype,
+        tol=tol,
         downcast=downcast,
         errors=errors
     )
 
 
-@to_integer.overload("datetime[pandas]")
-def pandas_timestamp_to_integer(
-    series: SeriesWrapper,
-    dtype: types.AtomicType,
-    rounding: str,
-    unit: str,
-    step_size: int,
-    since: Epoch,
-    naive_tz: pytz.BaseTzInfo,
-    downcast: types.CompositeType,
-    errors: str,
-    **kwargs
-) -> SeriesWrapper:
-    """Convert pandas Timestamps into an integer data type."""
-    # convert to ns
-    series = series.rectify()
-    if naive_tz:
-        series.series = series.series.dt.tz_localize(naive_tz)
-    series = series.astype(np.int64)
-
-    # apply epoch
-    if since:
-        series.series = series.series.astype("O")  # overflow-safe
-        series.series -= since.offset
-
-    # convert ns to final unit
-    if unit != "ns" or step_size != 1:
-        convert_ns_to_unit(
-            series,
-            unit=unit,
-            step_size=step_size,
-            rounding=rounding
-        )
-
-    # boundscheck and convert to final integer representation
-    series, dtype = series.boundscheck(dtype, errors=errors)
-    return super().to_integer(
-        series,
-        dtype,
-        downcast=downcast,
-        errors=errors
-    )
-
-
-@to_integer.overload("datetime[python]")
-def python_datetime_to_integer(
-    series: SeriesWrapper,
-    dtype: types.AtomicType,
-    unit: str,
-    step_size: int,
-    since: Epoch,
-    rounding: str,
-    downcast: types.CompositeType,
-    errors: str,
-    **unused
-) -> SeriesWrapper:
-    """Convert python datetimes into an integer data type."""
-    series = series.apply_with_errors(
-        pydatetime_to_ns,
-        element_type=resolve.resolve_type("int[python]")
-    )
-    if since:
-        series.series -= since.offset
-
-    if unit != "ns" or step_size != 1:
-        convert_ns_to_unit(
-            series,
-            unit=unit,
-            step_size=step_size,
-            rounding=rounding,
-        )
-
-    series, dtype = series.boundscheck(dtype, errors=errors)
-    return to_integer.generic(
-        series,
-        dtype,
-        downcast=downcast,
-        errors=errors
-    )
-
-
-@to_float.overload("datetime")
+@cast.overload("datetime", "float")
 def datetime_to_float(
     series: SeriesWrapper,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
-    since: Epoch,
+    since: time.Epoch,
     tol: Tolerance,
     rounding: str,
     downcast: types.CompositeType,
@@ -200,10 +255,10 @@ def datetime_to_float(
     **unused
 ) -> SeriesWrapper:
     """Convert timedelta data to a floating point data type."""
-    # convert to nanoseconds, then from nanoseconds to final unit
-    series = to_integer(
+    # 2 step conversion: datetime -> ns, ns -> float
+    series = cast(
         series,
-        dtype="int",
+        "int",
         unit="ns",
         step_size=1,
         since=since,
@@ -211,21 +266,28 @@ def datetime_to_float(
         downcast=None,
         errors=errors
     )
-    if unit != "ns" or step_size != 1:
-        series.series = convert_unit(
-            series.series.astype(object),
+
+    # convert ns to final unit
+    if unit != "ns":
+        series.series = time.convert_unit(
+            series.series,
             "ns",
             unit,
             rounding=rounding,
             since=since
         )
-        if step_size != 1:
-            series.series /= step_size
+        if rounding is None:
             series.element_type = float
 
-    return to_float(
+    # apply final step size
+    if step_size != 1:
+        series.series /= step_size
+        series.element_type = float
+
+    # integer/float -> float
+    return cast(
         series,
-        dtype=dtype,
+        dtype,
         unit=unit,
         step_size=step_size,
         since=since,
@@ -237,53 +299,26 @@ def datetime_to_float(
     )
 
 
-@to_complex.overload("datetime")
+@cast.overload("datetime", "complex")
 def datetime_to_complex(
     series: SeriesWrapper,
     dtype: types.AtomicType,
-    unit: str,
-    step_size: int,
-    since: Epoch,
-    tol: Tolerance,
-    rounding: str,
     downcast: types.CompositeType,
-    errors: str,
     **unused
 ) -> SeriesWrapper:
     """Convert timedelta data to a complex data type."""
-    # 2-step conversion: timedelta -> float, float -> complex
-    series = to_float(
-        series,
-        dtype=series.element_type.equiv_float,
-        unit=unit,
-        step_size=step_size,
-        since=since,
-        tol=tol,
-        rounding=rounding,
-        downcast=None,
-        errors=errors
-    )
-    return to_complex(
-        series,
-        dtype=dtype,
-        unit=unit,
-        step_size=step_size,
-        since=since,
-        tol=tol,
-        rounding=rounding,
-        downcast=downcast,
-        errors=errors,
-        **unused
-    )
+    # 2-step conversion: datetime -> float, float -> complex
+    series = cast(series, dtype.equiv_float, downcast=None, **unused)
+    return cast(series, dtype, downcast=downcast, **unused)
 
 
-@to_decimal.overload("datetime")
+@cast.overload("datetime", "decimal")
 def datetime_to_decimal(
     series: SeriesWrapper,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
-    since: Epoch,
+    since: time.Epoch,
     tol: Tolerance,
     rounding: str,
     errors: str,
@@ -291,9 +326,9 @@ def datetime_to_decimal(
 ) -> SeriesWrapper:
     """Convert timedelta data to a decimal data type."""
     # 2-step conversion: datetime -> ns, ns -> decimal
-    series = self.to_integer(
+    series = cast(
         series,
-        dtype="int",
+        "int",
         unit="ns",
         step_size=1,
         since=since,
@@ -301,9 +336,9 @@ def datetime_to_decimal(
         downcast=None,
         errors=errors
     )
-    series = to_decimal(
+    series = cast(
         series,
-        dtype=dtype,
+        dtype,
         unit=unit,
         step_size=step_size,
         since=since,
@@ -312,153 +347,137 @@ def datetime_to_decimal(
         errors=errors,
         **unused
     )
-    if unit != "ns" or step_size != 1:
-        series.series = convert_unit(
+
+    # convert decimal ns to final unit
+    if unit != "ns":
+        series.series = time.convert_unit(
             series.series,
             "ns",
             unit,
             rounding=rounding,
             since=since
         )
-        if step_size != 1:
-            series.series /= step_size
+
+    # apply final step size
+    if step_size != 1:
+        series.series /= step_size
 
     return series
 
 
-@to_datetime.overload("datetime")
+@cast.overload("datetime", "datetime")
 def datetime_to_datetime(
     series: SeriesWrapper,
     dtype: types.AtomicType,
     rounding: str,
     unit: str,
     step_size: int,
-    since: Epoch,
-    tz: pytz.BaseTzInfo,
-    naive_tz: pytz.BaseTzInfo,
+    since: time.Epoch,
+    tz: datetime.tzinfo,
     errors: str,
     **unused
 ) -> SeriesWrapper:
     """Convert datetime data to another datetime representation."""
     # trivial case
-    if dtype == self:
+    if dtype == series.element_type:
         return series.rectify()
 
-    if tz and hasattr(dtype, "tz"):
-        dtype = dtype.replace(tz=tz)
-    if naive_tz is None:
-        if hasattr(dtype, "tz"):
-            naive_tz = dtype.tz
-        else:
-            naive_tz = tz
-
     # 2-step conversion: datetime -> ns, ns -> datetime
-    series = to_integer(
+    series = cast(
         series,
-        dtype="int",
+        "int",
         rounding=rounding,
         unit="ns",
         step_size=1,
-        since=Epoch("utc"),
-        naive_tz=naive_tz,
+        since=time.Epoch("utc"),
+        tz=tz,
         downcast=None,
         errors=errors
     )
-    return to_datetime(
+    return cast(
         series,
-        dtype=dtype,
+        dtype,
         rounding=rounding,
         unit="ns",
         step_size=1,
-        since=Epoch("utc"),
+        since=time.Epoch("utc"),
         tz=tz,
-        naive_tz=naive_tz,
         errors=errors,
         **unused
     )
 
 
-@to_datetime.overload("datetime[pandas]")
-def pandas_timestamp_to_datetime(
+@cast.overload("datetime[pandas]", "datetime[pandas]")
+def pandas_timestamp_to_pandas_timestamp(
     series: SeriesWrapper,
     dtype: types.AtomicType,
-    tz: pytz.BaseTzInfo,
-    naive_tz: pytz.BaseTzInfo,
+    tz: datetime.tzinfo,
     **unused
 ) -> SeriesWrapper:
-    """Specialized for same-type conversions."""
-    series_type = series.element_type
+    """Fastpath for same-class pandas timestamp conversions."""
+    breakpoint()
+    series = series.rectify()
 
-    # fastpath for same-class datetime conversions
-    if type(dtype) == type(series_type):
-        series = series.rectify()
-        if tz:
-            dtype = dtype.replace(tz=tz)
-        if dtype.tz != series_type.tz:
-            if not series_type.tz:
-                if not naive_tz:
-                    result = series.series.dt.tz_localize(dtype.tz)
-                else:
-                    result = series.series.dt.tz_localize(naive_tz)
-                series = SeriesWrapper(
-                    result,
-                    hasnans=series.hasnans,
-                    element_type=series_type.replace(tz=naive_tz)
-                )
-            series = SeriesWrapper(
-                series.series.dt.tz_convert(dtype.tz),
-                hasnans=series.hasnans,
-                element_type=dtype
-            )
-        return series
+    # reconcile time zones
+    if tz:
+        dtype = dtype.replace(tz=tz)
 
-    return to_datetime.generic(
-        series,
-        dtype=dtype,
-        tz=tz,
-        naive_tz=naive_tz,
-        **unused
+    # trivial case: time zones are identical
+    if dtype.tz == series.element_type.tz:
+        return series.copy()
+
+    # localize/convert tim ezones
+    if not series.element_type.tz:
+        result = series.series.dt.tz_localize(dtype.tz)
+    else:
+        result = series.series.dt.tz_convert(dtype.tz)
+    return SeriesWrapper(
+        result,
+        hasnans=series.hasnans,
+        element_type=dtype
     )
 
 
-@to_datetime.overload("datetime[python]")
-def pydatetime_to_datetime(
+@cast.overload("datetime[python]", "datetime[python]")
+def python_datetime_to_python_datetime(
     series: SeriesWrapper,
     dtype: types.AtomicType,
-    tz: pytz.BaseTzInfo,
+    tz: datetime.tzinfo,
     **unused
 ) -> SeriesWrapper:
-    """Specialized for same-type conversions."""
-    series_type = series.element_type
+    """Fastpath for same-class pandas timestamp conversions."""
+    # reconcile time zones
+    if tz:
+        dtype = dtype.replace(tz=tz)
 
-    # fastpath for same-class datetime conversions
-    if type(dtype) == type(series_type):
-        if tz:
-            dtype = dtype.replace(tz=tz)
-        if dtype.tz != series_type.tz:
-            if not series_type.tz:
-                series = series_type.tz_localize(series, "UTC")
-            return series_type.tz_convert(series, dtype.tz)
+    # trivial case: time zones are identical
+    if dtype.tz == series.element_type.tz:
+        return series.copy()
 
-    return to_datetime.generic(series, dtype=dtype, tz=tz, **unused)
+    # localize/convert time zones
+    return series.apply_with_errors(
+        partial(time.localize_pydatetime_scalar, tz=tz),
+        errors="raise",
+        element_type=dtype
+    )
 
 
-@to_timedelta.overload("datetime")
+@cast.overload("datetime", "timedelta")
 def datetime_to_timedelta(
     series: SeriesWrapper,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
     rounding: str,
-    since: Epoch,
+    since: time.Epoch,
     errors: str,
     **unused
 ) -> SeriesWrapper:
     """Convert datetime data to a timedelta representation."""
     # 2-step conversion: datetime -> ns, ns -> timedelta
-    series = self.to_integer(
+    series = cast(
         series,
-        dtype="int",
+        "int",
         unit="ns",
         step_size=1,
         rounding=rounding,
@@ -466,9 +485,9 @@ def datetime_to_timedelta(
         downcast=None,
         errors=errors
     )
-    return to_timedelta(
+    return cast(
         series,
-        dtype=dtype,
+        dtype,
         unit="ns",
         step_size=1,
         rounding=rounding,
@@ -476,28 +495,3 @@ def datetime_to_timedelta(
         errors=errors,
         **unused
     )
-
-
-
-
-
-
-# def convert_ns_to_unit(
-#     series: SeriesWrapper,
-#     unit: str,
-#     step_size: int,
-#     rounding: str
-# ) -> None:
-#     """Helper for converting between integer time units."""
-#     series.series = convert_unit(
-#         series.series,
-#         "ns",
-#         unit,
-#         rounding=rounding or "down",
-#     )
-#     if step_size != 1:
-#         series.series = round_div(
-#             series.series,
-#             step_size,
-#             rule=rounding or "down"
-#         )
