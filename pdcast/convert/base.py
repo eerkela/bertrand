@@ -146,6 +146,14 @@ def cast(
     change the behavior of :func:`cast`.  The method that is chosen is based on
     the :attr:`family <AtomicType.family>` of its ``dtype`` argument.
     """
+    # recursively unwrap adapters and retry.
+    # NOTE: This operates like a recursive stack.  Adapters are popped
+    # off the stack in FIFO order before recurring, and then each
+    # adapter is pushed back onto the stack in the same order.
+    for before in getattr(dtype, "adapters", ()):
+        series = cast(series, dtype.wrapped, **kwargs)
+        return before.transform(series)
+
     raise NotImplementedError(
         f"no conversion found between {str(series.element_type)} and "
         f"{str(dtype)}"

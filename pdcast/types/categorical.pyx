@@ -1,9 +1,6 @@
 """This module describes a ``CategoricalType`` object, which can be used to
 dynamically wrap other types.
 """
-from types import MappingProxyType
-from typing import Any
-
 import numpy as np
 import pandas as pd
 
@@ -15,7 +12,7 @@ from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 from pdcast.decorators cimport wrapper
 
-from .base cimport AtomicType, AdapterType, CompositeType, ScalarType
+from .base cimport AdapterType, CompositeType, ScalarType
 from .base import register
 
 

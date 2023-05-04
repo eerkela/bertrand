@@ -1,7 +1,6 @@
 """This module describes a ``SparseType`` object, which can be used to
 dynamically wrap other types.
 """
-from types import MappingProxyType
 from typing import Any
 
 import numpy as np
@@ -13,13 +12,18 @@ from pdcast import resolve
 from pdcast.decorators cimport wrapper
 from pdcast.util.type_hints import type_specifier
 
-from .base cimport AtomicType, AdapterType, CompositeType, ScalarType
+from .base cimport AdapterType, CompositeType, ScalarType
 from .base import register
 
 
 # TODO: may need to create a special case for nullable integers, booleans
 # to use their numpy counterparts.  This avoids converting to object, but
 # forces the fill value to be pd.NA.
+# -> this can be handled in a dispatched sparsify() implementation
+
+
+# TODO: pdcast.resolve_type("sparse[categorical[int], 1]")
+
 
 
 @register

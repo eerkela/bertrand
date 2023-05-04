@@ -444,13 +444,15 @@ class DispatchFunc(BaseDecorator):
         **kwargs
     ) -> SeriesWrapper:
         """Dispatch a homogenous series to the correct implementation."""
+        series_type = series.element_type
+
         # rectify series
         series = series.rectify()
 
         # bind *args, **kwargs
         bound = self._signature.bind(series, *args, **kwargs)
         bound.apply_defaults()
-        key = (series.element_type,)
+        key = (series_type,)
         key += tuple(
             detect.detect_type(bound.arguments[param])
             for param in self._arguments[1:]
@@ -463,22 +465,20 @@ class DispatchFunc(BaseDecorator):
         except KeyError:
             result = None
 
-        # # TODO: adapters might be handled by their own cast() overloads.
-
-        # # recursively unwrap adapters and retry.
-        # if result is None:
-        #     # NOTE: This operates like a recursive stack.  Adapters are popped
-        #     # off the stack in FIFO order before recurring, and then each
-        #     # adapter is pushed back onto the stack in the same order.
-        #     for before in getattr(series.element_type, "adapters", ()):
-        #         series = series.element_type.inverse_transform(series)
-        #         series = self._dispatch_scalar(series, *args, **kwargs)
-        #         if (
-        #             self._wrap_adapters and
-        #             series.element_type == before.wrapped
-        #         ):
-        #             series = series.element_type.transform(series)
-        #         return series
+        # recursively unwrap adapters and retry.
+        if result is None:
+            # NOTE: This operates like a recursive stack.  Adapters are popped
+            # off the stack in FIFO order before recurring, and then each
+            # adapter is pushed back onto the stack in the same order.
+            for before in getattr(series_type, "adapters", ()):
+                series = before.inverse_transform(series)
+                series = self._dispatch_scalar(series, *args, **kwargs)
+                if (
+                    self._wrap_adapters and
+                    series.element_type == before.wrapped
+                ):
+                    series = before.transform(series)
+                return series
 
         # fall back to generic implementation
         if result is None:
@@ -489,15 +489,15 @@ class DispatchFunc(BaseDecorator):
             raise TypeError(
                 f"dispatched implementation of {self.__wrapped__.__name__}() "
                 f"did not return a SeriesWrapper for type: "
-                f"{series.element_type}"
+                f"{series_type}"
             )
 
         # ensure final index is a subset of original index
         if not result.index.difference(series.index).empty:
             raise RuntimeError(
                 f"index mismatch in {self.__wrapped__.__name__}(): dispatched "
-                f"implementation for type {series.element_type} must return "
-                f"a series with the same index as the original"
+                f"implementation for type {series_type} must return a series "
+                f"with the same index as the original"
             )
 
         return result.rectify()
