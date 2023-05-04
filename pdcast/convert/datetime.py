@@ -14,6 +14,13 @@ from pdcast.util import time
 from .base import cast, generic_to_integer
 
 
+# TODO: pdcast.cast("1883-11-18 12:00:00", "datetime", tz="US/Pacific")
+# induces an `AmbiguousTimeError: Cannot infer dst time from 1883-11-18
+# 12:00:00, try using the 'ambiguous' argument`
+
+# -> have to pass in ambiguous_tz, nonexistent_tz arguments to cast()
+
+
 @cast.overload("datetime", "bool")
 def datetime_to_boolean(
     series: SeriesWrapper,
@@ -258,7 +265,7 @@ def datetime_to_float(
     # 2 step conversion: datetime -> ns, ns -> float
     series = cast(
         series,
-        "int",
+        int,
         unit="ns",
         step_size=1,
         since=since,

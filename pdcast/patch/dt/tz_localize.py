@@ -42,8 +42,7 @@ tz_localize.register_arg(time.tz)
 def localize_pandas_timestamp(
     series: SeriesWrapper,
     tz: datetime.tzinfo | None,
-    *args,
-    **kwargs
+    **unused
 ) -> SeriesWrapper:
     """TODO"""
     series = series.rectify()
@@ -54,7 +53,7 @@ def localize_pandas_timestamp(
         orig = orig.original
 
     return SeriesWrapper(
-        orig(series.series, tz, *args, **kwargs),
+        orig(series.series, tz, **unused),
         hasnans=series.hasnans,
         element_type=series.element_type.replace(tz=tz)
     )
@@ -64,8 +63,7 @@ def localize_pandas_timestamp(
 def localize_python_datetime(
     series: SeriesWrapper,
     tz: datetime.tzinfo | None,
-    *args,
-    **kwargs
+    **unused
 ) -> SeriesWrapper:
     """TODO"""
     # emulate pandas tz_localize limitation
