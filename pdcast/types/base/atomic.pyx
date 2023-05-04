@@ -11,18 +11,17 @@ import pandas as pd
 from pandas.api.extensions import ExtensionDtype, register_extension_dtype
 import pytz
 
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
-
-from pdcast.types.array import abstract
-cimport pdcast.types.base.registry as registry
-import pdcast.types.base.registry as registry
-cimport pdcast.types.base.adapter as adapter
-cimport pdcast.types.base.composite as composite
-
+from pdcast cimport resolve
+from pdcast import resolve
 from pdcast.decorators cimport wrapper
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import array_like, type_specifier
+
+from . cimport registry
+import pdcast.types.base.registry as registry  # NOTE: fails if relative
+from . cimport adapter
+from . cimport composite
+from pdcast.types.array import abstract
 
 
 # TODO: add examples/raises for each method
@@ -313,9 +312,7 @@ cdef class AtomicType(ScalarType):
             return abstract.construct_extension_dtype(
                 self,
                 is_boolean=self.is_subtype("bool"),
-                is_numeric=self.is_subtype(
-                    "bool, int, float, complex, decimal"
-                ),
+                is_numeric=self.is_numeric,
                 add_comparison_ops=True,
                 add_arithmetic_ops=True
             )
@@ -353,6 +350,13 @@ cdef class AtomicType(ScalarType):
         AtomicType.is_na : for comparisons against this value.
         """
         return pd.NA
+
+    @property
+    def is_numeric(self) -> bool:
+        """Used to auto-generate :class:`AbstractDtypes <pdcast.AbstractDtype>`
+        from this type.
+        """
+        return False
 
     ############################
     ####    CONSTRUCTORS    ####

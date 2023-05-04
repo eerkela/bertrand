@@ -7,7 +7,7 @@ from typing import Callable
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
 
-from .base import cast
+from .base import cast, generic_to_object, safe_apply
 
 
 @cast.overload("object", "bool")
@@ -19,14 +19,29 @@ def object_to_boolean(
     **unused
 ) -> SeriesWrapper:
     """Convert unstructured objects to a boolean data type."""
-    return two_step_conversion(
-        series=series,
-        dtype=dtype,
-        call=dtype.type_def if call is None else call,
+    # if no callable is given, hook into object's __bool__ dunder
+    if call is None:
+        call = bool
+        element_type = bool
+    else:
+        element_type = None  # don't know what output of `call` will be
+
+    # apply callable
+    series = series.apply_with_errors(
+        call,
         errors=errors,
-        conv_func=dtype.to_boolean,
-        **unused
+        element_type=element_type
     )
+
+    # check result is boolean
+    if not series.element_type.is_subtype("bool"):
+        raise TypeError(
+            f"`call` must produce boolean output, not "
+            f"{str(series.element_type)}"
+        )
+
+    # convert int[python] -> final repr
+    return cast(series, dtype, call=call, errors=errors, **unused)
 
 
 @cast.overload("object", "int")
@@ -38,14 +53,29 @@ def object_to_integer(
     **unused
 ) -> SeriesWrapper:
     """Convert unstructured objects to an integer data type."""
-    return two_step_conversion(
-        series=series,
-        dtype=dtype,
-        call=dtype.type_def if call is None else call,
+    # if no callable is given, hook into object's __int__ dunder
+    if call is None:
+        call = int
+        element_type = int
+    else:
+        element_type = None
+
+    # apply callable
+    series = series.apply_with_errors(
+        call,
         errors=errors,
-        conv_func=dtype.to_integer,
-        **unused
+        element_type=element_type
     )
+
+    # check result is integer
+    if not series.element_type.is_subtype("int"):
+        raise TypeError(
+            f"`call` must produce integer output, not "
+            f"{str(series.element_type)}"
+        )
+
+    # apply final conversion
+    return cast(series, dtype, call=call, errors=errors, **unused)
 
 
 @cast.overload("object", "float")
@@ -57,14 +87,29 @@ def object_to_float(
     **unused
 ) -> SeriesWrapper:
     """Convert unstructured objects to a float data type."""
-    return two_step_conversion(
-        series=series,
-        dtype=dtype,
-        call=dtype.type_def if call is None else call,
+    # if no callable is given, hook into object's __float__ dunder
+    if call is None:
+        call = float
+        element_type = float
+    else:
+        element_type = None
+
+    # apply callable
+    series = series.apply_with_errors(
+        call,
         errors=errors,
-        conv_func=convert.to_float,
-        **unused
+        element_type=element_type
     )
+
+    # check result is float
+    if not series.element_type.is_subtype("float"):
+        raise TypeError(
+            f"`call` must produce float output, not "
+            f"{str(series.element_type)}"
+        )
+
+    # convert float[python] -> final repr
+    return cast(series, dtype, call=call, errors=errors, **unused)
 
 
 @cast.overload("object", "complex")
@@ -76,14 +121,29 @@ def object_to_complex(
     **unused
 ) -> SeriesWrapper:
     """Convert unstructured objects to a complex data type."""
-    return two_step_conversion(
-        series=series,
-        dtype=dtype,
-        call=dtype.type_def if call is None else call,
+    # if no callable is given, hook into object's __complex__ dunder
+    if call is None:
+        call = complex
+        element_type = complex
+    else:
+        element_type = None
+
+    # apply callable
+    series = series.apply_with_errors(
+        call,
         errors=errors,
-        conv_func=dtype.to_complex,
-        **unused
+        element_type=element_type
     )
+
+    # check result is complex
+    if not series.element_type.is_subtype("complex"):
+        raise TypeError(
+            f"`call` must produce complex output, not "
+            f"{str(series.element_type)}"
+        )
+
+    # convert complex[python] -> final repr
+    return cast(series, dtype, call=call, errors=errors, **unused)
 
 
 @cast.overload("object", "decimal")
@@ -95,14 +155,12 @@ def object_to_decimal(
     **unused
 ) -> SeriesWrapper:
     """Convert unstructured objects to a decimal data type."""
-    return two_step_conversion(
-        series=series,
-        dtype=dtype,
-        call=dtype.type_def if call is None else call,
-        errors=errors,
-        conv_func=dtype.to_decimal,
-        **unused
-    )
+    # if no callable is given, hook into object's __float__ dunder
+    if call is None:
+        call = lambda x: dtype.type_def(float(x))
+
+    # check callable output matches dtype at every index
+    return safe_apply(series=series, dtype=dtype, call=call, errors=errors)
 
 
 @cast.overload("object", "datetime")
@@ -114,14 +172,13 @@ def object_to_datetime(
     **unused
 ) -> SeriesWrapper:
     """Convert unstructured objects to a datetime data type."""
-    return two_step_conversion(
-        series=series,
-        dtype=dtype,
-        call=dtype.type_def if call is None else call,
-        errors=errors,
-        conv_func=dtype.to_datetime,
-        **unused
-    )
+    # if callable is given, convert directly
+    if call:
+        return safe_apply(series=series, dtype=dtype, call=call, errors=errors)
+
+    # 2-step conversion: object -> float, float -> datetime
+    series = cast(series, float, call=float, errors=errors)
+    return cast(series, dtype, call=call, errors=errors, **unused)
 
 
 @cast.overload("object", "timedelta")
@@ -133,14 +190,18 @@ def object_to_timedelta(
     **unused
 ) -> SeriesWrapper:
     """Convert unstructured objects to a timedelta data type."""
-    return two_step_conversion(
-        series=series,
-        dtype=dtype,
-        call=dtype.type_def if call is None else call,
-        errors=errors,
-        conv_func=dtype.to_timedelta,
-        **unused
-    )
+    # if callable is given, convert directly
+    if call:
+        return safe_apply(
+            series=series,
+            dtype=dtype,
+            call=call,
+            errors=errors
+        )
+
+    # 2-step conversion: object -> float, float -> timedelta
+    series = cast(series, float, call=float, errors=errors)
+    return cast(series, dtype, call=call, errors=errors, **unused)
 
 
 @cast.overload("object", "string")
@@ -152,14 +213,15 @@ def object_to_string(
     **unused
 ) -> SeriesWrapper:
     """Convert unstructured objects to a string data type."""
-    return two_step_conversion(
-        series=series,
-        dtype=dtype,
-        call=dtype.type_def if call is None else call,
-        errors=errors,
-        conv_func=dtype.to_string,
-        **unused
-    )
+    # if no callable is given, hook into object's __str__ dunder
+    if call is None:
+        if dtype.type_def is str:
+            call = str
+        else:
+            call = lambda x: dtype.type_def(str(x))
+
+    # check callable output matches dtype at every index
+    return safe_apply(series=series, dtype=dtype, call=call, errors=errors)
 
 
 @cast.overload("object", "object")
@@ -172,36 +234,6 @@ def object_to_object(
     # trivial case
     if dtype == series.element_type:
         return series.rectify()
-    return to_object.generic(series, dtype=dtype, **unused)
 
-
-#######################
-####    PRIVATE    ####
-#######################
-
-
-def two_step_conversion(
-    series: SeriesWrapper,
-    dtype: types.AtomicType,
-    call: Callable,
-    errors: str,
-    conv_func: Callable,
-    **unused
-) -> SeriesWrapper:
-    """A conversion in two parts."""
-    def safe_call(val):
-        result = call(val)
-        output_type = type(result)
-        if output_type != dtype.type_def:
-            raise TypeError(
-                f"`call` must return an object of type {dtype.type_def}"
-            )
-        return result
-
-    # apply `safe_call` over series and pass to delegated conversion
-    series = series.apply_with_errors(
-        call=safe_call,
-        errors=errors,
-        element_type=dtype
-    )
-    return conv_func(series, dtype=dtype, errors=errors, **unused)
+    # fall back to generic implementation
+    return generic_to_object(series, dtype=dtype, **unused)

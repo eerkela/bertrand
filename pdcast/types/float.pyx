@@ -29,6 +29,8 @@ cdef bint has_longdouble = (np.dtype(np.longdouble).itemsize > 8)
 
 class FloatMixin:
 
+    is_numeric = True
+
     ############################
     ####    TYPE METHODS    ####
     ############################

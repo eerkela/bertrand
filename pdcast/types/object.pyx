@@ -85,58 +85,8 @@ class ObjectType(AtomicType, cache_size=64):
 #######################
 
 
-class Test:
-
-    def __init__(self, x: str = "foo"):
-        self.x = x
-
-    def as_boolean(self):
-        print("Test.as_boolean called!")
-        return bool(self)
-
-    def __bool__(self) -> bool:
-        return np.random.rand() > 0.5
-
-    def __int__(self) -> int:
-        return np.random.randint(10)
-
-    def __float__(self) -> float:
-        return np.random.rand()
-
-    def __complex__(self) -> complex:
-        return complex(np.random.rand(), np.random.rand())
-
-    def __str__(self) -> str:
-        return self.x
-
-
-class Test2:
-
-    def __init__(self, x: Test):
-        self.x = f"{x} bar"
-
-    def as_boolean(self):
-        print("Test2.as_boolean called!")
-        return bool(self)
-
-    def __bool__(self) -> bool:
-        return np.random.rand() > 0.5
-
-    def __int__(self) -> int:
-        return np.random.randint(10)
-
-    def __float__(self) -> float:
-        return np.random.rand()
-
-    def __complex__(self) -> complex:
-        return complex(np.random.rand(), np.random.rand())
-
-    def __str__(self) -> str:
-        return self.x
-
-
 cdef object from_caller(str name, int stack_index = 0):
-    """Get an arbitrary object from a parent calling context."""
+    """Get an arbitrary object from a parent calling context by name."""
     # NOTE: cython does not yield proper inspect.frame objects. In normal
     # python, a stack_index of 0 would reference the `from_caller` frame
     # itself, but in cython (as implemented), it refers to the first python

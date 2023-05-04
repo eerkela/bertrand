@@ -5,8 +5,8 @@ to other types.
 import inspect
 from typing import Any
 
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
+from pdcast cimport resolve
+from pdcast import resolve
 
 from .adapter import AdapterType
 from .atomic import ScalarType, AtomicType

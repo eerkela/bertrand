@@ -18,6 +18,8 @@ from .base import generic, subtype, register
 
 class IntegerMixin:
 
+    is_numeric = True
+
     @property
     def larger(self) -> list:
         """Get a list of types that this type can be upcasted to."""
@@ -564,31 +566,6 @@ class PythonIntegerType(IntegerMixin, AtomicType):
 #######################
 ####    PRIVATE    ####
 #######################
-
-
-cdef Py_UNICODE[36] base_lookup = (
-    [chr(ord("0") + i) for i in range(10)] + 
-    [chr(ord("A") + i) for i in range(26)]
-)
-
-
-cdef str int_to_base(object val, unsigned char base):
-    if not val:
-        return "0"
-
-    cdef bint negative = val < 0
-    if negative:
-        val = abs(val)
-
-    cdef list chars = []
-    while val:
-        chars.append(base_lookup[val % base])
-        val //= base
-
-    cdef str result = "".join(chars[::-1])
-    if negative:
-        result = "-" + result
-    return result
 
 
 # these aliases are platform-specific and may be assigned to different integer

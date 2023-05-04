@@ -33,6 +33,7 @@ generic
     Transform a subclass of ``AtomicType`` into a generic type, which can
     reference other types as backends.
 """
+from .array import AbstractArray, AbstractDtype
 from .base import (
     AdapterType, AtomicType, BaseType, CompositeType, generic, register,
     ScalarType, subtype, TypeRegistry

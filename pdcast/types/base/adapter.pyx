@@ -8,14 +8,13 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
-
-cimport pdcast.types.base.atomic as atomic
-cimport pdcast.types.base.composite as composite
-
+from pdcast cimport resolve
+from pdcast import resolve
 from pdcast.decorators cimport wrapper
 from pdcast.util.type_hints import type_specifier
+
+from . cimport atomic
+from . cimport composite
 
 
 cdef class AdapterType(atomic.ScalarType):

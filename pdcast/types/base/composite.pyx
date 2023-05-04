@@ -4,13 +4,12 @@ group types into a set-like container.
 cimport numpy as np
 import numpy as np
 
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
-
-cimport pdcast.types.base.atomic as atomic
-cimport pdcast.types.base.adapter as adapter
-
+from pdcast cimport resolve
+from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
+
+from . cimport atomic
+from . cimport adapter
 
 
 cdef class CompositeType(BaseType):

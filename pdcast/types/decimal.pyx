@@ -27,6 +27,7 @@ class DecimalType(AtomicType):
     type_def = decimal.Decimal
     itemsize = sys.getsizeof(decimal.Decimal(0))
     na_value = decimal.Decimal("nan")
+    is_numeric = True
 
 
 ##############################
@@ -42,3 +43,4 @@ class PythonDecimalType(AtomicType):
     type_def = decimal.Decimal
     itemsize = sys.getsizeof(decimal.Decimal(0))
     na_value = decimal.Decimal("nan")
+    is_numeric = True

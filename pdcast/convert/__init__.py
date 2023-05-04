@@ -48,4 +48,4 @@ from .decimal import *
 from .datetime import *
 from .timedelta import *
 from .string import *
-# from .object import *
+from .object import *

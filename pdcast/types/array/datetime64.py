@@ -16,7 +16,7 @@ from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
 import pdcast.convert as convert
 
 import pdcast.util.time as time
-from pdcast.type_hints import type_specifier
+from pdcast.util.type_hints import type_specifier
 
 
 # NOTE: it is currently not possible to store np.datetime64 objects in a
@@ -126,7 +126,7 @@ class M8Dtype(ExtensionDtype):
         return np.dtype(f"M8[{self.step_size}{self.unit}]")
 
     def __repr__(self) -> str:
-        return f"M8Dtype(unit={self.unit}, step_size={self.step_size})"
+        return f"M8Dtype(unit={repr(self.unit)}, step_size={self.step_size})"
 
 
 class M8Array(ExtensionArray, ExtensionScalarOpsMixin):

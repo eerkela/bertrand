@@ -10,7 +10,7 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-cimport pdcast.types.base.atomic as atomic
+from . cimport atomic
 
 
 ######################

@@ -25,6 +25,8 @@ cdef bint has_clongdouble = (np.dtype(np.clongdouble).itemsize > 16)
 
 class ComplexMixin:
 
+    is_numeric = True
+
     ############################
     ####    TYPE METHODS    ####
     ############################

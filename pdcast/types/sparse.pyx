@@ -7,15 +7,19 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from pdcast import convert
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
+from pdcast cimport resolve
+from pdcast import resolve
 
 from pdcast.decorators cimport wrapper
 from pdcast.util.type_hints import type_specifier
 
 from .base cimport AtomicType, AdapterType, CompositeType, ScalarType
-from .base import dispatch, register
+from .base import register
+
+
+# TODO: may need to create a special case for nullable integers, booleans
+# to use their numpy counterparts.  This avoids converting to object, but
+# forces the fill value to be pd.NA.
 
 
 @register
@@ -23,7 +27,6 @@ class SparseType(AdapterType):
 
     name = "sparse"
     aliases = {pd.SparseDtype, "sparse", "Sparse"}
-    is_sparse = True
     _priority = 10
 
     def __init__(self, wrapped: ScalarType = None, fill_value: Any = None):
@@ -32,6 +35,7 @@ class SparseType(AdapterType):
             if fill_value is None:
                 fill_value = wrapped.fill_value
             wrapped = wrapped.wrapped
+
         elif wrapped is not None:  # 2nd order
             for x in wrapped.adapters:
                 if isinstance(x.wrapped, SparseType):
@@ -61,6 +65,9 @@ class SparseType(AdapterType):
         cls,
         dtype: pd.api.extensions.ExtensionDtype
     ) -> AdapterType:
+        """Convert a pandas SparseDtype into a
+        :class:`SparseType <pdcast.SparseType>` object.
+        """
         return cls(
             wrapped=resolve.resolve_type(dtype.subtype),
             fill_value=dtype.fill_value
@@ -72,6 +79,11 @@ class SparseType(AdapterType):
         wrapped: str = None,
         fill_value: str = None
     ) -> AdapterType:
+        """Resolve a sparse specifier in the
+        :ref:`type specification mini langauge <resolve_type.mini_language>`.
+        """
+        from pdcast.convert import cast
+
         if wrapped is None:
             return cls()
 
@@ -83,7 +95,7 @@ class SparseType(AdapterType):
             if fill_value in resolve.na_strings:
                 parsed = resolve.na_strings[fill_value]
             else:
-                parsed = convert.cast(fill_value, instance)[0]
+                parsed = cast(fill_value, instance)[0]
 
         # insert into sorted adapter stack according to priority
         for x in instance.adapters:
@@ -102,6 +114,9 @@ class SparseType(AdapterType):
         wrapped: ScalarType = None,
         fill_value: Any = None
     ) -> str:
+        """Create a unique string representation of a
+        :class:`SparseType <pdcast.SparseType>`
+        """
         if wrapped is None:
             return cls.name
         if fill_value is None:
@@ -139,7 +154,7 @@ class SparseType(AdapterType):
         if other.wrapped is None:
             return False
 
-        # check for equal fill values
+        # check for unequal fill values
         if self.kwargs["fill_value"] is not None:
             na_1 = self.is_na(self.fill_value)
             na_2 = other.is_na(other.fill_value)
@@ -157,6 +172,7 @@ class SparseType(AdapterType):
 
     @property
     def dtype(self) -> pd.SparseDtype:
+        """An equivalent SparseDtype to use for arrays of this type."""
         return pd.SparseDtype(self.wrapped.dtype, fill_value=self.fill_value)
 
     ##############################

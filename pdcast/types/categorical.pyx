@@ -7,12 +7,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from pdcast import convert
-import pdcast.convert as convert
-cimport pdcast.detect as detect
-import pdcast.detect as detect
-cimport pdcast.resolve as resolve
-import pdcast.resolve as resolve
+from pdcast cimport detect
+from pdcast import detect
+from pdcast cimport resolve
+from pdcast import resolve
 
 from pdcast.util.type_hints import type_specifier
 from pdcast.decorators cimport wrapper
@@ -39,7 +37,6 @@ class CategoricalType(AdapterType):
         "Categorical"
     }
     _priority = 5
-    is_categorical = True
 
     def __init__(self, wrapped: ScalarType = None, levels: list = None):
         # do not re-wrap CategoricalTypes
@@ -79,6 +76,8 @@ class CategoricalType(AdapterType):
         wrapped: str = None,
         levels: str = None
     ) -> AdapterType:
+        from pdcast.convert import cast
+
         if wrapped is None:
             return cls()
 
@@ -91,7 +90,7 @@ class CategoricalType(AdapterType):
             if not match:
                 raise TypeError(f"levels must be list-like: {levels}")
             tokens = resolve.tokenize(match.group("body"))
-            parsed = convert.cast(tokens, instance).tolist()
+            parsed = cast(tokens, instance).tolist()
 
         # insert into sorted adapter stack according to priority
         for x in instance.adapters:

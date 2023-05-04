@@ -373,30 +373,14 @@ def generic_to_object(
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
-    direct = call is None
-    if direct:
+    if call is None:
         call = dtype.type_def
 
     # object root type
     if call is object:
         return series.astype("O")
 
-    def wrapped_call(val):
-        result = call(val)
-        if direct:
-            return result
-        output_type = type(result)
-        if output_type != dtype.type_def:
-            raise ValueError(
-                f"`call` must return an object of type {dtype.type_def}"
-            )
-        return result
-
-    return series.apply_with_errors(
-        call=wrapped_call,
-        errors=errors,
-        element_type=dtype
-    )
+    return safe_apply(series=series, dtype=dtype, call=call, errors=errors)
 
 
 #######################
@@ -513,6 +497,35 @@ def downcast_complex(
         result.series.astype(target.dtype, copy=False),
         hasnans=real.hasnans or imag.hasnans,
         element_type=target
+    )
+
+
+def safe_apply(
+    series: SeriesWrapper,
+    dtype: types.AtomicType,
+    call: Callable,
+    errors: str
+) -> SeriesWrapper:
+    """Apply a callable over the input series that produces objects of the
+    appropriate type.
+
+    This is only used for conversions to or from
+    :class:`ObjectTypes <pdcast.ObjectType>`.
+    """
+    def safe_call(val):
+        result = call(val)
+        output_type = type(result)
+        if output_type != dtype.type_def:
+            raise TypeError(
+                f"`call` must return an object of type {dtype.type_def}"
+            )
+        return result
+
+    # apply `safe_call` over series and pass to delegated conversion
+    return series.apply_with_errors(
+        call=safe_call,
+        errors=errors,
+        element_type=dtype
     )
 
 

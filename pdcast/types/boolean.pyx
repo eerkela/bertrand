@@ -21,6 +21,7 @@ class BooleanMixin:
     for boolean types.
     """
 
+    is_numeric = True
     max = 1
     min = 0
 
