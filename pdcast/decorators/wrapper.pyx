@@ -26,6 +26,9 @@ from pdcast.util.type_hints import array_like, numeric, type_specifier
 
 # TODO: tol should clip overflowing values if they are within the window.
 # -> force boundscheck to accept ``tol``.
+# -> boundscheck can be completely decoupled from SeriesWrapper.  Put it in
+# convert/base.  Same with upcast()
+
 
 
 # TODO: SparseType works, but not in all cases.
@@ -39,6 +42,7 @@ from pdcast.util.type_hints import array_like, numeric, type_specifier
 # TODO: drop astype() from SeriesWrapper and put it in
 # AbstractArray.from_sequence().  Then handle the integer/boolean special case
 # in separate overloaded cast() implementations.
+# -> potentially ruins rectify() performance
 
 
 # -> SeriesWrapper might be completely internal.  Apply_with_errors becomes
@@ -131,7 +135,7 @@ cdef class SeriesWrapper:
         hasnans: bool = None,
         element_type: type_specifier = None,
     ):
-        self.series = series
+        self.series = as_series(series)
         self.hasnans = hasnans
         self.element_type = element_type
 
@@ -971,3 +975,21 @@ cdef tuple _apply_with_errors(np.ndarray[object] arr, object call, str errors):
             raise err
 
     return result, has_errors, index
+
+
+cpdef object as_series(object data):
+    """Convert arbitrary data into a corresponding pd.Series object."""
+    # Series
+    if isinstance(data, pd.Series):
+        return data
+
+    # SeriesWrapper
+    if isinstance(data, SeriesWrapper):
+        return data.series
+
+    # numpy array
+    if isinstance(data, np.ndarray):
+        return pd.Series(np.atleast_1d(data))
+
+    # scalar or non-array iterable
+    return pd.Series(data, dtype="O")

@@ -13,7 +13,7 @@ from pdcast.util import time
 
 @attachable
 @extension_func
-@dispatch
+@dispatch("series")
 def tz_localize(
     series: SeriesWrapper,
     tz: str | datetime.tzinfo | None,

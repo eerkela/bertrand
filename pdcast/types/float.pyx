@@ -14,9 +14,6 @@ from .base import generic, subtype, register
 import pdcast.types.complex as complex_types
 
 
-# TODO: Add pyarrow float types?
-
-
 ##################################
 ####    MIXINS & CONSTANTS    ####
 ##################################

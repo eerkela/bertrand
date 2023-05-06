@@ -3,6 +3,7 @@ cimport numpy as np
 cimport pdcast.types as types
 
 
+# classes
 cdef class SeriesWrapper:
     cdef:
         object _max
@@ -17,3 +18,7 @@ cdef class SeriesWrapper:
         types.BaseType _element_type
         object _hasnans  # bint can't store None
         object encoder
+
+
+# functions
+cpdef object as_series(object data)

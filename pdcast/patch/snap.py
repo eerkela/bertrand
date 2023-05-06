@@ -15,7 +15,7 @@ from .round import round
 
 @attachable
 @extension_func
-@dispatch
+@dispatch("series")
 def snap(
     series: SeriesWrapper,
     tol: numeric = 1e-6

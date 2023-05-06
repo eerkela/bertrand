@@ -22,9 +22,6 @@ from .base import register
 # -> this can be handled in a dispatched sparsify() implementation
 
 
-# TODO: pdcast.resolve_type("sparse[categorical[int], 1]")
-
-
 
 @register
 class SparseType(AdapterType):

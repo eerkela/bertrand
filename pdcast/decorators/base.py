@@ -60,9 +60,11 @@ class BaseDecorator:
 
     def __delattr__(self, name: str) -> None:
         """Delegate deleters to wrapped object."""
-        if hasattr(self, name):
+        # NOTE: hasattr() doesn't respect nested decorators
+        try:
+            object.__getattribute__(self, name)
             super().__delattr__(name)
-        else:
+        except AttributeError:
             delattr(self.__wrapped__, name)
 
     ################################

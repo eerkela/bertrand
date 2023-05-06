@@ -13,7 +13,7 @@ from pdcast.util.round import round_decimal, round_div, round_float
 
 @attachable
 @extension_func
-@dispatch
+@dispatch("series")
 def round(
     series: SeriesWrapper,
     decimals: int = 0,

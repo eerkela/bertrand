@@ -3,15 +3,15 @@
 See the API docs for :func:`@extension_func <pdcast.extension_func>` for more
 details.
 """
-# pylint: disable=unused-argument
+# pylint: disable=unused-argument, anomalous-backslash-in-string
+# pylint: disable=redefined-outer-name
 from __future__ import annotations
 import datetime
 import decimal
-from typing import Callable, Iterable
-
-import pytz
+from typing import Any, Callable, Iterable
 
 from pdcast import types
+from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
 from pdcast.patch.round import rule as rounding_rule
 from pdcast.patch.snap import tol as snap_tol
@@ -94,6 +94,15 @@ defaults = {
     "downcast": False,
     "errors": "raise"
 }
+
+
+@cast.register_arg
+def series(val: Any, state: dict) -> SeriesWrapper:
+    """TODO
+    """
+    if isinstance(val, SeriesWrapper):
+        return val
+    return SeriesWrapper(val)
 
 
 @cast.register_arg

@@ -12,7 +12,8 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from pdcast.decorators.attachable import attachable
+from pdcast.decorators import attachable
+from pdcast.decorators cimport wrapper
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 cimport pdcast.types as types
@@ -24,7 +25,7 @@ import pdcast.types as types
 ######################
 
 
-@attachable
+@attachable.attachable
 def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
     """Infer types from example data.
 
@@ -58,6 +59,10 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
     # trivial case: example is already a type object
     if isinstance(data, types.BaseType):
         return data
+
+    # trivial case: example is a SeriesWrapper
+    if isinstance(data, wrapper.SeriesWrapper):
+        return data.element_type
 
     # DataFrame (columnwise) case
     if isinstance(data, pd.DataFrame):
@@ -96,7 +101,7 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
 
         # no dtype or dtype=object, loop through and interpret
         if result is None:
-            data = as_series(data)
+            data = wrapper.as_series(data)
             if skip_na:
                 data = data.dropna()
             result = detect_vector_type(data.to_numpy(dtype="O"))
@@ -117,17 +122,6 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
 #######################
 ####    PRIVATE    ####
 #######################  
-
-
-def as_series(data: Any) -> pd.Series:
-    """Convert arbitrary data into a corresponding pd.Series object."""
-    if isinstance(data, pd.Series):
-        return data.copy()
-
-    if isinstance(data, np.ndarray):
-        return pd.Series(np.atleast_1d(data))
-
-    return pd.Series(data, dtype="O")
 
 
 cdef types.AtomicType detect_scalar_type(object example):

@@ -114,7 +114,7 @@ class catch_ignore(BaseDecorator):
 @attachable
 @columnwise
 @extension_func
-@dispatch(depth=2, cache_size=128, wrap_adapters=False)
+@dispatch("series", "dtype", cache_size=128)
 def cast(
     series: Any,
     dtype: Optional[type_specifier] = None,
@@ -146,6 +146,24 @@ def cast(
     change the behavior of :func:`cast`.  The method that is chosen is based on
     the :attr:`family <AtomicType.family>` of its ``dtype`` argument.
     """
+    # TODO: this has to implement all custom back off behavior.  The first
+    # backs off data adapters and the second backs off dtype adapters.
+
+    # recursively unwrap adapters and retry.
+    # NOTE: This operates like a recursive stack.  Adapters are popped
+    # off the stack in FIFO order before recurring, and then each
+    # # adapter is pushed back onto the stack in the same order.
+    # for before in getattr(series_type, "adapters", ()):
+    #     series = before.inverse_transform(series)
+    #     series = self._dispatch_scalar(series, *args, **kwargs)
+    #     if (
+    #         self._wrap_adapters and
+    #         series.element_type == before.wrapped
+    #     ):
+    #         series = before.transform(series)
+    #     return series
+
+
     # recursively unwrap adapters and retry.
     # NOTE: This operates like a recursive stack.  Adapters are popped
     # off the stack in FIFO order before recurring, and then each

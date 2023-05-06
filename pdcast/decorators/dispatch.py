@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Iterable
 import warnings
 
+import numpy as np
 import pandas as pd
 
 from pdcast import detect
@@ -30,21 +31,23 @@ from .wrapper import SeriesWrapper
 # TODO: None wildcard value?
 
 
-# TODO: figure out a way to unwrap adapters and retry if no match is found.
-# -> this might be handled in their own overloaded implementations of
+# TODO: add a dropna flag to @dispatch
 
-# @cast.overload("sparse", None)
-# def densify()
-# -> return cast(dense series, dtype)  # recursive
 
-# @cast.overload(None, "sparse")
-# def sparsify()
-# -> result = cast(series, wrapped dtype)  # recursive
-# -> return sparse result
+# TODO: series and dtype are managed by @extension_func.  If they are given as
+# SeriesWrappers, then they will be added to an argument matrix (DataFrame)
+# and distributed to the appropriate implementations.
 
-# @cast.overload("int", "sparse")
-# def integer_sparsify()
-#    overloaded specifically for integers
+
+
+# TODO: if dispatched implementation returns a scalar, treat it as an
+# aggregation.  If it returns a SeriesWrapper, treat it as a
+# transformation.  If it returns treat it as a filtration and remove
+# the group from the pool.
+
+# _dispatch_composite should just iterate through the GroupBy object directly,
+# rather than passing through transform().  This means we aren't limited to
+# a like-indexed result.
 
 
 ######################
@@ -53,10 +56,8 @@ from .wrapper import SeriesWrapper
 
 
 def dispatch(
-    _func: Callable = None,
-    *,
-    depth: int = 1,
-    wrap_adapters: bool = True,
+    *args: str,
+    drop_na: bool = True,
     cache_size: int = 64
 ) -> Callable:
     """A decorator that allows a Python function to dispatch to multiple
@@ -64,14 +65,17 @@ def dispatch(
 
     Parameters
     ----------
-    func : Callable
-        A Python function or other callable to be decorated.  This serves as a
-        generic implementation and is only called if no overloaded
-        implementation is found for the dispatched data.
-    wrap_adapters : bool
-        TODO
+    *args : str
+        Argument names to dispatch on.  Each of these must be reflected in the
+        signature of the decorated function, and will be required for each of
+        its overloaded implementations.
+    drop_na : bool
+        Indicates whether to drop missing values from dispatched arguments that
+        are given as vectors.  If set to ``True``, then the input will be
+        stripped of missing values before being passed to an overloaded
+        implementation, which are safe to disregard them entirely.
     cache_size : int
-        TODO
+        The number of signatures to store in the cache.
 
     Returns
     -------
@@ -82,28 +86,35 @@ def dispatch(
     Raises
     ------
     TypeError
-        If the decorated function does not accept at least one positional
-        argument.
+        If the decorated function does not accept the named arguments, or if no
+        arguments are given.
 
     Notes
     -----
-    This decorator works just like
-    :func:`@functools.singledispatch <python:functools.singledispatch>`,
-    except that it is extended to handle vectorized data in the ``pdcast``
-    :doc:`type system </content/types/types>`.
+    :meth:`overloaded <pdcast.dispatch.overload>` implementations are searched
+    from most specific to least specific, with ties broken from left to right.
+    If no specific implementation can be found for the observed input, then the
+    decorated function itself will be called as a generic implementation,
+    similar to :func:`@functools.singledispatch <functools.singledispatch>`.
+
+    If any of the dispatched arguments are to be vectorized, then they should
+    be passed to this function as :class:`SeriesWrapper <pdcast.SeriesWrapper>`
+    objects.  This can be handled automatically via the
+    :func:`@extension_func <pdcast.extension_func>` decorator, which should
+    always be placed above this one.  If any of these arguments contain mixed
+    data, they will be grouped by type and dispatched independently via the
+    ``pdcast`` :doc:`type system </content/types/types>`.
     """
     def decorator(func: Callable):
         """Convert a callable into a DispatchFunc object."""
         return DispatchFunc(
             func,
-            depth=depth,
-            wrap_adapters=wrap_adapters,
+            args=args,
+            drop_na=drop_na,
             cache_size=cache_size
         )
 
-    if _func is None:
-        return decorator
-    return decorator(_func)
+    return decorator
 
 
 #######################
@@ -272,39 +283,29 @@ class DispatchFunc(BaseDecorator):
 
     _reserved = (
         BaseDecorator._reserved |
-        {"_arguments", "_depth", "_dispatched", "_signature", "_wrap_adapters"}
+        {"_args", "_dispatched", "_drop_na", "_signature"}
     )
 
     def __init__(
         self,
         func: Callable,
-        depth: int,
-        wrap_adapters: bool,
+        args: tuple,
+        drop_na: bool,
         cache_size: int
     ):
         super().__init__(func=func)
-        self._wrap_adapters = bool(wrap_adapters)
-
-        # validate depth
-        if depth < 1:
-            raise ValueError(
-                f"@dispatch depth must be >= 1 for function: "
-                f"'{func.__qualname__}'"
+        self._drop_na = bool(drop_na)
+        if not args:
+            raise TypeError(
+                f"'{func.__qualname__}' must dispatch on at least one argument"
             )
-        self._depth = depth
 
-        # validate signature
+        # validate args
         self._signature = inspect.signature(func)
-        if len(self._signature.parameters) < self._depth:
-            err_msg = f"'{func.__qualname__}' must accept at least "
-            if depth == 1:  # singular
-                err_msg += f"{self._depth} argument"
-            else:
-                err_msg += f"{self._depth} arguments"
-            raise TypeError(err_msg)
-
-        # get arguments up to depth
-        self._arguments = list(self._signature.parameters.keys())[:self._depth]
+        bad = [a for a in args if a not in self._signature.parameters]
+        if bad:
+            raise TypeError(f"argument not recognized: {bad}")
+        self._args = args
 
         # init dispatch table
         self._dispatched = DispatchDict(cache_size=cache_size)
@@ -346,7 +347,7 @@ class DispatchFunc(BaseDecorator):
         """
         return MappingProxyType(self._dispatched)
 
-    def overload(self, *args) -> Callable:
+    def overload(self, *args, **kwargs) -> Callable:
         """A decorator that transforms a naked function into a dispatched
         implementation for this :class:`DispatchFunc`.
 
@@ -390,38 +391,61 @@ class DispatchFunc(BaseDecorator):
             """Attach a dispatched implementation to the DispatchFunc with the
             associated types.
             """
-            # validate implementation signature
-            params = list(inspect.signature(call).parameters.keys())
-            if params[:self._depth] != self._arguments:
+            # validate func accepts dispatched arguments
+            sig = inspect.signature(call)
+            missing = [a for a in self._args if a not in sig.parameters]
+            if missing:
+                call_name = f"'{call.__module__}.{call.__qualname__}()'"
                 raise TypeError(
-                    f"'{call.__module__}.{call.__qualname__}()' must accept "
-                    f"dispatched arguments {self._arguments} (observed: "
-                    f"{params[:self._depth]})"
+                    f"{call_name} must accept dispatched arguments: {missing}"
                 )
 
-            # validate overloaded arguments
-            if len(args) != self._depth:
+            # bind signature
+            try:
+                bound = sig.bind_partial(*args, **kwargs).arguments
+            except TypeError as err:
+                call_name = f"'{call.__module__}.{call.__qualname__}()'"
+                reconstructed = [
+                    ", ".join(repr(v) for v in args),
+                    ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+                ]
+                reconstructed = ", ".join(s for s in reconstructed if s)
                 err_msg = (
-                    f"'{call.__module__}.{call.__qualname__}()' must dispatch "
-                    f"on exactly {self._depth} "
+                    f"invalid signature for {call_name}: ({reconstructed})"
                 )
-                err_msg += "argument: " if self._depth == 1 else "arguments: "
-                err_msg += f"{self._arguments}"
-                raise TypeError(err_msg)
+                raise TypeError(err_msg) from err
 
-            # broadcast to selected types (including composites)
-            composites = [resolve.resolve_type([spec]) for spec in args]
-            paths = list(itertools.product(*composites))
+            # parse overloaded signature
+            paths = []
+            missing = []
+            for name in self._args:
+                if name in bound:
+                    paths.append(bound.pop(name))
+                else:
+                    missing.append(name)
+            if missing:
+                raise TypeError(f"no signature given for argument: {missing}")
+            if bound:
+                raise TypeError(
+                    f"signature contains non-dispatched arguments: "
+                    f"{list(bound)}"
+                )
+
+            # generate dispatch keys
+            paths = [resolve.resolve_type([spec]) for spec in paths]
+            paths = list(itertools.product(*paths))
+
+            # merge with dispatch table
             existing = dict(self._dispatched)
             for path in paths:
                 previous = existing.get(path, None)
-                if previous:
-                    warn_msg = (
-                        f"Replacing '{previous.__qualname__}()' with "
-                        f"'{call.__qualname__}()' for signature "
-                        f"{tuple(str(x) for x in path)}"
-                    )
-                    # warnings.warn(warn_msg, UserWarning, stacklevel=2)
+                # if previous:
+                #     warn_msg = (
+                #         f"Replacing '{previous.__qualname__}()' with "
+                #         f"'{call.__qualname__}()' for signature "
+                #         f"{tuple(str(x) for x in path)}"
+                #     )
+                #     warnings.warn(warn_msg, UserWarning, stacklevel=2)
                 self._dispatched[path] = call
 
             return call
@@ -455,7 +479,7 @@ class DispatchFunc(BaseDecorator):
         key = (series_type,)
         key += tuple(
             detect.detect_type(bound.arguments[param])
-            for param in self._arguments[1:]
+            for param in self._args[1:]
         )
 
         # search for a dispatched implementation
@@ -576,15 +600,143 @@ class DispatchFunc(BaseDecorator):
         # re-wrap result
         return SeriesWrapper(result, hasnans=series.hasnans)
 
-    def __call__(
-        self,
-        data: Any,
-        *args,
-        **kwargs
-    ) -> pd.Series | SeriesWrapper:
+
+    def _normalize(self, dispatched: dict) -> tuple:
+        """Normalize arguments to this :class:`DispatchFunc`."""
+        # extract SeriesWrappers
+        wrappers = {
+            k: v for k, v in dispatched.items() if isinstance(v, SeriesWrapper)
+        }
+
+        # combine wrappers into DataFrame
+        arg_frame = pd.DataFrame({k: v.series for k, v in wrappers.items()})
+
+        # normalize index
+        index = arg_frame.index
+        if not isinstance(index, pd.RangeIndex):
+            arg_frame.index = pd.RangeIndex(0, index.shape[0])
+        if any(v.shape[0] != index.shape[0] for v in wrappers.values()):
+            warnings.warn("index mismatch", UserWarning, stacklevel=2)
+
+        # drop missing values
+        if self._drop_na:
+            arg_frame = arg_frame.dropna(how="any")
+            hasnans = arg_frame.shape[0] < index.shape[0]
+            for arg, wrapped in wrappers.items():
+                wrapped.hasnans = hasnans
+
+        # reassign to arguments
+        for arg, wrapped in wrappers.items():
+            filtered = arg_frame[arg].rename(wrapped.name)
+            wrappers[arg] = SeriesWrapper(filtered, hasnans=wrapped.hasnans)
+
+        # TODO: if composite, groupby and recur
+
+        # merge filtered wrappers back into args
+        return {**dispatched, **wrappers}, index
+
+    def _finalize(self, result: Any, original_index: pd.Index) -> Any:
+        """Infer operation mode based on return type of dispatched
+        implementation.
+        """
+        # filter
+        if result is None:
+            return pd.Series()
+
+        # transform
+        if isinstance(result, SeriesWrapper):
+            # TODO: would need a second normalized index argument to detect
+            # index mismatch.  norm_index gives the RangeIndex actually passed
+            # to the function.
+
+            # # ensure final index is a subset of original index
+            # if not result.index.difference(series.index).empty:
+            #     raise RuntimeError(
+            #         f"index mismatch in {self.__wrapped__.__name__}(): dispatched "
+            #         f"implementation for type {series_type} must return a series "
+            #         f"with the same index as the original"
+            #     )
+
+            # replace missing values, aligning on index
+            final = pd.Series(
+                np.full(
+                    original_index.shape[0],
+                    getattr(result.element_type, "na_value", pd.NA),
+                    dtype=object
+                )
+            )
+            final.update(result.series)
+            final = final.astype(result.dtype)
+
+            # replace original index
+            if "original_index" in locals():
+                final.index = original_index
+
+            return final
+
+        # aggregate
+        return result
+
+    def __call__(self, *args, **kwargs) -> Any:
         """Execute the decorated function, dispatching to an overloaded
         implementation if one exists.
+
+        Notes
+        -----
+        This automatically detects aggregations, transformations, and
+        filtrations based on the return value.
+
+            *   :data:`None <python:None>` signifies a filtration.  The passed
+                values will be excluded from the resulting series.
+            *   A :class:`SeriesWrapper <pdcast.SeriesWrapper>` signifies a
+                transformation.  Any missing indices will be replaced with NA.
+            *   Anything else signifies an aggreggation.  Its result will be
+                returned as-is if data is homogenous.  If mixed data is given,
+                This will be a DataFrame with rows for each group.
+
         """
+        # bind *args, **kwargs and extract dispatched
+        bound = self._signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        dispatched = {
+            k: v for k, v in bound.arguments.items() if k in self._args
+        }
+
+        # TODO: detect vectors
+
+        # @dispatch(args=["series", "dtype"], vectorized=["series"])
+
+        # vectors = {
+        #     k: v for k, v in bound.arguments.items() if k in self._vectors
+        # }
+        # if not all(isinstance(v, SeriesWrapper) for v in vectors.values()):
+        #     dispatched, original_index
+
+
+        # normalize inputs if outermost call
+        if not __internal:
+            dispatched, original_index = self._normalize(dispatched)
+            bound.arguments = {**bound.arguments, **dispatched}
+
+        # detect argument types
+        detected = {k: detect.detect_type(v) for k, v in dispatched.items()}
+        key = tuple(detected[k] for k in self._args)
+
+        # search for a dispatched implementation
+        try:
+            implementation = self._dispatched[key]
+            result = implementation(*bound.args, **bound.kwargs)
+        except KeyError:  # fall back to generic
+            result = self.__wrapped__(*bound.args, **bound.kwargs)
+
+        # if outermost call, finalize result
+        # if not __internal:
+        #     return self._finalize(result, original_index)
+
+        # pass back to internal context
+        return result
+
+
         # fastpath for pre-wrapped data (internal use)
         if isinstance(data, SeriesWrapper):
             if isinstance(data.element_type, types.CompositeType):
@@ -592,7 +744,7 @@ class DispatchFunc(BaseDecorator):
             return self._dispatch_scalar(data, *args, **kwargs)
 
         # enter SeriesWrapper context block
-        with SeriesWrapper(detect.as_series(data)) as series:
+        with SeriesWrapper(data) as series:
 
             # dispatch based on inferred type
             if isinstance(series.element_type, types.CompositeType):
@@ -647,9 +799,9 @@ class DispatchFunc(BaseDecorator):
     #         f"type of its "
     #     )
     #     if self._depth == 1:
-    #         doc += f"'{self._arguments[0]}' argument (in order):\n\n"
+    #         doc += f"'{self._args[0]}' argument (in order):\n\n"
     #     else:
-    #         doc += f"{self._arguments} arguments (in order):\n\n"
+    #         doc += f"{self._args} arguments (in order):\n\n"
 
     #     # dispatch table
     #     if self._depth == 1:
@@ -818,7 +970,7 @@ def _sort(edges: dict) -> list:
 
 
 
-# @dispatch(depth=2)
+# @dispatch("bar", "baz")
 # def foo(bar, baz=2):
 #     """doc for foo()"""
 #     print("generic")

@@ -28,7 +28,7 @@ from pdcast.types.array import abstract
 
 # TODO: IntegerType.downcast should accept a tolerance argument
 
-# TODO: move upcast into convert/
+# TODO: move upcast into convert/base
 
 
 # conversions
