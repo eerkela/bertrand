@@ -56,7 +56,7 @@ from .wrapper import SeriesWrapper
 
 
 def dispatch(
-    *args: str,
+    *args,
     drop_na: bool = True,
     cache_size: int = 64
 ) -> Callable:
@@ -289,7 +289,7 @@ class DispatchFunc(BaseDecorator):
     def __init__(
         self,
         func: Callable,
-        args: tuple,
+        args: list[str],
         drop_na: bool,
         cache_size: int
     ):
@@ -601,39 +601,121 @@ class DispatchFunc(BaseDecorator):
         return SeriesWrapper(result, hasnans=series.hasnans)
 
 
-    def _normalize(self, dispatched: dict) -> tuple:
-        """Normalize arguments to this :class:`DispatchFunc`."""
-        # extract SeriesWrappers
-        wrappers = {
-            k: v for k, v in dispatched.items() if isinstance(v, SeriesWrapper)
-        }
 
-        # combine wrappers into DataFrame
-        arg_frame = pd.DataFrame({k: v.series for k, v in wrappers.items()})
 
-        # normalize index
-        index = arg_frame.index
-        if not isinstance(index, pd.RangeIndex):
-            arg_frame.index = pd.RangeIndex(0, index.shape[0])
-        if any(v.shape[0] != index.shape[0] for v in wrappers.values()):
-            warnings.warn("index mismatch", UserWarning, stacklevel=2)
+
+    def _normalize(
+        self,
+        dispatched: dict[str, Any]
+    ) -> tuple[CompositeInput | dict, pd.Index]:
+        """Normalize vectorized inputs to this :class:`DispatchFunc`.
+
+        This method converts input vectors into :class:`SeriesWrappers` with
+        homogenous indices, missing values, and element types.  Composite
+        vectors will be grouped along with their homogenous counterparts and
+        processed as independent frames.
+
+        Notes
+        -----
+        Normalization is skipped if pre-wrapped :class:`SeriesWrappers` are
+        provided as input.  This is intended to short-circuit the normalization
+        machinery for internal (recursive) calls.
+        """
+        normalized = True
+
+        # extract vectors
+        vectors = {}
+        names = {}
+        for arg, value in dispatched.items():
+            if isinstance(value, SeriesWrapper):
+                vectors[arg] = value.series
+                names[arg] = value.name
+            elif isinstance(value, pd.Series):
+                normalized = False
+                vectors[arg] = value
+                names[arg] = value.name
+            elif isinstance(value, np.ndarray):
+                normalized = False
+                vectors[arg] = value
+            else:
+                value = np.asarray(value, dtype=object)
+                if value.shape:
+                    normalized = False
+                    vectors[arg] = value
+
+        # fastpath for pre-normalized/scalar inputs
+        if normalized:
+            return dispatched, None
+
+        # bind vectors into DataFrame
+        frame = pd.DataFrame(vectors)
+
+        # normalize indices
+        original_index = frame.index
+        if not isinstance(original_index, pd.RangeIndex):
+            frame.index = pd.RangeIndex(0, frame.shape[0])
+        if any(v.shape[0] != original_index.shape[0] for v in vectors.values()):
+            warn_msg = f"index mismatch in {self.__qualname__}()"
+            warnings.warn(warn_msg, UserWarning, stacklevel=2)
 
         # drop missing values
+        hasnans = None
         if self._drop_na:
-            arg_frame = arg_frame.dropna(how="any")
-            hasnans = arg_frame.shape[0] < index.shape[0]
-            for arg, wrapped in wrappers.items():
-                wrapped.hasnans = hasnans
+            frame = frame.dropna(how="any")
+            hasnans = frame.shape[0] < original_index.shape[0]
 
-        # reassign to arguments
-        for arg, wrapped in wrappers.items():
-            filtered = arg_frame[arg].rename(wrapped.name)
-            wrappers[arg] = SeriesWrapper(filtered, hasnans=wrapped.hasnans)
+        # group composites
+        detected = detect.detect_type(frame)
+        if any(isinstance(v, types.CompositeType) for v in detected.values()):
+            frame_generator = CompositeInput(
+                dispatched=dispatched,
+                frame=frame,
+                detected=detected,
+                hasnans=hasnans
+            )
+            return frame_generator, original_index
 
-        # TODO: if composite, groupby and recur
+        # split into SeriesWrappers
+        for col, series in frame.items():
+            dispatched[col] = SeriesWrapper(
+                series.rename(names.get(col, None)),
+                hasnans=hasnans,
+                element_type=detected[col]
+            )
 
-        # merge filtered wrappers back into args
-        return {**dispatched, **wrappers}, index
+        return dispatched, original_index
+
+    def _mixed_data(
+        self,
+        bound: inspect.BoundArguments,
+        frame_generator: CompositeInput,
+        original_index: pd.Index,
+    ) -> Any:
+        """Dispatch mixed data to the correct implementation and combine
+        results.
+        """
+        results = []
+        for dispatched in frame_generator:
+            bound.arguments = {**bound.arguments, **dispatched}
+
+            # generate dispatch key
+            detected = {k: detect.detect_type(v) for k, v in dispatched.items()}
+            key = tuple(detected[k] for k in self._args)
+
+            # search for dispatched implementation
+            try:
+                implementation = self._dispatched[key]
+                result = implementation(*bound.args, **bound.kwargs)
+            except KeyError:  # fall back to generic
+                result = self.__wrapped__(*bound.args, **bound.kwargs)
+
+            results.append(result)
+
+        # TODO: finalize results
+        # -> can use self._finalize in sequence
+        breakpoint()
+
+        raise NotImplementedError()
 
     def _finalize(self, result: Any, original_index: pd.Index) -> Any:
         """Infer operation mode based on return type of dispatched
@@ -695,34 +777,32 @@ class DispatchFunc(BaseDecorator):
                 This will be a DataFrame with rows for each group.
 
         """
-        # bind *args, **kwargs and extract dispatched
+        # bind signature
         bound = self._signature.bind(*args, **kwargs)
         bound.apply_defaults()
-        dispatched = {
-            k: v for k, v in bound.arguments.items() if k in self._args
-        }
 
-        # TODO: detect vectors
+        # extract dispatched args
+        dispatched = {arg: bound.arguments[arg] for arg in self._args}
 
-        # @dispatch(args=["series", "dtype"], vectorized=["series"])
+        # normalize vectors
+        dispatched, original_index = self._normalize(dispatched)
 
-        # vectors = {
-        #     k: v for k, v in bound.arguments.items() if k in self._vectors
-        # }
-        # if not all(isinstance(v, SeriesWrapper) for v in vectors.values()):
-        #     dispatched, original_index
+        # handle composite data
+        if isinstance(dispatched, CompositeInput):
+            return self._mixed_data(
+                bound=bound,
+                frame_generator=dispatched,
+                original_index=original_index
+            )
 
+        # continue with homogenous inputs
+        bound.arguments = {**bound.arguments, **dispatched}
 
-        # normalize inputs if outermost call
-        if not __internal:
-            dispatched, original_index = self._normalize(dispatched)
-            bound.arguments = {**bound.arguments, **dispatched}
-
-        # detect argument types
+        # generate dispatch key
         detected = {k: detect.detect_type(v) for k, v in dispatched.items()}
         key = tuple(detected[k] for k in self._args)
 
-        # search for a dispatched implementation
+        # search for dispatched implementation
         try:
             implementation = self._dispatched[key]
             result = implementation(*bound.args, **bound.kwargs)
@@ -730,35 +810,11 @@ class DispatchFunc(BaseDecorator):
             result = self.__wrapped__(*bound.args, **bound.kwargs)
 
         # if outermost call, finalize result
-        # if not __internal:
-        #     return self._finalize(result, original_index)
+        if original_index is not None:
+            return self._finalize(result, original_index)
 
         # pass back to internal context
         return result
-
-
-        # fastpath for pre-wrapped data (internal use)
-        if isinstance(data, SeriesWrapper):
-            if isinstance(data.element_type, types.CompositeType):
-                return self._dispatch_composite(data, *args, **kwargs)
-            return self._dispatch_scalar(data, *args, **kwargs)
-
-        # enter SeriesWrapper context block
-        with SeriesWrapper(data) as series:
-
-            # dispatch based on inferred type
-            if isinstance(series.element_type, types.CompositeType):
-                result = self._dispatch_composite(series, *args, **kwargs)
-            else:
-                result = self._dispatch_scalar(series, *args, **kwargs)
-
-            # finalize
-            series.series = result.series
-            series.element_type = result.element_type
-            series.hasnans = result.hasnans
-
-        # return as pandas Series
-        return series.series
 
     def __getitem__(self, key: type_specifier) -> Callable:
         """Get the dispatched implementation for objects of a given type.
@@ -839,6 +895,45 @@ class DispatchFunc(BaseDecorator):
 #######################
 ####    PRIVATE    ####
 #######################
+
+
+class CompositeInput:
+    """An iterator that yields successive groups in the case of mixed-type
+    data.
+    """
+
+    def __init__(
+        self,
+        dispatched: dict,
+        frame: pd.DataFrame,
+        detected: dict,
+        hasnans: bool
+    ):
+        self.dispatched = dispatched
+        type_frame = pd.DataFrame({
+            k: getattr(v, "index", v) for k, v in detected.items()
+        })
+        grouped = type_frame.groupby(list(detected), sort=False)
+        self.groups = grouped.groups
+        self.frame = frame
+        self.hasnans = hasnans
+
+    def __iter__(self):
+        for key, indices in self.groups.items():
+            # extract group
+            group = self.frame.iloc[indices]
+
+            # split into normalized vectors
+            vectors = {}
+            for idx, col in enumerate(group.columns):
+                vectors[col] = SeriesWrapper(
+                    group[col],
+                    hasnans=self.hasnans,
+                    element_type=key[idx]
+                )
+
+            # yield successive subsets
+            yield {**self.dispatched, **vectors}
 
 
 def _resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
@@ -970,11 +1065,24 @@ def _sort(edges: dict) -> list:
 
 
 
-# @dispatch("bar", "baz")
-# def foo(bar, baz=2):
-#     """doc for foo()"""
-#     print("generic")
-#     return bar
+@dispatch("bar", "baz")
+def add(bar, baz):
+    """doc for foo()"""
+    return bar + baz
+
+
+@add.overload("int", "int")
+def integer_add(bar, baz):
+    print("integer case")
+    return bar - baz
+
+
+
+# foo([1, 2, 3], [1, "a", True])
+
+
+
+
 
 
 # @foo.overload("int8", "int")

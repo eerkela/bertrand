@@ -11,7 +11,7 @@ import decimal
 from typing import Any, Callable, Iterable
 
 from pdcast import types
-from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.decorators.wrapper import as_series, SeriesWrapper
 from pdcast.detect import detect_type
 from pdcast.patch.round import rule as rounding_rule
 from pdcast.patch.snap import tol as snap_tol
@@ -102,7 +102,7 @@ def series(val: Any, state: dict) -> SeriesWrapper:
     """
     if isinstance(val, SeriesWrapper):
         return val
-    return SeriesWrapper(val)
+    return as_series(val)
 
 
 @cast.register_arg

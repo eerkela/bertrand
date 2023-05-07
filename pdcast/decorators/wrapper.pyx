@@ -24,6 +24,12 @@ from pdcast.util.error import shorten_list
 from pdcast.util.type_hints import array_like, numeric, type_specifier
 
 
+# TODO: drop as_series from SeriesWrapper constructor.  These are not meant to
+# be constructed externally.
+
+
+
+
 # TODO: tol should clip overflowing values if they are within the window.
 # -> force boundscheck to accept ``tol``.
 # -> boundscheck can be completely decoupled from SeriesWrapper.  Put it in
