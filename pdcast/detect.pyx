@@ -56,6 +56,9 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
         :ref:`numpy <resolve_type.type_specifiers.numpy>`\ /\ 
         :ref:`pandas <resolve_type.type_specifiers.pandas>` data types.
     """
+    cdef object fill_value = None
+    cdef types.BaseType result = None
+
     # trivial case: example is already a type object
     if isinstance(data, types.BaseType):
         return data
@@ -70,9 +73,6 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
         for col in data.columns:
             columnwise[col] = detect_type(data[col], skip_na=skip_na)
         return columnwise
-
-    cdef object fill_value = None
-    cdef types.BaseType result = None
 
     # check if example is iterable
     if hasattr(data, "__iter__") and not isinstance(data, type):
@@ -104,7 +104,7 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
             data = wrapper.as_series(data)
             if skip_na:
                 data = data.dropna()
-            result = detect_vector_type(data.to_numpy(dtype="O"))
+            result = detect_vector_type(data.to_numpy(dtype=object))
 
         # parse resulting CompositeType
         if not result:  # empty set

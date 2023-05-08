@@ -694,8 +694,10 @@ class DispatchFunc(BaseDecorator):
         """Dispatch mixed data to the correct implementation and combine
         results.
         """
+        mode = None
+
         results = []
-        for dispatched in frame_generator:
+        for dispatched, group_index in frame_generator:
             bound.arguments = {**bound.arguments, **dispatched}
 
             # generate dispatch key
@@ -709,35 +711,63 @@ class DispatchFunc(BaseDecorator):
             except KeyError:  # fall back to generic
                 result = self.__wrapped__(*bound.args, **bound.kwargs)
 
-            results.append(result)
+            # infer mode of operation from return type
+            if result is None or isinstance(result, SeriesWrapper):
+                op = "transform"
+            else:
+                op = "aggregate"
+            if mode is not None and op != mode:
+                # TODO: make error message clearer
+                raise RuntimeError(
+                    f"Mixed signals for composite {self.__qualname__}()"
+                    f" operation: {key}"
+                )
+            mode = op
 
-        # TODO: finalize results
-        # -> can use self._finalize in sequence
-        breakpoint()
+            # finalize result
+            result = self._finalize(
+                result,
+                original_index=group_index,
+                key=key
+            )
 
-        raise NotImplementedError()
+            # remember result
+            results.append((detected, result))
 
-    def _finalize(self, result: Any, original_index: pd.Index) -> Any:
+        # concatenate results
+        if mode == "transform":
+            # TODO: handle index gaps created by filtration
+            final = pd.concat([res for _, res in results if res is not None])
+            final.sort_index()
+            final.index = original_index
+            return final
+
+        # mode = "aggregate"
+        results = [
+            grp | {f"{self.__qualname__}()": res} for grp, res in results
+        ]
+        final = pd.concat([pd.DataFrame(res, index=[0]) for res in results])
+        return final
+
+    def _finalize(
+        self,
+        result: Any,
+        original_index: pd.Index,
+        key: tuple
+    ) -> Any:
         """Infer operation mode based on return type of dispatched
         implementation.
         """
-        # filter
-        if result is None:
-            return pd.Series()
-
         # transform
         if isinstance(result, SeriesWrapper):
-            # TODO: would need a second normalized index argument to detect
-            # index mismatch.  norm_index gives the RangeIndex actually passed
-            # to the function.
-
-            # # ensure final index is a subset of original index
-            # if not result.index.difference(series.index).empty:
-            #     raise RuntimeError(
-            #         f"index mismatch in {self.__wrapped__.__name__}(): dispatched "
-            #         f"implementation for type {series_type} must return a series "
-            #         f"with the same index as the original"
-            #     )
+            # warn if final index is not a subset of original
+            if not result.index.difference(original_index).empty:
+                warn_msg = (
+                    f"index mismatch in {self.__qualname__}() with signature"
+                    f"{tuple(str(x) for x in key)}: dispatched implementation "
+                    f"did not return a like-indexed SeriesWrapper"
+                )
+                warnings.warn(warn_msg, UserWarning, stacklevel=4)
 
             # replace missing values, aligning on index
             final = pd.Series(
@@ -751,12 +781,10 @@ class DispatchFunc(BaseDecorator):
             final = final.astype(result.dtype)
 
             # replace original index
-            if "original_index" in locals():
-                final.index = original_index
-
+            final.index = original_index
             return final
 
-        # aggregate
+        # filter/aggregate
         return result
 
     def __call__(self, *args, **kwargs) -> Any:
@@ -811,7 +839,11 @@ class DispatchFunc(BaseDecorator):
 
         # if outermost call, finalize result
         if original_index is not None:
-            return self._finalize(result, original_index)
+            return self._finalize(
+                result,
+                original_index=original_index,
+                key=key
+            )
 
         # pass back to internal context
         return result
@@ -933,7 +965,7 @@ class CompositeInput:
                 )
 
             # yield successive subsets
-            yield {**self.dispatched, **vectors}
+            yield ({**self.dispatched, **vectors}, indices)
 
 
 def _resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
@@ -1064,6 +1096,9 @@ def _sort(edges: dict) -> list:
 
 
 
+# TODO: this only sort of works for composite data.  There appears to be an
+# index mismatch or something else that injects missing values.
+
 
 @dispatch("bar", "baz")
 def add(bar, baz):
@@ -1078,7 +1113,7 @@ def integer_add(bar, baz):
 
 
 
-# foo([1, 2, 3], [1, "a", True])
+print(add([1, 2, 3], [1, True, 1.0]))
 
 
 
@@ -1095,11 +1130,6 @@ def integer_add(bar, baz):
 # def integer_foo(bar, baz):
 #     print("int")
 #     return bar
-
-
-# TODO: -> foo(np.int8(1), np.int8(1)) results in ambiguity.  We resolve these
-# by backing off from the right and chosing whichever is more specific.
-
 
 
 

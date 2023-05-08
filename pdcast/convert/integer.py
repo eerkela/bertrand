@@ -18,6 +18,9 @@ from .base import (
 )
 
 
+# TODO: int -> timedelta is unusually slow for some reason
+
+
 @cast.overload("int", "bool")
 def integer_to_boolean(
     series: SeriesWrapper,

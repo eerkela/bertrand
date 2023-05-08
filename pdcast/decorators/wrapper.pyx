@@ -24,11 +24,6 @@ from pdcast.util.error import shorten_list
 from pdcast.util.type_hints import array_like, numeric, type_specifier
 
 
-# TODO: drop as_series from SeriesWrapper constructor.  These are not meant to
-# be constructed externally.
-
-
-
 
 # TODO: tol should clip overflowing values if they are within the window.
 # -> force boundscheck to accept ``tol``.
@@ -985,7 +980,7 @@ cdef tuple _apply_with_errors(np.ndarray[object] arr, object call, str errors):
 
 cpdef object as_series(object data):
     """Convert arbitrary data into a corresponding pd.Series object."""
-    # Series
+    # pandas Series
     if isinstance(data, pd.Series):
         return data
 
