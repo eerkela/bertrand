@@ -603,11 +603,15 @@ class DispatchFunc(BaseDecorator):
 
 
 
+    # TODO: normalize returns a delegated object that encapsulates the call.
+    # These are like chain of responsibility handlers or command pattern
+
+
 
     def _normalize(
         self,
         dispatched: dict[str, Any]
-    ) -> tuple[CompositeInput | dict, pd.Index]:
+    ) -> tuple[CompositeFrames | dict, pd.Index, pd.Index]:
         """Normalize vectorized inputs to this :class:`DispatchFunc`.
 
         This method converts input vectors into :class:`SeriesWrappers` with
@@ -645,7 +649,7 @@ class DispatchFunc(BaseDecorator):
 
         # fastpath for pre-normalized/scalar inputs
         if normalized:
-            return dispatched, None
+            return dispatched, None, None
 
         # bind vectors into DataFrame
         frame = pd.DataFrame(vectors)
@@ -657,6 +661,7 @@ class DispatchFunc(BaseDecorator):
         if any(v.shape[0] != original_index.shape[0] for v in vectors.values()):
             warn_msg = f"index mismatch in {self.__qualname__}()"
             warnings.warn(warn_msg, UserWarning, stacklevel=2)
+        norm_index = frame.index
 
         # drop missing values
         hasnans = None
@@ -667,13 +672,13 @@ class DispatchFunc(BaseDecorator):
         # group composites
         detected = detect.detect_type(frame)
         if any(isinstance(v, types.CompositeType) for v in detected.values()):
-            frame_generator = CompositeInput(
+            frame_generator = CompositeFrames(
                 dispatched=dispatched,
                 frame=frame,
                 detected=detected,
                 hasnans=hasnans
             )
-            return frame_generator, original_index
+            return frame_generator, norm_index, original_index
 
         # split into SeriesWrappers
         for col, series in frame.items():
@@ -683,26 +688,28 @@ class DispatchFunc(BaseDecorator):
                 element_type=detected[col]
             )
 
-        return dispatched, original_index
+        return dispatched, norm_index, original_index
 
     def _mixed_data(
         self,
         bound: inspect.BoundArguments,
-        frame_generator: CompositeInput,
+        frame_generator: CompositeFrames,
         original_index: pd.Index,
     ) -> Any:
         """Dispatch mixed data to the correct implementation and combine
         results.
         """
         mode = None
-
+        homogenous = None
         results = []
+
+        # process each group independently
         for dispatched, group_index in frame_generator:
             bound.arguments = {**bound.arguments, **dispatched}
 
             # generate dispatch key
             detected = {k: detect.detect_type(v) for k, v in dispatched.items()}
-            key = tuple(detected[k] for k in self._args)
+            key = tuple(detected.values())
 
             # search for dispatched implementation
             try:
@@ -712,22 +719,26 @@ class DispatchFunc(BaseDecorator):
                 result = self.__wrapped__(*bound.args, **bound.kwargs)
 
             # infer mode of operation from return type
-            if result is None or isinstance(result, SeriesWrapper):
-                op = "transform"
+            if result is None:
+                operation = "transform"
+            elif isinstance(result, SeriesWrapper):
+                operation = "transform"
+                if homogenous is not None and result.element_type != homogenous:
+                
+                
             else:
-                op = "aggregate"
-            if mode is not None and op != mode:
-                # TODO: make error message clearer
+                operation = "aggregate"
+            if mode is not None and operation != mode:
                 raise RuntimeError(
-                    f"Mixed signals for composite {self.__qualname__}()"
-                    f" operation: {key}"
+                    f"Mixed transform/aggregate commands for "
+                    f"'{self.__name__}()' with composite data: {key}"
                 )
-            mode = op
+            mode = operation
 
             # finalize result
             result = self._finalize(
                 result,
-                original_index=group_index,
+                norm_index=group_index,
                 key=key
             )
 
@@ -737,8 +748,22 @@ class DispatchFunc(BaseDecorator):
         # concatenate results
         if mode == "transform":
             # TODO: handle index gaps created by filtration
+
+            # concatenate results
             final = pd.concat([res for _, res in results if res is not None])
             final.sort_index()
+
+            # TODO: if homogenous, use that na_value instead of pd.NA.  Look at
+            # conversion to/from SeriesWrapper in general here.
+
+            # replace missing values
+            final = replace_na(
+                final,
+                index=pd.RangeIndex(0, original_index.shape[0]),
+                na_value=pd.NA
+            )
+
+            # replace original index
             final.index = original_index
             return final
 
@@ -752,7 +777,7 @@ class DispatchFunc(BaseDecorator):
     def _finalize(
         self,
         result: Any,
-        original_index: pd.Index,
+        norm_index: pd.Index,
         key: tuple
     ) -> Any:
         """Infer operation mode based on return type of dispatched
@@ -761,7 +786,7 @@ class DispatchFunc(BaseDecorator):
         # transform
         if isinstance(result, SeriesWrapper):
             # warn if final index is not a subset of original
-            if not result.index.difference(original_index).empty:
+            if not result.index.difference(norm_index).empty:
                 warn_msg = (
                     f"index mismatch in {self.__qualname__}() with signature"
                     f"{tuple(str(x) for x in key)}: dispatched implementation "
@@ -770,22 +795,17 @@ class DispatchFunc(BaseDecorator):
                 warnings.warn(warn_msg, UserWarning, stacklevel=4)
 
             # replace missing values, aligning on index
-            final = pd.Series(
-                np.full(
-                    original_index.shape[0],
-                    getattr(result.element_type, "na_value", pd.NA),
-                    dtype=object
-                )
+            return replace_na(
+                result.series,
+                index=norm_index,
+                na_value=result.element_type.na_value
             )
-            final.update(result.series)
-            final = final.astype(result.dtype)
-
-            # replace original index
-            final.index = original_index
-            return final
 
         # filter/aggregate
         return result
+
+
+
 
     def __call__(self, *args, **kwargs) -> Any:
         """Execute the decorated function, dispatching to an overloaded
@@ -812,11 +832,15 @@ class DispatchFunc(BaseDecorator):
         # extract dispatched args
         dispatched = {arg: bound.arguments[arg] for arg in self._args}
 
+        # TODO: handler = self._normalize(dispatched)
+        # handler gets a reference to self, and implement a single method,
+        # execute().  We just return handler.execute(bound)
+
         # normalize vectors
-        dispatched, original_index = self._normalize(dispatched)
+        dispatched, norm_index, original_index = self._normalize(dispatched)
 
         # handle composite data
-        if isinstance(dispatched, CompositeInput):
+        if isinstance(dispatched, CompositeFrames):
             return self._mixed_data(
                 bound=bound,
                 frame_generator=dispatched,
@@ -839,11 +863,9 @@ class DispatchFunc(BaseDecorator):
 
         # if outermost call, finalize result
         if original_index is not None:
-            return self._finalize(
-                result,
-                original_index=original_index,
-                key=key
-            )
+            result = self._finalize(result, norm_index=norm_index, key=key)
+            result.index = original_index
+            return result
 
         # pass back to internal context
         return result
@@ -877,59 +899,13 @@ class DispatchFunc(BaseDecorator):
         """
         self._dispatched.__delitem__(key)
 
-    # @property
-    # def __doc__(self) -> str:
-    #     """Run time docstring."""
-    #     # header
-    #     doc = (
-    #         f"A wrapper for {self.__module__}.{self.__qualname__}() that\n"
-    #         f"dispatches to one of the following virtual methods based on the\n"
-    #         f"type of its "
-    #     )
-    #     if self._depth == 1:
-    #         doc += f"'{self._args[0]}' argument (in order):\n\n"
-    #     else:
-    #         doc += f"{self._args} arguments (in order):\n\n"
-
-    #     # dispatch table
-    #     if self._depth == 1:
-    #         docmap = {
-    #             str(k[0]): f"{v.__module__}.{v.__qualname__}()"
-    #             for k, v in self.dispatched.items()
-    #         }
-    #     else:
-    #         docmap = {
-    #             tuple(str(x) for x in k): f"{v.__module__}.{v.__qualname__}()"
-    #             for k, v in self.dispatched.items()
-    #         }
-    #     docmap["..."] = f"{self.__module__}.{self.__qualname__}.generic()"
-    #     sep = "\n    "
-    #     doc += (
-    #         f"{{"
-    #         f"{sep}{sep.join(f'{k}: {v}' for k, v in docmap.items())}\n"
-    #         f"}}\n\n"
-    #     )
-
-    #     # footer
-    #     doc += (
-    #         "The map above is available under this function's ``.dispatched``\n"
-    #         "attribute, and individual implementations can be queried using\n"
-    #         "normal dictionary indexing:\n\n"
-    #     )
-    #     query = ", ".join("int" for _ in range(self._depth))
-    #     doc += (
-    #         f">>> {self.__qualname__}[{query}]\n"
-    #         f"{self[query]}\n"
-    #     )
-    #     return doc
-
 
 #######################
 ####    PRIVATE    ####
 #######################
 
 
-class CompositeInput:
+class CompositeFrames:
     """An iterator that yields successive groups in the case of mixed-type
     data.
     """
@@ -961,7 +937,7 @@ class CompositeInput:
                 vectors[col] = SeriesWrapper(
                     group[col],
                     hasnans=self.hasnans,
-                    element_type=key[idx]
+                    element_type=key[idx] if isinstance(key, tuple) else key
                 )
 
             # yield successive subsets
@@ -1058,6 +1034,18 @@ def _sort(edges: dict) -> list:
 
 
 
+def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
+    """Replace any index that is not present in ``result`` with a missing value.
+    """
+    result = pd.Series(
+        np.full(index.shape[0], na_value, dtype=object),
+        index=index
+    )
+    result.update(series)
+    return result.astype(series.dtype)
+
+
+
 
 # def _consistent(sig1: tuple, sig2: tuple) -> bool:
 #     """Check for an overlap between two signatures.
@@ -1096,8 +1084,8 @@ def _sort(edges: dict) -> list:
 
 
 
-# TODO: this only sort of works for composite data.  There appears to be an
-# index mismatch or something else that injects missing values.
+# TODO: pdcast.cast([1, True, 3.2, None], "float", unit="s")
+# -> missing values break composite dispatch
 
 
 @dispatch("bar", "baz")
