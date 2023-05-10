@@ -27,27 +27,23 @@ from .wrapper import SeriesWrapper
 
 # TODO: emit a warning whenever an implementation is replaced.
 
-
 # TODO: None wildcard value?
 
+# TODO: result is None -> fill with NA?
 
-# TODO: add a dropna flag to @dispatch
+# TODO: support DataFrame transforms in addition to Series (i.e. replace
+# missing rows with NAs)
+# -> either include a replace_na flag in @dispatch or a DataFrameWrapper
+# similar to SeriesWrapper.
 
+# TODO: special cases for e.g. int64/uint64 conflict in DispatchComposite:
 
-# TODO: series and dtype are managed by @extension_func.  If they are given as
-# SeriesWrappers, then they will be added to an argument matrix (DataFrame)
-# and distributed to the appropriate implementations.
+# pdcast.cast([True, 2**63 - 1], "int")
+# vs
+# pdcast.cast([True, 2**63], "int")
 
+# first works, second comes out as float64
 
-
-# TODO: if dispatched implementation returns a scalar, treat it as an
-# aggregation.  If it returns a SeriesWrapper, treat it as a
-# transformation.  If it returns treat it as a filtration and remove
-# the group from the pool.
-
-# _dispatch_composite should just iterate through the GroupBy object directly,
-# rather than passing through transform().  This means we aren't limited to
-# a like-indexed result.
 
 
 ######################
@@ -61,7 +57,7 @@ def dispatch(
     cache_size: int = 64
 ) -> Callable:
     """A decorator that allows a Python function to dispatch to multiple
-    implementations based on the type of its first argument.
+    implementations based on the type of its arguments.
 
     Parameters
     ----------
@@ -70,12 +66,11 @@ def dispatch(
         signature of the decorated function, and will be required for each of
         its overloaded implementations.
     drop_na : bool
-        Indicates whether to drop missing values from dispatched arguments that
-        are given as vectors.  If set to ``True``, then the input will be
-        stripped of missing values before being passed to an overloaded
-        implementation, which are safe to disregard them entirely.
+        Indicates whether to drop missing values from input vectors.  If set to
+        ``True``, then each vector will be stripped of missing values before
+        being passed to the dispatched implementation.
     cache_size : int
-        The number of signatures to store in the cache.
+        The maximum number of signatures to store in cache.
 
     Returns
     -------
@@ -97,9 +92,10 @@ def dispatch(
     decorated function itself will be called as a generic implementation,
     similar to :func:`@functools.singledispatch <functools.singledispatch>`.
 
-    If any of the dispatched arguments are to be vectorized, then they should
-    be passed to this function as :class:`SeriesWrapper <pdcast.SeriesWrapper>`
-    objects.  This can be handled automatically via the
+    If any of the dispatched arguments are vectorized (as a series, numpy
+    array, or 1D array-like iterable), then they should be passed to this
+    function as :class:`SeriesWrapper <pdcast.SeriesWrapper>` objects.  This
+    can be handled automatically via the
     :func:`@extension_func <pdcast.extension_func>` decorator, which should
     always be placed above this one.  If any of these arguments contain mixed
     data, they will be grouped by type and dispatched independently via the
@@ -461,157 +457,147 @@ class DispatchFunc(BaseDecorator):
         """
         return self.__wrapped__(*args, **kwargs)
 
-    def _dispatch_scalar(
-        self,
-        series: SeriesWrapper,
-        *args,
-        **kwargs
-    ) -> SeriesWrapper:
-        """Dispatch a homogenous series to the correct implementation."""
-        series_type = series.element_type
+    # def _dispatch_scalar(
+    #     self,
+    #     series: SeriesWrapper,
+    #     *args,
+    #     **kwargs
+    # ) -> SeriesWrapper:
+    #     """Dispatch a homogenous series to the correct implementation."""
+    #     series_type = series.element_type
 
-        # rectify series
-        series = series.rectify()
+    #     # rectify series
+    #     series = series.rectify()
 
-        # bind *args, **kwargs
-        bound = self._signature.bind(series, *args, **kwargs)
-        bound.apply_defaults()
-        key = (series_type,)
-        key += tuple(
-            detect.detect_type(bound.arguments[param])
-            for param in self._args[1:]
-        )
+    #     # bind *args, **kwargs
+    #     bound = self._signature.bind(series, *args, **kwargs)
+    #     bound.apply_defaults()
+    #     key = (series_type,)
+    #     key += tuple(
+    #         detect.detect_type(bound.arguments[param])
+    #         for param in self._args[1:]
+    #     )
 
-        # search for a dispatched implementation
-        try:
-            implementation = self._dispatched[key]
-            result = implementation(*bound.args, **bound.kwargs)
-        except KeyError:
-            result = None
+    #     # search for a dispatched implementation
+    #     try:
+    #         implementation = self._dispatched[key]
+    #         result = implementation(*bound.args, **bound.kwargs)
+    #     except KeyError:
+    #         result = None
 
-        # recursively unwrap adapters and retry.
-        if result is None:
-            # NOTE: This operates like a recursive stack.  Adapters are popped
-            # off the stack in FIFO order before recurring, and then each
-            # adapter is pushed back onto the stack in the same order.
-            for before in getattr(series_type, "adapters", ()):
-                series = before.inverse_transform(series)
-                series = self._dispatch_scalar(series, *args, **kwargs)
-                if (
-                    self._wrap_adapters and
-                    series.element_type == before.wrapped
-                ):
-                    series = before.transform(series)
-                return series
+    #     # recursively unwrap adapters and retry.
+    #     if result is None:
+    #         # NOTE: This operates like a recursive stack.  Adapters are popped
+    #         # off the stack in FIFO order before recurring, and then each
+    #         # adapter is pushed back onto the stack in the same order.
+    #         for before in getattr(series_type, "adapters", ()):
+    #             series = before.inverse_transform(series)
+    #             series = self._dispatch_scalar(series, *args, **kwargs)
+    #             if (
+    #                 self._wrap_adapters and
+    #                 series.element_type == before.wrapped
+    #             ):
+    #                 series = before.transform(series)
+    #             return series
 
-        # fall back to generic implementation
-        if result is None:
-            result = self.__wrapped__(**bound.arguments)
+    #     # fall back to generic implementation
+    #     if result is None:
+    #         result = self.__wrapped__(**bound.arguments)
 
-        # ensure result is a SeriesWrapper
-        if not isinstance(result, SeriesWrapper):
-            raise TypeError(
-                f"dispatched implementation of {self.__wrapped__.__name__}() "
-                f"did not return a SeriesWrapper for type: "
-                f"{series_type}"
-            )
+    #     # ensure result is a SeriesWrapper
+    #     if not isinstance(result, SeriesWrapper):
+    #         raise TypeError(
+    #             f"dispatched implementation of {self.__wrapped__.__name__}() "
+    #             f"did not return a SeriesWrapper for type: "
+    #             f"{series_type}"
+    #         )
 
-        # ensure final index is a subset of original index
-        if not result.index.difference(series.index).empty:
-            raise RuntimeError(
-                f"index mismatch in {self.__wrapped__.__name__}(): dispatched "
-                f"implementation for type {series_type} must return a series "
-                f"with the same index as the original"
-            )
+    #     # ensure final index is a subset of original index
+    #     if not result.index.difference(series.index).empty:
+    #         raise RuntimeError(
+    #             f"index mismatch in {self.__wrapped__.__name__}(): dispatched "
+    #             f"implementation for type {series_type} must return a series "
+    #             f"with the same index as the original"
+    #         )
 
-        return result.rectify()
+    #     return result.rectify()
 
-    def _dispatch_composite(
-        self,
-        series: SeriesWrapper,
-        *args,
-        **kwargs
-    ) -> SeriesWrapper:
-        """Dispatch a mixed-type series to the appropriate implementation."""
-        from pdcast import convert
+    # def _dispatch_composite(
+    #     self,
+    #     series: SeriesWrapper,
+    #     *args,
+    #     **kwargs
+    # ) -> SeriesWrapper:
+    #     """Dispatch a mixed-type series to the appropriate implementation."""
+    #     from pdcast import convert
 
-        groups = series.series.groupby(
-            series.element_type.index,
-            dropna=False,  # no NAs to drop
-            sort=False
-        )
+    #     groups = series.series.groupby(
+    #         series.element_type.index,
+    #         dropna=False,  # no NAs to drop
+    #         sort=False
+    #     )
 
-        # NOTE: SeriesGroupBy.transform() cannot reconcile mixed int64/uint64
-        # arrays, and will attempt to convert them to float.  To avoid this, we
-        # keep track of result.dtype.  If it is signed/unsigned and opposite
-        # has been observed, we convert the result to dtype=object and
-        # reconsider afterwards.
-        observed = set()
-        check_uint = [False]  # using a list avoids UnboundLocalError
-        signed = types.SignedIntegerType
-        unsigned = types.UnsignedIntegerType
+    #     # NOTE: SeriesGroupBy.transform() cannot reconcile mixed int64/uint64
+    #     # arrays, and will attempt to convert them to float.  To avoid this, we
+    #     # keep track of result.dtype.  If it is signed/unsigned and opposite
+    #     # has been observed, we convert the result to dtype=object and
+    #     # reconsider afterwards.
+    #     observed = set()
+    #     check_uint = [False]  # using a list avoids UnboundLocalError
+    #     signed = types.SignedIntegerType
+    #     unsigned = types.UnsignedIntegerType
 
-        def transform(grp) -> pd.Series:
-            """Groupwise transformation."""
-            grp = SeriesWrapper(
-                grp,
-                hasnans=series.hasnans,
-                element_type=grp.name
-            )
-            result = self._dispatch_scalar(grp, *args, **kwargs)
+    #     def transform(grp) -> pd.Series:
+    #         """Groupwise transformation."""
+    #         grp = SeriesWrapper(
+    #             grp,
+    #             hasnans=series.hasnans,
+    #             element_type=grp.name
+    #         )
+    #         result = self._dispatch_scalar(grp, *args, **kwargs)
 
-            # check for int64/uint64 conflict
-            # NOTE: This is a bit complicated, but it effectively invalidates
-            # the check_uint flag if any type other than pure signed/unsigned
-            # integers are detected as results.  In these cases, our final
-            # result will be dtype: object anyway, so there's no point
-            # following through with the check.
-            if result.element_type.is_subtype(signed):
-                if any(o.is_subtype(unsigned) for o in observed):
-                    result.series = result.series.astype(object, copy=False)
-                    check_uint[0] = None if check_uint[0] is None else True
-            elif result.element_type.is_subtype(unsigned):
-                if any(x.is_subtype(signed) for x in observed):
-                    result.series = result.series.astype(object, copy=False)
-                    check_uint[0] = None if check_uint[0] is None else True
-            else:
-                check_uint[0] = None
+    #         # check for int64/uint64 conflict
+    #         # NOTE: This is a bit complicated, but it effectively invalidates
+    #         # the check_uint flag if any type other than pure signed/unsigned
+    #         # integers are detected as results.  In these cases, our final
+    #         # result will be dtype: object anyway, so there's no point
+    #         # following through with the check.
+    #         if result.element_type.is_subtype(signed):
+    #             if any(o.is_subtype(unsigned) for o in observed):
+    #                 result.series = result.series.astype(object, copy=False)
+    #                 check_uint[0] = None if check_uint[0] is None else True
+    #         elif result.element_type.is_subtype(unsigned):
+    #             if any(x.is_subtype(signed) for x in observed):
+    #                 result.series = result.series.astype(object, copy=False)
+    #                 check_uint[0] = None if check_uint[0] is None else True
+    #         else:
+    #             check_uint[0] = None
 
-            observed.add(result.element_type)
-            return result.series  # transform() expects a Series output
+    #         observed.add(result.element_type)
+    #         return result.series  # transform() expects a Series output
 
-        # apply transformation
-        result = groups.transform(transform)
+    #     # apply transformation
+    #     result = groups.transform(transform)
 
-        # resolve signed/unsigned conflict
-        if check_uint[0]:
-            # attempt conversion to uint64
-            target = unsigned.make_nullable() if series.hasnans else unsigned
-            try:
-                result = convert.cast(
-                    result,
-                    dtype=target,
-                    downcast=kwargs.get("downcast", None),
-                    errors="raise"
-                )
-            except OverflowError:
-                pass  # keep as dtype: object
+    #     # resolve signed/unsigned conflict
+    #     if check_uint[0]:
+    #         # attempt conversion to uint64
+    #         target = unsigned.make_nullable() if series.hasnans else unsigned
+    #         try:
+    #             result = convert.cast(
+    #                 result,
+    #                 dtype=target,
+    #                 downcast=kwargs.get("downcast", None),
+    #                 errors="raise"
+    #             )
+    #         except OverflowError:
+    #             pass  # keep as dtype: object
 
-        # re-wrap result
-        return SeriesWrapper(result, hasnans=series.hasnans)
-
-
+    #     # re-wrap result
+    #     return SeriesWrapper(result, hasnans=series.hasnans)
 
 
-    # TODO: normalize returns a delegated object that encapsulates the call.
-    # These are like chain of responsibility handlers or command pattern
-
-
-
-    def _normalize(
-        self,
-        dispatched: dict[str, Any]
-    ) -> tuple[CompositeFrames | dict, pd.Index, pd.Index]:
+    def _build_pipeline(self, dispatched: dict[str, Any]) -> DispatchPipeline:
         """Normalize vectorized inputs to this :class:`DispatchFunc`.
 
         This method converts input vectors into :class:`SeriesWrappers` with
@@ -649,7 +635,7 @@ class DispatchFunc(BaseDecorator):
 
         # fastpath for pre-normalized/scalar inputs
         if normalized:
-            return dispatched, None, None
+            return DispatchDirect(func=self, dispatched=dispatched)
 
         # bind vectors into DataFrame
         frame = pd.DataFrame(vectors)
@@ -661,7 +647,6 @@ class DispatchFunc(BaseDecorator):
         if any(v.shape[0] != original_index.shape[0] for v in vectors.values()):
             warn_msg = f"index mismatch in {self.__qualname__}()"
             warnings.warn(warn_msg, UserWarning, stacklevel=2)
-        norm_index = frame.index
 
         # drop missing values
         hasnans = None
@@ -669,143 +654,31 @@ class DispatchFunc(BaseDecorator):
             frame = frame.dropna(how="any")
             hasnans = frame.shape[0] < original_index.shape[0]
 
-        # group composites
+        # detect type of each column
         detected = detect.detect_type(frame)
+
+        # composite case
         if any(isinstance(v, types.CompositeType) for v in detected.values()):
-            frame_generator = CompositeFrames(
+            return DispatchComposite(
+                func=self,
                 dispatched=dispatched,
                 frame=frame,
                 detected=detected,
-                hasnans=hasnans
-            )
-            return frame_generator, norm_index, original_index
-
-        # split into SeriesWrappers
-        for col, series in frame.items():
-            dispatched[col] = SeriesWrapper(
-                series.rename(names.get(col, None)),
+                names=names,
                 hasnans=hasnans,
-                element_type=detected[col]
+                original_index=original_index
             )
 
-        return dispatched, norm_index, original_index
-
-    def _mixed_data(
-        self,
-        bound: inspect.BoundArguments,
-        frame_generator: CompositeFrames,
-        original_index: pd.Index,
-    ) -> Any:
-        """Dispatch mixed data to the correct implementation and combine
-        results.
-        """
-        mode = None
-        homogenous = None
-        results = []
-
-        # process each group independently
-        for dispatched, group_index in frame_generator:
-            bound.arguments = {**bound.arguments, **dispatched}
-
-            # generate dispatch key
-            detected = {k: detect.detect_type(v) for k, v in dispatched.items()}
-            key = tuple(detected.values())
-
-            # search for dispatched implementation
-            try:
-                implementation = self._dispatched[key]
-                result = implementation(*bound.args, **bound.kwargs)
-            except KeyError:  # fall back to generic
-                result = self.__wrapped__(*bound.args, **bound.kwargs)
-
-            # infer mode of operation from return type
-            if result is None:
-                operation = "transform"
-            elif isinstance(result, SeriesWrapper):
-                operation = "transform"
-                if homogenous is not None and result.element_type != homogenous:
-                
-                
-            else:
-                operation = "aggregate"
-            if mode is not None and operation != mode:
-                raise RuntimeError(
-                    f"Mixed transform/aggregate commands for "
-                    f"'{self.__name__}()' with composite data: {key}"
-                )
-            mode = operation
-
-            # finalize result
-            result = self._finalize(
-                result,
-                norm_index=group_index,
-                key=key
-            )
-
-            # remember result
-            results.append((detected, result))
-
-        # concatenate results
-        if mode == "transform":
-            # TODO: handle index gaps created by filtration
-
-            # concatenate results
-            final = pd.concat([res for _, res in results if res is not None])
-            final.sort_index()
-
-            # TODO: if homogenous, use that na_value instead of pd.NA.  Look at
-            # conversion to/from SeriesWrapper in general here.
-
-            # replace missing values
-            final = replace_na(
-                final,
-                index=pd.RangeIndex(0, original_index.shape[0]),
-                na_value=pd.NA
-            )
-
-            # replace original index
-            final.index = original_index
-            return final
-
-        # mode = "aggregate"
-        results = [
-            grp | {f"{self.__qualname__}()": res} for grp, res in results
-        ]
-        final = pd.concat([pd.DataFrame(res, index=[0]) for res in results])
-        return final
-
-    def _finalize(
-        self,
-        result: Any,
-        norm_index: pd.Index,
-        key: tuple
-    ) -> Any:
-        """Infer operation mode based on return type of dispatched
-        implementation.
-        """
-        # transform
-        if isinstance(result, SeriesWrapper):
-            # warn if final index is not a subset of original
-            if not result.index.difference(norm_index).empty:
-                warn_msg = (
-                    f"index mismatch in {self.__qualname__}() with signature"
-                    f"{tuple(str(x) for x in key)}: dispatched implementation "
-                    f"did not return a like-indexed SeriesWrapper"
-                )
-                warnings.warn(warn_msg, UserWarning, stacklevel=4)
-
-            # replace missing values, aligning on index
-            return replace_na(
-                result.series,
-                index=norm_index,
-                na_value=result.element_type.na_value
-            )
-
-        # filter/aggregate
-        return result
-
-
-
+        # homogenous case
+        return DispatchHomogenous(
+            func=self,
+            dispatched=dispatched,
+            frame=frame,
+            detected=detected,
+            names=names,
+            hasnans=hasnans,
+            original_index=original_index
+        )
 
     def __call__(self, *args, **kwargs) -> Any:
         """Execute the decorated function, dispatching to an overloaded
@@ -832,43 +705,11 @@ class DispatchFunc(BaseDecorator):
         # extract dispatched args
         dispatched = {arg: bound.arguments[arg] for arg in self._args}
 
-        # TODO: handler = self._normalize(dispatched)
-        # handler gets a reference to self, and implement a single method,
-        # execute().  We just return handler.execute(bound)
+        # generate instructions (command pattern)
+        pipeline = self._build_pipeline(dispatched)
 
-        # normalize vectors
-        dispatched, norm_index, original_index = self._normalize(dispatched)
-
-        # handle composite data
-        if isinstance(dispatched, CompositeFrames):
-            return self._mixed_data(
-                bound=bound,
-                frame_generator=dispatched,
-                original_index=original_index
-            )
-
-        # continue with homogenous inputs
-        bound.arguments = {**bound.arguments, **dispatched}
-
-        # generate dispatch key
-        detected = {k: detect.detect_type(v) for k, v in dispatched.items()}
-        key = tuple(detected[k] for k in self._args)
-
-        # search for dispatched implementation
-        try:
-            implementation = self._dispatched[key]
-            result = implementation(*bound.args, **bound.kwargs)
-        except KeyError:  # fall back to generic
-            result = self.__wrapped__(*bound.args, **bound.kwargs)
-
-        # if outermost call, finalize result
-        if original_index is not None:
-            result = self._finalize(result, norm_index=norm_index, key=key)
-            result.index = original_index
-            return result
-
-        # pass back to internal context
-        return result
+        # execute command
+        return pipeline(bound)
 
     def __getitem__(self, key: type_specifier) -> Callable:
         """Get the dispatched implementation for objects of a given type.
@@ -905,43 +746,230 @@ class DispatchFunc(BaseDecorator):
 #######################
 
 
-class CompositeFrames:
-    """An iterator that yields successive groups in the case of mixed-type
-    data.
-    """
+class DispatchPipeline:
+    """Base class for Command-Pattern dispatch pipelines."""
+
+    def execute(self, bound: inspect.BoundArguments) -> Any:
+        """Abstract method for executing a dispatched command."""
+        raise NotImplementedError(
+            f"command does not implement an `execute()` method: "
+            f"{self.__qualname__}"
+        )
+
+    def finalize(self, result: Any) -> Any:
+        """Abstract method to post-process the result of a dispatched command.
+        """
+        raise NotImplementedError(
+            f"command does not implement a `finalize()` method: "
+            f"{self.__qualname__}"
+        )
+
+    def __call__(self, bound: inspect.BoundArguments) -> Any:
+        """A macro for invoking a command's `execute` and `finalize` methods
+        in sequence.
+        """
+        return self.finalize(self.execute(bound))
+
+
+class DispatchDirect(DispatchPipeline):
+    """Dispatch pre-normalized inputs to the appropriate implementation."""
 
     def __init__(
         self,
-        dispatched: dict,
-        frame: pd.DataFrame,
-        detected: dict,
-        hasnans: bool
+        func: DispatchFunc,
+        dispatched: dict[str, Any]
     ):
+        self.func = func
         self.dispatched = dispatched
+        self.key = tuple(detect.detect_type(v) for v in dispatched.values())
+
+    def execute(self, bound: inspect.BoundArguments) -> Any:
+        """Call the dispatched function with the bound arguments."""
+        # bind dispatched to non-dispatched arguments
+        bound.arguments = {**bound.arguments, **self.dispatched}
+
+        # search for dispatched implementation
+        try:
+            implementation = self.func._dispatched[self.key]
+            return implementation(*bound.args, **bound.kwargs)
+        except KeyError:  # fall back to generic
+            return self.func.__wrapped__(*bound.args, **bound.kwargs)
+
+    def finalize(self, result: Any) -> Any:
+        """Process the result returned by this command's `execute` method."""
+        return result  # do nothing
+
+
+class DispatchHomogenous(DispatchPipeline):
+    """Dispatch homogenous inputs to the appropriate implementation."""
+
+    def __init__(
+        self,
+        func: DispatchFunc,
+        dispatched: dict[str, Any],
+        frame: pd.DataFrame,
+        detected: dict[str, types.ScalarType],
+        names: dict[str, str],
+        hasnans: bool,
+        original_index: pd.Index | None
+    ):
+        # remember indices
+        self.index = frame.index
+        self.original_index = original_index
+
+        # split frame into normalized columns
+        for col, series in frame.items():
+            dispatched[col] = SeriesWrapper(
+                series.rename(names.get(col, None)),
+                hasnans=hasnans,
+                element_type=detected[col]
+            )
+
+        # construct DispatchDirect wrapper
+        self.direct = DispatchDirect(
+            func=func,
+            dispatched=dispatched
+        )
+
+    def execute(self, bound: inspect.BoundArguments) -> Any:
+        """Call the dispatched implementation with the bound arguments."""
+        return self.direct(bound)
+
+    def finalize(self, result: Any) -> Any:
+        """Infer mode of operation (filter/transform/aggregate) from return
+        type and adjust result accordingly.
+        """
+        # transform
+        if isinstance(result, SeriesWrapper):
+            # warn if final index is not a subset of original
+            if not result.index.difference(self.index).empty:
+                warn_msg = (
+                    f"index mismatch in {self.__qualname__}() with signature"
+                    f"{tuple(str(x) for x in self.direct.key)}: dispatched "
+                    f"implementation did not return a like-indexed "
+                    f"SeriesWrapper"
+                )
+                warnings.warn(warn_msg, UserWarning, stacklevel=4)
+
+            # replace missing values, aligning on index
+            result = replace_na(
+                result.series,
+                index=pd.RangeIndex(0, self.original_index.shape[0]),
+                na_value=result.element_type.na_value
+            )
+
+            # replace original index (if given)
+            if self.original_index is not None:
+                result.index = self.original_index
+
+        # aggregate
+        return result
+
+
+class DispatchComposite(DispatchPipeline):
+    """Dispatch composite inputs to the appropriate implementations."""
+
+    def __init__(
+        self,
+        func: DispatchFunc,
+        dispatched: dict[str, Any],
+        frame: pd.DataFrame,
+        detected: dict[str, types.ScalarType | types.CompositeType],
+        names: dict[str, str],
+        hasnans: bool,
+        original_index: pd.Index
+    ):
+        self.func = func
+        self.dispatched = dispatched
+        self.frame = frame
+        self.names = names
+        self.hasnans = hasnans
+        self.original_index = original_index
+
+        # generate type frame
         type_frame = pd.DataFrame({
             k: getattr(v, "index", v) for k, v in detected.items()
         })
+
+        # group by type
         grouped = type_frame.groupby(list(detected), sort=False)
         self.groups = grouped.groups
-        self.frame = frame
-        self.hasnans = hasnans
 
     def __iter__(self):
+        """Sequentially extract each group from the parent frame"""
         for key, indices in self.groups.items():
             # extract group
             group = self.frame.iloc[indices]
 
-            # split into normalized vectors
-            vectors = {}
-            for idx, col in enumerate(group.columns):
-                vectors[col] = SeriesWrapper(
-                    group[col],
-                    hasnans=self.hasnans,
-                    element_type=key[idx] if isinstance(key, tuple) else key
-                )
+            # bind names to key
+            if not isinstance(key, tuple):
+                key = (key,)
+            detected = dict(zip(group.columns, key))
 
-            # yield successive subsets
-            yield ({**self.dispatched, **vectors}, indices)
+            # yield to __call__()
+            yield detected, group
+
+    def execute(self, bound: inspect.BoundArguments) -> list:
+        """For each group in the input, call the dispatched implementation
+        with the bound arguments.
+        """
+        results = []
+
+        # process each group independently
+        for detected, group in self:
+            command = DispatchHomogenous(
+                func=self.func,
+                dispatched=self.dispatched,
+                frame=group,
+                detected=detected,
+                names=self.names,
+                hasnans=self.hasnans,
+                original_index=None
+            )
+            result = (detected, command.execute(bound))
+            results.append(result)
+
+        return results
+
+    def finalize(self, result: list) -> pd.Series | pd.DataFrame:
+        """Concatenate the results and then finalize according to the inferred
+        mode of operation.
+        """
+        # transform
+        if all(isinstance(res, SeriesWrapper) for _, res in result):
+            # concatenate results
+            final = pd.concat([res.series for _, res in result])
+            final.sort_index()
+
+            # determine appropriate NA value
+            final_type = types.CompositeType(
+                res.element_type for _, res in result
+            )
+            if len(final_type) == 1:
+                na_val = final_type.pop().na_value
+            else:
+                na_val = pd.NA
+
+            # replace missing values
+            final = replace_na(
+                final,
+                index=pd.RangeIndex(0, self.original_index.shape[0]),
+                na_value=na_val
+            )
+
+            # replace original index
+            final.index = self.original_index
+
+            return final
+
+        # aggregate
+        return pd.concat([
+            pd.DataFrame(
+                group | {f"{self.func.__name__}()": pd.Series([res])},
+                index=[0]
+            )
+            for group, res in result
+        ])
 
 
 def _resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
@@ -1033,7 +1061,6 @@ def _sort(edges: dict) -> list:
     return L
 
 
-
 def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
     """Replace any index that is not present in ``result`` with a missing value.
     """
@@ -1084,24 +1111,21 @@ def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
 
 
 
-# TODO: pdcast.cast([1, True, 3.2, None], "float", unit="s")
-# -> missing values break composite dispatch
+
+# @dispatch("bar", "baz")
+# def add(bar, baz):
+#     """doc for foo()"""
+#     return bar + baz
 
 
-@dispatch("bar", "baz")
-def add(bar, baz):
-    """doc for foo()"""
-    return bar + baz
-
-
-@add.overload("int", "int")
-def integer_add(bar, baz):
-    print("integer case")
-    return bar - baz
+# @add.overload("int", "int")
+# def integer_add(bar, baz):
+#     print("integer case")
+#     return bar - baz
 
 
 
-print(add([1, 2, 3], [1, True, 1.0]))
+# print(add([1, 2, 3], [1, True, 1.0]))
 
 
 

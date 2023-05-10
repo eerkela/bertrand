@@ -389,66 +389,6 @@ cdef class SeriesWrapper:
             element_type=self._element_type
         )
 
-    ###########################
-    ####    NEW METHODS    ####
-    ###########################
-
-    def __enter__(self) -> SeriesWrapper:
-        """Enter a :class:`SeriesWrapper`'s context block.
-
-        This strips problematic information from the series.  See the
-        :class:`SeriesWrapper` documentation for details.
-        """
-        # record shape, name
-        self._orig_shape = self.series.shape
-        self._orig_name = self.series.name
-
-        # normalize index
-        if not isinstance(self.series.index, pd.RangeIndex):
-            self._orig_index = self.series.index
-            self.series.index = pd.RangeIndex(0, self._orig_shape[0])
-
-        # drop missing values
-        is_na = self.isna()
-        self.hasnans = is_na.any()
-        if self._hasnans:
-            self.series = self.series[~is_na]
-
-        # detect element type if not set manually
-        if self._element_type is None:
-            self.element_type = detect.detect_type(self.series, skip_na=False)
-
-        # enter context block
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Exit a :class:`SeriesWrapper`'s context block.
-
-        This replaces the information that was stripped in
-        :meth:`SeriesWrapper.__enter__`.  See the :class:`SeriesWrapper`
-        documentation for more details.
-        """
-        # replace missing values, aligning on index
-        if self.hasnans:
-            result = pd.Series(
-                np.full(
-                    self._orig_shape,
-                    getattr(self.element_type, "na_value", pd.NA),
-                    dtype="O"
-                ),
-                dtype=object
-            )
-            result.update(self.series)
-            self.series = result.astype(self.dtype, copy=False)
-
-        # replace original index
-        if self._orig_index is not None:
-            self.series.index = self._orig_index
-            self._orig_index = None
-
-        # replace original name
-        self.series.name = self._orig_name
-
     def __getattr__(self, name: str) -> Any:
         """`Decorator Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`
         dynamic wrapper for attribute lookups.
@@ -475,6 +415,10 @@ cdef class SeriesWrapper:
         if isinstance(attr, pd.Series):
             return SeriesWrapper(attr, hasnans=self._hasnans)
         return attr
+
+    ###########################
+    ####    NEW METHODS    ####
+    ###########################
 
     def apply_with_errors(
         self,
