@@ -45,7 +45,6 @@ from .wrapper import SeriesWrapper
 # first works, second comes out as float64
 
 
-
 ######################
 ####    PUBLIC    ####
 ######################
@@ -151,7 +150,7 @@ class DispatchDict(OrderedDict):
 
     def pop(self, key: type_specifier, default: Any = no_default) -> Any:
         """Implement :meth:`dict.pop` for DispatchDict objects."""
-        key = _resolve_key(key)
+        key = resolve_key(key)
         try:
             result = self[key]
             del self[key]
@@ -163,7 +162,7 @@ class DispatchDict(OrderedDict):
 
     def setdefault(self, key: type_specifier, default: Callable = None) -> Any:
         """Implement :meth:`dict.setdefault` for DispatchDict objects."""
-        key = _resolve_key(key)
+        key = resolve_key(key)
 
         try:
             return self[key]
@@ -191,8 +190,8 @@ class DispatchDict(OrderedDict):
         edges = {}
 
         # group edges by first node
-        for edge in [(a, b) for a in sigs for b in sigs if _edge(a, b)]:
-            edges.setdefault(edge[0], []).append(edge[1])
+        for _edge in [(a, b) for a in sigs for b in sigs if edge(a, b)]:
+            edges.setdefault(_edge[0], []).append(_edge[1])
 
         # add signatures not contained in edges
         for sig in sigs:
@@ -200,7 +199,7 @@ class DispatchDict(OrderedDict):
                 edges[sig] = []
 
         # sort according to edges
-        for sig in _sort(edges):
+        for sig in topological_sort(edges):
             super().move_to_end(sig)
 
         self._ordered = True
@@ -215,7 +214,7 @@ class DispatchDict(OrderedDict):
         return self
 
     def __getitem__(self, key: type_specifier | tuple[type_specifier]) -> Any:
-        key = _resolve_key(key)
+        key = resolve_key(key)
 
         # trivial case: key has exact match
         if super().__contains__(key):
@@ -240,13 +239,13 @@ class DispatchDict(OrderedDict):
         raise KeyError(tuple(str(x) for x in key))
 
     def __setitem__(self, key: type_specifier, value: Callable) -> None:
-        key = _resolve_key(key)
+        key = resolve_key(key)
         self._validate_implementation(value)
         super().__setitem__(key, value)
         self._ordered = False
 
     def __delitem__(self, key: type_specifier) -> None:
-        key = _resolve_key(key)
+        key = resolve_key(key)
 
         # require exact match
         if super().__contains__(key):
@@ -972,7 +971,7 @@ class DispatchComposite(DispatchPipeline):
         ])
 
 
-def _resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
+def resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
     """Convert arbitrary type specifiers into a valid key for DispatchDict
     lookups.
     """
@@ -989,13 +988,13 @@ def _resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
     return tuple(key_type)
 
 
-def _supercedes(sig1: tuple, sig2: tuple) -> bool:
+def supercedes(sig1: tuple, sig2: tuple) -> bool:
     """Check if sig1 is consistent with and strictly more specific than sig2.
     """
     return all(x.contains(y) for x, y in zip(sig2, sig1))
 
 
-def _edge(sig1: tuple, sig2: tuple) -> bool:
+def edge(sig1: tuple, sig2: tuple) -> bool:
     """If ``True``, check sig1 before sig2.
 
     Ties are broken by recursively backing off the last element of both
@@ -1007,12 +1006,12 @@ def _edge(sig1: tuple, sig2: tuple) -> bool:
         return False
 
     return (
-        _supercedes(sig1, sig2) and
-        not _supercedes(sig2, sig1) or _edge(sig1[:-1], sig2[:-1])
+        supercedes(sig1, sig2) and
+        not supercedes(sig2, sig1) or edge(sig1[:-1], sig2[:-1])
     )
 
 
-def _sort(edges: dict) -> list:
+def topological_sort(edges: dict) -> list:
     """Topological sort algorithm by Kahn (1962).
 
     Parameters
@@ -1027,7 +1026,7 @@ def _sort(edges: dict) -> list:
 
     Examples
     --------
-    >>> _sort({1: (2, 3), 2: (3, )})
+    >>> topological_sort({1: (2, 3), 2: (3, )})
     [1, 2, 3]
 
     References
@@ -1095,7 +1094,7 @@ def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
 #     """
 #     return (
 #         _consistent(sig1, sig2) and
-#         not (_supercedes(sig1, sig2) or _supercedes(sig2, sig1))
+#         not (supercedes(sig1, sig2) or supercedes(sig2, sig1))
 #     )
 
 

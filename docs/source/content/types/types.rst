@@ -155,7 +155,7 @@ related :ref:`type specifier <resolve_type.type_specifiers>`.
 .. [#object] by default, :class:`ObjectTypes <ObjectType>` describe *any* raw
     python type, storing instances internally as a ``dtype: object`` array.
 .. [#adapter] These are :class:`AdapterTypes <AdapterType>`, which can be used
-    modify the behavior of other types.  See the :ref:`API docs <adapter_type>`
+    modify the behavior of other types.  See the :ref:`API docs <AdapterType>`
     for more information.
 
 .. toctree::

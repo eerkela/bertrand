@@ -1,5 +1,7 @@
 .. currentmodule:: pdcast
 
+.. _dispatch:
+
 pdcast.dispatch
 ===============
 

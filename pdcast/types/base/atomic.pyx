@@ -151,7 +151,7 @@ cdef class AtomicType(ScalarType):
     etc.), and are responsible for defining all the necessary implementation
     logic for :doc:`dispatched </content/api/attach>` methods,
     :doc:`conversions </content/api/cast>`, and
-    :ref:`type-related <atomic_type.required>` functionality at the scalar
+    :ref:`type-related <AtomicType.required>` functionality at the scalar
     level.
 
     Parameters

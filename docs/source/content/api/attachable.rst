@@ -6,6 +6,8 @@
     import pandas as pd
     from pdcast import *
 
+.. _attachable:
+
 pdcast.attachable
 =================
 

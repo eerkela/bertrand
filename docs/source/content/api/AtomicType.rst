@@ -1,11 +1,13 @@
 .. currentmodule:: pdcast
 
+.. _AtomicType:
+
 pdcast.AtomicType
 =================
 
 .. autoclass:: AtomicType
 
-.. _atomic_type.inheritance:
+.. _AtomicType.inheritance:
 
 Inheritance
 -----------
@@ -44,7 +46,7 @@ like so:
     inheritance signature.  This ensures correct `Method Resolution Order (MRO)
     <https://en.wikipedia.org/wiki/C3_linearization>`_.
 
-.. _atomic_type.allocation:
+.. _AtomicType.allocation:
 
 Memory Allocation
 -----------------
@@ -86,7 +88,7 @@ type's inheritance signature, like so:
     Setting ``cache_size`` to 0 effectively eliminates flyweight caching for
     the type in question, though this is not recommended.
 
-.. _atomic_type.required:
+.. _AtomicType.required:
 
 Required Attributes
 -------------------
@@ -103,7 +105,7 @@ be considered valid.
     AtomicType.itemsize
     AtomicType.na_value
 
-.. _atomic_type.constructors:
+.. _AtomicType.constructors:
 
 Constructors
 ------------
@@ -121,7 +123,7 @@ These should always be preferred over direct instantiation to allow for the
     AtomicType.slugify
     AtomicType.kwargs
 
-.. _atomic_type.aliases:
+.. _AtomicType.aliases:
 
 Aliases
 -------
@@ -134,7 +136,7 @@ See :attr:`AtomicType.aliases` for more information on how aliases are used.
     AtomicType.remove_alias <ScalarType.remove_alias>
     AtomicType.clear_aliases <ScalarType.clear_aliases>
 
-.. _atomic_type.subtypes:
+.. _AtomicType.subtypes:
 
 Subtypes/Supertypes
 -------------------
@@ -151,7 +153,7 @@ define subtypes.
     AtomicType.contains
     AtomicType.is_subtype
 
-.. _atomic_type.generic:
+.. _AtomicType.generic:
 
 Generic Backends
 ----------------
@@ -167,7 +169,7 @@ leverage generic types and register individual backends.
     AtomicType.backends
     AtomicType.register_backend
 
-.. _atomic_type.adapters:
+.. _AtomicType.adapters:
 
 Adapters
 --------
@@ -182,7 +184,7 @@ See :class:`AdapterType` for more information on how to wrap
     AtomicType.make_sparse
     AtomicType.make_categorical
 
-.. _atomic_type.downcast:
+.. _AtomicType.downcast:
 
 Upcast/Downcast
 ---------------
@@ -195,7 +197,7 @@ Upcast/Downcast
     AtomicType.upcast
     AtomicType.downcast
 
-.. _atomic_type.missing:
+.. _AtomicType.missing:
 
 Missing Values
 --------------
@@ -207,7 +209,7 @@ Missing Values
     AtomicType.is_na
     AtomicType.make_nullable
 
-.. _atomic_type.special:
+.. _AtomicType.special:
 
 Special Methods
 ---------------

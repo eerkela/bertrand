@@ -6,6 +6,8 @@
     import pandas as pd
     import pdcast
 
+.. _typecheck:
+
 pdcast.typecheck
 ================
 

@@ -1,5 +1,7 @@
 .. currentmodule:: pdcast
 
+.. _subtype:
+
 pdcast.subtype
 ==============
 

@@ -6,6 +6,8 @@
     import pandas as pd
     import pdcast
 
+.. _detect_type:
+
 pdcast.detect_type
 ==================
 
@@ -105,7 +107,7 @@ This also tracks the type that was observed at each
 .. note::
 
     This is space-efficient thanks to :class:`AtomicType`\'s
-    :ref:`flyweight construction <atomic_type.allocation>`.
+    :ref:`flyweight construction <AtomicType.allocation>`.
 
 .. _detect_type.pandas:
 

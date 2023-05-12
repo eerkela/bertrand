@@ -6,6 +6,8 @@
     import pandas as pd
     import pdcast
 
+.. _resolve_type:
+
 pdcast.resolve_type
 ===================
 

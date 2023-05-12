@@ -1,5 +1,7 @@
 .. currentmodule:: pdcast
 
+.. _generic:
+
 pdcast.generic
 ==============
 

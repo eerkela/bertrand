@@ -1,112 +1,64 @@
 .. NOTE: whenever a change is made to this file, make sure to update the
 .. start and end lines of index.rst to allow doctests to run.
 
-pdcast - pandas data types made easy
-====================================
-``pdcast`` modifies the existing numpy/pandas typing infrastructure, making it
-easier to work with tabular data in a wide variety of formats.
+pdcast - flexible type extensions for pandas
+============================================
+``pdcast`` expands and enhances the existing numpy/pandas typing
+infrastructure, making it easier to work with tabular data in a wide variety of
+formats.
 
 Features
 --------
 ``pdcast`` adds support for:
 
-*  **Extendable hierarchies** for numpy/pandas ``dtype`` objects.  These can
-   be arranged into trees to represent different subtypes and implementations,
-   and new types can be defined in as little as 10 lines of code.  They can
-   utilize existing ``dtype``\ /\ ``ExtensionDtype`` definitions or
-   *automatically generate* their own via the  `pandas extension API
+*  **Abstract hierarchies** for numpy/pandas ``dtype`` objects.  These are
+   lightweight, efficient, and highly extensible, with new types added in as
+   little as :ref:`10 lines of code <tutorial>`.  They can use existing
+   ``dtype``\ /\ ``ExtensionDtype`` definitions or *automatically generate*
+   their own via the `pandas extension API
    <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
-   This unifies the two halves of the pandas typing infrastructure and takes
-   the guesswork out of writing new extensions.  In either case, integration is
-   seamless and automatic, and every aspect of a type's behavior can be
-   customized as needed.
-*  **A generalized mini-language** for resolving types, with user-definable
-   aliases and semantics in the style of existing pandas conventions.  This
-   allows users to quickly and unambiguously specify types while maintaining
-   fine control over their composition and behavior.
-*  Tools for **inferencing** and **type checking**.  Types can be readily
-   detected from example data, even if those data are non-homogenous or not
-   supported by existing numpy/pandas alternatives.  This is more robust than
-   simply checking an array's ``.dtype`` field, and allows explicit
-   ``isinstance()``\-like checks for vectorized data in any representation.
-   Users can even work with ``dtype: object`` arrays without losing confidence
-   in their results.
-*  **A suite of conversions** covering 9 of the most commonly-encountered data
-   types: *boolean*, *integer*, *floating point*, *complex*, *decimal*
-   (arbitrary precision), *datetime*, *timedelta*, *string*, *raw python
-   objects*, or any combination of the above.  Each conversion is fully
-   reversible, protected against overflow and precision loss, and can be
-   customized on a per-type basis similar to the resolution and inferencing
-   tools outlined above.
-*  **Automatic method dispatching** based on observed data.  This functions in
-   a manner similar to ``@functools.singledispatch``, allowing series methods
-   to dispatch to multiple different implementations based on their underlying
-   data type.  This mechanism is fully general-purpose, and can be used to
-   modify existing pandas functionality in cases where it is broken, or to
-   extend it arbitrarily without interference.  In either case, ``pdcast``
-   handles all the necessary type checks and inferencing, dispatching to the
-   appropriate implementation if one exists and falling back to pandas if it
-   does not.  Original functionality can be easily recovered if necessary, and
-   dispatched methods can be hidden behind virtual namespaces to avoid
-   conflicts, similar to ``Series.dt``, ``Series.str``, etc.
+   This allows users to quickly integrate arbitrary data types into the pandas
+   ecosystem, with customizable behavior for each one.
+*  A configurable, **domain-specific language** for resolving types.  This
+   represents a superset of the existing numpy/pandas keywords and syntax, with
+   support for arbitrary parametrization, configurable aliases, and
+   user-definable semantics.
+*  Robust **type detection** from vectorized example data.  This works
+   regardless of an example's ``.dtype`` attribute, allowing ``pdcast`` to
+   describe arbitrary Python iterables, including lists, tuples, generators,
+   and ``dtype: object`` arrays.  In each case, inference is fast,
+   customizable, and works even when the examples are of mixed type or are not
+   supported by existing numpy/pandas alternatives.
+*  **Efficient type checks** for arbitrary data.  This combines the above tools
+   to perform ``isinstance()``-like hierarchical checks for any node in the
+   ``pdcast`` type system.  If the provided data are properly labeled, then
+   this is done with *O(1)* complexity, allowing users to sprinkle checks
+   throughout their code without worrying about performance implications.
+*  **Multiple dispatch** based on the observed types of a function's inputs.
+   This works like ``@functools.singledispatch``, but can dispatch on any
+   combination of positional and/or keyword arguments, each of which can be
+   independently vectorized.  It can even dispatch to multiple implementations
+   at once in the case of mixed data, which are processed using a
+   split-apply-combine strategy.
+*  **Direct integration with pandas**.  ``pdcast`` supports a functional
+   approach to extending pandas with small, fully encapsulated functions
+   performing special operations based on the types of their arguments.  These
+   can be combined to create powerful, dynamic patches for its rich feature
+   set, which can be deployed directly to its public data structures on a
+   global basis.  This allows users to surgically overload virtually any
+   aspect of the pandas machinery in cases where it is broken, or to add
+   entirely new behavior specific to one or more types.  The original
+   implementations of these attributes can be easily recovered if necessary,
+   and just like the existing pandas framework, they can be hidden behind
+   virtual namespaces to avoid conflicts, similar to ``Series.dt``,
+   ``Series.str``, etc.
 
-Advantages over Pandas
-----------------------
-Compared to the existing pandas framework, ``pdcast`` is:
+Usage
+-----
+In its basic usage, ``pdcast`` can be used to easily verify the types that are
+present within pandas data structures and other iterables:
 
-*  **Simple**.  ``pdcast`` avoids many common gotchas and edge cases that
-   can crop up during type manipulations, including (but not limited to):
-   missing values, overflow, precision loss, string parsing, datetimes, and
-   sparse/categorical encoding.
-*  **Robust**. ``pdcast`` can ingest almost any input data, even if they are
-   missing, imprecise, or ambiguous.  They can even be of mixed type and still
-   be processed intelligibly.
-*  **Flexible**.  Every aspect of ``pdcast``'s functionality can be modified or
-   extended to meet one's needs, no matter how complex.
-*  **Comprehensive**.  ``pdcast`` comes prepackaged with support for several
-   different backends for each data type, including numpy, pandas, python, and
-   pyarrow where applicable.
-*  **Intuitive**.  ``pdcast`` has a minimalistic, decorator-focused design that
-   can be attached directly to existing pandas data structures.  There are no
-   new frameworks to learn, and any additional functionality is designed to be
-   familiar and self-explanatory.
-*  **Efficient**.  By giving users more control over the types that are present
-   within their series and dataframe objects, substantial memory savings and
-   performance improvements can be achieved.  Sparse data structures and
-   lossless downcasting make it possible to shrink data by up to a factor of
-   10 in some cases, and conversions can be used to enhance compatibility with
-   statically-typed, third party libraries.
-
-.. TODO: uncomment this once the package is pushed to PyPI
-
-   Installation
-   ------------
-   Wheels are built using `cibuildwheel <https://cibuildwheel.readthedocs.io/en/stable/>`_
-   and are available for most platforms via the Python Package Index (PyPI).
-
-   .. TODO: add hyperlink to PyPI page when it goes live
-
-   .. code:: console
-
-      (.venv) $ pip install pdcast
-
-   If a wheel is not available for your system, ``pdcast`` also provides an sdist
-   to allow pip to build from source, although doing so requires an additional
-   ``cython`` dependency.
-
-   If you want to run the test suite, install the package using the optional
-   ``pdcast[dev]`` dependencies.
-
-   .. note::
-      
-      Tests are still incomplete at this stage and are constantly being updated.
-
-Demonstration
--------------
-``pdcast`` can be used to easily verify the types that are present within
-pandas data structures:
-
-.. doctest:: typecheck
+.. doctest::
 
    >>> import pandas as pd
    >>> import pdcast; pdcast.attach()
@@ -117,14 +69,15 @@ pandas data structures:
    >>> df["a"].typecheck("int")
    True
 
-It can also be used to convert data from one representation to another.  Here
-is a short walk around the various type categories that are recognized by
-``pdcast`` (Note: _ refers to previous output).
+With its more advanced features ``pdcast`` implements its own universal
+:func:`cast() <pdcast.cast>` function, which can perform arbitrary data
+conversions within its expanded type system.  Here's a short walk around the
+various categories that are included out of the box (Note: ``_`` refers to the
+previous output).
 
-.. doctest:: conversion
+.. doctest::
 
    >>> import numpy as np
-   >>> import pdcast; pdcast.attach()
 
    >>> class CustomObj:
    ...     def __init__(self, x):  self.x = x
@@ -188,48 +141,75 @@ nonstandard representation.
 
 .. NOTE: BREAK HERE IN INDEX.RST
 
-.. doctest:: dispatch
+.. doctest::
 
-   >>> import pandas as pd
-
-   >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round()
+   >>> pd.Series([1.1, -2.5, 3.7], dtype=object).round()
    Traceback (most recent call last):
       ...
    TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
 
-``pdcast`` defines type-agnostic alternatives for these where applicable.  If
-required, the original functionality can be easily recovered.
+``pdcast`` allows users to define type-agnostic alternatives for these where
+applicable.  If required, the original functionality can be easily recovered.
 
-.. doctest:: dispatch
+.. doctest::
 
-   >>> import pdcast; pdcast.attach()
-
-   >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round()
+   >>> pdcast.attach()
+   >>> pd.Series([1.1, -2.5, 3.7], dtype=object).round()
    0    1.0
    1   -2.0
    2    4.0
    dtype: float[python]
-   >>> pd.Series([1.1, -2.5, 3.7], dtype="O").round.original()
+   >>> pd.Series([1.1, -2.5, 3.7], dtype=object).round.original()
    Traceback (most recent call last):
       ...
    TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
 
-New methods can also be defined programmatically using ``pdcast``'s powerful
+New methods can be defined programmatically using ``pdcast``'s powerful
 dispatching tools.
 
-.. doctest:: dispatch
+.. doctest::
 
-   >>> @pdcast.dispatch(namespace="foo", types="int, float")
+   >>> @pdcast.attachable
+   >>> @pdcast.dispatch("series")
    ... def bar(series: pdcast.SeriesWrapper) -> pdcast.SeriesWrapper:
    ...     print("Hello, World!")
    ...     return series
 
-   >>> pd.Series([1, 2, 3]).foo.bar()
+   >>> @bar.overload("int")
+   ... def int_bar(series: pdcast.SeriesWrapper) -> pdcast.SeriesWrapper:
+   ...     print("Goodbye, World!")
+   ...     return series
+
+   >>> pd.Series([1.0, 2.0, 3.0]).foo.bar()
    Hello, World!
+   0    1.0
+   1    2.0
+   2    3.0
+   dtype: float64
+   >>> pd.Series([1, 2, 3]).foo.bar()
+   Goodbye, World!
    0    1
    1    2
    2    3
    dtype: int64
+
+.. TODO: uncomment this once the package is pushed to PyPI
+
+   Installation
+   ------------
+   Wheels are built using `cibuildwheel <https://cibuildwheel.readthedocs.io/en/stable/>`_
+   and are available for most platforms via the Python Package Index (PyPI).
+
+   .. TODO: add hyperlink to PyPI page when it goes live
+
+   .. code:: console
+
+      (.venv) $ pip install pdcast
+
+   If a wheel is not available for your system, ``pdcast`` also provides an sdist
+   to allow pip to build from source, although doing so requires an additional
+   ``cython`` dependency.
+
 
 .. uncomment this when documentation goes live
 
