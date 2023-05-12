@@ -44,19 +44,35 @@ Features
    approach to extending pandas with small, fully encapsulated functions
    performing special operations based on the types of their arguments.  These
    can be combined to create powerful, dynamic patches for its rich feature
-   set, which can be deployed directly to its public data structures on a
-   global basis.  This allows users to surgically overload virtually any
-   aspect of the pandas machinery in cases where it is broken, or to add
-   entirely new behavior specific to one or more types.  The original
-   implementations of these attributes can be easily recovered if necessary,
-   and just like the existing pandas framework, they can be hidden behind
-   virtual namespaces to avoid conflicts, similar to ``Series.dt``,
-   ``Series.str``, etc.
+   set, which can be deployed directly to pandas data structures on a global
+   basis.  This allows users to surgically overload virtually any aspect of the
+   pandas machinery in cases where it is broken, or to add entirely new
+   behavior specific to one or more types.  The original implementations of
+   these attributes can be easily recovered if necessary, and just like the
+   existing pandas framework, they can be hidden behind virtual namespaces to
+   avoid conflicts, similar to ``Series.dt``, ``Series.str``, etc.
+
+.. TODO: uncomment this once the package is pushed to PyPI
+
+   Installation
+   ------------
+   Wheels are built using `cibuildwheel <https://cibuildwheel.readthedocs.io/en/stable/>`_
+   and are available for most platforms via the Python Package Index (PyPI).
+
+   .. TODO: add hyperlink to PyPI page when it goes live
+
+   .. code:: console
+
+      (.venv) $ pip install pdcast
+
+   If a wheel is not available for your system, ``pdcast`` also provides an sdist
+   to allow pip to build from source, although doing so requires an additional
+   ``cython`` dependency.
 
 Usage
 -----
-In its basic usage, ``pdcast`` can be used to easily verify the types that are
-present within pandas data structures and other iterables:
+In its basic usage, ``pdcast`` can easily verify the types that are present
+within pandas data structures and other iterables:
 
 .. doctest::
 
@@ -69,10 +85,10 @@ present within pandas data structures and other iterables:
    >>> df["a"].typecheck("int")
    True
 
-With its more advanced features ``pdcast`` implements its own universal
+Using its more advanced features, ``pdcast`` implements its own universal
 :func:`cast() <pdcast.cast>` function, which can perform arbitrary data
 conversions within its expanded type system.  Here's a short walk around the
-various categories that are included out of the box (Note: ``_`` refers to the
+various categories that are supported out of the box (Note: ``_`` refers to the
 previous output).
 
 .. doctest::
@@ -136,79 +152,74 @@ previous output).
    2     <NA>
    dtype: boolean
 
-Occasionally a pandas method might break when working with data in a
-nonstandard representation.
-
-.. NOTE: BREAK HERE IN INDEX.RST
+New implementations for the :func:`cast() <pdcast.cast>` function can be added
+dynamically, with customization for both the source and destination types.
 
 .. doctest::
 
-   >>> pd.Series([1.1, -2.5, 3.7], dtype=object).round()
-   Traceback (most recent call last):
-      ...
-   TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
+   >>> @pdcast.cast.overload("bool[python]", "int[python]")
+   ... def my_custom_conversion(series, dtype, **unused):
+   ...     print("calling my custom conversion...")
+   ...     return series.apply(int, convert_dtype=False)
 
-``pdcast`` allows users to define type-agnostic alternatives for these where
-applicable.  If required, the original functionality can be easily recovered.
+   >>> pd.Series([True, False], dtype=object).cast(int)
+   calling my custom conversion...
+   0    1
+   1    0
+   dtype: object
 
-.. doctest::
-
-   >>> pdcast.attach()
-   >>> pd.Series([1.1, -2.5, 3.7], dtype=object).round()
-   0    1.0
-   1   -2.0
-   2    4.0
-   dtype: float[python]
-   >>> pd.Series([1.1, -2.5, 3.7], dtype=object).round.original()
-   Traceback (most recent call last):
-      ...
-   TypeError: loop of ufunc does not support argument 0 of type float which has no callable rint method
-
-New methods can be defined programmatically using ``pdcast``'s powerful
-dispatching tools.
+Finally, ``pdcast`` offers a selection of powerful tools for extending pandas
+with a minimalistic, decorator-focused design.  They can be used to modify
+existing behavior:
 
 .. doctest::
 
    >>> @pdcast.attachable
-   >>> @pdcast.dispatch("series")
-   ... def bar(series: pdcast.SeriesWrapper) -> pdcast.SeriesWrapper:
+   ... @pdcast.dispatch("self", "other")
+   ... def __add__(self, other):
+   ...     return getattr(self.__add__, "original", self.__add__)(other)
+
+   >>> @__add__.overload("int", "int")
+   ... def add_integer(self, other):
+   ...     return self - other
+
+   >>> __add__.attach_to(pd.Series)
+   >>> pd.Series([1, 2, 3]) + 1
+   0    0
+   1    1
+   2    2
+   dtype: int64
+   >>> pd.Series([1, 2, 3]) + True
+   0    2
+   1    3
+   2    4
+   dtype: int64
+
+Or create entirely new attributes and methods above and beyond what's included
+in pandas.
+
+.. doctest::
+
+   >>> @pdcast.attachable
+   ... @pdcast.dispatch("series")
+   ... def bar(series):
+   ...     raise NotImplementedError("bar is only defined for floating point values")
+
+   >>> @bar.overload("float")
+   ... def float_bar(series):
    ...     print("Hello, World!")
    ...     return series
 
-   >>> @bar.overload("int")
-   ... def int_bar(series: pdcast.SeriesWrapper) -> pdcast.SeriesWrapper:
-   ...     print("Goodbye, World!")
-   ...     return series
-
-   >>> pd.Series([1.0, 2.0, 3.0]).foo.bar()
+   >>> bar.attach_to(pd.Series, namespace="foo", pattern="property")
+   >>> pd.Series([1.0, 2.0]).foo.bar
    Hello, World!
    0    1.0
    1    2.0
-   2    3.0
    dtype: float64
-   >>> pd.Series([1, 2, 3]).foo.bar()
-   Goodbye, World!
-   0    1
-   1    2
-   2    3
-   dtype: int64
-
-.. TODO: uncomment this once the package is pushed to PyPI
-
-   Installation
-   ------------
-   Wheels are built using `cibuildwheel <https://cibuildwheel.readthedocs.io/en/stable/>`_
-   and are available for most platforms via the Python Package Index (PyPI).
-
-   .. TODO: add hyperlink to PyPI page when it goes live
-
-   .. code:: console
-
-      (.venv) $ pip install pdcast
-
-   If a wheel is not available for your system, ``pdcast`` also provides an sdist
-   to allow pip to build from source, although doing so requires an additional
-   ``cython`` dependency.
+   >>> pd.Series([1, 0]).foo.bar
+   Traceback (most recent call last):
+      ...
+   NotImplementedError: bar is only defined for floating point values
 
 
 .. uncomment this when documentation goes live
