@@ -15,6 +15,12 @@ pipelines.
 
 Type Safety
 -----------
+
+
+
+
+
+
 Python is a `dynamically-typed <https://realpython.com/python-type-checking/>`_
 language.  This comes with a number of noteworthy benefits, many of which have
 spurred the growth of Python as an easy to use, general purpose programming

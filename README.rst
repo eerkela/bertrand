@@ -4,12 +4,12 @@
 pdcast - flexible type extensions for pandas
 ============================================
 ``pdcast`` expands and enhances the existing numpy/pandas typing
-infrastructure, making it easier to work with tabular data in a wide variety of
-formats.
+infrastructure, allowing users to write powerful extensions with an intuitive,
+decorator-focused design.
 
 Features
 --------
-``pdcast`` adds support for:
+``pdcast``'s core features include:
 
 *  **Abstract hierarchies** for numpy/pandas ``dtype`` objects.  These are
    lightweight, efficient, and highly extensible, with new types added in as
@@ -19,27 +19,25 @@ Features
    <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
    This allows users to quickly integrate arbitrary data types into the pandas
    ecosystem, with customizable behavior for each one.
-*  A configurable, **domain-specific language** for resolving types.  This
-   represents a superset of the existing numpy/pandas keywords and syntax, with
-   support for arbitrary parametrization, as well as configurable aliases and
-   semantics.
+*  A configurable **domain-specific language** for resolving types.  This
+   represents a superset of the existing numpy/pandas syntax, with support for
+   arbitrary parametrization, as well as customizable aliases and semantics.
 *  Robust **type detection** from vectorized data in any format.  This works
    regardless of an example's ``.dtype`` attribute, allowing ``pdcast`` to
    describe ambiguous Python iterables, such as lists, tuples, generators,
    and ``dtype: object`` arrays.  In each case, inference is fast,
-   customizable, and works even when the examples are of mixed type.
+   reliable, and works even when the examples are of mixed type.
 *  **Efficient type checks** for arbitrary data.  This combines the above tools
    to perform ``isinstance()``-like hierarchical checks for any node in the
    ``pdcast`` type system.  If the provided data are properly labeled, then
-   this is done with *O(1)* complexity, allowing users to sprinkle checks
-   throughout their code without worrying about performance implications.
+   this is done in constant time, allowing users to sprinkle checks throughout
+   their code wherever they are needed.
 *  **Multiple dispatch** with vectorized inputs.  This works like
    ``@functools.singledispatch``, allowing a function to dispatch to a
    collection of virtual implementations based the observed type of one or more
-   positional and/or keyword arguments.  With the pdcast type system, however,
-   this can be extended to cover vectorized data in any representation,
-   including those containing mixed-type elements, which are processed using a
-   split-apply-combine strategy.
+   arguments.  With the ``pdcast`` type system, this can be extended to cover
+   vectorized data in any representation, including those containing mixed-type
+   elements, which are processed using a split-apply-combine strategy.
 *  **Attachable functions** with a variety of access patterns.  These leverage
    Python's `descriptor protocol <https://docs.python.org/3/reference/datamodel.html#descriptor-invocation>`_
    to attach naked functions to external classes as bound attributes, just as
@@ -50,18 +48,18 @@ Features
 *  **Dynamic arguments** with custom validators, default values, and
    programmatic extensions.  These can be used to actively manage the values
    that are supplied to a function by defining validators for its arguments,
-   which can perform their own preprocessing before passing the result into the
+   which can perform their own processing before passing the result into the
    body of the function itself.  Validators such as these can also be used to
    add new arguments to a function at run time, passing them through to any
    dispatched implementations that might request them.
 
 Together, these enable a functional approach to extending pandas with small,
 fully encapsulated functions performing special operations based on the types
-of their arguments. They can be combined to create powerful, dynamic patches
+of their arguments.  They can be combined to create powerful, dynamic patches
 for its rich feature set, which can be deployed directly to pandas data
-structures on a global basis.  This enables users to surgically overload
-virtually any aspect of the existing pandas interface or add entirely new
-behavior specific to one or more data types.
+structures on a global basis.  Users are thus able to surgically overload
+virtually any aspect of the pandas interface, or add entirely new behavior
+specific to one or more data types.
 
 .. TODO: uncomment this once the package is pushed to PyPI
 
@@ -96,7 +94,7 @@ within pandas data structures and other iterables:
    >>> df["a"].typecheck("int")
    True
 
-Using its more advanced features, ``pdcast`` implements its own universal
+With its more advanced features, ``pdcast`` implements its own universal
 :func:`cast() <pdcast.cast>` function, which can perform arbitrary data
 conversions within its expanded type system.  Here's a short walk around the
 various categories that are supported out of the box (Note: ``_`` refers to the
@@ -230,7 +228,6 @@ in pandas.
    Traceback (most recent call last):
       ...
    NotImplementedError: bar is only defined for floating point values
-
 
 .. uncomment this when documentation goes live
 
