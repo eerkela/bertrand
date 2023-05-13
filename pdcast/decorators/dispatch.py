@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import OrderedDict
 import inspect
 import itertools
+import threading
 from types import MappingProxyType
 from typing import Any, Callable, Iterable
 import warnings
@@ -100,13 +101,16 @@ def dispatch(
     data, they will be grouped by type and dispatched independently via the
     ``pdcast`` :doc:`type system </content/types/types>`.
     """
+    flags = threading.local()
+
     def decorator(func: Callable):
         """Convert a callable into a DispatchFunc object."""
         return DispatchFunc(
             func,
             args=args,
             drop_na=drop_na,
-            cache_size=cache_size
+            cache_size=cache_size,
+            flags=flags
         )
 
     return decorator
@@ -278,7 +282,7 @@ class DispatchFunc(BaseDecorator):
 
     _reserved = (
         BaseDecorator._reserved |
-        {"_args", "_dispatched", "_drop_na", "_signature"}
+        {"_args", "_dispatched", "_drop_na", "_flags", "_signature"}
     )
 
     def __init__(
@@ -286,10 +290,12 @@ class DispatchFunc(BaseDecorator):
         func: Callable,
         args: list[str],
         drop_na: bool,
-        cache_size: int
+        cache_size: int,
+        flags: threading.local
     ):
         super().__init__(func=func)
         self._drop_na = bool(drop_na)
+        self._flags = flags
         if not args:
             raise TypeError(
                 f"'{func.__qualname__}' must dispatch on at least one argument"
@@ -596,7 +602,7 @@ class DispatchFunc(BaseDecorator):
     #     return SeriesWrapper(result, hasnans=series.hasnans)
 
 
-    def _build_pipeline(self, dispatched: dict[str, Any]) -> DispatchPipeline:
+    def _build_strategy(self, dispatched: dict[str, Any]) -> DispatchStrategy:
         """Normalize vectorized inputs to this :class:`DispatchFunc`.
 
         This method converts input vectors into :class:`SeriesWrappers` with
@@ -610,8 +616,6 @@ class DispatchFunc(BaseDecorator):
         provided as input.  This is intended to short-circuit the normalization
         machinery for internal (recursive) calls.
         """
-        normalized = True
-
         # extract vectors
         vectors = {}
         names = {}
@@ -620,21 +624,14 @@ class DispatchFunc(BaseDecorator):
                 vectors[arg] = value.series
                 names[arg] = value.name
             elif isinstance(value, pd.Series):
-                normalized = False
                 vectors[arg] = value
                 names[arg] = value.name
             elif isinstance(value, np.ndarray):
-                normalized = False
                 vectors[arg] = value
             else:
                 value = np.asarray(value, dtype=object)
                 if value.shape:
-                    normalized = False
                     vectors[arg] = value
-
-        # fastpath for pre-normalized/scalar inputs
-        if normalized:
-            return DispatchDirect(func=self, dispatched=dispatched)
 
         # bind vectors into DataFrame
         frame = pd.DataFrame(vectors)
@@ -658,7 +655,7 @@ class DispatchFunc(BaseDecorator):
 
         # composite case
         if any(isinstance(v, types.CompositeType) for v in detected.values()):
-            return DispatchComposite(
+            return CompositeDispatch(
                 func=self,
                 dispatched=dispatched,
                 frame=frame,
@@ -669,7 +666,7 @@ class DispatchFunc(BaseDecorator):
             )
 
         # homogenous case
-        return DispatchHomogenous(
+        return HomogenousDispatch(
             func=self,
             dispatched=dispatched,
             frame=frame,
@@ -704,11 +701,18 @@ class DispatchFunc(BaseDecorator):
         # extract dispatched args
         dispatched = {arg: bound.arguments[arg] for arg in self._args}
 
-        # generate instructions (strategy pattern)
-        pipeline = self._build_pipeline(dispatched)
+        # fastpath for recursive calls
+        if getattr(self._flags, "recursive", False):
+            strategy = DirectDispatch(func=self, dispatched=dispatched)
+            return strategy(bound)
 
-        # execute strategy
-        return pipeline(bound)
+        # outermost call - extract/normalize vectors and finalize results
+        self._flags.recursive = True
+        try:
+            strategy = self._build_strategy(dispatched)
+            return strategy(bound)
+        finally:
+            self._flags.recursive = False
 
     def __getitem__(self, key: type_specifier) -> Callable:
         """Get the dispatched implementation for objects of a given type.
@@ -733,7 +737,7 @@ class DispatchFunc(BaseDecorator):
 #######################
 
 
-class DispatchPipeline:
+class DispatchStrategy:
     """Base class for Strategy-Pattern dispatch pipelines."""
 
     def execute(self, bound: inspect.BoundArguments) -> Any:
@@ -758,7 +762,7 @@ class DispatchPipeline:
         return self.finalize(self.execute(bound))
 
 
-class DispatchDirect(DispatchPipeline):
+class DirectDispatch(DispatchStrategy):
     """Dispatch pre-normalized inputs to the appropriate implementation."""
 
     def __init__(
@@ -787,7 +791,7 @@ class DispatchDirect(DispatchPipeline):
         return result  # do nothing
 
 
-class DispatchHomogenous(DispatchPipeline):
+class HomogenousDispatch(DispatchStrategy):
     """Dispatch homogenous inputs to the appropriate implementation."""
 
     def __init__(
@@ -813,7 +817,7 @@ class DispatchHomogenous(DispatchPipeline):
             )
 
         # construct DispatchDirect wrapper
-        self.direct = DispatchDirect(
+        self.direct = DirectDispatch(
             func=func,
             dispatched=dispatched
         )
@@ -853,7 +857,7 @@ class DispatchHomogenous(DispatchPipeline):
         return result
 
 
-class DispatchComposite(DispatchPipeline):
+class CompositeDispatch(DispatchStrategy):
     """Dispatch composite inputs to the appropriate implementations."""
 
     def __init__(
@@ -904,7 +908,7 @@ class DispatchComposite(DispatchPipeline):
 
         # process each group independently
         for detected, group in self:
-            strategy = DispatchHomogenous(
+            strategy = HomogenousDispatch(
                 func=self.func,
                 dispatched=self.dispatched,
                 frame=group,
@@ -1101,6 +1105,9 @@ def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
 #                and not any(supercedes(c, a) and supercedes(c, b)
 #                            for c in signatures))
 
+
+
+# TODO: update README for overloading __add__.  Must account for SeriesWrapper.
 
 
 # from .attachable import attachable
