@@ -21,7 +21,7 @@ Features
    ecosystem, with customizable behavior for each one.
 *  A configurable **domain-specific language** for resolving types.  This
    represents a superset of the existing numpy/pandas syntax, with support for
-   arbitrary parametrization, as well as customizable aliases and semantics.
+   arbitrary parametrization as well as customizable aliases and semantics.
 *  Robust **type detection** from vectorized data in any format.  This works
    regardless of an example's ``.dtype`` attribute, allowing ``pdcast`` to
    describe ambiguous Python iterables, such as lists, tuples, generators,
@@ -139,7 +139,7 @@ previous output).
    1   2000-01-01 12:00:00
    2                   NaT
    dtype: datetime64[ns]
-   >>> _.cast("timedelta[python]", since="Jan 1st, 2000 at 12:00 PM")
+   >>> _.cast("timedelta[python]", since="Jan 1st, 2000 at 12:00 PM")  # TODO: object dtype
    0    366 days, 0:00:00
    1              0:00:00
    2                  NaT
@@ -148,7 +148,7 @@ previous output).
    0    CustomObj(366 days, 0:00:00)
    1              CustomObj(0:00:00)
    2                            <NA>
-   dtype: object
+   dtype: object[CustomObj]
    >>> _.cast("categorical[str[pyarrow]]")
    0    CustomObj(366 days, 0:00:00)
    1              CustomObj(0:00:00)

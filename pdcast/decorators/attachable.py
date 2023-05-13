@@ -266,13 +266,10 @@ class Attachable(BaseDecorator):
 
         # generate namespace
         if namespace:
-            parent, original = _generate_namespace(class_, name, namespace)
+            parent, original = generate_namespace(class_, name, namespace)
         else:  # attach to class itself
             parent = class_
-            try:
-                original = object.__getattribute__(class_, name)
-            except AttributeError:
-                original = None
+            original = get_descriptor(class_, name, None)
 
         # generate kwargs for descriptor
         kwargs = {
@@ -552,29 +549,18 @@ class VirtualAttribute(BaseDecorator):
         )
 
 
-def _generate_namespace(
+def generate_namespace(
     class_: type,
     name: str,
     namespace: str
 ) -> tuple:
     """Get an existing namespace or generate a new one."""
-    # breakpoint()
-
-    # get existing attribute (bypassing __get__)
-    try:
-        existing = object.__getattribute__(class_, namespace)
-    except AttributeError:
-        existing = None
-    # existing = getattr(class_, namespace, None)
+    existing = get_descriptor(class_, namespace, None)
 
     # use existing namespace
     if isinstance(existing, Namespace):
         parent = existing
-        try:
-            original = object.__getattribute__(existing._original, name)
-        except AttributeError:
-            original = None
-        # original = getattr(existing._original, name, None)
+        original = get_descriptor(existing._original, name, None)
 
     else:
         # NOTE: we need to create a unique subclass of Namespace to
@@ -589,13 +575,25 @@ def _generate_namespace(
             original=existing
         )
         setattr(class_, parent.__name__, parent)
-        try:
-            original = object.__getattribute__(existing, name)
-        except AttributeError:
-            original = None
-        # original = getattr(existing, name, None)
+        original = get_descriptor(existing, name, None)
 
     return parent, original
+
+
+def get_descriptor(class_: type, name: str, default: Any) -> Any:
+    """Get a descriptor from a class without invoking its ``__get__()`` method.
+
+    This works like getattr(), except that it avoids invoking the descriptor
+    protocol.
+    """
+    # follow method resolution order (MRO).
+    for base in class_.__mro__:
+        try:
+            return object.__getattribute__(base, name)
+        except AttributeError:
+            continue
+
+    return default
 
 
 #########################
@@ -783,7 +781,7 @@ class Namespace:
 
             >>> foo.attach_to(MyClass, namespace="foo")
             >>> MyClass.foo   # doctest: +SKIP
-            <pdcast.decorators.attachable._generate_namespace.<locals>._Namespace object at 0x7fbd591adba0>
+            <pdcast.decorators.attachable.generate_namespace.<locals>._Namespace object at 0x7fbd591adba0>
             >>> MyClass.foo.detach()
             >>> MyClass.foo
             Traceback (most recent call last):
@@ -1071,3 +1069,74 @@ class Property(VirtualAttribute):
     def __call__(self, *args, **kwargs):
         """Call the property, producing an identical error to python."""
         return self._property(*args, **kwargs)  # raises TypeError
+
+
+
+
+
+# class Parent:
+
+#     def a(self):
+#         print("I'm a method!")
+#         return self
+
+#     @property
+#     def b(self):
+#         print("I'm a property!")
+#         return self
+
+#     @classmethod
+#     def c(cls):
+#         print("I'm a class method!")
+#         return cls
+
+#     @staticmethod
+#     def d():
+#         print("I'm a static method!")
+#         return None
+
+
+# class Foo(Parent):
+
+#     class bar:
+
+#         def __init__(self, obj: Foo):
+#             self.obj = obj
+
+#         def a(self):
+#             print("I'm a namespace method!")
+#             return self
+
+#         @property
+#         def b(self):
+#             print("I'm a namespace property!")
+#             return self
+
+#         @classmethod
+#         def c(cls):
+#             print("I'm a namespace class method!")
+#             return cls
+
+#         @staticmethod
+#         def d():
+#             print("I'm a namespace static method!")
+#             return None
+
+
+# @attachable
+# def baz(self):
+#     print("overloaded")
+#     return self
+
+
+# # baz.attach_to(Foo, name="a")
+# # baz.attach_to(Foo, namespace="bar", name="d")
+
+
+# def attach(name, namespace=None, pattern="method"):
+#     for v in baz.attached.values():
+#         v.detach()
+#     baz.attach_to(Foo, name=name, namespace=namespace, pattern=pattern)
+
+
+# breakpoint()

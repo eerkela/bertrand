@@ -717,22 +717,10 @@ class DispatchFunc(BaseDecorator):
         :class:`DispatchFunc`.  It always returns the same implementation that
         is used when the function is invoked.
         """
-        # search for a dispatched implementation
         try:
             return self._dispatched[key]
         except KeyError:
             return self.__wrapped__
-
-        # TODO: maybe adapter unwrapping should be implemented in generic
-        # implementation?  Either that or convert @dispatch wrap_adapters into
-        # ignore_adapters.  Or just use **kwargs for contains() operations.
-
-        # # unwrap adapters  # TODO: breaks multiple dispatch
-        # for _ in key_type.adapters:
-        #     return self[key_type.wrapped]  # recur
-
-        # return generic
-        return self.__wrapped__
 
     def __delitem__(self, key: type_specifier) -> None:
         """Remove an implementation from the pool.
@@ -938,6 +926,9 @@ class DispatchComposite(DispatchPipeline):
 
         # transform
         if all(isinstance(res, SeriesWrapper) for _, res in result):
+            # NOTE: pd.concat does not account for mixed int64/uint64 output
+            # and will attempt to coerce them to float.
+
             # concatenate results
             final = pd.concat([res.series for _, res in result])
             final.sort_index()
@@ -1067,7 +1058,8 @@ def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
     """
     result = pd.Series(
         np.full(index.shape[0], na_value, dtype=object),
-        index=index
+        index=index,
+        dtype=object
     )
     result.update(series)
     return result.astype(series.dtype)
@@ -1108,3 +1100,25 @@ def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
 #                and ambiguous(a, b)
 #                and not any(supercedes(c, a) and supercedes(c, b)
 #                            for c in signatures))
+
+
+
+# from .attachable import attachable
+
+
+# @attachable
+# @dispatch("self", "other")
+# def __add__(self, other):
+#     original = getattr(self.series.__add__, "original", self.series.__add__)
+#     return SeriesWrapper(original(other))
+
+
+# @__add__.overload("int", "int")
+# def add_integer(self, other):
+#     return self - other
+
+
+# __add__.attach_to(pd.Series)
+# print(pd.Series([1, 2, 3]) + 1)
+# print(pd.Series([1, 2, 3]) + True)
+# print(pd.Series([1, 2, 3]) + [1, True, 1.0])

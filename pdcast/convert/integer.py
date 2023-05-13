@@ -357,12 +357,12 @@ def integer_to_python_timedelta(
     # convert to us
     result = round_div(series.series, time.as_ns["us"], rule=rounding or "down")
 
-    # NOTE: m8[us].astype("O") implicitly converts to datetime.timedelta
+    # NOTE: m8[us].astype(object) implicitly converts to datetime.timedelta
     return SeriesWrapper(
         pd.Series(
-            result.to_numpy("m8[us]").astype("O"),
+            result.to_numpy("m8[us]").astype(object),
             index=series.series.index,
-            dtype="O"
+            dtype=dtype.dtype
         ),
         hasnans=series.hasnans,
         element_type=dtype
