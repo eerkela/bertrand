@@ -704,10 +704,10 @@ class DispatchFunc(BaseDecorator):
         # extract dispatched args
         dispatched = {arg: bound.arguments[arg] for arg in self._args}
 
-        # generate instructions (command pattern)
+        # generate instructions (strategy pattern)
         pipeline = self._build_pipeline(dispatched)
 
-        # execute command
+        # execute strategy
         return pipeline(bound)
 
     def __getitem__(self, key: type_specifier) -> Callable:
@@ -746,25 +746,25 @@ class DispatchFunc(BaseDecorator):
 
 
 class DispatchPipeline:
-    """Base class for Command-Pattern dispatch pipelines."""
+    """Base class for Strategy-Pattern dispatch pipelines."""
 
     def execute(self, bound: inspect.BoundArguments) -> Any:
-        """Abstract method for executing a dispatched command."""
+        """Abstract method for executing a dispatched strategy."""
         raise NotImplementedError(
-            f"command does not implement an `execute()` method: "
+            f"strategy does not implement an `execute()` method: "
             f"{self.__qualname__}"
         )
 
     def finalize(self, result: Any) -> Any:
-        """Abstract method to post-process the result of a dispatched command.
+        """Abstract method to post-process the result of a dispatched strategy.
         """
         raise NotImplementedError(
-            f"command does not implement a `finalize()` method: "
+            f"strategy does not implement a `finalize()` method: "
             f"{self.__qualname__}"
         )
 
     def __call__(self, bound: inspect.BoundArguments) -> Any:
-        """A macro for invoking a command's `execute` and `finalize` methods
+        """A macro for invoking a strategy's `execute` and `finalize` methods
         in sequence.
         """
         return self.finalize(self.execute(bound))
@@ -795,7 +795,7 @@ class DispatchDirect(DispatchPipeline):
             return self.func.__wrapped__(*bound.args, **bound.kwargs)
 
     def finalize(self, result: Any) -> Any:
-        """Process the result returned by this command's `execute` method."""
+        """Process the result returned by this strategy's `execute` method."""
         return result  # do nothing
 
 
@@ -916,7 +916,7 @@ class DispatchComposite(DispatchPipeline):
 
         # process each group independently
         for detected, group in self:
-            command = DispatchHomogenous(
+            strategy = DispatchHomogenous(
                 func=self.func,
                 dispatched=self.dispatched,
                 frame=group,
@@ -925,7 +925,7 @@ class DispatchComposite(DispatchPipeline):
                 hasnans=self.hasnans,
                 original_index=None
             )
-            result = (detected, command.execute(bound))
+            result = (detected, strategy.execute(bound))
             results.append(result)
 
         return results
@@ -934,6 +934,8 @@ class DispatchComposite(DispatchPipeline):
         """Concatenate the results and then finalize according to the inferred
         mode of operation.
         """
+        # TODO: signed/unsigned conflict
+
         # transform
         if all(isinstance(res, SeriesWrapper) for _, res in result):
             # concatenate results
@@ -1106,51 +1108,3 @@ def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
 #                and ambiguous(a, b)
 #                and not any(supercedes(c, a) and supercedes(c, b)
 #                            for c in signatures))
-
-
-
-
-
-# @dispatch("bar", "baz")
-# def add(bar, baz):
-#     """doc for foo()"""
-#     return bar + baz
-
-
-# @add.overload("int", "int")
-# def integer_add(bar, baz):
-#     print("integer case")
-#     return bar - baz
-
-
-
-# print(add([1, 2, 3], [1, True, 1.0]))
-
-
-
-
-
-
-# @foo.overload("int8", "int")
-# def int8_foo(bar, baz):
-#     print("int8")
-#     return bar
-
-
-# @foo.overload("int", "int8")
-# def integer_foo(bar, baz):
-#     print("int")
-#     return bar
-
-
-
-# @foo.overload("bool", "bool")
-# def boolean_foo(bar, baz):
-#     print("boolean")
-#     return bar
-
-
-# @foo.overload("int8[numpy]")
-# def numpy_int8_foo(bar, baz):
-#     print("np.int8")
-#     return bar

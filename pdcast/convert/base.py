@@ -146,32 +146,24 @@ def cast(
     change the behavior of :func:`cast`.  The method that is chosen is based on
     the :attr:`family <AtomicType.family>` of its ``dtype`` argument.
     """
-    # TODO: this has to implement all custom back off behavior.  The first
-    # backs off data adapters and the second backs off dtype adapters.
+    # recursively unwrap adapters and retry
 
-    # recursively unwrap adapters and retry.
-    # NOTE: This operates like a recursive stack.  Adapters are popped
-    # off the stack in FIFO order before recurring, and then each
-    # # adapter is pushed back onto the stack in the same order.
-    # for before in getattr(series_type, "adapters", ()):
-    #     series = before.inverse_transform(series)
-    #     series = self._dispatch_scalar(series, *args, **kwargs)
-    #     if (
-    #         self._wrap_adapters and
-    #         series.element_type == before.wrapped
-    #     ):
-    #         series = before.transform(series)
-    #     return series
+    # NOTE: These operate like recursive stacks.  If adapters are detected,
+    # they are popped off the stack in FIFO order before recurring.  We do this
+    # first to the data, and then to the target data type, allowing conversions
+    # to safely ignore adapters in all their implementations.
 
+    # data
+    for before in getattr(series.element_type, "adapters", ()):
+        series = before.inverse_transform(series)
+        return cast(series, dtype, **kwargs)
 
-    # recursively unwrap adapters and retry.
-    # NOTE: This operates like a recursive stack.  Adapters are popped
-    # off the stack in FIFO order before recurring, and then each
-    # adapter is pushed back onto the stack in the same order.
+    # dtype
     for before in getattr(dtype, "adapters", ()):
         series = cast(series, dtype.wrapped, **kwargs)
         return before.transform(series)
 
+    # no match
     raise NotImplementedError(
         f"no conversion found between {str(series.element_type)} and "
         f"{str(dtype)}"
