@@ -12,6 +12,7 @@ from pdcast.util import time
 from .base import (
     cast, generic_to_boolean, generic_to_integer, snap_round
 )
+from .util import boundscheck
 
 
 @cast.overload("decimal", "bool")
@@ -30,7 +31,7 @@ def decimal_to_boolean(
         rule=rounding,
         errors=errors
     )
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
     return generic_to_boolean(series, dtype, errors=errors)
 
 
@@ -51,7 +52,7 @@ def decimal_to_integer(
         rule=rounding,
         errors=errors
     )
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
     return generic_to_integer(
         series,
         dtype,
@@ -171,7 +172,7 @@ def decimal_to_datetime(
         series.element_type = int
 
     # check for overflow and upcast if applicable
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # convert to final representation
     return cast(
@@ -201,7 +202,7 @@ def decimal_to_timedelta(
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
     # check for overflow and upcast if necessary
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # convert to final representation
     return cast(

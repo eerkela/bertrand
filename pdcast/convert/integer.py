@@ -16,6 +16,7 @@ from .base import (
     cast, generic_to_boolean, generic_to_integer, generic_to_float,
     generic_to_string
 )
+from .util import boundscheck
 
 
 # TODO: int -> timedelta is unusually slow for some reason
@@ -29,7 +30,7 @@ def integer_to_boolean(
     **unused
 ) -> SeriesWrapper:
     """Convert integer data to a boolean data type."""
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
     return generic_to_boolean(series, dtype, errors=errors)
 
 
@@ -43,7 +44,7 @@ def integer_to_integer(
     **unused
 ) -> SeriesWrapper:
     """Convert integer data to another integer data type."""
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
     return generic_to_integer(
         series,
         dtype,
@@ -147,7 +148,7 @@ def integer_to_datetime(
         series.series += since.offset
 
     # check for overflow and upcast if applicable
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # convert to final representation
     return cast(
@@ -182,7 +183,7 @@ def integer_to_pandas_timestamp(
         series.series += since.offset
 
     # check for overflow and upcast if applicable
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # reconcile `tz` argument with timezone attached to dtype, if given
     if tz:
@@ -223,7 +224,7 @@ def integer_to_python_datetime(
         series.series += since.offset
 
     # check for overflow and upcast if applicable
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # reconcile `tz` argument with timezone attached to dtype, if given
     if tz:
@@ -254,7 +255,7 @@ def integer_to_numpy_datetime64(
         series.series += since.offset
 
     # check for overflow and upcast if applicable
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # convert from nanoseconds to final representation
     series.series = time.convert_unit(
@@ -297,7 +298,7 @@ def integer_to_timedelta(
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
     # check for overflow and upcast if necessary
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # convert to final representation
     return cast(
@@ -326,7 +327,7 @@ def integer_to_pandas_timedelta(
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
     # check for overflow and upcast if necessary
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # convert to final representation
     return SeriesWrapper(
@@ -352,7 +353,7 @@ def integer_to_python_timedelta(
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
     # check for overflow and upcast if necessary
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # convert to us
     result = round_div(series.series, time.as_ns["us"], rule=rounding or "down")
@@ -385,7 +386,7 @@ def integer_to_numpy_timedelta64(
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
     # check for overflow and upcast if necessary
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # convert from ns to final unit
     series.series = time.convert_unit(

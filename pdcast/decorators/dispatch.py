@@ -101,16 +101,13 @@ def dispatch(
     data, they will be grouped by type and dispatched independently via the
     ``pdcast`` :doc:`type system </content/types/types>`.
     """
-    flags = threading.local()
-
     def decorator(func: Callable):
         """Convert a callable into a DispatchFunc object."""
         return DispatchFunc(
             func,
             args=args,
             drop_na=drop_na,
-            cache_size=cache_size,
-            flags=flags
+            cache_size=cache_size
         )
 
     return decorator
@@ -291,11 +288,10 @@ class DispatchFunc(BaseDecorator):
         args: list[str],
         drop_na: bool,
         cache_size: int,
-        flags: threading.local
     ):
         super().__init__(func=func)
         self._drop_na = bool(drop_na)
-        self._flags = flags
+        self._flags = threading.local()
         if not args:
             raise TypeError(
                 f"'{func.__qualname__}' must dispatch on at least one argument"
@@ -763,7 +759,7 @@ class DispatchStrategy:
 
 
 class DirectDispatch(DispatchStrategy):
-    """Dispatch pre-normalized inputs to the appropriate implementation."""
+    """Dispatch raw inputs to the appropriate implementation."""
 
     def __init__(
         self,

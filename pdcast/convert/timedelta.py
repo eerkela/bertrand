@@ -11,6 +11,7 @@ from pdcast.util import time
 from pdcast.util.round import round_div, Tolerance
 
 from .base import cast, generic_to_integer
+from .util import boundscheck
 
 
 @cast.overload("timedelta", "bool")
@@ -84,7 +85,7 @@ def pandas_timedelta_to_integer(
         )
 
     # check for overflow
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # delegate to generic conversion
     return generic_to_integer(
@@ -133,7 +134,7 @@ def python_timedelta_to_integer(
         )
 
     # check for overflow
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # delegate to generic conversion
     return generic_to_integer(
@@ -189,7 +190,7 @@ def numpy_timedelta64_to_integer(
     )
 
     # check for overflow
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
 
     # delegate to generic conversion
     return generic_to_integer(

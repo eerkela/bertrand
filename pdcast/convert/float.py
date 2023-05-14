@@ -9,6 +9,7 @@ from pdcast.util.round import Tolerance
 from .base import (
     cast, generic_to_boolean, generic_to_integer, snap_round
 )
+from .util import boundscheck
 
 
 @cast.overload("float", "bool")
@@ -27,7 +28,7 @@ def float_to_boolean(
         rule=rounding,
         errors=errors
     )
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
     return generic_to_boolean(series, dtype, errors=errors)
 
 
@@ -48,7 +49,7 @@ def float_to_integer(
         rule=rounding,
         errors=errors
     )
-    series, dtype = series.boundscheck(dtype, errors=errors)
+    series, dtype = boundscheck(series, dtype, errors=errors)
     return generic_to_integer(
         series,
         dtype,
