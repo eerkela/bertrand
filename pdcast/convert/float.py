@@ -12,6 +12,9 @@ from .base import (
 from .util import boundscheck
 
 
+# TODO: float -> float doesn't account for tol
+
+
 @cast.overload("float", "bool")
 def float_to_boolean(
     series: SeriesWrapper,

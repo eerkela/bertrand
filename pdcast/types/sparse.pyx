@@ -22,6 +22,13 @@ from .base import register
 # -> this can be handled in a dispatched sparsify() implementation
 
 
+# TODO: SparseType works, but not in all cases.
+# -> pd.NA disallows non-missing fill values
+# -> Timestamps must be sparsified manually by converting to object and then
+# to sparse
+# -> Timedeltas just don't work at all.  astype() rejects pd.SparseDtype("m8")
+# entirely.
+
 
 @register
 class SparseType(AdapterType):

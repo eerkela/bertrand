@@ -1,4 +1,5 @@
 # pylint: disable=redefined-outer-name, unused-argument
+from pdcast.convert.util import real, imag
 from pdcast.decorators.attachable import attachable
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
@@ -186,6 +187,6 @@ def _snap_complex(
     if not tol:  # trivial case, tol=0
         return series.copy()
 
-    real = snap(series.real, tol=tol.real)
-    imag = snap(series.imag, tol=tol.imag)
-    return real + imag * 1j
+    real_part = snap(real(series), tol=tol.real)
+    imag_part = snap(imag(series), tol=tol.imag)
+    return real_part + imag_part * 1j

@@ -12,7 +12,7 @@ from pdcast.util import time
 from .base import (
     cast, generic_to_boolean, generic_to_integer, snap_round
 )
-from .util import boundscheck
+from .util import boundscheck, isinf, within_tol
 
 
 @cast.overload("decimal", "bool")
@@ -62,6 +62,12 @@ def decimal_to_integer(
     )
 
 
+# TODO: pdcast.cast(pdcast.cast([1., 2., float("inf")], "decimal"), "float")
+# OverflowError: cannot convert Infinity to integer
+
+# -> insert series.min == inf checks
+
+
 @cast.overload("decimal", "float")
 def decimal_to_float(
     series: SeriesWrapper,
@@ -83,7 +89,7 @@ def decimal_to_float(
 
     # check for overflow
     if int(series.min) < dtype.min or int(series.max) > dtype.max:
-        infs = result.isinf() ^ series.isinf()
+        infs = isinf(result) ^ isinf(series)
         if infs.any():
             if errors == "coerce":
                 result = result[~infs]
@@ -92,19 +98,20 @@ def decimal_to_float(
             else:
                 raise OverflowError(
                     f"values exceed {dtype} range at index "
-                    f"{shorten_list(infs[infs].index.values)}"
+                    f"{shorten_list(series[infs].index.values)}"
                 )
 
     # backtrack to check for precision loss
     if errors != "coerce":  # coercion ignores precision loss
-        bad = ~series.within_tol(
+        bad = ~within_tol(
+            series,
             cast(result, dtype=series.element_type, errors="raise"),
             tol=tol.real
         )
         if bad.any():
             raise ValueError(
                 f"precision loss exceeds tolerance {float(tol.real):g} at "
-                f"index {shorten_list(bad[bad].index.values)}"
+                f"index {shorten_list(series[bad].index.values)}"
             )
 
     if downcast is not None:

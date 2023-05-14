@@ -24,22 +24,6 @@ from pdcast.util.error import shorten_list
 from pdcast.util.type_hints import array_like, numeric, type_specifier
 
 
-
-# TODO: tol should clip overflowing values if they are within the window.
-# -> force boundscheck to accept ``tol``.
-# -> boundscheck can be completely decoupled from SeriesWrapper.  Put it in
-# convert/base.  Same with upcast()
-
-
-
-# TODO: SparseType works, but not in all cases.
-# -> pd.NA disallows non-missing fill values
-# -> Timestamps must be sparsified manually by converting to object and then
-# to sparse
-# -> Timedeltas just don't work at all.  astype() rejects pd.SparseDtype("m8")
-# entirely.
-
-
 # TODO: drop astype() from SeriesWrapper and put it in
 # AbstractArray.from_sequence().  Then handle the integer/boolean special case
 # in separate overloaded cast() implementations.
@@ -209,40 +193,6 @@ cdef class SeriesWrapper:
         self._hasnans = val
 
     @property
-    def imag(self) -> SeriesWrapper:
-        """Get the imaginary component of the wrapped series.
-
-        This is a convenience attribute that mimics the behavior of
-        ``numpy.imag()``, but wraps the output as a new ``SeriesWrapper``
-        instance.
-
-        Returns
-        -------
-        SeriesWrapper
-            The imaginary component of the series.
-
-        See Also
-        --------
-        SeriesWrapper.real : real equivalent.
-        """
-        target = getattr(self.element_type, "equiv_float", self.element_type)
-
-        # NOTE: np.imag() fails when applied over object arrays that may
-        # contain complex values.  In this case, we reduce it to a loop.
-        if self.series.dtype.kind == "O":
-            result = np.frompyfunc(np.imag, 1, 1)(self.series)
-            if isinstance(target.dtype, abstract.AbstractDtype):
-                result = result.astype(target.dtype)
-        else:
-            result = pd.Series(np.imag(self.series), index=self.index)
-
-        return SeriesWrapper(
-            result,
-            hasnans=self._hasnans,
-            element_type=target
-        )
-
-    @property
     def max(self) -> Any:
         """A cached version of pd.Series.max()."""
         if self._max is None:
@@ -255,40 +205,6 @@ cdef class SeriesWrapper:
         if self._min is None:
             self._min = self.series.min()
         return self._min
-
-    @property
-    def real(self) -> SeriesWrapper:
-        """Get the real component of the wrapped series.
-
-        This is a convenience attribute that mimics the behavior of
-        ``numpy.real()``, but wraps the output as a new ``SeriesWrapper``
-        instance.
-
-        Returns
-        -------
-        SeriesWrapper
-            The real component of the series.
-
-        See Also
-        --------
-        SeriesWrapper.imag : imaginary equivalent.
-        """
-        target = getattr(self.element_type, "equiv_float", self.element_type)
-
-        # NOTE: np.real() fails when applied over object arrays that may
-        # contain complex values.  In this case, we reduce it to a loop.
-        if self.series.dtype.kind == "O":
-            result = np.frompyfunc(np.real, 1, 1)(self.series)
-            if isinstance(target.dtype, abstract.AbstractDtype):
-                result = result.astype(target.dtype)
-        else:
-            result = pd.Series(np.real(self.series), index=self.index)
-
-        return SeriesWrapper(
-            result,
-            hasnans=self._hasnans,
-            element_type=target
-        )
 
     @property
     def series(self) -> pd.Series:
@@ -492,15 +408,6 @@ cdef class SeriesWrapper:
             element_type=element_type
         )
 
-    def isinf(self) -> SeriesWrapper:
-        """Return a boolean mask indicating the position of infinities in the
-        series.
-
-        This works exactly like ``SeriesWrapper.isna()``, but checks for infs
-        rather than NAs.
-        """
-        return self.isin([np.inf, -np.inf])
-
     def rectify(self) -> SeriesWrapper:
         """If a :class:`SeriesWrapper`'s ``.dtype`` field does not match
         ``self.element_type.dtype``, then ``astype()`` it to match.
@@ -511,31 +418,6 @@ cdef class SeriesWrapper:
         if self.series.dtype != self.element_type.dtype:
             self.series = self.series.astype(self.element_type.dtype)
         return self
-
-    def within_tol(self, other, tol: numeric) -> SeriesWrapper:
-        """Check if every element of a series is within tolerance of a given
-        value or other series.
-
-        This is used to detect precision loss during :ref:`conversions`.
-
-        Parameters
-        ----------
-        other : numeric, np.array, pd.Series, or SeriesWrapper
-            The value to compare against.
-        tol : numeric
-            The available tolerance.  If any elements of the series differ from
-            ``other`` by more than this amount, then the corresponding index in
-            the result will be set to ``False``.
-
-        Returns
-        -------
-        SeriesWrapper
-            A boolean mask indicating which elements of ``self`` are within
-            tolerance of ``other``.
-        """
-        if not tol:  # fastpath if tolerance=0
-            return self == other
-        return ~((self - other).abs() > tol)
 
     ##########################
     ####    ARITHMETIC    ####

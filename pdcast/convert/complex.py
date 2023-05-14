@@ -6,6 +6,7 @@ from pdcast.util.round import Tolerance
 from pdcast.util.error import shorten_list
 
 from .base import cast, generic_to_float
+from .util import real, imag, within_tol
 
 
 @cast.overload("complex", "bool")
@@ -76,20 +77,18 @@ def complex_to_float(
     **unused
 ) -> SeriesWrapper:
     """Convert complex data to a float data type."""
-    real = series.real
-
     # check for nonzero imag
     if errors != "coerce":  # ignore if coercing
-        bad = ~series.imag.within_tol(0, tol=tol.imag)
+        bad = ~within_tol(imag(series), 0, tol=tol.imag)
         if bad.any():
             raise ValueError(
                 f"imaginary component exceeds tolerance "
                 f"{float(tol.imag):g} at index "
-                f"{shorten_list(bad[bad].index.values)}"
+                f"{shorten_list(series[bad].index.values)}"
             )
 
     return generic_to_float(
-        real,
+        real(series),
         dtype,
         tol=tol,
         downcast=downcast,

@@ -1,4 +1,5 @@
 # pylint: disable=redefined-outer-name, unused-argument
+from pdcast.convert.util import real, imag
 from pdcast.decorators.attachable import attachable, VirtualAttribute
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
@@ -232,6 +233,6 @@ def _round_complex(
     """Round a complex series to the given number of decimal places using
     the specified rounding rule.
     """
-    real = round_float(series.real, decimals=decimals, rule=rule)
-    imag = round_float(series.imag, decimals=decimals, rule=rule)
-    return real + imag * 1j
+    real_part = round_float(real(series), decimals=decimals, rule=rule)
+    imag_part = round_float(imag(series), decimals=decimals, rule=rule)
+    return real_part + imag_part * 1j

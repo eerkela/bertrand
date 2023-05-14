@@ -21,6 +21,9 @@ from .util import boundscheck
 
 # TODO: int -> timedelta is unusually slow for some reason
 
+# TODO: int -> decimal returns dtype: object results
+
+
 
 @cast.overload("int", "bool")
 def integer_to_boolean(

@@ -5,7 +5,6 @@ equivalents that allow quick conversion to predefined data types.
 from __future__ import annotations
 from typing import Any, Callable, Optional
 
-import numpy as np
 import pandas as pd
 
 from pdcast import types
@@ -20,6 +19,10 @@ from pdcast.util.round import Tolerance
 from pdcast.util.type_hints import type_specifier
 
 from . import arguments
+from .util import downcast_integer, downcast_float, downcast_complex
+
+
+# TODO: hasnans should be handled in @dispatch, not here or in any helpers
 
 
 # ignore this file when doing string-based object lookups in resolve_type()
@@ -404,118 +407,6 @@ def generic_to_object(
 #######################
 ####    PRIVATE    ####
 #######################
-
-
-def downcast_integer(
-    series: SeriesWrapper,
-    tol: Tolerance,
-    smallest: types.CompositeType = None
-) -> SeriesWrapper:
-    """Reduce the itemsize of an integer type to fit the observed range."""
-    series_type = series.element_type
-
-    # get downcast candidates
-    smaller = series_type.smaller
-    if smallest is not None:
-        if series_type in smallest:
-            smaller = []
-        else:
-            filtered = []
-            for typ in reversed(smaller):
-                filtered.append(typ)
-                if typ in smallest:
-                    break
-            smaller = reversed(filtered)
-
-    # convert range to python int for consistent comparison
-    if series_type.is_na(series.min):
-        min_val = series_type.max  # NOTE: we swap these to maintain upcast()
-        max_val = series_type.min  # behavior for upcast-only types
-    else:
-        min_val = int(series.min)
-        max_val = int(series.max)
-
-    # search for smaller data type that fits observed range
-    for small in smaller:
-        if min_val < small.min or max_val > small.max:
-            continue
-        return cast(
-            series,
-            dtype=small,
-            downcast=None,
-            errors="raise"
-        )
-
-    return series
-
-
-def downcast_float(
-    series: SeriesWrapper,
-    tol: Tolerance,
-    smallest: types.CompositeType
-) -> SeriesWrapper:
-    """Reduce the itemsize of a float type to fit the observed range."""
-    # get downcast candidates
-    smaller = series.element_type.smaller
-    if smallest is not None:
-        filtered = []
-        for typ in reversed(smaller):
-            filtered.append(typ)
-            if typ in smallest:
-                break  # stop at largest type contained in `smallest`
-        smaller = reversed(filtered)
-
-    # try each candidate in order
-    for small in smaller:
-        try:
-            attempt = cast(
-                series,
-                dtype=small,
-                tol=tol,
-                downcast=None,
-                errors="raise"
-            )
-        except Exception:
-            continue
-
-        # candidate is valid
-        if attempt.within_tol(series, tol=tol.real).all():
-            return attempt
-
-    # return original
-    return series
-
-
-def downcast_complex(
-    series: SeriesWrapper,
-    tol: Tolerance,
-    smallest: types.CompositeType
-) -> SeriesWrapper:
-    """Reduce the itemsize of a complex type to fit the observed range."""
-    # downcast real and imaginary component separately
-    real = downcast_float(
-        series.real,
-        tol=tol,
-        smallest=smallest
-    )
-    imag = downcast_float(
-        series.imag,
-        tol=Tolerance(tol.imag),
-        smallest=smallest
-    )
-
-    # use whichever type is larger
-    largest = max(
-        [real.element_type, imag.element_type],
-        key=lambda x: x.itemsize or np.inf
-    )
-    target = largest.equiv_complex
-    result = real + imag * 1j
-    return SeriesWrapper(
-        result.series.astype(target.dtype, copy=False),
-        hasnans=real.hasnans or imag.hasnans,
-        element_type=target
-    )
 
 
 def safe_apply(
