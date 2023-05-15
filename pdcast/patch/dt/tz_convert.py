@@ -45,7 +45,7 @@ def localize_pandas_timestamp(
     **unused
 ) -> SeriesWrapper:
     """TODO"""
-    series = series.rectify()
+    series = series.astype(detect_type(series).dtype, copy=False)
     original = getattr(series.dt.tz_convert, "original", series.dt.tz_convert)
     return original(series.series, tz, **unused)
 

@@ -326,18 +326,6 @@ cdef class SeriesWrapper:
             element_type=element_type
         )
 
-    def rectify(self) -> SeriesWrapper:
-        """If a :class:`SeriesWrapper`'s ``.dtype`` field does not match
-        ``self.element_type.dtype``, then ``astype()`` it to match.
-
-        This method is used to convert a ``dtype: object`` series to a standard
-        numpy/pandas data type.
-        """
-        element_type = detect.detect_type(self)
-        if self.series.dtype != element_type.dtype:
-            self.series = self.series.astype(element_type.dtype)
-        return self
-
     ##########################
     ####    ARITHMETIC    ####
     ##########################

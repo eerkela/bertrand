@@ -8,6 +8,7 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
+from pdcast import detect
 from pdcast cimport resolve
 from pdcast import resolve
 from pdcast.decorators cimport wrapper
@@ -345,7 +346,7 @@ cdef class AdapterType(atomic.ScalarType):
     ) -> wrapper.SeriesWrapper:
         """Remove an adapter from an example series."""
         # series.element_type = self.wrapped
-        return series.rectify()
+        return series.astype(detect.detect_type(series).dtype, copy=False)
 
     def transform(
         self,

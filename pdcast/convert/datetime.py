@@ -75,8 +75,9 @@ def pandas_timestamp_to_integer(
     **kwargs
 ) -> SeriesWrapper:
     """Convert pandas Timestamps into an integer data type."""
+    series = series.astype(detect_type(series).dtype, copy=False)
+
     # apply tz if naive
-    series = series.rectify()
     if tz and detect_type(series).tz is None:
         series.series = series.series.dt.tz_localize(tz)
 
@@ -393,8 +394,9 @@ def datetime_to_datetime(
 ) -> SeriesWrapper:
     """Convert datetime data to another datetime representation."""
     # trivial case
-    if dtype == detect_type(series):
-        return series.rectify()
+    series_type = detect_type(series)
+    if dtype == series_type:
+        return series.astype(series_type.dtype, copy=False)
 
     # 2-step conversion: datetime -> ns, ns -> datetime
     series = cast(
@@ -430,7 +432,7 @@ def pandas_timestamp_to_pandas_timestamp(
 ) -> SeriesWrapper:
     """Fastpath for same-class pandas timestamp conversions."""
     series_type = detect_type(series)
-    series = series.rectify()
+    series = series.astype(series_type.dtype, copy=False)
 
     # reconcile time zones
     if tz:

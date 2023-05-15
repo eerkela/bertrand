@@ -67,8 +67,9 @@ def pandas_timedelta_to_integer(
 ) -> SeriesWrapper:
     """Convert pandas Timedeltas to an integer data type."""
     # get integer ns
-    series = series.rectify().astype(np.int64)
-    
+    series = series.astype(detect_type(series).dtype, copy=False)
+    series = series.astype(np.int64)
+
     # convert ns to final unit, step_size
     if unit != "ns":
         series.series = time.convert_unit(
