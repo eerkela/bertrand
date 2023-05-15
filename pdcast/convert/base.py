@@ -25,6 +25,9 @@ from .util import downcast_integer, downcast_float, downcast_complex
 # TODO: hasnans should be handled in @dispatch, not here or in any helpers
 
 
+# TODO: pdcast.cast([1, 2], "bool", errors="coerce") broken
+
+
 # ignore this file when doing string-based object lookups in resolve_type()
 IGNORE_FRAME_OBJECTS = True
 
@@ -117,6 +120,7 @@ class catch_ignore(BaseDecorator):
 @attachable
 @columnwise
 @extension_func
+@catch_ignore
 @dispatch("series", "dtype", cache_size=128)
 def cast(
     series: Any,
@@ -276,8 +280,6 @@ def generic_to_boolean(
     **unused
 ) -> pd.Series:
     """Convert a to boolean representation."""
-    if series.hasnans:
-        dtype = dtype.make_nullable()
     return series.astype(dtype, errors=errors)
 
 
@@ -291,9 +293,6 @@ def generic_to_integer(
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to integer representation."""
-    if series.hasnans:
-        dtype = dtype.make_nullable()
-
     series = series.astype(dtype, errors=errors)
     if downcast is not None:
         return downcast_integer(series, tol=tol, smallest=downcast)

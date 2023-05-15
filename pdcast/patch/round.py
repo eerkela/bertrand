@@ -35,7 +35,6 @@ def round(
     return SeriesWrapper(
         endpoint(decimals=decimals),
         element_type=series.element_type,
-        hasnans=series.hasnans
     )
 
 
@@ -190,7 +189,6 @@ def _round_integer(
         scale = 10**(-1 * decimals)
         return SeriesWrapper(
             round_div(series.series, scale, rule=rule) * scale,
-            hasnans=series.hasnans,
             element_type=series.element_type
         )
     return series.copy()
@@ -205,7 +203,6 @@ def _round_decimal(
     """Overloaded round() implementation for decimal data."""
     return SeriesWrapper(
         round_decimal(series.series, decimals=decimals, rule=rule),
-        hasnans=series.hasnans,
         element_type=series.element_type
     )
 
@@ -219,7 +216,6 @@ def _round_float(
     """Overloaded round() implementation for float data."""
     return SeriesWrapper(
         round_float(series.series, decimals=decimals, rule=rule),
-        hasnans=series.hasnans,
         element_type=series.element_type
     )
 

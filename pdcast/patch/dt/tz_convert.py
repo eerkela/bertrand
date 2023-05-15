@@ -53,7 +53,6 @@ def localize_pandas_timestamp(
 
     return SeriesWrapper(
         orig(series.series, tz, **unused),
-        hasnans=series.hasnans,
         element_type=series.element_type.replace(tz=tz)
     )
 

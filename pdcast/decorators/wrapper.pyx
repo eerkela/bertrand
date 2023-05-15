@@ -117,11 +117,9 @@ cdef class SeriesWrapper:
     def __init__(
         self,
         series: pd.Series,
-        hasnans: bool = None,
         element_type: type_specifier = None,
     ):
         self.series = as_series(series)
-        self.hasnans = hasnans
         self.element_type = element_type
 
     ##########################
@@ -166,45 +164,6 @@ cdef class SeriesWrapper:
                     f"series it describes"
                 )
         self._element_type = val
-
-    @property
-    def hasnans(self) -> bool:
-        """Indicates whether missing values were detected in the series.
-
-        Parameters
-        ----------
-        val : bool
-            Allows users to override this setting during wrapped logic.  This
-            may be useful if a transformation drops values from the series or
-            otherwise injects missing values into it.
-
-        Returns
-        -------
-        bool
-            ``True`` if missing values were detected in the wrapped series.
-            ``False`` otherwise.
-        """
-        if self._hasnans is None:
-            self._hasnans = self.isna().any()
-        return self._hasnans
-
-    @hasnans.setter
-    def hasnans(self, val: bool) -> None:
-        self._hasnans = val
-
-    @property
-    def max(self) -> Any:
-        """A cached version of pd.Series.max()."""
-        if self._max is None:
-            self._max = self.series.max()
-        return self._max
-
-    @property
-    def min(self) -> Any:
-        """A cached version of pd.Series.min()."""
-        if self._min is None:
-            self._min = self.series.min()
-        return self._min
 
     @property
     def series(self) -> pd.Series:
@@ -293,7 +252,6 @@ cdef class SeriesWrapper:
 
         return SeriesWrapper(
             result,
-            hasnans=self.hasnans,
             element_type=dtype
         )
 

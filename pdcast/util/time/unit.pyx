@@ -346,6 +346,11 @@ cdef object _convert_unit_regular_to_irregular(
     """Helper to convert integer numbers of regular units ('ns', 'us', 'ms',
     's', 'm', 'h', 'D', 'W') to irregular units ('M', 'Y').
     """
+    cdef object diff
+    cdef object residual
+    cdef object end
+    cdef object unit_length
+
     # convert val to whole days + residual ns
     val = val * as_ns[from_unit]
     diff = round_div(val, as_ns["D"], rule="down")

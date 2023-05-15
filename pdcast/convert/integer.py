@@ -70,7 +70,7 @@ def integer_to_float(
     # NOTE: integers can always be exactly represented as floats as long as
     # their width in bits fits within the significand of the specified floating
     # point type with exponent 1 (as listed in the IEEE 754 specification).
-    if int(series.min) < dtype.min or int(series.max) > dtype.max:
+    if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
         # 2-step conversion: int -> decimal, decimal -> float
         series = cast(series, "decimal", errors=errors)
         return cast(
@@ -202,7 +202,6 @@ def integer_to_pandas_timestamp(
 
     return SeriesWrapper(
         result,
-        hasnans=series.hasnans,
         element_type=dtype
     )
 
@@ -281,7 +280,6 @@ def integer_to_numpy_datetime64(
             index=series.series.index,
             dtype="O"
         ),
-        hasnans=series.hasnans,
         element_type=dtype
     )
 
@@ -335,7 +333,6 @@ def integer_to_pandas_timedelta(
     # convert to final representation
     return SeriesWrapper(
         pd.to_timedelta(series.series.astype(object), unit="ns"),
-        hasnans=series.hasnans,
         element_type=dtype
     )
 
@@ -368,7 +365,6 @@ def integer_to_python_timedelta(
             index=series.series.index,
             dtype=dtype.dtype
         ),
-        hasnans=series.hasnans,
         element_type=dtype
     )
 
@@ -412,7 +408,6 @@ def integer_to_numpy_timedelta64(
             index=series.series.index,
             dtype="O"
         ),
-        hasnans=series.hasnans,
         element_type=dtype
     )
 
@@ -477,6 +472,5 @@ def to_ns(
     # convert to ns
     return SeriesWrapper(
         time.convert_unit(series.series, unit, "ns", since=since),
-        hasnans=series.hasnans,
         element_type=int
     )

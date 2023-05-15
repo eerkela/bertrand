@@ -232,7 +232,6 @@ def numpy_datetime64_to_integer(
     # re-wrap as SeriesWrapper
     series = SeriesWrapper(
         pd.Series(arr, index=series.series.index),
-        hasnans=series.hasnans,
         element_type=int
     )
 
@@ -423,7 +422,6 @@ def pandas_timestamp_to_pandas_timestamp(
     **unused
 ) -> SeriesWrapper:
     """Fastpath for same-class pandas timestamp conversions."""
-    breakpoint()
     series = series.rectify()
 
     # reconcile time zones
@@ -441,7 +439,6 @@ def pandas_timestamp_to_pandas_timestamp(
         result = series.series.dt.tz_convert(dtype.tz)
     return SeriesWrapper(
         result,
-        hasnans=series.hasnans,
         element_type=dtype
     )
 

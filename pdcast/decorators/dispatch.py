@@ -164,7 +164,6 @@ class DispatchDict(OrderedDict):
     def setdefault(self, key: type_specifier, default: Callable = None) -> Any:
         """Implement :meth:`dict.setdefault` for DispatchDict objects."""
         key = resolve_key(key)
-
         try:
             return self[key]
         except KeyError:
@@ -772,15 +771,8 @@ class DirectDispatch(DispatchStrategy):
 
     def execute(self, bound: inspect.BoundArguments) -> Any:
         """Call the dispatched function with the bound arguments."""
-        # bind dispatched to non-dispatched arguments
         bound.arguments = {**bound.arguments, **self.dispatched}
-
-        # search for dispatched implementation
-        try:
-            implementation = self.func._dispatched[self.key]
-            return implementation(*bound.args, **bound.kwargs)
-        except KeyError:  # fall back to generic
-            return self.func.__wrapped__(*bound.args, **bound.kwargs)
+        return self.func[self.key](*bound.args, **bound.kwargs)
 
     def finalize(self, result: Any) -> Any:
         """Process the result returned by this strategy's `execute` method."""
@@ -800,15 +792,16 @@ class HomogenousDispatch(DispatchStrategy):
         hasnans: bool,
         original_index: pd.Index | None
     ):
-        # remember indices
         self.index = frame.index
         self.original_index = original_index
+        self.hasnans = hasnans
+
+        # TODO: rectify series and skip SeriesWrapper
 
         # split frame into normalized columns
         for col, series in frame.items():
             dispatched[col] = SeriesWrapper(
                 series.rename(names.get(col, None)),
-                hasnans=hasnans,
                 element_type=detected[col]
             )
 
@@ -828,6 +821,8 @@ class HomogenousDispatch(DispatchStrategy):
         """
         # transform
         if isinstance(result, SeriesWrapper):
+            hasnans = self.hasnans
+
             # warn if final index is not a subset of original
             if not result.index.difference(self.index).empty:
                 warn_msg = (
@@ -837,17 +832,22 @@ class HomogenousDispatch(DispatchStrategy):
                     f"SeriesWrapper"
                 )
                 warnings.warn(warn_msg, UserWarning, stacklevel=4)
+                hasnans = True
 
             # replace missing values, aligning on index
-            result = replace_na(
-                result.series,
-                index=pd.RangeIndex(0, self.original_index.shape[0]),
-                na_value=result.element_type.na_value
-            )
+            if hasnans or result.shape[0] < self.index.shape[0]:
+                nullable = detect.detect_type(result).make_nullable()
+                result = replace_na(
+                    result.series.astype(nullable.dtype, copy=False),
+                    index=pd.RangeIndex(0, self.original_index.shape[0]),
+                    na_value=nullable.na_value
+                )
+
+            # TODO: is original_index ever None?  seems to conflict w/ above.
 
             # replace original index (if given)
-            if self.original_index is not None:
-                result.index = self.original_index
+            # if self.original_index is not None:
+            #     result.index = self.original_index
 
         # aggregate
         return result
@@ -941,6 +941,9 @@ class CompositeDispatch(DispatchStrategy):
                 na_val = final_type.pop().na_value
             else:
                 na_val = pd.NA
+
+            # TODO: use replace missing values block from
+            # HomogenousDispatch.finalize()
 
             # replace missing values
             final = replace_na(

@@ -909,7 +909,6 @@ cdef class AtomicType(ScalarType):
 
         return wrapper.SeriesWrapper(
             series.series.astype(categorical_type),
-            hasnans=series.hasnans
             # element_type is set in AdapterType.transform()
             )
 
@@ -949,7 +948,6 @@ cdef class AtomicType(ScalarType):
 
         return wrapper.SeriesWrapper(
             series.series.astype(sparse_type),
-            hasnans=series.hasnans
             # element_type is set in AdapterType.transform()
         )
 
@@ -984,6 +982,7 @@ cdef class AtomicType(ScalarType):
         -----
         Candidate types will always be tested in order.
         """
+        return []
 
     def upcast(self, series: wrapper.SeriesWrapper) -> AtomicType:
         """Upcast an :class:`AtomicType` to fit the observed range of a series.
@@ -1011,6 +1010,9 @@ cdef class AtomicType(ScalarType):
         This method allows these to be dynamically resized to match observed
         data.
         """
+        # TODO: move this into convert/util/numeric and remove SeriesWrapper
+        # .min/max references
+
         # NOTE: we convert to python int to prevent inconsistent comparisons
         if self.is_na(series.min):
             min_val = self.max  # NOTE: we swap these to maintain upcast()

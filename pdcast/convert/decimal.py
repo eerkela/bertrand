@@ -88,12 +88,11 @@ def decimal_to_float(
         result = series.astype(dtype)
 
     # check for overflow
-    if int(series.min) < dtype.min or int(series.max) > dtype.max:
+    if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
         infs = isinf(result) ^ isinf(series)
         if infs.any():
             if errors == "coerce":
                 result = result[~infs]
-                result.hasnans = True
                 series = series[~infs]  # mirror on original
             else:
                 raise OverflowError(
@@ -251,4 +250,4 @@ def to_ns(
             result *= time.as_ns[unit]
         result = as_pyint(result)
 
-    return SeriesWrapper(result, hasnans=series.hasnans, element_type=int)
+    return SeriesWrapper(result, element_type=int)

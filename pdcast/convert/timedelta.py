@@ -185,7 +185,6 @@ def numpy_timedelta64_to_integer(
     # re-wrap as SeriesWrapper
     series = SeriesWrapper(
         pd.Series(arr, index=series.series.index),
-        hasnans=series.hasnans,
         element_type=int
     )
 

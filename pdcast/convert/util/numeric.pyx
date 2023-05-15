@@ -65,9 +65,12 @@ cpdef tuple boundscheck(
         return series, dtype
 
     # get min/max values as python ints (prevents inconsistent comparison)
-    cdef object min_val = int(series.min) - bool(series.min % 1)
-    cdef object max_val = int(series.max) + bool(series.max % 1)
+    cdef object min_val = series.min()
+    cdef object max_val = series.max()
     cdef object index
+
+    min_val = int(min_val) - bool(min_val % 1)
+    max_val = int(max_val) + bool(max_val % 1)
 
     # check for overflow
     if min_val < dtype.min or max_val > dtype.max:
@@ -113,14 +116,17 @@ cpdef object downcast_integer(
     if smallest is not None:
         smaller = filter_smallest(smaller, smallest, series_type=series_type)
 
+    min_val = series.min()
+    max_val = series.max()
+
     # get observed range as python ints (prevents inconsistent comparison)
-    if series_type.is_na(series.min):  # series is empty
+    if series_type.is_na(min_val):  # series is empty
         # NOTE: we swap min/max to maintain upcast() behavior for generic types
         min_val = series_type.max
         max_val = series_type.min
     else:
-        min_val = int(series.min)
-        max_val = int(series.max)
+        min_val = int(min_val)
+        max_val = int(max_val)
 
     # search for smaller data type that fits observed range
     for small in smaller:

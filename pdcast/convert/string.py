@@ -109,12 +109,10 @@ def string_to_complex(
     components = series.str.extract(complex_pattern)
     real = SeriesWrapper(
         components["real"],
-        hasnans=series.hasnans,
         element_type=series.element_type
     )
     imag = SeriesWrapper(
         components["imag"],
-        hasnans=series.hasnans,
         element_type=series.element_type
     )
 
@@ -221,7 +219,6 @@ def string_to_pandas_timestamp(
     # account for missing values introduced during coercion
     if errors == "coerce":
         isna = result.isna()
-        series.hasnans = series.hasnans or isna.any()
         result = result[~isna]
 
     # localize to final timezone
@@ -252,7 +249,6 @@ def string_to_pandas_timestamp(
 
     return SeriesWrapper(
         result,
-        hasnans=series.hasnans,
         element_type=dtype
     )
 

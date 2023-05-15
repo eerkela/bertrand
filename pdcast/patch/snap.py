@@ -35,7 +35,6 @@ def snap(
             (series.series - rounded).abs() > tol.real),
             rounded.series
         ),
-        hasnans=series.hasnans,
         element_type=series.element_type
     )
 
