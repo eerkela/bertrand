@@ -9,8 +9,6 @@ import numpy as np
 import pandas as pd
 
 from pdcast import types
-from pdcast.decorators.wrapper import SeriesWrapper
-from pdcast.detect import detect_type
 from pdcast.resolve import resolve_type
 from pdcast.util.round import Tolerance
 from pdcast.util.string import boolean_match
@@ -24,16 +22,15 @@ from .base import (
 
 @cast.overload("string", "bool")
 def string_to_boolean(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     true: set,
     false: set,
     errors: str,
     ignore_case: bool,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert string data to a boolean data type."""
-    # configure lookup dict
     lookup = dict.fromkeys(true, 1) | dict.fromkeys(false, 0)
     if "*" in true:
         fill = 1  # KeyErrors become truthy
@@ -42,7 +39,6 @@ def string_to_boolean(
     else:
         fill = -1  # raise
 
-    # apply lookup function with specified errors
     call = partial(
         boolean_match,
         lookup=lookup,
@@ -50,18 +46,18 @@ def string_to_boolean(
         fill=fill
     )
     series = apply_with_errors(series, call, errors=errors)
-
+    series = series.astype(np.bool_)
     return generic_to_boolean(series, dtype, errors=errors)
 
 
 @cast.overload("string", "int")
 def string_to_integer(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     base: int,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert string data to an integer data type with the given base."""
     # 2 step conversion: string -> int[python], int[python] -> int
     series = apply_with_errors(series, partial(int, base=base), errors=errors)
@@ -77,57 +73,47 @@ def string_to_integer(
 
 @cast.overload("string", "float")
 def string_to_float(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     tol: Tolerance,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert string data to a floating point data type."""
     # 2 step conversion: string -> decimal, decimal -> float
     series = cast(series, "decimal", errors=errors)
     return cast(series, dtype, tol=tol, errors=errors, **unused)
 
 
-# TODO: remove assignment to .element_type
-
-
 @cast.overload("string", "complex")
 def string_to_complex(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert string data to a complex data type."""
     # NOTE: this is technically a 3-step conversion: (1) str -> str (split
-    # real/imag), (2) str -> float, (3) float -> complex.  This allows for full
-    # precision loss/overflow/downcast checks for both real + imag.
+    # real/imag), (2) str -> float (x2), (3) float -> complex.  This allows for
+    # full precision loss/overflow/downcast checks for both real and imag.
 
     # (1) separate real, imaginary components via regex
-    series_type = detect_type(series)
     components = series.str.extract(complex_pattern)
-    real = SeriesWrapper(
-        components["real"],
-        element_type=series_type
-    )
-    imag = SeriesWrapper(
-        components["imag"],
-        element_type=series_type
-    )
+    real_part = components["real"]
+    imag_part = components["imag"]
 
     # (2) convert real, imag to float, applying checks independently
-    real = cast(
-        real,
+    real_part = cast(
+        real_part,
         dtype.equiv_float,
         tol=Tolerance(tol.real),
         downcast=None,
         errors="raise"
     )
-    imag = cast(
-        imag,
+    imag_part = cast(
+        imag_part,
         dtype.equiv_float,
         tol=Tolerance(tol.imag),
         downcast=None,
@@ -135,8 +121,7 @@ def string_to_complex(
     )
 
     # (3) combine floats into complex result
-    series = real + imag * 1j
-    # series.element_type = dtype
+    series = (real_part + imag_part * 1j).astype(dtype.dtype, copy=False)
     return generic_to_complex(
         series,
         dtype,
@@ -148,11 +133,11 @@ def string_to_complex(
 
 @cast.overload("string", "datetime")
 def string_to_datetime(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert string data into a datetime data type."""
     # NOTE: because this type has no associated scalars, it will never be given
     # as the result of a detect_type() operation.  It can only be specified
@@ -178,7 +163,7 @@ def string_to_datetime(
 
 @cast.overload("string", "datetime[pandas]")
 def string_to_pandas_timestamp(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     tz: datetime.tzinfo,
     format: str,
@@ -186,7 +171,7 @@ def string_to_pandas_timestamp(
     year_first: bool,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert datetime strings into pandas Timestamps."""
     # reconcile `tz` argument with timezone attached to dtype, if given
     if tz:
@@ -208,7 +193,7 @@ def string_to_pandas_timestamp(
     # are ambiguous.  For simplicity, we catch and re-raise these only as
     # ValueErrors or OverflowErrors.
     try:
-        result = pd.to_datetime(series.series, **kwargs)
+        result = pd.to_datetime(series, **kwargs)
 
     # exception 1: outside pd.Timestamp range, but within datetime.datetime
     except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime as err:
@@ -249,15 +234,12 @@ def string_to_pandas_timestamp(
     except pd._libs.tslibs.np_datetime.OutOfBoundsDatetime as err:
         raise OverflowError(str(err)) from None
 
-    return SeriesWrapper(
-        result,
-        element_type=dtype
-    )
+    return result
 
 
 @cast.overload("string", "datetime[python]")
 def string_to_python_datetime(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     tz: datetime.tzinfo,
     day_first: bool,
@@ -265,7 +247,7 @@ def string_to_python_datetime(
     format: str,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert strings into datetime objects."""
     # reconcile `tz` argument with timezone attached to dtype, if given
     if tz:
@@ -291,13 +273,13 @@ def string_to_python_datetime(
 
 @cast.overload("string", "datetime[numpy]")
 def string_to_numpy_datetime64(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     format: str,
     tz: datetime.tzinfo,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert ISO 8601 strings to a numpy datetime64 data type."""
     if format and not time.is_iso_8601_format_string(format):
         raise TypeError(
@@ -323,7 +305,7 @@ def string_to_numpy_datetime64(
 
 @cast.overload("string", "timedelta")
 def string_to_timedelta(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
@@ -331,7 +313,7 @@ def string_to_timedelta(
     as_hours: bool,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert string data into a timedelta representation."""
     # 2-step conversion: str -> int, int -> timedelta
     call = partial(time.timedelta_string_to_ns, as_hours=as_hours, since=since)

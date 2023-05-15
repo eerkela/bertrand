@@ -8,8 +8,6 @@ import pandas as pd
 
 from pdcast cimport resolve
 from pdcast import resolve
-
-from pdcast.decorators cimport wrapper
 from pdcast.util.type_hints import type_specifier
 
 from .base cimport AdapterType, CompositeType, ScalarType
@@ -187,32 +185,18 @@ class SparseType(AdapterType):
     ####    SERIES METHODS    ####
     ##############################
 
-    def inverse_transform(
-        self,
-        series: wrapper.SeriesWrapper
-    ) -> wrapper.SeriesWrapper:
+    def inverse_transform(self, series: pd.Series) -> pd.Series:
         """Convert a sparse series into a dense format"""
         # NOTE: this is a pending deprecation shim.  In a future version of
         # pandas, astype() from a sparse to non-sparse dtype will return a
         # non-sparse series.  Currently, it returns a sparse equivalent. When
         # this behavior changes, this method can be deleted.
-        return wrapper.SeriesWrapper(
-            series.sparse.to_dense(),
-            hasnans=series._hasnans,
-            element_type=self.wrapped
-        )
+        return series.sparse.to_dense()
 
-    # TODO: remove assignment to .element_type
-
-    def transform(
-        self,
-        series: wrapper.SeriesWrapper
-    ) -> wrapper.SeriesWrapper:
+    def transform(self, series: pd.Series) -> pd.Series:
         """Convert a series into a sparse format with the given fill_value."""
         # apply custom logic for each AtomicType
-        series = self.atomic_type.make_sparse(
+        return self.atomic_type.make_sparse(
             series,
             fill_value=self.fill_value
         )
-        # series.element_type = self
-        return series

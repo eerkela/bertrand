@@ -10,8 +10,9 @@ import datetime
 import decimal
 from typing import Any, Callable, Iterable
 
+import pandas as pd
+
 from pdcast import types
-from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
 from pdcast.patch.round import rule as rounding_rule
 from pdcast.patch.snap import tol as snap_tol
@@ -98,11 +99,8 @@ defaults = {
 
 
 @cast.register_arg
-def series(val: Any, state: dict) -> SeriesWrapper:
-    """TODO
-    """
-    if isinstance(val, SeriesWrapper):
-        return val
+def series(val: Any, state: dict) -> pd.Series:
+    """TODO"""
     return as_series(val)
 
 

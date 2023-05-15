@@ -4,9 +4,10 @@ raw Python objects.
 # pylint: disable=unused-argument
 from typing import Callable
 
+import pandas as pd
+
 from pdcast import types
 from pdcast.resolve import resolve_type
-from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
 from pdcast.util.vector import apply_with_errors
 
@@ -15,12 +16,12 @@ from .base import cast, generic_to_object, safe_apply
 
 @cast.overload("object", "bool")
 def object_to_boolean(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert unstructured objects to a boolean data type."""
     # if no callable is given, hook into object's __bool__ dunder
     use_dunder = call is None or call is bool
@@ -45,12 +46,12 @@ def object_to_boolean(
 
 @cast.overload("object", "int")
 def object_to_integer(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert unstructured objects to an integer data type."""
     # if no callable is given, hook into object's __int__ dunder
     use_dunder = call is None or call is int
@@ -75,12 +76,12 @@ def object_to_integer(
 
 @cast.overload("object", "float")
 def object_to_float(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert unstructured objects to a float data type."""
     # if no callable is given, hook into object's __float__ dunder
     use_dunder = call is None or call is float
@@ -105,12 +106,12 @@ def object_to_float(
 
 @cast.overload("object", "complex")
 def object_to_complex(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert unstructured objects to a complex data type."""
     # if no callable is given, hook into object's __complex__ dunder
     use_dunder = call is None or call is complex
@@ -135,12 +136,12 @@ def object_to_complex(
 
 @cast.overload("object", "decimal")
 def object_to_decimal(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert unstructured objects to a decimal data type."""
     # if no callable is given, hook into object's __float__ dunder
     if call is None:
@@ -152,12 +153,12 @@ def object_to_decimal(
 
 @cast.overload("object", "datetime")
 def object_to_datetime(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert unstructured objects to a datetime data type."""
     # if callable is given, convert directly
     if call:
@@ -170,12 +171,12 @@ def object_to_datetime(
 
 @cast.overload("object", "timedelta")
 def object_to_timedelta(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert unstructured objects to a timedelta data type."""
     # if callable is given, convert directly
     if call:
@@ -193,12 +194,12 @@ def object_to_timedelta(
 
 @cast.overload("object", "string")
 def object_to_string(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert unstructured objects to a string data type."""
     # if no callable is given, hook into object's __str__ dunder
     if call is None:
@@ -209,17 +210,3 @@ def object_to_string(
 
     # check callable output matches dtype at every index
     return safe_apply(series=series, dtype=dtype, call=call, errors=errors)
-
-
-@cast.overload("object", "object")
-def object_to_object(
-    series: SeriesWrapper,
-    dtype: types.AtomicType,
-    **unused
-) -> SeriesWrapper:
-    """Convert arbitrary data to an object data type."""
-    if dtype == detect_type(series):
-        return series.astype(dtype.dtype, copy=False)
-
-    # fall back to generic implementation
-    return generic_to_object(series, dtype=dtype, **unused)

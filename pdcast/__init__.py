@@ -39,7 +39,6 @@ from .decorators.attachable import (
 )
 from .decorators.extension import extension_func, ExtensionFunc
 from .decorators.dispatch import dispatch, DispatchFunc
-from .decorators.wrapper import SeriesWrapper
 from .detect import detect_type
 from .patch.base import attach, detach
 from .resolve import resolve_type

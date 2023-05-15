@@ -2,8 +2,9 @@
 data.
 """
 # pylint: disable=unused-argument
+import pandas as pd
+
 from pdcast import types
-from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.util.round import Tolerance
 from pdcast.util.vector import apply_with_errors
 
@@ -18,13 +19,13 @@ from .util import boundscheck
 
 @cast.overload("float", "bool")
 def float_to_boolean(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     rounding: str,
     tol: Tolerance,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert floating point data to a boolean data type."""
     series = snap_round(
         series,
@@ -38,14 +39,14 @@ def float_to_boolean(
 
 @cast.overload("float", "int")
 def float_to_integer(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     rounding: str,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert floating point data to an integer data type."""
     series = snap_round(
         series,
@@ -67,11 +68,11 @@ try:  # float80 might not be defined on all systems
 
     @cast.overload("float80", "decimal")
     def longdouble_to_decimal(
-        series: SeriesWrapper,
+        series: pd.Series,
         dtype: types.AtomicType,
         errors: str,
         **unused
-    ) -> SeriesWrapper:
+    ) -> pd.Series:
         """A special case of float_to_decimal() that bypasses
         `TypeError: conversion from numpy.float128 to Decimal is not supported`.
         """

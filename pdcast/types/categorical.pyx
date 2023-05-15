@@ -10,7 +10,6 @@ from pdcast cimport resolve
 from pdcast import resolve
 
 from pdcast.util.type_hints import type_specifier
-from pdcast.decorators cimport wrapper
 
 from .base cimport AdapterType, CompositeType, ScalarType
 from .base import register
@@ -162,15 +161,9 @@ class CategoricalType(AdapterType):
     ####    SERIES METHODS    ####
     ##############################
 
-    # TODO: remove assignment to .element_type
-
     def transform(
         self,
-        series: wrapper.SeriesWrapper
-    ) -> wrapper.SeriesWrapper:
+        series: pd.Series
+    ) -> pd.Series:
         """Convert an unwrapped series into a categorical representation."""
-        # discover levels automatically
-        series = self.atomic_type.make_categorical(series, levels=self.levels)
-        self.levels = series.series.dtype.categories.tolist()
-        # series.element_type = self
-        return series
+        return self.atomic_type.make_categorical(series, levels=self.levels)

@@ -1,7 +1,8 @@
 """This module contains dispatched cast() implementations for complex data."""
 # pylint: disable=unused-argument
+import pandas as pd
+
 from pdcast import types
-from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.util.round import Tolerance
 from pdcast.util.error import shorten_list
 
@@ -11,13 +12,13 @@ from .util import real, imag, within_tol
 
 @cast.overload("complex", "bool")
 def complex_to_boolean(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     rounding: str,
     tol: Tolerance,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert complex data to a boolean data type."""
     # 2-step conversion: complex -> float, float -> bool
     series = cast(
@@ -39,14 +40,14 @@ def complex_to_boolean(
 
 @cast.overload("complex", "int")
 def complex_to_integer(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     rounding: str,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert complex data to an integer data type."""
     # 2-step conversion: complex -> float, float -> int
     series = cast(
@@ -69,13 +70,13 @@ def complex_to_integer(
 
 @cast.overload("complex", "float")
 def complex_to_float(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert complex data to a float data type."""
     # check for nonzero imag
     if errors != "coerce":  # ignore if coercing
@@ -99,12 +100,12 @@ def complex_to_float(
 
 @cast.overload("complex", "decimal")
 def complex_to_decimal(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     tol: Tolerance,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert complex data to a decimal data type."""
     # 2-step conversion: complex -> float, float -> decimal
     series = cast(

@@ -4,10 +4,12 @@ from __future__ import annotations
 import datetime
 from functools import partial
 
+import numpy as np
 import pandas as pd
 
 from pdcast import types
-from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.detect import detect_type
+from pdcast.resolve import resolve_type
 from pdcast.util.round import round_div, Tolerance
 from pdcast.util.string import int_to_base
 from pdcast.util import time
@@ -22,17 +24,14 @@ from .util import boundscheck
 
 # TODO: int -> timedelta is unusually slow for some reason
 
-# TODO: int -> decimal returns dtype: object results
-
-
 
 @cast.overload("int", "bool")
 def integer_to_boolean(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a boolean data type."""
     series, dtype = boundscheck(series, dtype, errors=errors)
     return generic_to_boolean(series, dtype, errors=errors)
@@ -40,14 +39,18 @@ def integer_to_boolean(
 
 @cast.overload("int", "int")
 def integer_to_integer(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to another integer data type."""
+    # trivial case
+    if detect_type(series) == dtype:
+        return series
+
     series, dtype = boundscheck(series, dtype, errors=errors)
     return generic_to_integer(
         series,
@@ -60,17 +63,18 @@ def integer_to_integer(
 
 @cast.overload("int", "float")
 def integer_to_float(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a float data type."""
     # NOTE: integers can always be exactly represented as floats as long as
     # their width in bits fits within the significand of the specified floating
     # point type with exponent 1 (as listed in the IEEE 754 specification).
+
     if int(series.min()) < dtype.min or int(series.max()) > dtype.max:
         # 2-step conversion: int -> decimal, decimal -> float
         series = cast(series, "decimal", errors=errors)
@@ -94,13 +98,13 @@ def integer_to_float(
 
 @cast.overload("int", "complex")
 def integer_to_complex(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a complex data type."""
     # 2-step conversion: int -> float, float -> complex
     series = cast(
@@ -122,18 +126,20 @@ def integer_to_complex(
 
 @cast.overload("int", "decimal")
 def integer_to_decimal(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a decimal data type."""
-    result = series + dtype.type_def(0)  # ~2x faster than apply loop
-    return result.astype(dtype.dtype, copy=False)
+    target = dtype.dtype
+    if isinstance(target, types.AbstractDtype):
+        series = series + dtype.type_def(0)  # ~2x faster than apply loop
+    return series.astype(target)
 
 
 @cast.overload("int", "datetime")
 def integer_to_datetime(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
@@ -141,14 +147,14 @@ def integer_to_datetime(
     tz: datetime.tzinfo,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a datetime data type."""
     # convert to ns
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
     # account for non-utc epoch
     if since:
-        series.series += since.offset
+        series += since.offset
 
     # check for overflow and upcast if applicable
     series, dtype = boundscheck(series, dtype, errors=errors)
@@ -168,7 +174,7 @@ def integer_to_datetime(
 
 @cast.overload("int", "datetime[pandas]")
 def integer_to_pandas_timestamp(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
@@ -176,14 +182,14 @@ def integer_to_pandas_timestamp(
     tz: datetime.tzinfo,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a datetime data type."""
     # convert to ns
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
     # account for non-utc epoch
     if since:
-        series.series += since.offset
+        series += since.offset
 
     # check for overflow and upcast if applicable
     series, dtype = boundscheck(series, dtype, errors=errors)
@@ -194,21 +200,18 @@ def integer_to_pandas_timestamp(
 
     # convert using pd.to_datetime, accounting for timezone
     if dtype.tz is None:
-        result = pd.to_datetime(series.series, unit="ns")
+        series = pd.to_datetime(series, unit="ns")
     else:
-        result = pd.to_datetime(series.series, unit="ns", utc=True)
+        series = pd.to_datetime(series, unit="ns", utc=True)
         if not time.is_utc(dtype.tz):
-            result = result.dt.tz_convert(dtype.tz)
+            series = series.dt.tz_convert(dtype.tz)
 
-    return SeriesWrapper(
-        result,
-        element_type=dtype
-    )
+    return series
 
 
 @cast.overload("int", "datetime[python]")
 def integer_to_python_datetime(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
@@ -216,14 +219,14 @@ def integer_to_python_datetime(
     tz: datetime.tzinfo,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a datetime data type."""
     # convert to ns
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
     # account for non-utc epoch
     if since:
-        series.series += since.offset
+        series += since.offset
 
     # check for overflow and upcast if applicable
     series, dtype = boundscheck(series, dtype, errors=errors)
@@ -240,7 +243,7 @@ def integer_to_python_datetime(
 
 @cast.overload("int", "datetime[numpy]")
 def integer_to_numpy_datetime64(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
@@ -248,53 +251,50 @@ def integer_to_numpy_datetime64(
     since: time.Epoch,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a datetime data type."""
     # convert to ns
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
     # account for non-utc epoch
     if since:
-        series.series += since.offset
+        series += since.offset
 
     # check for overflow and upcast if applicable
     series, dtype = boundscheck(series, dtype, errors=errors)
 
     # convert from nanoseconds to final representation
-    series.series = time.convert_unit(
-        series.series,
+    series = time.convert_unit(
+        series,
         "ns",
         dtype.unit,
         rounding=rounding or "down"
     )
     if dtype.step_size != 1:
-        series.series = round_div(
-            series.series,
+        series = round_div(
+            series,
             dtype.step_size,
             rule=rounding or "down"
         )
 
     M8_str = f"M8[{dtype.step_size}{dtype.unit}]"
-    return SeriesWrapper(
-        pd.Series(
-            list(series.series.to_numpy(M8_str)),
-            index=series.series.index,
-            dtype="O"
-        ),
-        element_type=dtype
+    return pd.Series(
+        list(series.to_numpy(M8_str)),
+        index=series.index,
+        dtype=object
     )
 
 
 @cast.overload("int", "timedelta")
 def integer_to_timedelta(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
     since: time.Epoch,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a timedelta data type."""
     # convert to ns
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
@@ -316,31 +316,28 @@ def integer_to_timedelta(
 
 @cast.overload("int", "timedelta[pandas]")
 def integer_to_pandas_timedelta(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
     since: time.Epoch,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a timedelta data type."""
-    # convert to ns
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
-    # check for overflow and upcast if necessary
     series, dtype = boundscheck(series, dtype, errors=errors)
 
-    # convert to final representation
-    return SeriesWrapper(
-        pd.to_timedelta(series.series.astype(object), unit="ns"),
-        element_type=dtype
-    )
+    # NOTE: pandas.to_timedelta complains when given an AbstractArray as input,
+    # so we convert to dtype: object instead.
+
+    return pd.to_timedelta(series.astype(object), unit="ns")
 
 
 @cast.overload("int", "timedelta[python]")
 def integer_to_python_timedelta(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
@@ -348,7 +345,7 @@ def integer_to_python_timedelta(
     since: time.Epoch,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a timedelta data type."""
     # convert to ns
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
@@ -357,22 +354,20 @@ def integer_to_python_timedelta(
     series, dtype = boundscheck(series, dtype, errors=errors)
 
     # convert to us
-    result = round_div(series.series, time.as_ns["us"], rule=rounding or "down")
+    result = round_div(series, time.as_ns["us"], rule=rounding or "down")
 
     # NOTE: m8[us].astype(object) implicitly converts to datetime.timedelta
-    return SeriesWrapper(
-        pd.Series(
-            result.to_numpy("m8[us]").astype(object),
-            index=series.series.index,
-            dtype=dtype.dtype
-        ),
-        element_type=dtype
+
+    return pd.Series(
+        result.to_numpy("m8[us]").astype(object),
+        index=series.index,
+        dtype=dtype.dtype
     )
 
 
 @cast.overload("int", "timedelta[numpy]")
 def integer_to_numpy_timedelta64(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     unit: str,
     step_size: int,
@@ -380,7 +375,7 @@ def integer_to_numpy_timedelta64(
     since: time.Epoch,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a timedelta data type."""
     # convert to ns
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
@@ -389,39 +384,36 @@ def integer_to_numpy_timedelta64(
     series, dtype = boundscheck(series, dtype, errors=errors)
 
     # convert from ns to final unit
-    series.series = time.convert_unit(
-        series.series,
+    series = time.convert_unit(
+        series,
         "ns",
         dtype.unit,
         rounding=rounding or "down",
         since=since
     )
     if dtype.step_size != 1:
-        series.series = round_div(
-            series.series,
+        series = round_div(
+            series,
             dtype.step_size,
             rule=rounding or "down"
         )
     m8_str = f"m8[{dtype.step_size}{dtype.unit}]"
-    return SeriesWrapper(
-        pd.Series(
-            list(series.series.to_numpy(m8_str)),
-            index=series.series.index,
-            dtype="O"
-        ),
-        element_type=dtype
+    return pd.Series(
+        list(series.to_numpy(m8_str)),
+        index=series.index,
+        dtype="O"
     )
 
 
 @cast.overload("int", "string")
 def integer_to_string(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.ScalarType,
     base: int,
     format: str,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a string data type in any base."""
     # use non-decimal base in conjunction with format
     if base and base != 10:
@@ -434,8 +426,8 @@ def integer_to_string(
         return result.astype(dtype.dtype)
 
     return generic_to_string(
-        series=series,
-        dtype=dtype,
+        series,
+        dtype,
         format=format,
         errors=errors
     )
@@ -446,30 +438,24 @@ def integer_to_string(
 #######################
 
 
+as_pyint = np.frompyfunc(int, 1, 1)
+
+
 def to_ns(
-    series: SeriesWrapper,
+    series: pd.Series,
     unit: str,
     step_size: int,
     since: time.Epoch
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert an integer number of time units into nanoseconds from a given
     epoch.
     """
-    # TODO: use np.frompyfunc(int, 1, 1) rather than full cast() op
-
-    # convert to python int to avoid overflow
-    series = cast(series, int, downcast=False, errors="raise")
+    series = as_pyint(series).astype(resolve_type(int).dtype)  # overflow-safe
 
     # trivial case
     if unit == "ns" and step_size == 1:
         return series
 
-    # account for step size
     if step_size != 1:
-        series.series *= step_size
-
-    # convert to ns
-    return SeriesWrapper(
-        time.convert_unit(series.series, unit, "ns", since=since),
-        element_type=int
-    )
+        series *= step_size
+    return time.convert_unit(series, unit, "ns", since=since)

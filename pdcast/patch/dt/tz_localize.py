@@ -6,7 +6,6 @@ from functools import partial
 from pdcast.decorators.attachable import attachable
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
-from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
 from pdcast.util import time
 from pdcast.util.vector import apply_with_errors
@@ -16,10 +15,10 @@ from pdcast.util.vector import apply_with_errors
 @extension_func
 @dispatch("series")
 def tz_localize(
-    series: SeriesWrapper,
+    series: pd.Series,
     tz: str | datetime.tzinfo | None,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """TODO"""
     raise NotImplementedError(
         f"{detect_type(series)} objects do not carry timezone information"
@@ -41,22 +40,22 @@ tz_localize.register_arg(time.tz)
 
 @tz_localize.overload("datetime[pandas]")
 def localize_pandas_timestamp(
-    series: SeriesWrapper,
+    series: pd.Series,
     tz: datetime.tzinfo | None,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """TODO"""
     series = series.astype(detect_type(series).dtype, copy=False)
     original = getattr(series.dt.tz_localize, "original", series.dt.tz_localize)
-    return original(series.series, tz, **unused)
+    return original(tz, **unused)
 
 
 @tz_localize.overload("datetime[python]")
 def localize_python_datetime(
-    series: SeriesWrapper,
+    series: pd.Series,
     tz: datetime.tzinfo | None,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """TODO"""
     # emulate pandas tz_localize limitation
     if detect_type(series).tz:

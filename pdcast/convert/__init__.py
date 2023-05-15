@@ -30,13 +30,6 @@ to_timedelta()
 
 to_string()
     String-specific version of cast().
-
-Classes
--------
-SeriesWrapper
-    A a type-aware view into a pandas Series that automatically handles missing
-    values, non-unique indices, and other common problems, as well as offering
-    convenience methods for conversions and ``@dispatch`` methods.
 """
 from .arguments import *
 from .base import *

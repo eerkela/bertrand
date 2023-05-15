@@ -12,7 +12,6 @@ from pdcast.decorators.attachable import attachable
 from pdcast.decorators.base import BaseDecorator
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
-from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
 from pdcast.patch.round import round as round_generic
 from pdcast.util.error import shorten_list
@@ -22,9 +21,6 @@ from pdcast.util.vector import apply_with_errors
 
 from . import arguments
 from .util import downcast_integer, downcast_float, downcast_complex
-
-
-# TODO: hasnans should be handled in @dispatch, not here or in any helpers
 
 
 # TODO: pdcast.cast([1, 2], "bool", errors="coerce") broken
@@ -277,18 +273,31 @@ wildcard = (
 
 @cast.overload(wildcard, "bool")
 def generic_to_boolean(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     errors: str,
     **unused
 ) -> pd.Series:
     """Convert a to boolean representation."""
-    return series.astype(dtype, errors=errors)
+    # trivial case
+    if detect_type(series) == dtype:
+        return series
+
+    target = dtype.dtype
+
+    # NOTE: pandas complains about converting arbitrary objects to nullable
+    # boolean.  Luckily, NAs are dropped, so we can do a two-step conversion.
+
+    if isinstance(target, types.AbstractDtype):
+        series = apply_with_errors(series, dtype.type_def, errors=errors)
+    elif target == pd.BooleanDtype():
+        series = series.astype(target.numpy_dtype, copy=False)
+    return series.astype(target)
 
 
 @cast.overload(wildcard, "int")
 def generic_to_integer(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     tol: Tolerance,
     errors: str,
@@ -296,7 +305,19 @@ def generic_to_integer(
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to integer representation."""
-    series = series.astype(dtype, errors=errors)
+    if detect_type(series) != dtype:  # ignore trivial
+        target = dtype.dtype
+
+        # NOTE: pandas complains about converting arbitrary objects to nullable
+        # int. Luckily, NAs are dropped, so we can do a two-step conversion.
+
+        if isinstance(target, types.AbstractDtype):
+            series = apply_with_errors(series, dtype.type_def, errors=errors)
+        elif target in pandas_integer_dtypes:
+            series = series.astype(target.numpy_dtype, copy=False)
+        series = series.astype(target)
+
+    # downcast if applicable
     if downcast is not None:
         return downcast_integer(series, tol=tol, smallest=downcast)
     return series
@@ -304,7 +325,7 @@ def generic_to_integer(
 
 @cast.overload(wildcard, "float")
 def generic_to_float(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     tol: Tolerance,
     downcast: types.CompositeType,
@@ -312,7 +333,12 @@ def generic_to_float(
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to float representation."""
-    series = series.astype(dtype, errors=errors)
+    if detect_type(series) != dtype:  # ignore trivial
+        target = dtype.dtype
+        if isinstance(target.dtype, types.AbstractDtype):
+            series = apply_with_errors(series, dtype.type_def, errors=errors)
+        series = series.astype(target)
+
     if downcast is not None:
         return downcast_float(series, tol=tol, smallest=downcast)
     return series
@@ -320,7 +346,7 @@ def generic_to_float(
 
 @cast.overload(wildcard, "complex")
 def generic_to_complex(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     tol: Tolerance,
     downcast: types.CompositeType,
@@ -328,7 +354,12 @@ def generic_to_complex(
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to complex representation."""
-    series = series.astype(dtype, errors=errors)
+    if detect_type(series) != dtype:  # ignore trivial
+        target = dtype.dtype
+        if isinstance(target.dtype, types.AbstractDtype):
+            series = apply_with_errors(series, dtype.type_def, errors=errors)
+        series = series.astype(target)
+
     if downcast is not None:
         return downcast_complex(series, tol=tol, smallest=downcast)
     return series
@@ -336,18 +367,24 @@ def generic_to_complex(
 
 @cast.overload(wildcard, "decimal")
 def generic_to_decimal(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     errors: str,
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to decimal representation."""
+    if detect_type(series) != dtype:  # ignore trivial
+        target = dtype.dtype
+        if isinstance(target.dtype, types.AbstractDtype):
+            series = apply_with_errors(series, dtype.type_def, errors=errors)
+        series = series.astype(target)
+
     return series.astype(dtype, errors=errors)
 
 
 @cast.overload(wildcard, "datetime")
 def generic_to_datetime(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     **unused
 ) -> pd.Series:
@@ -359,7 +396,7 @@ def generic_to_datetime(
 
 @cast.overload(wildcard, "timedelta")
 def generic_to_timedelta(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     **unused
 ) -> pd.Series:
@@ -371,7 +408,7 @@ def generic_to_timedelta(
 
 @cast.overload(wildcard, "string")
 def generic_to_string(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     format: str,
     errors: str,
@@ -382,24 +419,31 @@ def generic_to_string(
         call = lambda x: f"{x:{format}}"
         series = apply_with_errors(series, call, errors=errors)
 
-    return series.astype(dtype, errors=errors)
+    target = dtype.dtype
+    if isinstance(target.dtype, types.AbstractDtype):
+        series = apply_with_errors(series, dtype.type_def, errors=errors)
+    return series.astype(target, copy=False)
 
 
 @cast.overload(wildcard, "object")
 def generic_to_object(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     call: Callable,
     errors: str,
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
+    # trivial case
+    if detect_type(series) == dtype:
+        return series
+
     if call is None:
         call = dtype.type_def
 
-    # object root type
+    # trivial case: object root type
     if call is object:
-        return series.astype("O")
+        return series.astype(object, copy=False)
 
     return safe_apply(series=series, dtype=dtype, call=call, errors=errors)
 
@@ -409,12 +453,18 @@ def generic_to_object(
 #######################
 
 
+pandas_integer_dtypes = {
+    pd.Int8Dtype(), pd.Int16Dtype(), pd.Int32Dtype(), pd.Int64Dtype(),
+    pd.UInt8Dtype(), pd.UInt16Dtype(), pd.UInt32Dtype(), pd.UInt64Dtype()
+}
+
+
 def safe_apply(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     call: Callable,
     errors: str
-) -> SeriesWrapper:
+) -> pd.Series:
     """Apply a callable over the input series that produces objects of the
     appropriate type.
 
@@ -436,11 +486,11 @@ def safe_apply(
 
 
 def snap_round(
-    series: SeriesWrapper,
+    series: pd.Series,
     tol: Tolerance,
     rule: str | None,
     errors: str
-) -> SeriesWrapper:
+) -> pd.Series:
     """Snap a series to the nearest integer within `tol`, and then round
     any remaining results according to the given rule.  Reject any outputs
     that are not integer-like by the end of this process.
@@ -457,7 +507,7 @@ def snap_round(
         rounded = round_generic(series, rule="half_even")
         outside = ~series.within_tol(rounded, tol=tol)
         if tol:
-            series = series.where(outside.series, rounded.series)
+            series = series.where(outside, rounded)
 
         # check for non-integer (ignore if rounding in next step)
         if rule is None and outside.any():

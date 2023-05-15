@@ -1,30 +1,39 @@
 """This module contains dispatched cast() implementations for decimal data."""
 # pylint: disable=unused-argument
 import datetime
+
 import numpy as np
+import pandas as pd
 
 from pdcast import types
-from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
+from pdcast.resolve import resolve_type
 from pdcast.util.error import shorten_list
 from pdcast.util.round import Tolerance
 from pdcast.util import time
+from pdcast.util.vector import apply_with_errors
 
 from .base import (
     cast, generic_to_boolean, generic_to_integer, snap_round
 )
-from .util import boundscheck, isinf, within_tol
+from .util import boundscheck, downcast_float, isinf, within_tol
+
+
+# TODO: pdcast.cast(pdcast.cast([1., 2., np.inf], "decimal"), "float")
+# OverflowError: cannot convert Infinity to integer
+
+# -> insert series.min == inf checks
 
 
 @cast.overload("decimal", "bool")
 def decimal_to_boolean(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     rounding: str,
     tol: Tolerance,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert decimal data to a boolean data type."""
     series = snap_round(
         series,
@@ -38,14 +47,14 @@ def decimal_to_boolean(
 
 @cast.overload("decimal", "integer")
 def decimal_to_integer(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     rounding: str,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert decimal data to an integer data type."""
     series = snap_round(
         series,
@@ -63,27 +72,21 @@ def decimal_to_integer(
     )
 
 
-# TODO: pdcast.cast(pdcast.cast([1., 2., float("inf")], "decimal"), "float")
-# OverflowError: cannot convert Infinity to integer
-
-# -> insert series.min == inf checks
-
-
 @cast.overload("decimal", "float")
 def decimal_to_float(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert decimal data to a floating point data type."""
     # do naive conversion
     if dtype.itemsize > 8:
         # NOTE: series.astype() implicitly calls Decimal.__float__(), which
         # is limited to 64-bits.  Converting to an intermediate string
-        # representation avoids this.
+        # representation avoids this and maintains full precision
         result = series.astype(str).astype(dtype)
     else:
         result = series.astype(dtype)
@@ -116,19 +119,19 @@ def decimal_to_float(
             )
 
     if downcast is not None:
-        return dtype.downcast(result, smallest=downcast, tol=tol)
+        return downcast_float(result, tol=tol, smallest=downcast)
     return result
 
 
 @cast.overload("decimal", "complex")
 def decimal_to_complex(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert decimal data to a complex data type."""
     # 2-step conversion: decimal -> float, float -> complex
     series = cast(
@@ -150,18 +153,25 @@ def decimal_to_complex(
 
 @cast.overload("decimal", "decimal")
 def decimal_to_decimal(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert boolean data to a decimal data type."""
-    return series.astype(dtype, errors=errors)
+    # trivial case
+    if detect_type(series) == dtype:
+        return series
+
+    target = dtype.dtype
+    if isinstance(dtype.dtype, types.AbstractDtype):
+        series = apply_with_errors(series, dtype.type_def, errors=errors)
+    return series.astype(target)
 
 
 @cast.overload("decimal", "datetime")
 def decimal_to_datetime(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
@@ -169,7 +179,7 @@ def decimal_to_datetime(
     tz: datetime.tzinfo,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a datetime data type."""
     # 2-step conversion: decimal -> ns, ns -> datetime
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
@@ -177,7 +187,6 @@ def decimal_to_datetime(
     # account for non-utc epoch
     if since:
         series += since.offset
-        # TODO: series might be dtype: object, which will kill performance
 
     # check for overflow and upcast if applicable
     series, dtype = boundscheck(series, dtype, errors=errors)
@@ -197,14 +206,14 @@ def decimal_to_datetime(
 
 @cast.overload("decimal", "timedelta")
 def decimal_to_timedelta(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
     since: time.Epoch,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert integer data to a timedelta data type."""
     # 2-step conversion: decimal -> ns, ns -> timedelta
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
@@ -230,26 +239,26 @@ def decimal_to_timedelta(
 
 
 def to_ns(
-    series: SeriesWrapper,
+    series: pd.Series,
     unit: str,
     step_size: int,
     since: time.Epoch
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert an integer number of time units into nanoseconds from a given
     epoch.
     """
     # round fractional inputs to the nearest nanosecond
     if unit == "Y":
-        result = time.round_years_to_ns(series.series * step_size, since=since)
+        result = time.round_years_to_ns(series * step_size, since=since)
     elif unit == "M":
-        result = time.round_months_to_ns(series.series * step_size, since=since)
+        result = time.round_months_to_ns(series * step_size, since=since)
     else:
         as_pyint = np.frompyfunc(int, 1, 1)
-        result = series.series
+        result = series
         if step_size != 1:
             result *= step_size
         if unit != "ns":
             result *= time.as_ns[unit]
         result = as_pyint(result)
 
-    return SeriesWrapper(result, element_type=int)
+    return result.astype(resolve_type(int).dtype)

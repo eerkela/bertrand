@@ -1,9 +1,10 @@
 # pylint: disable=redefined-outer-name, unused-argument
+import pandas as pd
+
 from pdcast.convert.util import real, imag, within_tol
 from pdcast.decorators.attachable import attachable
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
-from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.util.round import Tolerance
 from pdcast.util.type_hints import numeric
 
@@ -18,10 +19,7 @@ from .round import round
 @attachable
 @extension_func
 @dispatch("series")
-def snap(
-    series: SeriesWrapper,
-    tol: numeric = 1e-6
-) -> SeriesWrapper:
+def snap(series: pd.Series, tol: numeric = 1e-6) -> pd.Series:
     """Snap each element of the series to the nearest integer if it is
     within the specified tolerance.
     """
@@ -29,10 +27,7 @@ def snap(
         return series.copy()
 
     rounded = round(series, rule="half_even")
-    return series.series.where(
-        ~within_tol(series.series, rounded, tol=tol.real),
-        rounded.series
-    )
+    return series.where(~within_tol(series, rounded, tol=tol.real), rounded)
 
 
 #########################
@@ -159,23 +154,17 @@ def tol(val: numeric, state: dict) -> Tolerance:
 
 
 @snap.overload("int")
-def _snap_integer(
-    series: SeriesWrapper,
-    tol: Tolerance
-) -> SeriesWrapper:
+def _snap_integer(series: pd.Series, tol: Tolerance) -> pd.Series:
     """Snap each element of the series to the nearest integer if it is
     within the specified tolerance.
 
     For integers, this is an identity function.
     """
-    return series.copy()
+    return series
 
 
 @snap.overload("complex")
-def _snap_complex(
-    series: SeriesWrapper,
-    tol: Tolerance
-) -> SeriesWrapper:
+def _snap_complex(series: pd.Series, tol: Tolerance) -> pd.Series:
     """Snap each element of the series to the nearest integer if it is
     within the specified tolerance.
     """

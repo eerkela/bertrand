@@ -8,7 +8,6 @@ setup(
         [
             "pdcast/*.pyx",
             "pdcast/convert/util/*.pyx",
-            "pdcast/decorators/*.pyx",
             "pdcast/types/array/*.pyx",
             "pdcast/types/base/*.pyx",
             "pdcast/types/*.pyx",

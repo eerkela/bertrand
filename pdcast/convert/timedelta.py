@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 
 from pdcast import types
-from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
+from pdcast.resolve import resolve_type
 from pdcast.util import time
 from pdcast.util.round import round_div, Tolerance
 from pdcast.util.vector import apply_with_errors
@@ -18,7 +18,7 @@ from .util import boundscheck
 
 @cast.overload("timedelta", "bool")
 def timedelta_to_boolean(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     tol: Tolerance,
     rounding: str,
@@ -27,7 +27,7 @@ def timedelta_to_boolean(
     since: time.Epoch,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert timedelta data to a boolean data type."""
     # 2-step conversion: timedelta -> decimal, decimal -> bool
     series = cast(
@@ -55,7 +55,7 @@ def timedelta_to_boolean(
 
 @cast.overload("timedelta[pandas]", "int")
 def pandas_timedelta_to_integer(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     rounding: str,
     tol: Tolerance,
@@ -65,24 +65,23 @@ def pandas_timedelta_to_integer(
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert pandas Timedeltas to an integer data type."""
     # get integer ns
-    series = series.astype(detect_type(series).dtype, copy=False)
     series = series.astype(np.int64)
 
     # convert ns to final unit, step_size
     if unit != "ns":
-        series.series = time.convert_unit(
-            series.series,
+        series = time.convert_unit(
+            series,
             "ns",
             unit,
             since=since,
             rounding=rounding or "down",
         )
     if step_size != 1:
-        series.series = round_div(
-            series.series,
+        series = round_div(
+            series,
             step_size,
             rule=rounding or "down"
         )
@@ -102,7 +101,7 @@ def pandas_timedelta_to_integer(
 
 @cast.overload("timedelta[python]", "int")
 def python_timedelta_to_integer(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     rounding: str,
     tol: Tolerance,
@@ -112,23 +111,24 @@ def python_timedelta_to_integer(
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert python timedeltas to an integer data type."""
     # get integer ns
     series = apply_with_errors(series, time.pytimedelta_to_ns, errors=errors)
+    series = series.astype(resolve_type(int).dtype)
 
     # convert ns to final unit, step_size
     if unit != "ns":
-        series.series = time.convert_unit(
-            series.series,
+        series = time.convert_unit(
+            series,
             "ns",
             unit,
             since=since,
             rounding=rounding or "down",
         )
     if step_size != 1:
-        series.series = round_div(
-            series.series,
+        series = round_div(
+            series,
             step_size,
             rule=rounding or "down"
         )
@@ -148,7 +148,7 @@ def python_timedelta_to_integer(
 
 @cast.overload("timedelta[numpy]", "int")
 def numpy_timedelta64_to_integer(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     rounding: str,
     tol: Tolerance,
@@ -158,40 +158,27 @@ def numpy_timedelta64_to_integer(
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert numpy timedelta64s into an integer data type."""
     series_type = detect_type(series)
 
     # NOTE: using numpy m8 array is ~2x faster than looping through series
+
     m8_str = f"m8[{series_type.step_size}{series_type.unit}]"
-    arr = series.series.to_numpy(m8_str).view(np.int64).astype(object)
-
-    # correct for m8 step size
+    arr = series.to_numpy(m8_str).view(np.int64).astype(object)
     arr *= series_type.step_size
-
-    # convert to final unit
-    arr = time.Epochconvert_unit(
+    arr = time.convert_unit(
         arr,
         series_type.unit,
         unit,
         rounding=rounding or "down",
         since=since
     )
-
-    # apply final step size
     if step_size != 1:
         arr = round_div(arr, step_size, rule=rounding or "down")
 
-    # re-wrap as SeriesWrapper
-    series = SeriesWrapper(
-        pd.Series(arr, index=series.series.index),
-        element_type=int
-    )
-
-    # check for overflow
+    pd.Series(arr, index=series.index, dtype=resolve_type(int).dtype)
     series, dtype = boundscheck(series, dtype, errors=errors)
-
-    # delegate to generic conversion
     return generic_to_integer(
         series,
         dtype,
@@ -201,12 +188,9 @@ def numpy_timedelta64_to_integer(
     )
 
 
-# TODO: remove assignment to .element_type
-
-
 @cast.overload("timedelta", "float")
 def timedelta_to_float(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
@@ -216,7 +200,7 @@ def timedelta_to_float(
     downcast: types.CompositeType,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert timedelta data to a floating point data type."""
     # 2 step conversion: timedelta -> ns, ns -> float
     series = cast(
@@ -232,20 +216,20 @@ def timedelta_to_float(
 
     # convert ns to final unit
     if unit != "ns":
-        series.series = time.convert_unit(
-            series.series,
+        series = time.convert_unit(
+            series,
             "ns",
             unit,
             rounding=rounding,
             since=since
         )
-        # if rounding is None:
-        #     series.element_type = float
+        if rounding is None:
+            series = series.astype(resolve_type(float).dtype)
 
     # apply final step size
     if step_size != 1:
-        series.series /= step_size
-        # series.element_type = float
+        series /= step_size
+        series = series.astype(resolve_type(float).dtype)
 
     # integer/float -> float
     return cast(
@@ -264,11 +248,11 @@ def timedelta_to_float(
 
 @cast.overload("timedelta", "complex")
 def timedelta_to_complex(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     downcast: types.CompositeType,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert timedelta data to a complex data type."""
     # 2-step conversion: timedelta -> float, float -> complex
     series = cast(series, dtype.equiv_float, downcast=None, **unused)
@@ -277,7 +261,7 @@ def timedelta_to_complex(
 
 @cast.overload("timedelta", "decimal")
 def timedelta_to_decimal(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
@@ -286,7 +270,7 @@ def timedelta_to_decimal(
     rounding: str,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert timedelta data to a decimal data type."""
     # 2-step conversion: timedelta -> ns, ns -> decimal
     series = cast(
@@ -313,8 +297,8 @@ def timedelta_to_decimal(
 
     # convert decimal ns to final unit
     if unit != "ns":
-        series.series = time.convert_unit(
-            series.series,
+        series = time.convert_unit(
+            series,
             "ns",
             unit,
             rounding=rounding,
@@ -323,14 +307,14 @@ def timedelta_to_decimal(
 
     # apply final step size
     if step_size != 1:
-        series.series /= step_size
+        series /= step_size
 
     return series
 
 
 @cast.overload("timedelta", "datetime")
 def timedelta_to_datetime(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
@@ -339,7 +323,7 @@ def timedelta_to_datetime(
     tz: datetime.tzinfo,
     errors: str,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert datetime data to another datetime representation."""
     # 2-step conversion: timedelta -> ns, ns -> datetime
     series = cast(
@@ -367,17 +351,17 @@ def timedelta_to_datetime(
 
 @cast.overload("timedelta", "timedelta")
 def timedelta_to_timedelta(
-    series: SeriesWrapper,
+    series: pd.Series,
     dtype: types.AtomicType,
     unit: str,
     step_size: int,
     downcast: types.CompositeType,
     **unused
-) -> SeriesWrapper:
+) -> pd.Series:
     """Convert timedelta data to a timedelta representation."""
     # trivial case
-    if dtype == detect_type(series):
-        return series.astype(dtype.dtype, copy=False)
+    if detect_type(series) == dtype:
+        return series
 
     # 2-step conversion: datetime -> ns, ns -> timedelta
     series = cast(

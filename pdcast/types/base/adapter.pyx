@@ -11,7 +11,6 @@ import pandas as pd
 from pdcast import detect
 from pdcast cimport resolve
 from pdcast import resolve
-from pdcast.decorators cimport wrapper
 from pdcast.util.type_hints import type_specifier
 
 from . cimport atomic
@@ -338,20 +337,11 @@ cdef class AdapterType(atomic.ScalarType):
             )
         )
 
-    # TODO: remove assignment to .element_type
-
-    def inverse_transform(
-        self,
-        series: wrapper.SeriesWrapper
-    ) -> wrapper.SeriesWrapper:
+    def inverse_transform(self, series: pd.Series) -> pd.Series:
         """Remove an adapter from an example series."""
-        # series.element_type = self.wrapped
         return series.astype(detect.detect_type(series).dtype, copy=False)
 
-    def transform(
-        self,
-        series: wrapper.SeriesWrapper
-    ) -> wrapper.SeriesWrapper:
+    def transform(self, series: pd.Series) -> pd.Series:
         """Given an unwrapped conversion result, apply all the necessary logic
         to bring it into alignment with this AdapterType and all its children.
 

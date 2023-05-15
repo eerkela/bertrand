@@ -23,7 +23,6 @@ from pdcast.util.structs import LRUDict
 from pdcast.util.type_hints import type_specifier
 
 from .base import BaseDecorator, no_default
-from .wrapper import SeriesWrapper
 
 
 # TODO: emit a warning whenever an implementation is replaced.
@@ -34,8 +33,6 @@ from .wrapper import SeriesWrapper
 
 # TODO: support DataFrame transforms in addition to Series (i.e. replace
 # missing rows with NAs)
-# -> either include a replace_na flag in @dispatch or a DataFrameWrapper
-# similar to SeriesWrapper.
 
 # TODO: special cases for e.g. int64/uint64 conflict in DispatchComposite:
 
@@ -91,15 +88,6 @@ def dispatch(
     If no specific implementation can be found for the observed input, then the
     decorated function itself will be called as a generic implementation,
     similar to :func:`@functools.singledispatch <functools.singledispatch>`.
-
-    If any of the dispatched arguments are vectorized (as a series, numpy
-    array, or 1D array-like iterable), then they should be passed to this
-    function as :class:`SeriesWrapper <pdcast.SeriesWrapper>` objects.  This
-    can be handled automatically via the
-    :func:`@extension_func <pdcast.extension_func>` decorator, which should
-    always be placed above this one.  If any of these arguments contain mixed
-    data, they will be grouped by type and dispatched independently via the
-    ``pdcast`` :doc:`type system </content/types/types>`.
     """
     def decorator(func: Callable):
         """Convert a callable into a DispatchFunc object."""
@@ -448,11 +436,7 @@ class DispatchFunc(BaseDecorator):
 
         return implementation
 
-    def generic(
-        self,
-        *args,
-        **kwargs
-    ) -> pd.Series | SeriesWrapper:
+    def generic(self, *args, **kwargs) -> Any:
         """A reference to the generic implementation of the decorated function.
         """
         return self.__wrapped__(*args, **kwargs)
@@ -600,25 +584,21 @@ class DispatchFunc(BaseDecorator):
     def _build_strategy(self, dispatched: dict[str, Any]) -> DispatchStrategy:
         """Normalize vectorized inputs to this :class:`DispatchFunc`.
 
-        This method converts input vectors into :class:`SeriesWrappers` with
+        This method converts input vectors into pandas Series objects with
         homogenous indices, missing values, and element types.  Composite
         vectors will be grouped along with their homogenous counterparts and
         processed as independent frames.
 
         Notes
         -----
-        Normalization is skipped if pre-wrapped :class:`SeriesWrappers` are
-        provided as input.  This is intended to short-circuit the normalization
-        machinery for internal (recursive) calls.
+        Normalization is skipped if the dispatched function is called from a
+        recursive context.
         """
         # extract vectors
         vectors = {}
         names = {}
         for arg, value in dispatched.items():
-            if isinstance(value, SeriesWrapper):
-                vectors[arg] = value.series
-                names[arg] = value.name
-            elif isinstance(value, pd.Series):
+            if isinstance(value, pd.Series):
                 vectors[arg] = value
                 names[arg] = value.name
             elif isinstance(value, np.ndarray):
@@ -682,7 +662,8 @@ class DispatchFunc(BaseDecorator):
 
             *   :data:`None <python:None>` signifies a filtration.  The passed
                 values will be excluded from the resulting series.
-            *   A :class:`SeriesWrapper <pdcast.SeriesWrapper>` signifies a
+            *   A pandas :class:`Series <pandas.Series>` or
+                :class:`DataFrame <pandas.DataFrame>`signifies a
                 transformation.  Any missing indices will be replaced with NA.
             *   Anything else signifies an aggreggation.  Its result will be
                 returned as-is if data is homogenous.  If mixed data is given,
@@ -796,13 +777,10 @@ class HomogenousDispatch(DispatchStrategy):
         self.original_index = original_index
         self.hasnans = hasnans
 
-        # TODO: no SeriesWrapper
-
         # split frame into normalized columns
         for col, series in frame.items():
             series = series.rename(names.get(col, None))
-            series = series.astype(detected[col].dtype, copy=False)
-            dispatched[col] = SeriesWrapper(series)
+            dispatched[col] = series.astype(detected[col].dtype, copy=False)
 
         # construct DispatchDirect wrapper
         self.direct = DirectDispatch(
@@ -819,7 +797,7 @@ class HomogenousDispatch(DispatchStrategy):
         type and adjust result accordingly.
         """
         # transform
-        if isinstance(result, SeriesWrapper):
+        if isinstance(result, (pd.Series, pd.DataFrame)):
             hasnans = self.hasnans
 
             # warn if final index is not a subset of original
@@ -827,8 +805,8 @@ class HomogenousDispatch(DispatchStrategy):
                 warn_msg = (
                     f"index mismatch in {self.__qualname__}() with signature"
                     f"{tuple(str(x) for x in self.direct.key)}: dispatched "
-                    f"implementation did not return a like-indexed "
-                    f"SeriesWrapper"
+                    f"implementation did not return a like-indexed Series/"
+                    f"DataFrame"
                 )
                 warnings.warn(warn_msg, UserWarning, stacklevel=4)
                 hasnans = True
@@ -837,7 +815,7 @@ class HomogenousDispatch(DispatchStrategy):
             if hasnans or result.shape[0] < self.index.shape[0]:
                 nullable = detect.detect_type(result).make_nullable()
                 result = replace_na(
-                    result.series.astype(nullable.dtype, copy=False),
+                    result.astype(nullable.dtype, copy=False),
                     index=pd.RangeIndex(0, self.original_index.shape[0]),
                     na_value=nullable.na_value
                 )
@@ -920,15 +898,13 @@ class CompositeDispatch(DispatchStrategy):
         """
         # TODO: signed/unsigned conflict
 
-        # TODO: remove SeriesWrapper references
-
         # transform
-        if all(isinstance(res, SeriesWrapper) for _, res in result):
+        if all(isinstance(res, (pd.Series, pd.DataFrame)) for _, res in result):
             # NOTE: pd.concat does not account for mixed int64/uint64 output
             # and will attempt to coerce them to float.
 
             # concatenate results
-            final = pd.concat([res.series for _, res in result])
+            final = pd.concat([res for _, res in result])
             final.sort_index()
 
             # determine appropriate NA value
@@ -1107,8 +1083,6 @@ def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
 
 
 
-# TODO: revisit after eliminating SeriesWrapper
-
 
 
 # from .attachable import attachable
@@ -1117,7 +1091,7 @@ def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
 # @attachable
 # @dispatch("self", "other")
 # def __add__(self, other):
-#     original = getattr(self.series.__add__, "original", self.series.__add__)
+#     original = getattr(self.__add__, "original", self.__add__)
 #     return SeriesWrapper(original(other))
 
 

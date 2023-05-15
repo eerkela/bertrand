@@ -13,7 +13,6 @@ import pytz
 
 from pdcast cimport resolve
 from pdcast import resolve
-from pdcast.decorators cimport wrapper
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import array_like, type_specifier
 
@@ -871,9 +870,9 @@ cdef class AtomicType(ScalarType):
 
     def make_categorical(
         self,
-        series: wrapper.SeriesWrapper,
+        series: pd.Series,
         levels: list = None
-    ) -> wrapper.SeriesWrapper:
+    ) -> pd.Series:
         """Transform a series of the associated type into a categorical format
         with the given levels.
 
@@ -882,9 +881,8 @@ cdef class AtomicType(ScalarType):
 
         Parameters
         ----------
-        series : SeriesWrapper
-            The series to be transformed.  This is always provided as a
-            :class:`SeriesWrapper` object.
+        series : pd.Series
+            The series to be transformed.
         levels : list
             The categories to use for the transformation.  If this is ``None``
             (the default), then levels will be automatically discovered when
@@ -892,8 +890,8 @@ cdef class AtomicType(ScalarType):
 
         Returns
         -------
-        SeriesWrapper
-            The transformed series, returned as a :class:`SeriesWrapper`.
+        pd.Series
+            The transformed series.
 
         Notes
         -----
@@ -907,16 +905,13 @@ cdef class AtomicType(ScalarType):
                 pd.Index(levels, dtype=self.dtype)
             )
 
-        return wrapper.SeriesWrapper(
-            series.series.astype(categorical_type),
-            # element_type is set in AdapterType.transform()
-            )
+        return series.astype(categorical_type)
 
     def make_sparse(
         self,
-        series: wrapper.SeriesWrapper,
+        series: pd.Series,
         fill_value: Any = None
-    ) -> wrapper.SeriesWrapper:
+    ) -> pd.Series:
         """Transform a series of the associated type into a sparse format with
         the given fill value.
 
@@ -925,17 +920,16 @@ cdef class AtomicType(ScalarType):
 
         Parameters
         ----------
-        series : SeriesWrapper
-            The series to be transformed.  This is always provided as a
-            :class:`SeriesWrapper` object.
+        series : pd.Series
+            The series to be transformed.
         fill_value : Any
             The fill value to use for the transformation.  If this is ``None``
             (the default), then this type's ``na_value`` will be used instead.
 
         Returns
         -------
-        SeriesWrapper
-            The transformed series, returned as a :class:`SeriesWrapper`.
+        pd.Series
+            The transformed series.
 
         Notes
         -----
@@ -945,11 +939,7 @@ cdef class AtomicType(ScalarType):
         if fill_value is None:
             fill_value = self.na_value
         sparse_type = pd.SparseDtype(series.dtype, fill_value)
-
-        return wrapper.SeriesWrapper(
-            series.series.astype(sparse_type),
-            # element_type is set in AdapterType.transform()
-        )
+        return series.astype(sparse_type)
 
     ###############################
     ####    UPCAST/DOWNCAST    ####
@@ -983,60 +973,6 @@ cdef class AtomicType(ScalarType):
         Candidate types will always be tested in order.
         """
         return []
-
-    def upcast(self, series: wrapper.SeriesWrapper) -> AtomicType:
-        """Upcast an :class:`AtomicType` to fit the observed range of a series.
-
-        Parameters
-        ----------
-        series : SeriesWrapper
-            The series to be fitted.  This is always provided as a
-            :class:`SeriesWrapper` object.
-
-        Returns
-        -------
-        SeriesWrapper
-            The transformed series, returned as a :class:`SeriesWrapper`.
-
-        Notes
-        -----
-        Upcasting occurs whenever :meth:`SeriesWrapper.boundscheck` is called
-        and an ``OverflowError`` is detected.  When this occurs, we search
-        :attr:`AtomicType.larger` for another type that has a wider range than
-        ``self``, which we can use to represent the series without overflowing.
-
-        This is generally relevant only for generic types and supertypes that
-        have implementations/subtypes with a wider range than the default.
-        This method allows these to be dynamically resized to match observed
-        data.
-        """
-        # TODO: move this into convert/util/numeric and remove SeriesWrapper
-        # .min/max references
-
-        # NOTE: we convert to python int to prevent inconsistent comparisons
-        if self.is_na(series.min):
-            min_val = self.max  # NOTE: we swap these to maintain upcast()
-            max_val = self.min  # behavior for upcast-only types
-        else:
-            min_val = int(series.min - bool(series.min % 1))  # round floor
-            max_val = int(series.max + bool(series.max % 1))  # round ceiling
-
-        if min_val < self.min or max_val > self.max:
-            # recursively search for a larger alternative
-            for t in self.larger:
-                try:
-                    return t.upcast(series)
-                except OverflowError:
-                    pass
-
-            # no matching type could be found
-            raise OverflowError(
-                f"could not upcast {self} to fit observed range "
-                f"({series.min}, {series.max})"
-            )
-
-        # series fits type
-        return self
 
     ##############################
     ####    MISSING VALUES    ####

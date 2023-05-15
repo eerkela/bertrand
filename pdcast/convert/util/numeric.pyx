@@ -15,8 +15,6 @@ from pdcast.util.round cimport Tolerance
 
 # TODO: tol should clip overflowing values if they are within the window.
 # -> force boundscheck to accept ``tol``.
-# -> boundscheck can be completely decoupled from SeriesWrapper.  Put it in
-# convert/base.  Same with upcast()
 
 
 ######################
@@ -78,10 +76,10 @@ cpdef tuple boundscheck(
     # check for overflow
     if min_val < dtype.min or max_val > dtype.max:
         # attempt to upcast dtype to fit series
-        try:
-            return series, dtype.upcast(series)
-        except OverflowError:
-            pass
+        for candidate in dtype.larger:
+            if min_val < candidate.min or max_val > candidate.max:
+                continue
+            return series, candidate
 
         # TODO: clip to within tolerance?
         # if min_val > dtype.min - tol and max_val < dtype.max + tol:

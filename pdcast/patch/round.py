@@ -1,9 +1,10 @@
 # pylint: disable=redefined-outer-name, unused-argument
+import pandas as pd
+
 from pdcast.convert.util import real, imag
 from pdcast.decorators.attachable import attachable, VirtualAttribute
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
-from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.util.round import round_decimal, round_div, round_float
 
 
@@ -16,10 +17,10 @@ from pdcast.util.round import round_decimal, round_div, round_float
 @extension_func
 @dispatch("series")
 def round(
-    series: SeriesWrapper,
+    series: pd.Series,
     decimals: int = 0,
     rule: str = "half_even"
-) -> SeriesWrapper:
+) -> pd.Series:
     """TODO: copy from abstract docs"""
     if rule != "half_even":
         raise ValueError(
@@ -169,10 +170,10 @@ def rule(val: str | None, state: dict) -> str:
 
 @round.overload("int")
 def _round_integer(
-    series: SeriesWrapper,
+    series: pd.Series,
     decimals: int,
     rule: str
-) -> SeriesWrapper:
+) -> pd.Series:
     """Round an integer series to the given number of decimals.
 
     NOTE: this implementation does nothing unless the input to `decimals` is
@@ -180,36 +181,36 @@ def _round_integer(
     """
     if decimals < 0:
         scale = 10**(-1 * decimals)
-        return round_div(series.series, scale, rule=rule) * scale,
-    return series.copy()
+        return round_div(series, scale, rule=rule) * scale
+    return series
 
 
 @round.overload("decimal")
 def _round_decimal(
-    series: SeriesWrapper,
+    series: pd.Series,
     decimals: int,
     rule: str,
-) -> SeriesWrapper:
+) -> pd.Series:
     """Overloaded round() implementation for decimal data."""
-    return round_decimal(series.series, decimals=decimals, rule=rule)
+    return round_decimal(series, decimals=decimals, rule=rule)
 
 
 @round.overload("float")
 def _round_float(
-    series: SeriesWrapper,
+    series: pd.Series,
     decimals: int,
     rule: str
-) -> SeriesWrapper:
+) -> pd.Series:
     """Overloaded round() implementation for float data."""
-    return round_float(series.series, decimals=decimals, rule=rule)
+    return round_float(series, decimals=decimals, rule=rule)
 
 
 @round.overload("complex")
 def _round_complex(
-    series: SeriesWrapper,
+    series: pd.Series,
     decimals: int,
     rule: str
-) -> SeriesWrapper:
+) -> pd.Series:
     """Round a complex series to the given number of decimal places using
     the specified rounding rule.
     """
