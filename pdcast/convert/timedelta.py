@@ -7,6 +7,7 @@ import pandas as pd
 
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.detect import detect_type
 from pdcast.util import time
 from pdcast.util.round import round_div, Tolerance
 
@@ -160,7 +161,7 @@ def numpy_timedelta64_to_integer(
     **unused
 ) -> SeriesWrapper:
     """Convert numpy timedelta64s into an integer data type."""
-    series_type = series.element_type
+    series_type = detect_type(series)
 
     # NOTE: using numpy m8 array is ~2x faster than looping through series
     m8_str = f"m8[{series_type.step_size}{series_type.unit}]"
@@ -201,6 +202,9 @@ def numpy_timedelta64_to_integer(
     )
 
 
+# TODO: remove assignment to .element_type
+
+
 @cast.overload("timedelta", "float")
 def timedelta_to_float(
     series: SeriesWrapper,
@@ -236,13 +240,13 @@ def timedelta_to_float(
             rounding=rounding,
             since=since
         )
-        if rounding is None:
-            series.element_type = float
+        # if rounding is None:
+        #     series.element_type = float
 
     # apply final step size
     if step_size != 1:
         series.series /= step_size
-        series.element_type = float
+        # series.element_type = float
 
     # integer/float -> float
     return cast(
@@ -373,8 +377,8 @@ def timedelta_to_timedelta(
 ) -> SeriesWrapper:
     """Convert timedelta data to a timedelta representation."""
     # trivial case
-    if dtype == series.element_type:
-        return series.rectify()
+    if dtype == detect_type(series):
+        return series.astype(dtype.dtype, copy=False)
 
     # 2-step conversion: datetime -> ns, ns -> timedelta
     series = cast(

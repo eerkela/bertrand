@@ -127,8 +127,7 @@ def integer_to_decimal(
 ) -> SeriesWrapper:
     """Convert integer data to a decimal data type."""
     result = series + dtype.type_def(0)  # ~2x faster than apply loop
-    result.element_type = dtype
-    return result
+    return result.astype(dtype.dtype, copy=False)
 
 
 @cast.overload("int", "datetime")

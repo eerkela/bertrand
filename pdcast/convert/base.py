@@ -13,6 +13,7 @@ from pdcast.decorators.base import BaseDecorator
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
 from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.detect import detect_type
 from pdcast.patch.round import round as round_generic
 from pdcast.util.error import shorten_list
 from pdcast.util.round import Tolerance
@@ -160,8 +161,10 @@ def cast(
     # first to the data, and then to the target data type, allowing conversions
     # to safely ignore adapters in all their implementations.
 
+    series_type = detect_type(series)
+
     # data
-    for before in getattr(series.element_type, "adapters", ()):
+    for before in getattr(series_type, "adapters", ()):
         series = before.inverse_transform(series)
         return cast(series, dtype, **kwargs)
 
@@ -172,8 +175,7 @@ def cast(
 
     # no match
     raise NotImplementedError(
-        f"no conversion found between {str(series.element_type)} and "
-        f"{str(dtype)}"
+        f"no conversion found between {str(series_type)} and {str(dtype)}"
     )
 
 
@@ -459,9 +461,7 @@ def snap_round(
         rounded = round_generic(series, rule="half_even")
         outside = ~series.within_tol(rounded, tol=tol)
         if tol:
-            element_type = series.element_type
             series = series.where(outside.series, rounded.series)
-            series.element_type = element_type
 
         # check for non-integer (ignore if rounding in next step)
         if rule is None and outside.any():

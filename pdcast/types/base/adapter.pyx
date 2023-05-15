@@ -337,12 +337,14 @@ cdef class AdapterType(atomic.ScalarType):
             )
         )
 
+    # TODO: remove assignment to .element_type
+
     def inverse_transform(
         self,
         series: wrapper.SeriesWrapper
     ) -> wrapper.SeriesWrapper:
         """Remove an adapter from an example series."""
-        series.element_type = self.wrapped
+        # series.element_type = self.wrapped
         return series.rectify()
 
     def transform(

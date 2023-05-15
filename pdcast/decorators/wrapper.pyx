@@ -120,50 +120,10 @@ cdef class SeriesWrapper:
         element_type: type_specifier = None,
     ):
         self.series = as_series(series)
-        self.element_type = element_type
 
     ##########################
     ####    PROPERTIES    ####
     ##########################
-
-    @property
-    def element_type(self) -> types.BaseType:
-        """The inferred type of the series.
-
-        Parameters
-        ----------
-        val : type specifier
-            A new element type to assign to the series.  Note that this does
-            not perform any conversions, it merely re-labels the
-            ``SeriesWrapper``'s ``element_type`` field.  This can be in any
-            format recognized by :func:`resolve_type`
-
-        Returns
-        -------
-        BaseType
-            The inferred type of the series.
-
-        See Also
-        --------
-        detect_type : type inference from example data.
-        """
-        if self._element_type is None:
-            self._element_type = detect.detect_type(self.series)
-        return self._element_type
-
-    @element_type.setter
-    def element_type(self, val: type_specifier) -> None:
-        if val is not None:
-            val = resolve.resolve_type(val)
-            if (
-                isinstance(val, types.CompositeType) and
-                getattr(val.index, "shape", None) != self.shape
-            ):
-                raise ValueError(
-                    f"`element_type.index` must have the same shape as the "
-                    f"series it describes"
-                )
-        self._element_type = val
 
     @property
     def series(self) -> pd.Series:
@@ -373,8 +333,9 @@ cdef class SeriesWrapper:
         This method is used to convert a ``dtype: object`` series to a standard
         numpy/pandas data type.
         """
-        if self.series.dtype != self.element_type.dtype:
-            self.series = self.series.astype(self.element_type.dtype)
+        element_type = detect.detect_type(self)
+        if self.series.dtype != element_type.dtype:
+            self.series = self.series.astype(element_type.dtype)
         return self
 
     ##########################

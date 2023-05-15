@@ -8,6 +8,7 @@ import pandas as pd
 
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.detect import detect_type
 from pdcast.util.round import round_div, Tolerance
 from pdcast.util import time
 
@@ -76,7 +77,7 @@ def pandas_timestamp_to_integer(
     """Convert pandas Timestamps into an integer data type."""
     # apply tz if naive
     series = series.rectify()
-    if tz and series.element_type.tz is None:
+    if tz and detect_type(series).tz is None:
         series.series = series.series.dt.tz_localize(tz)
 
     # convert to ns
@@ -130,12 +131,14 @@ def python_datetime_to_integer(
     **unused
 ) -> SeriesWrapper:
     """Convert python datetimes into an integer data type."""
+    series_type = detect_type(series)
+
     # apply tz if naive
-    if tz and series.element_type.tz is None:
+    if tz and series_type.tz is None:
         series = series.apply_with_errors(
             partial(time.localize_pydatetime_scalar, tz=tz),
             errors="raise",
-            element_type=series.element_type.replace(tz=tz)
+            element_type=series_type.replace(tz=tz)
         )
 
     # convert to ns
@@ -191,7 +194,7 @@ def numpy_datetime64_to_integer(
     **unused
 ) -> SeriesWrapper:
     """Convert numpy datetime64s into an integer data type."""
-    series_type = series.element_type
+    series_type = detect_type(series)
 
     # NOTE: using numpy M8 array is ~2x faster than looping through series
     M8_str = f"M8[{series_type.step_size}{series_type.unit}]"
@@ -248,6 +251,9 @@ def numpy_datetime64_to_integer(
     )
 
 
+# TODO: remove assignment to .element_type
+
+
 @cast.overload("datetime", "float")
 def datetime_to_float(
     series: SeriesWrapper,
@@ -283,13 +289,14 @@ def datetime_to_float(
             rounding=rounding,
             since=since
         )
-        if rounding is None:
-            series.element_type = float
+        # if rounding is None:
+        #     series.element_type = float
+        
 
     # apply final step size
     if step_size != 1:
         series.series /= step_size
-        series.element_type = float
+        # series.element_type = float
 
     # integer/float -> float
     return cast(
@@ -386,7 +393,7 @@ def datetime_to_datetime(
 ) -> SeriesWrapper:
     """Convert datetime data to another datetime representation."""
     # trivial case
-    if dtype == series.element_type:
+    if dtype == detect_type(series):
         return series.rectify()
 
     # 2-step conversion: datetime -> ns, ns -> datetime
@@ -422,6 +429,7 @@ def pandas_timestamp_to_pandas_timestamp(
     **unused
 ) -> SeriesWrapper:
     """Fastpath for same-class pandas timestamp conversions."""
+    series_type = detect_type(series)
     series = series.rectify()
 
     # reconcile time zones
@@ -429,11 +437,11 @@ def pandas_timestamp_to_pandas_timestamp(
         dtype = dtype.replace(tz=tz)
 
     # trivial case: time zones are identical
-    if dtype.tz == series.element_type.tz:
+    if dtype.tz == series_type.tz:
         return series.copy()
 
     # localize/convert tim ezones
-    if not series.element_type.tz:
+    if not series_type.tz:
         result = series.series.dt.tz_localize(dtype.tz)
     else:
         result = series.series.dt.tz_convert(dtype.tz)
@@ -456,7 +464,7 @@ def python_datetime_to_python_datetime(
         dtype = dtype.replace(tz=tz)
 
     # trivial case: time zones are identical
-    if dtype.tz == series.element_type.tz:
+    if dtype.tz == detect_type(series).tz:
         return series.copy()
 
     # localize/convert time zones

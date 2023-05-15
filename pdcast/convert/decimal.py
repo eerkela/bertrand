@@ -5,6 +5,7 @@ import numpy as np
 
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.detect import detect_type
 from pdcast.util.error import shorten_list
 from pdcast.util.round import Tolerance
 from pdcast.util import time
@@ -102,9 +103,10 @@ def decimal_to_float(
 
     # backtrack to check for precision loss
     if errors != "coerce":  # coercion ignores precision loss
+        series_type = detect_type(series)
         bad = ~within_tol(
             series,
-            cast(result, dtype=series.element_type, errors="raise"),
+            cast(result, dtype=series_type, errors="raise"),
             tol=tol.real
         )
         if bad.any():
@@ -175,7 +177,7 @@ def decimal_to_datetime(
     # account for non-utc epoch
     if since:
         series += since.offset
-        series.element_type = int
+        # TODO: series might be dtype: object, which will kill performance
 
     # check for overflow and upcast if applicable
     series, dtype = boundscheck(series, dtype, errors=errors)

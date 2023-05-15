@@ -6,6 +6,7 @@ from typing import Callable
 
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.detect import detect_type
 
 from .base import cast, generic_to_object, safe_apply
 
@@ -34,10 +35,11 @@ def object_to_boolean(
     )
 
     # check result is boolean
-    if not series.element_type.is_subtype("bool"):
+    series_type = detect_type(series)
+    if not series_type.is_subtype("bool"):
         raise TypeError(
             f"`call` must produce boolean output, not "
-            f"{str(series.element_type)}"
+            f"{str(series_type)}"
         )
 
     # convert int[python] -> final repr
@@ -68,10 +70,11 @@ def object_to_integer(
     )
 
     # check result is integer
-    if not series.element_type.is_subtype("int"):
+    series_type = detect_type(series)
+    if not series_type.is_subtype("int"):
         raise TypeError(
             f"`call` must produce integer output, not "
-            f"{str(series.element_type)}"
+            f"{str(series_type)}"
         )
 
     # apply final conversion
@@ -102,10 +105,11 @@ def object_to_float(
     )
 
     # check result is float
-    if not series.element_type.is_subtype("float"):
+    series_type = detect_type(series)
+    if not series_type.is_subtype("float"):
         raise TypeError(
             f"`call` must produce float output, not "
-            f"{str(series.element_type)}"
+            f"{str(series_type)}"
         )
 
     # convert float[python] -> final repr
@@ -136,10 +140,11 @@ def object_to_complex(
     )
 
     # check result is complex
-    if not series.element_type.is_subtype("complex"):
+    series_type = detect_type(series)
+    if not series_type.is_subtype("complex"):
         raise TypeError(
             f"`call` must produce complex output, not "
-            f"{str(series.element_type)}"
+            f"{str(series_type)}"
         )
 
     # convert complex[python] -> final repr
@@ -231,9 +236,8 @@ def object_to_object(
     **unused
 ) -> SeriesWrapper:
     """Convert arbitrary data to an object data type."""
-    # trivial case
-    if dtype == series.element_type:
-        return series.rectify()
+    if dtype == detect_type(series):
+        return series.astype(dtype.dtype, copy=False)
 
     # fall back to generic implementation
     return generic_to_object(series, dtype=dtype, **unused)

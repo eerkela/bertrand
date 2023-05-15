@@ -63,10 +63,6 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
     if isinstance(data, types.BaseType):
         return data
 
-    # trivial case: example is a SeriesWrapper
-    if isinstance(data, wrapper.SeriesWrapper):
-        return data.element_type
-
     # DataFrame (columnwise) case
     if isinstance(data, pd.DataFrame):
         columnwise = {}

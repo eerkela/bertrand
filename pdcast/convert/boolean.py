@@ -14,8 +14,7 @@ def boolean_to_decimal(
 ) -> SeriesWrapper:
     """Convert boolean data to a decimal data type."""
     series = series + dtype.type_def(0)  # ~2x faster than loop
-    series.element_type = dtype
-    return series
+    return series.astype(dtype.dtype)
 
 
 @cast.overload("bool", "datetime")

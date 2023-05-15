@@ -202,6 +202,8 @@ class SparseType(AdapterType):
             element_type=self.wrapped
         )
 
+    # TODO: remove assignment to .element_type
+
     def transform(
         self,
         series: wrapper.SeriesWrapper
@@ -212,5 +214,5 @@ class SparseType(AdapterType):
             series,
             fill_value=self.fill_value
         )
-        series.element_type = self
+        # series.element_type = self
         return series

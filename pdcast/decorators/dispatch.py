@@ -924,6 +924,8 @@ class CompositeDispatch(DispatchStrategy):
         """
         # TODO: signed/unsigned conflict
 
+        # TODO: remove SeriesWrapper references
+
         # transform
         if all(isinstance(res, SeriesWrapper) for _, res in result):
             # NOTE: pd.concat does not account for mixed int64/uint64 output
@@ -935,7 +937,7 @@ class CompositeDispatch(DispatchStrategy):
 
             # determine appropriate NA value
             final_type = types.CompositeType(
-                res.element_type for _, res in result
+                detect.detect_type(res) for _, res in result
             )
             if len(final_type) == 1:
                 na_val = final_type.pop().na_value

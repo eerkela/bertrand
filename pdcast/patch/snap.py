@@ -1,5 +1,5 @@
 # pylint: disable=redefined-outer-name, unused-argument
-from pdcast.convert.util import real, imag
+from pdcast.convert.util import real, imag, within_tol
 from pdcast.decorators.attachable import attachable
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
@@ -14,6 +14,7 @@ from .round import round
 ####    PUBLIC    ####
 ######################
 
+
 @attachable
 @extension_func
 @dispatch("series")
@@ -24,18 +25,13 @@ def snap(
     """Snap each element of the series to the nearest integer if it is
     within the specified tolerance.
     """
-    # trivial case, tol=0
     if not tol:
         return series.copy()
 
-    # use rounded result if within tol, else use original
     rounded = round(series, rule="half_even")
-    return SeriesWrapper(
-        series.series.where((
-            (series.series - rounded).abs() > tol.real),
-            rounded.series
-        ),
-        element_type=series.element_type
+    return series.series.where(
+        ~within_tol(series.series, rounded, tol=tol.real),
+        rounded.series
     )
 
 

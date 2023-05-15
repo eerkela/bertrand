@@ -162,6 +162,8 @@ class CategoricalType(AdapterType):
     ####    SERIES METHODS    ####
     ##############################
 
+    # TODO: remove assignment to .element_type
+
     def transform(
         self,
         series: wrapper.SeriesWrapper
@@ -170,5 +172,5 @@ class CategoricalType(AdapterType):
         # discover levels automatically
         series = self.atomic_type.make_categorical(series, levels=self.levels)
         self.levels = series.series.dtype.categories.tolist()
-        series.element_type = self
+        # series.element_type = self
         return series

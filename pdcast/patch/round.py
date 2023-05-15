@@ -27,15 +27,8 @@ def round(
             f"rule='half_even', not {repr(rule)}"
         )
 
-    # bypass attachment
-    endpoint = series.series.round
-    if isinstance(endpoint, VirtualAttribute):
-        endpoint = endpoint.original
-
-    return SeriesWrapper(
-        endpoint(decimals=decimals),
-        element_type=series.element_type,
-    )
+    original = getattr(series.round, "original", series.round)
+    return original(decimals=decimals)
 
 
 #########################
@@ -187,10 +180,7 @@ def _round_integer(
     """
     if decimals < 0:
         scale = 10**(-1 * decimals)
-        return SeriesWrapper(
-            round_div(series.series, scale, rule=rule) * scale,
-            element_type=series.element_type
-        )
+        return round_div(series.series, scale, rule=rule) * scale,
     return series.copy()
 
 
@@ -201,10 +191,7 @@ def _round_decimal(
     rule: str,
 ) -> SeriesWrapper:
     """Overloaded round() implementation for decimal data."""
-    return SeriesWrapper(
-        round_decimal(series.series, decimals=decimals, rule=rule),
-        element_type=series.element_type
-    )
+    return round_decimal(series.series, decimals=decimals, rule=rule)
 
 
 @round.overload("float")
@@ -214,10 +201,7 @@ def _round_float(
     rule: str
 ) -> SeriesWrapper:
     """Overloaded round() implementation for float data."""
-    return SeriesWrapper(
-        round_float(series.series, decimals=decimals, rule=rule),
-        element_type=series.element_type
-    )
+    return round_float(series.series, decimals=decimals, rule=rule)
 
 
 @round.overload("complex")

@@ -10,6 +10,7 @@ import pandas as pd
 
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
+from pdcast.detect import detect_type
 from pdcast.util.round import Tolerance
 from pdcast.util.string import boolean_match
 from pdcast.util import time
@@ -91,6 +92,9 @@ def string_to_float(
     return cast(series, dtype, tol=tol, errors=errors, **unused)
 
 
+# TODO: remove assignment to .element_type
+
+
 @cast.overload("string", "complex")
 def string_to_complex(
     series: SeriesWrapper,
@@ -106,14 +110,15 @@ def string_to_complex(
     # precision loss/overflow/downcast checks for both real + imag.
 
     # (1) separate real, imaginary components via regex
+    series_type = detect_type(series)
     components = series.str.extract(complex_pattern)
     real = SeriesWrapper(
         components["real"],
-        element_type=series.element_type
+        element_type=series_type
     )
     imag = SeriesWrapper(
         components["imag"],
-        element_type=series.element_type
+        element_type=series_type
     )
 
     # (2) convert real, imag to float, applying checks independently
@@ -134,7 +139,7 @@ def string_to_complex(
 
     # (3) combine floats into complex result
     series = real + imag * 1j
-    series.element_type = dtype
+    # series.element_type = dtype
     return generic_to_complex(
         series,
         dtype,

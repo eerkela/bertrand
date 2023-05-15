@@ -2,7 +2,11 @@
 
 Motivation
 ==========
-``pdcast`` is meant to be a flexible framework for resolving certain
+``pdcast`` is meant to be a flexible framework for writing extensions to
+pandas.
+
+
+resolving certain
 idiosyncrasies in pandas functionality, particularly as it relates to data
 cleaning, preprocessing, and `type safety <https://en.wikipedia.org/wiki/Type_safety>`_.
 It allows users to easily detect and manipulate data in virtually any
