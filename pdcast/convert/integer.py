@@ -11,6 +11,7 @@ from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.util.round import round_div, Tolerance
 from pdcast.util.string import int_to_base
 from pdcast.util import time
+from pdcast.util.vector import apply_with_errors
 
 from .base import (
     cast, generic_to_boolean, generic_to_integer, generic_to_float,
@@ -233,7 +234,8 @@ def integer_to_python_datetime(
 
     # convert elementwise
     call = partial(time.ns_to_pydatetime, tz=dtype.tz)
-    return series.apply_with_errors(call, element_type=dtype)
+    result = apply_with_errors(series, call, errors=errors)
+    return result.astype(dtype.dtype)
 
 
 @cast.overload("int", "datetime[numpy]")
@@ -427,11 +429,9 @@ def integer_to_string(
             call = lambda x: f"{int_to_base(x, base=base):{format}}"
         else:
             call = partial(int_to_base, base=base)
-        return series.apply_with_errors(
-            call,
-            errors=errors,
-            element_type=dtype
-        )
+
+        result = apply_with_errors(series, call, errors=errors)
+        return result.astype(dtype.dtype)
 
     return generic_to_string(
         series=series,

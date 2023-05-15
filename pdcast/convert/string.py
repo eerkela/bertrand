@@ -11,9 +11,11 @@ import pandas as pd
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
+from pdcast.resolve import resolve_type
 from pdcast.util.round import Tolerance
 from pdcast.util.string import boolean_match
 from pdcast.util import time
+from pdcast.util.vector import apply_with_errors
 
 from .base import (
     cast, generic_to_boolean, generic_to_complex
@@ -41,16 +43,14 @@ def string_to_boolean(
         fill = -1  # raise
 
     # apply lookup function with specified errors
-    series = series.apply_with_errors(
-        partial(
-            boolean_match,
-            lookup=lookup,
-            ignore_case=ignore_case,
-            fill=fill
-        ),
-        errors=errors,
-        element_type="bool"
+    call = partial(
+        boolean_match,
+        lookup=lookup,
+        ignore_case=ignore_case,
+        fill=fill
     )
+    series = apply_with_errors(series, call, errors=errors)
+
     return generic_to_boolean(series, dtype, errors=errors)
 
 
@@ -64,11 +64,8 @@ def string_to_integer(
 ) -> SeriesWrapper:
     """Convert string data to an integer data type with the given base."""
     # 2 step conversion: string -> int[python], int[python] -> int
-    series = series.apply_with_errors(
-        partial(int, base=base),
-        errors=errors,
-        element_type=int
-    )
+    series = apply_with_errors(series, partial(int, base=base), errors=errors)
+    series = series.astype(resolve_type(int).dtype)
     return cast(
         series,
         dtype,
@@ -281,21 +278,19 @@ def string_to_python_datetime(
     )
 
     # apply elementwise
-    return series.apply_with_errors(
-        partial(
-            time.string_to_pydatetime,
-            format=format,
-            parser_info=parser_info,
-            tz=dtype.tz,
-            errors=errors
-        ),
-        errors=errors,
-        element_type=dtype
+    call = partial(
+        time.string_to_pydatetime,
+        format=format,
+        parser_info=parser_info,
+        tz=dtype.tz,
+        errors=errors
     )
+    series = apply_with_errors(series, call, errors=errors)
+    return series.astype(dtype.dtype)
 
 
 @cast.overload("string", "datetime[numpy]")
-def from_string(
+def string_to_numpy_datetime64(
     series: SeriesWrapper,
     dtype: types.ScalarType,
     format: str,
@@ -314,11 +309,8 @@ def from_string(
         )
 
     # 2-step conversion: string -> ns, ns -> datetime64
-    series = series.apply_with_errors(
-        time.iso_8601_to_ns,
-        errors=errors,
-        element_type=int
-    )
+    series = apply_with_errors(series, time.iso_8601_to_ns, errors=errors)
+    series = series.astype(resolve_type(int).dtype)
     return cast(
         series,
         dtype,
@@ -342,11 +334,9 @@ def string_to_timedelta(
 ) -> SeriesWrapper:
     """Convert string data into a timedelta representation."""
     # 2-step conversion: str -> int, int -> timedelta
-    series = series.apply_with_errors(
-        partial(time.timedelta_string_to_ns, as_hours=as_hours, since=since),
-        errors=errors,
-        element_type=int
-    )
+    call = partial(time.timedelta_string_to_ns, as_hours=as_hours, since=since)
+    series = apply_with_errors(series, call, errors=errors)
+    series = series.astype(resolve_type(int).dtype)
     return cast(
         series,
         dtype,

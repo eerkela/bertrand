@@ -11,7 +11,7 @@ import decimal
 from typing import Any, Callable, Iterable
 
 from pdcast import types
-from pdcast.decorators.wrapper import as_series, SeriesWrapper
+from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
 from pdcast.patch.round import rule as rounding_rule
 from pdcast.patch.snap import tol as snap_tol
@@ -19,6 +19,7 @@ from pdcast.resolve import resolve_type
 from pdcast.util.round import Tolerance
 from pdcast.util import time
 from pdcast.util.type_hints import datetime_like, type_specifier
+from pdcast.util.vector import as_series
 
 from .base import cast
 

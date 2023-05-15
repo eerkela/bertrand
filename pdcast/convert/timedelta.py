@@ -10,6 +10,7 @@ from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
 from pdcast.util import time
 from pdcast.util.round import round_div, Tolerance
+from pdcast.util.vector import apply_with_errors
 
 from .base import cast, generic_to_integer
 from .util import boundscheck
@@ -114,10 +115,7 @@ def python_timedelta_to_integer(
 ) -> SeriesWrapper:
     """Convert python timedeltas to an integer data type."""
     # get integer ns
-    series = series.apply_with_errors(
-        time.pytimedelta_to_ns,
-        element_type=int
-    )
+    series = apply_with_errors(series, time.pytimedelta_to_ns, errors=errors)
 
     # convert ns to final unit, step_size
     if unit != "ns":

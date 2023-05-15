@@ -790,20 +790,19 @@ class HomogenousDispatch(DispatchStrategy):
         detected: dict[str, types.ScalarType],
         names: dict[str, str],
         hasnans: bool,
-        original_index: pd.Index | None
+        original_index: pd.Index
     ):
         self.index = frame.index
         self.original_index = original_index
         self.hasnans = hasnans
 
-        # TODO: rectify series and skip SeriesWrapper
+        # TODO: no SeriesWrapper
 
         # split frame into normalized columns
         for col, series in frame.items():
-            dispatched[col] = SeriesWrapper(
-                series.rename(names.get(col, None)),
-                element_type=detected[col]
-            )
+            series = series.rename(names.get(col, None))
+            series = series.astype(detected[col].dtype, copy=False)
+            dispatched[col] = SeriesWrapper(series)
 
         # construct DispatchDirect wrapper
         self.direct = DirectDispatch(
@@ -843,11 +842,8 @@ class HomogenousDispatch(DispatchStrategy):
                     na_value=nullable.na_value
                 )
 
-            # TODO: is original_index ever None?  seems to conflict w/ above.
-
-            # replace original index (if given)
-            # if self.original_index is not None:
-            #     result.index = self.original_index
+            # replace original index
+            # result.index = self.original_index
 
         # aggregate
         return result
@@ -911,7 +907,7 @@ class CompositeDispatch(DispatchStrategy):
                 detected=detected,
                 names=self.names,
                 hasnans=self.hasnans,
-                original_index=None
+                original_index=self.original_index
             )
             result = (detected, strategy.execute(bound))
             results.append(result)
@@ -1108,7 +1104,11 @@ def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
 
 
 
-# TODO: update README for overloading __add__.  Must account for SeriesWrapper.
+
+
+
+# TODO: revisit after eliminating SeriesWrapper
+
 
 
 # from .attachable import attachable

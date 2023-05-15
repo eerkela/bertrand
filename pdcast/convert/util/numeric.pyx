@@ -1,5 +1,4 @@
-"""This module contains helper functions for numeric series inputs.
-"""
+"""This module contains helper functions for numeric conversions."""
 import pandas as pd
 cimport numpy as np
 import numpy as np
@@ -8,6 +7,10 @@ from pdcast cimport types
 from pdcast.detect import detect_type
 from pdcast.util.error import shorten_list
 from pdcast.util.round cimport Tolerance
+
+
+# TODO: move this entire file into pdcast.util.numeric.pyx
+# maybe separate downcast/upcast into pdcast.util.downcast.pyx
 
 
 # TODO: tol should clip overflowing values if they are within the window.

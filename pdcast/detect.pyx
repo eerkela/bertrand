@@ -13,11 +13,11 @@ import numpy as np
 import pandas as pd
 
 from pdcast.decorators import attachable
-from pdcast.decorators cimport wrapper
 cimport pdcast.resolve as resolve
 import pdcast.resolve as resolve
 cimport pdcast.types as types
 import pdcast.types as types
+from pdcast.util.vector cimport as_array
 
 
 ######################
@@ -97,10 +97,10 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
 
         # no dtype or dtype=object, loop through and interpret
         if result is None:
-            data = wrapper.as_series(data)
+            data = as_array(data)
             if skip_na:
-                data = data.dropna()
-            result = detect_vector_type(data.to_numpy(dtype=object))
+                data = data[~pd.isna(data)]
+            result = detect_vector_type(data.astype(object, copy=False))
 
         # parse resulting CompositeType
         if not result:  # empty set

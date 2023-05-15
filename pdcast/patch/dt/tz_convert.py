@@ -9,6 +9,7 @@ from pdcast.decorators.extension import extension_func
 from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
 from pdcast.util import time
+from pdcast.util.vector import apply_with_errors
 
 
 @attachable
@@ -63,8 +64,7 @@ def localize_python_datetime(
             "Cannot convert tz-naive Timestamp, use tz_localize to localize"
         )
 
-    return series.apply_with_errors(
-        partial(time.localize_pydatetime_scalar, tz=tz),
-        errors="raise",
-        element_type=detect_type(series).replace(tz=tz)
-    )
+    series_type = detect_type(series)
+    call = partial(time.localize_pydatetime_scalar, tz=tz)
+    series = apply_with_errors(series, call, errors="raise")
+    return series.astype(series_type.replace(tz=tz).dtype)

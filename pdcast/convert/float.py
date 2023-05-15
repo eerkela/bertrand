@@ -5,6 +5,7 @@ data.
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.util.round import Tolerance
+from pdcast.util.vector import apply_with_errors
 
 from .base import (
     cast, generic_to_boolean, generic_to_integer, snap_round
@@ -79,11 +80,8 @@ try:  # float80 might not be defined on all systems
             numerator, denominator = element.as_integer_ratio()
             return dtype.type_def(numerator) / denominator
 
-        return series.apply_with_errors(
-            call=call,
-            errors=errors,
-            element_type=dtype
-        )
+        result = apply_with_errors(series, call, errors=errors)
+        return result.astype(dtype.dtype)
 
 except ValueError:
     pass

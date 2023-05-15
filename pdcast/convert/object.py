@@ -5,8 +5,10 @@ raw Python objects.
 from typing import Callable
 
 from pdcast import types
+from pdcast.resolve import resolve_type
 from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
+from pdcast.util.vector import apply_with_errors
 
 from .base import cast, generic_to_object, safe_apply
 
@@ -21,28 +23,23 @@ def object_to_boolean(
 ) -> SeriesWrapper:
     """Convert unstructured objects to a boolean data type."""
     # if no callable is given, hook into object's __bool__ dunder
-    if call is None:
+    use_dunder = call is None or call is bool
+    if use_dunder:
         call = bool
-        element_type = bool
-    else:
-        element_type = None  # don't know what output of `call` will be
 
     # apply callable
-    series = series.apply_with_errors(
-        call,
-        errors=errors,
-        element_type=element_type
-    )
+    series = apply_with_errors(series, call, errors=errors)
+    if use_dunder:
+        series = series.astype(resolve_type(bool).dtype)
+    else:
+        output_type = detect_type(series)
+        if not output_type.is_subtype("bool"):
+            raise TypeError(
+                f"`call` must produce boolean output, not {str(output_type)}"
+            )
+        series = series.astype(output_type.dtype)
 
-    # check result is boolean
-    series_type = detect_type(series)
-    if not series_type.is_subtype("bool"):
-        raise TypeError(
-            f"`call` must produce boolean output, not "
-            f"{str(series_type)}"
-        )
-
-    # convert int[python] -> final repr
+    # convert bool[python] -> final repr
     return cast(series, dtype, call=call, errors=errors, **unused)
 
 
@@ -56,28 +53,23 @@ def object_to_integer(
 ) -> SeriesWrapper:
     """Convert unstructured objects to an integer data type."""
     # if no callable is given, hook into object's __int__ dunder
-    if call is None:
+    use_dunder = call is None or call is int
+    if use_dunder:
         call = int
-        element_type = int
-    else:
-        element_type = None
 
     # apply callable
-    series = series.apply_with_errors(
-        call,
-        errors=errors,
-        element_type=element_type
-    )
+    series = apply_with_errors(series, call, errors=errors)
+    if use_dunder:
+        series = series.astype(resolve_type(int).dtype)
+    else:
+        output_type = detect_type(series)
+        if not output_type.is_subtype("int"):
+            raise TypeError(
+                f"`call` must produce integer output, not {str(output_type)}"
+            )
+        series = series.astype(output_type.dtype)
 
-    # check result is integer
-    series_type = detect_type(series)
-    if not series_type.is_subtype("int"):
-        raise TypeError(
-            f"`call` must produce integer output, not "
-            f"{str(series_type)}"
-        )
-
-    # apply final conversion
+    # convert int[python] -> final repr
     return cast(series, dtype, call=call, errors=errors, **unused)
 
 
@@ -91,26 +83,21 @@ def object_to_float(
 ) -> SeriesWrapper:
     """Convert unstructured objects to a float data type."""
     # if no callable is given, hook into object's __float__ dunder
-    if call is None:
+    use_dunder = call is None or call is float
+    if use_dunder:
         call = float
-        element_type = float
-    else:
-        element_type = None
 
     # apply callable
-    series = series.apply_with_errors(
-        call,
-        errors=errors,
-        element_type=element_type
-    )
-
-    # check result is float
-    series_type = detect_type(series)
-    if not series_type.is_subtype("float"):
-        raise TypeError(
-            f"`call` must produce float output, not "
-            f"{str(series_type)}"
-        )
+    series = apply_with_errors(series, call, errors=errors)
+    if use_dunder:
+        series = series.astype(resolve_type(float).dtype)
+    else:
+        output_type = detect_type(series)
+        if not output_type.is_subtype("float"):
+            raise TypeError(
+                f"`call` must produce float output, not {str(output_type)}"
+            )
+        series = series.astype(output_type.dtype)
 
     # convert float[python] -> final repr
     return cast(series, dtype, call=call, errors=errors, **unused)
@@ -126,26 +113,21 @@ def object_to_complex(
 ) -> SeriesWrapper:
     """Convert unstructured objects to a complex data type."""
     # if no callable is given, hook into object's __complex__ dunder
-    if call is None:
+    use_dunder = call is None or call is complex
+    if use_dunder:
         call = complex
-        element_type = complex
-    else:
-        element_type = None
 
     # apply callable
-    series = series.apply_with_errors(
-        call,
-        errors=errors,
-        element_type=element_type
-    )
-
-    # check result is complex
-    series_type = detect_type(series)
-    if not series_type.is_subtype("complex"):
-        raise TypeError(
-            f"`call` must produce complex output, not "
-            f"{str(series_type)}"
-        )
+    series = apply_with_errors(series, call, errors=errors)
+    if use_dunder:
+        series = series.astype(resolve_type(complex).dtype)
+    else:
+        output_type = detect_type(series)
+        if not output_type.is_subtype("complex"):
+            raise TypeError(
+                f"`call` must produce complex output, not {str(output_type)}"
+            )
+        series = series.astype(output_type.dtype)
 
     # convert complex[python] -> final repr
     return cast(series, dtype, call=call, errors=errors, **unused)

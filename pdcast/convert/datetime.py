@@ -9,8 +9,9 @@ import pandas as pd
 from pdcast import types
 from pdcast.decorators.wrapper import SeriesWrapper
 from pdcast.detect import detect_type
-from pdcast.util.round import round_div, Tolerance
 from pdcast.util import time
+from pdcast.util.round import round_div, Tolerance
+from pdcast.util.vector import apply_with_errors
 
 from .base import cast, generic_to_integer
 from .util import boundscheck
@@ -136,18 +137,14 @@ def python_datetime_to_integer(
 
     # apply tz if naive
     if tz and series_type.tz is None:
-        series = series.apply_with_errors(
+        series = apply_with_errors(
+            series,
             partial(time.localize_pydatetime_scalar, tz=tz),
-            errors="raise",
-            element_type=series_type.replace(tz=tz)
+            errors="raise"
         )
 
     # convert to ns
-    series = series.apply_with_errors(
-        time.pydatetime_to_ns,
-        errors="raise",
-        element_type=int
-    )
+    series = apply_with_errors(series, time.pydatetime_to_ns, errors="raise")
 
     # apply epoch
     if since:
@@ -470,11 +467,9 @@ def python_datetime_to_python_datetime(
         return series.copy()
 
     # localize/convert time zones
-    return series.apply_with_errors(
-        partial(time.localize_pydatetime_scalar, tz=tz),
-        errors="raise",
-        element_type=dtype
-    )
+    call = partial(time.localize_pydatetime_scalar, tz=tz)
+    result = series.apply(call, convert_dtype=False)
+    return result.astype(dtype.dtype)
 
 
 @cast.overload("datetime", "timedelta")

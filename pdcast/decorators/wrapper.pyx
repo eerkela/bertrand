@@ -22,6 +22,7 @@ import pdcast.types.array.abstract as abstract
 
 from pdcast.util.error import shorten_list
 from pdcast.util.type_hints import array_like, numeric, type_specifier
+from pdcast.util.vector cimport as_series
 
 
 # TODO: drop astype() from SeriesWrapper and put it in
@@ -213,14 +214,6 @@ cdef class SeriesWrapper:
         return SeriesWrapper(
             result,
             element_type=dtype
-        )
-
-    def copy(self, *args, **kwargs) -> SeriesWrapper:
-        """Duplicate a SeriesWrapper."""
-        return SeriesWrapper(
-            self.series.copy(*args, **kwargs),
-            hasnans=self._hasnans,
-            element_type=self._element_type
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -588,60 +581,3 @@ cdef class SeriesWrapper:
 
     def __str__(self) -> str:
         return str(self.series)
-
-
-######################
-####    PRIVATE   ####
-######################
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef tuple _apply_with_errors(np.ndarray[object] arr, object call, str errors):
-    """Apply a function over an object array using the given error-handling
-    rule.
-    """
-    cdef unsigned int arr_length = arr.shape[0]
-    cdef unsigned int i
-    cdef np.ndarray[object] result = np.full(arr_length, None, dtype="O")
-    cdef bint has_errors = False
-    cdef np.ndarray[np.uint8_t, cast=True] index
-
-    # index is only necessary if errors="coerce"
-    if errors == "coerce":
-        index = np.full(arr_length, False)
-    else:
-        index = None
-
-    # apply `call` at every index of array and record errors
-    for i in range(arr_length):
-        try:
-            result[i] = call(arr[i])
-        except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
-            raise  # never coerce on these error types
-        except Exception as err:
-            if errors == "coerce":
-                has_errors = True
-                index[i] = True
-                continue
-            raise err
-
-    return result, has_errors, index
-
-
-cpdef object as_series(object data):
-    """Convert arbitrary data into a corresponding pd.Series object."""
-    # pandas Series
-    if isinstance(data, pd.Series):
-        return data
-
-    # SeriesWrapper
-    if isinstance(data, SeriesWrapper):
-        return data.series
-
-    # numpy array
-    if isinstance(data, np.ndarray):
-        return pd.Series(np.atleast_1d(data))
-
-    # scalar or non-array iterable
-    return pd.Series(data, dtype="O")

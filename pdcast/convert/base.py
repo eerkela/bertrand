@@ -18,6 +18,7 @@ from pdcast.patch.round import round as round_generic
 from pdcast.util.error import shorten_list
 from pdcast.util.round import Tolerance
 from pdcast.util.type_hints import type_specifier
+from pdcast.util.vector import apply_with_errors
 
 from . import arguments
 from .util import downcast_integer, downcast_float, downcast_complex
@@ -378,11 +379,9 @@ def generic_to_string(
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
     if format:
-        series = series.apply_with_errors(
-            lambda x: f"{x:{format}}",
-            errors=errors,
-            element_type=str
-        )
+        call = lambda x: f"{x:{format}}"
+        series = apply_with_errors(series, call, errors=errors)
+
     return series.astype(dtype, errors=errors)
 
 
@@ -432,11 +431,8 @@ def safe_apply(
         return result
 
     # apply `safe_call` over series and pass to delegated conversion
-    return series.apply_with_errors(
-        call=safe_call,
-        errors=errors,
-        element_type=dtype
-    )
+    series = apply_with_errors(series, safe_call, errors=errors)
+    return series.astype(dtype.dtype)
 
 
 def snap_round(
