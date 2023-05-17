@@ -31,6 +31,12 @@ from .base import BaseDecorator, no_default
 
 # TODO: result is None -> fill with NA?
 
+# TODO: inconsistent use of series.update vs slice assignment.  Probably higher
+# performance to use slicing and then astype() to make_nullable().dtype in
+# final step of replace_na(), rather than astyping() twice.
+
+# TODO: scattered TODOs in strategies
+
 
 ######################
 ####    PUBLIC    ####
@@ -40,23 +46,29 @@ from .base import BaseDecorator, no_default
 def dispatch(
     *args,
     drop_na: bool = True,
-    cache_size: int = 64
+    cache_size: int = 64,
+    convert_mixed: bool = False
 ) -> Callable:
     """A decorator that allows a Python function to dispatch to multiple
-    implementations based on the type of its arguments.
+    implementations based on the type of one or more of its arguments.
 
     Parameters
     ----------
     *args : str
         Argument names to dispatch on.  Each of these must be reflected in the
-        signature of the decorated function, and will be required for each of
+        signature of the decorated function, and will be required in each of
         its overloaded implementations.
-    drop_na : bool
-        Indicates whether to drop missing values from input vectors.  If set to
-        ``True``, then each vector will be stripped of missing values before
-        being passed to the dispatched implementation.
-    cache_size : int
+    drop_na : bool, default True
+        Indicates whether to drop missing values from input vectors before
+        forwarding to a dispatched implementation.
+    cache_size : int, default 64
         The maximum number of signatures to store in cache.
+    convert_mixed_output : bool, default False
+        Controls whether to attempt standardization of mixed-type results
+        during composite dispatch.  This is only applied if the output type for
+        each group belongs to the same family (i.e. multiple variations of int,
+        float, datetime, etc.).  This argument is primarily used to allow
+        dynamic upcasting for each group during data conversions.
 
     Returns
     -------
@@ -84,7 +96,8 @@ def dispatch(
             func,
             args=args,
             drop_na=drop_na,
-            cache_size=cache_size
+            cache_size=cache_size,
+            convert_mixed=convert_mixed
         )
 
     return decorator
@@ -264,24 +277,24 @@ class DispatchFunc(BaseDecorator):
         args: list[str],
         drop_na: bool,
         cache_size: int,
+        convert_mixed: bool
     ):
         super().__init__(func=func)
-        self._drop_na = bool(drop_na)
-        self._flags = threading.local()
+
         if not args:
             raise TypeError(
                 f"'{func.__qualname__}' must dispatch on at least one argument"
             )
-
-        # validate args
         self._signature = inspect.signature(func)
         bad = [a for a in args if a not in self._signature.parameters]
         if bad:
             raise TypeError(f"argument not recognized: {bad}")
-        self._args = args
 
-        # init dispatch table
+        self._args = args
+        self._drop_na = drop_na
         self._dispatched = DispatchDict(cache_size=cache_size)
+        self._convert_mixed = convert_mixed
+        self._flags = threading.local()
 
     @property
     def dispatched(self) -> MappingProxyType:
@@ -486,7 +499,8 @@ class DispatchFunc(BaseDecorator):
                 detected=detected,
                 names=names,
                 hasnans=hasnans,
-                original_index=original_index
+                original_index=original_index,
+                convert_mixed=self._convert_mixed
             )
 
         # homogenous case
@@ -645,12 +659,8 @@ class HomogenousDispatch(DispatchStrategy):
         """Infer mode of operation (filter/transform/aggregate) from return
         type and adjust result accordingly.
         """
-        # TODO: transform needs to account for dataframe output
-
         # transform
         if isinstance(result, (pd.Series, pd.DataFrame)):
-            hasnans = self.hasnans
-
             # warn if final index is not a subset of original
             if not result.index.difference(self.index).empty:
                 warn_msg = (
@@ -660,13 +670,16 @@ class HomogenousDispatch(DispatchStrategy):
                     f"DataFrame"
                 )
                 warnings.warn(warn_msg, UserWarning, stacklevel=4)
-                hasnans = True
+                self.hasnans = True
+
+            # TODO: this block doesn't account for dataframe output
 
             # replace missing values, aligning on index
-            if hasnans or result.shape[0] < self.index.shape[0]:
+            if self.hasnans or result.shape[0] < self.index.shape[0]:
                 nullable = detect.detect_type(result).make_nullable()
                 result = replace_na(
-                    result.astype(nullable.dtype, copy=False),
+                    result,
+                    dtype=nullable.dtype,
                     index=pd.RangeIndex(0, self.original_index.shape[0]),
                     na_value=nullable.na_value
                 )
@@ -689,7 +702,8 @@ class CompositeDispatch(DispatchStrategy):
         detected: dict[str, types.ScalarType | types.CompositeType],
         names: dict[str, str],
         hasnans: bool,
-        original_index: pd.Index
+        original_index: pd.Index,
+        convert_mixed: bool
     ):
         self.func = func
         self.dispatched = dispatched
@@ -697,6 +711,7 @@ class CompositeDispatch(DispatchStrategy):
         self.names = names
         self.hasnans = hasnans
         self.original_index = original_index
+        self.convert_mixed = convert_mixed
 
         # generate type frame
         type_frame = pd.DataFrame({
@@ -775,27 +790,56 @@ class CompositeDispatch(DispatchStrategy):
             ignore_index=True
         )
 
+    def _check_indices(self, group_indices: list) -> int:
+        """Validate and merge a collection of transformed Series/DataFrame
+        indices.
+        """
+        # TODO: reference offending signature?
+        # TODO: check stack level
+
+        # check that indices do not overlap with each other
+        iterator = iter(group_indices)
+        final_index = next(iterator)
+        final_size = final_index.shape[0]
+        for index in iterator:
+            final_index = final_index.union(index)
+            if len(final_index) < final_size + index.shape[0]:
+                warn_msg = (
+                    f"index collision detected in composite "
+                    f"{self.func.__name__}()"
+                )
+                warnings.warn(warn_msg, UserWarning, stacklevel=4)
+            final_size = final_index.shape[0]
+
+        # check that indices are subset of starting index
+        if not final_index.difference(self.frame.index).empty:
+            warn_msg = "final index is not a subset of the original"
+            warnings.warn(warn_msg, UserWarning, stacklevel=4)
+            self.hasnans = True
+
     def _combine_series(self, computed: list) -> pd.Series:
         """Merge the computed series results by index."""
-        observed = {detect.detect_type(series) for series in computed}
+        observed = [detect.detect_type(series) for series in computed]
+        unique = set(observed)
 
         # if results are composite but in same family, attempt to standardize
-        if len(observed) > 1:
-            roots = {typ.generic.root for typ in observed}
-            if any(all(x.is_subtype(y) for x in observed) for y in roots):
-                computed, observed = self._standardize_same_family(
+        if self.convert_mixed and len(unique) > 1:
+            roots = {typ.generic.root for typ in unique}
+            if any(all(t1.is_subtype(t2) for t1 in unique) for t2 in roots):
+                computed, unique = self._standardize_same_family(
                     computed,
-                    observed
+                    unique
                 )
 
         # results are homogenous
-        if len(observed) == 1:
+        if len(unique) == 1:
             final = pd.concat(computed)
             final.sort_index()
             if self.hasnans or final.shape[0] < self.frame.shape[0]:
-                nullable = observed.pop().make_nullable()
+                nullable = unique.pop().make_nullable()
                 final = replace_na(
-                    final.astype(nullable.dtype, copy=False),
+                    final,
+                    dtype=nullable.dtype,
                     index=pd.RangeIndex(0, self.original_index.shape[0]),
                     na_value=nullable.na_value
                 )
@@ -810,40 +854,12 @@ class CompositeDispatch(DispatchStrategy):
 
         final = pd.Series(
             np.full(self.original_index.shape[0], pd.NA, dtype=object),
-            index=self.frame.index
+            index=pd.RangeIndex(0, self.original_index.shape[0])
         )
-        for group_result in computed:
-            final.update(group_result)
+        for series in computed:
+            final[series.index] = series
         final.index = self.original_index
         return final
-
-    def _check_indices(self, group_indices: list) -> int:
-        """Validate and merge a collection of transformed Series/DataFrame
-        indices.
-        """
-        # TODO: reference offending signature
-        # TODO: check stack level
-
-        # check that indices do not overlap with each other
-        iterator = iter(group_indices)
-        final_index = next(iterator)
-        final_size = final_index.shape[0]
-        for index in iterator:
-            final_index = final_index.union(index)
-
-            if len(final_index) < final_size + index.shape[0]:
-                warn_msg = (
-                    f"index collision detected in composite "
-                    f"{self.func.__name__}()"
-                )
-                warnings.warn(warn_msg, UserWarning, stacklevel=4)
-
-            final_size = final_index.shape[0]
-
-        # check that indices are subset of starting index
-        if not final_index.difference(self.frame.index).empty:
-            warn_msg = "final index is not a subset of the original"
-            warnings.warn(warn_msg, UserWarning, stacklevel=4)
 
     def _standardize_same_family(
         self,
@@ -876,7 +892,6 @@ class CompositeDispatch(DispatchStrategy):
                 continue
 
         return computed, observed
-
 
 
 def resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
@@ -968,16 +983,22 @@ def topological_sort(edges: dict) -> list:
     return L
 
 
-def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
-    """Replace any index that is not present in ``result`` with a missing value.
+def replace_na(
+    series: pd.Series,
+    dtype: np.dtype | pd.api.extensions.ExtensionDtype,
+    index: pd.Index,
+    na_value: Any
+) -> pd.Series:
+    """Replace any index that is not present in ``result`` with a missing
+    value.
     """
     result = pd.Series(
         np.full(index.shape[0], na_value, dtype=object),
         index=index,
         dtype=object
     )
-    result.update(series)
-    return result.astype(series.dtype)
+    result[series.index] = series
+    return result.astype(dtype, copy=False)
 
 
 

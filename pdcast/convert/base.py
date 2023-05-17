@@ -116,7 +116,7 @@ class catch_ignore(BaseDecorator):
 @columnwise
 @extension_func
 @catch_ignore
-@dispatch("series", "dtype", cache_size=128)
+@dispatch("series", "dtype", cache_size=128, convert_mixed=True)
 def cast(
     series: Any,
     dtype: type_specifier | None = None,
