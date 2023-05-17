@@ -40,6 +40,9 @@ from .base import BaseDecorator
 # tz_localize, tz_convert, etc.
 # -> recreate foo.bar test case and compare with pdcast.attach()
 
+# TODO: generate_namespace asks for the MRO of pandas namespace *objects*, not
+# *types*.
+
 
 ######################
 ####    PUBLIC    ####

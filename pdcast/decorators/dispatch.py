@@ -746,24 +746,24 @@ class CompositeDispatch(DispatchStrategy):
     def finalize(self, result: list) -> Any:
         computed = [group_result for _, group_result in result]
 
-        # dataframe transform
-        if all(isinstance(comp, pd.DataFrame) for comp in computed):
+        # transform
+        as_series = all(isinstance(comp, pd.Series) for comp in computed)
+        as_dataframe = all(isinstance(comp, pd.DataFrame) for comp in computed)
+        if as_series or as_dataframe:
+            self._check_indices([comp.index for comp in computed])
+
+            # return as series
+            if as_series:
+                return self._combine_series(computed)
+
+            # return as dataframe
             columns = {tuple(df.columns) for df in computed}
             if len(columns) > 1:
                 raise ValueError(f"column mismatch: {columns}")
-
-            computed = {
-                col: [df[col] for df in computed]
-                for col in columns.pop()
-            }
             return pd.DataFrame({
-                col: self._combine_series(vals)
-                for col, vals in computed.items()
+                col: self._combine_series([df[col] for df in computed])
+                for col in columns.pop()
             })
-
-        # series transform
-        if all(isinstance(comp, pd.Series) for comp in computed):
-            return self._combine_series(computed)
 
         # aggregate
         computed = [
@@ -778,31 +778,15 @@ class CompositeDispatch(DispatchStrategy):
     def _combine_series(self, computed: list) -> pd.Series:
         """Merge the computed series results by index."""
         observed = {detect.detect_type(series) for series in computed}
-        # final_size = self._check_indices([series.index for series in computed])
 
         # if results are composite but in same family, attempt to standardize
-        roots = {typ.root for typ in observed}
-        if (
-            len(observed) > 1 and
-            any(all(typ.is_subtype(root) for typ in observed) for root in roots)
-        ):
-            from pdcast.convert import cast
-
-            max_range = max(typ.max - typ.min for typ in observed)
-            candidates = [
-                typ for typ in observed if typ.max - typ.min == max_range
-            ]
-            candidates = sorted(candidates, key=lambda typ: typ.min + typ.max)
-            for candidate in candidates:
-                try:
-                    computed = [
-                        cast(series, candidate, errors="raise")
-                        for series in computed
-                    ]
-                    observed = {candidate}
-                    break
-                except:
-                    continue
+        if len(observed) > 1:
+            roots = {typ.generic.root for typ in observed}
+            if any(all(x.is_subtype(y) for x in observed) for y in roots):
+                computed, observed = self._standardize_same_family(
+                    computed,
+                    observed
+                )
 
         # results are homogenous
         if len(observed) == 1:
@@ -819,9 +803,11 @@ class CompositeDispatch(DispatchStrategy):
             return final
 
         # results are composite
+
         # NOTE: we can't use pd.concat() because it tends to coerce mixed-type
         # results in undesirable ways.  Instead, we manually fold them into a
         # `dtype: object` series to preserve the actual values.
+
         final = pd.Series(
             np.full(self.original_index.shape[0], pd.NA, dtype=object),
             index=self.frame.index
@@ -831,26 +817,66 @@ class CompositeDispatch(DispatchStrategy):
         final.index = self.original_index
         return final
 
-
     def _check_indices(self, group_indices: list) -> int:
-        """Validate and merge a collection of transformed Series/DataFrame indices.
+        """Validate and merge a collection of transformed Series/DataFrame
+        indices.
         """
-        # TODO: can't use pd.concat with indices.  Have to use index.append or
-        # index.union
+        # TODO: reference offending signature
+        # TODO: check stack level
 
         # check that indices do not overlap with each other
-        try:
-            index = pd.concat(group_indices, verify_integrity=True)
-        except SomeError:
-            # warn that groups had an index collision
-            index = pd.concat(group_indices)
+        iterator = iter(group_indices)
+        final_index = next(iterator)
+        final_size = final_index.shape[0]
+        for index in iterator:
+            final_index = final_index.union(index)
+
+            if len(final_index) < final_size + index.shape[0]:
+                warn_msg = (
+                    f"index collision detected in composite "
+                    f"{self.func.__name__}()"
+                )
+                warnings.warn(warn_msg, UserWarning, stacklevel=4)
+
+            final_size = final_index.shape[0]
 
         # check that indices are subset of starting index
-        if not index.difference(self.index).empty:
-            # warn that groups did not produce a like-indexed series
-            pass
+        if not final_index.difference(self.frame.index).empty:
+            warn_msg = "final index is not a subset of the original"
+            warnings.warn(warn_msg, UserWarning, stacklevel=4)
 
-        return index.shape[0]
+    def _standardize_same_family(
+        self,
+        computed: list[pd.Series],
+        observed: set[types.ScalarType]
+    ) -> tuple[list[pd.Series], set[types.ScalarType]]:
+        """If the dispatched implementations return series objects of different
+        types within the same family, then attempt to standardize their
+        results.
+
+        This method attempts to standardize on the observed type with the
+        largest possible range (max - min).  If a tie is encountered, the types
+        will be sorted based on the absolute value of their mean range,
+        preferring types that are centered toward 0.
+        """
+        from pdcast.convert import cast
+
+        max_range = max(typ.max - typ.min for typ in observed)
+        candidates = [typ for typ in observed if typ.max - typ.min == max_range]
+        candidates = sorted(candidates, key=lambda typ: abs(typ.min + typ.max))
+        for typ in candidates:
+            try:
+                computed = [
+                    cast(x, typ, downcast=False, errors="raise")
+                    for x in computed
+                ]
+                observed = {typ}
+                return computed, observed
+            except:
+                continue
+
+        return computed, observed
+
 
 
 def resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
