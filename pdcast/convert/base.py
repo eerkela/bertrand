@@ -20,7 +20,7 @@ from pdcast.util.type_hints import type_specifier
 from pdcast.util.vector import apply_with_errors
 
 from . import arguments
-from .util import downcast_integer, downcast_float, downcast_complex
+from .util import downcast_integer, downcast_float, downcast_complex, within_tol
 
 
 # TODO: pdcast.cast([1, 2], "bool", errors="coerce") broken
@@ -335,7 +335,7 @@ def generic_to_float(
     """Convert arbitrary data to float representation."""
     if detect_type(series) != dtype:  # ignore trivial
         target = dtype.dtype
-        if isinstance(target.dtype, types.AbstractDtype):
+        if isinstance(target, types.AbstractDtype):
             series = apply_with_errors(series, dtype.type_def, errors=errors)
         series = series.astype(target)
 
@@ -356,7 +356,7 @@ def generic_to_complex(
     """Convert arbitrary data to complex representation."""
     if detect_type(series) != dtype:  # ignore trivial
         target = dtype.dtype
-        if isinstance(target.dtype, types.AbstractDtype):
+        if isinstance(target, types.AbstractDtype):
             series = apply_with_errors(series, dtype.type_def, errors=errors)
         series = series.astype(target)
 
@@ -375,7 +375,7 @@ def generic_to_decimal(
     """Convert arbitrary data to decimal representation."""
     if detect_type(series) != dtype:  # ignore trivial
         target = dtype.dtype
-        if isinstance(target.dtype, types.AbstractDtype):
+        if isinstance(target, types.AbstractDtype):
             series = apply_with_errors(series, dtype.type_def, errors=errors)
         series = series.astype(target)
 
@@ -420,7 +420,7 @@ def generic_to_string(
         series = apply_with_errors(series, call, errors=errors)
 
     target = dtype.dtype
-    if isinstance(target.dtype, types.AbstractDtype):
+    if isinstance(target, types.AbstractDtype):
         series = apply_with_errors(series, dtype.type_def, errors=errors)
     return series.astype(target, copy=False)
 
@@ -505,7 +505,7 @@ def snap_round(
     # apply tolerance & check for non-integer results
     if tol or rule is None:
         rounded = round_generic(series, rule="half_even")
-        outside = ~series.within_tol(rounded, tol=tol)
+        outside = ~within_tol(series, rounded, tol=tol)
         if tol:
             series = series.where(outside, rounded)
 

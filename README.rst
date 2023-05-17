@@ -202,6 +202,11 @@ own micro-extensions for existing pandas behavior:
    1    3
    2    4
    dtype: int64
+   >>> pd.Series([1, 2, 3]) + [1, True, 1.0]
+   0      0
+   1      3
+   2    4.0
+   dtype: object
 
 Or create entirely new attributes and methods above and beyond what's included
 in pandas.

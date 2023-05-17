@@ -31,17 +31,6 @@ from .base import BaseDecorator, no_default
 
 # TODO: result is None -> fill with NA?
 
-# TODO: support DataFrame transforms in addition to Series (i.e. replace
-# missing rows with NAs)
-
-# TODO: special cases for e.g. int64/uint64 conflict in DispatchComposite:
-
-# pdcast.cast([True, 2**63 - 1], "int")
-# vs
-# pdcast.cast([True, 2**63], "int")
-
-# first works, second comes out as float64
-
 
 ######################
 ####    PUBLIC    ####
@@ -441,146 +430,6 @@ class DispatchFunc(BaseDecorator):
         """
         return self.__wrapped__(*args, **kwargs)
 
-    # def _dispatch_scalar(
-    #     self,
-    #     series: SeriesWrapper,
-    #     *args,
-    #     **kwargs
-    # ) -> SeriesWrapper:
-    #     """Dispatch a homogenous series to the correct implementation."""
-    #     series_type = series.element_type
-
-    #     # rectify series
-    #     series = series.rectify()
-
-    #     # bind *args, **kwargs
-    #     bound = self._signature.bind(series, *args, **kwargs)
-    #     bound.apply_defaults()
-    #     key = (series_type,)
-    #     key += tuple(
-    #         detect.detect_type(bound.arguments[param])
-    #         for param in self._args[1:]
-    #     )
-
-    #     # search for a dispatched implementation
-    #     try:
-    #         implementation = self._dispatched[key]
-    #         result = implementation(*bound.args, **bound.kwargs)
-    #     except KeyError:
-    #         result = None
-
-    #     # recursively unwrap adapters and retry.
-    #     if result is None:
-    #         # NOTE: This operates like a recursive stack.  Adapters are popped
-    #         # off the stack in FIFO order before recurring, and then each
-    #         # adapter is pushed back onto the stack in the same order.
-    #         for before in getattr(series_type, "adapters", ()):
-    #             series = before.inverse_transform(series)
-    #             series = self._dispatch_scalar(series, *args, **kwargs)
-    #             if (
-    #                 self._wrap_adapters and
-    #                 series.element_type == before.wrapped
-    #             ):
-    #                 series = before.transform(series)
-    #             return series
-
-    #     # fall back to generic implementation
-    #     if result is None:
-    #         result = self.__wrapped__(**bound.arguments)
-
-    #     # ensure result is a SeriesWrapper
-    #     if not isinstance(result, SeriesWrapper):
-    #         raise TypeError(
-    #             f"dispatched implementation of {self.__wrapped__.__name__}() "
-    #             f"did not return a SeriesWrapper for type: "
-    #             f"{series_type}"
-    #         )
-
-    #     # ensure final index is a subset of original index
-    #     if not result.index.difference(series.index).empty:
-    #         raise RuntimeError(
-    #             f"index mismatch in {self.__wrapped__.__name__}(): dispatched "
-    #             f"implementation for type {series_type} must return a series "
-    #             f"with the same index as the original"
-    #         )
-
-    #     return result.rectify()
-
-    # def _dispatch_composite(
-    #     self,
-    #     series: SeriesWrapper,
-    #     *args,
-    #     **kwargs
-    # ) -> SeriesWrapper:
-    #     """Dispatch a mixed-type series to the appropriate implementation."""
-    #     from pdcast import convert
-
-    #     groups = series.series.groupby(
-    #         series.element_type.index,
-    #         dropna=False,  # no NAs to drop
-    #         sort=False
-    #     )
-
-    #     # NOTE: SeriesGroupBy.transform() cannot reconcile mixed int64/uint64
-    #     # arrays, and will attempt to convert them to float.  To avoid this, we
-    #     # keep track of result.dtype.  If it is signed/unsigned and opposite
-    #     # has been observed, we convert the result to dtype=object and
-    #     # reconsider afterwards.
-    #     observed = set()
-    #     check_uint = [False]  # using a list avoids UnboundLocalError
-    #     signed = types.SignedIntegerType
-    #     unsigned = types.UnsignedIntegerType
-
-    #     def transform(grp) -> pd.Series:
-    #         """Groupwise transformation."""
-    #         grp = SeriesWrapper(
-    #             grp,
-    #             hasnans=series.hasnans,
-    #             element_type=grp.name
-    #         )
-    #         result = self._dispatch_scalar(grp, *args, **kwargs)
-
-    #         # check for int64/uint64 conflict
-    #         # NOTE: This is a bit complicated, but it effectively invalidates
-    #         # the check_uint flag if any type other than pure signed/unsigned
-    #         # integers are detected as results.  In these cases, our final
-    #         # result will be dtype: object anyway, so there's no point
-    #         # following through with the check.
-    #         if result.element_type.is_subtype(signed):
-    #             if any(o.is_subtype(unsigned) for o in observed):
-    #                 result.series = result.series.astype(object, copy=False)
-    #                 check_uint[0] = None if check_uint[0] is None else True
-    #         elif result.element_type.is_subtype(unsigned):
-    #             if any(x.is_subtype(signed) for x in observed):
-    #                 result.series = result.series.astype(object, copy=False)
-    #                 check_uint[0] = None if check_uint[0] is None else True
-    #         else:
-    #             check_uint[0] = None
-
-    #         observed.add(result.element_type)
-    #         return result.series  # transform() expects a Series output
-
-    #     # apply transformation
-    #     result = groups.transform(transform)
-
-    #     # resolve signed/unsigned conflict
-    #     if check_uint[0]:
-    #         # attempt conversion to uint64
-    #         target = unsigned.make_nullable() if series.hasnans else unsigned
-    #         try:
-    #             result = convert.cast(
-    #                 result,
-    #                 dtype=target,
-    #                 downcast=kwargs.get("downcast", None),
-    #                 errors="raise"
-    #             )
-    #         except OverflowError:
-    #             pass  # keep as dtype: object
-
-    #     # re-wrap result
-    #     return SeriesWrapper(result, hasnans=series.hasnans)
-
-
     def _build_strategy(self, dispatched: dict[str, Any]) -> DispatchStrategy:
         """Normalize vectorized inputs to this :class:`DispatchFunc`.
 
@@ -796,6 +645,8 @@ class HomogenousDispatch(DispatchStrategy):
         """Infer mode of operation (filter/transform/aggregate) from return
         type and adjust result accordingly.
         """
+        # TODO: transform needs to account for dataframe output
+
         # transform
         if isinstance(result, (pd.Series, pd.DataFrame)):
             hasnans = self.hasnans
@@ -821,7 +672,7 @@ class HomogenousDispatch(DispatchStrategy):
                 )
 
             # replace original index
-            # result.index = self.original_index
+            result.index = self.original_index
 
         # aggregate
         return result
@@ -892,53 +743,114 @@ class CompositeDispatch(DispatchStrategy):
 
         return results
 
-    def finalize(self, result: list) -> pd.Series | pd.DataFrame:
-        """Concatenate the results and then finalize according to the inferred
-        mode of operation.
-        """
-        # TODO: signed/unsigned conflict
+    def finalize(self, result: list) -> Any:
+        computed = [group_result for _, group_result in result]
 
-        # transform
-        if all(isinstance(res, (pd.Series, pd.DataFrame)) for _, res in result):
-            # NOTE: pd.concat does not account for mixed int64/uint64 output
-            # and will attempt to coerce them to float.
+        # dataframe transform
+        if all(isinstance(comp, pd.DataFrame) for comp in computed):
+            columns = {tuple(df.columns) for df in computed}
+            if len(columns) > 1:
+                raise ValueError(f"column mismatch: {columns}")
 
-            # concatenate results
-            final = pd.concat([res for _, res in result])
-            final.sort_index()
+            computed = {
+                col: [df[col] for df in computed]
+                for col in columns.pop()
+            }
+            return pd.DataFrame({
+                col: self._combine_series(vals)
+                for col, vals in computed.items()
+            })
 
-            # determine appropriate NA value
-            final_type = types.CompositeType(
-                detect.detect_type(res) for _, res in result
-            )
-            if len(final_type) == 1:
-                na_val = final_type.pop().na_value
-            else:
-                na_val = pd.NA
-
-            # TODO: use replace missing values block from
-            # HomogenousDispatch.finalize()
-
-            # replace missing values
-            final = replace_na(
-                final,
-                index=pd.RangeIndex(0, self.original_index.shape[0]),
-                na_value=na_val
-            )
-
-            # replace original index
-            final.index = self.original_index
-
-            return final
+        # series transform
+        if all(isinstance(comp, pd.Series) for comp in computed):
+            return self._combine_series(computed)
 
         # aggregate
-        return pd.concat([
-            pd.DataFrame(
-                group | {f"{self.func.__name__}()": pd.Series([res])},
-                index=[0]
-            )
-            for group, res in result
-        ])
+        computed = [
+            arg_types | {f"{self.func.__name__}()": pd.Series([comp])}
+            for arg_types, comp in result
+        ]
+        return pd.concat(
+            [pd.DataFrame(row, index=[0]) for row in computed],
+            ignore_index=True
+        )
+
+    def _combine_series(self, computed: list) -> pd.Series:
+        """Merge the computed series results by index."""
+        observed = {detect.detect_type(series) for series in computed}
+        # final_size = self._check_indices([series.index for series in computed])
+
+        # if results are composite but in same family, attempt to standardize
+        roots = {typ.root for typ in observed}
+        if (
+            len(observed) > 1 and
+            any(all(typ.is_subtype(root) for typ in observed) for root in roots)
+        ):
+            from pdcast.convert import cast
+
+            max_range = max(typ.max - typ.min for typ in observed)
+            candidates = [
+                typ for typ in observed if typ.max - typ.min == max_range
+            ]
+            candidates = sorted(candidates, key=lambda typ: typ.min + typ.max)
+            for candidate in candidates:
+                try:
+                    computed = [
+                        cast(series, candidate, errors="raise")
+                        for series in computed
+                    ]
+                    observed = {candidate}
+                    break
+                except:
+                    continue
+
+        # results are homogenous
+        if len(observed) == 1:
+            final = pd.concat(computed)
+            final.sort_index()
+            if self.hasnans or final.shape[0] < self.frame.shape[0]:
+                nullable = observed.pop().make_nullable()
+                final = replace_na(
+                    final.astype(nullable.dtype, copy=False),
+                    index=pd.RangeIndex(0, self.original_index.shape[0]),
+                    na_value=nullable.na_value
+                )
+            final.index = self.original_index
+            return final
+
+        # results are composite
+        # NOTE: we can't use pd.concat() because it tends to coerce mixed-type
+        # results in undesirable ways.  Instead, we manually fold them into a
+        # `dtype: object` series to preserve the actual values.
+        final = pd.Series(
+            np.full(self.original_index.shape[0], pd.NA, dtype=object),
+            index=self.frame.index
+        )
+        for group_result in computed:
+            final.update(group_result)
+        final.index = self.original_index
+        return final
+
+
+    def _check_indices(self, group_indices: list) -> int:
+        """Validate and merge a collection of transformed Series/DataFrame indices.
+        """
+        # TODO: can't use pd.concat with indices.  Have to use index.append or
+        # index.union
+
+        # check that indices do not overlap with each other
+        try:
+            index = pd.concat(group_indices, verify_integrity=True)
+        except SomeError:
+            # warn that groups had an index collision
+            index = pd.concat(group_indices)
+
+        # check that indices are subset of starting index
+        if not index.difference(self.index).empty:
+            # warn that groups did not produce a like-indexed series
+            pass
+
+        return index.shape[0]
 
 
 def resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
@@ -1091,8 +1003,7 @@ def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
 # @attachable
 # @dispatch("self", "other")
 # def __add__(self, other):
-#     original = getattr(self.__add__, "original", self.__add__)
-#     return SeriesWrapper(original(other))
+#     return getattr(self.__add__, "original", self.__add__)(other)
 
 
 # @__add__.overload("int", "int")
