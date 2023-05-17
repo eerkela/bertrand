@@ -182,7 +182,7 @@ class ExtensionFunc(BaseDecorator, threading.local):
         self,
         _func: Callable = None,
         *,
-        name: str = None,
+        name: str | None = None,
         default: Any = no_default
     ) -> Callable:
         """A decorator that transforms a naked validation function into a
@@ -191,11 +191,11 @@ class ExtensionFunc(BaseDecorator, threading.local):
 
         Parameters
         ----------
-        name : Optional[str]
+        name : str | None
             The name of the argument that the validator validates.  If this is
             left as :data:`None <python:None>` (the default), then the name of
             the validator will be used instead.
-        default : Optional[Any]
+        default : Any | None
             The default value to use for this argument.  This is implicitly
             passed to the validator itself, so any custom logic that is
             implemented there will also be applied to this value.  If this

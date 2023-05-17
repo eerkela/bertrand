@@ -1,6 +1,6 @@
 import datetime
 import decimal
-from typing import Union
+from typing import runtime_checkable, Protocol, Union
 
 import numpy as np
 import pandas as pd
@@ -61,3 +61,13 @@ type_specifier = Union[
     np.dtype,
     pd.api.extensions.ExtensionDtype
 ]
+
+
+#########################
+####    PROTOCOLS    ####
+#########################
+
+
+@runtime_checkable
+class Descriptor(Protocol):
+    def __get__(self, instance, owner): ...

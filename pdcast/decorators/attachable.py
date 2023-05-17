@@ -33,15 +33,9 @@ from types import MappingProxyType
 from typing import Any, Callable
 import weakref
 
+from pdcast.util.type_hints import Descriptor
+
 from .base import BaseDecorator
-
-
-# TODO: .original doesn't properly expose the pandas equivalents of
-# tz_localize, tz_convert, etc.
-# -> recreate foo.bar test case and compare with pdcast.attach()
-
-# TODO: generate_namespace asks for the MRO of pandas namespace *objects*, not
-# *types*.
 
 
 ######################
@@ -276,11 +270,11 @@ class Attachable(BaseDecorator):
 
         # generate kwargs for descriptor
         kwargs = {
+            "func": self,
             "parent": parent,
             "name": name,
-            "func": self,
             "instance": None,
-            "original": original
+            "original_descriptor": original
         }
 
         # generate pattern-specific descriptor
@@ -306,31 +300,36 @@ class Attachable(BaseDecorator):
 class VirtualAttribute(BaseDecorator):
     """Base class for all :ref:`virtual attributes <attachable.attributes>`.
 
-    These rely on the :meth:`__get__() <python:object.__get__>` implementations
-    defined in subclasses and should never be instantiated directly.
+    These are produced by
+    :meth:`Attachable.attach_to() <pdcast.Attachable.attach_to>` and should
+    never be instantiated directly.
 
     Parameters
     ----------
-    parent : type | Namespace
-        The type or :class:`Namespace <pdcast.Namespace>` that spawned this
-        attribute.
-    name : str
-        The name of the attribute as attached to ``parent``.
     func : Attachable
-        An :class:`Attachable <pdcast.Attachable>` wrapper for the decorated
-        function.
-    original : Callable | None
-        The original (unbound) implementation that this attribute is masking,
-        if one exists.
+        An :class:`Attachable <pdcast.Attachable>` function to forward calls
+        to.
+    parent : type | Namespace
+        The type or :class:`Namespace <pdcast.Namespace>` that this attribute
+        is assigned to.
+    name : str
+        The name of the attribute during lookups.
+    original_descriptor : Descriptor | Any | None
+        The original implementation that this attribute is masking, if one
+        exists.  This must be unbound and might implement the descriptor
+        protocol, in which case its :meth:`__get__() <python:object.__get__>`
+        method will be called during
+        :attr:`.original <pdcast.VirtualAttribute.original>` lookups.
     instance : Any | None
-        An instance of the class that spawned this attribute, or
-        :data:`None <python:None>` if it was invoked from the class itself
-        (without instantiation).
+        An instance of the class that this attribute was accessed from or
+        :data:`None <python:None>` if it was invoked from the class itself.
 
     Notes
     -----
     See the :ref:`descriptor tutorial <python:descriptorhowto>` for more
-    information on how these work.
+    information on how these work behind the scenes.  The actual
+    :meth:`__get__() <python:object.__get__>` implementations are defined in
+    subclasses.
 
     Examples
     --------
@@ -344,18 +343,18 @@ class VirtualAttribute(BaseDecorator):
 
     def __init__(
         self,
+        func: Attachable,
         parent: type | Namespace,
         name: str,
-        func: Attachable,
-        original: Callable | None,
+        original_descriptor: Descriptor | Any | None,
         instance: Any | None
     ):
         super().__init__(func=func)
         self._parent = parent  # either a class or namespace
         self.__name__ = name
         self.__qualname__ = f"{self._parent.__qualname__}.{self.__name__}"
+        self._original = original_descriptor
         self.__self__ = instance
-        self._original = original
 
     @property
     def original(self) -> Any:
@@ -424,30 +423,30 @@ class VirtualAttribute(BaseDecorator):
             >>> MyClass().baz.bar.original()
             namespace static method
         """
-        if self._original is None:
+        parent = self._parent
+        original = self._original
+        if original is None:
             raise RuntimeError(
-                f"'{self._parent.__qualname__}' has no attribute "
-                f"'{self.__name__}'"
+                f"'{parent.__qualname__}' has no attribute '{self.__name__}'"
             )
 
-        def bind(instance: Any, owner: type):
-            """Bind the original attribute according to its configuration."""
-            # descriptor
-            if hasattr(self._original, "__get__"):
-                return self._original.__get__(instance, owner)
-
-            # raw data
-            return self._original
-
         # from namespace
-        if isinstance(self._parent, Namespace):
-            instance = self._parent.original
+        if isinstance(parent, Namespace):
+            instance = parent.original
             if isinstance(instance, type):
-                return bind(None, instance)
-            return bind(instance, type(instance))
+                owner = instance
+                instance = None
+            else:
+                owner = type(instance)
+        else:
+            instance = self.__self__
+            owner = parent
 
-        # from class
-        return bind(self.__self__, self._parent)
+        # follow descriptor protocol
+        if hasattr(original, "__get__"):
+            return original.__get__(instance, owner)
+
+        return original
 
     def detach(self) -> None:
         """Remove the attribute from the object and replace the
@@ -558,29 +557,32 @@ def generate_namespace(
     namespace: str
 ) -> tuple:
     """Get an existing namespace or generate a new one."""
-    existing = get_descriptor(class_, namespace, None)
+    masked = get_descriptor(class_, namespace, None)
 
-    # use existing namespace
-    if isinstance(existing, Namespace):
-        parent = existing
-        original = get_descriptor(existing._original, name, None)
-
+    if isinstance(masked, Namespace):
+        space = masked
+        masked = masked.original
     else:
-        # NOTE: we need to create a unique subclass of Namespace to
-        # isolate any descriptors that are attached at run time.
+        # NOTE: we need to create a unique subclass of Namespace to isolate
+        # any descriptors that are attached at run time.
+
         class _Namespace(Namespace):
             pass
 
-        parent = _Namespace(
+        space = _Namespace(
             parent=class_,
             name=namespace,
             instance=None,
-            original=existing
+            original_descriptor=masked
         )
-        setattr(class_, parent.__name__, parent)
-        original = get_descriptor(existing, name, None)
+        masked = getattr(class_, namespace, None)  # invoke __get__
+        setattr(class_, space.__name__, space)
 
-    return parent, original
+    if masked is None:
+        return space, None
+    if not isinstance(masked, type):
+        masked = type(masked)
+    return space, get_descriptor(masked, name, None)
 
 
 def get_descriptor(class_: type, name: str, default: Any) -> Any:
@@ -589,7 +591,7 @@ def get_descriptor(class_: type, name: str, default: Any) -> Any:
     This works like getattr(), except that it avoids invoking the descriptor
     protocol.
     """
-    # follow method resolution order (MRO).
+    # follow method resolution order (MRO)
     for base in class_.__mro__:
         try:
             return object.__getattribute__(base, name)
@@ -612,16 +614,18 @@ class Namespace:
     Parameters
     ----------
     parent : type
-        The Python class to attach this namespace to.
+        The type that this namespace is assigned to.
     name : str
-        The name of this descriptor as supplied to
-        :func:`setattr <python:setattr>`.
-    original : Any | None
-        The original (unbound) attribute that is being masked by this
-        :class:`Namespace <pdcast.Namespace>`, if one exists.
+        The name of the namespace during lookups.
+    original_descriptor : Any | None
+        The original implementation that this namespace is masking, if one
+        exists.  This must be unbound and might implement the descriptor
+        protocol, in which case its :meth:`__get__() <python:object.__get__>`
+        method will be called during
+        :attr:`.original <pdcast.VirtualAttribute.original>` lookups.
     instance : Any | None
-        An instance of the ``parent`` class to pass along to bound attributes,
-        or :data:`None <python:None>`.
+        An instance of the class that this attribute was accessed from or
+        :data:`None <python:None>` if it was invoked from the class itself.
 
     Notes
     -----
@@ -642,13 +646,13 @@ class Namespace:
         self,
         parent: type,
         name: str,
-        original: Any | None,
+        original_descriptor: Descriptor | Any | None,
         instance: Any | None
     ):
         self._parent = parent
-        self._original = original
         self.__name__ = name
         self.__qualname__ = f"{self._parent.__qualname__}.{self.__name__}"
+        self._original = original_descriptor
         self.__self__ = instance
 
     @property
@@ -746,22 +750,18 @@ class Namespace:
             >>> MyClass.baz.original
             <class 'MyClass.baz'>
         """
-        if self._original is None:
+        parent = self._parent
+        original = self._original
+        if original is None:
             raise RuntimeError(
-                f"'{self._parent.__qualname__}' has no attribute "
-                f"'{self.__name__}'"
+                f"'{parent.__qualname__}' has no attribute {self.__name__}'"
             )
 
-        # descriptor
-        if hasattr(self._original, "__get__"):
-            return self._original.__get__(self.__self__, self._parent)    
+        # follow descriptor protocol
+        if hasattr(original, "__get__"):
+            return original.__get__(self.__self__, parent)    
 
-        # raw data or from class
-        if self.__self__ is None or not isinstance(self._original, type):
-            return self._original
-
-        # inner class
-        return self._original(self.__self__)  # NOTE: implicitly passes self
+        return original
 
     def detach(self) -> None:
         """Remove the namespace from the object and replace the
@@ -862,8 +862,8 @@ class Namespace:
         return type(self)(
             parent=self._parent,
             name=self.__name__,
-            instance=instance,
-            original=self._original
+            original_descriptor=self._original,
+            instance=instance
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -931,11 +931,11 @@ class InstanceMethod(VirtualAttribute):
 
         # from instance
         return InstanceMethod(
+            func=self.__wrapped__,
             parent=parent,
             name=self.__name__,
-            func=self.__wrapped__,
-            instance=instance,
-            original=self._original
+            original_descriptor=self._original,
+            instance=instance
         )
 
 
@@ -975,11 +975,11 @@ class ClassMethod(VirtualAttribute):
 
         # from instance
         return ClassMethod(
+            func=self.__wrapped__,
             parent=parent,
             name=self.__name__,
-            func=self.__wrapped__,
-            instance=owner,
-            original=self._original
+            original_descriptor=self._original,
+            instance=owner
         )
 
 
@@ -1028,17 +1028,17 @@ class Property(VirtualAttribute):
 
     def __init__(
         self,
+        func: Attachable,
         parent: type | Namespace,
         name: str,
-        func: Attachable,
-        original: Callable | None,
+        original_descriptor: Descriptor | Any | None,
         instance: Any | None
     ):
         super().__init__(
+            func=func,
             parent=parent,
             name=name,
-            func=func,
-            original=original,
+            original_descriptor=original_descriptor,
             instance=instance
         )
         self._property = property(fget=func)
@@ -1133,7 +1133,7 @@ class Property(VirtualAttribute):
 
 
 # # baz.attach_to(Foo, name="a")
-# # baz.attach_to(Foo, namespace="bar", name="d")
+# baz.attach_to(Foo, namespace="b", name="d")
 
 
 # def attach(name, namespace=None, pattern="method"):

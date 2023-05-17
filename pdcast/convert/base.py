@@ -3,7 +3,7 @@ equivalents that allow quick conversion to predefined data types.
 """
 # pylint: disable=unused-argument
 from __future__ import annotations
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -21,9 +21,6 @@ from pdcast.util.vector import apply_with_errors
 
 from . import arguments
 from .util import downcast_integer, downcast_float, downcast_complex, within_tol
-
-
-# TODO: pdcast.cast([1, 2], "bool", errors="coerce") broken
 
 
 # ignore this file when doing string-based object lookups in resolve_type()
@@ -122,7 +119,7 @@ class catch_ignore(BaseDecorator):
 @dispatch("series", "dtype", cache_size=128)
 def cast(
     series: Any,
-    dtype: Optional[type_specifier] = None,
+    dtype: type_specifier | None = None,
     **kwargs
 ) -> pd.Series:
     """Cast arbitrary data to the specified data type.
@@ -151,26 +148,22 @@ def cast(
     change the behavior of :func:`cast`.  The method that is chosen is based on
     the :attr:`family <AtomicType.family>` of its ``dtype`` argument.
     """
-    # recursively unwrap adapters and retry
+    series_type = detect_type(series)
 
+    # recursively unwrap adapters and retry
     # NOTE: These operate like recursive stacks.  If adapters are detected,
     # they are popped off the stack in FIFO order before recurring.  We do this
     # first to the data, and then to the target data type, allowing conversions
     # to safely ignore adapters in all their implementations.
 
-    series_type = detect_type(series)
-
-    # data
     for before in getattr(series_type, "adapters", ()):
         series = before.inverse_transform(series)
         return cast(series, dtype, **kwargs)
 
-    # dtype
     for before in getattr(dtype, "adapters", ()):
         series = cast(series, dtype.wrapped, **kwargs)
         return before.transform(series)
 
-    # no match
     raise NotImplementedError(
         f"no conversion found between {str(series_type)} and {str(dtype)}"
     )
@@ -373,13 +366,14 @@ def generic_to_decimal(
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to decimal representation."""
-    if detect_type(series) != dtype:  # ignore trivial
-        target = dtype.dtype
-        if isinstance(target, types.AbstractDtype):
-            series = apply_with_errors(series, dtype.type_def, errors=errors)
-        series = series.astype(target)
+    # trivial case
+    if detect_type(series) == dtype:
+        return series
 
-    return series.astype(dtype, errors=errors)
+    target = dtype.dtype
+    if isinstance(target, types.AbstractDtype):
+        series = apply_with_errors(series, dtype.type_def, errors=errors)
+    return series.astype(target)
 
 
 @cast.overload(wildcard, "datetime")
@@ -415,6 +409,9 @@ def generic_to_string(
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to string representation."""
+    if detect_type(series) == dtype:
+        return series
+
     if format:
         call = lambda x: f"{x:{format}}"
         series = apply_with_errors(series, call, errors=errors)

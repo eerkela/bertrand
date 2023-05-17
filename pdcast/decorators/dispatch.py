@@ -1021,6 +1021,9 @@ def replace_na(series: pd.Series, index: pd.Index, na_value: Any) -> pd.Series:
 
 
 
+# TODO: pd.Series([pd.Timestamp(0), datetime.datetime.utcfromtimestamp(0)], dtype="O").dt.tz_localize("local")
+# returns a dtype: object series
+
 
 
 # from .attachable import attachable

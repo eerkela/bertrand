@@ -89,6 +89,10 @@ within pandas data structures and other iterables:
    >>> import pdcast; pdcast.attach()
 
    >>> df = pd.DataFrame({"a": [1, 2], "b": [1., 2.], "c": ["a", "b"]})
+   >>> df
+      a    b  c
+   0  1  1.0  a
+   1  2  2.0  b
    >>> df.typecheck({"a": "int", "b": "float", "c": "string"})
    True
    >>> df["a"].typecheck("int")
@@ -139,7 +143,7 @@ previous output).
    1   2000-01-01 12:00:00
    2                   NaT
    dtype: datetime64[ns]
-   >>> _.cast("timedelta[python]", since="Jan 1st, 2000 at 12:00 PM")  # TODO: object dtype
+   >>> _.cast("timedelta[python]", since="Jan 1st, 2000 at 12:00 PM")
    0    366 days, 0:00:00
    1              0:00:00
    2                  NaT
@@ -155,7 +159,7 @@ previous output).
    2                            <NA>
    dtype: category
    Categories (2, string): [CustomObj(0:00:00), CustomObj(366 days, 0:00:00)]
-   >>> _.cast("bool", true="*", false="CustomObj(0:00:00)")  # our original data
+   >>> _.cast("bool", true="*", false="CustomObj(0:00:00)")  # our original data  # TODO: infinite recursion
    0     True
    1    False
    2     <NA>
