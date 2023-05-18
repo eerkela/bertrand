@@ -16,7 +16,8 @@
    :hidden:
    :maxdepth: 3
 
-   Quickstart <content/quickstart/quickstart>
+   Motivation <content/motivation>
+   Tutorial: bfloat16 <content/tutorial>
    Type Index <content/types/types>
    API <content/api/api>
    Changelog <content/changelog>

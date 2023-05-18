@@ -4,43 +4,45 @@
 pdcast - flexible type extensions for pandas
 ============================================
 ``pdcast`` expands and enhances the existing numpy/pandas typing
-infrastructure, allowing users to write powerful extensions with an intuitive,
+infrastructure, allowing users to write powerful extensions with a minimal,
 decorator-focused design.
 
 Features
 --------
-``pdcast``'s core features include:
+``pdcast`` implements an abstract `type system
+<https://en.wikipedia.org/wiki/Type_system>`_ for numpy/pandas ``dtype``
+objects, adding support for:
 
-*  **Abstract hierarchies** for numpy/pandas ``dtype`` objects.  These are
-   lightweight, efficient, and highly extensible, with new types added in as
-   little as :ref:`10 lines of code <tutorial>`.  They can use existing
-   ``dtype``\ /\ ``ExtensionDtype`` definitions or *automatically generate*
-   their own via the `pandas extension API
+*  **Concrete hierarchies** representing different subtypes and
+   implementations.  These are lightweight, efficient, and highly extensible,
+   with new types added in as little as :ref:`10 lines of code <tutorial>`.
+   They can use existing ``dtype``\ /\ ``ExtensionDtype`` definitions or
+   *automatically generate* their own via the `pandas extension API
    <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
    This allows users to quickly integrate arbitrary data types into the pandas
-   ecosystem, with customizable behavior for each.
-*  A configurable **domain-specific language** for resolving types.  This
+   ecosystem, with customizable behavior for each one.
+*  A configurable, **domain-specific mini-language** for resolving types.  This
    represents a superset of the existing numpy/pandas syntax, with support for
-   arbitrary parametrization as well as customizable aliases and semantics.
+   arbitrary parametrization, composition, and semantics.
 *  Robust **type detection** for vectorized data in any format.  This works
    regardless of an example's ``.dtype`` attribute, allowing ``pdcast`` to
-   describe ambiguous Python iterables, such as lists, tuples, generators,
-   and ``dtype: object`` arrays.  In each case, inference is fast,
-   reliable, and works even when the examples are of mixed type.
-*  **Efficient type checks** for arbitrary data.  This combines the above tools
-   to perform ``isinstance()``-like hierarchical checks for any node in the
-   ``pdcast`` type system.  If the provided data are properly labeled, then
-   this is done in constant time, allowing users to sprinkle checks throughout
-   their code wherever they are needed.
+   infer the types of ambiguous sequences such as lists, tuples, generators,
+   and ``dtype: object`` arrays.  In each case, inference is fast, reliable,
+   and works even when the examples are of mixed type.
+*  Efficient **type checks** for vectorized data.  This combines the above
+   tools to perform ``isinstance()``-like hierarchical checks for any node in
+   the ``pdcast`` type system.  If the provided data are properly labeled, then
+   this is done in constant time, allowing users to add checks wherever they
+   are needed.
 *  **Multiple dispatch** with vectorized inputs.  This works like
    ``@functools.singledispatch``, allowing a function to dispatch to a
    collection of virtual implementations based the observed type of one or more
-   arguments.  With the ``pdcast`` type system, this can be extended to cover
-   vectorized data in any representation, including those containing mixed-type
-   elements, which are processed using a split-apply-combine strategy.
+   of its arguments.  With the ``pdcast`` type system, this can be extended to
+   cover vectorized data in any representation, including those containing
+   mixed elements using a split-apply-combine strategy.
 *  **Attachable functions** with a variety of access patterns.  These leverage
    Python's `descriptor protocol <https://docs.python.org/3/reference/datamodel.html#descriptor-invocation>`_
-   to programmatically extend an external class's interface, adding the
+   to programmatically extend an external class's interface, using the
    decorated function as a virtual attribute.  The resulting attributes can be
    used to mask existing behavior while maintaining access to the original
    implementation, or be hidden behind virtual namespaces to avoid conflicts,
@@ -56,8 +58,8 @@ Features
 Together, these enable a functional approach to extending pandas with small,
 fully encapsulated functions performing special operations based on the types
 of their arguments.  They can be combined to create powerful, dynamic patches
-for its rich feature set, which can be seamlessly deployed to existing pandas
-data structures on a global basis.  Users are thus able to surgically overload
+for its rich feature set, which can be seamlessly deployed to pandas data
+structures on a global basis.  Users are thus able to surgically overload
 virtually any aspect of the pandas interface, or add entirely new behavior
 specific to one or more data types.
 
@@ -181,8 +183,8 @@ with customization for both the source and destination types.
    1    0
    dtype: object
 
-Finally, ``pdcast``'s powerful function decorators allow users to write their
-own micro-extensions for existing pandas behavior:
+Finally, ``pdcast``'s powerful decorators allow users to write their own
+specialized extensions for existing pandas behavior:
 
 .. doctest::
 

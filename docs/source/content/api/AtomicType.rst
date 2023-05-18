@@ -194,8 +194,6 @@ Upcast/Downcast
 
     AtomicType.larger
     AtomicType.smaller
-    AtomicType.upcast
-    AtomicType.downcast
 
 .. _AtomicType.missing:
 

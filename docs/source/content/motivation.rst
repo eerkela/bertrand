@@ -2,11 +2,15 @@
 
 Motivation
 ==========
-``pdcast`` is meant to be a flexible framework for writing extensions to
-pandas.
+``pdcast`` is meant to be a general-purpose framework for writing type-based
+pandas extensions.  It provides a wealth of powerful tools to do this, but in
+order to understand how it can help, we first need to do an in-depth
+examination of the current state of the numpy/pandas typing infrastructure.
 
 
-resolving certain
+
+
+``pdcast`` is meant to be a flexible framework for resolving certain
 idiosyncrasies in pandas functionality, particularly as it relates to data
 cleaning, preprocessing, and `type safety <https://en.wikipedia.org/wiki/Type_safety>`_.
 It allows users to easily detect and manipulate data in virtually any

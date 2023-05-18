@@ -42,9 +42,6 @@ The behavior of this function can be customized using the following arguments.
     * - :attr:`tz <convert.arguments.tz>`
       - Specifies a time zone to use for datetime conversions.
       - ``None``
-    * - :attr:`naive_tz <convert.arguments.naive_tz>`
-      - The assumed time zone when localizing naive datetimes.
-      - ``None``
     * - :attr:`day_first <convert.arguments.day_first>`
       - Indicates whether to interpret the first value in an ambiguous
         3-integer date (e.g. 01/05/09) as the day (``True``) or month
@@ -94,7 +91,6 @@ The behavior of this function can be customized using the following arguments.
     step_size <abstract/cast/step_size>
     since <abstract/cast/since>
     tz <abstract/cast/tz>
-    naive_tz <abstract/cast/naive_tz>
     day_first <abstract/cast/day_first>
     year_first <abstract/cast/year_first>
     as_hours <abstract/cast/as_hours>
@@ -138,7 +134,7 @@ The behavior of this function can be customized using the following arguments.
         ...         raise ValueError(f"`foo` must be one of ('bar', 'baz')")
         ...     return val
 
-    This allows the type's :ref:`delegated <atomic_type.conversions>`
+    This allows the type's :ref:`delegated <AtomicType.conversions>`
     conversion methods to access ``foo`` simply by adding it to their call
     signature.
 
