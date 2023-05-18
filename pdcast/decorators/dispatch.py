@@ -10,7 +10,7 @@ import inspect
 import itertools
 import threading
 from types import MappingProxyType
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 import warnings
 
 import numpy as np
@@ -30,12 +30,6 @@ from .base import BaseDecorator, no_default
 # TODO: None wildcard value?
 
 # TODO: result is None -> fill with NA?
-
-# TODO: inconsistent use of series.update vs slice assignment.  Probably higher
-# performance to use slicing and then astype() to make_nullable().dtype in
-# final step of replace_na(), rather than astyping() twice.
-
-# TODO: scattered TODOs in strategies
 
 
 ######################
@@ -672,17 +666,29 @@ class HomogenousDispatch(DispatchStrategy):
                 warnings.warn(warn_msg, UserWarning, stacklevel=4)
                 self.hasnans = True
 
-            # TODO: this block doesn't account for dataframe output
-
             # replace missing values, aligning on index
             if self.hasnans or result.shape[0] < self.index.shape[0]:
-                nullable = detect.detect_type(result).make_nullable()
-                result = replace_na(
-                    result,
-                    dtype=nullable.dtype,
-                    index=pd.RangeIndex(0, self.original_index.shape[0]),
-                    na_value=nullable.na_value
-                )
+                output_type = detect.detect_type(result)
+                output_index = pd.RangeIndex(0, self.original_index.shape[0])
+                if isinstance(result, pd.Series):
+                    nullable = output_type.make_nullable()
+                    result = replace_na(
+                        result,
+                        dtype=nullable.dtype,
+                        index=output_index,
+                        na_value=nullable.na_value
+                    )
+                else:
+                    with_na = {}
+                    for col, series in result.items():
+                        nullable = output_type[col].make_nullable()
+                        with_na[col] = replace_na(
+                            series,
+                            dtype=nullable.dtype,
+                            index=output_index,
+                            na_value=nullable.na_value
+                        )
+                    result = pd.DataFrame(with_na)
 
             # replace original index
             result.index = self.original_index
@@ -765,7 +771,7 @@ class CompositeDispatch(DispatchStrategy):
         as_series = all(isinstance(comp, pd.Series) for comp in computed)
         as_dataframe = all(isinstance(comp, pd.DataFrame) for comp in computed)
         if as_series or as_dataframe:
-            self._check_indices([comp.index for comp in computed])
+            self._check_indices(series.index for series in computed)
 
             # return as series
             if as_series:
@@ -790,31 +796,28 @@ class CompositeDispatch(DispatchStrategy):
             ignore_index=True
         )
 
-    def _check_indices(self, group_indices: list) -> int:
+    def _check_indices(self, indices: Iterator[pd.Index]) -> None:
         """Validate and merge a collection of transformed Series/DataFrame
         indices.
         """
-        # TODO: reference offending signature?
-        # TODO: check stack level
-
         # check that indices do not overlap with each other
-        iterator = iter(group_indices)
-        final_index = next(iterator)
+        final_index = next(indices)
         final_size = final_index.shape[0]
-        for index in iterator:
+        for index in indices:
             final_index = final_index.union(index)
             if len(final_index) < final_size + index.shape[0]:
                 warn_msg = (
-                    f"index collision detected in composite "
-                    f"{self.func.__name__}()"
+                    f"index collision in composite {self.func.__name__}()"
                 )
-                warnings.warn(warn_msg, UserWarning, stacklevel=4)
+                warnings.warn(warn_msg, UserWarning)
             final_size = final_index.shape[0]
 
         # check that indices are subset of starting index
         if not final_index.difference(self.frame.index).empty:
-            warn_msg = "final index is not a subset of the original"
-            warnings.warn(warn_msg, UserWarning, stacklevel=4)
+            # TODO: this results in a KeyError during slice assignment, so
+            # just raise it as an error here and in HomogenousDispatch
+            warn_msg = "final index is not a subset of original"
+            warnings.warn(warn_msg, UserWarning)
             self.hasnans = True
 
     def _combine_series(self, computed: list) -> pd.Series:
@@ -995,6 +998,7 @@ def replace_na(
     result = pd.Series(
         np.full(index.shape[0], na_value, dtype=object),
         index=index,
+        name=series.name,
         dtype=object
     )
     result[series.index] = series
@@ -1039,14 +1043,6 @@ def replace_na(
 
 
 
-
-
-
-# TODO: pd.Series([pd.Timestamp(0), datetime.datetime.utcfromtimestamp(0)], dtype="O").dt.tz_localize("local")
-# returns a dtype: object series
-
-
-
 # from .attachable import attachable
 
 
@@ -1058,10 +1054,12 @@ def replace_na(
 
 # @__add__.overload("int", "int")
 # def add_integer(self, other):
-#     return self - other
+#     result = self - other
+#     # result.index = [5]
+#     return pd.DataFrame({"a": result})
 
 
 # __add__.attach_to(pd.Series)
-# print(pd.Series([1, 2, 3]) + 1)
-# print(pd.Series([1, 2, 3]) + True)
-# print(pd.Series([1, 2, 3]) + [1, True, 1.0])
+# print(pd.Series([1, 2, 3, None], dtype="Int64") + 1)
+# # print(pd.Series([1, 2, 3]) + True)
+# # print(__add__(pd.Series([1, 2, 3]), [1, True, 1.0]))

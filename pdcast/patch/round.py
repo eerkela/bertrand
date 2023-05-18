@@ -1,10 +1,10 @@
 # pylint: disable=redefined-outer-name, unused-argument
 import pandas as pd
 
-from pdcast.convert.util import real, imag
 from pdcast.decorators.attachable import attachable, VirtualAttribute
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
+from pdcast.util.numeric import real, imag
 from pdcast.util.round import round_decimal, round_div, round_float
 
 

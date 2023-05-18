@@ -18,6 +18,10 @@ from .atomic import ScalarType, AtomicType
 # @subtype("signed[numpy]")
 # @backend("int8", "numpy")
 
+# This could be used alongside `cond` argument of @register if that
+# short-circuits the class definition.  If the type specifier could not be
+# interpreted, we either silently ignore or say so manually.  This could avoid
+# manual TypeRegistry interactions in 
 
 
 def register(class_: type = None, *, cond: bool = True):

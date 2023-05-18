@@ -339,7 +339,7 @@ cdef class AdapterType(atomic.ScalarType):
 
     def inverse_transform(self, series: pd.Series) -> pd.Series:
         """Remove an adapter from an example series."""
-        return series.astype(detect.detect_type(series).dtype, copy=False)
+        return series.astype(self.wrapped.dtype, copy=False)
 
     def transform(self, series: pd.Series) -> pd.Series:
         """Given an unwrapped conversion result, apply all the necessary logic

@@ -7,7 +7,6 @@ setup(
     ext_modules=cythonize(
         [
             "pdcast/*.pyx",
-            "pdcast/convert/util/*.pyx",
             "pdcast/types/array/*.pyx",
             "pdcast/types/base/*.pyx",
             "pdcast/types/*.pyx",

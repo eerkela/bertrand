@@ -9,12 +9,11 @@ from pdcast.util.error import shorten_list
 from pdcast.util.round cimport Tolerance
 
 
-# TODO: move this entire file into pdcast.util.numeric.pyx
-# maybe separate downcast/upcast into pdcast.util.downcast.pyx
-
-
 # TODO: tol should clip overflowing values if they are within the window.
 # -> force boundscheck to accept ``tol``.
+
+
+# TODO: downcast_integer should use its tol argument for bounds checks
 
 
 ######################
@@ -122,7 +121,7 @@ cpdef object downcast_integer(
 
     # get observed range as python ints (prevents inconsistent comparison)
     if series_type.is_na(min_val):  # series is empty
-        # NOTE: we swap min/max to maintain upcast() behavior for generic types
+        # NOTE: we swap min/max to maintain upcast behavior for generic types
         min_val = series_type.max
         max_val = series_type.min
     else:

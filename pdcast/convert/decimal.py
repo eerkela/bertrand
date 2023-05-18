@@ -8,15 +8,15 @@ import pandas as pd
 from pdcast import types
 from pdcast.detect import detect_type
 from pdcast.resolve import resolve_type
-from pdcast.util.error import shorten_list
-from pdcast.util.round import Tolerance
 from pdcast.util import time
+from pdcast.util.error import shorten_list
+from pdcast.util.numeric import boundscheck, downcast_float, isinf, within_tol
+from pdcast.util.round import Tolerance
 from pdcast.util.vector import apply_with_errors
 
 from .base import (
     cast, generic_to_boolean, generic_to_integer, snap_round
 )
-from .util import boundscheck, downcast_float, isinf, within_tol
 
 
 # TODO: pdcast.cast(pdcast.cast([1., 2., np.inf], "decimal"), "float")

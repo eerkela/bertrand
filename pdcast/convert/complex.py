@@ -3,11 +3,11 @@
 import pandas as pd
 
 from pdcast import types
-from pdcast.util.round import Tolerance
 from pdcast.util.error import shorten_list
+from pdcast.util.numeric import real, imag, within_tol
+from pdcast.util.round import Tolerance
 
 from .base import cast, generic_to_float
-from .util import real, imag, within_tol
 
 
 @cast.overload("complex", "bool")

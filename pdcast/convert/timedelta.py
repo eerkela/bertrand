@@ -9,11 +9,11 @@ from pdcast import types
 from pdcast.detect import detect_type
 from pdcast.resolve import resolve_type
 from pdcast.util import time
+from pdcast.util.numeric import boundscheck
 from pdcast.util.round import round_div, Tolerance
 from pdcast.util.vector import apply_with_errors
 
 from .base import cast, generic_to_integer
-from .util import boundscheck
 
 
 @cast.overload("timedelta", "bool")

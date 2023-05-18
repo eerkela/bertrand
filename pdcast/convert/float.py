@@ -5,13 +5,13 @@ data.
 import pandas as pd
 
 from pdcast import types
+from pdcast.util.numeric import boundscheck
 from pdcast.util.round import Tolerance
 from pdcast.util.vector import apply_with_errors
 
 from .base import (
     cast, generic_to_boolean, generic_to_integer, snap_round
 )
-from .util import boundscheck
 
 
 # TODO: float -> float doesn't account for tol

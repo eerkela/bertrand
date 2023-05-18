@@ -31,12 +31,6 @@ from pdcast.util.type_hints import type_specifier
 # -> CategoricalType must be able to wrap CompositeTypes
 
 
-# TODO: for np.dtype inputs, iterate through aliases for instances of np.dtype,
-# then do an np.issubdtype() check on each one and use the associated type.
-# ExtensionDtypes should be checked by their type().  These can be separated
-# into different helpers.
-
-
 #####################
 ####   PUBLIC    ####
 #####################

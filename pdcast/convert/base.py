@@ -13,14 +13,15 @@ from pdcast.decorators.base import BaseDecorator
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
 from pdcast.detect import detect_type
-from pdcast.patch.round import round as round_generic
 from pdcast.util.error import shorten_list
+from pdcast.util.numeric import (
+    downcast_integer, downcast_float, downcast_complex, within_tol
+)
 from pdcast.util.round import Tolerance
 from pdcast.util.type_hints import type_specifier
 from pdcast.util.vector import apply_with_errors
 
 from . import arguments
-from .util import downcast_integer, downcast_float, downcast_complex, within_tol
 
 
 # ignore this file when doing string-based object lookups in resolve_type()
@@ -492,6 +493,8 @@ def snap_round(
     any remaining results according to the given rule.  Reject any outputs
     that are not integer-like by the end of this process.
     """
+    from pdcast.patch.round import round as round_generic
+
     # if rounding to nearest, don't bother applying tolerance
     nearest = (
         "half_floor", "half_ceiling", "half_down", "half_up", "half_even"

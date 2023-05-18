@@ -1,10 +1,10 @@
 # pylint: disable=redefined-outer-name, unused-argument
 import pandas as pd
 
-from pdcast.convert.util import real, imag, within_tol
 from pdcast.decorators.attachable import attachable
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
+from pdcast.util.numeric import real, imag, within_tol
 from pdcast.util.round import Tolerance
 from pdcast.util.type_hints import numeric
 

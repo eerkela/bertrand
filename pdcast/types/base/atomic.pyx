@@ -25,9 +25,8 @@ from pdcast.types.array import abstract
 
 # TODO: add examples/raises for each method
 
-# TODO: IntegerType.downcast should accept a tolerance argument
-
-# TODO: move upcast into convert/base
+# TODO: remove is_na() in favor of pd.isna() and convert make_nullable into
+# a .nullable property.
 
 
 # conversions
