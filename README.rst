@@ -18,11 +18,11 @@ Features
    their own via the `pandas extension API
    <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
    This allows users to quickly integrate arbitrary data types into the pandas
-   ecosystem, with customizable behavior for each one.
+   ecosystem, with customizable behavior for each.
 *  A configurable **domain-specific language** for resolving types.  This
    represents a superset of the existing numpy/pandas syntax, with support for
    arbitrary parametrization as well as customizable aliases and semantics.
-*  Robust **type detection** from vectorized data in any format.  This works
+*  Robust **type detection** for vectorized data in any format.  This works
    regardless of an example's ``.dtype`` attribute, allowing ``pdcast`` to
    describe ambiguous Python iterables, such as lists, tuples, generators,
    and ``dtype: object`` arrays.  In each case, inference is fast,
@@ -40,24 +40,24 @@ Features
    elements, which are processed using a split-apply-combine strategy.
 *  **Attachable functions** with a variety of access patterns.  These leverage
    Python's `descriptor protocol <https://docs.python.org/3/reference/datamodel.html#descriptor-invocation>`_
-   to attach naked functions to external classes as bound attributes, just as
-   if they were defined on the class itself.  The resulting attributes can be
+   to programmatically extend an external class's interface, adding the
+   decorated function as a virtual attribute.  The resulting attributes can be
    used to mask existing behavior while maintaining access to the original
    implementation, or be hidden behind virtual namespaces to avoid conflicts,
    like ``Series.str``, ``Series.dt``, etc.
-*  **Dynamic arguments** with custom validators, default values, and
+*  **Dynamic arguments** with custom preprocessing, default values, and
    programmatic extensions.  These can be used to actively manage the values
-   that are supplied to a function by defining validators for its arguments,
-   which can perform their own processing before passing the result into the
-   body of the function itself.  Validators such as these can also be used to
-   add new arguments to a function at run time, passing them through to any
-   dispatched implementations that might request them.
+   that are supplied to a function by defining validators for one or more of
+   its arguments, which can perform their own logic before passing the result
+   into the body of the function itself.  Validators such as these can also be
+   used to add new arguments to a function at run time, passing them through to
+   any dispatched implementations that might request them.
 
 Together, these enable a functional approach to extending pandas with small,
 fully encapsulated functions performing special operations based on the types
 of their arguments.  They can be combined to create powerful, dynamic patches
-for its rich feature set, which can be deployed directly to pandas data
-structures on a global basis.  Users are thus able to surgically overload
+for its rich feature set, which can be seamlessly deployed to existing pandas
+data structures on a global basis.  Users are thus able to surgically overload
 virtually any aspect of the pandas interface, or add entirely new behavior
 specific to one or more data types.
 
@@ -159,7 +159,7 @@ previous output).
    2                            <NA>
    dtype: category
    Categories (2, string): [CustomObj(0:00:00), CustomObj(366 days, 0:00:00)]
-   >>> _.cast("bool", true="*", false="CustomObj(0:00:00)")  # our original data  # TODO: infinite recursion
+   >>> _.cast("bool", true="*", false="CustomObj(0:00:00)")  # our original data
    0     True
    1    False
    2     <NA>
