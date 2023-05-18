@@ -67,14 +67,14 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
     """
     if isinstance(typespec, types.BaseType):
         result = typespec
-    elif isinstance(typespec, str):
-        result = resolve_typespec_string(typespec)
     elif isinstance(typespec, type):
-        result = resolve_typespec_type(typespec)
+        result = resolve_class(typespec)
+    elif isinstance(typespec, str):
+        result = resolve_string(typespec)
     elif isinstance(typespec, np.dtype):
-        result = resolve_typespec_dtype_numpy(typespec)
+        result = resolve_numpy_dtype(typespec)
     elif isinstance(typespec, pd.api.extensions.ExtensionDtype):
-        result = resolve_typespec_dtype_pandas(typespec)
+        result = resolve_pandas_dtype(typespec)
     elif hasattr(typespec, "__iter__"):
         result = types.CompositeType(resolve_type(x) for x in typespec)
     else:
@@ -135,7 +135,7 @@ cdef list tokenize(str input_str):
     return [x.group().strip() for x in token.finditer(input_str)]
 
 
-cdef types.BaseType resolve_typespec_string(str input_str):
+cdef types.BaseType resolve_string(str input_str):
     """Resolve a string-based type specifier, returning a corresponding
     AtomicType.
     """
@@ -175,7 +175,19 @@ cdef types.BaseType resolve_typespec_string(str input_str):
     return types.CompositeType(result)
 
 
-cdef types.ScalarType resolve_typespec_dtype_numpy(object input_dtype):
+cdef types.ScalarType resolve_class(type input_type):
+    """Resolve a python type, returning a corresponding AtomicType."""
+    cdef dict aliases = types.AtomicType.registry.aliases
+    cdef type result = aliases.get(input_type, None)
+
+    if result is None:
+        return types.ObjectType.instance(type_def=input_type)
+    if issubclass(result, types.AdapterType):
+        return result()
+    return result.instance()
+
+
+cdef types.ScalarType resolve_numpy_dtype(object input_dtype):
     """Resolve a numpy/pandas dtype object, returning a corresponding
     AtomicType.
     """
@@ -186,7 +198,7 @@ cdef types.ScalarType resolve_typespec_dtype_numpy(object input_dtype):
     raise ValueError(f"numpy dtype not recognized: {input_dtype}")
 
 
-cdef types.ScalarType resolve_typespec_dtype_pandas(object input_dtype):
+cdef types.ScalarType resolve_pandas_dtype(object input_dtype):
     """Resolve a numpy/pandas dtype object, returning a corresponding
     AtomicType.
     """
@@ -198,15 +210,3 @@ cdef types.ScalarType resolve_typespec_dtype_pandas(object input_dtype):
 
     # look up ExtensionDtype and pass example
     return registry.aliases[type(input_dtype)].from_dtype(input_dtype)
-
-
-cdef types.ScalarType resolve_typespec_type(type input_type):
-    """Resolve a python type, returning a corresponding AtomicType."""
-    cdef dict aliases = types.AtomicType.registry.aliases
-    cdef type result = aliases.get(input_type, None)
-
-    if result is None:
-        return types.ObjectType.instance(type_def=input_type)
-    if issubclass(result, types.AdapterType):
-        return result()
-    return result.instance()

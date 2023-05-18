@@ -1,28 +1,13 @@
+"""This module provides PEP 484-style type hints for ``pdcast`` constructs.
+"""
 import datetime
 import decimal
-from typing import runtime_checkable, Protocol, Union
+import numbers
+from typing import runtime_checkable, Iterable, List, Protocol, Tuple, Union
 
 import numpy as np
+import numpy.typing
 import pandas as pd
-
-
-#########################
-####    ITERABLES    ####
-#########################
-
-
-array_like = Union[
-    np.ndarray,
-    pd.Series
-]
-
-
-list_like = Union[
-    list,
-    tuple,
-    np.ndarray,
-    pd.Series
-]
 
 
 #######################
@@ -30,21 +15,17 @@ list_like = Union[
 #######################
 
 
+numeric = Union[
+    np.number,
+    numbers.Complex,
+    decimal.Decimal
+]
+
+
 datetime_like = Union[
     pd.Timestamp,
     datetime.datetime,
     np.datetime64
-]
-
-
-numeric = Union[
-    int,
-    np.integer,
-    float,
-    np.floating,
-    complex,
-    np.complexfloating,
-    decimal.Decimal
 ]
 
 
@@ -59,7 +40,30 @@ type_specifier = Union[
     type,
     str,
     np.dtype,
-    pd.api.extensions.ExtensionDtype
+    pd.api.extensions.ExtensionDtype,
+    Iterable[
+        Union[
+            type,
+            str,
+            np.dtype,
+            pd.api.extensions.ExtensionDtype
+        ]
+    ]
+]
+
+
+#########################
+####    ITERABLES    ####
+#########################
+
+
+array_like = numpy.typing.ArrayLike
+
+
+list_like = Union[
+    List,
+    Tuple,
+    array_like
 ]
 
 

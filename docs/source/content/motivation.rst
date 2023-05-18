@@ -1,28 +1,144 @@
 .. currentmodule:: pdcast
 
+.. _motivation:
+
 Motivation
 ==========
 ``pdcast`` is meant to be a general-purpose framework for writing type-based
-pandas extensions.  It provides a wealth of powerful tools to do this, but in
-order to understand how it can help, we first need to do an in-depth
-examination of the current state of the numpy/pandas typing infrastructure.
+extensions for the `pandas <https://pandas.pydata.org/>`_ ecosystem.  It offers
+a wealth of tools to do this, but in order to understand all of them, we need
+to do an in-depth examination of the current state of the numpy/pandas
+equivalents.
+
+.. _motivation.type_systems:
+
+Type systems
+------------
+Before we dive into the specifics of the numpy/pandas type systems, we should
+first examine how such systems are implemented on a language level.  Broadly
+speaking, `type systems <https://en.wikipedia.org/wiki/Type_system>`_ vary
+along 2 main axes: `strong/weak
+<https://en.wikipedia.org/wiki/Strong_and_weak_typing>`_ and `static/dynamic
+<https://en.wikipedia.org/wiki/Type_system#Type_checking>`_.
+
+In its default CPython implementation, Python is a **strongly**-typed,
+**dynamic** language.  This means that variable types are
+**strictly enforced**, and are **checked at runtime**.  Practically speaking,
+this allows us to eschew most of the boilerplate code found in statically-typed
+languages like Java and C while maintaining similar levels of predictability
+and safety.  Since variables are allowed to hold objects of any type,
+assignments can be performed without converting the underlying data, and the
+flexibility of the data model itself allows us to easily implement
+`polymorphism <https://en.wikipedia.org/wiki/Polymorphism_(computer_science)>`_
+in our code.  This results in a straightforward, easy-to-use programming
+language that supports a wide variety of design patterns with relatively little
+fuss.  It does, however, come with a few important drawbacks, particularly as
+it relates to performance and reliability.
+
+.. _motivation.type_systems.performance:
+
+Performance
+^^^^^^^^^^^
+On an implementation level, Python achieves dynamic typing by storing a pointer
+to an object's type in its header.  This adds a small overhead to every object
+that Python creates - the size of a single `pointer
+<https://en.wikipedia.org/wiki/Pointer_(computer_programming)>`_ on the target
+system.  We can observe this by running
+:func:`sys.getsizeof() <python:sys.getsizeof>` on a built-in Python type.
+
+.. doctest::
+
+    >>> import sys
+    >>> sys.getsizeof(3.14)
+    24
+
+On a `64-bit <https://en.wikipedia.org/wiki/64-bit_computing>`_ system, these
+bytes are broken down as follows:
+
+*   8 byte `reference counter <https://en.wikipedia.org/wiki/Reference_counting>`_
+    for automatic garbage collection.
+*   8 byte pointer to the :class:`float <python:float>` type object.
+*   8 bytes describing the value of the float itself.
+
+This effectively triples the size of every :class:`float <python:float>` that
+Python creates, and makes storing them in arrays particularly inefficient.  In
+contrast, C can store the same float with only 8 bytes of memory thanks to
+manual memory management and static typing, which completely eliminates the
+overhead added by Python.  As a result, we can store 3 times as many floats in
+C as we can in Python, without compromising our data or exceeding the original
+memory footprint.  What's more, C exposes several smaller floating point data
+types with reduced precision compared to the 64-bit `doubles
+<https://en.wikipedia.org/wiki/Double-precision_floating-point_format>`_ used
+by Python.  This allows us to increase our memory savings even further by
+demoting our floats to a `32
+<https://en.wikipedia.org/wiki/Single-precision_floating-point_format>`_ or
+`16-bit <https://en.wikipedia.org/wiki/Half-precision_floating-point_format>`_
+representation, giving a maximum 12x reduction in overall memory consumption.
+
+These factors can dramatically increase the speed and efficiency of
+statically-typed (and non reference-counted) languages over Python, especially
+for numeric computations.  In fact, this is the reason numpy implements its own
+primitive type system in the first place, bypassing the inefficiencies of the
+ordinary Python data model.  Instead, numpy stores data in
+:ref:`packed arrays <numpy:arrays>`: contiguous blocks of memory whose indices
+correspond to scalars of the corresponding
+:ref:`array-scalar <numpy:arrays.scalars>` type.  These types are effectively
+identical to their C counterparts, bringing the same performance advantages to
+Python without sacrificing its overall convenience.
+
+Flexibility
+^^^^^^^^^^^
+
+*   Discuss the assumptions made by C data types, and the difficulty of
+    translating Python types to them.
+
+
+.. _motivation.type_systems.reliability:
+
+Reliability
+^^^^^^^^^^^
+Another area where dynamic typing can lead to problems is in error detection
+and `type safety <https://en.wikipedia.org/wiki/Type_safety>`_.  Because C has
+access to full type information at compile time, it can warn users of
+mismatches before the program is ever run.  Python, on the other hand, forces
+users to rely on **runtime** type checks via the
+:func:`isinstance() <python:isinstance>` and
+:func:`issubclass() <python:issubclass>` built-in functions.  This has a number
+of consequences, almost all of them bad.
+
+First and most importantly, we are unable to catch errors until we actually run
+our program.  This means we can never have absolute confidence that our
+constructs are receiving the data they expect in all cases, and the only way we
+can make sure is by adding an explicit branch to our production code.  This is
+inefficient and cumbersome to the extent that it is often considered an
+`anti-pattern <https://en.wikipedia.org/wiki/Anti-pattern>`_ in large projects.
+
+Instead, we are encouraged to use static analysis tools like `mypy
+<https://mypy-lang.org/>`_, which can analyze `type hints
+<https://peps.python.org/pep-0484/>`_ that are separate from actual logic.
+This emulates the power of a C-style static compiler, solving most issues with
+type safety (at least on an internal level).  Public-facing functions still
+need explicit type checks to handle arbitrary user input, and there are some
+data structures that can't be easily checked by static analysis tools, like
+vectors and other containers.  This is enough of a problem that numpy has
+implemented its own vectorized type hints
+
+Ironically, this confidence breaks down when numpy enters the picture.  Because
+
+
+
+*   Vectors fall through the cracks of static analyzers like mypy.
+*   Statically-typed functions cannot accept arbitrary Python objects.  There
+    must therefore be a translation layer to prevent unexpected type errors.
 
 
 
 
-``pdcast`` is meant to be a flexible framework for resolving certain
-idiosyncrasies in pandas functionality, particularly as it relates to data
-cleaning, preprocessing, and `type safety <https://en.wikipedia.org/wiki/Type_safety>`_.
-It allows users to easily detect and manipulate data in virtually any
-representation, and to safely convert between them without losing information
-in the process.
 
-To explain this further, we need to do an in-depth examination of what these
-idiosyncrasies are, and how they can adversely affect your data science
-pipelines.
+at the cost of early error detection.  Because the Python compiler does not know the explicit type of a variable beforehand, it can't perform the same level of analysis as a true static compiler
 
-Type Safety
------------
+type of a variable is not known until runtime, errors will not be encountered until the offending code is actually executed.
+
 
 
 

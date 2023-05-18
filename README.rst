@@ -63,23 +63,6 @@ structures on a global basis.  Users are thus able to surgically overload
 virtually any aspect of the pandas interface, or add entirely new behavior
 specific to one or more data types.
 
-.. TODO: uncomment this once the package is pushed to PyPI
-
-   Installation
-   ------------
-   Wheels are built using `cibuildwheel <https://cibuildwheel.readthedocs.io/en/stable/>`_
-   and are available for most platforms via the Python Package Index (PyPI).
-
-   .. TODO: add hyperlink to PyPI page when it goes live
-
-   .. code:: console
-
-      (.venv) $ pip install pdcast
-
-   If a wheel is not available for your system, ``pdcast`` also provides an sdist
-   to allow pip to build from source, although doing so requires an additional
-   ``cython`` dependency.
-
 Usage
 -----
 In its basic usage, ``pdcast`` can easily verify the types that are present
@@ -239,6 +222,23 @@ in pandas.
    Traceback (most recent call last):
       ...
    NotImplementedError: bar is only defined for floating point values
+
+.. TODO: uncomment this once the package is pushed to PyPI
+
+   Installation
+   ------------
+   Wheels are built using `cibuildwheel <https://cibuildwheel.readthedocs.io/en/stable/>`_
+   and are available for most platforms via the Python Package Index (PyPI).
+
+   .. TODO: add hyperlink to PyPI page when it goes live
+
+   .. code:: console
+
+      (.venv) $ pip install pdcast
+
+   If a wheel is not available for your system, ``pdcast`` also provides an sdist
+   to allow pip to build from source, although doing so requires an additional
+   ``cython`` dependency.
 
 .. uncomment this when documentation goes live
 
