@@ -35,7 +35,8 @@ supports a wide variety of design patterns with relatively little fuss.  It can
 even emulate weak typing to a certain extent through its
 :ref:`dunder method <python:numeric-types>` interface, which further enhances
 the language's flexibility.  This scheme does, however, come with a few
-important drawbacks, particularly as it relates to performance and reliability.
+important drawbacks, particularly as it relates to performance, type safety,
+and conversions.
 
 .. _motivation.type_systems.performance:
 
@@ -102,8 +103,59 @@ Python without sacrificing its overall convenience.
 
     Basic schematic for numpy's packed array structure.
 
-Translation
+.. _motivation.type_systems.type_safety:
+
+Type safety
 ^^^^^^^^^^^
+Another area where dynamic typing can lead to problems is in error detection
+and `type safety <https://en.wikipedia.org/wiki/Type_safety>`_.  Because C has
+access to full type information at `compile <https://en.wikipedia.org/wiki/Compiler>`_
+time, it can warn users of mismatches before the program is ever run.  Python,
+on the other hand, forces users to rely on **runtime** type checks via the
+built-in :func:`isinstance() <python:isinstance>` and
+:func:`issubclass() <python:issubclass>` functions.  This has a number of
+consequences, almost all of them bad.
+
+First and most importantly, we are unable to catch errors until we actually run
+our program.  This means we can never have absolute confidence that our
+constructs are receiving the data they expect in all cases, and the only way we
+can make sure is by adding an explicit branch to our production code.  This is
+inefficient and cumbersome to the extent that it is often considered an
+`anti-pattern <https://en.wikipedia.org/wiki/Anti-pattern>`_ in large projects.
+
+Instead, we are encouraged to use static analysis tools like `mypy
+<https://mypy-lang.org/>`_, which can analyze `type hints
+<https://peps.python.org/pep-0484/>`_ that are separate from actual logic.
+This solves most issues with type safety on an internal level, but
+public-facing functions still need explicit checks to handle arbitrary user
+input, where static analysis is unable to reach.  This forces us back into the
+:func:`isinstance() <python:isinstance>`\ /
+:func:`issubclass() <python:issubclass>` paradigm for at least some portion of
+our code base.
+
+If our inputs are scalar, then this isn't the end of the world.  Where it
+becomes especially pathological is when the data we're expecting is `vectorized
+<https://en.wikipedia.org/wiki/Array_programming>`_ in some way, as might be
+the case for numpy arrays or pandas data structures.  If we try to run
+:func:`isinstance() <python:isinstance>` on these objects, we will simply be
+checking the type of the vector itself rather than any of its contents.  If we
+want to determine the type of each element, then we have 2 options.  Either we
+check the vector's :class:`dtype <numpy.dtype>` attribute (if it has one), or
+we iterate through it manually, applying
+:func:`isinstance() <python:isinstance>` at every index.  Both of these have
+problems.  The first is fast, but restricts us only to numpy/pandas types, and
+the second is slow, but works on generic data.
+
+What would be great is if we could leverage numpy's :class:`dtype <numpy.dtype>`
+system to do fast checks for arbitrary data.  Luckily, this is exactly what
+``pdcast`` enables us to do.
+
+.. _motivation.type_systems.conversions:
+
+Conversions
+^^^^^^^^^^^
+.. https://en.wikipedia.org/wiki/Type_conversion
+
 As we can see, Python's type system tends to value flexibility and abstraction
 over performance and efficiency.  This divorces us from the actual bits and
 bytes that our program operates on, allowing us to ignore a great deal of
@@ -134,59 +186,15 @@ on all systems.
     translating Python types to them.
 
 
-.. _motivation.type_systems.reliability:
-
-Reliability
-^^^^^^^^^^^
-Another area where dynamic typing can lead to problems is in error detection
-and `type safety <https://en.wikipedia.org/wiki/Type_safety>`_.  Because C has
-access to full type information at `compile <https://en.wikipedia.org/wiki/Compiler>`_
-time, it can warn users of mismatches before the program is ever run.  Python,
-on the other hand, forces users to rely on **runtime** type checks via the
-built-in :func:`isinstance() <python:isinstance>` and
-:func:`issubclass() <python:issubclass>` functions.  This has a number of
-consequences, almost all of them bad.
-
-First and most importantly, we are unable to catch errors until we actually run
-our program.  This means we can never have absolute confidence that our
-constructs are receiving the data they expect in all cases, and the only way we
-can make sure is by adding an explicit branch to our production code.  This is
-inefficient and cumbersome to the extent that it is often considered an
-`anti-pattern <https://en.wikipedia.org/wiki/Anti-pattern>`_ in large projects.
-
-Instead, we are encouraged to use static analysis tools like `mypy
-<https://mypy-lang.org/>`_, which can analyze `type hints
-<https://peps.python.org/pep-0484/>`_ that are separate from actual logic.
-This emulates the power of a C-style static compiler, solving most issues with
-type safety, at least on an internal level.  Public-facing functions still
-need explicit type checks to handle arbitrary user input, where mypy is unable
-to reach.  This forces us back into the
-:func:`isinstance() <python:isinstance>`\ /
-:func:`issubclass() <python:issubclass>` paradigm
 
 
-, and there are some
-data structures that can't be easily checked by static analysis tools, like
-vectors and other containers.  This is enough of a problem that numpy has
-implemented its own array-based type hints
 
-Ironically, this confidence breaks down when numpy enters the picture.  Because
 
 
 
 *   Vectors fall through the cracks of static analyzers like mypy.
 *   Statically-typed functions cannot accept arbitrary Python objects.  There
     must therefore be a translation layer to prevent unexpected type errors.
-
-
-
-
-
-at the cost of early error detection.  Because the Python compiler does not know the explicit type of a variable beforehand, it can't perform the same level of analysis as a true static compiler
-
-type of a variable is not known until runtime, errors will not be encountered until the offending code is actually executed.
-
-
 
 
 
