@@ -1,7 +1,6 @@
 """This module provides PEP 484-style type hints for ``pdcast`` constructs.
 """
 import datetime
-import decimal
 import numbers
 from typing import runtime_checkable, Iterable, List, Protocol, Tuple, Union
 
@@ -16,9 +15,8 @@ import pandas as pd
 
 
 numeric = Union[
-    np.number,
-    numbers.Complex,
-    decimal.Decimal
+    numbers.Number,
+    np.number
 ]
 
 
