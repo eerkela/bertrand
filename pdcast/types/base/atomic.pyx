@@ -741,7 +741,7 @@ cdef class AtomicType(ScalarType):
             if other == backend:
                 return True
             if include_subtypes:
-                subtypes = backend.subtypes.atomic_types - {self}
+                subtypes = set(backend.subtypes) - {self}
                 if any(s.contains(other) for s in subtypes):
                     return True
 
