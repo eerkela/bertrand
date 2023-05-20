@@ -21,13 +21,12 @@ along 2 main axes: `strong/weak <https://en.wikipedia.org/wiki/Strong_and_weak_t
 and `static/dynamic <https://en.wikipedia.org/wiki/Type_system#Type_checking>`_.
 
 In its default `CPython <https://en.wikipedia.org/wiki/CPython>`_
-implementation, Python is a **strongly**-typed, **dynamic** language.  This
-means that variable types are **strictly enforced**, and are **checked at
-runtime**.  Practically speaking, this configuration allows us to eschew most
-of the boilerplate code found in statically-typed languages like `Java
+implementation, Python is a **strongly**-typed, **dynamic** language.
+This configuration allows us to eschew most of the boilerplate code found in
+statically-typed languages like `Java
 <https://en.wikipedia.org/wiki/Java_(programming_language)>`_
 and `C <https://en.wikipedia.org/wiki/C_(programming_language)>`_ while
-maintaining similar levels of predictability overall.  Since variables are
+maintaining similar levels of overall predictability.  Since variables are
 allowed to hold objects of any type, assignments can be performed without
 converting the underlying data, and the flexibility of the :ref:`data model
 <python:datamodel>` itself allows us to easily implement `polymorphism
@@ -35,10 +34,10 @@ converting the underlying data, and the flexibility of the :ref:`data model
 This results in a straightforward, easy-to-use programming language that
 supports a wide variety of design patterns with relatively little fuss.  It can
 even emulate weak typing to a certain extent through its
-:ref:`dunder method <python:numeric-types>` interface, which further enhances
-the language's flexibility.  This scheme does, however, come with a few
-important drawbacks, particularly as it relates to performance, type safety,
-and stability.
+:ref:`special methods <python:numeric-types>`, which further enhance the
+language's flexibility.  This scheme does, however, come with a few important
+drawbacks, particularly as it relates to performance, type safety, and
+stability.
 
 .. _motivation.type_systems.performance:
 
@@ -48,8 +47,8 @@ On an implementation level, Python achieves dynamic typing by storing a
 `pointer <https://en.wikipedia.org/wiki/Pointer_(computer_programming)>`_
 to an object's type in its header.  This adds a small overhead for every object
 Python creates - the size of a single pointer on the target system.  We can
-observe this in action by running :func:`sys.getsizeof() <python:sys.getsizeof>`
-on a built-in Python type.
+observe this by running :func:`sys.getsizeof() <python:sys.getsizeof>` on a
+built-in Python type.
 
 .. doctest::
 
@@ -60,28 +59,25 @@ on a built-in Python type.
 On a `64-bit <https://en.wikipedia.org/wiki/64-bit_computing>`_ system, these
 bytes are broken down as follows:
 
-*   8 byte `reference counter <https://en.wikipedia.org/wiki/Reference_counting>`_
+#.  8 byte `reference counter <https://en.wikipedia.org/wiki/Reference_counting>`_
     for automatic `garbage collection
     <https://en.wikipedia.org/wiki/Garbage_collection_(computer_science)>`_.
-*   8 byte pointer to the :class:`float <python:float>` type object.
-*   8 bytes describing the value of the float itself.
+#.  8 byte pointer to the :class:`float <python:float>` type object.
+#.  8 bytes describing the value of the float as a 64-bit `double
+    <https://en.wikipedia.org/wiki/Double-precision_floating-point_format>`_.
 
 This effectively triples the size of every :class:`float <python:float>` that
 Python creates and makes storing them in arrays particularly inefficient.  By
-contrast, C can store the same float in only 8 bytes of memory thanks to manual
+contrast, C can store the same value in a third of the memory thanks to manual
 `memory management <https://en.wikipedia.org/wiki/Memory_management>`_ and
-static typing, which completely eliminates the overhead added by Python.  As a
-result, we can store 3 times as many floats in C as we can in Python, without
-compromising our data or exceeding the original memory footprint.  What's more,
-C exposes several smaller floating point data types with reduced precision
-compared to the 64-bit `doubles
-<https://en.wikipedia.org/wiki/Double-precision_floating-point_format>`_ used
-by Python.  This allows us to increase our memory savings even further by
-demoting our floats to a `32
+static typing.  This allows us to store 3 times as many floats in C as we can
+in Python, without compromising their values or exceeding the original memory
+footprint.  What's more, C exposes several smaller data types with reduced
+precision compared to Python's doubles.  By demoting our floats to a `32
 <https://en.wikipedia.org/wiki/Single-precision_floating-point_format>`_ or
 `16-bit <https://en.wikipedia.org/wiki/Half-precision_floating-point_format>`_
-representation, giving us a maximum 12x reduction in overall memory
-consumption.
+representation, we can increase memory savings even further, to a maximum 12x
+reduction.
 
 .. figure:: /images/Floating_Point_Data_Formats.svg
     :align: center
@@ -111,10 +107,11 @@ Safety
 ^^^^^^
 Probably the most significant ramifications of dynamic typing are in error
 detection and `type safety <https://en.wikipedia.org/wiki/Type_safety>`_.
-Because C has access to full type information at `compile <https://en.wikipedia.org/wiki/Compiler>`_
-time, it can warn users of mismatches before the program is ever run.  Python,
-on the other hand, forces users to rely on **runtime** type checks via the
-built-in :func:`isinstance() <python:isinstance>` and
+Because C has access to full type information at `compile
+<https://en.wikipedia.org/wiki/Compiler>`_ time, it can warn users of
+mismatches before the program is ever run.  Python, on the other hand, forces
+users to rely on **runtime** type checks via the built-in
+:func:`isinstance() <python:isinstance>` and
 :func:`issubclass() <python:issubclass>` functions.  This has a number of
 consequences, almost all of them bad.
 
@@ -127,10 +124,10 @@ inefficient and cumbersome to the extent that it is often considered an
 
 Instead, we are encouraged to use static analysis tools like `mypy
 <https://mypy-lang.org/>`_, which can analyze `type hints
-<https://peps.python.org/pep-0484/>`_ that are separate from actual logic.
-This solves most issues with type safety on an internal level, but
-public-facing functions still need explicit checks to handle arbitrary user
-input, where static analysis is unable to reach.  This forces us back into the
+<https://peps.python.org/pep-0484/>`_ that are separate from logic.  This
+solves most issues with type safety on an internal level, but public-facing
+functions still need explicit checks to handle user input, where static
+analysis can't reach.  This forces us back into the
 :func:`isinstance() <python:isinstance>`\ /
 :func:`issubclass() <python:issubclass>` paradigm for at least some portion of
 our code base.
@@ -138,26 +135,24 @@ our code base.
 If our inputs are scalar, then this isn't the end of the world.  Where it
 becomes especially pathological is when the data we're expecting is `vectorized
 <https://en.wikipedia.org/wiki/Array_programming>`_ in some way, as might be
-the case for numpy arrays or pandas data structures.  If we try to run
-:func:`isinstance() <python:isinstance>` on these objects, we will simply be
-checking the type of the vector itself rather than any of its contents.  If we
-want to determine the type of each element, then we have 2 options.  Either we
-check the vector's :class:`dtype <numpy.dtype>` attribute (if it has one), or
-we iterate through it manually, applying
-:func:`isinstance() <python:isinstance>` at every index.  Both of these have
-problems.  The first is fast, but restricts us only to numpy/pandas types, and
-the second is slow, but works on generic data.
+the case for numpy arrays or pandas data structures.  Running
+:func:`isinstance() <python:isinstance>` on these objects will simply check the
+type of the vector itself rather than any of its contents.  If we want to
+determine the type of each element, then we have 2 options.  Either we check
+the vector's :class:`dtype <numpy.dtype>` attribute (if it has one), or iterate
+through it manually, applying :func:`isinstance() <python:isinstance>` at
+every index.  The former is fast, but restricts us to numpy/pandas types, and
+the latter is slow, but works on generic data.
 
-What would be great is if we could leverage numpy's :class:`dtype <numpy.dtype>`
-system to do fast checks for arbitrary data.  Luckily, this is exactly what
-``pdcast`` enables us to do.
+.. figure:: /images/Checking_Numpy_Packed_Arrays.svg
+    :align: center
 
-.. _motivation.type_systems.conversions:
+    An illustration of the two type checking algorithms.
+
+.. _motivation.type_systems.stability:
 
 Stability
 ^^^^^^^^^
-.. https://en.wikipedia.org/wiki/Type_conversion
-
 Everything we've seen thus far encourages us to couple our code to the numpy
 type system for vectorized operations.  The trouble with this is that we
 inevitably have to translate values from Python to numpy and vice versa, which
@@ -166,7 +161,7 @@ integers and booleans.
 
 In C, integers come in several `varieties
 <https://en.wikipedia.org/wiki/C_data_types>`_ based on the size of their
-underlying memory buffer and signed/unsigned behavior.  This means they can
+underlying memory buffer and signed/unsigned status.  This means they can
 only represent values within a certain fixed range, and are subject to
 `overflow <https://en.wikipedia.org/wiki/Integer_overflow>`_ errors if they
 exceed it.  By contrast, Python (since `3.0
@@ -183,8 +178,8 @@ memory, and can work with integers that far exceed the C limitations.
 
 This presents a problem for numpy, which has to coerce these integers into a
 C-compatible format for use in its arrays.  As long as they fall within the
-`64-bit <https://en.wikipedia.org/wiki/64-bit_computing>`_ limit, then this can
-be done without issue:
+`64-bit <https://en.wikipedia.org/wiki/64-bit_computing>`_ limit, this can be
+done without issue:
 
 .. doctest::
 
@@ -206,8 +201,8 @@ floating point data type.
     >>> _.dtype
     dtype('float64')
 
-And for even larger values, we get a ``dtype: object`` array, which is
-essentially just a Python :class:`list <python:list>` with extra operations.
+For even larger values, we get a ``dtype: object`` array, which is essentially
+just a Python :class:`list <python:list>` with extra operations.
 
 .. doctest::
 
@@ -239,13 +234,13 @@ our arrays.
     `Rust <https://en.wikipedia.org/wiki/Rust_(programming_language)>`_) will
     raise an exception in this circumstance, but as we can see, numpy does not.
 
-This gives us 3 completely different results depending on our input data,
-further compounding the implicit conversion problem.  This means that our
-answers for even simple arithmetic problems depend (in a non-trivial manner) on
+This gives us 3 different results depending on the input data, further
+compounding the implicit conversion problem.  This means that our answers for
+even simple arithmetic problems depend (in a non-trivial manner) on
 our data.  We can't really be sure which of these we're going to get in
 practice, or what the intended representation was before we constructed the
-array.  We just make a note of it in our documentation counseling users not to
-try something like this and move on.
+array.  We just have to make a note of it in our documentation counseling users
+not to try something like this and move on.
 
 This works for us in the short term and our analysis is progressing smoothly.
 But what if we start adding `missing values <https://en.wikipedia.org/wiki/NaN>`_
@@ -253,7 +248,7 @@ to our data set?
 
 .. doctest::
 
-    >>> np.array([1, 2, np.nan])
+    >>> np.array([1, 2, np.nan])  # returns floats
     array([ 1.,  2., nan])
     >>> np.array([1, 2, None])
     array([1, 2, None], dtype=object)
@@ -264,14 +259,15 @@ to our data set?
     <https://en.wikipedia.org/wiki/NaN#Integer_NaN>`_ to hold missing values
     due to their fixed memory layout.  There is no specific bit pattern that
     can be reserved for these kinds of `special values
-    <https://en.wikipedia.org/wiki/IEEE_754#Special_values>`_.  This is not the
-    case for floating points, which `restrict a particular exponent
+    <https://en.wikipedia.org/wiki/IEEE_754#Special_values>`_, since every bit
+    is significant.  This is not the case for floating points, which
+    `restrict a particular exponent
     <https://en.wikipedia.org/wiki/Double-precision_floating-point_format#Exponent_encoding>`_
     specifically for such purposes, or for Python integers, which are nullable
     by default.
 
-We now have an entirely new set of implicit conversions to deal with.  Now
-we can't even tell whether our operations are failing due to overflow or the
+We now have an entirely new set of implicit conversions to deal with.  Now we
+can't even tell whether our operations are failing due to overflow or the
 presence of some illegal value, which can occur anywhere in the array.
 Needless to say, this is unsustainable, so we decide to move to pandas hoping
 for a better solution.  Unfortunately, since pandas shares numpy's type system,
@@ -308,6 +304,8 @@ all the same problems are reflected there as well.
     2    NaN
     dtype: float64
 
+At this point, we might not even be sure if *we* are real, let alone our data.
+
 .. note::
 
     Pandas does expose its own :ref:`nullable integer types <pandas:integer_na>`
@@ -326,8 +324,6 @@ all the same problems are reflected there as well.
         1       2
         2    <NA>
         dtype: Int64
-
-At this point, we might not even be sure if *we* are real, let alone our data.
 
 
 
