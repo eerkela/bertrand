@@ -11,7 +11,7 @@ Features
 --------
 ``pdcast`` implements an abstract `type system
 <https://en.wikipedia.org/wiki/Type_system>`_ for numpy/pandas ``dtype``
-objects, adding support for:
+objects, with support for:
 
 *  **Concrete hierarchies** representing different subtypes and
    implementations.  These are lightweight, efficient, and highly extensible,
@@ -85,8 +85,8 @@ within pandas data structures and other iterables:
 
 With its more advanced features, ``pdcast`` implements its own universal
 :func:`cast() <pdcast.cast>` function, which can perform arbitrary data
-conversions within its expanded type system.  Here's a short walk around the
-various categories that are supported out of the box (Note: ``_`` refers to the
+conversions within its expanded type system.  Here's a short walk around some
+of the categories that are supported out of the box (Note: ``_`` refers to the
 previous output).
 
 .. doctest::

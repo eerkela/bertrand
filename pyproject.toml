@@ -23,7 +23,7 @@ keywords = [
     "extension",
     "type",
     "conversion",
-    "dispatch"
+    "dispatch",
 ]
 dependencies = [
     "numpy",
@@ -31,7 +31,7 @@ dependencies = [
     "python-dateutil",
     "pytz",
     "regex",
-    "tzlocal"
+    "tzlocal",
 ]
 requires-python = ">=3.7"
 
@@ -40,7 +40,8 @@ requires-python = ">=3.7"
 dev = [
     "cibuildwheel",
     "pytest",
-    "sphinx"
+    "sphinx",
+    "sphinx_rtd_theme",
 ]
 
 

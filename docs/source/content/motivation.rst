@@ -7,28 +7,30 @@ Motivation
 ``pdcast`` is meant to be a general-purpose framework for writing type-based
 extensions for the `pandas <https://pandas.pydata.org/>`_ ecosystem.  It offers
 a wealth of tools to do this, but in order to understand how they work, we need
-to do an in-depth examination of the current state of the numpy/pandas
-typing infrastructure.
+to do an in-depth examination of the current state of the numpy/pandas typing
+infrastructure and `type systems <https://en.wikipedia.org/wiki/Type_system>`_
+in general.
 
 .. _motivation.type_systems:
 
 Type systems
 ------------
-Before we dive into the specifics of the numpy/pandas `type systems
-<https://en.wikipedia.org/wiki/Type_system>`_, we should first examine how such
-systems are implemented on a language level.  Broadly speaking, these vary
+Before we dive into the specifics of numpy/pandas, we should first examine how
+type systems are implemented on a language level.  Broadly speaking, these vary
 along 2 main axes: `strong/weak <https://en.wikipedia.org/wiki/Strong_and_weak_typing>`_
 and `static/dynamic <https://en.wikipedia.org/wiki/Type_system#Type_checking>`_.
 
-In its default CPython implementation, Python is a **strongly**-typed,
-**dynamic** language.  This means that variable types are
-**strictly enforced**, and are **checked at runtime**.  Practically speaking,
-this configuration allows us to eschew most of the boilerplate code found in
-statically-typed languages like Java and C while maintaining similar levels of
-predictability overall.  Since variables are allowed to hold objects of any
-type, assignments can be performed without converting the underlying data, and
-the flexibility of the :ref:`data model <python:datamodel>` itself allows us to
-easily implement `polymorphism
+In its default `CPython <https://en.wikipedia.org/wiki/CPython>`_
+implementation, Python is a **strongly**-typed, **dynamic** language.  This
+means that variable types are **strictly enforced**, and are **checked at
+runtime**.  Practically speaking, this configuration allows us to eschew most
+of the boilerplate code found in statically-typed languages like `Java
+<https://en.wikipedia.org/wiki/Java_(programming_language)>`_
+and `C <https://en.wikipedia.org/wiki/C_(programming_language)>`_ while
+maintaining similar levels of predictability overall.  Since variables are
+allowed to hold objects of any type, assignments can be performed without
+converting the underlying data, and the flexibility of the :ref:`data model
+<python:datamodel>` itself allows us to easily implement `polymorphism
 <https://en.wikipedia.org/wiki/Polymorphism_(computer_science)>`_ in our code.
 This results in a straightforward, easy-to-use programming language that
 supports a wide variety of design patterns with relatively little fuss.  It can
@@ -36,7 +38,7 @@ even emulate weak typing to a certain extent through its
 :ref:`dunder method <python:numeric-types>` interface, which further enhances
 the language's flexibility.  This scheme does, however, come with a few
 important drawbacks, particularly as it relates to performance, type safety,
-and conversions.
+and stability.
 
 .. _motivation.type_systems.performance:
 
@@ -65,7 +67,7 @@ bytes are broken down as follows:
 *   8 bytes describing the value of the float itself.
 
 This effectively triples the size of every :class:`float <python:float>` that
-Python creates, and makes storing them in arrays particularly inefficient.  In
+Python creates and makes storing them in arrays particularly inefficient.  By
 contrast, C can store the same float in only 8 bytes of memory thanks to manual
 `memory management <https://en.wikipedia.org/wiki/Memory_management>`_ and
 static typing, which completely eliminates the overhead added by Python.  As a
@@ -103,13 +105,13 @@ Python without sacrificing its overall convenience.
 
     Basic schematic for numpy's packed array structure.
 
-.. _motivation.type_systems.type_safety:
+.. _motivation.type_systems.safety:
 
-Type safety
-^^^^^^^^^^^
-Another area where dynamic typing can lead to problems is in error detection
-and `type safety <https://en.wikipedia.org/wiki/Type_safety>`_.  Because C has
-access to full type information at `compile <https://en.wikipedia.org/wiki/Compiler>`_
+Safety
+^^^^^^
+Probably the most significant ramifications of dynamic typing are in error
+detection and `type safety <https://en.wikipedia.org/wiki/Type_safety>`_.
+Because C has access to full type information at `compile <https://en.wikipedia.org/wiki/Compiler>`_
 time, it can warn users of mismatches before the program is ever run.  Python,
 on the other hand, forces users to rely on **runtime** type checks via the
 built-in :func:`isinstance() <python:isinstance>` and
@@ -152,298 +154,370 @@ system to do fast checks for arbitrary data.  Luckily, this is exactly what
 
 .. _motivation.type_systems.conversions:
 
-Conversions
-^^^^^^^^^^^
+Stability
+^^^^^^^^^
 .. https://en.wikipedia.org/wiki/Type_conversion
 
-As we can see, Python's type system tends to value flexibility and abstraction
-over performance and efficiency.  This divorces us from the actual bits and
-bytes that our program operates on, allowing us to ignore a great deal of
-complexity when writing software.  Unfortunately, this abstraction comes with a
-cost, making it difficult to translate arbitrary Python objects into
-numpy-compatible static types.
+Everything we've seen thus far encourages us to couple our code to the numpy
+type system for vectorized operations.  The trouble with this is that we
+inevitably have to translate values from Python to numpy and vice versa, which
+is non-trivial in many cases.  This is true even for simple data types, like
+integers and booleans.
 
-This is particularly pronounced in the case of integers, which are handled
-differently in Python compared to C.  In C, integers are always of a fixed
-size as specified during variable declaration (e.g. ``int32_t``, ``uint64_t``,
-etc.).  This limits them to a certain operating range determined by the size of
-their containers.  Once this is set, it cannot be changed, except by converting
-the integer to a different data type.
+In C, integers come in several `varieties
+<https://en.wikipedia.org/wiki/C_data_types>`_ based on the size of their
+underlying memory buffer and signed/unsigned behavior.  This means they can
+only represent values within a certain fixed range, and are subject to
+`overflow <https://en.wikipedia.org/wiki/Integer_overflow>`_ errors if they
+exceed it.  By contrast, Python (since `3.0
+<https://peps.python.org/pep-0237/>`_) exposes only a single
+:class:`int <python:int>` type with unlimited precision.  Whenever one of these
+integers overflows, Python simply adds another 32-bit buffer to store the
+larger value.  In this way, Python is limited only by the amount of available
+memory, and can work with integers that far exceed the C limitations.
 
+.. figure:: /images/Integer_Data_Formats.svg
+    :align: center
 
-In Python, integers are unsized, allowing
-them to grow and shrink as needed
+    Memory layouts for numpy/C vs. Python integers.
 
+This presents a problem for numpy, which has to coerce these integers into a
+C-compatible format for use in its arrays.  As long as they fall within the
+`64-bit <https://en.wikipedia.org/wiki/64-bit_computing>`_ limit, then this can
+be done without issue:
 
-
-Another consequence of dynamic typing in Python is its support for abstract
-behavior.  In the early days of C, types were often `platform-specific
-<https://en.wikipedia.org/wiki/C_data_types>`_, and might not behave the same
-on all systems.  
-
-
-*   Discuss the assumptions made by C data types, and the difficulty of
-    translating Python types to them.
-
-
-
-
-
-
-
-
-*   Vectors fall through the cracks of static analyzers like mypy.
-*   Statically-typed functions cannot accept arbitrary Python objects.  There
-    must therefore be a translation layer to prevent unexpected type errors.
-
-
-
-
-
-Python is a `dynamically-typed <https://realpython.com/python-type-checking/>`_
-language.  This comes with a number of noteworthy benefits, many of which have
-spurred the growth of Python as an easy to use, general purpose programming
-language.  Simultaneously, it is also the basis for many of the complaints
-against Python as just such a language.  Python is too slow?  Blame dynamic
-typing.  Python uses too much memory?  Blame dynamic typing (and reference
-counting).  Python is buggy?  *Blame dynamic typing.*
-
-In order to avoid these problems, production code is often lifted out of Python
-entirely, implemented in some other statically-typed language (usually C), and
-then reintroduced to Python by way of the CPython interface or a compatibility
-layer such as `Cython <https://cython.org/>`_, `Jython <https://www.jython.org/>`_,
-`Numba <https://numba.pydata.org/>`_, or `RustPython <https://rustpython.github.io/>`_.
-This is all well and good, but in so doing, one must make certain assumptions
-about the data they are working with.  C integers, for instance, can be
-`platform-specific <https://en.wikipedia.org/wiki/C_data_types>`_ and may not
-fit arbitrary data without overflowing, like `Python integers <https://peps.python.org/pep-0237/>`_
-can. Similarly, they are `unable to hold missing values <https://en.wikipedia.org/wiki/NaN#Integer_NaN>`_,
-which are often encountered in real-world data.  Nevertheless, as long as one
-is aware of these limitations going in, the benefits can be significant, and so
-it is done regardless.
-
-This, however, presents an entirely new problem: one of translation.  Given the
-fact that there is no direct C equivalent for the built-in Python integer type,
-how can we be sure that our dynamic inputs will fit within the limits of our
-statically-typed variables?  In fact, how can we be certain that we're dealing
-with integers at all?  What if our data is given as `datetimes <https://docs.python.org/3/library/datetime.html>`_,
-for which there is no direct `C analogue <https://en.wikipedia.org/wiki/C_date_and_time_functions>`_?
-Dynamic typing forces us to answer these questions at **runtime.**  We cannot
-rely on a static compiler to keep things consistent for us.  If we want to be
-certain, then we must insert manual checks to guarantee that the translation
-occurs without error.
-
-If we were working with scalar values, we could do this by inserting one or
-more ``isinstance()`` and/or range checks, but this adds overhead and
-counteracts the performance benefits we can expect to achieve.  It also fails
-to address the case where our data has no analogue, for which we'd need to
-implement our own custom encoding/decoding logic.  Additionally, if our data is
-vectorized, then we'd need to repeat the check at every index, which might be
-slow and inefficient, particularly in Python.  Of course we could just move
-forward and hope we don't encounter any problems, but what if we do?  What if
-our assumptions are wrong, or what if we don't know ahead of time what kind of
-data we will encounter?
-
-These are common problems in data science, where data cleaning and
-preprocessing take up a significant fraction of one's time.  In this process,
-missing and malformed values are the rule rather than the exception, and care
-must be taken to treat them appropriately.  Most often, this involves a whole
-pipeline of formatting, interpolation, cuts, biases, normalization,
-conversions, and anything else a data scientist might keep in their toolkit for
-just such an occassion.
-
-This is also the exact case where reliability and performance matter most,
-especially in the era of big data.  As such, one should be looking to use
-statically-typed acceleration wherever possible, and indeed that's exactly
-what the two most common data analysis packages (numpy and pandas) do under the
-hood.  It is important to state, however, that they do not eliminate the
-problems that arise when converting between `type systems <https://en.wikipedia.org/wiki/Type_system>`_;
-they merely bury them beneath an extra layer of abstraction.  Occasionally,
-they still rear their ugly heads.
-
-Limitations of Numpy/Pandas
----------------------------
-Consider a pandas series containing the integers 1 through 3:
-
-.. doctest:: limitations
-
-    >>> import pandas as pd
-    >>> pd.Series([1, 2, 3])
-    0    1
-    1    2
-    2    3
-    dtype: int64
-
-By default, this is automatically converted to a 64-bit integer data type, as
-represented by its ``dtype`` attribute.  If we request a value at a specific
-index of the series, it will be returned as a ``numpy.int64`` object:
-
-.. doctest:: limitations
-
-    >>> val = pd.Series([1, 2, 3])[0]
-    >>> print(type(val), val)
-    <class 'numpy.int64'> 1
-
-So far, so good.  But what if we add a missing value to the series?
-
-.. doctest:: limitations
-
-    >>> pd.Series([1, 2, 3, None])
-    0    1.0
-    1    2.0
-    2    3.0
-    3    NaN
-    dtype: float64
-
-It changes to ``float64``!  This happens because ``numpy.int64`` objects
-cannot contain missing values.  There is no particular bit pattern in their
-binary representation that can be reserved to hold `special values <https://en.wikipedia.org/wiki/IEEE_754#Special_values>`_
-like ``inf`` or ``NaN``.  This is not the case for floating points, which
-`restrict a particular exponent <https://en.wikipedia.org/wiki/Double-precision_floating-point_format#Exponent_encoding>`_
-specifically for such purposes.  Because of this discrepancy, pandas silently
-converts our integer series into a float series to accomodate the missing
-value.
-
-Pandas does expose an ``Int64Dtype()`` that bypasses this restriction, but it
-must be set manually:
-
-.. doctest:: limitations
-
-    >>> pd.Series([1, 2, 3, None], dtype=pd.Int64Dtype())
-    0       1
-    1       2
-    2       3
-    3    <NA>
-    dtype: Int64
-
-This means that unless you are aware of it ahead of time, your data could very
-well be converted to floats *without your knowledge!* Why is this a problem?
-Well, let's see what happens when our integers are very large:
-
-.. doctest:: limitations
-
-    >>> pd.Series([2**63 - 3, 2**63 - 2, 2**63 - 1])
-    0    9223372036854775805
-    1    9223372036854775806
-    2    9223372036854775807
-    dtype: int64
-
-These integers are very large indeed.  In fact, they are almost overflowing
-their 64-bit buffers.  If we add 1 to this series, we might expect to
-receive some kind of overflow error informing us of our potential mistake.  Do
-we get such an error?
-
-.. doctest:: limitations
-
-    >>> pd.Series([2**63 - 3, 2**63 - 2, 2**63 - 1]) + 1
-    0    9223372036854775806
-    1    9223372036854775807
-    2   -9223372036854775808
-    dtype: int64
-
-No, the data type stays 64-bits wide and we simply wrap around to the
-negative side of the number line.  Again, if you aren't aware of this behavior,
-you might have just introduced an outlier to your data set unexpectedly.
-
-It gets even worse when you combine large integers with missing values:
-
-.. doctest:: limitations
-
-    >>> pd.Series([2**63 - 3, 2**63 - 2, 2**63 - 1, None])
-    0    9.223372e+18
-    1    9.223372e+18
-    2    9.223372e+18
-    3             NaN
-    dtype: float64
-
-As before, this converts our data into a floating point format.  What happens
-if we add 1 to this series?
-
-.. _floating_point_rounding_error:
-
-.. doctest:: limitations
-
-    >>> pd.Series([2**63 - 3, 2**63 - 2, 2**63 - 1, None]) + 1
-    0    9.223372e+18
-    1    9.223372e+18
-    2    9.223372e+18
-    3             NaN
-    dtype: float64
-
-This time we don't wrap around the number line like before.  This is because in
-`floating point arithmetic <https://en.wikipedia.org/wiki/Floating-point_arithmetic>`_,
-we have plenty of extra numbers to work with above the normal 64-bit limit.
-However, if we look at the values at each index, what integers are we actually
-storing?
-
-.. doctest:: limitations
-
-    >>> series = pd.Series([2**63 - 3, 2**63 - 2, 2**63 - 1, None])
-    >>> for val in series[:3]:
-    ...     print(int(val))
-    9223372036854775808
-    9223372036854775808
-    9223372036854775808
-
-They're all the same!  This is an example of a
-`floating point rounding error <https://en.wikipedia.org/wiki/Round-off_error>`_
-in action.  Each of our integers is above the integral range of ``float64``
-objects, which is defined by the number of bits in their significand 
-(`53 <https://en.wikipedia.org/wiki/Double-precision_floating-point_format#IEEE_754_double-precision_binary_floating-point_format:_binary64>`_
-in the case of ``float64`` objects).  Only integers within this range can be
-exactly represented with exponent 1, meaning that any integer outside the range
-``(-2**53, 2**53)`` must increment the exponent and therefore lose exact
-integer precision.  In this case it's even worse, since our values are ~10
-factors of 2 outside that range, meaning that the exponent portion of our
-floats must be >= 10.  This leaves approximately ``2**10 = 1024`` unique values
-that we are masking with the above data.  We can confirm this by doing the
-following:
-
-.. doctest:: limitations
+.. doctest::
 
     >>> import numpy as np
-    >>> val = np.float64(2**63 - 1)
-    >>> i, j = 0, 0
-    >>> while val + i == val:  # count up
-    ...     i += 1
-    >>> while val - j == val:  # count down
-    ...     j += 1
-    >>> print(f"up: {i}\ndown: {j}\ntotal: {i + j}")
-    up: 1025
-    down: 513
-    total: 1538
 
-So it turns out we have over 1500 different values within error of the observed
-result.  Once more, if we weren't aware of this going in to our analysis, we
-may have just unwittingly introduced a form of systematic error by accident.
-This is not ideal!
+    >>> np.array([1, 2, 3])
+    array([1, 2, 3])
+    >>> _.dtype
+    dtype('int64')
+
+However, as soon as we exceed this limit, we get inconsistent behavior.  For
+values > int64 but < uint64, this results in an implicit conversion to a
+floating point data type.
+
+.. doctest::
+
+    >>> np.array([1, 2, 2**63])
+    array([1.00000000e+00, 2.00000000e+00, 9.22337204e+18])
+    >>> _.dtype
+    dtype('float64')
+
+And for even larger values, we get a ``dtype: object`` array, which is
+essentially just a Python :class:`list <python:list>` with extra operations.
+
+.. doctest::
+
+    >>> np.array([1, 2, 2**64])
+    array([1, 2, 18446744073709551616], dtype=object)
+    >>> _.dtype
+    dtype('O')
+
+This raises the specter of weak typing that we fought so hard to eliminate.
+Such implicit conversions are often unexpected, and can easily result in hidden
+bugs if not properly accounted for.  Worse still, numpy doesn't even warn us
+when this occurs, which makes diagnosing the problem that much more difficult.
+These distinctions become especially problematic when we start doing math on
+our arrays.
+
+.. doctest::
+
+    >>> np.array([1, 2, 2**63 - 1]) + 1   # doctest: +NORMALIZE_WHITESPACE
+    array([1, 2, -9223372036854775808])
+    >>> np.array([1, 2, 2**63]) + 1
+    array([2.00000000e+00, 3.00000000e+00, 9.22337204e+18])
+    >>> np.array([1, 2, 2**64]) + 1
+    array([2, 3, 18446744073709551617], dtype=object)
+
+.. warning::
+
+    The first case is an example of `integer overflow
+    <https://en.wikipedia.org/wiki/Integer_overflow>`_. Some languages (like
+    `Rust <https://en.wikipedia.org/wiki/Rust_(programming_language)>`_) will
+    raise an exception in this circumstance, but as we can see, numpy does not.
+
+This gives us 3 completely different results depending on our input data,
+further compounding the implicit conversion problem.  This means that our
+answers for even simple arithmetic problems depend (in a non-trivial manner) on
+our data.  We can't really be sure which of these we're going to get in
+practice, or what the intended representation was before we constructed the
+array.  We just make a note of it in our documentation counseling users not to
+try something like this and move on.
+
+This works for us in the short term and our analysis is progressing smoothly.
+But what if we start adding `missing values <https://en.wikipedia.org/wiki/NaN>`_
+to our data set?
+
+.. doctest::
+
+    >>> np.array([1, 2, np.nan])
+    array([ 1.,  2., nan])
+    >>> np.array([1, 2, None])
+    array([1, 2, None], dtype=object)
+
+.. warning::
+
+    This occurs because C integers are `unable
+    <https://en.wikipedia.org/wiki/NaN#Integer_NaN>`_ to hold missing values
+    due to their fixed memory layout.  There is no specific bit pattern that
+    can be reserved for these kinds of `special values
+    <https://en.wikipedia.org/wiki/IEEE_754#Special_values>`_.  This is not the
+    case for floating points, which `restrict a particular exponent
+    <https://en.wikipedia.org/wiki/Double-precision_floating-point_format#Exponent_encoding>`_
+    specifically for such purposes, or for Python integers, which are nullable
+    by default.
+
+We now have an entirely new set of implicit conversions to deal with.  Now
+we can't even tell whether our operations are failing due to overflow or the
+presence of some illegal value, which can occur anywhere in the array.
+Needless to say, this is unsustainable, so we decide to move to pandas hoping
+for a better solution.  Unfortunately, since pandas shares numpy's type system,
+all the same problems are reflected there as well.
+
+.. doctest::
+
+    >>> import pandas as pd
+
+    >>> pd.Series([1, 2, 2**63 - 1])
+    0                      1
+    1                      2
+    2    9223372036854775807
+    dtype: int64
+    >>> pd.Series([1, 2, 2**63])  # numpy gave us a float64 array
+    0                      1
+    1                      2
+    2    9223372036854775808
+    dtype: uint64
+    >>> pd.Series([1, 2, 2**64])
+    0                       1
+    1                       2
+    2    18446744073709551616
+    dtype: object
+
+    >>> pd.Series([1, 2, np.nan])
+    0    1.0
+    1    2.0
+    2    NaN
+    dtype: float64
+    >>> pd.Series([1, 2, None])  # why is this not dtype: object?
+    0    1.0
+    1    2.0
+    2    NaN
+    dtype: float64
 
 .. note::
 
-    The discrepancy from our predicted value of 1024 comes from the fact
-    that ``2**63 - 1`` is on the verge of overflowing past its current
-    exponent.  Once we reach ``2**63``, we must increment our exponent to 11,
-    giving us twice as many values above ``2**63`` as below it.
+    Pandas does expose its own :ref:`nullable integer types <pandas:integer_na>`
+    to bypass the missing value restriction, but they must be set manually
+    ahead of time, and are easily overlooked.
+
+    .. doctest::
+
+        >>> pd.Series([1, 2, np.nan], dtype=pd.Int64Dtype())
+        0       1
+        1       2
+        2    <NA>
+        dtype: Int64
+        >>> pd.Series([1, 2, None], dtype=pd.Int64Dtype())
+        0       1
+        1       2
+        2    <NA>
+        dtype: Int64
+
+At this point, we might not even be sure if *we* are real, let alone our data.
+
+
+
+.. 
+    Limitations of Numpy/Pandas
+    ---------------------------
+    Consider a pandas series containing the integers 1 through 3:
+
+    .. doctest:: limitations
+
+        >>> import pandas as pd
+        >>> pd.Series([1, 2, 3])
+        0    1
+        1    2
+        2    3
+        dtype: int64
+
+    By default, this is automatically converted to a 64-bit integer data type, as
+    represented by its ``dtype`` attribute.  If we request a value at a specific
+    index of the series, it will be returned as a ``numpy.int64`` object:
+
+    .. doctest:: limitations
+
+        >>> val = pd.Series([1, 2, 3])[0]
+        >>> print(type(val), val)
+        <class 'numpy.int64'> 1
+
+    So far, so good.  But what if we add a missing value to the series?
+
+    .. doctest:: limitations
+
+        >>> pd.Series([1, 2, 3, None])
+        0    1.0
+        1    2.0
+        2    3.0
+        3    NaN
+        dtype: float64
+
+    It changes to ``float64``!  This happens because ``numpy.int64`` objects
+    cannot contain missing values.  There is no particular bit pattern in their
+    binary representation that can be reserved to hold `special values <https://en.wikipedia.org/wiki/IEEE_754#Special_values>`_
+    like ``inf`` or ``NaN``.  This is not the case for floating points, which
+    `restrict a particular exponent <https://en.wikipedia.org/wiki/Double-precision_floating-point_format#Exponent_encoding>`_
+    specifically for such purposes.  Because of this discrepancy, pandas silently
+    converts our integer series into a float series to accomodate the missing
+    value.
+
+    Pandas does expose an ``Int64Dtype()`` that bypasses this restriction, but it
+    must be set manually:
+
+    .. doctest:: limitations
+
+        >>> pd.Series([1, 2, 3, None], dtype=pd.Int64Dtype())
+        0       1
+        1       2
+        2       3
+        3    <NA>
+        dtype: Int64
+
+    This means that unless you are aware of it ahead of time, your data could very
+    well be converted to floats *without your knowledge!* Why is this a problem?
+    Well, let's see what happens when our integers are very large:
+
+    .. doctest:: limitations
+
+        >>> pd.Series([2**63 - 3, 2**63 - 2, 2**63 - 1])
+        0    9223372036854775805
+        1    9223372036854775806
+        2    9223372036854775807
+        dtype: int64
+
+    These integers are very large indeed.  In fact, they are almost overflowing
+    their 64-bit buffers.  If we add 1 to this series, we might expect to
+    receive some kind of overflow error informing us of our potential mistake.  Do
+    we get such an error?
+
+    .. doctest:: limitations
+
+        >>> pd.Series([2**63 - 3, 2**63 - 2, 2**63 - 1]) + 1
+        0    9223372036854775806
+        1    9223372036854775807
+        2   -9223372036854775808
+        dtype: int64
+
+    No, the data type stays 64-bits wide and we simply wrap around to the
+    negative side of the number line.  Again, if you aren't aware of this behavior,
+    you might have just introduced an outlier to your data set unexpectedly.
+
+    It gets even worse when you combine large integers with missing values:
+
+    .. doctest:: limitations
+
+        >>> pd.Series([2**63 - 3, 2**63 - 2, 2**63 - 1, None])
+        0    9.223372e+18
+        1    9.223372e+18
+        2    9.223372e+18
+        3             NaN
+        dtype: float64
+
+    As before, this converts our data into a floating point format.  What happens
+    if we add 1 to this series?
+
+    .. _floating_point_rounding_error:
+
+    .. doctest:: limitations
+
+        >>> pd.Series([2**63 - 3, 2**63 - 2, 2**63 - 1, None]) + 1
+        0    9.223372e+18
+        1    9.223372e+18
+        2    9.223372e+18
+        3             NaN
+        dtype: float64
+
+    This time we don't wrap around the number line like before.  This is because in
+    `floating point arithmetic <https://en.wikipedia.org/wiki/Floating-point_arithmetic>`_,
+    we have plenty of extra numbers to work with above the normal 64-bit limit.
+    However, if we look at the values at each index, what integers are we actually
+    storing?
+
+    .. doctest:: limitations
+
+        >>> series = pd.Series([2**63 - 3, 2**63 - 2, 2**63 - 1, None])
+        >>> for val in series[:3]:
+        ...     print(int(val))
+        9223372036854775808
+        9223372036854775808
+        9223372036854775808
+
+    They're all the same!  This is an example of a
+    `floating point rounding error <https://en.wikipedia.org/wiki/Round-off_error>`_
+    in action.  Each of our integers is above the integral range of ``float64``
+    objects, which is defined by the number of bits in their significand 
+    (`53 <https://en.wikipedia.org/wiki/Double-precision_floating-point_format#IEEE_754_double-precision_binary_floating-point_format:_binary64>`_
+    in the case of ``float64`` objects).  Only integers within this range can be
+    exactly represented with exponent 1, meaning that any integer outside the range
+    ``(-2**53, 2**53)`` must increment the exponent and therefore lose exact
+    integer precision.  In this case it's even worse, since our values are ~10
+    factors of 2 outside that range, meaning that the exponent portion of our
+    floats must be >= 10.  This leaves approximately ``2**10 = 1024`` unique values
+    that we are masking with the above data.  We can confirm this by doing the
+    following:
+
+    .. doctest:: limitations
+
+        >>> import numpy as np
+        >>> val = np.float64(2**63 - 1)
+        >>> i, j = 0, 0
+        >>> while val + i == val:  # count up
+        ...     i += 1
+        >>> while val - j == val:  # count down
+        ...     j += 1
+        >>> print(f"up: {i}\ndown: {j}\ntotal: {i + j}")
+        up: 1025
+        down: 513
+        total: 1538
+
+    So it turns out we have over 1500 different values within error of the observed
+    result.  Once more, if we weren't aware of this going in to our analysis, we
+    may have just unwittingly introduced a form of systematic error by accident.
+    This is not ideal!
+
+    .. note::
+
+        The discrepancy from our predicted value of 1024 comes from the fact
+        that ``2**63 - 1`` is on the verge of overflowing past its current
+        exponent.  Once we reach ``2**63``, we must increment our exponent to 11,
+        giving us twice as many values above ``2**63`` as below it.
+
+.. _motivation.pdcast:
 
 pdcast: a safer alternative
 -------------------------------
-Let's see how ``pdcast`` handles the above example:
+Let's see how ``pdcast`` handles the above examples:
 
-.. doctest:: pdcast_intro
+.. doctest::
 
     >>> import pdcast
+
     >>> pdcast.to_integer([1, 2, 3])
     0    1
     1    2
     2    3
     dtype: int64
-    >>> pdcast.to_integer([1, 2, 3]).dtype
+    >>> _.dtype
     dtype('int64')
 
 So far this is exactly the same as before.  However, when we add missing
 values, we see how ``pdcast`` diverges from normal pandas:
 
-.. doctest:: pdcast_intro
+.. doctest::
 
     >>> pdcast.to_integer([1, 2, 3, None])
     0       1
@@ -452,9 +526,10 @@ values, we see how ``pdcast`` diverges from normal pandas:
     3    <NA>
     dtype: Int64
 
-Instead of coercing integers to floating point, we skip straight to the
-``pd.Int64Dtype()`` implementation.  This doesn't just happen for ``int64``\s
-either, it also applies for booleans and all other non-nullable data types.
+Instead of coercing integers to floats, we skip straight to the
+:class:`pd.Int64Dtype() <pandas.Int64Dtype>` implementation.  This doesn't
+just happen for int64s either, it also applies for booleans and all other
+non-nullable data types.
 
 .. doctest:: pdcast_intro
 
