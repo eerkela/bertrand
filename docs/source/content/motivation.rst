@@ -57,7 +57,7 @@ built-in Python type.
     24
 
 On a `64-bit <https://en.wikipedia.org/wiki/64-bit_computing>`_ system, these
-bytes are broken down as follows:
+are broken down as follows:
 
 #.  8 byte `reference counter <https://en.wikipedia.org/wiki/Reference_counting>`_
     for automatic `garbage collection
@@ -68,11 +68,11 @@ bytes are broken down as follows:
 
 This effectively triples the size of every :class:`float <python:float>` that
 Python creates and makes storing them in arrays particularly inefficient.  By
-contrast, C can store the same value in a third of the memory thanks to manual
+contrast, C can store the same value in only 8 bytes of memory thanks to manual
 `memory management <https://en.wikipedia.org/wiki/Memory_management>`_ and
 static typing.  This allows us to store 3 times as many floats in C as we can
 in Python, without compromising their values or exceeding the original memory
-footprint.  What's more, C exposes several smaller data types with reduced
+footprint.  What's more, C exposes several smaller float types with reduced
 precision compared to Python's doubles.  By demoting our floats to a `32
 <https://en.wikipedia.org/wiki/Single-precision_floating-point_format>`_ or
 `16-bit <https://en.wikipedia.org/wiki/Half-precision_floating-point_format>`_
@@ -113,7 +113,7 @@ mismatches before the program is ever run.  Python, on the other hand, forces
 users to rely on **runtime** type checks via the built-in
 :func:`isinstance() <python:isinstance>` and
 :func:`issubclass() <python:issubclass>` functions.  This has a number of
-consequences, almost all of them bad.
+negative consequences.
 
 First and most importantly, we are unable to catch errors until we actually run
 our program.  This means we can never have absolute confidence that our
@@ -126,8 +126,8 @@ Instead, we are encouraged to use static analysis tools like `mypy
 <https://mypy-lang.org/>`_, which can analyze `type hints
 <https://peps.python.org/pep-0484/>`_ that are separate from logic.  This
 solves most issues with type safety on an internal level, but public-facing
-functions still need explicit checks to handle user input, where static
-analysis can't reach.  This forces us back into the
+functions still need explicit checks to handle arbitrary user input, where
+static analysis cannot reach.  This forces us back into the
 :func:`isinstance() <python:isinstance>`\ /
 :func:`issubclass() <python:issubclass>` paradigm for at least some portion of
 our code base.
