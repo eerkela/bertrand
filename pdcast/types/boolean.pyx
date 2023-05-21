@@ -100,7 +100,7 @@ class BooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
 
 
 @register
-@BooleanType.register_backend("numpy")
+@BooleanType.implementation("numpy")
 class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
     """Numpy boolean type.
 
@@ -140,7 +140,7 @@ class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
 
 
 @register
-@BooleanType.register_backend("pandas")
+@BooleanType.implementation("pandas")
 class PandasBooleanType(BooleanMixin, AtomicType):
     """Pandas boolean type.
 
@@ -181,7 +181,7 @@ class PandasBooleanType(BooleanMixin, AtomicType):
 
 
 @register
-@BooleanType.register_backend("python")
+@BooleanType.implementation("python")
 class PythonBooleanType(BooleanMixin, AtomicType):
     """Python boolean type.
 

@@ -80,7 +80,7 @@ class TimedeltaType(AtomicType):
 
 
 @register
-@TimedeltaType.register_backend("numpy")
+@TimedeltaType.implementation("numpy")
 class NumpyTimedelta64Type(AtomicType, cache_size=64):
 
     # NOTE: dtype is set to object due to pandas and its penchant for
@@ -194,7 +194,7 @@ class NumpyTimedelta64Type(AtomicType, cache_size=64):
 
 
 @register
-@TimedeltaType.register_backend("pandas")
+@TimedeltaType.implementation("pandas")
 class PandasTimedeltaType(AtomicType):
 
     aliases = {pd.Timedelta, "Timedelta", "pandas.Timedelta", "pd.Timedelta"}
@@ -212,7 +212,7 @@ class PandasTimedeltaType(AtomicType):
 
 
 @register
-@TimedeltaType.register_backend("python")
+@TimedeltaType.implementation("python")
 class PythonTimedeltaType(AtomicType):
 
     aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}

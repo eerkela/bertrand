@@ -77,7 +77,7 @@ class StringType(AtomicType):
 
 
 @register
-@StringType.register_backend("python")
+@StringType.implementation("python")
 class PythonStringType(AtomicType):
 
     aliases = set()
@@ -99,7 +99,7 @@ if pyarrow_installed:
 
 
     @register
-    @StringType.register_backend("pyarrow")
+    @StringType.implementation("pyarrow")
     class PyArrowStringType(AtomicType):
 
         aliases = set()

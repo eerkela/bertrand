@@ -8,7 +8,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AtomicType, CompositeType
-from .base import generic, subtype, register
+from .base import generic, register
 
 
 ######################
@@ -82,7 +82,7 @@ class IntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 @register
 @generic
-@subtype(IntegerType)
+@IntegerType.subtype
 class SignedIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic signed integer supertype."""
 
@@ -97,7 +97,7 @@ class SignedIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 @register
 @generic
-@subtype(IntegerType)
+@IntegerType.subtype
 class UnsignedIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 8-bit unsigned integer type."""
 
@@ -112,7 +112,7 @@ class UnsignedIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 @register
 @generic
-@subtype(SignedIntegerType)
+@SignedIntegerType.subtype
 class Int8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 8-bit signed integer type."""
 
@@ -127,7 +127,7 @@ class Int8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 @register
 @generic
-@subtype(SignedIntegerType)
+@SignedIntegerType.subtype
 class Int16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 16-bit signed integer type."""
 
@@ -142,7 +142,7 @@ class Int16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 @register
 @generic
-@subtype(SignedIntegerType)
+@SignedIntegerType.subtype
 class Int32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 32-bit signed integer type."""
 
@@ -157,7 +157,7 @@ class Int32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 @register
 @generic
-@subtype(SignedIntegerType)
+@SignedIntegerType.subtype
 class Int64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 64-bit signed integer type."""
 
@@ -172,7 +172,7 @@ class Int64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 @register
 @generic
-@subtype(UnsignedIntegerType)
+@UnsignedIntegerType.subtype
 class UInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 8-bit unsigned integer type."""
 
@@ -187,7 +187,7 @@ class UInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 @register
 @generic
-@subtype(UnsignedIntegerType)
+@UnsignedIntegerType.subtype
 class UInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 16-bit unsigned integer type."""
 
@@ -202,7 +202,7 @@ class UInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 @register
 @generic
-@subtype(UnsignedIntegerType)
+@UnsignedIntegerType.subtype
 class UInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 32-bit unsigned integer type."""
 
@@ -217,7 +217,7 @@ class UInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 @register
 @generic
-@subtype(UnsignedIntegerType)
+@UnsignedIntegerType.subtype
 class UInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Generic 64-bit unsigned integer type."""
 
@@ -236,7 +236,8 @@ class UInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 
 @register
-@IntegerType.register_backend("numpy")
+@IntegerType.implementation("numpy")
+@generic
 class NumpyIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Numpy integer type."""
 
@@ -249,8 +250,9 @@ class NumpyIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 
 @register
-@subtype(NumpyIntegerType)
-@SignedIntegerType.register_backend("numpy")
+@NumpyIntegerType.subtype
+@SignedIntegerType.implementation("numpy")
+@generic
 class NumpySignedIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Numpy signed integer type."""
 
@@ -263,8 +265,9 @@ class NumpySignedIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 
 @register
-@subtype(NumpyIntegerType)
-@UnsignedIntegerType.register_backend("numpy")
+@NumpyIntegerType.subtype
+@UnsignedIntegerType.implementation("numpy")
+@generic
 class NumpyUnsignedIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """Numpy unsigned integer type."""
 
@@ -277,8 +280,8 @@ class NumpyUnsignedIntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 
 @register
-@subtype(NumpySignedIntegerType)
-@Int8Type.register_backend("numpy")
+@NumpySignedIntegerType.subtype
+@Int8Type.implementation("numpy")
 class NumpyInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """8-bit numpy integer subtype."""
 
@@ -291,8 +294,8 @@ class NumpyInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 
 @register
-@subtype(NumpySignedIntegerType)
-@Int16Type.register_backend("numpy")
+@NumpySignedIntegerType.subtype
+@Int16Type.implementation("numpy")
 class NumpyInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """16-bit numpy integer subtype."""
 
@@ -305,8 +308,8 @@ class NumpyInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 
 @register
-@subtype(NumpySignedIntegerType)
-@Int32Type.register_backend("numpy")
+@NumpySignedIntegerType.subtype
+@Int32Type.implementation("numpy")
 class NumpyInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """32-bit numpy integer subtype."""
 
@@ -319,8 +322,8 @@ class NumpyInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 
 @register
-@subtype(NumpySignedIntegerType)
-@Int64Type.register_backend("numpy")
+@NumpySignedIntegerType.subtype
+@Int64Type.implementation("numpy")
 class NumpyInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """64-bit numpy integer subtype."""
 
@@ -333,8 +336,8 @@ class NumpyInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 
 @register
-@subtype(NumpyUnsignedIntegerType)
-@UInt8Type.register_backend("numpy")
+@NumpyUnsignedIntegerType.subtype
+@UInt8Type.implementation("numpy")
 class NumpyUInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """8-bit numpy unsigned integer subtype."""
 
@@ -347,8 +350,8 @@ class NumpyUInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 
 @register
-@subtype(NumpyUnsignedIntegerType)
-@UInt16Type.register_backend("numpy")
+@NumpyUnsignedIntegerType.subtype
+@UInt16Type.implementation("numpy")
 class NumpyUInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """16-bit numpy unsigned integer subtype."""
 
@@ -361,8 +364,8 @@ class NumpyUInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 
 @register
-@subtype(NumpyUnsignedIntegerType)
-@UInt32Type.register_backend("numpy")
+@NumpyUnsignedIntegerType.subtype
+@UInt32Type.implementation("numpy")
 class NumpyUInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """32-bit numpy unsigned integer subtype."""
 
@@ -375,8 +378,8 @@ class NumpyUInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 
 @register
-@subtype(NumpyUnsignedIntegerType)
-@UInt64Type.register_backend("numpy")
+@NumpyUnsignedIntegerType.subtype
+@UInt64Type.implementation("numpy")
 class NumpyUInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
     """64-bit numpy unsigned integer subtype."""
 
@@ -394,7 +397,8 @@ class NumpyUInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
 
 @register
-@IntegerType.register_backend("pandas")
+@IntegerType.implementation("pandas")
+@generic
 class PandasIntegerType(IntegerMixin, AtomicType):
     """Pandas integer supertype."""
 
@@ -407,8 +411,9 @@ class PandasIntegerType(IntegerMixin, AtomicType):
 
 
 @register
-@subtype(PandasIntegerType)
-@SignedIntegerType.register_backend("pandas")
+@PandasIntegerType.subtype
+@SignedIntegerType.implementation("pandas")
+@generic
 class PandasSignedIntegerType(IntegerMixin, AtomicType):
     """Python signed integer supertype."""
 
@@ -421,8 +426,9 @@ class PandasSignedIntegerType(IntegerMixin, AtomicType):
 
 
 @register
-@subtype(PandasIntegerType)
-@UnsignedIntegerType.register_backend("pandas")
+@PandasIntegerType.subtype
+@UnsignedIntegerType.implementation("pandas")
+@generic
 class PandasUnsignedIntegerType(IntegerMixin, AtomicType):
     """Numpy unsigned integer type."""
 
@@ -435,8 +441,8 @@ class PandasUnsignedIntegerType(IntegerMixin, AtomicType):
 
 
 @register
-@subtype(PandasSignedIntegerType)
-@Int8Type.register_backend("pandas")
+@PandasSignedIntegerType.subtype
+@Int8Type.implementation("pandas")
 class PandasInt8Type(IntegerMixin, AtomicType):
     """8-bit numpy integer subtype."""
 
@@ -449,8 +455,8 @@ class PandasInt8Type(IntegerMixin, AtomicType):
 
 
 @register
-@subtype(PandasSignedIntegerType)
-@Int16Type.register_backend("pandas")
+@PandasSignedIntegerType.subtype
+@Int16Type.implementation("pandas")
 class PandasInt16Type(IntegerMixin, AtomicType):
     """16-bit numpy integer subtype."""
 
@@ -463,8 +469,8 @@ class PandasInt16Type(IntegerMixin, AtomicType):
 
 
 @register
-@subtype(PandasSignedIntegerType)
-@Int32Type.register_backend("pandas")
+@PandasSignedIntegerType.subtype
+@Int32Type.implementation("pandas")
 class PandasInt32Type(IntegerMixin, AtomicType):
     """32-bit numpy integer subtype."""
 
@@ -477,8 +483,8 @@ class PandasInt32Type(IntegerMixin, AtomicType):
 
 
 @register
-@subtype(PandasSignedIntegerType)
-@Int64Type.register_backend("pandas")
+@PandasSignedIntegerType.subtype
+@Int64Type.implementation("pandas")
 class PandasInt64Type(IntegerMixin, AtomicType):
     """64-bit numpy integer subtype."""
 
@@ -491,8 +497,8 @@ class PandasInt64Type(IntegerMixin, AtomicType):
 
 
 @register
-@subtype(PandasUnsignedIntegerType)
-@UInt8Type.register_backend("pandas")
+@PandasUnsignedIntegerType.subtype
+@UInt8Type.implementation("pandas")
 class PandasUInt8Type(IntegerMixin, AtomicType):
     """8-bit numpy integer subtype."""
 
@@ -505,8 +511,8 @@ class PandasUInt8Type(IntegerMixin, AtomicType):
 
 
 @register
-@subtype(PandasUnsignedIntegerType)
-@UInt16Type.register_backend("pandas")
+@PandasUnsignedIntegerType.subtype
+@UInt16Type.implementation("pandas")
 class PandasUInt16Type(IntegerMixin, AtomicType):
     """16-bit numpy integer subtype."""
 
@@ -519,8 +525,8 @@ class PandasUInt16Type(IntegerMixin, AtomicType):
 
 
 @register
-@subtype(PandasUnsignedIntegerType)
-@UInt32Type.register_backend("pandas")
+@PandasUnsignedIntegerType.subtype
+@UInt32Type.implementation("pandas")
 class PandasUInt32Type(IntegerMixin, AtomicType):
     """32-bit numpy integer subtype."""
 
@@ -533,8 +539,8 @@ class PandasUInt32Type(IntegerMixin, AtomicType):
 
 
 @register
-@subtype(PandasUnsignedIntegerType)
-@UInt64Type.register_backend("pandas")
+@PandasUnsignedIntegerType.subtype
+@UInt64Type.implementation("pandas")
 class PandasUInt64Type(IntegerMixin, AtomicType):
     """64-bit numpy integer subtype."""
 
@@ -552,8 +558,8 @@ class PandasUInt64Type(IntegerMixin, AtomicType):
 
 
 @register
-@IntegerType.register_backend("python")
-@SignedIntegerType.register_backend("python")
+@IntegerType.implementation("python")
+@SignedIntegerType.implementation("python")
 class PythonIntegerType(IntegerMixin, AtomicType):
     """Python integer supertype."""
 

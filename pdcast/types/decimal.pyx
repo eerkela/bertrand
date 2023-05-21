@@ -36,7 +36,7 @@ class DecimalType(AtomicType):
 
 
 @register
-@DecimalType.register_backend("python")
+@DecimalType.implementation("python")
 class PythonDecimalType(AtomicType):
 
     aliases = {decimal.Decimal}

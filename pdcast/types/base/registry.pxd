@@ -1,3 +1,5 @@
+# from . cimport atomic
+
 
 cdef class CacheValue:
     cdef readonly:
@@ -13,7 +15,7 @@ cdef class TypeRegistry:
         list atomic_types
         long long _hash
 
-    cdef int validate_aliases(self, type subclass) except -1
-    cdef int validate_name(self, type subclass) except -1
-    cdef int validate_slugify(self, type subclass) except -1
+    cdef int validate_aliases(self, object typ) except -1
+    cdef int validate_name(self, object typ) except -1
+    cdef int validate_slugify(self, object typ) except -1
     cdef void update_hash(self)

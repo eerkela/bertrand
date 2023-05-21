@@ -3,13 +3,36 @@
 to other types.
 """
 import inspect
+from types import MappingProxyType
 from typing import Any
 
 from pdcast cimport resolve
 from pdcast import resolve
 
 from .adapter import AdapterType
-from .atomic import ScalarType, AtomicType
+from .atomic cimport ScalarType, AtomicType
+from .composite cimport CompositeType
+
+from pdcast.util.type_hints import type_specifier
+
+
+# TODO: we probably have to adjust @subtype/@implementation decorators to
+# account for unregistered types.
+
+
+# TODO: @subtype should be decoupled from @generic
+# -> maybe separated into @generic, @supertype?  @supertype must be
+# cooperative
+
+
+# TODO: @register should transform the decorated type into its base instance.
+
+
+
+
+# TODO: Using GenericType for both subtypes and backends causes
+# int[numpy].generic to return a circular reference rather than pointing to int
+
 
 
 # TODO: @backend should be an independent decorator, which resolves the given
@@ -24,161 +47,219 @@ from .atomic import ScalarType, AtomicType
 # manual TypeRegistry interactions in 
 
 
-def register(class_: type = None, *, cond: bool = True):
+def register(class_: type | GenericType | None = None, *, cond: bool = True):
     """Validate an AtomicType definition and add it to the registry.
 
     Note: Any decorators above this one will be ignored during validation.
     """
-    def register_decorator(class_def):
-        if not issubclass(class_def, ScalarType):
-            raise TypeError(
-                "`@register` can only be applied to AtomicType and "
-                "AdapterType subclasses"
-            )
-        if cond:
-            AtomicType.registry.add(class_def)
+    def register_decorator(cls):
+        if isinstance(cls, GenericType):
+            result = cls
+        else:
+            if not issubclass(cls, ScalarType):
+                raise TypeError(
+                    "`@register` can only be applied to AtomicType and "
+                    "AdapterType subclasses"
+                )
+            result = cls.instance()
 
-        return class_def
+        if False:
+            AtomicType.registry.add(result)
+        return result
 
     if class_ is None:
         return register_decorator
     return register_decorator(class_)
 
 
-def generic(class_: type):
-    """Class decorator to mark generic AtomicType definitions.
+def generic(cls: type) -> GenericType:
+    """Mark a type as generic.
+    """
+    return GenericType(cls)
+
+
+
+class GenericType(ScalarType):
+    """Class decorator to mark generic type definitions.
 
     Generic types are backend-agnostic and act as wildcard containers for
     more specialized subtypes.  For instance, the generic "int" can contain
     the backend-specific "int[numpy]", "int[pandas]", and "int[python]"
     subtypes, which can be resolved as shown. 
     """
-    # NOTE: something like this would normally be handled using a decorating
-    # class rather than a function.  Doing it this way (patching) has the
-    # advantage of preserving the original type for issubclass() checks
-    if not issubclass(class_, AtomicType):
-        raise TypeError(f"`@generic` can only be applied to AtomicTypes")
 
-    # verify init is empty.  NOTE: cython __init__ is not introspectable.
-    if (
-        class_.__init__ != AtomicType.__init__ and
-        inspect.signature(class_).parameters
-    ):
-        raise TypeError(
-            f"To be generic, {class_.__qualname__}.__init__() cannot "
-            f"have arguments other than self"
-        )
+    def __init__(self, cls):
+        self._validate_class(cls)
 
-    # remember original equivalents
-    cdef dict orig = {k: getattr(class_, k) for k in ("instance", "resolve")}
+        self.__wrapped__ = cls
+        self._default = cls.instance()
+        self.name = cls.name
+        self.aliases = cls.aliases
+        self._subtypes = CompositeType()
+        self._backends = {None: self._default}
 
-    @classmethod
-    def instance(cls, backend: str = None, *args, **kwargs) -> AtomicType:
-        if backend is None:
-            return orig["instance"](*args, **kwargs)
-        extension = cls._backends.get(backend, None)
-        if extension is None:
-            raise TypeError(
-                f"{cls.name} backend not recognized: {repr(backend)}"
-            )
-        return extension.instance(*args, **kwargs)
+    def _validate_class(self, cls) -> None:
+        """Ensure that the decorated class is valid."""
+        if not issubclass(cls, AtomicType):
+            raise TypeError("@generic types must inherit from AtomicType")
 
-    @classmethod
-    def resolve(cls, backend: str = None, *args: str) -> AtomicType:
-        if backend is None:
-            return orig["resolve"](*args)
+        # NOTE: cython __init__ is not introspectable.
+        if (
+            cls.__init__ != AtomicType.__init__ and
+            inspect.signature(cls).parameters
+        ):
+            raise TypeError("@generic types cannot be parametrized")
 
-        # if a specific backend is given, resolve from its perspective
-        specific = cls._backends.get(backend, None)
-        if specific is not None and specific not in cls.registry:
-            specific = None
-        if specific is None:
-            raise TypeError(
-                f"{cls.name} backend not recognized: {repr(backend)}"
-            )
-        return specific.resolve(*args)
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
 
-    @classmethod
-    def register_backend(cls, backend: str):
-        # NOTE: in this context, cls is an alias for class_
-        def decorator(specific: type):
-            if not issubclass(specific, AtomicType):
+    def instance(
+        self,
+        backend: str | None = None,
+        *args,
+        **kwargs
+    ) -> AtomicType:
+        """Forward constructor arguments to the appropriate implementation."""
+        return self._backends[backend].instance(*args, **kwargs)
+
+    def resolve(
+        self,
+        backend: str | None = None,
+        *args
+    ) -> AtomicType:
+        """Forward constructor arguments to the appropriate implementation."""
+        return self._backends[backend].resolve(*args)
+
+    ##########################
+    ####    DECORATORS    ####
+    ##########################
+
+    def subtype(self, cls: type | None = None, *, **kwargs):
+        """A class decorator that adds a type as a subtype of this GenericType.
+        """
+        def decorator(cls: type) -> type:
+            """Link the decorated type to this GenericType."""
+            if not issubclass(cls, AtomicType):
+                raise TypeError("@generic types can only contain AtomicTypes")
+
+            if cls._parent:
                 raise TypeError(
-                    f"`generic.register_backend()` can only be applied to "
-                    f"AtomicType definitions"
+                    f"AtomicTypes can only be registered to one @generic type "
+                    f"at a time: '{cls.__qualname__}' is currently registered "
+                    f"to '{cls._parent.__qualname__}'"
                 )
 
-            # ensure backend is unique
-            if backend in cls._backends:
+            curr = cls
+            while curr is not None:
+                if curr is self:
+                    raise TypeError("@generic type cannot contain itself")
+                curr = curr._parent
+
+            cls._parent = self
+            self._subtypes |= cls.instance(**kwargs)
+            self.registry.flush()
+            return cls
+
+        if cls is None:
+            return decorator
+        return decorator(cls)
+
+    def implementation(self, backend: str = None, **kwargs):
+        """A class decorator that adds a type as an implementation of this
+        type.
+        """
+        def decorator(cls: type) -> type:
+            """Link the decorated type to this GenericType."""
+            if not issubclass(cls, AtomicType):
+                raise TypeError("@generic types can only contain AtomicTypes")
+
+            if not isinstance(backend, str):
                 raise TypeError(
-                    f"`backend` must be unique, not one of "
-                    f"{set(cls._backends)}"
+                    f"backend specifier must be a string, not {type(backend)}"
+                )
+
+            if backend in self._backends:
+                raise TypeError(
+                    f"backend specifier must be unique: {repr(backend)} is "
+                    f"already registered to {str(self._backends[backend])}"
                 )
 
             # ensure backend is self-consistent
-            if specific._backend is None:
-                specific._backend = backend
-            elif backend != specific._backend:
+            if cls._backend is None:
+                cls._backend = backend
+            elif backend != cls._backend:
                 raise TypeError(
-                    f"backends must match ({repr(backend)} != "
-                    f"{repr(specific._backend)})"
+                    f"backend specifiers must match ({repr(backend)} != "
+                    f"{repr(cls._backend)})"
                 )
 
-            # inherit generic attributes
-            specific._is_generic = False
-            specific._generic = cls
-            specific.name = cls.name
-            cls._backends[backend] = specific
-            specific.registry.flush()
-            return specific
+            cls._is_generic = False
+            cls._generic = self
+            cls.name = self.name
+            self._backends[backend] = cls.instance(**kwargs)
+            self.registry.flush()
+            return cls
 
         return decorator
 
-    # overwrite class attributes
-    class_._is_generic = True
-    class_._backend = None
+    #########################
+    ####    HIERARCHY    ####
+    #########################
 
-    # patch in new methods
-    loc = locals()
-    for k in orig:
-        setattr(class_, k, loc[k])
-    class_.register_backend = register_backend
-    return class_
+    @property
+    def is_generic(self) -> bool:
+        return True
 
+    @property
+    def generic(self) -> AtomicType:
+        return self
 
-def subtype(supertype: type):
-    """Class decorator to establish type hierarchies."""
-    if not issubclass(supertype, AtomicType):
-        raise TypeError(f"`supertype` must be a subclass of AtomicType")
+    @property
+    def subtypes(self) -> CompositeType:
+        return self._subtypes.copy()
 
-    def decorator(subtype_: type):
-        """Modify a subtype, linking it to a parent type."""
-        if not issubclass(subtype_, AtomicType):
-            raise TypeError(
-                f"`@subtype()` can only be applied to AtomicType definitions"
-            )
+    @property
+    def backends(self) -> dict:
+        return MappingProxyType(self._backends)
 
-        # break circular references
-        ref = supertype
-        while ref is not None:
-            if ref is subtype_:
-                raise TypeError(
-                    "Type hierarchy cannot contain circular references"
-                )
-            ref = ref._parent
+    @property
+    def children(self) -> CompositeType:
+        return self._subtypes | CompositeType(self._backends.values())
 
-        # check type is not already registered
-        if subtype_._parent:
-            raise TypeError(
-                f"AtomicTypes can only be registered to one supertype at a "
-                f"time: '{subtype_.__qualname__}'' is currently registered to "
-                f"'{subtype_._parent.__qualname__}'"
-            )
+    #################################
+    ####    COMPOSITE PATTERN    ####
+    #################################
 
-        # overwrite class attributes
-        subtype_._parent = supertype
-        supertype._children.add(subtype_)
-        AtomicType.registry.flush()
-        return subtype_
+    @property
+    def default(self) -> AtomicType:
+        """The concrete type that this generic type defaults to.
 
-    return decorator
+        This will be used whenever the generic type is specified without an
+        explicit backend.
+        """
+        return self._default
+
+    @default.setter
+    def default(self, val: type_specifier) -> None:
+        if val is None:
+            del self.default
+        else:
+            val = resolve.resolve_type(val)
+            if isinstance(val, CompositeType):
+                raise ValueError
+            if val not in self.children:
+                raise KeyError
+
+            self._default = val
+
+    @default.deleter
+    def default(self) -> None:
+        self._default = self._backends[None]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.default, name)
+
+    def __getitem__(self, key: str) -> AtomicType:
+        # this should be part of the AtomicType interface
+        return self._backends[key[:1]].instance(*key[1:])

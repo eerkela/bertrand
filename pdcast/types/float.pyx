@@ -10,7 +10,7 @@ cimport numpy as np
 from pdcast.util.type_hints import numeric
 
 from .base cimport AtomicType, CompositeType
-from .base import generic, subtype, register
+from .base import generic, register
 import pdcast.types.complex as complex_types
 
 
@@ -83,7 +83,7 @@ class FloatType(FloatMixin, AtomicType):
 
 @register
 @generic
-@subtype(FloatType)
+@FloatType.subtype
 class Float16Type(FloatMixin, AtomicType):
 
     name = "float16"
@@ -99,7 +99,7 @@ class Float16Type(FloatMixin, AtomicType):
 
 @register
 @generic
-@subtype(FloatType)
+@FloatType.subtype
 class Float32Type(FloatMixin, AtomicType):
 
     name = "float32"
@@ -115,7 +115,7 @@ class Float32Type(FloatMixin, AtomicType):
 
 @register
 @generic
-@subtype(FloatType)
+@FloatType.subtype
 class Float64Type(FloatMixin, AtomicType):
 
     name = "float64"
@@ -131,7 +131,7 @@ class Float64Type(FloatMixin, AtomicType):
 
 @register(cond=has_longdouble)
 @generic
-@subtype(FloatType)
+@FloatType.subtype
 class Float80Type(FloatMixin, AtomicType):
 
     name = "float80"
@@ -154,7 +154,7 @@ class Float80Type(FloatMixin, AtomicType):
 
 
 @register
-@FloatType.register_backend("numpy")
+@FloatType.implementation("numpy")
 class NumpyFloatType(FloatMixin, AtomicType):
 
     aliases = {np.floating}
@@ -168,8 +168,8 @@ class NumpyFloatType(FloatMixin, AtomicType):
 
 
 @register
-@subtype(NumpyFloatType)
-@Float16Type.register_backend("numpy")
+@NumpyFloatType.subtype
+@Float16Type.implementation("numpy")
 class NumpyFloat16Type(FloatMixin, AtomicType):
 
     aliases = {np.float16, np.dtype(np.float16)}
@@ -183,8 +183,8 @@ class NumpyFloat16Type(FloatMixin, AtomicType):
 
 
 @register
-@subtype(NumpyFloatType)
-@Float32Type.register_backend("numpy")
+@NumpyFloatType.subtype
+@Float32Type.implementation("numpy")
 class NumpyFloat32Type(FloatMixin, AtomicType):
 
     aliases = {np.float32, np.dtype(np.float32)}
@@ -198,8 +198,8 @@ class NumpyFloat32Type(FloatMixin, AtomicType):
 
 
 @register
-@subtype(NumpyFloatType)
-@Float64Type.register_backend("numpy")
+@NumpyFloatType.subtype
+@Float64Type.implementation("numpy")
 class NumpyFloat64Type(FloatMixin, AtomicType):
 
     aliases = {np.float64, np.dtype(np.float64)}
@@ -213,8 +213,8 @@ class NumpyFloat64Type(FloatMixin, AtomicType):
 
 
 @register(cond=has_longdouble)
-@subtype(NumpyFloatType)
-@Float80Type.register_backend("numpy")
+@NumpyFloatType.subtype
+@Float80Type.implementation("numpy")
 class NumpyFloat80Type(FloatMixin, AtomicType):
 
     aliases = {np.longdouble, np.dtype(np.longdouble)}
@@ -233,8 +233,8 @@ class NumpyFloat80Type(FloatMixin, AtomicType):
 
 
 @register
-@FloatType.register_backend("python")
-@Float64Type.register_backend("python")
+@FloatType.implementation("python")
+@Float64Type.implementation("python")
 class PythonFloatType(FloatMixin, AtomicType):
 
     aliases = {float}

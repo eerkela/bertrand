@@ -70,7 +70,7 @@ class DatetimeType(AtomicType):
 
 
 @register
-@DatetimeType.register_backend("numpy")
+@DatetimeType.implementation("numpy")
 class NumpyDatetime64Type(AtomicType, cache_size=64):
 
     # NOTE: dtype is set to object due to pandas and its penchant for
@@ -184,7 +184,7 @@ class NumpyDatetime64Type(AtomicType, cache_size=64):
 
 
 @register
-@DatetimeType.register_backend("pandas")
+@DatetimeType.implementation("pandas")
 class PandasTimestampType(AtomicType, cache_size=64):
 
     aliases = {
@@ -268,7 +268,7 @@ class PandasTimestampType(AtomicType, cache_size=64):
 
 
 @register
-@DatetimeType.register_backend("python")
+@DatetimeType.implementation("python")
 class PythonDatetimeType(AtomicType, cache_size=64):
 
     aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}

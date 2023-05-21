@@ -23,6 +23,12 @@ from . cimport composite
 from pdcast.types.array import abstract
 
 
+# TODO: __init_subclass__ returns a proxy, that is removed by @register.  This
+# pushes all the updates to the registry at once, rather than requiring checks
+# in decorators.
+
+
+
 # TODO: add examples/raises for each method
 
 # TODO: remove is_na() in favor of pd.isna() and convert make_nullable into
@@ -138,6 +144,13 @@ cdef class ScalarType(BaseType):
 ######################
 ####    ATOMIC    ####
 ######################
+
+# Type
+# ScalarType
+# GenericType
+# AtomicType
+# DecoratorType
+# CompositeType
 
 
 cdef class AtomicType(ScalarType):

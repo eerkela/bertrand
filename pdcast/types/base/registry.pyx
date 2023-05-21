@@ -94,15 +94,15 @@ cdef class TypeRegistry:
     ####    ADD/REMOVE    ####
     ##########################
 
-    def add(self, new_type: type) -> None:
+    def add(self, typ: atomic.ScalarType) -> None:
         """Add an AtomicType/AdapterType subclass to the registry."""
         # validate subclass has required fields
-        self.validate_name(new_type)
-        self.validate_aliases(new_type)
-        self.validate_slugify(new_type)
+        self.validate_name(typ)
+        self.validate_aliases(typ)
+        self.validate_slugify(typ)
 
         # add type to registry and update hash
-        self.atomic_types.append(new_type)
+        self.atomic_types.append(typ)
         self.update_hash()
 
     def remove(self, old_type: type) -> None:
@@ -204,48 +204,49 @@ cdef class TypeRegistry:
     ####    PRIVATE    ####
     #######################
 
-    cdef int validate_name(self, type subclass) except -1:
+    cdef int validate_name(self, object typ) except -1:
         """Ensure that a subclass of AtomicType has a unique `name` attribute
         associated with it.
         """
-        validate(subclass, "name", expected_type=str)
+        validate(typ, "name", expected_type=str)
 
-        # ensure subclass.name is unique or inherited from generic type
-        if (issubclass(subclass, atomic.AtomicType) and (
-            subclass._is_generic != False or
-            subclass.name != subclass._generic.name
-        )):
+        # ensure typ.name is unique or inherited from generic type
+        if (
+            isinstance(typ, atomic.AtomicType) and
+            typ._is_generic != False or
+            typ.name != typ._generic.name
+        ):
             observed_names = {x.name for x in self.atomic_types}
-            if subclass.name in observed_names:
+            if typ.name in observed_names:
                 raise TypeError(
-                    f"{subclass.__name__}.name ({repr(subclass.name)}) must be "
-                    f"unique (not one of {observed_names})"
+                    f"{typ.__name__}.name ({repr(typ.name)}) must be unique, "
+                    f"not one of {observed_names}"
                 )
 
-    cdef int validate_aliases(self, type subclass) except -1:
+    cdef int validate_aliases(self, object typ) except -1:
         """Ensure that a subclass of AtomicType has an `aliases` dictionary
         and that none of its aliases overlap with another registered
         AtomicType.
         """
-        validate(subclass, "aliases", expected_type=set)
+        validate(typ, "aliases", expected_type=set)
 
         # ensure that no aliases are already registered to another AtomicType
-        for k in subclass.aliases:
+        for k in typ.aliases:
             if k in self.aliases:
                 raise TypeError(
-                    f"{subclass.__name__} alias {repr(k)} is already "
-                    f"registered to {self.aliases[k].__name__}"
+                    f"{typ.__name__} alias {repr(k)} is already registered to "
+                    f"{self.aliases[k].__name__}"
                 )
 
-    cdef int validate_slugify(self, type subclass) except -1:
+    cdef int validate_slugify(self, object typ) except -1:
         """Ensure that a subclass of AtomicType has a `slugify()`
         classmethod and that its signature matches __init__.
         """
         validate(
-            subclass,
+            typ,
             "slugify",
             expected_type="classmethod",
-            signature=subclass
+            signature=typ
         )
 
     ###############################
@@ -289,20 +290,18 @@ cdef class CacheValue:
 
 
 cdef int validate(
-    type subclass,
+    object typ,
     str name,
     object expected_type = None,
     object signature = None,
 ) except -1:
     """Ensure that a subclass defines a particular named attribute."""
     # ensure attribute exists
-    if not hasattr(subclass, name):
-        raise TypeError(
-            f"{subclass.__name__} must define a `{name}` attribute"
-        )
+    if not hasattr(typ, name):
+        raise TypeError(f"{typ.__name__} must define a `{name}` attribute")
 
     # get attribute value
-    attr = getattr(subclass, name)
+    attr = getattr(typ, name)
 
     # if an expected type is given, check it
     if expected_type is not None:
@@ -310,16 +309,16 @@ cdef int validate(
             bound = getattr(attr, "__self__", None)
             if expected_type == "method" and bound:
                 raise TypeError(
-                    f"{subclass.__name__}.{name}() must be an instance method"
+                    f"{typ.__name__}.{name}() must be an instance method"
                 )
-            elif expected_type == "classmethod" and bound != subclass:
+            elif expected_type == "classmethod" and bound != typ:
                 raise TypeError(
-                    f"{subclass.__name__}.{name}() must be a classmethod"
+                    f"{typ.__name__}.{name}() must be a classmethod"
                 )
         elif not isinstance(attr, expected_type):
             raise TypeError(
-                f"{subclass.__name__}.{name} must be of type {expected_type}, "
-                f"not {type(attr)}"
+                f"{typ.__name__}.{name} must be of type {expected_type}, not "
+                f"{type(attr)}"
             )
 
     # if attribute has a signature match, check it
@@ -339,6 +338,6 @@ cdef int validate(
 
         if attr_sig != expected:
             raise TypeError(
-                f"{subclass.__name__}.{name}() must have the following "
-                f"signature: {dict(expected)}, not {attr_sig}"
+                f"{typ.__name__}.{name}() must have the following signature: "
+                f"{dict(expected)}, not {attr_sig}"
             )
