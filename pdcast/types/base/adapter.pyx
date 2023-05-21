@@ -14,10 +14,12 @@ from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
 from . cimport atomic
+from . cimport flyweights
+from . cimport scalar
 from . cimport composite
 
 
-cdef class AdapterType(atomic.ScalarType):
+cdef class AdapterType(scalar.ScalarType):
     """Abstract base class for all `Decorator pattern
     <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_ type
     objects.
@@ -124,15 +126,19 @@ cdef class AdapterType(atomic.ScalarType):
     # NOTE: controls the order of nested adapters.  Higher comes first.
     _priority = 0  # categorical has priority 5, sparse has priority 10.
 
-    def __init__(self, wrapped: atomic.ScalarType, **kwargs):
+    def __init__(self, wrapped: scalar.ScalarType, **kwargs):
         self._wrapped = wrapped
-        self.kwargs = MappingProxyType({"wrapped": wrapped} | kwargs)
+        self._kwargs = {"wrapped": wrapped} | kwargs
         self._slug = self.slugify(wrapped, **kwargs)
         self._hash = hash(self._slug)
 
     ############################
     ####    CONSTRUCTORS    ####
     ############################
+
+    @classmethod
+    def slugify(cls, wrapped: scalar.ScalarType) -> str:
+        return f"{cls.name}[{str(wrapped)}]"
 
     @classmethod
     def resolve(cls, wrapped: str = None, *args: str) -> AdapterType:
@@ -180,7 +186,7 @@ cdef class AdapterType(atomic.ScalarType):
         if wrapped is None:
             return cls()
 
-        cdef ScalarType instance = resolve.resolve_type(wrapped)
+        cdef scalar.ScalarType instance = resolve.resolve_type(wrapped)
 
         # insert into sorted adapter stack according to priority
         for x in instance.adapters:
@@ -252,10 +258,6 @@ cdef class AdapterType(atomic.ScalarType):
         # construct new AdapterType
         return type(self)(wrapped=wrapped, **adapter_kwargs)
 
-    @classmethod
-    def slugify(cls, wrapped: atomic.ScalarType) -> str:
-        return f"{cls.name}[{str(wrapped)}]"
-
     ##########################
     ####    PROPERTIES    ####
     ##########################
@@ -281,7 +283,7 @@ cdef class AdapterType(atomic.ScalarType):
         return result
 
     @atomic_type.setter
-    def atomic_type(self, val: atomic.ScalarType) -> None:
+    def atomic_type(self, val: scalar.ScalarType) -> None:
         lowest = self
         while isinstance(lowest.wrapped, AdapterType):
             lowest = lowest.wrapped
@@ -295,12 +297,12 @@ cdef class AdapterType(atomic.ScalarType):
         }
 
     @property
-    def wrapped(self) -> atomic.ScalarType:
+    def wrapped(self) -> scalar.ScalarType:
         """Access the type object that this AdapterType modifies."""
         return self._wrapped
 
     @wrapped.setter
-    def wrapped(self, val: atomic.ScalarType) -> None:
+    def wrapped(self, val: scalar.ScalarType) -> None:
         """Change the type object that this AdapterType modifies."""
         self._wrapped = val
         self.kwargs = self.kwargs | {"wrapped": val}
@@ -372,18 +374,11 @@ cdef class AdapterType(atomic.ScalarType):
     ####    MAGIC METHODS    ####
     #############################
 
-    def __contains__(self, other: type_specifier) -> bool:
-        return self.contains(other)
-
     def __dir__(self) -> list:
         result = dir(type(self))
         result += list(self.__dict__.keys())
         result += [x for x in dir(self.wrapped) if x not in result]
         return result
-
-    def __eq__(self, other: type_specifier) -> bool:
-        other = resolve.resolve_type(other)
-        return isinstance(other, AdapterType) and hash(self) == hash(other)
 
     def __getattr__(self, name: str) -> Any:
         try:
@@ -395,7 +390,7 @@ cdef class AdapterType(atomic.ScalarType):
         if callable(val):
             def sticky_wrapper(*args, **kwargs):
                 result = val(*args, **kwargs)
-                if isinstance(result, atomic.ScalarType):
+                if isinstance(result, scalar.ScalarType):
                     result = self.replace(wrapped=result)
                 elif isinstance(result, composite.CompositeType):
                     result = composite.CompositeType(
@@ -406,18 +401,17 @@ cdef class AdapterType(atomic.ScalarType):
             return sticky_wrapper
 
         # wrap properties as AdapterTypes
-        if isinstance(val, atomic.ScalarType):
+        if isinstance(val, scalar.ScalarType):
             val = self.replace(wrapped=val)
         elif isinstance(val, composite.CompositeType):
             val = composite.CompositeType({self.replace(wrapped=t) for t in val})
 
         return val
 
-    def __hash__(self) -> int:
-        return self._hash
-
     @classmethod
-    def __init_subclass__(cls, cache_size: int = None, **kwargs):
+    def __init_subclass__(cls, **kwargs):
+        super(AdapterType, cls).__init_subclass__(**kwargs)
+
         valid = AdapterType.__subclasses__()
         if cls not in valid:
             raise TypeError(
@@ -425,9 +419,4 @@ cdef class AdapterType(atomic.ScalarType):
                 f"definition"
             )
 
-    def __repr__(self) -> str:
-        sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())
-        return f"{type(self).__name__}({sig})"
-
-    def __str__(self) -> str:
-        return self._slug
+        cls.instance = flyweights.NoInstanceManager(cls)

@@ -4,13 +4,45 @@ types and the relationships between them.
 import inspect
 import regex as re  # using alternate regex
 from types import MappingProxyType
-from typing import Callable
+from typing import Any, Callable
 
 cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from . cimport atomic
+# from . cimport atomic
+from . cimport scalar
+
+
+# TODO: we probably have to adjust @subtype/@implementation decorators to
+# account for unregistered types.
+
+
+# TODO: @subtype should be decoupled from @generic
+# -> maybe separated into @generic, @supertype?  @supertype must be
+# cooperative
+
+
+# TODO: @register should transform the decorated type into its base instance.
+# -> what do we do for AdapterTypes?
+
+
+
+# TODO: Using GenericType for both subtypes and backends causes
+# int[numpy].generic to return a circular reference rather than pointing to int
+
+
+
+# TODO: @backend should be an independent decorator, which resolves the given
+# type and checks that it is generic
+
+# @subtype("signed[numpy]")
+# @backend("int8", "numpy")
+
+# This could be used alongside `cond` argument of @register if that
+# short-circuits the class definition.  If the type specifier could not be
+# interpreted, we either silently ignore or say so manually.  This could avoid
+# manual TypeRegistry interactions in 
 
 
 ######################
@@ -18,43 +50,102 @@ from . cimport atomic
 ######################
 
 
-cdef class TypeRegistry:
-    """A registry representing the current state of ``pdcast``'s typing
-    infrastructure.
+def register(
+    class_: type | scalar.ScalarType | None = None,
+    *,
+    cond: bool = True
+) -> scalar.ScalarType:
+    """Validate a scalar type definition and add it to the registry.
 
-    This is a `global object <https://python-patterns.guide/python/module-globals/>`_
-    that is attached to every ``pdcast`` data type.  It is responsible for
-    validating and managing every type that has been registered through the
-    :func:`@register() <register>` decorator, as well as updating their
-    attributes as new types are added.
+    Parameters
+    ----------
+    class_ : type | GenericType | None
+        The type definition to register.
+    cond : bool, default True
+        Used to create :ref:`conditional types <tutorial.conditional>`.  The
+        type will only be added to the registry if this evaluates ``True``.
+
+    Returns
+    -------
+    ScalarType
+        A base (unparametrized) instance of the decorated type.  This is always
+        equal to the direct output of ``class_.instance()``, without arguments.
+
+    See Also
+    --------
+    generic :
+        for creating :ref:`hierarchical types <tutorial.hierarchy>`, which can
+        contain other types.
 
     Notes
     -----
+    The properties that this decorator validates are as follows:
 
-    , recording their aliases,
-    dispatched methods, subtypes, supertype, backends, root type, and generic
-    equivalent.
+        *   :attr:`class_.name <AtomicType.name>`: this must be unique or
+            inherited from a :func:`generic() <pdcast.generic>` type.
+        *   :attr:`class_.aliases <AtomicType.aliases>`: these must contain
+            only valid type specifiers, each of which must be unique.
+        *   :meth:`class_.slugify() <AtomicType.slugify>`: this must be a
+            classmethod whose signature matches the decorated class's
+            ``__init__``.
+
+    Examples
+    --------
+    TODO: take from tutorial
+
+    """
+    # TODO: one consequence of instantiating every type is that aliases might
+    # be tied to instances of that type rather than classes, which would enable
+    # flexible naming.  You could assign an alias for "pacific" that points to
+    # datetime[pandas, US/Pacific].  Aliases might then apply to composites
+    # as well.  "numeric" could be an alias for [bool, int, float, complex,
+    # decimal, ...].  You could thus create your own collections of types, and
+    # 'pin' them in a sense.
+
+    def register_decorator(cls: type | scalar.ScalarType) -> scalar.ScalarType:
+        """Add the type to the registry and instantiate it."""
+        if isinstance(cls, scalar.ScalarType):
+            instance = cls
+        else:
+            if not issubclass(cls, scalar.ScalarType):
+                raise TypeError(
+                    "`@register` can only be applied to AtomicType and "
+                    "AdapterType subclasses"
+                )
+            instance = cls.instance()  # TODO: AdapterType has to implement this
+
+        if cond:
+            cls.registry.add(instance)
+        return instance
+
+    if class_ is None:
+        return register_decorator
+    return register_decorator(class_)
 
 
+cdef class TypeRegistry:
+    """A registry containing the current state of the ``pdcast`` type system.
 
-    Whenever a new type definition is registered through the
-    :func:`@register() <register>` decorator, it is added to this registry
+    See Also
+    --------
+    register : add a type to this registry.
+
+    Notes
+    -----
+    This is a global object attached to every type that ``pdcast`` generates.
+    It is responsible for caching base (unparametrized) instances for every
+    type that can be returned by the :func:`detect_type() <pdcast.detect_type>`
+    and :func:`resolve_type() <pdcast.resolve_type>` constructors.
     
-    
-    containing every validated type object recognized by ``pdcast`` features.
-
-    This is a global object attached to the base AtomicType class definition.
-    It can be accessed through any of its instances, and it is updated
-    automatically whenever a class inherits from AtomicType.  The registry
-    itself contains methods to validate and synchronize subclass behavior,
-    including the maintenance of a set of regular expressions that account for
-    every known AtomicType alias, along with their default arguments.  These
-    lists are updated dynamically each time a new alias and/or type is added
-    to the pool.
+    It also provides individual types a way of tying cached values to the
+    global state of the type system more generally.  We can use this to compute
+    properties only once, and automatically update them whenever a new type is
+    added to the system.  This mechanism is used to synchronize aliases,
+    subtypes, larger/smaller implementations, etc.
     """
 
     def __init__(self):
-        self.atomic_types = []
+        self.base_types = set()
         self.update_hash()
 
     #####################
@@ -63,56 +154,121 @@ cdef class TypeRegistry:
 
     @property
     def hash(self) -> int:
-        """Hash representing the current state of the ``pdcast`` type system.
+        """A hash representing the current state of the ``pdcast`` type system.
 
-        This hash is updated whenever a new type is :meth:`added
-        <TypeRegistry.add>` or :meth:`removed <TypeRegistry.remove>` from the
-        registry or :meth:`gains <AtomicType.register_alias>`/:meth:`loses
-        <AtomicType.remove_alias>` an :attr:`alias <AtomicType.aliases>` or
-        :func:`dispatched <dispatch>` attribute.
+        Notes
+        -----
+        This is updated whenever a new type is
+        :meth:`added <pdcast.TypeRegistry.add>` or
+        :meth:`removed <pdcast.TypeRegistry.remove>` from the registry.  It is
+        also updated whenever a registered type
+        :meth:`gains <pdcast.ScalarType.register_alias>` or
+        :meth:`loses <pdcast.ScalarType.remove_alias>` an alias.
         """
         return self._hash
 
     cdef void update_hash(self):
         """Hash the registry's internal state, for use in cached properties."""
-        self._hash = hash(tuple(self.atomic_types))
+        self._hash = hash(tuple(self.base_types))
 
     def flush(self):
         """Reset the registry's internal state, forcing every property to be
         recomputed.
         """
-        self._hash += 1  # this is overflow-safe
+        self._hash += 1
 
-    def remember(self, val) -> CacheValue:
-        return CacheValue(value=val, hash=self.hash)
+    def remember(self, val: Any) -> CacheValue:
+        """Record a value, tying it to the registry's internal state.
 
-    def needs_updating(self, prop) -> bool:
-        """Check if a `remember()`-ed registry property is out of date."""
-        return prop is None or prop.hash != self.hash
+        Parameters
+        ----------
+        val : Any
+            A value to cache
+
+        Returns
+        -------
+        CacheValue
+            A wrapper around the value that records the observed state of the
+            registry at the time it was cached.
+        """
+        return CacheValue(val, self.hash)
+
+    def needs_updating(self, val: CacheValue | None) -> bool:
+        """Check if a :meth:`remembered <pdcast.TypeRegistry.remember>` value
+        is out of date.
+        """
+        return val is None or val.hash != self.hash
 
     ##########################
     ####    ADD/REMOVE    ####
     ##########################
 
-    def add(self, typ: atomic.ScalarType) -> None:
-        """Add an AtomicType/AdapterType subclass to the registry."""
-        # validate subclass has required fields
-        self.validate_name(typ)
-        self.validate_aliases(typ)
-        self.validate_slugify(typ)
+    def add(self, instance: scalar.ScalarType) -> None:
+        """Validate a base type and add it to the registry.
 
-        # add type to registry and update hash
-        self.atomic_types.append(typ)
+        Parameters
+        ----------
+        instance : ScalarType
+            An instance of a :class:`ScalarType <pdcast.ScalarType>` to add to
+            the registry.  This instance must not be parametrized, and it must
+            implement at least the :attr:`name <pdcast.ScalarType.name>` and
+            :attr:`aliases <pdcast.ScalarType.aliases>` attributes  to be
+            considered valid.
+
+        Raises
+        ------
+        TypeError
+            If the instance is malformed in some way.  This can happen if the
+            type is parametrized, does not have an appropriate
+            :attr:`name <pdcast.ScalarType.name>` or
+            :attr:`aliases <pdcast.ScalarType.aliases>`, or if the signature of
+            its :meth:`slugify <pdcast.ScalarType.slugify>` method does not
+            match its constructor.
+
+        See Also
+        --------
+        register : automatically call this method as a class decorator.
+        TypeRegistry.remove : remove a type from the registry.
+        TypeRegistry.clear : remove all types from the registry.
+        """
+        self._validate_no_parameters(instance)
+        self._validate_name(instance)
+        self._validate_aliases(instance)
+        # self._validate_slugify(instance)
+        self.base_types.add(instance)
         self.update_hash()
 
-    def remove(self, old_type: type) -> None:
-        """Remove an AtomicType subclass from the registry."""
-        self.atomic_types.remove(old_type)
+    def remove(self, instance: scalar.ScalarType) -> None:
+        """Remove a base type from the registry.
+
+        Parameters
+        ----------
+        instance : ScalarType
+            The type to remove.
+
+        Raises
+        ------
+        KeyError
+            If the instance is not in the registry.  This will also be raised
+            if the instance is parametrized.
+
+        See Also
+        --------
+        TypeRegistry.add : add a type to the registry.
+        TypeRegistry.clear : remove all types from the registry.
+        """
+        self.base_types.remove(instance)
         self.update_hash()
 
     def clear(self):
-        """Clear the AtomicType registry of all AtomicType subclasses."""
-        self.atomic_types.clear()
+        """Clear the AtomicType registry, removing every type at once.
+
+        See Also
+        --------
+        TypeRegistry.add : add a type to the registry.
+        TypeRegistry.remove : remove a single type from the registry.
+        """
+        self.base_types.clear()
         self.update_hash()
 
     #####################
@@ -121,26 +277,36 @@ cdef class TypeRegistry:
 
     @property
     def aliases(self) -> dict:
-        """An up-to-date dictionary mapping every alias to its corresponding
-        type.
+        """An up-to-date mapping of every alias to its corresponding type.
+
+        This encodes every specifier recognized by both the
+        :func:`detect_type() <pdcast.detect_type>` and
+        :func:`resolve_type() <pdcast.resolve_type>` constructors.
+
+        See Also
+        --------
+        TypeRegistry.regex :
+            A regular expression to match strings in the
+            :ref:`type specification mini-language <resolve_type.mini_language>`.
+        TypeRegistry.resolvable :
+            A regular expression that matches any number of individual type
+            specifiers.
 
         Notes
         -----
-        This is a cached property that is tied to the current state of the
-        registry.  Whenever a new type is added, removed, or has one of its
-        aliases changed, it will be regenerated to reflect that change.
-
-        .. note::
-
-            This table can be manually updated by :func:`adding <register>` or
-            :meth:`removing <TypeRegistry.remove>` whole types, or by
-            :meth:`updating <AtomicType.register_alias>` individual aliases, both of
-            which globally change the behavior of the :func:`resolve_type` factory
-            function.
+        This is a :meth:`remembered <pdcast.TypeRegistry.remember>` property
+        that is tied to the current state of the registry.  Whenever a new type
+        is :meth:`added <pdcast.TypeRegistry.add>`,
+        :meth:`removed <pdcast.TypeRegistry.remove>`, or
+        :meth:`gains <pdcast.ScalarType.register_alias>`\ /
+        :meth:`loses <pdcast.ScalarType.remove_alias>` an alias, it will be
+        regenerated to reflect that change.
         """
         # check if cache is out of date
         if self.needs_updating(self._aliases):
-            result = {k: c for c in self.atomic_types for k in c.aliases}
+            result = {
+                alias: typ for typ in self.base_types for alias in typ.aliases
+            }
             self._aliases = self.remember(result)
 
         # return cached value
@@ -148,28 +314,44 @@ cdef class TypeRegistry:
 
     @property
     def regex(self) -> re.Pattern:
-        """Compile a regular expression to match any registered AtomicType
-        name or alias, as well as any arguments that may be passed to its
-        `resolve()` constructor.
+        """A compiled regular expression that matches strings in the
+        :ref:`type specification mini-language <resolve_type.mini_language>`.
+
+        See Also
+        --------
+        TypeRegistry.aliases :
+            A complete map of every alias to its corresponding type.
+        TypeRegistry.resolvable :
+            A regular expression that matches any number of these expressions.
+
+        Notes
+        -----
+        This expression uses `recursive regular expressions
+        <https://perldoc.perl.org/perlre#(?PARNO)-(?-PARNO)-(?+PARNO)-(?R)-(?0)>`_
+        to match nested type specifiers.  This is enabled by the alternate
+        Python `regex <https://pypi.org/project/regex/>`_ engine, which is
+        PERL-compatible.  It is otherwise equivalent to the base Python
+        :mod:`re <python:re>` package.
         """
         # check if cache is out of date
         if self.needs_updating(self._regex):
-            # fastfail: empty case
-            if not self.atomic_types:
+            # trivial case: empty registry
+            if not self.base_types:
                 result = re.compile(".^")  # matches nothing
-
-            # update using string aliases from every registered subtype
             else:
                 # automatically escape reserved regex characters
                 string_aliases = [
-                    re.escape(k) for k in self.aliases if isinstance(k, str)
+                    re.escape(alias) for alias in self.aliases
+                    if isinstance(alias, str)
                 ]
+
+                # special case for sized unicode in numpy syntax
                 string_aliases.append(r"(?P<sized_unicode>U(?P<size>[0-9]*))$")
 
                 # sort into reverse order based on length
                 string_aliases.sort(key=len, reverse=True)
 
-                # join with regex OR and compile regex
+                # join with regex OR and compile
                 result = re.compile(
                     rf"(?P<type>{'|'.join(string_aliases)})"
                     rf"(?P<nested>\[(?P<args>([^\[\]]|(?&nested))*)\])?"
@@ -183,16 +365,44 @@ cdef class TypeRegistry:
 
     @property
     def resolvable(self) -> re.Pattern:
+        """A compiled regular expression that matches any number of specifiers
+        in the
+        :ref:`type specification mini-language <resolve_type.mini_language>`.
+
+        See Also
+        --------
+        TypeRegistry.aliases :
+            A complete map of every alias to its corresponding type.
+        TypeRegistry.regex :
+            A regular expression to match individual specifiers.
+
+        Notes
+        -----
+        This expression uses `recursive regular expressions
+        <https://perldoc.perl.org/perlre#(?PARNO)-(?-PARNO)-(?+PARNO)-(?R)-(?0)>`_
+        to match nested type specifiers.  This is enabled by the alternate
+        Python `regex <https://pypi.org/project/regex/>`_ engine, which is
+        PERL-compatible.  It is otherwise equivalent to the base Python
+        :mod:`re <python:re>` package.
+        """
         # check if cache is out of date
         if self.needs_updating(self._resolvable):
             # wrap self.regex in ^$ to match the entire string and allow for
-            # comma-separated repetition of AtomicType patterns.
+            # comma-separated repetition.
             pattern = rf"(?P<atomic>{self.regex.pattern})(,\s*(?&atomic))*"
-            lead = r"((CompositeType\(\{)|\{)?"
-            follow = r"((\}\))|\})?"
+
+            # various prefixes/suffixes to be ignored
+            lead = "|".join([
+                r"CompositeType\(\{",
+                r"\{",
+            ])
+            follow = "|".join([
+                r"\}\)",
+                r"\}",
+            ])
 
             # compile regex
-            result = re.compile(rf"{lead}(?P<body>{pattern}){follow}")
+            result = re.compile(rf"({lead})?(?P<body>{pattern})({follow})?")
 
             # remember result
             self._resolvable = self.remember(result)
@@ -204,49 +414,51 @@ cdef class TypeRegistry:
     ####    PRIVATE    ####
     #######################
 
-    cdef int validate_name(self, object typ) except -1:
-        """Ensure that a subclass of AtomicType has a unique `name` attribute
-        associated with it.
-        """
-        validate(typ, "name", expected_type=str)
+    def _validate_no_parameters(self, instance: scalar.ScalarType) -> None:
+        """Ensure that a base type is not parametrized."""
+        # TODO: inspect the type's kwargs
+        pass
+
+    def _validate_name(self, instance: scalar.ScalarType) -> None:
+        """Ensure that a base type has a unique name attribute."""
+        if not isinstance(instance.name, str):
+            raise TypeError(f"{instance.__qualname__}.name must be a string")
 
         # ensure typ.name is unique or inherited from generic type
-        if (
-            isinstance(typ, atomic.AtomicType) and
-            typ._is_generic != False or
-            typ.name != typ._generic.name
-        ):
-            observed_names = {x.name for x in self.atomic_types}
-            if typ.name in observed_names:
-                raise TypeError(
-                    f"{typ.__name__}.name ({repr(typ.name)}) must be unique, "
-                    f"not one of {observed_names}"
-                )
+        # if (
+        #     isinstance(instance, atomic.AtomicType) and
+        #     instance._is_generic != False or
+        #    instance.name != instance._generic.name
+        #):
+        #    observed_names = {x.name for x in self.base_types}
+        #    if instance.name in observed_names:
+        #        raise TypeError(
+        #            f"name must be unique, not one of {observed_names}"
+        #        )
 
-    cdef int validate_aliases(self, object typ) except -1:
-        """Ensure that a subclass of AtomicType has an `aliases` dictionary
-        and that none of its aliases overlap with another registered
-        AtomicType.
+    def _validate_aliases(self, instance: scalar.ScalarType) -> None:
+        """Ensure that a base type has aliases, and that none of its aliases
+        overlap with another registered type.
         """
-        validate(typ, "aliases", expected_type=set)
+        if not isinstance(instance.aliases, set):
+            raise TypeError(f"{instance.__qualname__}.aliases must be a set")
 
-        # ensure that no aliases are already registered to another AtomicType
-        for k in typ.aliases:
-            if k in self.aliases:
+        for alias in instance.aliases:
+            if alias in self.aliases:
                 raise TypeError(
-                    f"{typ.__name__} alias {repr(k)} is already registered to "
-                    f"{self.aliases[k].__name__}"
+                    f"alias {repr(alias)} is already registered to "
+                    f"{self.aliases[alias].__name__}"
                 )
 
-    cdef int validate_slugify(self, object typ) except -1:
-        """Ensure that a subclass of AtomicType has a `slugify()`
-        classmethod and that its signature matches __init__.
+    def _validate_slugify(self, instance: scalar.ScalarType) -> None:
+        """Ensure that a base type has a slugify() classmethod and that its
+        signature matches __init__.
         """
         validate(
-            typ,
+            instance,
             "slugify",
             expected_type="classmethod",
-            signature=typ
+            signature=type(instance)
         )
 
     ###############################
@@ -254,22 +466,32 @@ cdef class TypeRegistry:
     ###############################
 
     def __contains__(self, val) -> bool:
-        return val in self.atomic_types
+        return val in self.base_types
 
     def __hash__(self) -> int:
         return self.hash
 
     def __iter__(self):
-        return iter(self.atomic_types)
+        return iter(self.base_types)
 
     def __len__(self) -> int:
-        return len(self.atomic_types)
+        return len(self.base_types)
 
     def __str__(self) -> str:
-        return str(self.atomic_types)
+        return str(self.base_types)
 
     def __repr__(self) -> str:
-        return repr(self.atomic_types)
+        return repr(self.base_types)
+
+
+cdef class BaseType:
+    """Base type for all type objects.
+
+    This has no interface of its own.  It simply serves to anchor inheritance
+    and distribute the shared type registry to all ``pdcast`` types.
+    """
+
+    registry: TypeRegistry = TypeRegistry()
 
 
 #######################
@@ -325,7 +547,7 @@ cdef int validate(
     if signature is not None:
         if (
             isinstance(signature, type) and
-            signature.__init__ == atomic.AtomicType.__init__
+            signature.__init__ == scalar.ScalarType.__init__
         ):
             expected = MappingProxyType({})
         else:

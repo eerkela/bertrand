@@ -36,15 +36,17 @@ class SparseType(AdapterType):
     _priority = 10
 
     def __init__(self, wrapped: ScalarType = None, fill_value: Any = None):
+        print(globals())
+
         # do not re-wrap SparseTypes
-        if isinstance(wrapped, SparseType):  # 1st order
+        if isinstance(wrapped, type(self)):  # 1st order
             if fill_value is None:
                 fill_value = wrapped.fill_value
             wrapped = wrapped.wrapped
 
         elif wrapped is not None:  # 2nd order
             for x in wrapped.adapters:
-                if isinstance(x.wrapped, SparseType):
+                if isinstance(x.wrapped, type(self)):
                     if fill_value is None:
                         fill_value = x.fill_value
                     wrapped = x.wrapped.wrapped

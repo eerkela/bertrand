@@ -1,8 +1,8 @@
 cimport numpy as np
-from .atomic cimport BaseType
+from . cimport registry
 
 
-cdef class CompositeType(BaseType):
+cdef class CompositeType(registry.BaseType):
     cdef readonly:
         set _types
 

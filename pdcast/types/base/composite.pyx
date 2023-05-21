@@ -10,9 +10,10 @@ from pdcast.util.type_hints import type_specifier
 
 from . cimport atomic
 from . cimport adapter
+from . cimport registry
 
 
-cdef class CompositeType(BaseType):
+cdef class CompositeType(registry.BaseType):
     """Set-like container for type objects.
 
     Implements the same interface as the built-in set type, but is restricted
@@ -47,7 +48,7 @@ cdef class CompositeType(BaseType):
                 for typ in types:
                     if isinstance(typ, CompositeType):
                         self._types.update(t for t in typ)
-                    elif isinstance(typ, atomic.BaseType):
+                    elif isinstance(typ, registry.BaseType):
                         self._types.add(typ)
                     else:
                         bad_input = True
@@ -239,7 +240,7 @@ cdef class CompositeType(BaseType):
         """Test whether `self` is a proper superset of `other`
         (``self >= other and self != other``).
         """
-        cdef BaseType other
+        cdef registry.BaseType other
 
         other = resolve.resolve_type(typespec)
         return self != other and self >= other
@@ -260,7 +261,7 @@ cdef class CompositeType(BaseType):
         """Test whether `self` is a proper subset of `other`
         (``self <= other and self != other``).
         """
-        cdef atomic.BaseType other
+        cdef registry.BaseType other
 
         other = resolve.resolve_type(typespec)
         return self != other and self <= other

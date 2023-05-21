@@ -2,6 +2,7 @@
 of the ``pdcast`` type system.
 """
 import decimal
+import inspect
 from types import MappingProxyType
 from typing import Any, Callable, Iterator
 
@@ -16,8 +17,8 @@ from pdcast import resolve
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import array_like, type_specifier
 
-from . cimport registry
-import pdcast.types.base.registry as registry  # NOTE: fails if relative
+from . cimport scalar
+from . cimport flyweights
 from . cimport adapter
 from . cimport composite
 from pdcast.types.array import abstract
@@ -59,88 +60,6 @@ from pdcast.types.array import abstract
 # +-----------+---+---+---+---+---+---+---+---+---+
 
 
-##########################
-####    PRIMITIVES    ####
-##########################
-
-
-cdef class BaseType:
-    """Base type for all type objects.
-
-    This has no interface of its own.  It simply serves to anchor inheritance
-    and distribute the shared type registry to all ``pdcast`` types.
-    """
-
-    registry: registry.TypeRegistry = registry.TypeRegistry()
-
-
-cdef class ScalarType(BaseType):
-    """Base type for :class:`AtomicType` and :class:`AdapterType` objects.
-
-    This allows inherited types to manage aliases and update them at runtime.
-    """
-
-    #######################
-    ####    ALIASES    ####
-    #######################
-
-    @classmethod
-    def register_alias(cls, alias: Any, overwrite: bool = False) -> None:
-        """Register a new alias for this type.
-
-        See the docs on the :ref:`type specification mini language
-        <resolve_type.mini_language>` for more information on how aliases work.
-
-        Parameters
-        ----------
-        alias : Any
-            A string, ``dtype``, ``ExtensionDtype``, or scalar type to register
-            as an alias of this type.
-        overwrite : bool, default False
-            Indicates whether to overwrite existing aliases (``True``) or
-            raise an error (``False``) in the event of a conflict.
-        """
-        if alias in cls.registry.aliases:
-            other = cls.registry.aliases[alias]
-            if other is cls:
-                return None
-            if overwrite:
-                del other.aliases[alias]
-            else:
-                raise ValueError(
-                    f"alias {repr(alias)} is already registered to {other}"
-                )
-        cls.aliases.add(alias)
-        cls.registry.flush()  # rebuild regex patterns
-
-    @classmethod
-    def remove_alias(cls, alias: Any) -> None:
-        """Remove an alias from this type.
-
-        See the docs on the :ref:`type specification mini language
-        <resolve_type.mini_language>` for more information on how aliases work.
-
-        Parameters
-        ----------
-        alias : Any
-            The alias to remove.  This can be a string, ``dtype``,
-            ``ExtensionDtype``, or scalar type that is present in this type's
-            ``.aliases`` attribute.
-        """
-        del cls.aliases[alias]
-        cls.registry.flush()  # rebuild regex patterns
-
-    @classmethod
-    def clear_aliases(cls) -> None:
-        """Remove every alias that is registered to this type.
-
-        See the docs on the :ref:`type specification mini language
-        <resolve_type.mini_language>` for more information on how aliases work.
-        """
-        cls.aliases.clear()
-        cls.registry.flush()  # rebuild regex patterns
-
-
 ######################
 ####    ATOMIC    ####
 ######################
@@ -153,7 +72,7 @@ cdef class ScalarType(BaseType):
 # CompositeType
 
 
-cdef class AtomicType(ScalarType):
+cdef class AtomicType(scalar.ScalarType):
     """Abstract base class for all user-defined scalar types.
 
     :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
@@ -206,82 +125,9 @@ cdef class AtomicType(ScalarType):
     definitions that ``BackendType`` is linked to.
     """
 
-    def __init__(self, **kwargs):
-        self._kwargs = kwargs
-        self._slug = self.slugify(**kwargs)
-        self._hash = hash(self._slug)
-        self._is_frozen = True  # no new attributes beyond this point
-
     ###################################
     ####    REQUIRED ATTRIBUTES    ####
     ###################################
-
-    @property
-    def name(self) -> str:
-        """A unique name for each type.
-
-        This must be defined at the **class level**.  It is used in conjunction
-        with :meth:`slugify() <AtomicType.slugify>` to generate string
-        representations of the associated type, which use this as their base.
-
-        Returns
-        -------
-        str
-            A unique string identifying each type.
-
-        Notes
-        -----
-        Names can also be inherited from :func:`generic <generic>` types via
-        :meth:`@AtomicType.register_backend <AtomicType.register_backend>`.
-        """
-        raise NotImplementedError(
-            f"'{type(self).__name__}' is missing a `name` field."
-        )
-
-    @property
-    def aliases(self) -> set:
-        """A set of unique aliases for this type.
-    
-        These must be defined at the **class level**, and are used by
-        :func:`detect_type` and :func:`resolve_type` to map aliases onto their
-        corresponding types.
-
-        Returns
-        -------
-        set[str | type | numpy.dtype]
-            A set containing all the aliases that are associated with this
-            type.
-
-        Notes
-        -----
-        Special significance is given to the type of each alias:
-
-            *   Strings are used by the :ref:`type specification mini-language
-                <resolve_type.mini_language>` to trigger :meth:`resolution
-                <AtomicType.resolve>` of the associated type.
-            *   Numpy/pandas :class:`dtype <numpy.dtype>`\ /\
-                :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
-                objects are used by :func:`detect_type` for *O(1)* type
-                inference.  In both cases, parametrized dtypes can be handled
-                by adding a root dtype to :attr:`aliases <AtomicType.aliases>`.
-                For numpy :class:`dtypes <numpy.dtype>`, this will be the
-                root of their :func:`numpy.issubdtype` hierarchy.  For pandas
-                :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`,
-                it is its :class:`type() <python:type>` directly.  When either
-                of these are encountered, they will invoke the type's
-                :meth:`from_dtype() <AtomicType.from_dtype>` constructor.
-            *   Raw Python types are used by :func:`detect_type` for scalar or
-                unlabeled vector inference.  If the type of a scalar element
-                appears in :attr:`aliases <AtomicType.aliases>`, then the
-                associated type's :meth:`detect() <AtomicType.detect>` method
-                will be called on it.
-
-        All aliases are recognized by :func:`resolve_type` and the set always
-        includes the :class:`AtomicType` itself.
-        """
-        raise NotImplementedError(
-            f"'{type(self).__name__}' is missing an `aliases` field."
-        )
 
     @property
     def type_def(self) -> type | None:
@@ -374,50 +220,32 @@ cdef class AtomicType(ScalarType):
     ############################
 
     @classmethod
-    def instance(cls, *args, **kwargs) -> AtomicType:
-        """The preferred constructor for :class:`AtomicType` objects.
+    def slugify(cls) -> str:
+        """Generate a string representation of a type.
 
-        This method is responsible for implementing the
-        `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_
-        pattern for :class:`AtomicType` objects.
-
-        Parameters
-        ----------
-        *args, **kwargs
-            Arguments passed to this type's
-            :meth:`slugify() <AtomicType.slugify>` and
-            :class:`__init__ <AtomicType>` methods.
+        This method must have the same arguments as a type's
+        :class:`__init__() <AtomicType>` method, and its output determines how
+        flyweights are identified.  If a type is not parameterized and does not
+        implement a custom :class:`__init__() <AtomicType>` method, this can be
+        safely omitted in subclasses.
 
         Returns
         -------
-        AtomicType
-            A flyweight for the specified type.  If this method is given the
-            same inputs again in the future, then this will be a simple
-            reference to the previous instance.
+        str
+            A string that fully specifies the type.  The string must be unique
+            for every set of inputs, as it is used to look up flyweights.
 
         Notes
         -----
-        This method should never be overriden.  Together with a corresponding
-        :meth:`slugify() <AtomicType.slugify>` method, it ensures that no
-        leakage occurs with the flyweight cache, which could result in
-        uncontrollable memory consumption.
-
-        Users should use this method in place of :class:`__init__ <AtomicType>`
-        to ensure that the `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_
-        pattern is observed.  One can manually check the cache that is used for
-        this method under a type's ``.flyweights`` attribute.
+        This method is always called **before** initializing a new
+        :class:`AtomicType`.  The uniqueness of its result determines whether a
+        new flyweight will be generated for this type.
         """
-        # generate slug
-        cdef str slug = cls.slugify(*args, **kwargs)
-
-        # get previous flyweight if one exists
-        cdef AtomicType result = cls.flyweights.get(slug, None)
-        if result is None:  # create new flyweight
-            result = cls(*args, **kwargs)
-            cls.flyweights[slug] = result
-
-        # return flyweight
-        return result
+        # NOTE: we explicitly check for _is_generic=False, which signals that
+        # @register_backend has been explicitly called on this type.
+        if cls._is_generic == False:
+            return f"{cls.name}[{cls._backend}]"
+        return cls.name
 
     @classmethod
     def resolve(cls, *args: str) -> AtomicType:
@@ -552,40 +380,6 @@ cdef class AtomicType(ScalarType):
         """
         cdef dict merged = {**self.kwargs, **kwargs}
         return self.instance(**merged)
-
-    @classmethod
-    def slugify(cls) -> str:
-        """Generate a string representation of a type.
-
-        This method must have the same arguments as a type's
-        :class:`__init__() <AtomicType>` method, and its output determines how
-        flyweights are identified.  If a type is not parameterized and does not
-        implement a custom :class:`__init__() <AtomicType>` method, this can be
-        safely omitted in subclasses.
-
-        Returns
-        -------
-        str
-            A string that fully specifies the type.  The string must be unique
-            for every set of inputs, as it is used to look up flyweights.
-
-        Notes
-        -----
-        This method is always called **before** initializing a new
-        :class:`AtomicType`.  The uniqueness of its result determines whether a
-        new flyweight will be generated for this type.
-        """
-        # NOTE: we explicitly check for _is_generic=False, which signals that
-        # @register_backend has been explicitly called on this type.
-        if cls._is_generic == False:
-            return f"{cls.name}[{cls._backend}]"
-        return cls.name
-
-    @property
-    def kwargs(self) -> MappingProxyType:
-        """TODO
-        """
-        return MappingProxyType(self._kwargs)
 
     ###################################
     ####    SUBTYPES/SUPERTYPES    ####
@@ -862,24 +656,6 @@ cdef class AtomicType(ScalarType):
     ####    ADAPTERS    ####
     ########################
 
-    @property
-    def adapters(self) -> Iterator[adapter.AdapterType]:
-        """An iterator that yields each :class:`AdapterType` that is attached
-        to this type.
-
-        For :class:`AtomicTypes <AtomicType>`, this is always an empty
-        iterator.
-        """
-        yield from ()
-
-    def unwrap(self) -> AtomicType:
-        """Get the base :clasS:`AtomicType` for this type, disregarding
-        adapters.
-
-        For :class:`AtomicTypes <AtomicType>`, this always returns ``self``.
-        """
-        return self
-
     def make_categorical(
         self,
         series: pd.Series,
@@ -1052,24 +828,6 @@ cdef class AtomicType(ScalarType):
     ####    SPECIAL METHODS    ####
     ###############################
 
-    def __contains__(self, other: type_specifier) -> bool:
-        return self.contains(other)
-
-    def __eq__(self, other: type_specifier) -> bool:
-        other = resolve.resolve_type(other)
-        return isinstance(other, AtomicType) and hash(self) == hash(other)
-
-    def __getattr__(self, name: str) -> Any:
-        """Pass attribute lookups to ``self.kwargs``."""
-        try:
-            return self.kwargs[name]
-        except KeyError as err:
-            err_msg = (
-                f"{repr(type(self).__name__)} object has no attribute: "
-                f"{repr(name)}"
-            )
-            raise AttributeError(err_msg) from err
-
     @classmethod
     def __init_subclass__(cls, cache_size: int = None, **kwargs):
         """Metaclass initializer.
@@ -1089,12 +847,10 @@ cdef class AtomicType(ScalarType):
                 f"definition"
             )
 
-        # init required fields
-        cls.aliases.add(cls)  # cls always aliases itself
-        if cache_size is None:
-            cls.flyweights = {}
-        else:
-            cls.flyweights = LRUDict(maxsize=cache_size)
+        cls.instance = flyweights.FlyweightManager(
+            cls,
+            cache_size=0 if cache_size is None else cache_size
+        )
 
         # init fields for @subtype
         cls._children = set()
@@ -1106,21 +862,205 @@ cdef class AtomicType(ScalarType):
         cls._backend = None
         cls._backends = {}
 
-    def __setattr__(self, name: str, value: Any) -> None:
-        if self._is_frozen:
-            raise AttributeError("AtomicType objects are read-only")
+
+#######################
+####    GENERIC    ####
+#######################
+
+
+def generic(cls: type) -> GenericType:
+    """Class decorator to mark generic type definitions.
+
+    Generic types are backend-agnostic and act as wildcard containers for
+    more specialized subtypes.  For instance, the generic "int" can contain
+    the backend-specific "int[numpy]", "int[pandas]", and "int[python]"
+    subtypes, which can be resolved as shown. 
+    """
+    return GenericType(cls)
+
+
+cdef class GenericType(AtomicType):
+    """A hierarchical type that can contain other types.
+    """
+
+    def __init__(self, cls):
+        self._validate_class(cls)
+
+        self.__wrapped__ = cls
+        print(cls)
+        self._default = cls.instance()
+        self.name = cls.name
+        self.aliases = cls.aliases
+        self._subtypes = composite.CompositeType()
+        self._backends = {None: self._default}
+
+    def _validate_class(self, cls) -> None:
+        """Ensure that the decorated class is valid."""
+        if not issubclass(cls, AtomicType):
+            raise TypeError("@generic types must inherit from AtomicType")
+
+        # NOTE: cython __init__ is not introspectable.
+        if (
+            cls.__init__ != AtomicType.__init__ and
+            inspect.signature(cls).parameters
+        ):
+            raise TypeError("@generic types cannot be parametrized")
+
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
+
+    def instance(
+        self,
+        backend: str | None = None,
+        *args,
+        **kwargs
+    ) -> AtomicType:
+        """Forward constructor arguments to the appropriate implementation."""
+        return self._backends[backend].instance(*args, **kwargs)
+
+    def resolve(
+        self,
+        backend: str | None = None,
+        *args
+    ) -> AtomicType:
+        """Forward constructor arguments to the appropriate implementation."""
+        return self._backends[backend].resolve(*args)    
+    
+    ##########################
+    ####    DECORATORS    ####
+    ##########################
+
+    def subtype(self, cls: type | None = None, *, **kwargs):
+        """A class decorator that adds a type as a subtype of this GenericType.
+        """
+        def decorator(cls: type) -> type:
+            """Link the decorated type to this GenericType."""
+            if not issubclass(cls, AtomicType):
+                raise TypeError("@generic types can only contain AtomicTypes")
+
+            if cls._parent:
+                raise TypeError(
+                    f"AtomicTypes can only be registered to one @generic type "
+                    f"at a time: '{cls.__qualname__}' is currently registered "
+                    f"to '{cls._parent.__qualname__}'"
+                )
+
+            curr = cls
+            while curr is not None:
+                if curr is self:
+                    raise TypeError("@generic type cannot contain itself")
+                curr = curr._parent
+
+            cls._parent = self
+            self._subtypes |= cls.instance(**kwargs)
+            self.registry.flush()
+            return cls
+
+        if cls is None:
+            return decorator
+        return decorator(cls)
+
+    def implementation(self, backend: str = None, **kwargs):
+        """A class decorator that adds a type as an implementation of this
+        type.
+        """
+        def decorator(cls: type) -> type:
+            """Link the decorated type to this GenericType."""
+            if not issubclass(cls, AtomicType):
+                raise TypeError("@generic types can only contain AtomicTypes")
+
+            if not isinstance(backend, str):
+                raise TypeError(
+                    f"backend specifier must be a string, not {type(backend)}"
+                )
+
+            if backend in self._backends:
+                raise TypeError(
+                    f"backend specifier must be unique: {repr(backend)} is "
+                    f"already registered to {str(self._backends[backend])}"
+                )
+
+            # ensure backend is self-consistent
+            if cls._backend is None:
+                cls._backend = backend
+            elif backend != cls._backend:
+                raise TypeError(
+                    f"backend specifiers must match ({repr(backend)} != "
+                    f"{repr(cls._backend)})"
+                )
+
+            cls._is_generic = False
+            cls._generic = self
+            cls.name = self.name
+            self._backends[backend] = cls.instance(**kwargs)
+            self.registry.flush()
+            return cls
+
+        return decorator
+
+    #########################
+    ####    HIERARCHY    ####
+    #########################
+
+    @property
+    def is_generic(self) -> bool:
+        return True
+
+    @property
+    def generic(self) -> AtomicType:
+        return self
+
+    @property
+    def subtypes(self) -> composite.CompositeType:
+        return self._subtypes.copy()
+
+    @property
+    def backends(self) -> dict:
+        return MappingProxyType(self._backends)
+
+    @property
+    def children(self) -> composite.CompositeType:
+        return self._subtypes | composite.CompositeType(self._backends.values())
+
+    #################################
+    ####    COMPOSITE PATTERN    ####
+    #################################
+
+    @property
+    def default(self) -> AtomicType:
+        """The concrete type that this generic type defaults to.
+
+        This will be used whenever the generic type is specified without an
+        explicit backend.
+        """
+        return self._default
+
+    @default.setter
+    def default(self, val: type_specifier) -> None:
+        if val is None:
+            del self.default
         else:
-            self.__dict__[name] = value
+            val = resolve.resolve_type(val)
+            if isinstance(val, composite.CompositeType):
+                raise ValueError
+            if val not in self.children:
+                raise KeyError
 
-    def __hash__(self) -> int:
-        return self._hash
+            self._default = val
 
-    def __repr__(self) -> str:
-        sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())
-        return f"{type(self).__name__}({sig})"
+    @default.deleter
+    def default(self) -> None:
+        self._default = self._backends[None]
 
-    def __str__(self) -> str:
-        return self._slug
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.default, name)
+
+    def __getitem__(self, key: str) -> AtomicType:
+        # this should be part of the AtomicType interface
+        return self._backends[key[:1]].instance(*key[1:])
+
+
 
 
 #######################

@@ -1,6 +1,6 @@
-from .atomic cimport ScalarType
+from . cimport scalar
 
 
-cdef class AdapterType(ScalarType):
+cdef class AdapterType(scalar.ScalarType):
     cdef:
-        ScalarType _wrapped
+        scalar.ScalarType _wrapped
