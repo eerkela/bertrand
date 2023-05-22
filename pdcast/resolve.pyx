@@ -145,7 +145,7 @@ cdef list tokenize(str input_str):
 
 
 cdef class TypeFactory:
-    """A factory that returns type objects."""
+    """A factory that returns type objects from type specifiers."""
 
     def __init__(self):
         self.aliases = types.registry.aliases

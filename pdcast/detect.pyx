@@ -5,7 +5,7 @@ The classes that are recognized by this function can be managed via the
 ``register_alias()``, ``remove_alias()``, and ``clear_aliases()`` methods that
 are attached to every ``AtomicType`` and ``AdapterType`` definition.
 """
-from typing import Any
+from typing import Any, Iterable
 
 cimport cython
 cimport numpy as np
@@ -58,61 +58,31 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
     """
     cdef object fill_value = None
     cdef types.BaseType result = None
+    cdef type data_type = type(data)
 
     # trivial case: example is already a type object
-    if isinstance(data, types.BaseType):
+    if issubclass(data_type, types.BaseType):
         return data
 
     # DataFrame (columnwise) case
-    if isinstance(data, pd.DataFrame):
+    if issubclass(data_type, pd.DataFrame):
         columnwise = {}
         for col in data.columns:
             columnwise[col] = detect_type(data[col], skip_na=skip_na)
         return columnwise
 
-    # check if example is iterable
+    # build factory
     if hasattr(data, "__iter__") and not isinstance(data, type):
-        # if example type has been explicitly registered, interpret as scalar
-        if type(data) in types.AtomicType.registry.aliases:
-            return detect_scalar_type(data)
+        if data_type in types.AtomicType.registry.aliases:
+            factory = ScalarFactory(data, data_type)
+        elif hasattr(data, "dtype"):
+            factory = ArrayFactory(data, skip_na=skip_na)
+        else:
+            factory = ElementWiseFactory(data, skip_na=skip_na)
+    else:
+        factory = ScalarFactory(data, data_type)
 
-        # use .dtype field if available
-        dtype = getattr(data, "dtype", None)
-        if dtype is not None:
-            # strip sparse types
-            if isinstance(dtype, pd.SparseDtype):
-                fill_value = dtype.fill_value
-                dtype = dtype.subtype
-
-            # interpret dtype
-            if dtype != np.dtype("O"):
-                # special cases for pd.Timestamp/pd.Timedelta series
-                cases = (pd.Series, pd.Index, pd.api.extensions.ExtensionArray)
-                if isinstance(data, cases):
-                    if dtype == np.dtype("M8[ns]"):
-                        dtype = resolve.resolve_type(types.PandasTimestampType)
-                    elif dtype == np.dtype("m8[ns]"):
-                        dtype = resolve.resolve_type(types.PandasTimedeltaType)
-                result = resolve.resolve_type({dtype})
-
-        # no dtype or dtype=object, loop through and interpret
-        if result is None:
-            data = as_array(data)
-            if skip_na:
-                data = data[~pd.isna(data)]
-            result = detect_vector_type(data.astype(object, copy=False))
-
-        # parse resulting CompositeType
-        if not result:  # empty set
-            return None
-        if len(result) == 1:  # homogenous
-            if fill_value is not None:  # reapply sparse wrapper
-                return types.SparseType(result.pop(), fill_value)
-            return result.pop()
-        return result  # non-homogenous
-
-    # example is not iterable
-    return detect_scalar_type(data)
+    return factory()
 
 
 #######################
@@ -120,59 +90,137 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
 #######################  
 
 
-cdef types.AtomicType detect_scalar_type(object example):
-    """Given a scalar example of a particular data type, return a corresponding
-    AtomicType object.
+cdef tuple pandas_arrays = (
+    pd.Series, pd.Index, pd.api.extensions.ExtensionArray
+)
+
+
+cdef class TypeFactory:
+    """A factory that returns type objects from example data."""
+
+    def __init__(self):
+        self.aliases = types.registry.aliases
+
+    def __call__(self) -> types.BaseType:
+        raise NotImplementedError(f"{type(self)} does not implement __call__")
+
+
+cdef class ScalarFactory(TypeFactory):
+    """A factory that constructs types from scalar examples"""
+
+    def __init__(self, object example, type example_type):
+        super().__init__()
+        self.example = example
+        self.example_type = example_type
+
+    def __call__(self) -> types.AtomicType:
+        if pd.isna(self.example):
+            return None
+
+        cdef types.AtomicType result
+
+        result = self.aliases.get(self.example_type, None)
+        if result is None:
+            return types.ObjectType[self.example_type]
+        return result.detect(self.example)
+
+
+cdef class ArrayFactory(TypeFactory):
+    """A factory that constructs types using an array's .dtype protocol.
     """
-    # check for scalar NA
-    if pd.isna(example):
-        return None
 
-    # look up example type
-    cdef type example_type = type(example)
-    cdef dict lookup = types.AtomicType.registry.aliases
-    cdef type class_def = lookup.get(example_type, None)
+    def __init__(self, data: Iterable, skip_na: bool):
+        super().__init__()
+        self.data = data
+        self.dtype = data.dtype
+        self.skip_na = skip_na
 
-    # delegate to class_def.detect(), defaulting to ObjectType
-    if class_def is None:
-        return types.ObjectType.instance(example_type)
-    return class_def.detect(example)
+    def __call__(self) -> types.ScalarType:
+        dtype = self.dtype
+
+        # strip sparse types
+        fill_value = None
+        if isinstance(dtype, pd.SparseDtype):
+            fill_value = dtype.fill_value
+            dtype = dtype.subtype
+
+        # no type information
+        if dtype == np.dtype(object):
+            result = ElementWiseFactory(self.data, skip_na=self.skip_na)()
+        else:
+            # special cases for pd.Timestamp/pd.Timedelta series
+            if isinstance(self.data, pandas_arrays):
+                if dtype == np.dtype("M8[ns]"):
+                    dtype = resolve.resolve_type(types.PandasTimestampType)
+                elif dtype == np.dtype("m8[ns]"):
+                    dtype = resolve.resolve_type(types.PandasTimedeltaType)
+
+            result = resolve.resolve_type([dtype])
+            if len(result) == 1:
+                result = result.pop()
+
+        if not result:
+            return None
+
+        # replace sparse type
+        if fill_value is not None:
+            if isinstance(result, types.CompositeType):
+                return types.CompositeType(
+                    types.SparseType[typ, fill_value] for typ in result
+                )
+            return types.SparseType[result, fill_value]
+
+        return result
+
+
+cdef class ElementWiseFactory(TypeFactory):
+    """A factory that constructs types elementwise, by looping through the
+    vector.
+    """
+
+    def __init__(self, data: Iterable, skip_na: bool):
+        super().__init__()
+        data = as_array(data)
+        if skip_na:
+            data = data[~pd.isna(data)]
+
+        self.data = data.astype(object, copy=False)
+
+    def __call__(self) -> types.BaseType:
+        result = detect_vector_type(self.data, self.aliases)
+        if not result:
+            return None
+        if len(result) == 1:
+            return result.pop()
+        return result
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef types.CompositeType detect_vector_type(np.ndarray[object] arr):
+cdef types.CompositeType detect_vector_type(object[:] arr, dict lookup):
     """Loop through an object array and return a CompositeType that corresponds
-    to its elements.
+    to the type of each element.
     """
-    cdef set atomic_types = set()
-    cdef dict lookup = types.AtomicType.registry.aliases
     cdef unsigned int arr_length = arr.shape[0]
+    cdef np.ndarray[object] index = np.empty(arr_length, dtype="O")
+    cdef set atomic_types = set()
     cdef unsigned int i
     cdef object element
     cdef type element_type
-    cdef type class_def
     cdef types.AtomicType result
-    cdef np.ndarray[object] index = np.empty(arr_length, dtype="O")
 
-    # loop through input array (fast)
     for i in range(arr_length):
-        # call type() on each element
         element = arr[i]
         element_type = type(element)
 
-        # look up element_type to get AtomicType definition
-        class_def = lookup.get(element_type, None)
-
-        # delegate to class_def.detect(), defaulting to ObjectType
-        if class_def is None:
+        result = lookup.get(element_type, None)
+        if result is None:
             result = types.ObjectType.instance(element_type)
         else:
-            result = class_def.detect(element)
+            result = result.detect(element)
 
-        # add result to both atomic_types set and index buffer
         atomic_types.add(result)
-        index[i] = <object> result
+        index[i] = result
 
     # create CompositeType from atomic_types + index buffer
     return types.CompositeType(atomic_types, index=index)
