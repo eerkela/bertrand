@@ -4,7 +4,6 @@ group types into a set-like container.
 cimport numpy as np
 import numpy as np
 
-from pdcast cimport resolve
 from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 

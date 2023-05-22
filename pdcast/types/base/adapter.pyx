@@ -8,7 +8,6 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from pdcast cimport resolve
 from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
@@ -132,10 +131,6 @@ cdef class AdapterType(scalar.ScalarType):
     ############################
     ####    CONSTRUCTORS    ####
     ############################
-
-    @classmethod
-    def slugify(cls, wrapped: scalar.ScalarType) -> str:
-        return f"{cls.name}[{str(wrapped)}]"
 
     @classmethod
     def resolve(cls, wrapped: str = None, *args: str) -> AdapterType:

@@ -6,8 +6,7 @@ import regex as re  # using alternate regex
 from types import MappingProxyType
 from typing import Any
 
-# from . cimport atomic
-from . cimport scalar
+from . import scalar
 
 
 # TODO: we probably have to adjust @subtype/@implementation decorators to

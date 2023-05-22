@@ -29,7 +29,6 @@ resolve
 """
 # pylint: disable=undefined-variable, redefined-builtin
 from .types import *
-from .check import typecheck
 # from .convert import (
 #     cast, to_boolean, to_integer, to_float, to_complex, to_decimal,
 #     to_datetime, to_timedelta, to_string
@@ -40,9 +39,10 @@ from .decorators.attachable import (
 )
 from .decorators.extension import extension_func, ExtensionFunc
 from .decorators.dispatch import dispatch, DispatchFunc
+from .resolve import resolve_type
 from .detect import detect_type
 # from .patch.base import attach, detach
-from .resolve import resolve_type
+from .check import typecheck
 
 
 # # importing * from types also masks module names, which can be troublesome

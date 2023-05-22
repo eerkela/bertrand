@@ -7,7 +7,6 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdcast cimport resolve
 from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 

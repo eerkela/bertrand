@@ -1,8 +1,8 @@
 cimport numpy as np
-from . cimport registry
+from .registry cimport BaseType
 
 
-cdef class CompositeType(registry.BaseType):
+cdef class CompositeType(BaseType):
     cdef readonly:
         set _types
 

@@ -10,7 +10,6 @@ import numpy as np
 import pandas as pd
 from pandas.api.extensions import ExtensionDtype
 
-from pdcast cimport resolve
 from pdcast import resolve
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import array_like, type_specifier

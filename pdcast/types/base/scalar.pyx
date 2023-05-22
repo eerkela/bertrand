@@ -5,10 +5,10 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from pdcast import resolve
+
 from pdcast.util.type_hints import type_specifier
 
-from . cimport registry
+from .registry cimport BaseType
 
 
 # TODO: @subtype can be attached directly to ScalarType using the manager
@@ -21,7 +21,7 @@ from . cimport registry
 ##########################
 
 
-cdef class ScalarType(registry.BaseType):
+cdef class ScalarType(BaseType):
     """Base type for :class:`AtomicType` and :class:`AdapterType` objects.
 
     This allows inherited types to manage aliases and update them at runtime.
@@ -239,6 +239,7 @@ cdef class ScalarType(registry.BaseType):
 
     def __eq__(self, other: type_specifier) -> bool:
         """Compare two types for equality."""
+        from pdcast import resolve
         other = resolve.resolve_type(other)
         return isinstance(other, ScalarType) and hash(self) == hash(other)
 
