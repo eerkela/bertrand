@@ -847,7 +847,7 @@ cdef class AtomicType(scalar.ScalarType):
                 f"definition"
             )
 
-        cls.instance = flyweights.FlyweightManager(
+        cls.instance = flyweights.FlyweightFactory(
             cls,
             cache_size=0 if cache_size is None else cache_size
         )

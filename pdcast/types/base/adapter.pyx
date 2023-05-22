@@ -429,7 +429,7 @@ cdef class AdapterType(scalar.ScalarType):
                 f"definition"
             )
 
-        cls.instance = flyweights.NoInstanceManager(cls)
+        cls.instance = flyweights.NoInstanceFactory(cls)
         cls._insort = PrioritySorter(cls, priority=priority)
 
 

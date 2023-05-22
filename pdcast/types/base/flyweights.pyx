@@ -3,7 +3,7 @@ from pdcast.util.structs cimport LRUDict
 from . cimport scalar
 
 
-cdef class InstanceManager:
+cdef class InstanceFactory:
     """Interface for controlling instance creation for
     :class:`ScalarType <pdcast.ScalarType>` objects.
     """
@@ -15,9 +15,12 @@ cdef class InstanceManager:
         """Create a new instance of the """
         raise NotImplementedError(f"{type(self)} does not implement __call__")
 
+    def __str__(self) -> str:
+        return repr(self)
 
-cdef class FlyweightManager(InstanceManager):
-    """An InstanceManager that caches instances according to the flyweight
+
+cdef class FlyweightFactory(InstanceFactory):
+    """An InstanceFactory that caches instances according to the flyweight
     pattern.
     """
 
@@ -41,9 +44,15 @@ cdef class FlyweightManager(InstanceManager):
 
         return result
 
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.instances})"
 
-cdef class NoInstanceManager(InstanceManager):
-    """An InstanceManager that passes to the normal constructor."""
+
+cdef class NoInstanceFactory(InstanceFactory):
+    """An InstanceFactory that passes to the normal constructor."""
 
     def __call__(self, *args, **kwargs) -> scalar.ScalarType:
         return self.base_class(*args, **kwargs)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}()"

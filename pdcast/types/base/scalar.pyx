@@ -1,6 +1,10 @@
 from types import MappingProxyType
 from typing import Any, Iterator
 
+cimport numpy as np
+import numpy as np
+import pandas as pd
+
 from pdcast import resolve
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import type_specifier
@@ -155,6 +159,9 @@ cdef class ScalarType(registry.BaseType):
             self.__dict__[name] = value
 
     def __getitem__(self, key: Any) -> ScalarType:
+        """Return a parametrized type in the same syntax as the type
+        specification mini-language.
+        """
         if isinstance(key, tuple):
             return self.instance(*key)
 
@@ -193,13 +200,9 @@ cdef class AliasManager:
     """Interface for dynamically managing a :class:`ScalarType`'s aliases."""
 
     def __init__(self, set aliases):
+        self._aliases = set()
         for alias in aliases:
-            if alias in ScalarType.registry.aliases:
-                raise TypeError(
-                    f"alias {repr(alias)} is already registered to "
-                    f"{str(ScalarType.registry.aliases[alias])}"
-                )
-        self._aliases = aliases
+            self.add(alias)
 
     def _check_type_specifier(self, alias: type_specifier) -> None:
         """Ensure that an alias is a valid type specifier."""
@@ -207,6 +210,16 @@ cdef class AliasManager:
             raise TypeError(
                 f"alias must be a valid type specifier: {repr(alias)}"
             )
+
+    def _normalize_specifier(self, alias: type_specifier) -> type_specifier:
+        """Preprocess a type specifier, converting it into a recognizable
+        format.
+        """
+        # ignore parametrized dtypes
+        if isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
+            return type(alias)
+
+        return alias
 
     def add(self, alias: type_specifier, overwrite: bool = False) -> None:
         """Alias a type specifier to the managed type.
@@ -225,6 +238,7 @@ cdef class AliasManager:
         <resolve_type.mini_language>` for more information on how aliases work.
         """
         self._check_type_specifier(alias)
+        alias = self._normalize_specifier(alias)
 
         if alias in ScalarType.registry.aliases:
             other = ScalarType.registry.aliases[alias]

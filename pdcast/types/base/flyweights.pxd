@@ -1,13 +1,13 @@
 
 
-cdef class InstanceManager:
+cdef class InstanceFactory:
     cdef:
         type base_class
 
 
-cdef class FlyweightManager(InstanceManager):
+cdef class FlyweightFactory(InstanceFactory):
     cdef readonly:
         dict instances
 
-cdef class NoInstanceManager(InstanceManager):
+cdef class NoInstanceFactory(InstanceFactory):
     pass

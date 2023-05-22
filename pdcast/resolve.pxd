@@ -1,6 +1,3 @@
-cimport numpy as np
-cimport pdcast.types as types
-
 
 # constants
 cdef dict na_strings
@@ -13,7 +10,25 @@ cdef object token
 # helpers
 cdef str nested(str opener, str closer, str name)
 cdef list tokenize(str input_str)
-cdef types.BaseType resolve_string(str input_str)
-cdef types.ScalarType resolve_class(type input_type)
-cdef types.ScalarType resolve_numpy_dtype(object input_dtype)
-cdef types.ScalarType resolve_pandas_dtype(object input_dtype)
+
+
+# factories
+cdef class TypeFactory:
+    cdef:
+        dict aliases
+
+
+cdef class ClassFactory(TypeFactory):
+    cdef:
+        type specifier
+
+
+cdef class DtypeFactory(TypeFactory):
+    cdef:
+        object specifier
+
+
+cdef class StringFactory(TypeFactory):
+    cdef:
+        str specifier
+        object regex

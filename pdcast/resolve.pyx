@@ -65,23 +65,32 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
     AdapterType.resolve : customizable semantics for the
         :ref:`type specification mini-language <resolve_type.mini_language>`.
     """
+    # trivial case
     if isinstance(typespec, types.BaseType):
-        result = typespec
-    elif isinstance(typespec, type):
-        result = resolve_class(typespec)
+        return typespec
+
+    # build factory
+    if isinstance(typespec, type):
+        factory = ClassFactory(typespec)
+
     elif isinstance(typespec, str):
-        result = resolve_string(typespec)
-    elif isinstance(typespec, np.dtype):
-        result = resolve_numpy_dtype(typespec)
-    elif isinstance(typespec, pd.api.extensions.ExtensionDtype):
-        result = resolve_pandas_dtype(typespec)
+        factory = StringFactory(typespec)
+
+    elif isinstance(typespec, (np.dtype, pd.api.extensions.ExtensionDtype)):
+        if isinstance(typespec, abstract.AbstractDtype):
+            return typespec._atomic_type
+
+        factory = DtypeFactory(typespec)
+
     elif hasattr(typespec, "__iter__"):
-        result = types.CompositeType(resolve_type(x) for x in typespec)
+        return types.CompositeType(resolve_type(x) for x in typespec)
+
     else:
         raise ValueError(
             f"could not resolve specifier of type {type(typespec)}"
         )
-    return result
+
+    return factory()
 
 
 #######################
@@ -135,78 +144,81 @@ cdef list tokenize(str input_str):
     return [x.group().strip() for x in token.finditer(input_str)]
 
 
-cdef types.BaseType resolve_string(str input_str):
-    """Resolve a string-based type specifier, returning a corresponding
-    AtomicType.
+cdef class TypeFactory:
+    """A factory that returns type objects."""
+
+    def __init__(self):
+        self.aliases = types.registry.aliases
+
+    def __call__(self, typespec: type_specifier) -> types.BaseType:
+        raise NotImplementedError(f"{type(self)} does not implement __call__")
+
+
+cdef class ClassFactory(TypeFactory):
+    """A factory that constructs types from Python class objects."""
+
+    def __init__(self, type specifier):
+        super().__init__()
+        self.specifier = specifier
+
+    def __call__(self) -> types.ScalarType:
+        if self.specifier in self.aliases:
+            return self.aliases[self.specifier]
+
+        return types.ObjectType[self.specifier]
+
+
+cdef class DtypeFactory(TypeFactory):
+    """A factory that constructs types from numpy/pandas dtype objects."""
+
+    def __init__(self, object specifier) -> types.ScalarType:
+        super().__init__()
+        self.specifier = specifier
+
+    def __call__(self) -> types.ScalarType:
+        return self.aliases[type(self.specifier)].from_dtype(self.specifier)
+
+
+cdef class StringFactory(TypeFactory):
+    """A factory that constructs types from strings in the type specification
+    mini-language.
     """
-    # strip leading, trailing whitespace from input
-    input_str = input_str.strip()
 
-    # retrieve alias/regex registry
-    registry = types.AtomicType.registry
+    def __init__(self, str specifier):
+        super().__init__()
 
-    # ensure input consists only of resolvable type specifiers
-    valid = registry.resolvable.fullmatch(input_str)
-    if not valid:
-        raise ValueError(
-            f"could not interpret type specifier: {repr(input_str)}"
-        )
+        # strip leading/trailing whitespace
+        specifier = specifier.strip()
 
-    # parse every type specifier contained in the body of the input string
-    result = set()
-    input_str = valid.group("body")
-    matches = [x.groupdict() for x in registry.regex.finditer(input_str)]
-    for m in matches:
-        if m.get("sized_unicode"):
-            base = types.StringType
-        else:
-            base = registry.aliases[m["type"]]
+        # ensure string contains valid specifiers
+        resolvable = types.registry.resolvable.fullmatch(specifier)
+        if not resolvable:
+            raise ValueError(
+                f"could not interpret type specifier: {repr(specifier)}"
+            )
 
-        # tokenize args and pass to base.resolve()
-        args = () if not m["args"] else tokenize(m["args"])
-        instance = base.resolve(*args)
+        # strip prefix/suffix if present
+        self.specifier = resolvable.group("body")
+        self.regex = types.registry.regex
 
-        # add to result set
-        result.add(instance)
+    def __call__(self):
+        result = set()
+        for match in self.regex.finditer(self.specifier):
+            match_dict = match.groupdict()
 
-    # return either as single AtomicType or as CompositeType with 2+ types
-    if len(result) == 1:
-        return result.pop()
-    return types.CompositeType(result)
+            # get base type from alias
+            if match_dict.get("sized_unicode"):
+                base = types.StringType
+            else:
+                base = self.aliases[match_dict["type"]]
 
+            # tokenize args and pass to base.resolve()
+            args = match_dict["args"]
+            tokens = () if not args else tokenize(args)
+            instance = base.resolve(*tokens)
 
-cdef types.ScalarType resolve_class(type input_type):
-    """Resolve a python type, returning a corresponding AtomicType."""
-    cdef dict aliases = types.AtomicType.registry.aliases
-    cdef type result = aliases.get(input_type, None)
+            result.add(instance)
 
-    if result is None:
-        return types.ObjectType.instance(type_def=input_type)
-    if issubclass(result, types.AdapterType):
-        return result()
-    return result.instance()
-
-
-cdef types.ScalarType resolve_numpy_dtype(object input_dtype):
-    """Resolve a numpy/pandas dtype object, returning a corresponding
-    AtomicType.
-    """
-    for k, v in types.AtomicType.registry.aliases.items():
-        if isinstance(k, np.dtype) and np.issubdtype(input_dtype, k):
-            return v.from_dtype(input_dtype)
-
-    raise ValueError(f"numpy dtype not recognized: {input_dtype}")
-
-
-cdef types.ScalarType resolve_pandas_dtype(object input_dtype):
-    """Resolve a numpy/pandas dtype object, returning a corresponding
-    AtomicType.
-    """
-    # fastpath for AbstractDtypes
-    if isinstance(input_dtype, abstract.AbstractDtype):
-        return input_dtype._atomic_type
-
-    cdef types.TypeRegistry registry = types.AtomicType.registry
-
-    # look up ExtensionDtype and pass example
-    return registry.aliases[type(input_dtype)].from_dtype(input_dtype)
+        if len(result) == 1:
+            return result.pop()
+        return types.CompositeType(result)
