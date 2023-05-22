@@ -40,7 +40,7 @@ class NumpyBooleanMixin:
         return False
 
     def make_nullable(self) -> AtomicType:
-        return self.generic.instance(backend="pandas", **self.kwargs)
+        return self.generic("pandas", **self.kwargs)
 
 
 #######################

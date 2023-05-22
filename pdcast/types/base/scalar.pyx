@@ -6,10 +6,14 @@ import numpy as np
 import pandas as pd
 
 from pdcast import resolve
-from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import type_specifier
 
 from . cimport registry
+
+
+# TODO: @subtype can be attached directly to ScalarType using the manager
+# pattern, and therefore separated from @generic.  We just create a
+# TypeHierarchy interface with SubtypeHierarchy as a concretion.
 
 
 ##########################
@@ -27,7 +31,6 @@ cdef class ScalarType(registry.BaseType):
         self._kwargs = kwargs
         self._slug = self.slugify(**kwargs)
         self._hash = hash(self._slug)
-        self._is_frozen = True  # no new attributes beyond this point
 
     @property
     def name(self) -> str:
@@ -96,6 +99,37 @@ cdef class ScalarType(registry.BaseType):
             f"'{type(self).__name__}' is missing an `aliases` field."
         )
 
+    def slugify(self, *args, **kwargs) -> str:
+        """Generate a unique string representation of this type.
+
+        This method must have the same arguments as a type's
+        :class:`__init__() <AtomicType>` method, and its output determines how
+        flyweights are identified.  If a type is not parameterized and does not
+        implement a custom :class:`__init__() <AtomicType>` method, this can be
+        safely omitted in subclasses.
+
+        Returns
+        -------
+        str
+            A string that fully specifies the type.  The string must be unique
+            for every set of inputs, as it is used to look up flyweights.
+
+        Notes
+        -----
+        This method is always called **before** initializing a new
+        :class:`AtomicType`.  The uniqueness of its result determines whether a
+        new flyweight will be generated for this type.
+        """
+        if not args or kwargs:
+            return self.name
+
+        args = iter(args)
+        bound = (
+            str(kwargs[k]) if k in kwargs else str(next(args))
+            for k in self.kwargs
+        )
+        return f"{self.name}[', '.join(bound)]"
+
     @property
     def kwargs(self) -> MappingProxyType:
         """For parametrized types, the value of each parameter.
@@ -127,10 +161,35 @@ cdef class ScalarType(registry.BaseType):
         """
         return self
 
+    def replace(self, **kwargs) -> ScalarType:
+        """Return a modified copy of a type with the values specified in
+        ``**kwargs``.
+
+        Parameters
+        ----------
+        **kwargs : dict
+            keyword arguments corresponding to attributes of this type.  Any
+            arguments that are not specified will be replaced with the current
+            values for this type.
+
+        Returns
+        -------
+        AtomicType
+            A flyweight for the specified type.  If this method is given the
+            same input again in the future, then this will be a simple
+            reference to the previous instance.
+
+        Notes
+        -----
+        This method respects the immutability of :class:`AtomicType` objects.
+        It always returns a flyweight with the new values.
+        """
+        cdef dict merged = {**self.kwargs, **kwargs}
+        return self(**merged)
+
     ###############################
     ####    SPECIAL METHODS    ####
     ###############################
-
     @classmethod
     def __init_subclass__(cls, cache_size: int = None, **kwargs):
         """Metaclass initializer for flyweight pattern."""
@@ -158,14 +217,18 @@ cdef class ScalarType(registry.BaseType):
         else:
             self.__dict__[name] = value
 
+    def __call__(self, *args, **kwargs) -> ScalarType:
+        """Constructor for parametrized types."""
+        return type(self)(*args, **kwargs)
+
     def __getitem__(self, key: Any) -> ScalarType:
         """Return a parametrized type in the same syntax as the type
         specification mini-language.
         """
-        if isinstance(key, tuple):
-            return self.instance(*key)
+        if not isinstance(key, tuple):
+            key = (key,)
 
-        return self.instance(key)
+        return self(*key)
 
     def __contains__(self, other: type_specifier) -> bool:
         """Implement the ``in`` keyword for membership checks.

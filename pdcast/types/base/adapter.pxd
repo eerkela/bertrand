@@ -1,9 +1,9 @@
-from . cimport scalar
+from .scalar cimport ScalarType
 
 
-cdef class AdapterType(scalar.ScalarType):
+cdef class AdapterType(ScalarType):
     cdef:
-        scalar.ScalarType _wrapped
+        ScalarType _wrapped
 
 
 cdef class DecoratorSorter:

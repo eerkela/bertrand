@@ -9,7 +9,6 @@ from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
 from . cimport atomic
-from . cimport adapter
 from . cimport registry
 
 

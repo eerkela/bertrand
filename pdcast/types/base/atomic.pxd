@@ -9,6 +9,7 @@ cdef class AtomicType(ScalarType):
         CacheValue _backend_cache
         CacheValue _subtype_cache
         CacheValue _supertype_cache
+        bint _is_frozen
 
 
 cdef class GenericType(AtomicType):

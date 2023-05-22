@@ -8,13 +8,11 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from pdcast import detect
 from pdcast cimport resolve
 from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
 from . cimport atomic
-from . cimport flyweights
 from . cimport scalar
 from . cimport composite
 
@@ -410,9 +408,9 @@ cdef class AdapterType(scalar.ScalarType):
     def __getitem__(self, key: Any) -> AdapterType:
         if isinstance(key, tuple):
             wrapped = resolve.resolve_type(key[0])
-            return self.instance(wrapped, *key[1:])
+            return self(wrapped, *key[1:])
 
-        return self.instance(resolve.resolve_type(key))
+        return self(resolve.resolve_type(key))
 
     @classmethod
     def __init_subclass__(cls, priority: int = 0, **kwargs):
@@ -429,7 +427,6 @@ cdef class AdapterType(scalar.ScalarType):
                 f"definition"
             )
 
-        cls.instance = flyweights.NoInstanceFactory(cls)
         cls._insort = PrioritySorter(cls, priority=priority)
 
 

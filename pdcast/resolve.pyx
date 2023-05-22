@@ -12,14 +12,11 @@ function through the ``register_alias()``, ``remove_alias()``, and
 ``AdapterType`` definition.
 """
 import regex as re  # alternate (PCRE-style) python regex engine
-from typing import Iterable
 
 cimport numpy as np
 import numpy as np
 import pandas as pd
 
-cimport pdcast.detect as detect
-import pdcast.detect as detect
 import pdcast.types as types
 cimport pdcast.types as types
 import pdcast.types.array.abstract as abstract
@@ -145,7 +142,7 @@ cdef list tokenize(str input_str):
 
 
 cdef class TypeFactory:
-    """A factory that returns type objects from type specifiers."""
+    """A factory that returns type objects."""
 
     def __init__(self):
         self.aliases = types.registry.aliases

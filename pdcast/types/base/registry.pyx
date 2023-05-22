@@ -4,11 +4,7 @@ types and the relationships between them.
 import inspect
 import regex as re  # using alternate regex
 from types import MappingProxyType
-from typing import Any, Callable
-
-cimport numpy as np
-import numpy as np
-import pandas as pd
+from typing import Any
 
 # from . cimport atomic
 from . cimport scalar
@@ -112,7 +108,7 @@ def register(
                     "`@register` can only be applied to AtomicType and "
                     "AdapterType subclasses"
                 )
-            instance = cls.instance()
+            instance = cls()
 
         if cond:
             cls.registry.add(instance)

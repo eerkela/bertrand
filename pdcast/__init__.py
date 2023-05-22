@@ -28,6 +28,7 @@ resolve
     domain-specific mini-language for referring to types.
 """
 # pylint: disable=undefined-variable, redefined-builtin
+from .types import *
 from .check import typecheck
 # from .convert import (
 #     cast, to_boolean, to_integer, to_float, to_complex, to_decimal,
@@ -42,7 +43,6 @@ from .decorators.dispatch import dispatch, DispatchFunc
 from .detect import detect_type
 # from .patch.base import attach, detach
 from .resolve import resolve_type
-from .types import *
 
 
 # # importing * from types also masks module names, which can be troublesome

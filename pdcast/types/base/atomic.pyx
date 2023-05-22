@@ -1,16 +1,14 @@
 """This module describes an ``AtomicType`` object, which serves as the base
 of the ``pdcast`` type system.
 """
-import decimal
 import inspect
 from types import MappingProxyType
-from typing import Any, Callable, Iterator
+from typing import Any
 
 cimport numpy as np
 import numpy as np
 import pandas as pd
-from pandas.api.extensions import ExtensionDtype, register_extension_dtype
-import pytz
+from pandas.api.extensions import ExtensionDtype
 
 from pdcast cimport resolve
 from pdcast import resolve
@@ -18,16 +16,8 @@ from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import array_like, type_specifier
 
 from . cimport scalar
-from . cimport flyweights
-from . cimport adapter
 from . cimport composite
 from pdcast.types.array import abstract
-
-
-# TODO: __init_subclass__ returns a proxy, that is removed by @register.  This
-# pushes all the updates to the registry at once, rather than requiring checks
-# in decorators.
-
 
 
 # TODO: add examples/raises for each method
@@ -63,13 +53,6 @@ from pdcast.types.array import abstract
 ######################
 ####    ATOMIC    ####
 ######################
-
-# Type
-# ScalarType
-# GenericType
-# AtomicType
-# DecoratorType
-# CompositeType
 
 
 cdef class AtomicType(scalar.ScalarType):
@@ -124,6 +107,11 @@ cdef class AtomicType(scalar.ScalarType):
     Where ``ParentType`` and ``GenericType`` reference other :class:`AtomicType`
     definitions that ``BackendType`` is linked to.
     """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._instances[str(self)] = self
+        self._is_frozen = True  # no new attributes beyond this point
 
     ###################################
     ####    REQUIRED ATTRIBUTES    ####
@@ -219,36 +207,7 @@ cdef class AtomicType(scalar.ScalarType):
     ####    CONSTRUCTORS    ####
     ############################
 
-    @classmethod
-    def slugify(cls) -> str:
-        """Generate a string representation of a type.
-
-        This method must have the same arguments as a type's
-        :class:`__init__() <AtomicType>` method, and its output determines how
-        flyweights are identified.  If a type is not parameterized and does not
-        implement a custom :class:`__init__() <AtomicType>` method, this can be
-        safely omitted in subclasses.
-
-        Returns
-        -------
-        str
-            A string that fully specifies the type.  The string must be unique
-            for every set of inputs, as it is used to look up flyweights.
-
-        Notes
-        -----
-        This method is always called **before** initializing a new
-        :class:`AtomicType`.  The uniqueness of its result determines whether a
-        new flyweight will be generated for this type.
-        """
-        # NOTE: we explicitly check for _is_generic=False, which signals that
-        # @register_backend has been explicitly called on this type.
-        if cls._is_generic == False:
-            return f"{cls.name}[{cls._backend}]"
-        return cls.name
-
-    @classmethod
-    def resolve(cls, *args: str) -> AtomicType:
+    def resolve(self, *args: str) -> AtomicType:
         """Construct a new :class:`AtomicType` in the :ref:`type specification
         mini-language <resolve_type.mini_language>`.
 
@@ -273,11 +232,9 @@ cdef class AtomicType(scalar.ScalarType):
             same inputs again in the future, then this will be a simple
             reference to the previous instance.
         """
-        # NOTE: Most types don't accept any arguments at all
-        return cls.instance(*args)
+        return self(*args)  # NOTE: Most types don't accept any arguments at all
 
-    @classmethod
-    def detect(cls, example: Any) -> AtomicType:
+    def detect(self, example: Any) -> AtomicType:
         """Construct a new :class:`AtomicType` from scalar example data.
 
         Override this if a type has attributes that depend on the value of a
@@ -310,11 +267,9 @@ cdef class AtomicType(scalar.ScalarType):
         If the input to :func:`detect_type` is vectorized, then this method
         will be called at each index.
         """
-        # NOTE: most types disregard example data
-        return cls.instance()
+        return self()  # NOTE: most types disregard example data
 
-    @classmethod
-    def from_dtype(cls, dtype: np.dtype | ExtensionDtype) -> AtomicType:
+    def from_dtype(self, dtype: np.dtype | ExtensionDtype) -> AtomicType:
         """Construct an :class:`AtomicType` from a corresponding numpy/pandas
         :class:`dtype <numpy.dtype>`\ /\
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
@@ -353,33 +308,12 @@ cdef class AtomicType(scalar.ScalarType):
         asymmetry allows pandas dtypes to be arbitrarily parameterized when
         passed to this method.
         """
-        return cls.instance()  # NOTE: most types disregard dtype metadata
+        return self()  # NOTE: most types disregard dtype metadata
 
-    def replace(self, **kwargs) -> AtomicType:
-        """Return a modified copy of a type with the values specified in
-        ``**kwargs``.
-
-        Parameters
-        ----------
-        **kwargs : dict
-            keyword arguments corresponding to attributes of this type.  Any
-            arguments that are not specified will be replaced with the current
-            values for this type.
-
-        Returns
-        -------
-        AtomicType
-            A flyweight for the specified type.  If this method is given the
-            same input again in the future, then this will be a simple
-            reference to the previous instance.
-
-        Notes
-        -----
-        This method respects the immutability of :class:`AtomicType` objects.
-        It always returns a flyweight with the new values.
-        """
-        cdef dict merged = {**self.kwargs, **kwargs}
-        return self.instance(**merged)
+    @property
+    def instances(self) -> MappingProxyType:
+        """Return a map of all the flyweight instances of this type."""
+        return MappingProxyType(self._instances)
 
     ###################################
     ####    SUBTYPES/SUPERTYPES    ####
@@ -828,6 +762,17 @@ cdef class AtomicType(scalar.ScalarType):
     ####    SPECIAL METHODS    ####
     ###############################
 
+    def __call__(self, *args, **kwargs):
+        """Flyweight constructor for parametrized types."""
+        cdef str slug
+        cdef AtomicType instance
+
+        slug = self.slugify(*args, **kwargs)
+        instance = self._instances.get(slug, None)
+        if instance is None:
+            instance = type(self)(*args, **kwargs)
+        return instance
+
     @classmethod
     def __init_subclass__(cls, cache_size: int = None, **kwargs):
         """Metaclass initializer.
@@ -847,10 +792,11 @@ cdef class AtomicType(scalar.ScalarType):
                 f"definition"
             )
 
-        cls.instance = flyweights.FlyweightFactory(
-            cls,
-            cache_size=0 if cache_size is None else cache_size
-        )
+        # initialize flyweights
+        if cache_size is None:
+            cls._instances = {}
+        else:
+            cls._instances = LRUDict(maxsize=cache_size)
 
         # init fields for @subtype
         cls._children = set()
@@ -909,15 +855,6 @@ cdef class GenericType(AtomicType):
     ############################
     ####    CONSTRUCTORS    ####
     ############################
-
-    def instance(
-        self,
-        backend: str | None = None,
-        *args,
-        **kwargs
-    ) -> AtomicType:
-        """Forward constructor arguments to the appropriate implementation."""
-        return self._backends[backend].instance(*args, **kwargs)
 
     def resolve(
         self,
@@ -1058,7 +995,7 @@ cdef class GenericType(AtomicType):
 
     def __getitem__(self, key: str) -> AtomicType:
         # this should be part of the AtomicType interface
-        return self._backends[key[:1]].instance(*key[1:])
+        return self._backends[key[:1]](*key[1:])
 
 
 
