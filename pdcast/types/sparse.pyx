@@ -29,32 +29,13 @@ from .base import register
 
 
 @register
-class SparseType(AdapterType):
+class SparseType(AdapterType, priority=10):
 
     name = "sparse"
     aliases = {pd.SparseDtype, "sparse", "Sparse"}
-    _priority = 10
 
     def __init__(self, wrapped: ScalarType = None, fill_value: Any = None):
-        print(globals())
-
-        # do not re-wrap SparseTypes
-        if isinstance(wrapped, type(self)):  # 1st order
-            if fill_value is None:
-                fill_value = wrapped.fill_value
-            wrapped = wrapped.wrapped
-
-        elif wrapped is not None:  # 2nd order
-            for x in wrapped.adapters:
-                if isinstance(x.wrapped, type(self)):
-                    if fill_value is None:
-                        fill_value = x.fill_value
-                    wrapped = x.wrapped.wrapped
-                    x.wrapped = self
-                    break
-
-        # call AdapterType.__init__()
-        super().__init__(wrapped=wrapped, fill_value=fill_value)
+        super(type(self), self).__init__(wrapped, fill_value=fill_value)
 
     @property
     def fill_value(self) -> Any:

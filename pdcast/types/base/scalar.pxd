@@ -7,3 +7,8 @@ cdef class ScalarType(BaseType):
         str _slug
         long long _hash
         bint _is_frozen
+
+
+cdef class AliasManager:
+    cdef readonly:
+        set _aliases

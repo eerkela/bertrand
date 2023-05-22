@@ -112,7 +112,7 @@ def register(
                     "`@register` can only be applied to AtomicType and "
                     "AdapterType subclasses"
                 )
-            instance = cls.instance()  # TODO: AdapterType has to implement this
+            instance = cls.instance()
 
         if cond:
             cls.registry.add(instance)
@@ -233,7 +233,6 @@ cdef class TypeRegistry:
         """
         self._validate_no_parameters(instance)
         self._validate_name(instance)
-        self._validate_aliases(instance)
         # self._validate_slugify(instance)
         self.base_types.add(instance)
         self.update_hash()
@@ -435,20 +434,6 @@ cdef class TypeRegistry:
         #        raise TypeError(
         #            f"name must be unique, not one of {observed_names}"
         #        )
-
-    def _validate_aliases(self, instance: scalar.ScalarType) -> None:
-        """Ensure that a base type has aliases, and that none of its aliases
-        overlap with another registered type.
-        """
-        if not isinstance(instance.aliases, set):
-            raise TypeError(f"{instance.__qualname__}.aliases must be a set")
-
-        for alias in instance.aliases:
-            if alias in self.aliases:
-                raise TypeError(
-                    f"alias {repr(alias)} is already registered to "
-                    f"{self.aliases[alias].__name__}"
-                )
 
     def _validate_slugify(self, instance: scalar.ScalarType) -> None:
         """Ensure that a base type has a slugify() classmethod and that its

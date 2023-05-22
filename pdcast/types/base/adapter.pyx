@@ -123,14 +123,13 @@ cdef class AdapterType(scalar.ScalarType):
     :class:`AtomicType`.
     """
 
-    # NOTE: controls the order of nested adapters.  Higher comes first.
-    _priority = 0  # categorical has priority 5, sparse has priority 10.
-
     def __init__(self, wrapped: scalar.ScalarType, **kwargs):
+        if isinstance(wrapped, AdapterType):
+            wrapped, kwargs = self._insort(self, wrapped, kwargs)
+
         self._wrapped = wrapped
-        self._kwargs = {"wrapped": wrapped} | kwargs
-        self._slug = self.slugify(wrapped, **kwargs)
-        self._hash = hash(self._slug)
+        kwargs = {"wrapped": wrapped} | kwargs
+        super().__init__(**kwargs)
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -408,8 +407,19 @@ cdef class AdapterType(scalar.ScalarType):
 
         return val
 
+    def __getitem__(self, key: Any) -> AdapterType:
+        if isinstance(key, tuple):
+            wrapped = resolve.resolve_type(key[0])
+            return self.instance(wrapped, *key[1:])
+
+        return self.instance(resolve.resolve_type(key))
+
     @classmethod
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, priority: int = 0, **kwargs):
+        """priority controls the order of nested adapters.  Higher comes first.
+
+        categorical has priority 5, sparse has priority 10.
+        """
         super(AdapterType, cls).__init_subclass__(**kwargs)
 
         valid = AdapterType.__subclasses__()
@@ -420,3 +430,68 @@ cdef class AdapterType(scalar.ScalarType):
             )
 
         cls.instance = flyweights.NoInstanceManager(cls)
+        cls._insort = PrioritySorter(cls, priority=priority)
+
+
+#######################
+####    PRIVATE    ####
+#######################
+
+
+cdef class DecoratorSorter:
+    """Interface for controlling the insertion and sorting of nested
+    AdapterTypes.
+    """
+
+    def __init__(self, type base_class):
+        self.base_class = base_class
+
+    cdef dict copy_parameters(self, AdapterType wrapper, dict kwargs):
+        """Copy the parameters from one type to another"""
+        return {
+            param: getattr(wrapper, param) for param, value in kwargs.items()
+            if value is None
+        }
+
+    def __call__(
+        self,
+        AdapterType instance,
+        AdapterType stack,
+        dict kwargs
+    ) -> tuple:
+        """Search the stack for """
+        raise NotImplementedError(f"{type(self)} does not implement insort()")
+
+
+# TODO: SparseType.resolve still uses _priority.
+# -> some of this can be offloaded to parent
+
+
+cdef class PrioritySorter(DecoratorSorter):
+    """A DecoratorSorter that sorts nested decorators based on a given
+    priority level.
+    """
+
+    def __init__(self, type base_class, int priority):
+        super().__init__(base_class)
+        self.priority = priority
+
+    def __call__(
+        self,
+        AdapterType instance,
+        AdapterType stack,
+        dict kwargs
+    ) -> tuple:
+        # 1st order duplicate
+        if isinstance(stack, self.base_class):
+            return stack.wrapped, self.copy_parameters(stack, kwargs)
+
+        # 2nd order duplicate
+        for decorator in stack.adapters:
+            next_ = decorator.wrapped
+            if isinstance(next_, self.base_class):
+                decorator.wrapped = instance
+                return next_.wrapped, self.copy_parameters(next_, kwargs)
+
+        # unique
+        return stack, kwargs

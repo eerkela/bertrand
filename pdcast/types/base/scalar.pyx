@@ -123,55 +123,6 @@ cdef class ScalarType(registry.BaseType):
         """
         return self
 
-    ############################
-    ####    CONSTRUCTORS    ####
-    ############################
-
-    @classmethod
-    def instance(cls, *args, **kwargs) -> ScalarType:
-        """The preferred constructor for :class:`ScalarType` objects.
-
-        This method is responsible for implementing the
-        `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_
-        pattern for :class:`AtomicType` objects.
-
-        Parameters
-        ----------
-        *args, **kwargs
-            Arguments passed to this type's
-            :meth:`slugify() <AtomicType.slugify>` and
-            :class:`__init__ <AtomicType>` methods.
-
-        Returns
-        -------
-        AtomicType
-            A flyweight for the specified type.  If this method is given the
-            same inputs again in the future, then this will be a simple
-            reference to the previous instance.
-
-        Notes
-        -----
-        This method should never be overriden.  Together with a corresponding
-        :meth:`slugify() <AtomicType.slugify>` method, it ensures that no
-        leakage occurs with the flyweight cache, which could result in
-        uncontrollable memory consumption.
-
-        Users should use this method in place of :class:`__init__ <AtomicType>`
-        to ensure that the `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_
-        pattern is observed.  One can manually check the cache that is used for
-        this method under a type's ``.flyweights`` attribute.
-        """
-        cdef str slug
-        cdef ScalarType result
-
-        slug = cls.slugify(*args, **kwargs)
-        result = cls.flyweights.get(slug, None)
-        if result is None:  # create new flyweight
-            result = cls(*args, **kwargs)
-            cls.flyweights[slug] = result
-
-        return result
-
     #######################
     ####    ALIASES    ####
     #######################
@@ -243,7 +194,7 @@ cdef class ScalarType(registry.BaseType):
         super(ScalarType, cls).__init_subclass__(**kwargs)
 
         # cls always aliases itself
-        cls.aliases.add(cls)
+        cls.aliases = AliasManager(cls.aliases | {cls})
 
     def __getattr__(self, name: str) -> Any:
         """Pass attribute lookups to :attr:`kwargs <pdcast.ScalarType.kwargs>`.
@@ -262,6 +213,12 @@ cdef class ScalarType(registry.BaseType):
             raise AttributeError("ScalarType objects are read-only")
         else:
             self.__dict__[name] = value
+
+    def __getitem__(self, key: Any) -> ScalarType:
+        if isinstance(key, tuple):
+            return self.instance(*key)
+
+        return self.instance(key)
 
     def __contains__(self, other: type_specifier) -> bool:
         """Implement the ``in`` keyword for membership checks.
@@ -285,3 +242,137 @@ cdef class ScalarType(registry.BaseType):
     def __repr__(self) -> str:
         sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())
         return f"{type(self).__name__}({sig})"
+
+
+#######################
+####    PRIVATE    ####
+#######################
+
+
+cdef class AliasManager:
+    """Interface for dynamically managing a :class:`ScalarType`'s aliases."""
+
+    def __init__(self, set aliases):
+        for alias in aliases:
+            if alias in ScalarType.registry.aliases:
+                raise TypeError(
+                    f"alias {repr(alias)} is already registered to "
+                    f"{str(ScalarType.registry.aliases[alias])}"
+                )
+        self._aliases = aliases
+
+    def _check_type_specifier(self, alias: type_specifier) -> None:
+        """Ensure that an alias is a valid type specifier."""
+        if not isinstance(alias, type_specifier):
+            raise TypeError(
+                f"alias must be a valid type specifier: {repr(alias)}"
+            )
+
+    def add(self, alias: type_specifier, overwrite: bool = False) -> None:
+        """Alias a type specifier to the managed type.
+
+        Parameters
+        ----------
+        alias : type_specifier
+            A valid type specifier to register as an alias of the managed type.
+        overwrite : bool, default False
+            Indicates whether to overwrite existing aliases (``True``) or
+            raise an error (``False``) in the event of a conflict.
+
+        Notes
+        -----
+        See the docs on the :ref:`type specification mini language
+        <resolve_type.mini_language>` for more information on how aliases work.
+        """
+        self._check_type_specifier(alias)
+
+        if alias in ScalarType.registry.aliases:
+            other = ScalarType.registry.aliases[alias]
+            if overwrite:
+                del other.aliases[alias]
+            else:
+                raise ValueError(
+                    f"alias {repr(alias)} is already registered to {other}"
+                )
+
+        self._aliases.add(alias)
+        ScalarType.registry.flush()  # rebuild regex patterns
+
+    def remove(self, alias: type_specifier) -> None:
+        """Remove an alias from the managed type.
+
+        Parameters
+        ----------
+        alias : type_specifier
+            A valid type specifier to remove from the managed type's aliases.
+
+        Notes
+        -----
+        See the docs on the :ref:`type specification mini language
+        <resolve_type.mini_language>` for more information on how aliases work.
+        """
+        self._check_type_specifier(alias)
+        self._aliases.remove(alias)
+        ScalarType.registry.flush()  # rebuild regex patterns
+
+    def discard(self, alias: type_specifier) -> None:
+        """Remove an alias from the managed type if it is present.
+
+        Parameters
+        ----------
+        alias : type_specifier
+            A valid type specifier to remove from the managed type's aliases.
+
+        Notes
+        -----
+        See the docs on the :ref:`type specification mini language
+        <resolve_type.mini_language>` for more information on how aliases work.
+        """
+        try:
+            self.remove(alias)
+        except KeyError:
+            pass
+
+    def pop(self) -> type_specifier:
+        """Pop an alias from the managed type.
+
+        Notes
+        -----
+        See the docs on the :ref:`type specification mini language
+        <resolve_type.mini_language>` for more information on how aliases work.
+        """
+        value = self._aliases.pop()
+        ScalarType.registry.flush()
+        return value
+
+    def clear(self) -> None:
+        """Remove every alias that is registered to the managed type.
+
+        Notes
+        -----
+        See the docs on the :ref:`type specification mini language
+        <resolve_type.mini_language>` for more information on how aliases work.
+        """
+        self._aliases.clear()
+        ScalarType.registry.flush()  # rebuild regex patterns
+
+    def __or__(self, aliases: set) -> set:
+        return self._aliases | aliases
+
+    def __and__(self, aliases: set) -> set:
+        return self._aliases & aliases
+
+    def __sub__(self, aliases: set) -> set:
+        return self._aliases - aliases
+
+    def __xor__(self, aliases: set) -> set:
+        return self._aliases ^ aliases
+
+    def __contains__(self, alias: type_specifier) -> bool:
+        return alias in self._aliases
+
+    def __iter__(self):
+        return iter(self._aliases)
+
+    def __repr__(self):
+        return repr(self._aliases)
