@@ -123,66 +123,6 @@ cdef class ScalarType(registry.BaseType):
         """
         return self
 
-    #######################
-    ####    ALIASES    ####
-    #######################
-
-    @classmethod
-    def register_alias(cls, alias: Any, overwrite: bool = False) -> None:
-        """Register a new alias for this type.
-
-        See the docs on the :ref:`type specification mini language
-        <resolve_type.mini_language>` for more information on how aliases work.
-
-        Parameters
-        ----------
-        alias : Any
-            A string, ``dtype``, ``ExtensionDtype``, or scalar type to register
-            as an alias of this type.
-        overwrite : bool, default False
-            Indicates whether to overwrite existing aliases (``True``) or
-            raise an error (``False``) in the event of a conflict.
-        """
-        if alias in cls.registry.aliases:
-            other = cls.registry.aliases[alias]
-            if other is cls:
-                return None
-            if overwrite:
-                del other.aliases[alias]
-            else:
-                raise ValueError(
-                    f"alias {repr(alias)} is already registered to {other}"
-                )
-        cls.aliases.add(alias)
-        cls.registry.flush()  # rebuild regex patterns
-
-    @classmethod
-    def remove_alias(cls, alias: Any) -> None:
-        """Remove an alias from this type.
-
-        See the docs on the :ref:`type specification mini language
-        <resolve_type.mini_language>` for more information on how aliases work.
-
-        Parameters
-        ----------
-        alias : Any
-            The alias to remove.  This can be a string, ``dtype``,
-            ``ExtensionDtype``, or scalar type that is present in this type's
-            ``.aliases`` attribute.
-        """
-        del cls.aliases[alias]
-        cls.registry.flush()  # rebuild regex patterns
-
-    @classmethod
-    def clear_aliases(cls) -> None:
-        """Remove every alias that is registered to this type.
-
-        See the docs on the :ref:`type specification mini language
-        <resolve_type.mini_language>` for more information on how aliases work.
-        """
-        cls.aliases.clear()
-        cls.registry.flush()  # rebuild regex patterns
-
     ###############################
     ####    SPECIAL METHODS    ####
     ###############################
