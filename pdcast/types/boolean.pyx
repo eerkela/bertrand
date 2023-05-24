@@ -49,8 +49,8 @@ class NumpyBooleanMixin:
 
 
 @register
-# @generic
-class BooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
+@generic
+class BooleanType(AtomicType):
     """Generic boolean type.
 
     *   **aliases:** ``"bool"``, ``"boolean"``, ``"bool_"``, ``"bool8"``,
@@ -88,10 +88,6 @@ class BooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
     # standard type definition
     name = "bool"
     aliases = {"bool", "boolean", "bool_", "bool8", "b1", "?"}
-    dtype = np.dtype(np.bool_)
-    itemsize = 1
-    type_def = bool
-    is_nullable = False
 
 
 #####################
@@ -100,7 +96,7 @@ class BooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
 
 
 @register
-# @BooleanType.implementation("numpy")
+@BooleanType.implementation("numpy", default=True)
 class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
     """Numpy boolean type.
 
@@ -127,7 +123,6 @@ class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
         NumpyBooleanType()
     """
 
-    name = "b1"
     aliases = {np.bool_, np.dtype(np.bool_)}
     dtype = np.dtype(np.bool_)
     itemsize = 1
@@ -141,7 +136,7 @@ class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
 
 
 @register
-# @BooleanType.implementation("pandas")
+@BooleanType.implementation("pandas")
 class PandasBooleanType(BooleanMixin, AtomicType):
     """Pandas boolean type.
 
@@ -170,7 +165,6 @@ class PandasBooleanType(BooleanMixin, AtomicType):
         PandasBooleanType()
     """
 
-    name = "b2"
     aliases = {pd.BooleanDtype, "Boolean"}
     dtype = pd.BooleanDtype()
     itemsize = 1
@@ -183,7 +177,7 @@ class PandasBooleanType(BooleanMixin, AtomicType):
 
 
 @register
-# @BooleanType.implementation("python")
+@BooleanType.implementation("python")
 class PythonBooleanType(BooleanMixin, AtomicType):
     """Python boolean type.
 
@@ -207,7 +201,6 @@ class PythonBooleanType(BooleanMixin, AtomicType):
         PythonBooleanType()
     """
 
-    name = "b3"
     aliases = {bool}
     itemsize = sys.getsizeof(True)
     type_def = bool

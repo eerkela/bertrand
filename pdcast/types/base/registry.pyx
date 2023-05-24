@@ -6,6 +6,12 @@ import regex as re  # using alternate regex
 from types import MappingProxyType
 from typing import Any
 
+cimport numpy as np
+import numpy as np
+import pandas as pd
+
+from pdcast.util.type_hints import type_specifier
+
 from . import scalar
 
 
@@ -171,6 +177,9 @@ cdef class TypeRegistry:
         recomputed.
         """
         self._hash += 1
+
+    # TODO: remember() and needs_updating() should be subsumed into CacheValue
+    # itself
 
     def remember(self, val: Any) -> CacheValue:
         """Record a value, tying it to the registry's internal state.
@@ -462,6 +471,168 @@ cdef class TypeRegistry:
 
     def __repr__(self) -> str:
         return repr(self.base_types)
+
+
+cdef class AliasManager:
+    """Interface for dynamically managing a type's aliases."""
+
+    def __init__(self, set aliases):
+        self.aliases = set()
+        for alias in aliases:
+            self.add(alias)
+
+    #############################
+    ####    SET INTERFACE    ####
+    #############################
+
+    def add(self, alias: type_specifier, overwrite: bool = False) -> None:
+        """Alias a type specifier to the managed type.
+
+        Parameters
+        ----------
+        alias : type_specifier
+            A valid type specifier to register as an alias of the managed type.
+        overwrite : bool, default False
+            Indicates whether to overwrite existing aliases (``True``) or
+            raise an error (``False``) in the event of a conflict.
+
+        Notes
+        -----
+        See the docs on the :ref:`type specification mini language
+        <resolve_type.mini_language>` for more information on how aliases work.
+        """
+        self._check_specifier(alias)
+        alias = self._normalize_specifier(alias)
+
+        if alias in BaseType.registry.aliases:
+            other = BaseType.registry.aliases[alias]
+            if overwrite:
+                del other.aliases[alias]
+            else:
+                raise ValueError(
+                    f"alias {repr(alias)} is already registered to "
+                    f"{repr(other)}"
+                )
+
+        self.aliases.add(alias)
+        BaseType.registry.flush()  # rebuild regex patterns
+
+    def remove(self, alias: type_specifier) -> None:
+        """Remove an alias from the managed type.
+
+        Parameters
+        ----------
+        alias : type_specifier
+            A valid type specifier to remove from the managed type's aliases.
+
+        Notes
+        -----
+        See the docs on the :ref:`type specification mini language
+        <resolve_type.mini_language>` for more information on how aliases work.
+        """
+        self._check_specifier(alias)
+        self.aliases.remove(alias)
+        BaseType.registry.flush()  # rebuild regex patterns
+
+    def discard(self, alias: type_specifier) -> None:
+        """Remove an alias from the managed type if it is present.
+
+        Parameters
+        ----------
+        alias : type_specifier
+            A valid type specifier to remove from the managed type's aliases.
+
+        Notes
+        -----
+        See the docs on the :ref:`type specification mini language
+        <resolve_type.mini_language>` for more information on how aliases work.
+        """
+        try:
+            self.remove(alias)
+        except KeyError:
+            pass
+
+    def pop(self) -> type_specifier:
+        """Pop an alias from the managed type.
+
+        Notes
+        -----
+        See the docs on the :ref:`type specification mini language
+        <resolve_type.mini_language>` for more information on how aliases work.
+        """
+        value = self.aliases.pop()
+        BaseType.registry.flush()
+        return value
+
+    def clear(self) -> None:
+        """Remove every alias that is registered to the managed type.
+
+        Notes
+        -----
+        See the docs on the :ref:`type specification mini language
+        <resolve_type.mini_language>` for more information on how aliases work.
+        """
+        self.aliases.clear()
+        BaseType.registry.flush()  # rebuild regex patterns
+
+    ##############################
+    ####    SET OPERATIONS    ####
+    ##############################
+
+    def __or__(self, aliases: set) -> set:
+        return self.aliases | aliases
+
+    def __and__(self, aliases: set) -> set:
+        return self.aliases & aliases
+
+    def __sub__(self, aliases: set) -> set:
+        return self.aliases - aliases
+
+    def __xor__(self, aliases: set) -> set:
+        return self.aliases ^ aliases
+
+    #######################
+    ####    PRIVATE    ####
+    #######################
+
+    cdef int _check_specifier(self, alias: type_specifier) except -1:
+        """Ensure that an alias is a valid type specifier."""
+        if not isinstance(alias, type_specifier):
+            raise TypeError(
+                f"alias must be a valid type specifier: {repr(alias)}"
+            )
+
+    cdef object _normalize_specifier(self, alias: type_specifier):
+        """Preprocess a type specifier, converting it into a recognizable
+        format.
+        """
+        # ignore parametrized dtypes
+        if isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
+            return type(alias)
+
+        return alias
+
+    #############################
+    ####    MAGIC METHODS    ####
+    #############################
+
+    def __bool__(self) -> bool:
+        return bool(self.aliases)
+
+    def __len__(self) -> int:
+        return len(self.aliases)
+
+    def __contains__(self, alias: type_specifier) -> bool:
+        return alias in self.aliases
+
+    def __iter__(self):
+        return iter(self.aliases)
+
+    def __repr__(self):
+        return repr(self.aliases)
+
+    def __str__(self):
+        return str(self.aliases)
 
 
 cdef class BaseType:

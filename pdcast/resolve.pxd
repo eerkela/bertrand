@@ -31,4 +31,3 @@ cdef class DtypeFactory(TypeFactory):
 cdef class StringFactory(TypeFactory):
     cdef:
         str specifier
-        object regex

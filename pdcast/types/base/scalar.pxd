@@ -7,7 +7,4 @@ cdef class ScalarType(BaseType):
         str _slug
         long long _hash
 
-
-cdef class AliasManager:
-    cdef readonly:
-        set _aliases
+    cdef str slugify(self, tuple args, dict kwargs)

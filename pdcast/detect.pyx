@@ -194,6 +194,12 @@ cdef class ElementWiseFactory(TypeFactory):
         return result
 
 
+# TODO: could maybe implement fast cdef methods for from_x constructors.  If
+# a type defines a from_x function itself (whether cython or python), it
+# gets inserted into the default loop.  This makes the implementation fast for
+# most types while still being customizable where necessary.
+
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef types.CompositeType detect_vector_type(object[:] arr, dict lookup):
@@ -201,8 +207,8 @@ cdef types.CompositeType detect_vector_type(object[:] arr, dict lookup):
     to the type of each element.
     """
     cdef unsigned int arr_length = arr.shape[0]
-    cdef np.ndarray[object] index = np.empty(arr_length, dtype="O")
-    cdef set atomic_types = set()
+    cdef np.ndarray[object, ndim=1] index = np.empty(arr_length, dtype=object)
+    cdef set observed = set()
     cdef unsigned int i
     cdef object element
     cdef type element_type
@@ -218,8 +224,8 @@ cdef types.CompositeType detect_vector_type(object[:] arr, dict lookup):
         else:
             result = result.detect(element)
 
-        atomic_types.add(result)
+        observed.add(result)
         index[i] = result
 
     # create CompositeType from atomic_types + index buffer
-    return types.CompositeType(atomic_types, index=index)
+    return types.CompositeType(observed, index=index)

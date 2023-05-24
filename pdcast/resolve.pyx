@@ -83,16 +83,20 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
         return types.CompositeType(resolve_type(x) for x in typespec)
 
     else:
-        raise ValueError(
-            f"could not resolve specifier of type {type(typespec)}"
-        )
+        raise invalid_specifier(typespec)
 
+    # execute factory
     return factory()
 
 
 #######################
 ####    PRIVATE    ####
 #######################
+
+
+cdef Exception invalid_specifier(object typespec):
+    """Standardized exception for invalid type specifiers."""
+    return ValueError(f"invalid specifier: {repr(typespec)}")
 
 
 cdef dict na_strings = {
@@ -190,17 +194,14 @@ cdef class StringFactory(TypeFactory):
         # ensure string contains valid specifiers
         resolvable = types.registry.resolvable.fullmatch(specifier)
         if not resolvable:
-            raise ValueError(
-                f"could not interpret type specifier: {repr(specifier)}"
-            )
+            raise invalid_specifier(specifier)
 
         # strip prefix/suffix if present
         self.specifier = resolvable.group("body")
-        self.regex = types.registry.regex
 
     def __call__(self):
         result = set()
-        for match in self.regex.finditer(self.specifier):
+        for match in types.registry.regex.finditer(self.specifier):
             match_dict = match.groupdict()
 
             # get base type from alias

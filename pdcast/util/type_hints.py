@@ -2,7 +2,7 @@
 """
 import datetime
 import numbers
-from typing import runtime_checkable, Iterable, List, Protocol, Tuple, Union
+from typing import runtime_checkable, List, Protocol, Tuple, Union
 
 import numpy as np
 import numpy.typing
@@ -38,15 +38,13 @@ type_specifier = Union[
     type,
     str,
     np.dtype,
-    pd.api.extensions.ExtensionDtype,
-    Iterable[
-        Union[
-            type,
-            str,
-            np.dtype,
-            pd.api.extensions.ExtensionDtype
-        ]
-    ]
+    pd.api.extensions.ExtensionDtype
+]
+
+
+dtype_like = Union[
+    np.dtype,
+    pd.api.extensions.ExtensionDtype
 ]
 
 

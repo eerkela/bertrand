@@ -12,7 +12,7 @@ from pandas.api.extensions import ExtensionDtype
 
 from pdcast import resolve
 from pdcast.util.structs cimport LRUDict
-from pdcast.util.type_hints import array_like, type_specifier
+from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
 from . cimport scalar
 from . cimport composite
@@ -83,9 +83,9 @@ cdef class AtomicType(scalar.ScalarType):
     .. code:: python
 
         @pdcast.register
-        @pdcast.subtype(ParentType)
-        @GenericType.register_backend("backend name")  # inherits .name
-        class BackendType(pdcast.AtomicType, cache_size=128):
+        @ParentType.subtype
+        @GenericType.implementation("backend")  # inherits .name
+        class ImplementationType(pdcast.AtomicType, cache_size=128):
 
             aliases = {"foo", "bar", "baz", np.dtype(np.int64), int, ...}
             type_def = int
@@ -104,7 +104,7 @@ cdef class AtomicType(scalar.ScalarType):
             # additional customizations/dispatch methods as needed
 
     Where ``ParentType`` and ``GenericType`` reference other :class:`AtomicType`
-    definitions that ``BackendType`` is linked to.
+    definitions that ``ImplementationType`` is linked to.
     """
 
     def __init__(self, **kwargs):
@@ -567,24 +567,6 @@ cdef class AtomicType(scalar.ScalarType):
             self._generic_cache = self.registry.remember(result)
         return self._generic_cache.value
 
-    @classmethod
-    def register_backend(cls, backend: str):
-        """A decorator that allows individual backends to be added to generic
-        types.
-
-        Parameters
-        ----------
-        backend : str
-            The string to use as this type's backend specifier.
-
-        Notes
-        -----
-        The implementation for this method can be found within the
-        :func:`@generic <generic>` decorator itself.  Users do not need to
-        implement it themselves.
-        """
-        raise NotImplementedError(f"'{cls.__name__}' is not generic")
-
     ########################
     ####    ADAPTERS    ####
     ########################
@@ -766,7 +748,7 @@ cdef class AtomicType(scalar.ScalarType):
         cdef str slug
         cdef AtomicType instance
 
-        slug = self.slugify(*args, **kwargs)
+        slug = self.slugify(args, kwargs)
         instance = self._instances.get(slug, None)
         if instance is None:
             instance = type(self)(*args, **kwargs)
@@ -804,13 +786,17 @@ cdef class AtomicType(scalar.ScalarType):
         # init fields for @generic
         cls._is_generic = None
         cls._generic = None
-        cls._backend = None
         cls._backends = {}
 
 
 #######################
 ####    GENERIC    ####
 #######################
+
+
+# TODO: the decorated type must not implement its own attributes, like dtype,
+# itemsize, etc.
+
 
 
 def generic(cls: type) -> GenericType:
@@ -821,53 +807,77 @@ def generic(cls: type) -> GenericType:
     the backend-specific "int[numpy]", "int[pandas]", and "int[python]"
     subtypes, which can be resolved as shown. 
     """
+    if not issubclass(cls, AtomicType):
+        raise TypeError("@generic types must inherit from AtomicType")
+
+    # NOTE: cython __init__ is not introspectable.
+    if (
+        cls.__init__ != AtomicType.__init__ and
+        inspect.signature(cls).parameters
+    ):
+        raise TypeError("@generic types cannot be parametrized")
+
+    # print(dir(cls))
+
     return GenericType(cls)
 
 
 cdef class GenericType(AtomicType):
-    """A hierarchical type that can contain other types.
+    """A hierarchical type that can contain other types as implementations.
     """
 
     def __init__(self, cls):
-        self._validate_class(cls)
-
-        self.__wrapped__ = cls
-        print(cls)
-        self._default = cls.instance()
-        self.name = cls.name
-        self.aliases = cls.aliases
+        self.__wrapped__ = cls()
+        self._default = self.__wrapped__
+        self._name = cls.name
+        self._aliases = cls.aliases
         self._subtypes = composite.CompositeType()
         self._backends = {None: self._default}
+        super().__init__()
 
-    def _validate_class(self, cls) -> None:
-        """Ensure that the decorated class is valid."""
-        if not issubclass(cls, AtomicType):
-            raise TypeError("@generic types must inherit from AtomicType")
+    ##########################
+    ####    OVERLOADED    ####
+    ##########################
 
-        # NOTE: cython __init__ is not introspectable.
-        if (
-            cls.__init__ != AtomicType.__init__ and
-            inspect.signature(cls).parameters
-        ):
-            raise TypeError("@generic types cannot be parametrized")
+    @property
+    def name(self) -> str:
+        """Return the name of the decorated type."""
+        return self._name
 
-    ############################
-    ####    CONSTRUCTORS    ####
-    ############################
+    @property
+    def aliases(self) -> set:
+        """Return the aliases of the decorated type."""
+        return self._aliases
 
-    def resolve(
-        self,
-        backend: str | None = None,
-        *args
-    ) -> AtomicType:
+    @property
+    def is_generic(self) -> bool:
+        """True by definition."""
+        return True
+
+    @property
+    def generic(self) -> AtomicType:
+        """self by definition."""
+        return self
+
+    def resolve(self, backend: str | None = None, *args) -> AtomicType:
         """Forward constructor arguments to the appropriate implementation."""
+        if backend is None:
+            return self.default
         return self._backends[backend].resolve(*args)    
-    
+
+    def detect(self, example: Any) -> AtomicType:
+        """Forward scalar inference to the default implementation."""
+        return self.default.detect(example)
+
+    def from_dtype(self, dtype: dtype_like) -> AtomicType:
+        """Forward dtype translation to the default implementation."""
+        return self.default.from_dtype(dtype)
+
     ##########################
     ####    DECORATORS    ####
     ##########################
 
-    def subtype(self, cls: type | None = None, *, **kwargs):
+    def subtype(self, cls: type | None = None):
         """A class decorator that adds a type as a subtype of this GenericType.
         """
         def decorator(cls: type) -> type:
@@ -889,79 +899,73 @@ cdef class GenericType(AtomicType):
                 curr = curr._parent
 
             cls._parent = self
-            self._subtypes |= cls.instance(**kwargs)
-            self.registry.flush()
-            return cls
-
-        if cls is None:
-            return decorator
-        return decorator(cls)
-
-    def implementation(self, backend: str = None, **kwargs):
-        """A class decorator that adds a type as an implementation of this
-        type.
-        """
-        def decorator(cls: type) -> type:
-            """Link the decorated type to this GenericType."""
-            if not issubclass(cls, AtomicType):
-                raise TypeError("@generic types can only contain AtomicTypes")
-
-            if not isinstance(backend, str):
-                raise TypeError(
-                    f"backend specifier must be a string, not {type(backend)}"
-                )
-
-            if backend in self._backends:
-                raise TypeError(
-                    f"backend specifier must be unique: {repr(backend)} is "
-                    f"already registered to {str(self._backends[backend])}"
-                )
-
-            # ensure backend is self-consistent
-            if cls._backend is None:
-                cls._backend = backend
-            elif backend != cls._backend:
-                raise TypeError(
-                    f"backend specifiers must match ({repr(backend)} != "
-                    f"{repr(cls._backend)})"
-                )
-
-            cls._is_generic = False
-            cls._generic = self
-            cls.name = self.name
-            self._backends[backend] = cls.instance(**kwargs)
+            self._subtypes |= cls()
             self.registry.flush()
             return cls
 
         return decorator
 
-    #########################
-    ####    HIERARCHY    ####
-    #########################
+    def implementation(
+        self,
+        backend: str,
+        default: bool = False
+    ):
+        """A class decorator that registers a type definition as an
+        implementation of this type.
 
-    @property
-    def is_generic(self) -> bool:
-        return True
+        Parameters
+        ----------
+        backend : str
+            A unique string to identify the decorated type.  This type will be
+            automatically parametrized to accept this specifier as its first
+            argument during :func:`resolve_type <pdcast.resolve_type>` lookups.
+        default : bool
+            If ``True``, set the decorated type as the default implementation
+            for this type.
 
-    @property
-    def generic(self) -> AtomicType:
-        return self
+        Notes
+        -----
+        Any additional arguments will be dynamically passed to the
+        implementation's :meth:`resolve()` constructor.
+        """
+        if not isinstance(backend, str):
+            raise TypeError(
+                f"backend specifier must be a string: {repr(backend)}"
+            )
+        if backend in self._backends:
+            raise TypeError(
+                f"backend specifier must be unique: {repr(backend)} is "
+                f"already registered to {repr(self._backends[backend])}"
+            )
 
-    @property
-    def subtypes(self) -> composite.CompositeType:
-        return self._subtypes.copy()
+        def decorator(cls: type) -> type:
+            """Link the decorated type to this GenericType."""
+            if not issubclass(cls, AtomicType):
+                raise TypeError("@generic types can only contain AtomicTypes")
 
-    @property
-    def backends(self) -> dict:
-        return MappingProxyType(self._backends)
+            cls.name = self.name
+            self._backends[backend] = cls()
+            if default:
+                self.default = backend
 
-    @property
-    def children(self) -> composite.CompositeType:
-        return self._subtypes | composite.CompositeType(self._backends.values())
+            # TODO: eliminate as many of these flags as possible
+            cls._is_generic = False
+            cls._generic = self
+            self.registry.flush()
+            return cls
+
+        return decorator
 
     #################################
     ####    COMPOSITE PATTERN    ####
     #################################
+
+    @property
+    def backends(self) -> MappingProxyType:
+        """A mapping of all backend specifiers to their corresponding
+        concretions.
+        """
+        return MappingProxyType(self._backends)
 
     @property
     def default(self) -> AtomicType:
@@ -973,30 +977,46 @@ cdef class GenericType(AtomicType):
         return self._default
 
     @default.setter
-    def default(self, val: type_specifier) -> None:
-        if val is None:
-            del self.default
-        else:
-            val = resolve.resolve_type(val)
-            if isinstance(val, composite.CompositeType):
-                raise ValueError
-            if val not in self.children:
-                raise KeyError
-
-            self._default = val
+    def default(self, backend: str) -> None:
+        self._default = self.backends[backend]
 
     @default.deleter
     def default(self) -> None:
         self._default = self._backends[None]
 
+    @property
+    def type_def(self) -> type | None:
+        """Delegate `type_def` lookups to the default implementation."""
+        return self.default.type_def
+
+    @property
+    def dtype(self) -> np.dtype | ExtensionDtype:
+        """Delegate `dtype` lookups to the default implementation."""
+        return self.default.dtype
+
+    @property
+    def itemsize(self) -> int | None:
+        """Delegate `itemsize` lookups to the default implementation."""
+        return self.default.itemsize
+
+    @property
+    def na_value(self) -> Any:
+        return self.default.na_value
+
+    @property
+    def is_numeric(self) -> bool:
+        """Delegate `is_numeric` lookups to the default implementation."""
+        return self.default.is_numeric
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self.default, name)
 
-    def __getitem__(self, key: str) -> AtomicType:
-        # this should be part of the AtomicType interface
-        return self._backends[key[:1]](*key[1:])
+    ###############################
+    ####    SPECIAL METHODS    ####
+    ###############################
 
-
+    def __repr__(self) -> str:
+        return repr(self.__wrapped__)
 
 
 #######################

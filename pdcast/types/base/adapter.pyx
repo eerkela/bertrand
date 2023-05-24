@@ -298,7 +298,7 @@ cdef class AdapterType(scalar.ScalarType):
         """Change the type object that this AdapterType modifies."""
         self._wrapped = val
         self.kwargs = self.kwargs | {"wrapped": val}
-        self._slug = self.slugify(**self.kwargs)
+        self._slug = self.slugify((), self.kwargs)
         self._hash = hash(self._slug)
 
     #######################
