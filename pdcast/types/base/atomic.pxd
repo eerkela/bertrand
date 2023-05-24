@@ -13,15 +13,16 @@ cdef class AtomicType(ScalarType):
         bint _is_frozen
 
 
-cdef class GenericType(AtomicType):
+cdef class HierarchicalType(AtomicType):
     cdef:
-        str _name
-        AliasManager _aliases
-        CompositeType _subtypes
-        dict _backends
+        AtomicType default
 
     cdef readonly:
         AtomicType __wrapped__
 
-    cdef public:
-        AtomicType _default
+
+cdef class GenericType(HierarchicalType):
+    cdef:
+        AliasManager _aliases
+        CompositeType _subtypes
+        dict _backends

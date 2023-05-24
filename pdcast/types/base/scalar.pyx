@@ -16,6 +16,9 @@ from .registry cimport BaseType, AliasManager
 # TypeHierarchy interface with SubtypeHierarchy as a concretion.
 
 
+# TODO: remove non top-level imports in __eq__, is_subtype
+
+
 ##########################
 ####    PRIMITIVES    ####
 ##########################
@@ -201,6 +204,40 @@ cdef class ScalarType(BaseType):
         cdef dict merged = {**self.kwargs, **kwargs}
         return self(**merged)
 
+    def is_subtype(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
+        """Reverse of :meth:`AtomicType.contains`.
+
+        Parameters
+        ----------
+        other : type specifier
+            The type to check for membership.  This can be in any
+            representation recognized by :func:`resolve_type`.
+        include_subtypes : bool, default True
+            Controls whether to include subtypes for this comparison.  If this
+            is set to ``False``, then subtypes will be excluded.  Backends will
+            still be considered, but only at the top level.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``self`` is a member of ``other``\'s hierarchy.
+            ``False`` otherwise.
+
+        Notes
+        -----
+        This method performs the same check as :meth:`AtomicType.contains`,
+        except in reverse.  It is functionally equivalent to
+        ``other.contains(self)``.
+        """
+        from pdcast.resolve import resolve_type
+
+        other = resolve_type(other)
+        return other.contains(self, include_subtypes=include_subtypes)
+
     ###############################
     ####    SPECIAL METHODS    ####
     ###############################
@@ -262,10 +299,9 @@ cdef class ScalarType(BaseType):
 
     def __eq__(self, other: type_specifier) -> bool:
         """Compare two types for equality."""
-        # TODO: remove non top-level import
-        
-        from pdcast import resolve
-        other = resolve.resolve_type(other)
+        from pdcast.resolve import resolve_type
+
+        other = resolve_type(other)
         return isinstance(other, ScalarType) and hash(self) == hash(other)
 
     def __hash__(self) -> int:

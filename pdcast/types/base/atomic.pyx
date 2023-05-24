@@ -318,6 +318,9 @@ cdef class AtomicType(scalar.ScalarType):
     ####    SUBTYPES/SUPERTYPES    ####
     ###################################
 
+    # TODO: is_root = True, root = self, supertype = None, subtypes = {self}
+    # these are overloaded in ParentType
+
     @property
     def is_root(self) -> bool:
         """Indicates whether this type is the root of its
@@ -487,38 +490,6 @@ cdef class AtomicType(scalar.ScalarType):
 
         return False
 
-    def is_subtype(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
-        """Reverse of :meth:`AtomicType.contains`.
-
-        Parameters
-        ----------
-        other : type specifier
-            The type to check for membership.  This can be in any
-            representation recognized by :func:`resolve_type`.
-        include_subtypes : bool, default True
-            Controls whether to include subtypes for this comparison.  If this
-            is set to ``False``, then subtypes will be excluded.  Backends will
-            still be considered, but only at the top level.
-
-        Returns
-        -------
-        bool
-            ``True`` if ``self`` is a member of ``other``\'s hierarchy.
-            ``False`` otherwise.
-
-        Notes
-        -----
-        This method performs the same check as :meth:`AtomicType.contains`,
-        except in reverse.  It is functionally equivalent to
-        ``other.contains(self)``.
-        """
-        other = resolve.resolve_type(other)
-        return other.contains(self, include_subtypes=include_subtypes)
-
     #######################
     ####    GENERIC    ####
     #######################
@@ -529,6 +500,8 @@ cdef class AtomicType(scalar.ScalarType):
         :func:`@generic <generic>`.
         """
         return self._is_generic
+
+    # TODO: backend, backends should be deleted
 
     @property
     def backend(self) -> str:
@@ -554,6 +527,8 @@ cdef class AtomicType(scalar.ScalarType):
 
         return self._backend_cache.value
 
+    # TODO: .generic should just return a flag that defaults to None
+
     @property
     def generic(self) -> AtomicType:
         """The generic equivalent of this type, if one exists."""
@@ -570,6 +545,8 @@ cdef class AtomicType(scalar.ScalarType):
     ########################
     ####    ADAPTERS    ####
     ########################
+
+    # TODO: These should be overloadable convert/ functions
 
     def make_categorical(
         self,
@@ -648,6 +625,8 @@ cdef class AtomicType(scalar.ScalarType):
     ####    UPCAST/DOWNCAST    ####
     ###############################
 
+    # TODO: these should be automated.
+
     @property
     def larger(self) -> list:
         """A list of types that this type can be
@@ -680,6 +659,8 @@ cdef class AtomicType(scalar.ScalarType):
     ##############################
     ####    MISSING VALUES    ####
     ##############################
+
+    # TODO: delete is_na, make_nullable -> .nullable
 
     @property
     def is_nullable(self) -> bool:
@@ -789,6 +770,63 @@ cdef class AtomicType(scalar.ScalarType):
         cls._backends = {}
 
 
+
+
+############################
+####    HIERARCHICAL    ####
+############################
+
+
+cdef class HierarchicalType(AtomicType):
+    """A Composite Pattern type object that can contain other types.
+    """
+
+    def __init__(self, cls):
+        self.__wrapped__ = cls()
+        self.default = self.__wrapped__
+        super().__init__()
+
+    @property
+    def type_def(self) -> type | None:
+        """Delegate `type_def` lookups to the default implementation."""
+        return self.default.type_def
+
+    @property
+    def dtype(self) -> np.dtype | ExtensionDtype:
+        """Delegate `dtype` lookups to the default implementation."""
+        return self.default.dtype
+
+    @property
+    def itemsize(self) -> int | None:
+        """Delegate `itemsize` lookups to the default implementation."""
+        return self.default.itemsize
+
+    @property
+    def na_value(self) -> Any:
+        return self.default.na_value
+
+    @property
+    def is_numeric(self) -> bool:
+        """Delegate `is_numeric` lookups to the default implementation."""
+        return self.default.is_numeric
+
+    def detect(self, example: Any) -> AtomicType:
+        """Forward scalar inference to the default implementation."""
+        return self.default.detect(example)
+
+    def from_dtype(self, dtype: dtype_like) -> AtomicType:
+        """Forward dtype translation to the default implementation."""
+        return self.default.from_dtype(dtype)
+
+    # TODO: delegate all AtomicType attributes to default.
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.default, name)
+
+    def __repr__(self) -> str:
+        return repr(self.__wrapped__)
+
+
 #######################
 ####    GENERIC    ####
 #######################
@@ -796,7 +834,6 @@ cdef class AtomicType(scalar.ScalarType):
 
 # TODO: the decorated type must not implement its own attributes, like dtype,
 # itemsize, etc.
-
 
 
 def generic(cls: type) -> GenericType:
@@ -822,18 +859,14 @@ def generic(cls: type) -> GenericType:
     return GenericType(cls)
 
 
-cdef class GenericType(AtomicType):
+cdef class GenericType(HierarchicalType):
     """A hierarchical type that can contain other types as implementations.
     """
 
     def __init__(self, cls):
-        self.__wrapped__ = cls()
-        self._default = self.__wrapped__
-        self._name = cls.name
+        super().__init__(cls)
         self._aliases = cls.aliases
-        self._subtypes = composite.CompositeType()
-        self._backends = {None: self._default}
-        super().__init__()
+        self._backends = {None: self.default}
 
     ##########################
     ####    OVERLOADED    ####
@@ -842,7 +875,7 @@ cdef class GenericType(AtomicType):
     @property
     def name(self) -> str:
         """Return the name of the decorated type."""
-        return self._name
+        return self.__wrapped__.name
 
     @property
     def aliases(self) -> set:
@@ -861,17 +894,7 @@ cdef class GenericType(AtomicType):
 
     def resolve(self, backend: str | None = None, *args) -> AtomicType:
         """Forward constructor arguments to the appropriate implementation."""
-        if backend is None:
-            return self.default
         return self._backends[backend].resolve(*args)    
-
-    def detect(self, example: Any) -> AtomicType:
-        """Forward scalar inference to the default implementation."""
-        return self.default.detect(example)
-
-    def from_dtype(self, dtype: dtype_like) -> AtomicType:
-        """Forward dtype translation to the default implementation."""
-        return self.default.from_dtype(dtype)
 
     ##########################
     ####    DECORATORS    ####
@@ -946,7 +969,7 @@ cdef class GenericType(AtomicType):
             cls.name = self.name
             self._backends[backend] = cls()
             if default:
-                self.default = backend
+                self.default_implementation = backend
 
             # TODO: eliminate as many of these flags as possible
             cls._is_generic = False
@@ -968,60 +991,27 @@ cdef class GenericType(AtomicType):
         return MappingProxyType(self._backends)
 
     @property
-    def default(self) -> AtomicType:
+    def default_implementation(self) -> AtomicType:
         """The concrete type that this generic type defaults to.
 
         This will be used whenever the generic type is specified without an
         explicit backend.
         """
-        return self._default
+        return self.default
 
-    @default.setter
-    def default(self, backend: str) -> None:
-        self._default = self.backends[backend]
+    @default_implementation.setter
+    def default_implementation(self, backend: str) -> None:
+        self.default = self.backends[backend]
 
-    @default.deleter
-    def default(self) -> None:
-        self._default = self._backends[None]
-
-    @property
-    def type_def(self) -> type | None:
-        """Delegate `type_def` lookups to the default implementation."""
-        return self.default.type_def
-
-    @property
-    def dtype(self) -> np.dtype | ExtensionDtype:
-        """Delegate `dtype` lookups to the default implementation."""
-        return self.default.dtype
-
-    @property
-    def itemsize(self) -> int | None:
-        """Delegate `itemsize` lookups to the default implementation."""
-        return self.default.itemsize
-
-    @property
-    def na_value(self) -> Any:
-        return self.default.na_value
-
-    @property
-    def is_numeric(self) -> bool:
-        """Delegate `is_numeric` lookups to the default implementation."""
-        return self.default.is_numeric
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.default, name)
-
-    ###############################
-    ####    SPECIAL METHODS    ####
-    ###############################
-
-    def __repr__(self) -> str:
-        return repr(self.__wrapped__)
+    @default_implementation.deleter
+    def default_implementation(self) -> None:
+        self.default = self.backends[None]
 
 
-#######################
-####    PRIVATE    ####
-#######################
+
+
+
+# TODO: add ParentType
 
 
 cdef void _traverse_subtypes(type atomic_type, set result):
