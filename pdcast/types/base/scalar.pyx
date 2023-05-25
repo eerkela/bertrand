@@ -1,3 +1,7 @@
+"""This module describes a ScalarType object, which represents a homogenous
+vector type in the pdcast type system.
+"""
+import inspect
 from types import MappingProxyType
 from typing import Any, Iterator
 
@@ -6,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 # from pdcast import resolve  # TODO: causes import error
+from pdcast.util.structs import LRUDict
 from pdcast.util.type_hints import type_specifier
 
 from .registry cimport BaseType, AliasManager
@@ -32,7 +37,7 @@ cdef class ScalarType(BaseType):
 
     def __init__(self, **kwargs):
         self._kwargs = kwargs
-        self._slug = self.slugify((), kwargs)
+        self._slug = self.instances.slugify((), kwargs)
         self._hash = hash(self._slug)
 
     ##########################
@@ -135,43 +140,6 @@ cdef class ScalarType(BaseType):
     ####    METHODS    ####
     #######################
 
-    cdef str slugify(self, tuple args, dict kwargs):
-        """Generate a unique string representation for this type.
-
-        The output from this method determines how flyweights are identified.
-
-        Parameters
-        ----------
-        args : tuple
-            Equivalent to the *args parameter in an *args, **kwargs signature.
-        kwargs : dict
-            Equivalent to the **kwargs parameter in an *args, **kwargs
-            signature.
-
-        Returns
-        -------
-        str
-            A string that fully specifies the type.  The string must be unique
-            for every set of inputs, as it is used to look up flyweights.
-
-        Notes
-        -----
-        This method is always called before initializing a new AtomicType.
-        This makes it a bottleneck for detect_type() on lists/dtype: object
-        arrays.  It should thus be optimized for speed.
-        """
-        # TODO: this doesn't quite work for SparseType/NumpyDatetime64Type
-        # TODO: need to check if value is equal to default, not is None
-
-        args_iter = iter(args)
-        ordered = (
-            kwargs[k] if k in kwargs else next(args) for k in self.kwargs
-        )
-        params = ", ".join(str(o) for o in ordered if o is not None)
-        if not params:
-            return self.name
-        return f"{self.name}[{params}]"
-
     def unwrap(self) -> ScalarType:
         """Remove all :class:`AdapterTypes <pdcast.AdapterType>` from this
         :class:`ScalarType <pdcast.ScalarType>`.
@@ -248,6 +216,13 @@ cdef class ScalarType(BaseType):
         super(ScalarType, cls).__init_subclass__(**kwargs)
         cls.aliases = AliasManager(cls.aliases | {cls})
 
+        # if cls.__init__ is ScalarType.__init__:
+        #     parameters = ()
+        # else:
+        #     parameters = tuple(inspect.signature(cls).parameters.keys())
+        parameters = ()
+        cls.instances = NullFactory(cls, parameters)
+
     def __getattr__(self, name: str) -> Any:
         """Pass attribute lookups to :attr:`kwargs <pdcast.ScalarType.kwargs>`.
         """
@@ -279,7 +254,7 @@ cdef class ScalarType(BaseType):
 
     def __call__(self, *args, **kwargs) -> ScalarType:
         """Constructor for parametrized types."""
-        return type(self)(*args, **kwargs)
+        return self.instances(*args, **kwargs)
 
     def __getitem__(self, key: Any) -> ScalarType:
         """Return a parametrized type in the same syntax as the type
@@ -314,3 +289,107 @@ cdef class ScalarType(BaseType):
     def __repr__(self) -> str:
         sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())
         return f"{type(self).__name__}({sig})"
+
+
+#########################
+####    FACTORIES    ####
+#########################
+
+
+cdef class InstanceFactory:
+    """An interface for controlling instance creation for
+    :class:`ScalarType <pdcast.ScalarType>` objects.
+    """
+
+    def __init__(self, type base_class, tuple parameters):
+        self.base_class = base_class
+        if not isinstance(base_class.name, str):
+            self.name = None
+        else:
+            self.name = base_class.name
+        self.parameters = parameters
+
+    def slugify(self, tuple args, dict kwargs) -> str:
+        """Convert arbitrary arguments into a suitable slug identifier."""
+        cdef object args_iter
+        cdef object ordered
+        cdef str params
+
+        args_iter = iter(args)
+        ordered = (
+            str(kwargs[param]) if param in kwargs else str(next(args_iter))
+            for param in self.parameters
+        )
+        params = ", ".join(ordered)
+        if not params:
+            return self.name
+        return f"{self.name}[{params}]"
+
+    def __call__(self, *args, **kwargs):
+        raise NotImplementedError()
+
+
+cdef class NullFactory(InstanceFactory):
+    """An InstanceFactory that passes inputs to the normal class constructor."""
+
+    def __call__(self, *args, **kwargs):
+        return self.base_class(*args, **kwargs)
+
+
+cdef class FlyweightFactory(InstanceFactory):
+    """An InstanceFactory that implements the flyweight caching strategy."""
+
+    def __init__(
+        self,
+        type base_class,
+        tuple parameters,
+        unsigned int cache_size
+    ):
+        super().__init__(base_class, parameters)
+        self.cache_size = cache_size
+        if not cache_size:
+            self.instances = {}
+        else:
+            self.instances = LRUDict(maxsize=cache_size)
+
+    def __call__(self, *args, **kwargs) -> ScalarType:
+        cdef str slug
+        cdef ScalarType instance
+
+        slug = self.slugify(args, kwargs)
+        instance = self.instances.get(slug, None)
+        if instance is None:
+            instance = self.base_class(*args, **kwargs)
+            self.instances[slug] = instance
+        return instance
+
+
+cdef class ImplementationFactory(FlyweightFactory):
+    """A special case of FlyweightFactory that accounts for backend-specific
+    slug generation.
+    """
+
+    def __init__(
+        self,
+        type base_class,
+        unsigned int cache_size,
+        tuple parameters,
+        str backend
+    ):
+        super().__init__(base_class, parameters, cache_size)
+        self.backend = backend
+
+    def slugify(self, tuple args, dict kwargs) -> str:
+        cdef object args_iter
+        cdef object ordered
+        cdef str params
+
+        args_iter = iter(args)
+        ordered = (
+            str(kwargs[param]) if param in kwargs else str(next(args_iter))
+            for param in self.parameters
+        )
+        params = ", ".join(ordered)
+        if not params:
+            return f"{self.name}[{self.backend}]"
+        return f"{self.name}[{self.backend}, {params}]"

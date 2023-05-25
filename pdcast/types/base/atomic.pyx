@@ -14,6 +14,7 @@ from pdcast import resolve
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
+from .registry cimport AliasManager
 from . cimport scalar
 from . cimport composite
 from pdcast.types.array import abstract
@@ -109,7 +110,6 @@ cdef class AtomicType(scalar.ScalarType):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._instances[str(self)] = self
         self._is_frozen = True  # no new attributes beyond this point
 
     ###################################
@@ -309,11 +309,6 @@ cdef class AtomicType(scalar.ScalarType):
         """
         return self()  # NOTE: most types disregard dtype metadata
 
-    @property
-    def instances(self) -> MappingProxyType:
-        """Return a map of all the flyweight instances of this type."""
-        return MappingProxyType(self._instances)
-
     ###################################
     ####    SUBTYPES/SUPERTYPES    ####
     ###################################
@@ -499,48 +494,12 @@ cdef class AtomicType(scalar.ScalarType):
         """Indicates whether this type is decorated with
         :func:`@generic <generic>`.
         """
-        return self._is_generic
-
-    # TODO: backend, backends should be deleted
-
-    @property
-    def backend(self) -> str:
-        """The backend string used to refer to this type in the
-        :ref:`type specification mini-language <resolve_type.mini_language>`.
-        """
-        return self._backend
-
-    @property
-    def backends(self) -> MappingProxyType:
-        """A dictionary mapping backend specifiers to their corresponding
-        implementation types.
-
-        This dictionary always contains the key/value pair ``{None: self}``.
-        """
-        if self.registry.needs_updating(self._backend_cache):
-            result = {None: self}
-            result |= {
-                k: v.instance(**self.kwargs) for k, v in self._backends.items()
-            }
-            result = MappingProxyType(result)
-            self._backend_cache = self.registry.remember(result)
-
-        return self._backend_cache.value
-
-    # TODO: .generic should just return a flag that defaults to None
+        return False
 
     @property
     def generic(self) -> AtomicType:
         """The generic equivalent of this type, if one exists."""
-        if self.registry.needs_updating(self._generic_cache):
-            if self.is_generic:
-                result = self
-            elif self._generic is None:
-                result = None
-            else:
-                result = self._generic.instance()
-            self._generic_cache = self.registry.remember(result)
-        return self._generic_cache.value
+        return None
 
     ########################
     ####    ADAPTERS    ####
@@ -725,18 +684,10 @@ cdef class AtomicType(scalar.ScalarType):
     ###############################
 
     def __call__(self, *args, **kwargs):
-        """Flyweight constructor for parametrized types."""
-        cdef str slug
-        cdef AtomicType instance
-
-        slug = self.slugify(args, kwargs)
-        instance = self._instances.get(slug, None)
-        if instance is None:
-            instance = type(self)(*args, **kwargs)
-        return instance
+        return self.instances(*args, **kwargs)
 
     @classmethod
-    def __init_subclass__(cls, cache_size: int = None, **kwargs):
+    def __init_subclass__(cls, cache_size: int = 0, **kwargs):
         """Metaclass initializer.
 
         This method is responsible for
@@ -754,22 +705,24 @@ cdef class AtomicType(scalar.ScalarType):
                 f"definition"
             )
 
+
         # initialize flyweights
+        # if cls.__init__ is AtomicType.__init__:
+        #     parameters = ()
+        # else:
+        #     parameters = tuple(inspect.signature(cls).parameters.keys())
+        parameters = ()
         if cache_size is None:
-            cls._instances = {}
+            cls.instances = scalar.NullFactory(cls, parameters)
         else:
-            cls._instances = LRUDict(maxsize=cache_size)
+            cls.instances = scalar.FlyweightFactory(cls, parameters, cache_size)
 
         # init fields for @subtype
         cls._children = set()
         cls._parent = None
 
         # init fields for @generic
-        cls._is_generic = None
         cls._generic = None
-        cls._backends = {}
-
-
 
 
 ############################
@@ -783,45 +736,61 @@ cdef class HierarchicalType(AtomicType):
 
     def __init__(self, cls):
         self.__wrapped__ = cls()
-        self.default = self.__wrapped__
+        self._default = self.__wrapped__
         super().__init__()
+
+    # TODO: have to add a custom slugify() method here that appends backend
+
+    @property
+    def name(self) -> str:
+        """Return the name of the decorated type."""
+        return self.__wrapped__.name
+
+    @property
+    def aliases(self) -> AliasManager:
+        """Return the aliases of the decorated type."""
+        return self.__wrapped__.aliases
 
     @property
     def type_def(self) -> type | None:
         """Delegate `type_def` lookups to the default implementation."""
-        return self.default.type_def
+        return self._default.type_def
 
     @property
     def dtype(self) -> np.dtype | ExtensionDtype:
         """Delegate `dtype` lookups to the default implementation."""
-        return self.default.dtype
+        return self._default.dtype
 
     @property
     def itemsize(self) -> int | None:
         """Delegate `itemsize` lookups to the default implementation."""
-        return self.default.itemsize
+        return self._default.itemsize
 
     @property
     def na_value(self) -> Any:
-        return self.default.na_value
+        return self._default.na_value
 
     @property
     def is_numeric(self) -> bool:
         """Delegate `is_numeric` lookups to the default implementation."""
-        return self.default.is_numeric
+        return self._default.is_numeric
+
+    def resolve(self, *args: str) -> AtomicType:
+        """Forward constructor arguments to the appropriate implementation."""
+        return self._default.resolve(*args)
 
     def detect(self, example: Any) -> AtomicType:
         """Forward scalar inference to the default implementation."""
-        return self.default.detect(example)
+        return self._default.detect(example)
 
     def from_dtype(self, dtype: dtype_like) -> AtomicType:
         """Forward dtype translation to the default implementation."""
-        return self.default.from_dtype(dtype)
+        return self._default.from_dtype(dtype)
 
     # TODO: delegate all AtomicType attributes to default.
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self.default, name)
+        return getattr(self._default, name)
 
     def __repr__(self) -> str:
         return repr(self.__wrapped__)
@@ -865,22 +834,16 @@ cdef class GenericType(HierarchicalType):
 
     def __init__(self, cls):
         super().__init__(cls)
-        self._aliases = cls.aliases
-        self._backends = {None: self.default}
+        self._backends = {None: self._default}
 
     ##########################
     ####    OVERLOADED    ####
     ##########################
 
     @property
-    def name(self) -> str:
-        """Return the name of the decorated type."""
-        return self.__wrapped__.name
-
-    @property
     def aliases(self) -> set:
         """Return the aliases of the decorated type."""
-        return self._aliases
+        return self.__wrapped__.aliases
 
     @property
     def is_generic(self) -> bool:
@@ -895,6 +858,34 @@ cdef class GenericType(HierarchicalType):
     def resolve(self, backend: str | None = None, *args) -> AtomicType:
         """Forward constructor arguments to the appropriate implementation."""
         return self._backends[backend].resolve(*args)    
+
+    #################################
+    ####    COMPOSITE PATTERN    ####
+    #################################
+
+    @property
+    def backends(self) -> MappingProxyType:
+        """A mapping of all backend specifiers to their corresponding
+        concretions.
+        """
+        return MappingProxyType(self._backends)
+
+    @property
+    def default_implementation(self) -> AtomicType:
+        """The concrete type that this generic type defaults to.
+
+        This will be used whenever the generic type is specified without an
+        explicit backend.
+        """
+        return self._default
+
+    @default_implementation.setter
+    def default_implementation(self, backend: str) -> None:
+        self._default = self._backends[backend]
+
+    @default_implementation.deleter
+    def default_implementation(self) -> None:
+        self._default = self._backends[None]
 
     ##########################
     ####    DECORATORS    ####
@@ -966,46 +957,26 @@ cdef class GenericType(HierarchicalType):
             if not issubclass(cls, AtomicType):
                 raise TypeError("@generic types can only contain AtomicTypes")
 
-            cls.name = self.name
-            self._backends[backend] = cls()
+            if cls.name is AtomicType.name:
+                cls.name = self.name
+
+            if cls.name == self.name:
+                cls.instances = scalar.ImplementationFactory(
+                    base_class=cls,
+                    parameters=cls.instances.parameters,
+                    cache_size=cls.instances.cache_size,
+                    backend=backend
+                )
+
+            cls._generic = self
+            self._backends[backend] = cls.instances()
             if default:
                 self.default_implementation = backend
 
-            # TODO: eliminate as many of these flags as possible
-            cls._is_generic = False
-            cls._generic = self
             self.registry.flush()
             return cls
 
         return decorator
-
-    #################################
-    ####    COMPOSITE PATTERN    ####
-    #################################
-
-    @property
-    def backends(self) -> MappingProxyType:
-        """A mapping of all backend specifiers to their corresponding
-        concretions.
-        """
-        return MappingProxyType(self._backends)
-
-    @property
-    def default_implementation(self) -> AtomicType:
-        """The concrete type that this generic type defaults to.
-
-        This will be used whenever the generic type is specified without an
-        explicit backend.
-        """
-        return self.default
-
-    @default_implementation.setter
-    def default_implementation(self, backend: str) -> None:
-        self.default = self.backends[backend]
-
-    @default_implementation.deleter
-    def default_implementation(self) -> None:
-        self.default = self.backends[None]
 
 
 

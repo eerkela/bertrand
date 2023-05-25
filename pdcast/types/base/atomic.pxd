@@ -1,4 +1,4 @@
-from .registry cimport CacheValue, AliasManager
+from .registry cimport CacheValue
 from .scalar cimport ScalarType
 from .composite cimport CompositeType
 
@@ -15,7 +15,7 @@ cdef class AtomicType(ScalarType):
 
 cdef class HierarchicalType(AtomicType):
     cdef:
-        AtomicType default
+        AtomicType _default
 
     cdef readonly:
         AtomicType __wrapped__
@@ -23,6 +23,5 @@ cdef class HierarchicalType(AtomicType):
 
 cdef class GenericType(HierarchicalType):
     cdef:
-        AliasManager _aliases
         CompositeType _subtypes
         dict _backends

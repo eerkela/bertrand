@@ -51,6 +51,9 @@ from . import scalar
 ######################
 
 
+# @register isn't adding implementations to registry.
+
+
 def register(
     class_: type | scalar.ScalarType | None = None,
     *,
@@ -113,7 +116,7 @@ def register(
                     "`@register` can only be applied to AtomicType and "
                     "AdapterType subclasses"
                 )
-            instance = cls()
+            instance = cls.instances()
 
         if cond:
             cls.registry.add(instance)
