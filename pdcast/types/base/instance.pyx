@@ -21,18 +21,18 @@ cdef class SlugFactory:
     def __init__(self, str name, tuple parameters):
         self.name = name
         self.parameters = parameters
-        self.n_params = len(self.parameters)
 
     @cython.boundscheck(False)
     @cython.wraparound(False)
     def __call__(self, tuple args, dict kwargs) -> str:
         """Construct a string representation with the given *args, **kwargs."""
         cdef unsigned short arg_length = len(args)
+        cdef unsigned short kwarg_length = len(kwargs)
         cdef unsigned short i
         cdef list ordered = []
         cdef object param
 
-        for i in range(self.n_params):
+        for i in range(arg_length + kwarg_length):
             if i < arg_length:
                 param = args[i]
             else:
@@ -59,11 +59,12 @@ cdef class BackendSlugFactory:
     def __call__(self, tuple args, dict kwargs) -> str:
         """Construct a string representation with the given *args, **kwargs."""
         cdef unsigned short arg_length = len(args)
+        cdef unsigned short kwarg_length = len(kwargs)
         cdef unsigned short i
         cdef list ordered = [self.backend]
         cdef object param
 
-        for i in range(self.n_params):
+        for i in range(arg_length + kwarg_length):
             if i < arg_length:
                 param = args[i]
             else:
@@ -71,8 +72,6 @@ cdef class BackendSlugFactory:
     
             ordered.append(str(param))
 
-        if not ordered:
-            return self.name
         return f"{self.name}[{', '.join(ordered)}]"
 
 
