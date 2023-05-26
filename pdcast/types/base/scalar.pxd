@@ -11,8 +11,8 @@ cdef class ScalarType(BaseType):
 
     cdef readonly:
         AliasManager _aliases
-        SlugFactory _slugify
-        InstanceFactory _instances
+        SlugFactory slugify
+        InstanceFactory instances
 
     cdef void init_base(self)
     cdef void init_parametrized(self)

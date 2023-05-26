@@ -17,7 +17,6 @@ cdef class AtomicType(AtomicTypeConstructor):
 
     cdef public:
         AtomicType _parent  # should be ParentType
-        GenericType _generic
 
 
 cdef class HierarchicalType(AtomicType):

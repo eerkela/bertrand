@@ -1,6 +1,8 @@
 """This module controls instance creation and identification for
 :class:`ScalarType <pdcast.ScalarType>` objects.
 """
+cimport cython
+
 from pdcast.util.structs cimport LRUDict
 
 from .scalar cimport ScalarType
@@ -19,22 +21,28 @@ cdef class SlugFactory:
     def __init__(self, str name, tuple parameters):
         self.name = name
         self.parameters = parameters
+        self.n_params = len(self.parameters)
 
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
     def __call__(self, tuple args, dict kwargs) -> str:
-        """Construct a string representation with the given *args, *kwargs."""
-        cdef object args_iter
-        cdef object ordered
-        cdef str params
+        """Construct a string representation with the given *args, **kwargs."""
+        cdef unsigned short arg_length = len(args)
+        cdef unsigned short i
+        cdef list ordered = []
+        cdef object param
 
-        args_iter = iter(args)
-        ordered = (
-            str(kwargs[param]) if param in kwargs else str(next(args_iter))
-            for param in self.parameters
-        )
-        params = ", ".join(ordered)
-        if not params:
+        for i in range(self.n_params):
+            if i < arg_length:
+                param = args[i]
+            else:
+                param = kwargs[self.parameters[i]]
+    
+            ordered.append(str(param))
+
+        if not ordered:
             return self.name
-        return f"{self.name}[{params}]"
+        return f"{self.name}[{', '.join(ordered)}]"
 
 
 cdef class BackendSlugFactory:
@@ -46,21 +54,26 @@ cdef class BackendSlugFactory:
         super().__init__(name, parameters)
         self.backend = backend
 
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
     def __call__(self, tuple args, dict kwargs) -> str:
-        """Construct a string representation with the given *args, *kwargs."""
-        cdef object args_iter
-        cdef object ordered
-        cdef str params
+        """Construct a string representation with the given *args, **kwargs."""
+        cdef unsigned short arg_length = len(args)
+        cdef unsigned short i
+        cdef list ordered = [self.backend]
+        cdef object param
 
-        args_iter = iter(args)
-        ordered = (
-            str(kwargs[param]) if param in kwargs else str(next(args_iter))
-            for param in self.parameters
-        )
-        params = ", ".join(ordered)
-        if not params:
-            return f"{self.name}[{self.backend}]"
-        return f"{self.name}[{self.backend}, {params}]"
+        for i in range(self.n_params):
+            if i < arg_length:
+                param = args[i]
+            else:
+                param = kwargs[self.parameters[i]]
+    
+            ordered.append(str(param))
+
+        if not ordered:
+            return self.name
+        return f"{self.name}[{', '.join(ordered)}]"
 
 
 #############################

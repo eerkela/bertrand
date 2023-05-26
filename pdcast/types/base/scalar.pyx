@@ -159,11 +159,6 @@ cdef class ScalarType(BaseType):
         return self._aliases
 
     @property
-    def instances(self) -> InstanceFactory:
-        """"""
-        return self._instances
-
-    @property
     def kwargs(self) -> MappingProxyType:
         """For parametrized types, the value of each parameter.
 
@@ -293,7 +288,7 @@ cdef class ScalarType(BaseType):
 
     def __call__(self, *args, **kwargs) -> ScalarType:
         """Constructor for parametrized types."""
-        return self._instances(*args, **kwargs)
+        return self.instances(*args, **kwargs)
 
     def __contains__(self, other: type_specifier) -> bool:
         """Implement the ``in`` keyword for membership checks.

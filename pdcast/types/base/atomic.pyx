@@ -33,7 +33,6 @@ from pdcast.types.array import abstract
 # their own contains() methods.
 
 
-
 # conversions
 # +------------------------------------------------
 # |           | b | i | f | c | d | d | t | s | o |
@@ -101,7 +100,7 @@ cdef class AtomicTypeConstructor(scalar.ScalarType):
             slugify = instance.SlugFactory(name, parameters)
 
         self._slug = slugify((), self._kwargs)
-        self._slugify = slugify
+        self.slugify = slugify
 
     cdef void _init_instances(self, type subclass):
         """Create an InstanceFactory to control instance generation for this
@@ -116,11 +115,11 @@ cdef class AtomicTypeConstructor(scalar.ScalarType):
         if not cache_size:
             instances = instance.InstanceFactory(subclass)
         else:
-            slugify = self._slugify
+            slugify = self.slugify
             instances = instance.FlyweightFactory(subclass, slugify, cache_size)
             instances[self._slug] = self
 
-        self._instances = instances
+        self.instances = instances
 
     cdef void init_base(self):
         """Initialize a base (non-parametrized) instance of this type.
@@ -135,10 +134,8 @@ cdef class AtomicTypeConstructor(scalar.ScalarType):
         self._init_instances(subclass)
 
         # clean up subclass fields
-        del subclass.aliases  # pass to AtomicType.aliases
+        del subclass.aliases
 
-        subclass._parent = None
-        subclass._generic = None
         subclass._base_instance = self
 
     cdef void init_parametrized(self):
@@ -150,9 +147,9 @@ cdef class AtomicTypeConstructor(scalar.ScalarType):
         base = type(self)._base_instance
 
         self._aliases = base._aliases
-        self._slugify = base._slugify
-        self._slug = self._slugify((), self._kwargs)
-        self._instances = base._instances
+        self.slugify = base.slugify
+        self._slug = self.slugify((), self._kwargs)
+        self.instances = base.instances
 
 
 cdef class AtomicType(AtomicTypeConstructor):
@@ -208,8 +205,8 @@ cdef class AtomicType(AtomicTypeConstructor):
     definitions that ``ImplementationType`` is linked to.
     """
 
-    # NOTE: this is a sample __init__ method for a parametrized type
-    # (non-parametrized types can omit __init__ entirely).
+    # NOTE: this is a sample __init__ method for a parametrized type.
+    # Non-parametrized types can omit __init__ entirely.
 
     # def __init__(self, foo=None, bar=None):
     #     if foo is not None:
@@ -364,7 +361,8 @@ cdef class AtomicType(AtomicTypeConstructor):
             same inputs again in the future, then this will be a simple
             reference to the previous instance.
         """
-        return self(*args)  # NOTE: Most types don't accept any arguments at all
+        # NOTE: any special string conversion logic goes here
+        return self(*args)
 
     def detect(self, example: Any) -> AtomicType:
         """Construct a new :class:`AtomicType` from scalar example data.
@@ -399,7 +397,8 @@ cdef class AtomicType(AtomicTypeConstructor):
         If the input to :func:`detect_type` is vectorized, then this method
         will be called at each index.
         """
-        return self()  # NOTE: most types disregard example data
+        # NOTE: any special scalar parsing logic goes here
+        return self()
 
     def from_dtype(self, dtype: np.dtype | ExtensionDtype) -> AtomicType:
         """Construct an :class:`AtomicType` from a corresponding numpy/pandas
@@ -440,7 +439,8 @@ cdef class AtomicType(AtomicTypeConstructor):
         asymmetry allows pandas dtypes to be arbitrarily parameterized when
         passed to this method.
         """
-        return self()  # NOTE: most types disregard dtype metadata
+        # NOTE: any special dtype parsing logic goes here.
+        return self()
 
     ###################################
     ####    SUBTYPES/SUPERTYPES    ####
@@ -635,7 +635,7 @@ cdef class AtomicType(AtomicTypeConstructor):
     @property
     def generic(self) -> AtomicType:
         """The generic equivalent of this type, if one exists."""
-        return self._generic
+        return getattr(self, "_generic", None)
 
     ########################
     ####    ADAPTERS    ####
@@ -833,8 +833,8 @@ cdef class HierarchicalType(AtomicType):
         self._hash = self.__wrapped__._hash
 
         self._aliases = self.__wrapped__._aliases
-        self._slugify = self.__wrapped__._slugify
-        self._instances = self.__wrapped__._instances
+        self.slugify = self.__wrapped__.slugify
+        self.instances = self.__wrapped__.instances
 
         self._read_only = True
 
@@ -892,7 +892,7 @@ cdef class HierarchicalType(AtomicType):
     def __call__(self, *args, **kwargs):
         if not args or kwargs:
             return self
-        return self._instances(*args, **kwargs)
+        return self.instances(*args, **kwargs)
 
     def __repr__(self) -> str:
         return repr(self.__wrapped__)
@@ -1059,7 +1059,7 @@ cdef class GenericType(HierarchicalType):
             if cls.name is AtomicType.name:
                 cls.name = self.name
 
-            # NOTE: these flags 
+
             cls._generic = self  # for AtomicType.generic
             if cls.name == self.name:
                 cls._backend = backend  # for AtomicType.slugify

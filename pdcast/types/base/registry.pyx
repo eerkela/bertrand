@@ -24,6 +24,15 @@ from . import scalar
 # cooperative
 
 
+# TODO: Whenever AliasManager.add is called, we add it to the registry.
+# .remove(), .discard(), and .pop() remove it from the registry if empty.
+
+# This allows us to store unique AliasManagers at the instance level.
+
+# pdcast.resolve_type("object[int]") should not have any aliases, but
+# pdcast.resolve_type("object") should.
+
+
 ######################
 ####    PUBLIC    ####
 ######################
