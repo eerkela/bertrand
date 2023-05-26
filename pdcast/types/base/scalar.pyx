@@ -24,6 +24,9 @@ from .registry cimport BaseType, AliasManager
 # TODO: remove non top-level imports in __eq__, is_subtype
 
 
+# TODO: how does this interact with HierarchicalType?
+
+
 ##########################
 ####    PRIMITIVES    ####
 ##########################
@@ -37,8 +40,61 @@ cdef class ScalarType(BaseType):
 
     def __init__(self, **kwargs):
         self._kwargs = kwargs
-        self._slug = self.instances.slugify((), kwargs)
+
+        if hasattr(self, "_base_instance"):
+            self.init_parametrized()
+        else:
+            self.init_base()
+
         self._hash = hash(self._slug)
+
+    cdef void init_base(self):
+        """Initialize a base (non-parametrized) instance of this type.
+
+        Notes
+        -----
+        This is automatically called by @register, @generic, and @supertype
+        to transform the decorated class into a non-parametrized instance.  By
+        assigning attributes to this base instance, we can replicate the
+        behavior of an __init_subclass__ method without actually requiring a
+        metaclass.
+
+        Doing it this way guarantees cython compatibility and avoids confusion
+        with the special semantics around __init_subclass__ and metaclasses in
+        general.
+
+        .. note::
+
+            In Cython 0.29.x, __init_subclass__ applies only to python classes
+            that inherit from an extension type.  It will never be invoked when
+            an extension type inherits from another extension type.
+
+            As of Cython 3.0.x, any extension type that defines an
+            __init_subclass__ method will raise a compilation error instead.
+
+        """
+        raise NotImplementedError(
+            f"{repr(type(self).__qualname__)} must implement an init_base() "
+            f"method"
+        )
+
+    cdef void init_parametrized(self):
+        """Initialize a parametrized instance of this type with attributes
+        from the base instance.
+
+        Notes
+        -----
+        This allows us to copy attributes from the base instance (from
+        init_base) without requiring manipulation of class attributes or
+        metaclasses.
+
+        Every attribute that is assigned in init_base should also be assigned
+        here.
+        """
+        raise NotImplementedError(
+            f"{repr(type(self).__qualname__)} must implement an "
+            "init_parametrized() method"
+        )
 
     ##########################
     ####    ATTRIBUTES    ####
@@ -107,9 +163,12 @@ cdef class ScalarType(BaseType):
         All aliases are recognized by :func:`resolve_type` and the set always
         includes the :class:`AtomicType` itself.
         """
-        raise NotImplementedError(
-            f"'{type(self).__name__}' is missing an `aliases` field."
-        )
+        return self._aliases
+
+    @property
+    def instances(self) -> InstanceFactory:
+        """"""
+        return self._instances
 
     @property
     def kwargs(self) -> MappingProxyType:
@@ -210,19 +269,6 @@ cdef class ScalarType(BaseType):
     ####    SPECIAL METHODS    ####
     ###############################
 
-    @classmethod
-    def __init_subclass__(cls, cache_size: int = None, **kwargs):
-        """Metaclass initializer for flyweight pattern."""
-        super(ScalarType, cls).__init_subclass__(**kwargs)
-        cls.aliases = AliasManager(cls.aliases | {cls})
-
-        # if cls.__init__ is ScalarType.__init__:
-        #     parameters = ()
-        # else:
-        #     parameters = tuple(inspect.signature(cls).parameters.keys())
-        parameters = ()
-        cls.instances = NullFactory(cls, parameters)
-
     def __getattr__(self, name: str) -> Any:
         """Pass attribute lookups to :attr:`kwargs <pdcast.ScalarType.kwargs>`.
         """
@@ -254,7 +300,7 @@ cdef class ScalarType(BaseType):
 
     def __call__(self, *args, **kwargs) -> ScalarType:
         """Constructor for parametrized types."""
-        return self.instances(*args, **kwargs)
+        return self._instances(*args, **kwargs)
 
     def __getitem__(self, key: Any) -> ScalarType:
         """Return a parametrized type in the same syntax as the type
@@ -289,107 +335,3 @@ cdef class ScalarType(BaseType):
     def __repr__(self) -> str:
         sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())
         return f"{type(self).__name__}({sig})"
-
-
-#########################
-####    FACTORIES    ####
-#########################
-
-
-cdef class InstanceFactory:
-    """An interface for controlling instance creation for
-    :class:`ScalarType <pdcast.ScalarType>` objects.
-    """
-
-    def __init__(self, type base_class, tuple parameters):
-        self.base_class = base_class
-        if not isinstance(base_class.name, str):
-            self.name = None
-        else:
-            self.name = base_class.name
-        self.parameters = parameters
-
-    def slugify(self, tuple args, dict kwargs) -> str:
-        """Convert arbitrary arguments into a suitable slug identifier."""
-        cdef object args_iter
-        cdef object ordered
-        cdef str params
-
-        args_iter = iter(args)
-        ordered = (
-            str(kwargs[param]) if param in kwargs else str(next(args_iter))
-            for param in self.parameters
-        )
-        params = ", ".join(ordered)
-        if not params:
-            return self.name
-        return f"{self.name}[{params}]"
-
-    def __call__(self, *args, **kwargs):
-        raise NotImplementedError()
-
-
-cdef class NullFactory(InstanceFactory):
-    """An InstanceFactory that passes inputs to the normal class constructor."""
-
-    def __call__(self, *args, **kwargs):
-        return self.base_class(*args, **kwargs)
-
-
-cdef class FlyweightFactory(InstanceFactory):
-    """An InstanceFactory that implements the flyweight caching strategy."""
-
-    def __init__(
-        self,
-        type base_class,
-        tuple parameters,
-        unsigned int cache_size
-    ):
-        super().__init__(base_class, parameters)
-        self.cache_size = cache_size
-        if not cache_size:
-            self.instances = {}
-        else:
-            self.instances = LRUDict(maxsize=cache_size)
-
-    def __call__(self, *args, **kwargs) -> ScalarType:
-        cdef str slug
-        cdef ScalarType instance
-
-        slug = self.slugify(args, kwargs)
-        instance = self.instances.get(slug, None)
-        if instance is None:
-            instance = self.base_class(*args, **kwargs)
-            self.instances[slug] = instance
-        return instance
-
-
-cdef class ImplementationFactory(FlyweightFactory):
-    """A special case of FlyweightFactory that accounts for backend-specific
-    slug generation.
-    """
-
-    def __init__(
-        self,
-        type base_class,
-        unsigned int cache_size,
-        tuple parameters,
-        str backend
-    ):
-        super().__init__(base_class, parameters, cache_size)
-        self.backend = backend
-
-    def slugify(self, tuple args, dict kwargs) -> str:
-        cdef object args_iter
-        cdef object ordered
-        cdef str params
-
-        args_iter = iter(args)
-        ordered = (
-            str(kwargs[param]) if param in kwargs else str(next(args_iter))
-            for param in self.parameters
-        )
-        params = ", ".join(ordered)
-        if not params:
-            return f"{self.name}[{self.backend}]"
-        return f"{self.name}[{self.backend}, {params}]"

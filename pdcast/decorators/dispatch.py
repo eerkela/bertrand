@@ -331,6 +331,8 @@ class DispatchFunc(BaseDecorator):
         """A decorator that transforms a naked function into a dispatched
         implementation for this :class:`DispatchFunc`.
 
+        TODO: update this
+
         Parameters
         ----------
         types : type_specifier | Iterable[type_specifier] | None, default None

@@ -15,6 +15,7 @@ from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
 from .registry cimport AliasManager
+from . cimport instance
 from . cimport scalar
 from . cimport composite
 from pdcast.types.array import abstract
@@ -112,9 +113,76 @@ cdef class AtomicType(scalar.ScalarType):
         super().__init__(**kwargs)
         self._is_frozen = True  # no new attributes beyond this point
 
+    cdef void _init_identifier(self, type subclass):
+        """Create a SlugFactory for this type."""
+        name = subclass.name
+        parameters = tuple(self._kwargs)
+
+        # NOTE: appropriate slug generation depends on hierarchical
+        # configuration.  If name is inherited from GenericType, we have to
+        # append the backend specifier as the first parameter to maintain
+        # uniqueness.
+
+        if hasattr(subclass, "_backend"):
+            backend = subclass._backend
+            slugify = instance.BackendSlugFactory(name, parameters, backend)
+        else:
+            slugify = instance.SlugFactory(name, parameters)
+
+        self._slug = slugify((), self._kwargs)
+        self._slugify = slugify
+
+    cdef void _init_instances(self, type subclass):
+        """Create an InstanceFactory for this type."""
+        cache_size = subclass.cache_size
+
+        # cache_size = 0 negates flyweight pattern
+        if not cache_size:
+            instances = instance.InstanceFactory(subclass)
+        else:
+            slugify = self._slugify
+            instances = instance.FlyweightFactory(subclass, slugify, cache_size)
+            instances[self._slug] = self
+
+        self._instances = instances
+
+    cdef void init_base(self):
+        """Initialize a base (non-parametrized) instance of this type.
+
+        See :meth:`ScalarType.init_base` for more information on how this is
+        called and why it is necessary.
+        """
+        subclass = type(self)
+
+        self._aliases = AliasManager(subclass.aliases | {subclass})
+        self._init_identifier(subclass)
+        self._init_instances(subclass)
+
+        # clean up subclass fields
+        del subclass.aliases  # pass to AtomicType.aliases
+
+        subclass._parent = None
+        subclass._generic = None
+        subclass._base_instance = self
+
+    cdef void init_parametrized(self):
+        """Initialize a parametrized instance of this type.
+
+        See :meth:`ScalarType.init_parametrized` for more information on how
+        this is called and why it is necessary.
+        """
+        base = type(self)._base_instance
+
+        self._aliases = base._aliases
+        self._slugify = base._slugify
+        self._slug = self._slugify((), self._kwargs)
+        self._instances = base._instances
+
     ###################################
     ####    REQUIRED ATTRIBUTES    ####
     ###################################
+
+    cache_size = -1  # cache all instances
 
     @property
     def type_def(self) -> type | None:
@@ -499,7 +567,7 @@ cdef class AtomicType(scalar.ScalarType):
     @property
     def generic(self) -> AtomicType:
         """The generic equivalent of this type, if one exists."""
-        return None
+        return self._generic
 
     ########################
     ####    ADAPTERS    ####
@@ -679,51 +747,6 @@ cdef class AtomicType(scalar.ScalarType):
             f"'{type(self).__name__}' objects have no nullable alternative."
         )
 
-    ###############################
-    ####    SPECIAL METHODS    ####
-    ###############################
-
-    def __call__(self, *args, **kwargs):
-        return self.instances(*args, **kwargs)
-
-    @classmethod
-    def __init_subclass__(cls, cache_size: int = 0, **kwargs):
-        """Metaclass initializer.
-
-        This method is responsible for
-        `initializing subclasses <https://peps.python.org/pep-0487/>`_ of
-        :class:`AtomicType`.
-        """
-        # allow cooperative inheritance
-        super(AtomicType, cls).__init_subclass__(**kwargs)
-
-        # limit to 1st order
-        valid = AtomicType.__subclasses__()
-        if cls not in valid:
-            raise TypeError(
-                f"{cls.__name__} cannot inherit from another AtomicType "
-                f"definition"
-            )
-
-
-        # initialize flyweights
-        # if cls.__init__ is AtomicType.__init__:
-        #     parameters = ()
-        # else:
-        #     parameters = tuple(inspect.signature(cls).parameters.keys())
-        parameters = ()
-        if cache_size is None:
-            cls.instances = scalar.NullFactory(cls, parameters)
-        else:
-            cls.instances = scalar.FlyweightFactory(cls, parameters, cache_size)
-
-        # init fields for @subtype
-        cls._children = set()
-        cls._parent = None
-
-        # init fields for @generic
-        cls._generic = None
-
 
 ############################
 ####    HIERARCHICAL    ####
@@ -737,9 +760,15 @@ cdef class HierarchicalType(AtomicType):
     def __init__(self, cls):
         self.__wrapped__ = cls()
         self._default = self.__wrapped__
-        super().__init__()
+        self._kwargs = {}
+        self._slug = self.__wrapped__._slug
+        self._hash = self.__wrapped__._hash
 
-    # TODO: have to add a custom slugify() method here that appends backend
+        self._aliases = self.__wrapped__._aliases
+        self._slugify = self.__wrapped__._slugify
+        self._instances = self.__wrapped__._instances
+
+        self._is_frozen = True
 
     @property
     def name(self) -> str:
@@ -791,6 +820,11 @@ cdef class HierarchicalType(AtomicType):
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._default, name)
+
+    def __call__(self, *args, **kwargs):
+        if not args or kwargs:
+            return self
+        return self._instances(*args, **kwargs)
 
     def __repr__(self) -> str:
         return repr(self.__wrapped__)
@@ -857,6 +891,8 @@ cdef class GenericType(HierarchicalType):
 
     def resolve(self, backend: str | None = None, *args) -> AtomicType:
         """Forward constructor arguments to the appropriate implementation."""
+        if backend is None:
+            return self
         return self._backends[backend].resolve(*args)    
 
     #################################
@@ -946,11 +982,6 @@ cdef class GenericType(HierarchicalType):
             raise TypeError(
                 f"backend specifier must be a string: {repr(backend)}"
             )
-        if backend in self._backends:
-            raise TypeError(
-                f"backend specifier must be unique: {repr(backend)} is "
-                f"already registered to {repr(self._backends[backend])}"
-            )
 
         def decorator(cls: type) -> type:
             """Link the decorated type to this GenericType."""
@@ -960,20 +991,26 @@ cdef class GenericType(HierarchicalType):
             if cls.name is AtomicType.name:
                 cls.name = self.name
 
+            # NOTE: these flags 
+            cls._generic = self  # for AtomicType.generic
             if cls.name == self.name:
-                cls.instances = scalar.ImplementationFactory(
-                    base_class=cls,
-                    parameters=cls.instances.parameters,
-                    cache_size=cls.instances.cache_size,
-                    backend=backend
-                )
+                cls._backend = backend  # for AtomicType.slugify
 
-            cls._generic = self
-            self._backends[backend] = cls.instances()
-            if default:
-                self.default_implementation = backend
+            def promise(instance):
+                """A promise that registers the base implementation with this
+                GenericType.
+                """
+                if backend in self._backends:
+                    raise TypeError(
+                        f"backend specifier must be unique: {repr(backend)} "
+                        f"is already registered to "
+                        f"{repr(self._backends[backend])}"
+                    )
+                self._backends[backend] = instance
+                if default:
+                    self.default_implementation = backend
 
-            self.registry.flush()
+            cls.registry.promises.setdefault(cls, []).append(promise)
             return cls
 
         return decorator

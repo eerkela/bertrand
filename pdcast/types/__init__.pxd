@@ -1,1 +1,1 @@
-from .types.base cimport *
+from .base cimport *

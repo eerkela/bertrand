@@ -51,9 +51,6 @@ from . import scalar
 ######################
 
 
-# @register isn't adding implementations to registry.
-
-
 def register(
     class_: type | scalar.ScalarType | None = None,
     *,
@@ -116,7 +113,7 @@ def register(
                     "`@register` can only be applied to AtomicType and "
                     "AdapterType subclasses"
                 )
-            instance = cls.instances()
+            instance = cls()
 
         if cond:
             cls.registry.add(instance)
@@ -150,6 +147,7 @@ cdef class TypeRegistry:
 
     def __init__(self):
         self.base_types = set()
+        self.promises = {}
         self.update_hash()
 
     #####################
@@ -241,7 +239,13 @@ cdef class TypeRegistry:
         self._validate_no_parameters(instance)
         self._validate_name(instance)
         # self._validate_slugify(instance)
+
         self.base_types.add(instance)
+        promises = self.promises.pop(type(instance), [])
+        while promises:
+            delayed = promises.pop()
+            delayed(instance)
+
         self.update_hash()
 
     def remove(self, instance: scalar.ScalarType) -> None:

@@ -7,11 +7,14 @@ cdef class CacheValue:
 
 cdef class TypeRegistry:
     cdef:
+        set base_types
+        long long _hash
         CacheValue _aliases
         CacheValue _regex
         CacheValue _resolvable
-        set base_types
-        long long _hash
+
+    cdef readonly:
+        dict promises
 
     cdef void update_hash(self)
 

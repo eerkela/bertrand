@@ -11,7 +11,9 @@ import pandas as pd
 from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
+from .registry cimport AliasManager
 from . cimport atomic
+from . cimport instance
 from . cimport scalar
 from . cimport composite
 
@@ -120,6 +122,9 @@ cdef class AdapterType(scalar.ScalarType):
     :class:`AtomicType`.
     """
 
+    init_subclass = True
+    priority = 0
+
     def __init__(self, wrapped: scalar.ScalarType, **kwargs):
         if isinstance(wrapped, AdapterType):
             wrapped, kwargs = self._insort(self, wrapped, kwargs)
@@ -127,6 +132,32 @@ cdef class AdapterType(scalar.ScalarType):
         self._wrapped = wrapped
         kwargs = {"wrapped": wrapped} | kwargs
         super().__init__(**kwargs)
+
+    cdef void init_base(self):
+        subclass = type(self)
+
+        # TODO: might do validation at this level rather than in registry.add
+
+        # parse subclass fields
+        self._aliases = AliasManager(subclass.aliases | {subclass})
+        self._slugify = instance.SlugFactory(subclass.name, tuple(self._kwargs))
+        self._slug = self._slugify((), self._kwargs)
+        self._instances = instance.InstanceFactory(subclass)
+        self._insort = PrioritySorter(subclass, priority=subclass.priority)
+
+        # clean up subclass fields
+        del subclass.aliases  # pass to AtomicType.aliases
+
+        subclass._base_instance = self
+
+    cdef void init_parametrized(self):
+        base = type(self)._base_instance
+
+        self._aliases = base._aliases
+        self._slugify = base._slugify
+        self._slug = self._slugify((), self._kwargs)
+        self._instances = base._instances
+        self._insort = base._insort
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -406,23 +437,6 @@ cdef class AdapterType(scalar.ScalarType):
             return self(wrapped, *key[1:])
 
         return self(resolve.resolve_type(key))
-
-    @classmethod
-    def __init_subclass__(cls, priority: int = 0, **kwargs):
-        """priority controls the order of nested adapters.  Higher comes first.
-
-        categorical has priority 5, sparse has priority 10.
-        """
-        super(AdapterType, cls).__init_subclass__(**kwargs)
-
-        valid = AdapterType.__subclasses__()
-        if cls not in valid:
-            raise TypeError(
-                f"{cls.__name__} cannot inherit from another AdapterType "
-                f"definition"
-            )
-
-        cls._insort = PrioritySorter(cls, priority=priority)
 
 
 #######################

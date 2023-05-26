@@ -1,4 +1,5 @@
-from .registry cimport BaseType
+from .registry cimport BaseType, AliasManager
+from .instance cimport SlugFactory, InstanceFactory
 
 
 cdef class ScalarType(BaseType):
@@ -7,30 +8,10 @@ cdef class ScalarType(BaseType):
         str _slug
         long long _hash
 
-
-cdef class InstanceFactory:
-    cdef:
-        type base_class
-        str name
-
     cdef readonly:
-        tuple parameters
+        AliasManager _aliases
+        SlugFactory _slugify
+        InstanceFactory _instances
 
-    # cdef str slugify(self, tuple args, dict kwargs)
-
-
-cdef class NullFactory(InstanceFactory):
-    pass
-
-
-cdef class FlyweightFactory(InstanceFactory):
-    cdef:
-        dict instances
-
-    cdef readonly:
-        unsigned int cache_size
-
-
-cdef class ImplementationFactory(FlyweightFactory):
-    cdef:
-        str backend
+    cdef void init_base(self)
+    cdef void init_parametrized(self)

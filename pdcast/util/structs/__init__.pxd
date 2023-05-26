@@ -1,1 +1,1 @@
-from .structs.lru cimport LRUDict
+from .lru cimport LRUDict

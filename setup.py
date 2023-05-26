@@ -6,6 +6,7 @@ import numpy
 setup(
     ext_modules=cythonize(
         [
+            "*.pyx",
             "pdcast/*.pyx",
             "pdcast/types/array/*.pyx",
             "pdcast/types/base/*.pyx",

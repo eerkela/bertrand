@@ -4,6 +4,7 @@ from .scalar cimport ScalarType
 cdef class AdapterType(ScalarType):
     cdef:
         ScalarType _wrapped
+        DecoratorSorter _insort
 
 
 cdef class DecoratorSorter:
