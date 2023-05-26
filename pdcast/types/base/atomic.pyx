@@ -14,7 +14,7 @@ from pdcast import resolve
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
-from .registry cimport AliasManager
+from .registry cimport AliasManager, CacheValue
 from . cimport instance
 from . cimport scalar
 from . cimport composite
@@ -25,6 +25,13 @@ from pdcast.types.array import abstract
 
 # TODO: remove is_na() in favor of pd.isna() and convert make_nullable into
 # a .nullable property.
+
+
+# TODO: abstract dtype creation is broken due to broken code in
+# traverse_subtypes().  This function may not even be necessary anymore with
+# composite GenericType and ParentType classes.  These can just implement
+# their own contains() methods.
+
 
 
 # conversions
@@ -56,7 +63,99 @@ from pdcast.types.array import abstract
 ######################
 
 
-cdef class AtomicType(scalar.ScalarType):
+cdef class AtomicTypeConstructor(scalar.ScalarType):
+    """A stub class that separates internal :class:`AtomicType` constructor
+    methods from the public interface.
+    """
+
+    cdef void _init_identifier(self, type subclass):
+        """Create a SlugFactory to uniquely identify this type.
+
+        Notes
+        -----
+        There are two possible algorithms for generating identification strings
+        based on decorator configuration:
+
+            (1) A unique name followed by a bracketed list of parameter
+                strings.
+            (2) A non-unique name followed by a bracketed list containing a
+                unique backend specifier and zero or more parameter strings.
+
+        The second option is chosen whenever a concrete implementation is
+        registered to a :class:`GenericType` that shares the same name.  This
+        is what allows us to maintain generic namespaces with unique
+        identifiers.
+        """
+        name = subclass.name
+        parameters = tuple(self._kwargs)
+
+        # NOTE: appropriate slug generation depends on hierarchical
+        # configuration.  If name is inherited from GenericType, we have to
+        # append the backend specifier as the first parameter to maintain
+        # uniqueness.
+
+        if hasattr(subclass, "_backend"):
+            backend = subclass._backend
+            slugify = instance.BackendSlugFactory(name, parameters, backend)
+        else:
+            slugify = instance.SlugFactory(name, parameters)
+
+        self._slug = slugify((), self._kwargs)
+        self._slugify = slugify
+
+    cdef void _init_instances(self, type subclass):
+        """Create an InstanceFactory to control instance generation for this
+        type.
+
+        The chosen factory depends on the value of
+        :attr:`AtomicType.cache_size`.
+        """
+        cache_size = self.cache_size
+
+        # cache_size = 0 negates flyweight pattern
+        if not cache_size:
+            instances = instance.InstanceFactory(subclass)
+        else:
+            slugify = self._slugify
+            instances = instance.FlyweightFactory(subclass, slugify, cache_size)
+            instances[self._slug] = self
+
+        self._instances = instances
+
+    cdef void init_base(self):
+        """Initialize a base (non-parametrized) instance of this type.
+
+        See :meth:`ScalarType.init_base` for more information on how this is
+        called and why it is necessary.
+        """
+        subclass = type(self)
+
+        self._aliases = AliasManager(subclass.aliases | {subclass})
+        self._init_identifier(subclass)
+        self._init_instances(subclass)
+
+        # clean up subclass fields
+        del subclass.aliases  # pass to AtomicType.aliases
+
+        subclass._parent = None
+        subclass._generic = None
+        subclass._base_instance = self
+
+    cdef void init_parametrized(self):
+        """Initialize a parametrized instance of this type.
+
+        See :meth:`ScalarType.init_parametrized` for more information on how
+        this is called and why it is necessary.
+        """
+        base = type(self)._base_instance
+
+        self._aliases = base._aliases
+        self._slugify = base._slugify
+        self._slug = self._slugify((), self._kwargs)
+        self._instances = base._instances
+
+
+cdef class AtomicType(AtomicTypeConstructor):
     """Abstract base class for all user-defined scalar types.
 
     :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
@@ -109,80 +208,24 @@ cdef class AtomicType(scalar.ScalarType):
     definitions that ``ImplementationType`` is linked to.
     """
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._is_frozen = True  # no new attributes beyond this point
+    # NOTE: this is a sample __init__ method for a parametrized type
+    # (non-parametrized types can omit __init__ entirely).
 
-    cdef void _init_identifier(self, type subclass):
-        """Create a SlugFactory for this type."""
-        name = subclass.name
-        parameters = tuple(self._kwargs)
+    # def __init__(self, foo=None, bar=None):
+    #     if foo is not None:
+    #         ...
+    #     if bar is not None:
+    #         ...
+    #     super.__init__(foo=foo, bar=bar)
 
-        # NOTE: appropriate slug generation depends on hierarchical
-        # configuration.  If name is inherited from GenericType, we have to
-        # append the backend specifier as the first parameter to maintain
-        # uniqueness.
-
-        if hasattr(subclass, "_backend"):
-            backend = subclass._backend
-            slugify = instance.BackendSlugFactory(name, parameters, backend)
-        else:
-            slugify = instance.SlugFactory(name, parameters)
-
-        self._slug = slugify((), self._kwargs)
-        self._slugify = slugify
-
-    cdef void _init_instances(self, type subclass):
-        """Create an InstanceFactory for this type."""
-        cache_size = subclass.cache_size
-
-        # cache_size = 0 negates flyweight pattern
-        if not cache_size:
-            instances = instance.InstanceFactory(subclass)
-        else:
-            slugify = self._slugify
-            instances = instance.FlyweightFactory(subclass, slugify, cache_size)
-            instances[self._slug] = self
-
-        self._instances = instances
-
-    cdef void init_base(self):
-        """Initialize a base (non-parametrized) instance of this type.
-
-        See :meth:`ScalarType.init_base` for more information on how this is
-        called and why it is necessary.
-        """
-        subclass = type(self)
-
-        self._aliases = AliasManager(subclass.aliases | {subclass})
-        self._init_identifier(subclass)
-        self._init_instances(subclass)
-
-        # clean up subclass fields
-        del subclass.aliases  # pass to AtomicType.aliases
-
-        subclass._parent = None
-        subclass._generic = None
-        subclass._base_instance = self
-
-    cdef void init_parametrized(self):
-        """Initialize a parametrized instance of this type.
-
-        See :meth:`ScalarType.init_parametrized` for more information on how
-        this is called and why it is necessary.
-        """
-        base = type(self)._base_instance
-
-        self._aliases = base._aliases
-        self._slugify = base._slugify
-        self._slug = self._slugify((), self._kwargs)
-        self._instances = base._instances
+    # This automatically assigns foo and bar as parametrized attributes of
+    # the inheriting type and keeps track of any instances that are generated
+    # with them.  They must be optional, and the type must be constructable
+    # without arguments to be considered valid.
 
     ###################################
     ####    REQUIRED ATTRIBUTES    ####
     ###################################
-
-    cache_size = -1  # cache all instances
 
     @property
     def type_def(self) -> type | None:
@@ -269,6 +312,28 @@ cdef class AtomicType(scalar.ScalarType):
         from this type.
         """
         return False
+
+    @property
+    def cache_size(self) -> int:
+        """The number of flyweights to store in this type's cache.
+
+        Notes
+        -----
+        There are 3 possible algorithms for caching flyweights according to the
+        value of this attribute.
+
+            (1) ``cache_size < 0`` (the default): simple cache using a hash map
+                with string identifiers as keys and
+                :class:`AtomicType <pdcast.AtomicType>` instances as values.
+            (2) ``cache_size == 0``: no instance caching.  Effectively disables
+                the flyweight pattern.  Not recommended for general use.
+            (3) ``cache_size > 0`` same as (1) but with a fixed-size map and a
+                Least Recently Used (LRU) caching strategy.  Instances will be
+                evicted if they cause the dictionary to grow past the given
+                size.
+
+        """
+        return -1
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -444,11 +509,12 @@ cdef class AtomicType(scalar.ScalarType):
         The result of this accessor is cached between :class:`TypeRegistry`
         updates.
         """
-        if self.registry.needs_updating(self._supertype_cache):
-            result = self._generate_supertype(self._parent)
-            self._supertype_cache = self.registry.remember(result)
+        cached = self._supertype_cache
+        if not cached:
+            cached = CacheValue(self._generate_supertype(self._parent))
+            self._supertype_cache = cached
 
-        return self._supertype_cache.value
+        return cached.value
 
     def _generate_subtypes(self, types: set) -> set:
         """Transform a set of subtype definitions into their corresponding
@@ -496,13 +562,15 @@ cdef class AtomicType(scalar.ScalarType):
         The result of this accessor is cached between :class:`TypeRegistry`
         updates.
         """
-        if self.registry.needs_updating(self._subtype_cache):
+        cached = self._subtype_cache
+        if not cached:
             result = composite.CompositeType(
                 self._generate_subtypes(traverse_subtypes(type(self)))
             )
-            self._subtype_cache = self.registry.remember(result)
+            cached = CacheValue(result)
+            self._subtype_cache = cached
 
-        return self._subtype_cache.value
+        return cached.value
 
     def contains(
         self,
@@ -652,7 +720,7 @@ cdef class AtomicType(scalar.ScalarType):
     ####    UPCAST/DOWNCAST    ####
     ###############################
 
-    # TODO: these should be automated.
+    # TODO: these should be automated and placed on GenericType/ParentType
 
     @property
     def larger(self) -> list:
@@ -768,7 +836,7 @@ cdef class HierarchicalType(AtomicType):
         self._slugify = self.__wrapped__._slugify
         self._instances = self.__wrapped__._instances
 
-        self._is_frozen = True
+        self._read_only = True
 
     @property
     def name(self) -> str:

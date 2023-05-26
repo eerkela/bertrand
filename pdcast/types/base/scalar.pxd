@@ -7,6 +7,7 @@ cdef class ScalarType(BaseType):
         dict _kwargs
         str _slug
         long long _hash
+        bint _read_only
 
     cdef readonly:
         AliasManager _aliases

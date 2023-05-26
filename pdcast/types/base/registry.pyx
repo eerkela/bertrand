@@ -24,28 +24,6 @@ from . import scalar
 # cooperative
 
 
-# TODO: @register should transform the decorated type into its base instance.
-# -> what do we do for AdapterTypes?
-
-
-
-# TODO: Using GenericType for both subtypes and backends causes
-# int[numpy].generic to return a circular reference rather than pointing to int
-
-
-
-# TODO: @backend should be an independent decorator, which resolves the given
-# type and checks that it is generic
-
-# @subtype("signed[numpy]")
-# @backend("int8", "numpy")
-
-# This could be used alongside `cond` argument of @register if that
-# short-circuits the class definition.  If the type specifier could not be
-# interpreted, we either silently ignore or say so manually.  This could avoid
-# manual TypeRegistry interactions in 
-
-
 ######################
 ####    PUBLIC    ####
 ######################
@@ -179,31 +157,6 @@ cdef class TypeRegistry:
         """
         self._hash += 1
 
-    # TODO: remember() and needs_updating() should be subsumed into CacheValue
-    # itself
-
-    def remember(self, val: Any) -> CacheValue:
-        """Record a value, tying it to the registry's internal state.
-
-        Parameters
-        ----------
-        val : Any
-            A value to cache
-
-        Returns
-        -------
-        CacheValue
-            A wrapper around the value that records the observed state of the
-            registry at the time it was cached.
-        """
-        return CacheValue(val, self.hash)
-
-    def needs_updating(self, val: CacheValue | None) -> bool:
-        """Check if a :meth:`remembered <pdcast.TypeRegistry.remember>` value
-        is out of date.
-        """
-        return val is None or val.hash != self.hash
-
     ##########################
     ####    ADD/REMOVE    ####
     ##########################
@@ -238,7 +191,6 @@ cdef class TypeRegistry:
         """
         self._validate_no_parameters(instance)
         self._validate_name(instance)
-        # self._validate_slugify(instance)
 
         self.base_types.add(instance)
         promises = self.promises.pop(type(instance), [])
@@ -304,23 +256,21 @@ cdef class TypeRegistry:
 
         Notes
         -----
-        This is a :meth:`remembered <pdcast.TypeRegistry.remember>` property
-        that is tied to the current state of the registry.  Whenever a new type
-        is :meth:`added <pdcast.TypeRegistry.add>`,
+        This is a cached property tied to the current state of the registry.
+        Whenever a new type is :meth:`added <pdcast.TypeRegistry.add>`,
         :meth:`removed <pdcast.TypeRegistry.remove>`, or
         :meth:`gains <pdcast.ScalarType.register_alias>`\ /
         :meth:`loses <pdcast.ScalarType.remove_alias>` an alias, it will be
         regenerated to reflect that change.
         """
-        # check if cache is out of date
-        if self.needs_updating(self._aliases):
-            result = {
+        cached = self._aliases
+        if not cached:
+            cached = CacheValue({
                 alias: typ for typ in self.base_types for alias in typ.aliases
-            }
-            self._aliases = self.remember(result)
+            })
+            self._aliases = cached
 
-        # return cached value
-        return self._aliases.value
+        return cached.value
 
     @property
     def regex(self) -> re.Pattern:
@@ -343,35 +293,32 @@ cdef class TypeRegistry:
         PERL-compatible.  It is otherwise equivalent to the base Python
         :mod:`re <python:re>` package.
         """
-        # check if cache is out of date
-        if self.needs_updating(self._regex):
+        cached = self._regex
+        if not cached:
             # trivial case: empty registry
             if not self.base_types:
                 result = re.compile(".^")  # matches nothing
             else:
-                # automatically escape reserved regex characters
-                string_aliases = [
+                # escape regex characters
+                alias_strings = [
                     re.escape(alias) for alias in self.aliases
                     if isinstance(alias, str)
                 ]
 
                 # special case for sized unicode in numpy syntax
-                string_aliases.append(r"(?P<sized_unicode>U(?P<size>[0-9]*))$")
+                alias_strings.append(r"(?P<sized_unicode>U(?P<size>[0-9]*))$")
 
-                # sort into reverse order based on length
-                string_aliases.sort(key=len, reverse=True)
-
-                # join with regex OR and compile
+                # sort longest first and join with regex OR
+                alias_strings.sort(key=len, reverse=True)
                 result = re.compile(
-                    rf"(?P<type>{'|'.join(string_aliases)})"
+                    rf"(?P<type>{'|'.join(alias_strings)})"
                     rf"(?P<nested>\[(?P<args>([^\[\]]|(?&nested))*)\])?"
                 )
 
-            # remember result
-            self._regex = self.remember(result)
+            cached = CacheValue(result)
+            self._regex = cached
 
-        # return cached value
-        return self._regex.value
+        return cached.value
 
     @property
     def resolvable(self) -> re.Pattern:
@@ -395,10 +342,9 @@ cdef class TypeRegistry:
         PERL-compatible.  It is otherwise equivalent to the base Python
         :mod:`re <python:re>` package.
         """
-        # check if cache is out of date
-        if self.needs_updating(self._resolvable):
-            # wrap self.regex in ^$ to match the entire string and allow for
-            # comma-separated repetition.
+        cached = self._resolvable
+        if not cached:
+            # match full string and allow for comma-separated repetition
             pattern = rf"(?P<atomic>{self.regex.pattern})(,\s*(?&atomic))*"
 
             # various prefixes/suffixes to be ignored
@@ -410,15 +356,12 @@ cdef class TypeRegistry:
                 r"\}\)",
                 r"\}",
             ])
+            pattern = rf"({lead})?(?P<body>{pattern})({follow})?"
 
-            # compile regex
-            result = re.compile(rf"({lead})?(?P<body>{pattern})({follow})?")
+            cached = CacheValue(re.compile(pattern))
+            self._resolvable = cached
 
-            # remember result
-            self._resolvable = self.remember(result)
-
-        # return cached value
-        return self._resolvable.value
+        return cached.value
 
     #######################
     ####    PRIVATE    ####
@@ -426,7 +369,8 @@ cdef class TypeRegistry:
 
     def _validate_no_parameters(self, instance: scalar.ScalarType) -> None:
         """Ensure that a base type is not parametrized."""
-        # TODO: inspect the type's kwargs
+        # TODO: inspect the type's kwargs by comparing against
+        # instance._base_instance.  Currently, this fails for GenericTypes
         pass
 
     def _validate_name(self, instance: scalar.ScalarType) -> None:
@@ -446,16 +390,6 @@ cdef class TypeRegistry:
         #            f"name must be unique, not one of {observed_names}"
         #        )
 
-    def _validate_slugify(self, instance: scalar.ScalarType) -> None:
-        """Ensure that a base type has a slugify() classmethod and that its
-        signature matches __init__.
-        """
-        validate(
-            instance,
-            "slugify",
-            expected_type="classmethod",
-            signature=type(instance)
-        )
 
     ###############################
     ####    SPECIAL METHODS    ####
@@ -658,15 +592,20 @@ cdef class BaseType:
 
 
 cdef class CacheValue:
-    """A simple struct to hold cached values in TypeRegistry.
-
-    Note: this can't be an *actual* struct because it stores a python object
-    in its ``value`` field.
+    """A simple struct to hold cached values tied to the global state of the
+    registry.
     """
 
-    def __init__(self, object value, long long hash):
+    def __init__(self, object value):
         self.value = value
-        self.hash = hash
+        self.hash = BaseType.registry.hash
+
+    def __bool__(self) -> bool:
+        """Indicates whether a cached registry value is out of date."""
+        return self.hash == BaseType.registry.hash
+
+
+# TODO: validate() is unused
 
 
 cdef int validate(

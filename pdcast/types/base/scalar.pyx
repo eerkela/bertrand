@@ -16,15 +16,7 @@ from pdcast.util.type_hints import type_specifier
 from .registry cimport BaseType, AliasManager
 
 
-# TODO: @subtype can be attached directly to ScalarType using the manager
-# pattern, and therefore separated from @generic.  We just create a
-# TypeHierarchy interface with SubtypeHierarchy as a concretion.
-
-
 # TODO: remove non top-level imports in __eq__, is_subtype
-
-
-# TODO: how does this interact with HierarchicalType?
 
 
 ##########################
@@ -47,6 +39,7 @@ cdef class ScalarType(BaseType):
             self.init_base()
 
         self._hash = hash(self._slug)
+        self._read_only = True
 
     cdef void init_base(self):
         """Initialize a base (non-parametrized) instance of this type.
@@ -293,7 +286,7 @@ cdef class ScalarType(BaseType):
             prop.__set__(self, value)
 
         # prevent assignment outside __init__()
-        elif self._is_frozen:
+        elif self._read_only:
             raise AttributeError("ScalarType objects are read-only")
         else:
             self.__dict__[name] = value
@@ -301,15 +294,6 @@ cdef class ScalarType(BaseType):
     def __call__(self, *args, **kwargs) -> ScalarType:
         """Constructor for parametrized types."""
         return self._instances(*args, **kwargs)
-
-    def __getitem__(self, key: Any) -> ScalarType:
-        """Return a parametrized type in the same syntax as the type
-        specification mini-language.
-        """
-        if not isinstance(key, tuple):
-            key = (key,)
-
-        return self(*key)
 
     def __contains__(self, other: type_specifier) -> bool:
         """Implement the ``in`` keyword for membership checks.
@@ -326,10 +310,11 @@ cdef class ScalarType(BaseType):
         return isinstance(other, ScalarType) and hash(self) == hash(other)
 
     def __hash__(self) -> int:
-        """Return the hash of this type's slug."""
+        """Return the hash of this type's string identifier."""
         return self._hash
 
     def __str__(self) -> str:
+        """Return this type's string identifier."""
         return self._slug
 
     def __repr__(self) -> str:
