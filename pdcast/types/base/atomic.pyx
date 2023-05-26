@@ -17,6 +17,7 @@ from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 from .registry cimport AliasManager, CacheValue
 from . cimport instance
 from . cimport scalar
+from . cimport adapter
 from . cimport composite
 from pdcast.types.array import abstract
 
@@ -220,118 +221,6 @@ cdef class AtomicType(AtomicTypeConstructor):
     # with them.  They must be optional, and the type must be constructable
     # without arguments to be considered valid.
 
-    ###################################
-    ####    REQUIRED ATTRIBUTES    ####
-    ###################################
-
-    @property
-    def type_def(self) -> type | None:
-        """The scalar class for objects of this type.
-
-        Returns
-        -------
-        type | None
-            A class object used to instantiate scalar examples of this type.
-        """
-        # TODO: raise NotImplementedError?
-        return None
-
-    @property
-    def dtype(self) -> np.dtype | ExtensionDtype:
-        """The numpy :class:`dtype <numpy.dtype>` or pandas
-        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to use
-        for arrays of this type.
-
-        Returns
-        -------
-        numpy.dtype | pandas.api.extensions.ExtensionDtype
-            The dtype to use for arrays of this type.
-            :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>` are
-            free to define their own storage backends for objects of this type.
-
-        Notes
-        -----
-        By default, this will automatically create a new
-        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
-        encapsulate data of this type, storing them internally as a
-        ``dtype: object`` array, which may not be the most efficient.  If there
-        is a more compact representation for a particular data type, users can
-        :ref:`provide <pandas:extending>` their own
-        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
-        instead.
-        """
-        if not self._dtype:
-            return abstract.construct_extension_dtype(
-                self,
-                is_boolean=self.is_subtype("bool"),
-                is_numeric=self.is_numeric,
-                add_comparison_ops=True,
-                add_arithmetic_ops=True
-            )
-        return self._dtype
-
-    @property
-    def itemsize(self) -> int | None:
-        """The size (in bytes) for scalars of this type.
-
-        Returns
-        -------
-        int | None
-            If not :data:`None`, a positive integer describing the size of each
-            element in bytes.  If this would be hard to compute, use
-            :func:`sys.getsizeof() <python:sys.getsizeof>` or give an
-            approximate lower bound here.
-
-        Notes
-        -----
-        :data:`None` is interpreted as being resizable/unlimited.
-        """
-        return None
-
-    @property
-    def na_value(self) -> Any:
-        """The representation to use for missing values of this type.
-
-        Returns
-        -------
-        Any
-            An NA-like value for this data type.
-
-        See Also
-        --------
-        AtomicType.is_na : for comparisons against this value.
-        """
-        return pd.NA
-
-    @property
-    def is_numeric(self) -> bool:
-        """Used to auto-generate :class:`AbstractDtypes <pdcast.AbstractDtype>`
-        from this type.
-        """
-        return False
-
-    @property
-    def cache_size(self) -> int:
-        """The number of flyweights to store in this type's cache.
-
-        Notes
-        -----
-        There are 3 possible algorithms for caching flyweights according to the
-        value of this attribute.
-
-            (1) ``cache_size < 0`` (the default): simple cache using a hash map
-                with string identifiers as keys and
-                :class:`AtomicType <pdcast.AtomicType>` instances as values.
-            (2) ``cache_size == 0``: no instance caching.  Effectively disables
-                the flyweight pattern.  Not recommended for general use.
-            (3) ``cache_size > 0`` same as (1) but with a fixed-size map and a
-                Least Recently Used (LRU) caching strategy.  Instances will be
-                evicted if they cause the dictionary to grow past the given
-                size.
-
-        """
-        return -1
-
     ############################
     ####    CONSTRUCTORS    ####
     ############################
@@ -442,9 +331,178 @@ cdef class AtomicType(AtomicTypeConstructor):
         # NOTE: any special dtype parsing logic goes here.
         return self()
 
-    ###################################
-    ####    SUBTYPES/SUPERTYPES    ####
-    ###################################
+    #############################
+    ####    CONFIGURATION    ####
+    #############################
+
+    @property
+    def cache_size(self) -> int:
+        """The number of flyweights to store in this type's cache.
+
+        Notes
+        -----
+        There are 3 possible algorithms for caching flyweights according to the
+        value of this attribute.
+
+            (1) ``cache_size < 0`` (the default): simple cache using a hash map
+                with string identifiers as keys and
+                :class:`AtomicType <pdcast.AtomicType>` instances as values.
+            (2) ``cache_size == 0``: no instance caching.  Effectively disables
+                the flyweight pattern.  Not recommended for general use.
+            (3) ``cache_size > 0`` same as (1) but with a fixed-size map and a
+                Least Recently Used (LRU) caching strategy.  Instances will be
+                evicted if they cause the map to grow past the given size.
+
+        """
+        return -1
+
+    @property
+    def type_def(self) -> type | None:
+        """The scalar class for objects of this type.
+
+        Returns
+        -------
+        type | None
+            A class object used to instantiate scalar examples of this type.
+        """
+        # TODO: raise NotImplementedError?
+        return None
+
+    @property
+    def dtype(self) -> np.dtype | ExtensionDtype:
+        """The numpy :class:`dtype <numpy.dtype>` or pandas
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to use
+        for arrays of this type.
+
+        Returns
+        -------
+        numpy.dtype | pandas.api.extensions.ExtensionDtype
+            The dtype to use for arrays of this type.
+            :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>` are
+            free to define their own storage backends and behavior.
+
+        Notes
+        -----
+        By default, this will automatically create a new
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
+        encapsulate data of this type, storing them internally as a
+        ``dtype: object`` array, which may not be the most efficient.  If there
+        is a more compact representation for a particular data type, users can
+        :ref:`provide <pandas:extending>` their own
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
+        instead.
+        """
+        if not self._dtype:
+            return abstract.construct_extension_dtype(
+                self,
+                is_boolean=self.is_subtype("bool"),
+                is_numeric=self.is_numeric,
+                add_comparison_ops=True,
+                add_arithmetic_ops=True
+            )
+        return self._dtype
+
+    @property
+    def itemsize(self) -> int | None:
+        """The size (in bytes) for scalars of this type.
+
+        Returns
+        -------
+        int | None
+            If not :data:`None`, a positive integer describing the size of each
+            element in bytes.  If this would be hard to compute, use
+            :func:`sys.getsizeof() <python:sys.getsizeof>` or give an
+            approximate lower bound here.
+
+        Notes
+        -----
+        :data:`None` is interpreted as being resizable/unlimited.
+        """
+        return None
+
+    @property
+    def na_value(self) -> Any:
+        """The representation to use for missing values of this type.
+
+        Returns
+        -------
+        Any
+            An NA-like value for this data type.
+
+        See Also
+        --------
+        AtomicType.is_na : for comparisons against this value.
+        """
+        return pd.NA
+
+    @property
+    def is_numeric(self) -> bool:
+        """Used to auto-generate :class:`AbstractDtypes <pdcast.AbstractDtype>`
+        from this type.
+        """
+        return False
+
+    @property
+    def is_nullable(self) -> bool:
+        """Indicates whether a type supports missing values.
+
+        Set this ``False`` where necessary to invoke :meth:`make_nullable
+        <AtomicType.make_nullable>`.  This allows automatic conversion to a
+        nullable alternative when missing values are detected/coerced.
+        """
+        return True
+
+    def make_nullable(self) -> AtomicType:
+        """Convert a non-nullable :class:`AtomicType` into one that can accept
+        missing values.
+
+        Override this to control how this type is coerced when missing values
+        are detected during a :func:`cast` operation. 
+
+        Returns
+        -------
+        AtomicType
+            A nullable version of this data type to be used when missing or
+            coerced values are detected during a conversion.
+        """
+        if self.is_nullable:
+            return self
+
+        raise NotImplementedError(
+            f"'{type(self).__name__}' objects have no nullable alternative."
+        )
+
+    def is_na(self, val: Any) -> bool | array_like:
+        """Check if one or more values are considered missing in this
+        representation.
+
+        Parameters
+        ----------
+        val : Any
+            A scalar or 1D vector of values to check for NA equality.
+
+        Returns
+        -------
+        bool | array-like
+            ``True`` where ``val`` is equal to this type's ``na_value``,
+            ``False`` otherwise.  If the input is vectorized, then the output
+            will be as well.
+
+        Notes
+        -----
+        Comparison with missing values is often tricky.  Most NA values are not
+        equal to themselves, so some other algorithm must be used to test for
+        them.  This method allows users to define this logic on a per-type
+        basis.
+
+        If you override this method, you should always call its base equivalent
+        via ``super().is_na()`` before returning a custom result.
+        """
+        return pd.isna(val)
+
+    #########################
+    ####    TRAVERSAL    ####
+    #########################
 
     # TODO: is_root = True, root = self, supertype = None, subtypes = {self}
     # these are overloaded in ParentType
@@ -572,6 +630,53 @@ cdef class AtomicType(AtomicTypeConstructor):
 
         return cached.value
 
+    @property
+    def is_generic(self) -> bool:
+        """Indicates whether this type is decorated with
+        :func:`@generic <generic>`.
+        """
+        return False
+
+    @property
+    def generic(self) -> AtomicType:
+        """The generic equivalent of this type, if one exists."""
+        return getattr(self, "_generic", None)
+
+    @property
+    def larger(self) -> Iterator[AtomicType]:
+        """A list of types that this type can be
+        :meth:`upcasted <AtomicType.upcast>` to in the event of overflow.
+
+        Override this to change the behavior of a bounded type (with
+        appropriate `.min`/`.max` fields) when an ``OverflowError`` is
+        detected.
+
+        Notes
+        -----
+        Candidate types will always be tested in order.
+        """
+        # NOTE: this is overridden in ParentType/GenericType
+        yield from ()
+
+    @property
+    def smaller(self) -> Iterator[AtomicType]:
+        """A list of types that this type can be
+        :meth:`downcasted <AtomicType.downcast>` to if directed.
+
+        Override this to change the behavior of a type when the ``downcast``
+        argument is supplied to a conversion function.
+
+        Notes
+        -----
+        Candidate types will always be tested in order.
+        """
+        # NOTE: this is overridden in ParentType/GenericType
+        yield from ()
+
+    ##########################
+    ####    MEMBERSHIP    ####
+    ##########################
+
     def contains(
         self,
         other: type_specifier,
@@ -620,22 +725,6 @@ cdef class AtomicType(AtomicTypeConstructor):
                     return True
 
         return False
-
-    #######################
-    ####    GENERIC    ####
-    #######################
-
-    @property
-    def is_generic(self) -> bool:
-        """Indicates whether this type is decorated with
-        :func:`@generic <generic>`.
-        """
-        return False
-
-    @property
-    def generic(self) -> AtomicType:
-        """The generic equivalent of this type, if one exists."""
-        return getattr(self, "_generic", None)
 
     ########################
     ####    ADAPTERS    ####
@@ -716,109 +805,44 @@ cdef class AtomicType(AtomicTypeConstructor):
         sparse_type = pd.SparseDtype(series.dtype, fill_value)
         return series.astype(sparse_type)
 
-    ###############################
-    ####    UPCAST/DOWNCAST    ####
-    ###############################
-
-    # TODO: these should be automated and placed on GenericType/ParentType
-
-    @property
-    def larger(self) -> list:
-        """A list of types that this type can be
-        :meth:`upcasted <AtomicType.upcast>` to in the event of overflow.
-
-        Override this to change the behavior of a bounded type (with
-        appropriate `.min`/`.max` fields) when an ``OverflowError`` is
-        detected.
-
-        Notes
-        -----
-        Candidate types will always be tested in order.
-        """
-        return []  # NOTE: most types cannot be upcasted
-
-    @property
-    def smaller(self) -> list:
-        """A list of types that this type can be
-        :meth:`downcasted <AtomicType.downcast>` to if directed.
-
-        Override this to change the behavior of a type when the ``downcast``
-        argument is supplied to a conversion function.
-
-        Notes
-        -----
-        Candidate types will always be tested in order.
-        """
-        return []
-
-    ##############################
-    ####    MISSING VALUES    ####
-    ##############################
-
-    # TODO: delete is_na, make_nullable -> .nullable
-
-    @property
-    def is_nullable(self) -> bool:
-        """Indicates whether a type supports missing values.
-
-        Set this ``False`` where necessary to invoke :meth:`make_nullable
-        <AtomicType.make_nullable>`.  This allows automatic conversion to a
-        nullable alternative when missing values are detected/coerced.
-        """
-        return True
-
-    def is_na(self, val: Any) -> bool | array_like:
-        """Check if one or more values are considered missing in this
-        representation.
-
-        Parameters
-        ----------
-        val : Any
-            A scalar or 1D vector of values to check for NA equality.
-
-        Returns
-        -------
-        bool | array-like
-            ``True`` where ``val`` is equal to this type's ``na_value``,
-            ``False`` otherwise.  If the input is vectorized, then the output
-            will be as well.
-
-        Notes
-        -----
-        Comparison with missing values is often tricky.  Most NA values are not
-        equal to themselves, so some other algorithm must be used to test for
-        them.  This method allows users to define this logic on a per-type
-        basis.
-
-        If you override this method, you should always call its base equivalent
-        via ``super().is_na()`` before returning a custom result.
-        """
-        return pd.isna(val)
-
-    def make_nullable(self) -> AtomicType:
-        """Convert a non-nullable :class:`AtomicType` into one that can accept
-        missing values.
-
-        Override this to control how this type is coerced when missing values
-        are detected during a :func:`cast` operation. 
-
-        Returns
-        -------
-        AtomicType
-            A nullable version of this data type to be used when missing or
-            coerced values are detected during a conversion.
-        """
-        if self.is_nullable:
-            return self
-
-        raise NotImplementedError(
-            f"'{type(self).__name__}' objects have no nullable alternative."
-        )
-
 
 ############################
 ####    HIERARCHICAL    ####
 ############################
+
+
+def generic(cls: type) -> GenericType:
+    """Class decorator to mark generic type definitions.
+
+    Generic types are backend-agnostic and act as wildcard containers for
+    more specialized subtypes.  For instance, the generic "int" can contain
+    the backend-specific "int[numpy]", "int[pandas]", and "int[python]"
+    subtypes, which can be resolved as shown. 
+    """
+    if not issubclass(cls, AtomicType):
+        raise TypeError("@generic types must inherit from AtomicType")
+
+    # NOTE: cython __init__ is not introspectable.
+    if (
+        cls.__init__ != AtomicType.__init__ and
+        inspect.signature(cls).parameters
+    ):
+        raise TypeError("@generic types cannot be parametrized")
+
+    # print(dir(cls))
+
+    return GenericType(cls)
+
+
+# TODO: supertype() needs to be able to decorate GenericType objects.
+
+
+def supertype(cls: type) -> ParentType:
+    """Class decorator to mark parent type definitions.
+
+    Supertypes are nodes within the ``pdcast`` type system.
+    """
+    pass
 
 
 cdef class HierarchicalType(AtomicType):
@@ -837,6 +861,26 @@ cdef class HierarchicalType(AtomicType):
         self.instances = self.__wrapped__.instances
 
         self._read_only = True
+
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
+
+    def resolve(self, *args: str) -> AtomicType:
+        """Forward constructor arguments to the appropriate implementation."""
+        return self._default.resolve(*args)
+
+    def detect(self, example: Any) -> AtomicType:
+        """Forward scalar inference to the default implementation."""
+        return self._default.detect(example)
+
+    def from_dtype(self, dtype: dtype_like) -> AtomicType:
+        """Forward dtype translation to the default implementation."""
+        return self._default.from_dtype(dtype)
+
+    #############################
+    ####    CONFIGURATION    ####
+    #############################
 
     @property
     def name(self) -> str:
@@ -872,62 +916,30 @@ cdef class HierarchicalType(AtomicType):
         """Delegate `is_numeric` lookups to the default implementation."""
         return self._default.is_numeric
 
-    def resolve(self, *args: str) -> AtomicType:
-        """Forward constructor arguments to the appropriate implementation."""
-        return self._default.resolve(*args)
+    #########################
+    ####    TRAVERSAL    ####
+    #########################
 
-    def detect(self, example: Any) -> AtomicType:
-        """Forward scalar inference to the default implementation."""
-        return self._default.detect(example)
+    # TODO: delegate all AtomicType/ScalarType attributes to default.
 
-    def from_dtype(self, dtype: dtype_like) -> AtomicType:
-        """Forward dtype translation to the default implementation."""
-        return self._default.from_dtype(dtype)
+    ##########################
+    ####    MEMBERSHIP    ####
+    ##########################
 
-    # TODO: delegate all AtomicType attributes to default.
+    ###############################
+    ####    SPECIAL METHODS    ####
+    ###############################
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._default, name)
 
     def __call__(self, *args, **kwargs):
-        if not args or kwargs:
+        if not (args or kwargs):
             return self
         return self.instances(*args, **kwargs)
 
     def __repr__(self) -> str:
         return repr(self.__wrapped__)
-
-
-#######################
-####    GENERIC    ####
-#######################
-
-
-# TODO: the decorated type must not implement its own attributes, like dtype,
-# itemsize, etc.
-
-
-def generic(cls: type) -> GenericType:
-    """Class decorator to mark generic type definitions.
-
-    Generic types are backend-agnostic and act as wildcard containers for
-    more specialized subtypes.  For instance, the generic "int" can contain
-    the backend-specific "int[numpy]", "int[pandas]", and "int[python]"
-    subtypes, which can be resolved as shown. 
-    """
-    if not issubclass(cls, AtomicType):
-        raise TypeError("@generic types must inherit from AtomicType")
-
-    # NOTE: cython __init__ is not introspectable.
-    if (
-        cls.__init__ != AtomicType.__init__ and
-        inspect.signature(cls).parameters
-    ):
-        raise TypeError("@generic types cannot be parametrized")
-
-    # print(dir(cls))
-
-    return GenericType(cls)
 
 
 cdef class GenericType(HierarchicalType):
@@ -941,11 +953,6 @@ cdef class GenericType(HierarchicalType):
     ##########################
     ####    OVERLOADED    ####
     ##########################
-
-    @property
-    def aliases(self) -> set:
-        """Return the aliases of the decorated type."""
-        return self.__wrapped__.aliases
 
     @property
     def is_generic(self) -> bool:
@@ -989,39 +996,11 @@ cdef class GenericType(HierarchicalType):
 
     @default_implementation.deleter
     def default_implementation(self) -> None:
-        self._default = self._backends[None]
+        self._default = self.__wrapped__
 
     ##########################
     ####    DECORATORS    ####
     ##########################
-
-    def subtype(self, cls: type | None = None):
-        """A class decorator that adds a type as a subtype of this GenericType.
-        """
-        def decorator(cls: type) -> type:
-            """Link the decorated type to this GenericType."""
-            if not issubclass(cls, AtomicType):
-                raise TypeError("@generic types can only contain AtomicTypes")
-
-            if cls._parent:
-                raise TypeError(
-                    f"AtomicTypes can only be registered to one @generic type "
-                    f"at a time: '{cls.__qualname__}' is currently registered "
-                    f"to '{cls._parent.__qualname__}'"
-                )
-
-            curr = cls
-            while curr is not None:
-                if curr is self:
-                    raise TypeError("@generic type cannot contain itself")
-                curr = curr._parent
-
-            cls._parent = self
-            self._subtypes |= cls()
-            self.registry.flush()
-            return cls
-
-        return decorator
 
     def implementation(
         self,
@@ -1084,10 +1063,72 @@ cdef class GenericType(HierarchicalType):
         return decorator
 
 
+cdef class ParentType(HierarchicalType):
+    """A hierarchical type that can contain other types as subtypes.
+    """
+
+    def __init__(self, cls):
+        super().__init__(cls)
+        self._subtypes = set()
+
+    #################################
+    ####    COMPOSITE PATTERN    ####
+    #################################
+
+    @property
+    def default_subtype(self) -> AtomicType:
+        """The subtype that this parent type defaults to.
+
+        This will be used in place of the parent type during attribute access.
+        """
+        return self._default
+
+    @default_subtype.setter
+    def default_subtype(self, subtype: AtomicType) -> None:
+        if subtype not in self._subtypes:
+            raise KeyError(f"{subtype}")
+        self._default = subtype
+
+    @default_subtype.deleter
+    def default_subtype(self) -> None:
+        self._default = self.__wrapped__
+
+    ##########################
+    ####    DECORATORS    ####
+    ##########################
+
+    def subtype(self, cls: type | None = None):
+        """A class decorator that adds a type as a subtype of this GenericType.
+        """
+        def decorator(cls: type) -> type:
+            """Link the decorated type to this GenericType."""
+            if not issubclass(cls, AtomicType):
+                raise TypeError("@generic types can only contain AtomicTypes")
+
+            if cls._parent:
+                raise TypeError(
+                    f"subtypes can only be registered to one parent at a "
+                    f"time: '{cls.__qualname__}' is currently registered to "
+                    f"'{cls._parent.__qualname__}'"
+                )
+
+            typ = cls
+            while typ is not None:
+                if typ is self:
+                    raise TypeError("@generic type cannot contain itself")
+                typ = typ._parent
+
+            # TODO: use promises
+
+            cls._parent = self
+            self._subtypes |= cls()
+            self.registry.flush()
+            return cls
+
+        return decorator
 
 
-
-# TODO: add ParentType
+# TODO: move traversal into CompositeType.expand()
 
 
 cdef void _traverse_subtypes(type atomic_type, set result):

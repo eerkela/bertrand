@@ -15,9 +15,6 @@ cdef class AtomicType(AtomicTypeConstructor):
         CacheValue _subtype_cache
         CacheValue _supertype_cache
 
-    cdef public:
-        AtomicType _parent  # should be ParentType
-
 
 cdef class HierarchicalType(AtomicType):
     cdef:
@@ -29,5 +26,9 @@ cdef class HierarchicalType(AtomicType):
 
 cdef class GenericType(HierarchicalType):
     cdef:
-        CompositeType _subtypes
         dict _backends
+
+
+cdef class ParentType(HierarchicalType):
+    cdef:
+        CompositeType _subtypes

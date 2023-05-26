@@ -22,7 +22,6 @@ cdef class SlugFactory:
         self.name = name
         self.parameters = parameters
 
-    @cython.boundscheck(False)
     @cython.wraparound(False)
     def __call__(self, tuple args, dict kwargs) -> str:
         """Construct a string representation with the given *args, **kwargs."""
@@ -54,7 +53,6 @@ cdef class BackendSlugFactory:
         super().__init__(name, parameters)
         self.backend = backend
 
-    @cython.boundscheck(False)
     @cython.wraparound(False)
     def __call__(self, tuple args, dict kwargs) -> str:
         """Construct a string representation with the given *args, **kwargs."""
