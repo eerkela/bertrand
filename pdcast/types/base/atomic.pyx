@@ -159,11 +159,7 @@ cdef class AtomicType(AtomicTypeConstructor):
     :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
     ``pdcast`` type system.  They are used to describe scalar values of a
     particular type (i.e. :class:`int <python:int>`, :class:`numpy.float32`,
-    etc.), and are responsible for defining all the necessary implementation
-    logic for :doc:`dispatched </content/api/attach>` methods,
-    :doc:`conversions </content/api/cast>`, and
-    :ref:`type-related <AtomicType.required>` functionality at the scalar
-    level.
+    etc.), and can be linked together into hierarchical tree structures.
 
     Parameters
     ----------
@@ -176,31 +172,28 @@ cdef class AtomicType(AtomicTypeConstructor):
 
     Examples
     --------
-    All in all, a typical :class:`AtomicType` definition could look something like
-    this:
+    All in all, a typical :class:`AtomicType` definition could look something
+    like this:
 
     .. code:: python
 
         @pdcast.register
         @ParentType.subtype
         @GenericType.implementation("backend")  # inherits .name
-        class ImplementationType(pdcast.AtomicType, cache_size=128):
+        class ImplementationType(pdcast.AtomicType):
 
+            cache_size = 128
             aliases = {"foo", "bar", "baz", np.dtype(np.int64), int, ...}
             type_def = int
             dtype = np.dtype(np.int64)
             itemsize = 8
             na_value = pd.NA
 
-            def __init__(self, x, y):
+            def __init__(self, x=None, y=None):
                 # custom arg parsing goes here, along with any new attributes
                 super().__init__(x=x, y=y)  # no new attributes after this point
 
-            @classmethod
-            def slugify(cls, x, y) -> str:
-                return f"cls.name[{str(x)}, {str(y)}]"
-
-            # additional customizations/dispatch methods as needed
+            # further customizations
 
     Where ``ParentType`` and ``GenericType`` reference other :class:`AtomicType`
     definitions that ``ImplementationType`` is linked to.
@@ -620,6 +613,8 @@ cdef class AtomicType(AtomicTypeConstructor):
         The result of this accessor is cached between :class:`TypeRegistry`
         updates.
         """
+        return composite.CompositeType()
+
         cached = self._subtype_cache
         if not cached:
             result = composite.CompositeType(
@@ -715,16 +710,7 @@ cdef class AtomicType(AtomicTypeConstructor):
                 for o in other
             )
 
-        # self.backends includes self
-        for backend in self.backends.values():
-            if other == backend:
-                return True
-            if include_subtypes:
-                subtypes = set(backend.subtypes) - {self}
-                if any(s.contains(other) for s in subtypes):
-                    return True
-
-        return False
+        return self == other
 
     ########################
     ####    ADAPTERS    ####
@@ -970,6 +956,20 @@ cdef class GenericType(HierarchicalType):
             return self
         return self._backends[backend].resolve(*args)    
 
+    def contains(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
+        """Extend membership checks to all of this type's implementations."""
+        other = resolve.resolve_type(other)
+        if isinstance(other, composite.CompositeType):
+            return all(
+                self.contains(o, include_subtypes=include_subtypes)
+                for o in other
+            )
+        return any(typ.contains(other) for typ in self._backends.values())
+
     #################################
     ####    COMPOSITE PATTERN    ####
     #################################
@@ -1069,11 +1069,16 @@ cdef class ParentType(HierarchicalType):
 
     def __init__(self, cls):
         super().__init__(cls)
-        self._subtypes = set()
+        self._subtypes = composite.CompositeType()
 
     #################################
     ####    COMPOSITE PATTERN    ####
     #################################
+
+    @property
+    def subtypes(self) -> CompositeType:
+        """TODO"""
+        return self._subtypes.copy()
 
     @property
     def default_subtype(self) -> AtomicType:
