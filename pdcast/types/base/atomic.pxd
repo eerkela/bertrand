@@ -10,10 +10,8 @@ cdef class AtomicTypeConstructor(ScalarType):
 
 
 cdef class AtomicType(AtomicTypeConstructor):
-    cdef readonly:
+    cdef:
         object _dtype
-        CacheValue _subtype_cache
-        CacheValue _supertype_cache
 
 
 cdef class HierarchicalType(AtomicType):

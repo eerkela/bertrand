@@ -23,8 +23,7 @@ cdef class AliasManager:
     cdef:
         set aliases
 
-    cdef int _check_specifier(self, alias: type_specifier) except -1
-    cdef object _normalize_specifier(self, alias: type_specifier)
+    cdef object _normalize_specifier(self, alias)
 
 
 cdef class BaseType:

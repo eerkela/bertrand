@@ -7,11 +7,11 @@ import numpy as np
 from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
-from . cimport scalar
-from . cimport registry
+from .scalar cimport ScalarType
+from .registry cimport BaseType
 
 
-cdef class CompositeType(registry.BaseType):
+cdef class CompositeType(BaseType):
     """Set-like container for type objects.
 
     Implements the same interface as the built-in set type, but is restricted
@@ -28,7 +28,7 @@ cdef class CompositeType(registry.BaseType):
         if types is None:
             self.types = set()
 
-        elif isinstance(types, scalar.ScalarType):
+        elif isinstance(types, ScalarType):
             self.types = {types}
 
         elif isinstance(types, CompositeType):
@@ -43,7 +43,7 @@ cdef class CompositeType(registry.BaseType):
                 for typ in types:
                     if isinstance(typ, CompositeType):
                         self.types.update(t for t in typ)
-                    elif isinstance(typ, registry.BaseType):
+                    elif isinstance(typ, BaseType):
                         self.types.add(typ)
                     else:
                         invalid = True
@@ -69,8 +69,8 @@ cdef class CompositeType(registry.BaseType):
     def expand(self, expand_generics: bool = True) -> CompositeType:
         """Expand the contained types to include each of their subtypes."""
         cdef CompositeType result
-        cdef scalar.ScalarType original
-        cdef scalar.ScalarType typ
+        cdef ScalarType original
+        cdef ScalarType typ
 
         result = self.copy()
         if expand_generics:
@@ -89,8 +89,8 @@ cdef class CompositeType(registry.BaseType):
         redundant if it is fully encapsulated within the other members of the
         CompositeType.
         """
-        cdef scalar.ScalarType atomic_type
-        cdef scalar.ScalarType t
+        cdef ScalarType atomic_type
+        cdef ScalarType t
 
         # for every type a in self, check if there is another type b such that
         # a != b and b contains a.  If true, the type is redundant.
@@ -138,7 +138,7 @@ cdef class CompositeType(registry.BaseType):
     def add(self, typespec: type_specifier) -> None:
         """Add a type specifier to the CompositeType."""
         cdef CompositeType other
-        cdef scalar.ScalarType typ
+        cdef ScalarType typ
 
         other = resolve.resolve_type([typespec])
         self.types.update(typ for typ in other)
@@ -149,7 +149,7 @@ cdef class CompositeType(registry.BaseType):
         KeyError if `typespec` is not contained in the set.
         """
         cdef CompositeType other
-        cdef scalar.ScalarType typ
+        cdef ScalarType typ
 
         other = resolve.resolve_type([typespec])
         for typ in other:
@@ -162,7 +162,7 @@ cdef class CompositeType(registry.BaseType):
         present.
         """
         cdef CompositeType other
-        cdef scalar.ScalarType typ
+        cdef ScalarType typ
 
         other = resolve.resolve_type([typespec])
         for typ in other:
@@ -170,7 +170,7 @@ cdef class CompositeType(registry.BaseType):
 
         self.forget_index()
 
-    def pop(self) -> scalar.ScalarType:
+    def pop(self) -> ScalarType:
         """Remove and return an arbitrary type from the CompositeType. Raises a
         KeyError if the CompositeType is empty.
         """
@@ -218,7 +218,7 @@ cdef class CompositeType(registry.BaseType):
         """
         cdef CompositeType result
         cdef CompositeType other
-        cdef scalar.ScalarType typ
+        cdef ScalarType typ
 
         result = self.expand()
 
@@ -245,7 +245,7 @@ cdef class CompositeType(registry.BaseType):
     def __and__(self, typespec: type_specifier) -> CompositeType:
         """Return the intersection of two CompositeTypes."""
         cdef CompositeType other
-        cdef scalar.ScalarType typ
+        cdef ScalarType typ
         cdef set forward
         cdef set backward
 
@@ -258,8 +258,8 @@ cdef class CompositeType(registry.BaseType):
         """Return the difference of two CompositeTypes."""
         cdef CompositeType result
         cdef CompositeType other
-        cdef scalar.ScalarType typ
-        cdef scalar.ScalarType other_type
+        cdef ScalarType typ
+        cdef ScalarType other_type
 
         result = self.expand()
 
@@ -327,7 +327,7 @@ cdef class CompositeType(registry.BaseType):
         """Test whether `self` is a proper superset of `other`
         (``self >= other and self != other``).
         """
-        cdef registry.BaseType other
+        cdef BaseType other
 
         other = resolve.resolve_type(typespec)
         return self != other and self >= other
@@ -348,7 +348,7 @@ cdef class CompositeType(registry.BaseType):
         """Test whether `self` is a proper subset of `other`
         (``self <= other and self != other``).
         """
-        cdef registry.BaseType other
+        cdef BaseType other
 
         other = resolve.resolve_type(typespec)
         return self != other and self <= other
@@ -393,13 +393,11 @@ cdef class CompositeType(registry.BaseType):
 
 
 cdef CompositeType traverse_subtypes(
-    scalar.ScalarType typ,
+    ScalarType typ,
     CompositeType result
 ):
     """Traverse through a scalar type's subtype tree, recursively gathering
     all its children.
-
-    This modifies the input set in-place.
     """
     cdef CompositeType subtypes
 

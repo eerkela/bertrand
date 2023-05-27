@@ -4,15 +4,10 @@ types and the relationships between them.
 import inspect
 import regex as re  # using alternate regex
 from types import MappingProxyType
-from typing import Any
 
-cimport numpy as np
-import numpy as np
-import pandas as pd
+from pdcast.util.type_hints import type_specifier, dtype_like
 
-from pdcast.util.type_hints import type_specifier
-
-from . import scalar
+from .scalar cimport ScalarType
 
 
 # TODO: we probably have to adjust @subtype/@implementation decorators to
@@ -39,10 +34,10 @@ from . import scalar
 
 
 def register(
-    class_: type | scalar.ScalarType | None = None,
+    class_: type | ScalarType | None = None,
     *,
     cond: bool = True
-) -> scalar.ScalarType:
+) -> ScalarType:
     """Validate a scalar type definition and add it to the registry.
 
     Parameters
@@ -90,12 +85,12 @@ def register(
     # decimal, ...].  You could thus create your own collections of types, and
     # 'pin' them in a sense.
 
-    def register_decorator(cls: type | scalar.ScalarType) -> scalar.ScalarType:
+    def register_decorator(cls: type | ScalarType) -> ScalarType:
         """Add the type to the registry and instantiate it."""
-        if isinstance(cls, scalar.ScalarType):
+        if isinstance(cls, ScalarType):
             instance = cls
         else:
-            if not issubclass(cls, scalar.ScalarType):
+            if not issubclass(cls, ScalarType):
                 raise TypeError(
                     "`@register` can only be applied to AtomicType and "
                     "AdapterType subclasses"
@@ -170,7 +165,7 @@ cdef class TypeRegistry:
     ####    ADD/REMOVE    ####
     ##########################
 
-    def add(self, instance: scalar.ScalarType) -> None:
+    def add(self, instance: ScalarType) -> None:
         """Validate a base type and add it to the registry.
 
         Parameters
@@ -209,7 +204,7 @@ cdef class TypeRegistry:
 
         self.update_hash()
 
-    def remove(self, instance: scalar.ScalarType) -> None:
+    def remove(self, instance: ScalarType) -> None:
         """Remove a base type from the registry.
 
         Parameters
@@ -376,13 +371,13 @@ cdef class TypeRegistry:
     ####    PRIVATE    ####
     #######################
 
-    def _validate_no_parameters(self, instance: scalar.ScalarType) -> None:
+    def _validate_no_parameters(self, instance: ScalarType) -> None:
         """Ensure that a base type is not parametrized."""
         # TODO: inspect the type's kwargs by comparing against
         # instance._base_instance.  Currently, this fails for GenericTypes
         pass
 
-    def _validate_name(self, instance: scalar.ScalarType) -> None:
+    def _validate_name(self, instance: ScalarType) -> None:
         """Ensure that a base type has a unique name attribute."""
         if not isinstance(instance.name, str):
             raise TypeError(f"{instance.__qualname__}.name must be a string")
@@ -451,7 +446,6 @@ cdef class AliasManager:
         See the docs on the :ref:`type specification mini language
         <resolve_type.mini_language>` for more information on how aliases work.
         """
-        self._check_specifier(alias)
         alias = self._normalize_specifier(alias)
 
         if alias in BaseType.registry.aliases:
@@ -480,7 +474,7 @@ cdef class AliasManager:
         See the docs on the :ref:`type specification mini language
         <resolve_type.mini_language>` for more information on how aliases work.
         """
-        self._check_specifier(alias)
+        alias = self._normalize_specifier(alias)
         self.aliases.remove(alias)
         BaseType.registry.flush()  # rebuild regex patterns
 
@@ -545,19 +539,17 @@ cdef class AliasManager:
     ####    PRIVATE    ####
     #######################
 
-    cdef int _check_specifier(self, alias: type_specifier) except -1:
-        """Ensure that an alias is a valid type specifier."""
+    cdef object _normalize_specifier(self, alias: type_specifier):
+        """Preprocess a type specifier, converting it into a recognizable
+        format.
+        """
         if not isinstance(alias, type_specifier):
             raise TypeError(
                 f"alias must be a valid type specifier: {repr(alias)}"
             )
 
-    cdef object _normalize_specifier(self, alias: type_specifier):
-        """Preprocess a type specifier, converting it into a recognizable
-        format.
-        """
         # ignore parametrized dtypes
-        if isinstance(alias, (np.dtype, pd.api.extensions.ExtensionDtype)):
+        if isinstance(alias, dtype_like):
             return type(alias)
 
         return alias
@@ -653,7 +645,7 @@ cdef int validate(
     if signature is not None:
         if (
             isinstance(signature, type) and
-            signature.__init__ == scalar.ScalarType.__init__
+            signature.__init__ == ScalarType.__init__
         ):
             expected = MappingProxyType({})
         else:

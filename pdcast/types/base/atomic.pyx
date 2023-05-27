@@ -11,15 +11,15 @@ import pandas as pd
 from pandas.api.extensions import ExtensionDtype
 
 from pdcast import resolve
-from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
 from .registry cimport AliasManager, CacheValue
-from . cimport instance
-from . cimport scalar
-from . cimport adapter
-from . cimport composite
-from pdcast.types.array import abstract
+from .scalar cimport (
+    ScalarType, SlugFactory, BackendSlugFactory, InstanceFactory,
+    FlyweightFactory
+)
+from .composite cimport CompositeType
+from ..array import abstract
 
 
 # TODO: add examples/raises for each method
@@ -63,7 +63,7 @@ from pdcast.types.array import abstract
 ######################
 
 
-cdef class AtomicTypeConstructor(scalar.ScalarType):
+cdef class AtomicTypeConstructor(ScalarType):
     """A stub class that separates internal :class:`AtomicType` constructor
     methods from the public interface.
     """
@@ -96,9 +96,9 @@ cdef class AtomicTypeConstructor(scalar.ScalarType):
 
         if hasattr(subclass, "_backend"):
             backend = subclass._backend
-            slugify = instance.BackendSlugFactory(name, parameters, backend)
+            slugify = BackendSlugFactory(name, parameters, backend)
         else:
-            slugify = instance.SlugFactory(name, parameters)
+            slugify = SlugFactory(name, parameters)
 
         self._slug = slugify((), self._kwargs)
         self.slugify = slugify
@@ -114,10 +114,10 @@ cdef class AtomicTypeConstructor(scalar.ScalarType):
 
         # cache_size = 0 negates flyweight pattern
         if not cache_size:
-            instances = instance.InstanceFactory(subclass)
+            instances = InstanceFactory(subclass)
         else:
             slugify = self.slugify
-            instances = instance.FlyweightFactory(subclass, slugify, cache_size)
+            instances = FlyweightFactory(subclass, slugify, cache_size)
             instances[self._slug] = self
 
         self.instances = instances
@@ -604,7 +604,7 @@ cdef class AtomicType(AtomicTypeConstructor):
         return result
 
     @property
-    def subtypes(self) -> composite.CompositeType:
+    def subtypes(self) -> CompositeType:
         """A :class:`CompositeType` containing every subtype that is
         currently registered to this type.
 
@@ -613,17 +613,7 @@ cdef class AtomicType(AtomicTypeConstructor):
         The result of this accessor is cached between :class:`TypeRegistry`
         updates.
         """
-        return composite.CompositeType()
-
-        cached = self._subtype_cache
-        if not cached:
-            result = composite.CompositeType(
-                self._generate_subtypes(traverse_subtypes(type(self)))
-            )
-            cached = CacheValue(result)
-            self._subtype_cache = cached
-
-        return cached.value
+        return CompositeType()  # overridden in ParentType
 
     @property
     def is_generic(self) -> bool:
@@ -704,7 +694,7 @@ cdef class AtomicType(AtomicTypeConstructor):
         :class:`AtomicTypes <AtomicType>`.
         """
         other = resolve.resolve_type(other)
-        if isinstance(other, composite.CompositeType):
+        if isinstance(other, CompositeType):
             return all(
                 self.contains(o, include_subtypes=include_subtypes)
                 for o in other
@@ -963,7 +953,7 @@ cdef class GenericType(HierarchicalType):
     ) -> bool:
         """Extend membership checks to all of this type's implementations."""
         other = resolve.resolve_type(other)
-        if isinstance(other, composite.CompositeType):
+        if isinstance(other, CompositeType):
             return all(
                 self.contains(o, include_subtypes=include_subtypes)
                 for o in other
@@ -1069,7 +1059,7 @@ cdef class ParentType(HierarchicalType):
 
     def __init__(self, cls):
         super().__init__(cls)
-        self._subtypes = composite.CompositeType()
+        self._subtypes = CompositeType()
 
     #################################
     ####    COMPOSITE PATTERN    ####
