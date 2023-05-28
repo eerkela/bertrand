@@ -18,13 +18,13 @@ cdef class TypeRegistry:
         dict promises
 
     cdef void update_hash(self)
-    cdef void pin(self, BaseType instance, AliasManager aliases)
-    cdef void unpin(self, BaseType instance)
+    cdef void pin(self, Type instance, AliasManager aliases)
+    cdef void unpin(self, Type instance)
 
 
 cdef class AliasManager:
     cdef:
-        BaseType instance
+        Type instance
         set aliases
 
     cdef object normalize_specifier(self, alias)
@@ -32,6 +32,6 @@ cdef class AliasManager:
     cdef void unpin(self)
 
 
-cdef class BaseType:
+cdef class Type:
     cdef readonly:
         AliasManager _aliases

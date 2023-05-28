@@ -1,7 +1,7 @@
-from .registry cimport BaseType, AliasManager
+from .registry cimport Type, AliasManager
 
 
-cdef class ScalarType(BaseType):
+cdef class ScalarType(Type):
     cdef:
         dict _kwargs
         str _slug
@@ -9,20 +9,20 @@ cdef class ScalarType(BaseType):
         bint _read_only
 
     cdef readonly:
-        SlugFactory slugify
+        ArgumentEncoder encode
         InstanceFactory instances
 
     cdef void init_base(self)
     cdef void init_parametrized(self)
 
 
-cdef class SlugFactory:
+cdef class ArgumentEncoder:
     cdef:
         str name
         tuple parameters
 
 
-cdef class BackendSlugFactory(SlugFactory):
+cdef class BackendEncoder(ArgumentEncoder):
     cdef:
         str backend
 
@@ -35,4 +35,4 @@ cdef class InstanceFactory:
 cdef class FlyweightFactory(InstanceFactory):
     cdef:
         dict instances
-        SlugFactory slugify
+        ArgumentEncoder encode

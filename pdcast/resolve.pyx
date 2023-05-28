@@ -33,7 +33,7 @@ from pdcast.util.type_hints import type_specifier
 #####################
 
 
-def resolve_type(typespec: type_specifier) -> types.BaseType:
+def resolve_type(typespec: type_specifier) -> types.Type:
     """Interpret types from manual
     :ref:`type specifiers <resolve_type.type_specifiers>`.
 
@@ -63,7 +63,7 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
         :ref:`type specification mini-language <resolve_type.mini_language>`.
     """
     # trivial case
-    if isinstance(typespec, types.BaseType):
+    if isinstance(typespec, types.Type):
         return typespec
 
     # build factory
@@ -151,7 +151,7 @@ cdef class Resolver:
     def __init__(self):
         self.aliases = dict(types.registry.aliases)
 
-    def __call__(self, typespec: type_specifier) -> types.BaseType:
+    def __call__(self, typespec: type_specifier) -> types.Type:
         raise NotImplementedError(f"{type(self)} does not implement __call__")
 
 
@@ -162,7 +162,7 @@ cdef class ClassResolver(Resolver):
         super().__init__()
         self.specifier = specifier
 
-    def __call__(self) -> types.BaseType:
+    def __call__(self) -> types.Type:
         if self.specifier in self.aliases:
             return self.aliases[self.specifier]
 
@@ -176,8 +176,8 @@ cdef class DtypeResolver(Resolver):
         super().__init__()
         self.specifier = specifier
 
-    def __call__(self) -> types.BaseType:
-        cdef types.BaseType instance
+    def __call__(self) -> types.Type:
+        cdef types.Type instance
 
         instance = self.aliases[type(self.specifier)]
         if hasattr(instance, "from_dtype"):
@@ -204,10 +204,10 @@ cdef class StringResolver(Resolver):
         # strip prefix/suffix if present
         self.specifier = resolvable.group("body")
 
-    cdef types.BaseType process_match(self, object match):
+    cdef types.Type process_match(self, object match):
         """Construct a type from a regex match."""
         cdef dict match_dict
-        cdef types.BaseType instance
+        cdef types.Type instance
         cdef str args
         cdef list tokens
 
@@ -225,7 +225,7 @@ cdef class StringResolver(Resolver):
 
         return instance
 
-    def __call__(self) -> types.BaseType:
+    def __call__(self) -> types.Type:
         cdef list matches
         cdef types.CompositeType composite
 

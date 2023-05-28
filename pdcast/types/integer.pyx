@@ -11,6 +11,9 @@ from .base cimport AtomicType, CompositeType
 from .base import generic, register
 
 
+# TODO: register_alias no longer exists.  Call Type.aliases.add() instead.
+
+
 ######################
 ####    MIXINS    ####
 ######################

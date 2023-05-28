@@ -8,7 +8,7 @@ import pandas as pd
 from pdcast.decorators.attachable import attachable
 from pdcast.detect import detect_type
 from pdcast.resolve import resolve_type
-from pdcast.types cimport BaseType, CompositeType
+from pdcast.types cimport Type, CompositeType
 from pdcast.util.type_hints import type_specifier
 
 

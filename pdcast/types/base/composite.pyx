@@ -8,14 +8,14 @@ from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
 from .scalar cimport ScalarType
-from .registry cimport AliasManager, BaseType
+from .registry cimport AliasManager, Type
 
 
 # TODO: if supporting dynamic aliases, CompositeType must implement
 # from_string, from_dtype
 
 
-cdef class CompositeType(BaseType):
+cdef class CompositeType(Type):
     """Set-like container for type objects.
 
     Implements the same interface as the built-in set type, but is restricted
@@ -49,7 +49,7 @@ cdef class CompositeType(BaseType):
                 for typ in types:
                     if isinstance(typ, CompositeType):
                         self.types.update(t for t in typ)
-                    elif isinstance(typ, BaseType):
+                    elif isinstance(typ, Type):
                         self.types.add(typ)
                     else:
                         invalid = True
@@ -333,7 +333,7 @@ cdef class CompositeType(BaseType):
         """Test whether `self` is a proper superset of `other`
         (``self >= other and self != other``).
         """
-        cdef BaseType other
+        cdef Type other
 
         other = resolve.resolve_type(typespec)
         return self != other and self >= other
@@ -354,7 +354,7 @@ cdef class CompositeType(BaseType):
         """Test whether `self` is a proper subset of `other`
         (``self <= other and self != other``).
         """
-        cdef BaseType other
+        cdef Type other
 
         other = resolve.resolve_type(typespec)
         return self != other and self <= other

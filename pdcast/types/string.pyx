@@ -7,7 +7,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AtomicType, BaseType
+from .base cimport AtomicType, Type
 from .base import generic, register
 
 

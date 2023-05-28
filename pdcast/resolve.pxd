@@ -34,4 +34,4 @@ cdef class StringResolver(Resolver):
     cdef:
         str specifier
 
-    cdef types.BaseType process_match(self, object match)
+    cdef types.Type process_match(self, object match)

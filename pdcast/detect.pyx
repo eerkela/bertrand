@@ -25,7 +25,7 @@ from pdcast.util.vector cimport as_array
 
 
 @attachable.attachable
-def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
+def detect_type(data: Any, skip_na: bool = True) -> types.Type | dict:
     """Infer types from example data.
 
     Arguments
@@ -56,11 +56,11 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
         :ref:`pandas <resolve_type.type_specifiers.pandas>` data types.
     """
     cdef object fill_value = None
-    cdef types.BaseType result = None
+    cdef types.Type result = None
     cdef type data_type = type(data)
 
     # trivial case: example is already a type object
-    if issubclass(data_type, types.BaseType):
+    if issubclass(data_type, types.Type):
         return data
 
     # DataFrame (columnwise) case
@@ -100,7 +100,7 @@ cdef class Detector:
     def __init__(self):
         self.aliases = types.registry.aliases
 
-    def __call__(self) -> types.BaseType:
+    def __call__(self) -> types.Type:
         raise NotImplementedError(f"{type(self)} does not implement __call__")
 
 
@@ -185,7 +185,7 @@ cdef class ElementWiseDetector(Detector):
 
         self.data = data.astype(object, copy=False)
 
-    def __call__(self) -> types.BaseType:
+    def __call__(self) -> types.Type:
         result = detect_vector_type(self.data, self.aliases)
         if not result:
             return None

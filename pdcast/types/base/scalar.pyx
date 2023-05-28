@@ -12,7 +12,7 @@ import numpy as np
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import type_specifier
 
-from .registry cimport BaseType, AliasManager
+from .registry cimport Type, AliasManager
 
 
 # TODO: remove non top-level imports in __eq__, is_subtype
@@ -23,7 +23,7 @@ from .registry cimport BaseType, AliasManager
 ######################
 
 
-cdef class ScalarType(BaseType):
+cdef class ScalarType(Type):
     """Base type for :class:`AtomicType` and :class:`AdapterType` objects.
 
     This allows inherited types to manage aliases and update them at runtime.
@@ -98,7 +98,7 @@ cdef class ScalarType(BaseType):
         """A unique name for each type.
 
         This must be defined at the **class level**.  It is used in conjunction
-        with :meth:`slugify() <AtomicType.slugify>` to generate string
+        with :meth:`encode() <AtomicType.encode>` to generate string
         representations of the associated type, which use this as their base.
 
         Returns
@@ -279,7 +279,7 @@ cdef class ScalarType(BaseType):
 ##############################
 
 
-cdef class SlugFactory:
+cdef class ArgumentEncoder:
     """An interface for creating string representations of a type based on its
     base name and parameters.
     """
@@ -310,8 +310,8 @@ cdef class SlugFactory:
         return f"{self.name}[{', '.join(ordered)}]"
 
 
-cdef class BackendSlugFactory:
-    """A SlugFactory that automatically appends a type's backend specifier as
+cdef class BackendEncoder:
+    """A ArgumentEncoder that automatically appends a type's backend specifier as
     the first parameter of the returned slug.
     """
 
@@ -362,11 +362,11 @@ cdef class FlyweightFactory(InstanceFactory):
     def __init__(
         self,
         type base_class,
-        SlugFactory slugify,
+        ArgumentEncoder encode,
         int cache_size
     ):
         super().__init__(base_class)
-        self.slugify = slugify
+        self.encode = encode
         if cache_size < 0:
             self.instances = {}
         else:
@@ -376,7 +376,7 @@ cdef class FlyweightFactory(InstanceFactory):
         cdef str slug
         cdef ScalarType instance
 
-        slug = self.slugify(args, kwargs)
+        slug = self.encode(args, kwargs)
         instance = self.instances.get(slug, None)
         if instance is None:
             instance = self.base_class(*args, **kwargs)

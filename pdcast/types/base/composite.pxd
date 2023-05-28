@@ -1,8 +1,8 @@
 cimport numpy as np
-from .registry cimport BaseType
+from .registry cimport Type
 
 
-cdef class CompositeType(BaseType):
+cdef class CompositeType(Type):
     cdef readonly:
         set types
         np.ndarray index

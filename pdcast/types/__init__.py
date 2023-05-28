@@ -35,7 +35,7 @@ generic
 """
 from .array import AbstractArray, AbstractDtype
 from .base import (
-    BaseType, ScalarType, AdapterType, AtomicType, CompositeType, GenericType,
+    Type, ScalarType, AdapterType, AtomicType, CompositeType, GenericType,
     TypeRegistry, generic, register
 )
 from .boolean import (

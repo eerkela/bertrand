@@ -15,7 +15,7 @@ from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
 from .registry cimport AliasManager, CacheValue
 from .scalar cimport (
-    ScalarType, SlugFactory, BackendSlugFactory, InstanceFactory,
+    ScalarType, ArgumentEncoder, BackendEncoder, InstanceFactory,
     FlyweightFactory
 )
 from .composite cimport CompositeType
@@ -63,7 +63,7 @@ cdef class AtomicTypeConstructor(ScalarType):
     """
 
     cdef void _init_identifier(self, type subclass):
-        """Create a SlugFactory to uniquely identify this type.
+        """Create a ArgumentEncoder to uniquely identify this type.
 
         Notes
         -----
@@ -90,12 +90,12 @@ cdef class AtomicTypeConstructor(ScalarType):
 
         if hasattr(subclass, "_backend"):
             backend = subclass._backend
-            slugify = BackendSlugFactory(name, parameters, backend)
+            encode = BackendEncoder(name, parameters, backend)
         else:
-            slugify = SlugFactory(name, parameters)
+            encode = ArgumentEncoder(name, parameters)
 
-        self._slug = slugify((), self._kwargs)
-        self.slugify = slugify
+        self._slug = encode((), self._kwargs)
+        self.encode = encode
 
     cdef void _init_instances(self, type subclass):
         """Create an InstanceFactory to control instance generation for this
@@ -110,8 +110,8 @@ cdef class AtomicTypeConstructor(ScalarType):
         if not cache_size:
             instances = InstanceFactory(subclass)
         else:
-            slugify = self.slugify
-            instances = FlyweightFactory(subclass, slugify, cache_size)
+            encode = self.encode
+            instances = FlyweightFactory(subclass, encode, cache_size)
             instances[self._slug] = self
 
         self.instances = instances
@@ -142,8 +142,8 @@ cdef class AtomicTypeConstructor(ScalarType):
         """
         base = type(self)._base_instance
 
-        self.slugify = base.slugify
-        self._slug = self.slugify((), self._kwargs)
+        self.encode = base.encode
+        self._slug = self.encode((), self._kwargs)
         self.instances = base.instances
 
 
@@ -825,7 +825,7 @@ cdef class HierarchicalType(AtomicType):
         self._slug = self.__wrapped__._slug
         self._hash = self.__wrapped__._hash
 
-        self.slugify = self.__wrapped__.slugify
+        self.encode = self.__wrapped__.encode
         self.instances = self.__wrapped__.instances
         self._aliases = AliasManager(self)
 
@@ -1050,7 +1050,7 @@ cdef class GenericType(HierarchicalType):
 
                 cls._generic = self  # for AtomicType.generic
                 if cls.name == self.name:
-                    cls._backend = backend  # for AtomicType.slugify
+                    cls._backend = backend  # for AtomicType.encode
 
             def promise(instance):
                 """A promise that registers the base implementation with this

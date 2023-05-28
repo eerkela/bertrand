@@ -59,7 +59,7 @@ def register(
             inherited from a :func:`generic() <pdcast.generic>` type.
         *   :attr:`class_.aliases <AtomicType.aliases>`: these must contain
             only valid type specifiers, each of which must be unique.
-        *   :meth:`class_.slugify() <AtomicType.slugify>`: this must be a
+        *   :meth:`class_.encode() <AtomicType.encode>`: this must be a
             classmethod whose signature matches the decorated class's
             ``__init__``.
 
@@ -172,7 +172,7 @@ cdef class TypeRegistry:
             type is parametrized, does not have an appropriate
             :attr:`name <pdcast.ScalarType.name>` or
             :attr:`aliases <pdcast.ScalarType.aliases>`, or if the signature of
-            its :meth:`slugify <pdcast.ScalarType.slugify>` method does not
+            its :meth:`encode <pdcast.ScalarType.encode>` method does not
             match its constructor.
 
         See Also
@@ -366,11 +366,11 @@ cdef class TypeRegistry:
         """Hash the registry's internal state, for use in cached properties."""
         self._hash = hash(tuple(self.base_types))
 
-    cdef void pin(self, BaseType instance, AliasManager aliases):
+    cdef void pin(self, Type instance, AliasManager aliases):
         """Pin a type to the global alias namespace if it is not already being
         tracked.
         """
-        cdef BaseType typ
+        cdef Type typ
         cdef AliasManager _
 
         for typ, _ in self.alias_map:
@@ -379,7 +379,7 @@ cdef class TypeRegistry:
         else:
             self.alias_map.append((instance, aliases))
 
-    cdef void unpin(self, BaseType instance):
+    cdef void unpin(self, Type instance):
         """Unpin a type from the global alias namespace."""
         self.alias_map = [
             (typ, manager) for typ, manager in self.alias_map
@@ -436,7 +436,7 @@ cdef class TypeRegistry:
 cdef class AliasManager:
     """Interface for dynamically managing a type's aliases."""
 
-    def __init__(self, BaseType instance):
+    def __init__(self, Type instance):
         self.instance = instance
         self.aliases = set()
 
@@ -462,7 +462,7 @@ cdef class AliasManager:
         """
         alias = self.normalize_specifier(alias)
 
-        registry = BaseType.registry
+        registry = Type.registry
         if alias in registry.aliases:
             other = registry.aliases[alias]
             if overwrite:
@@ -496,7 +496,7 @@ cdef class AliasManager:
         self.aliases.remove(alias)
         if not self:
             self.unpin()
-        BaseType.registry.flush()  # rebuild regex patterns
+        Type.registry.flush()  # rebuild regex patterns
 
     def discard(self, alias: type_specifier) -> None:
         """Remove an alias from the managed type if it is present.
@@ -527,7 +527,7 @@ cdef class AliasManager:
         value = self.aliases.pop()
         if not self:
             self.unpin()
-        BaseType.registry.flush()
+        Type.registry.flush()
         return value
 
     def clear(self) -> None:
@@ -541,7 +541,7 @@ cdef class AliasManager:
         if self:
             self.unpin()
         self.aliases.clear()
-        BaseType.registry.flush()  # rebuild regex patterns
+        Type.registry.flush()  # rebuild regex patterns
 
     ##############################
     ####    SET OPERATIONS    ####
@@ -580,12 +580,12 @@ cdef class AliasManager:
 
     cdef void pin(self):
         """Pin the associated instance to the global alias namespace."""
-        cdef TypeRegistry registry = BaseType.registry
+        cdef TypeRegistry registry = Type.registry
 
         registry.pin(self.instance, self)
 
     cdef void unpin(self):
-        cdef TypeRegistry registry = BaseType.registry
+        cdef TypeRegistry registry = Type.registry
 
         registry.unpin(self.instance)
 
@@ -612,7 +612,7 @@ cdef class AliasManager:
         return str(self.aliases)
 
 
-cdef class BaseType:
+cdef class Type:
     """Base type for all type objects.
 
     This has no interface of its own.  It simply serves to anchor inheritance
@@ -680,11 +680,11 @@ cdef class CacheValue:
 
     def __init__(self, object value):
         self.value = value
-        self.hash = BaseType.registry.hash
+        self.hash = Type.registry.hash
 
     def __bool__(self) -> bool:
         """Indicates whether a cached registry value is out of date."""
-        return self.hash == BaseType.registry.hash
+        return self.hash == Type.registry.hash
 
 
 # TODO: validate() is unused

@@ -13,7 +13,7 @@ from pdcast.util.type_hints import type_specifier
 
 from .registry cimport AliasManager
 from .atomic cimport AtomicType
-from .scalar cimport ScalarType, SlugFactory, InstanceFactory
+from .scalar cimport ScalarType, ArgumentEncoder, InstanceFactory
 from .composite cimport CompositeType
 
 
@@ -58,8 +58,8 @@ cdef class AdapterType(ScalarType):
     ----------
     name : str
         A unique name for each type, which must be defined at the class level.
-        This is used in conjunction with :meth:`slugify()
-        <AdapterType.slugify>` to generate string representations of the
+        This is used in conjunction with :meth:`encode()
+        <AdapterType.encode>` to generate string representations of the
         associated type.
     aliases : set[str | ExtensionDtype]
         A set of unique aliases for this type, which must be defined at the
@@ -129,7 +129,7 @@ cdef class AdapterType(ScalarType):
             wrapped, kwargs = self._insort(self, wrapped, kwargs)
 
         self._wrapped = wrapped
-        self._slug = self._slugify((), self._kwargs)
+        self._slug = self.encode((), self._kwargs)
         kwargs = {"wrapped": wrapped} | kwargs
         super().__init__(**kwargs)
 
@@ -139,9 +139,9 @@ cdef class AdapterType(ScalarType):
         # TODO: might do validation at this level rather than in registry.add
 
         # parse subclass fields
-        self._slugify = SlugFactory(subclass.name, tuple(self._kwargs))
-        self._instances = InstanceFactory(subclass)
-        self._insort = PrioritySorter(subclass, priority=subclass.priority)
+        self.encode = ArgumentEncoder(subclass.name, tuple(self._kwargs))
+        self.instances = InstanceFactory(subclass)
+        self.insort = PrioritySorter(subclass, priority=subclass.priority)
         for alias in subclass.aliases | {subclass}:
             self._aliases.add(alias)
 
@@ -153,9 +153,9 @@ cdef class AdapterType(ScalarType):
     cdef void init_parametrized(self):
         base = type(self)._base_instance
 
-        self._slugify = base._slugify
-        self._instances = base._instances
-        self._insort = base._insort
+        self.encode = base.encode
+        self.instances = base.instances
+        self.insort = base.insort
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -327,7 +327,7 @@ cdef class AdapterType(ScalarType):
         """Change the type object that this AdapterType modifies."""
         self._wrapped = val
         self.kwargs = self.kwargs | {"wrapped": val}
-        self._slug = self.slugify((), self.kwargs)
+        self._slug = self.encode((), self.kwargs)
         self._hash = hash(self._slug)
 
     #######################
