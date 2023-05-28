@@ -9,7 +9,6 @@ cdef class ScalarType(BaseType):
         bint _read_only
 
     cdef readonly:
-        AliasManager _aliases
         SlugFactory slugify
         InstanceFactory instances
 

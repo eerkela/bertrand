@@ -19,15 +19,6 @@ from .scalar cimport ScalarType
 # cooperative
 
 
-# TODO: Whenever AliasManager.add is called, we add it to the registry.
-# .remove(), .discard(), and .pop() remove it from the registry if empty.
-
-# This allows us to store unique AliasManagers at the instance level.
-
-# pdcast.resolve_type("object[int]") should not have any aliases, but
-# pdcast.resolve_type("object") should.
-
-
 ######################
 ####    PUBLIC    ####
 ######################
@@ -129,6 +120,7 @@ cdef class TypeRegistry:
 
     def __init__(self):
         self.base_types = set()
+        self.alias_map = []
         self.promises = {}
         self.update_hash()
 
@@ -150,10 +142,6 @@ cdef class TypeRegistry:
         :meth:`loses <pdcast.ScalarType.remove_alias>` an alias.
         """
         return self._hash
-
-    cdef void update_hash(self):
-        """Hash the registry's internal state, for use in cached properties."""
-        self._hash = hash(tuple(self.base_types))
 
     def flush(self):
         """Reset the registry's internal state, forcing every property to be
@@ -242,7 +230,7 @@ cdef class TypeRegistry:
     #####################
 
     @property
-    def aliases(self) -> dict:
+    def aliases(self) -> MappingProxyType:
         """An up-to-date mapping of every alias to its corresponding type.
 
         This encodes every specifier recognized by both the
@@ -269,9 +257,12 @@ cdef class TypeRegistry:
         """
         cached = self._aliases
         if not cached:
-            cached = CacheValue({
-                alias: typ for typ in self.base_types for alias in typ.aliases
-            })
+            result = {
+                alias: typ
+                for typ, manager in self.alias_map
+                for alias in manager
+            }
+            cached = CacheValue(MappingProxyType(result))
             self._aliases = cached
 
         return cached.value
@@ -371,13 +362,37 @@ cdef class TypeRegistry:
     ####    PRIVATE    ####
     #######################
 
-    def _validate_no_parameters(self, instance: ScalarType) -> None:
+    cdef void update_hash(self):
+        """Hash the registry's internal state, for use in cached properties."""
+        self._hash = hash(tuple(self.base_types))
+
+    cdef void pin(self, BaseType instance, AliasManager aliases):
+        """Pin a type to the global alias namespace if it is not already being
+        tracked.
+        """
+        cdef BaseType typ
+        cdef AliasManager _
+
+        for typ, _ in self.alias_map:
+            if typ is instance:
+                break
+        else:
+            self.alias_map.append((instance, aliases))
+
+    cdef void unpin(self, BaseType instance):
+        """Unpin a type from the global alias namespace."""
+        self.alias_map = [
+            (typ, manager) for typ, manager in self.alias_map
+            if typ is not instance
+        ]
+
+    def _validate_no_parameters(self, instance: ScalarType):
         """Ensure that a base type is not parametrized."""
         # TODO: inspect the type's kwargs by comparing against
         # instance._base_instance.  Currently, this fails for GenericTypes
         pass
 
-    def _validate_name(self, instance: ScalarType) -> None:
+    def _validate_name(self, instance: ScalarType):
         """Ensure that a base type has a unique name attribute."""
         if not isinstance(instance.name, str):
             raise TypeError(f"{instance.__qualname__}.name must be a string")
@@ -421,10 +436,9 @@ cdef class TypeRegistry:
 cdef class AliasManager:
     """Interface for dynamically managing a type's aliases."""
 
-    def __init__(self, set aliases):
+    def __init__(self, BaseType instance):
+        self.instance = instance
         self.aliases = set()
-        for alias in aliases:
-            self.add(alias)
 
     #############################
     ####    SET INTERFACE    ####
@@ -446,10 +460,11 @@ cdef class AliasManager:
         See the docs on the :ref:`type specification mini language
         <resolve_type.mini_language>` for more information on how aliases work.
         """
-        alias = self._normalize_specifier(alias)
+        alias = self.normalize_specifier(alias)
 
-        if alias in BaseType.registry.aliases:
-            other = BaseType.registry.aliases[alias]
+        registry = BaseType.registry
+        if alias in registry.aliases:
+            other = registry.aliases[alias]
             if overwrite:
                 del other.aliases[alias]
             else:
@@ -458,8 +473,10 @@ cdef class AliasManager:
                     f"{repr(other)}"
                 )
 
+        if not self:
+            self.pin()
         self.aliases.add(alias)
-        BaseType.registry.flush()  # rebuild regex patterns
+        registry.flush()  # rebuild regex patterns
 
     def remove(self, alias: type_specifier) -> None:
         """Remove an alias from the managed type.
@@ -474,8 +491,11 @@ cdef class AliasManager:
         See the docs on the :ref:`type specification mini language
         <resolve_type.mini_language>` for more information on how aliases work.
         """
-        alias = self._normalize_specifier(alias)
+        alias = self.normalize_specifier(alias)
+
         self.aliases.remove(alias)
+        if not self:
+            self.unpin()
         BaseType.registry.flush()  # rebuild regex patterns
 
     def discard(self, alias: type_specifier) -> None:
@@ -505,6 +525,8 @@ cdef class AliasManager:
         <resolve_type.mini_language>` for more information on how aliases work.
         """
         value = self.aliases.pop()
+        if not self:
+            self.unpin()
         BaseType.registry.flush()
         return value
 
@@ -516,6 +538,8 @@ cdef class AliasManager:
         See the docs on the :ref:`type specification mini language
         <resolve_type.mini_language>` for more information on how aliases work.
         """
+        if self:
+            self.unpin()
         self.aliases.clear()
         BaseType.registry.flush()  # rebuild regex patterns
 
@@ -539,7 +563,7 @@ cdef class AliasManager:
     ####    PRIVATE    ####
     #######################
 
-    cdef object _normalize_specifier(self, alias: type_specifier):
+    cdef object normalize_specifier(self, alias: type_specifier):
         """Preprocess a type specifier, converting it into a recognizable
         format.
         """
@@ -553,6 +577,17 @@ cdef class AliasManager:
             return type(alias)
 
         return alias
+
+    cdef void pin(self):
+        """Pin the associated instance to the global alias namespace."""
+        cdef TypeRegistry registry = BaseType.registry
+
+        registry.pin(self.instance, self)
+
+    cdef void unpin(self):
+        cdef TypeRegistry registry = BaseType.registry
+
+        registry.unpin(self.instance)
 
     #############################
     ####    MAGIC METHODS    ####
@@ -585,6 +620,52 @@ cdef class BaseType:
     """
 
     registry: TypeRegistry = TypeRegistry()
+
+    def __init__(self):
+        self._aliases = AliasManager(self)
+
+    @property
+    def aliases(self) -> AliasManager:
+        """A set of unique aliases for this type.
+    
+        These must be defined at the **class level**, and are used by
+        :func:`detect_type` and :func:`resolve_type` to map aliases onto their
+        corresponding types.
+
+        Returns
+        -------
+        set[str | type | numpy.dtype]
+            A set containing all the aliases that are associated with this
+            type.
+
+        Notes
+        -----
+        Special significance is given to the type of each alias:
+
+            *   Strings are used by the :ref:`type specification mini-language
+                <resolve_type.mini_language>` to trigger :meth:`resolution
+                <AtomicType.resolve>` of the associated type.
+            *   Numpy/pandas :class:`dtype <numpy.dtype>`\ /\
+                :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
+                objects are used by :func:`detect_type` for *O(1)* type
+                inference.  In both cases, parametrized dtypes can be handled
+                by adding a root dtype to :attr:`aliases <AtomicType.aliases>`.
+                For numpy :class:`dtypes <numpy.dtype>`, this will be the
+                root of their :func:`numpy.issubdtype` hierarchy.  For pandas
+                :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`,
+                it is its :class:`type() <python:type>` directly.  When either
+                of these are encountered, they will invoke the type's
+                :meth:`from_dtype() <AtomicType.from_dtype>` constructor.
+            *   Raw Python types are used by :func:`detect_type` for scalar or
+                unlabeled vector inference.  If the type of a scalar element
+                appears in :attr:`aliases <AtomicType.aliases>`, then the
+                associated type's :meth:`detect() <AtomicType.detect>` method
+                will be called on it.
+
+        All aliases are recognized by :func:`resolve_type` and the set always
+        includes the :class:`AtomicType` itself.
+        """
+        return self._aliases
 
 
 #######################

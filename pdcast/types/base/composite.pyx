@@ -8,7 +8,11 @@ from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
 from .scalar cimport ScalarType
-from .registry cimport BaseType
+from .registry cimport AliasManager, BaseType
+
+
+# TODO: if supporting dynamic aliases, CompositeType must implement
+# from_string, from_dtype
 
 
 cdef class CompositeType(BaseType):
@@ -25,6 +29,8 @@ cdef class CompositeType(BaseType):
         object types = None,
         np.ndarray[object] index = None
     ):
+        super().__init__()
+
         if types is None:
             self.types = set()
 

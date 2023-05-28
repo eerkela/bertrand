@@ -129,6 +129,7 @@ cdef class AdapterType(ScalarType):
             wrapped, kwargs = self._insort(self, wrapped, kwargs)
 
         self._wrapped = wrapped
+        self._slug = self._slugify((), self._kwargs)
         kwargs = {"wrapped": wrapped} | kwargs
         super().__init__(**kwargs)
 
@@ -138,11 +139,11 @@ cdef class AdapterType(ScalarType):
         # TODO: might do validation at this level rather than in registry.add
 
         # parse subclass fields
-        self._aliases = AliasManager(subclass.aliases | {subclass})
         self._slugify = SlugFactory(subclass.name, tuple(self._kwargs))
-        self._slug = self._slugify((), self._kwargs)
         self._instances = InstanceFactory(subclass)
         self._insort = PrioritySorter(subclass, priority=subclass.priority)
+        for alias in subclass.aliases | {subclass}:
+            self._aliases.add(alias)
 
         # clean up subclass fields
         del subclass.aliases  # pass to AtomicType.aliases
@@ -152,9 +153,7 @@ cdef class AdapterType(ScalarType):
     cdef void init_parametrized(self):
         base = type(self)._base_instance
 
-        self._aliases = base._aliases
         self._slugify = base._slugify
-        self._slug = self._slugify((), self._kwargs)
         self._instances = base._instances
         self._insort = base._insort
 

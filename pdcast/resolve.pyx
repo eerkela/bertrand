@@ -68,16 +68,16 @@ def resolve_type(typespec: type_specifier) -> types.BaseType:
 
     # build factory
     if isinstance(typespec, type):
-        factory = ClassFactory(typespec)
+        factory = ClassResolver(typespec)
 
     elif isinstance(typespec, str):
-        factory = StringFactory(typespec)
+        factory = StringResolver(typespec)
 
     elif isinstance(typespec, (np.dtype, pd.api.extensions.ExtensionDtype)):
         if isinstance(typespec, abstract.AbstractDtype):
             return typespec._atomic_type
 
-        factory = DtypeFactory(typespec)
+        factory = DtypeResolver(typespec)
 
     elif hasattr(typespec, "__iter__"):
         return types.CompositeType(resolve_type(x) for x in typespec)
@@ -145,42 +145,47 @@ cdef list tokenize(str input_str):
     return [x.group().strip() for x in token.finditer(input_str)]
 
 
-cdef class TypeFactory:
+cdef class Resolver:
     """A factory that returns type objects."""
 
     def __init__(self):
-        self.aliases = types.registry.aliases
+        self.aliases = dict(types.registry.aliases)
 
     def __call__(self, typespec: type_specifier) -> types.BaseType:
         raise NotImplementedError(f"{type(self)} does not implement __call__")
 
 
-cdef class ClassFactory(TypeFactory):
+cdef class ClassResolver(Resolver):
     """A factory that constructs types from Python class objects."""
 
     def __init__(self, type specifier):
         super().__init__()
         self.specifier = specifier
 
-    def __call__(self) -> types.ScalarType:
+    def __call__(self) -> types.BaseType:
         if self.specifier in self.aliases:
             return self.aliases[self.specifier]
 
-        return types.ObjectType[self.specifier]
+        return types.ObjectType(self.specifier)
 
 
-cdef class DtypeFactory(TypeFactory):
+cdef class DtypeResolver(Resolver):
     """A factory that constructs types from numpy/pandas dtype objects."""
 
-    def __init__(self, object specifier) -> types.ScalarType:
+    def __init__(self, object specifier):
         super().__init__()
         self.specifier = specifier
 
-    def __call__(self) -> types.ScalarType:
-        return self.aliases[type(self.specifier)].from_dtype(self.specifier)
+    def __call__(self) -> types.BaseType:
+        cdef types.BaseType instance
+
+        instance = self.aliases[type(self.specifier)]
+        if hasattr(instance, "from_dtype"):
+            return instance.from_dtype(self.specifier)
+        return instance
 
 
-cdef class StringFactory(TypeFactory):
+cdef class StringResolver(Resolver):
     """A factory that constructs types from strings in the type specification
     mini-language.
     """
@@ -199,24 +204,39 @@ cdef class StringFactory(TypeFactory):
         # strip prefix/suffix if present
         self.specifier = resolvable.group("body")
 
-    def __call__(self):
-        result = set()
-        for match in types.registry.regex.finditer(self.specifier):
-            match_dict = match.groupdict()
+    cdef types.BaseType process_match(self, object match):
+        """Construct a type from a regex match."""
+        cdef dict match_dict
+        cdef types.BaseType instance
+        cdef str args
+        cdef list tokens
 
-            # get base type from alias
-            if match_dict.get("sized_unicode"):
-                base = types.StringType
-            else:
-                base = self.aliases[match_dict["type"]]
+        match_dict = match.groupdict()
 
-            # tokenize args and pass to base.resolve()
+        if match_dict.get("sized_unicode"):  # special case for U32, U17, ...
+            instance = types.StringType
+        else:
+            instance = self.aliases[match_dict["type"]]
+
+        if hasattr(instance, "resolve"):
             args = match_dict["args"]
-            tokens = () if not args else tokenize(args)
-            instance = base.resolve(*tokens)
+            tokens = [] if not args else tokenize(args)
+            instance = instance.resolve(*tokens)
 
-            result.add(instance)
+        return instance
 
-        if len(result) == 1:
-            return result.pop()
-        return types.CompositeType(result)
+    def __call__(self) -> types.BaseType:
+        cdef list matches
+        cdef types.CompositeType composite
+
+        matches = list(types.registry.regex.finditer(self.specifier))
+
+        if len(matches) > 1:
+            composite = types.CompositeType(
+                self.process_match(match) for match in matches
+            )
+            if len(composite) == 1:
+                return composite.pop()
+            return composite
+
+        return self.process_match(matches[0])  # guaranteed to have at least 1

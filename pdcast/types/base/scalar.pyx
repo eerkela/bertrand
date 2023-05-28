@@ -30,6 +30,7 @@ cdef class ScalarType(BaseType):
     """
 
     def __init__(self, **kwargs):
+        super().__init__()
         self._kwargs = kwargs
 
         if hasattr(self, "_base_instance"):
@@ -113,49 +114,6 @@ cdef class ScalarType(BaseType):
         raise NotImplementedError(
             f"'{type(self).__name__}' is missing a `name` field."
         )
-
-    @property
-    def aliases(self) -> AliasManager:
-        """A set of unique aliases for this type.
-    
-        These must be defined at the **class level**, and are used by
-        :func:`detect_type` and :func:`resolve_type` to map aliases onto their
-        corresponding types.
-
-        Returns
-        -------
-        set[str | type | numpy.dtype]
-            A set containing all the aliases that are associated with this
-            type.
-
-        Notes
-        -----
-        Special significance is given to the type of each alias:
-
-            *   Strings are used by the :ref:`type specification mini-language
-                <resolve_type.mini_language>` to trigger :meth:`resolution
-                <AtomicType.resolve>` of the associated type.
-            *   Numpy/pandas :class:`dtype <numpy.dtype>`\ /\
-                :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
-                objects are used by :func:`detect_type` for *O(1)* type
-                inference.  In both cases, parametrized dtypes can be handled
-                by adding a root dtype to :attr:`aliases <AtomicType.aliases>`.
-                For numpy :class:`dtypes <numpy.dtype>`, this will be the
-                root of their :func:`numpy.issubdtype` hierarchy.  For pandas
-                :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`,
-                it is its :class:`type() <python:type>` directly.  When either
-                of these are encountered, they will invoke the type's
-                :meth:`from_dtype() <AtomicType.from_dtype>` constructor.
-            *   Raw Python types are used by :func:`detect_type` for scalar or
-                unlabeled vector inference.  If the type of a scalar element
-                appears in :attr:`aliases <AtomicType.aliases>`, then the
-                associated type's :meth:`detect() <AtomicType.detect>` method
-                will be called on it.
-
-        All aliases are recognized by :func:`resolve_type` and the set always
-        includes the :class:`AtomicType` itself.
-        """
-        return self._aliases
 
     @property
     def kwargs(self) -> MappingProxyType:

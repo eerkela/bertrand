@@ -3,18 +3,18 @@ cimport pdcast.types as types
 
 
 # factories
-cdef class TypeFactory:
+cdef class Detector:
     cdef:
         dict aliases
 
 
-cdef class ScalarFactory(TypeFactory):
+cdef class ScalarDetector(Detector):
     cdef:
         object example
         type example_type
 
 
-cdef class ArrayFactory(TypeFactory):
+cdef class ArrayDetector(Detector):
 
     cdef:
         object data
@@ -22,7 +22,7 @@ cdef class ArrayFactory(TypeFactory):
         bint skip_na
 
 
-cdef class ElementWiseFactory(TypeFactory):
+cdef class ElementWiseDetector(Detector):
 
     cdef:
         object[:] data

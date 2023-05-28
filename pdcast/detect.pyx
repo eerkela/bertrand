@@ -73,13 +73,13 @@ def detect_type(data: Any, skip_na: bool = True) -> types.BaseType | dict:
     # build factory
     if hasattr(data, "__iter__") and not isinstance(data, type):
         if data_type in types.AtomicType.registry.aliases:
-            factory = ScalarFactory(data, data_type)
+            factory = ScalarDetector(data, data_type)
         elif hasattr(data, "dtype"):
-            factory = ArrayFactory(data, skip_na=skip_na)
+            factory = ArrayDetector(data, skip_na=skip_na)
         else:
-            factory = ElementWiseFactory(data, skip_na=skip_na)
+            factory = ElementWiseDetector(data, skip_na=skip_na)
     else:
-        factory = ScalarFactory(data, data_type)
+        factory = ScalarDetector(data, data_type)
 
     return factory()
 
@@ -94,7 +94,7 @@ cdef tuple pandas_arrays = (
 )
 
 
-cdef class TypeFactory:
+cdef class Detector:
     """A factory that returns type objects from example data."""
 
     def __init__(self):
@@ -104,7 +104,7 @@ cdef class TypeFactory:
         raise NotImplementedError(f"{type(self)} does not implement __call__")
 
 
-cdef class ScalarFactory(TypeFactory):
+cdef class ScalarDetector(Detector):
     """A factory that constructs types from scalar examples"""
 
     def __init__(self, object example, type example_type):
@@ -124,7 +124,7 @@ cdef class ScalarFactory(TypeFactory):
         return result.detect(self.example)
 
 
-cdef class ArrayFactory(TypeFactory):
+cdef class ArrayDetector(Detector):
     """A factory that constructs types using an array's .dtype protocol.
     """
 
@@ -145,7 +145,7 @@ cdef class ArrayFactory(TypeFactory):
 
         # no type information
         if dtype == np.dtype(object):
-            result = ElementWiseFactory(self.data, skip_na=self.skip_na)()
+            result = ElementWiseDetector(self.data, skip_na=self.skip_na)()
         else:
             # special cases for pd.Timestamp/pd.Timedelta series
             if isinstance(self.data, pandas_arrays):
@@ -172,7 +172,7 @@ cdef class ArrayFactory(TypeFactory):
         return result
 
 
-cdef class ElementWiseFactory(TypeFactory):
+cdef class ElementWiseDetector(Detector):
     """A factory that constructs types elementwise, by looping through the
     vector.
     """

@@ -28,12 +28,6 @@ from ..array import abstract
 # a .nullable property.
 
 
-# TODO: abstract dtype creation is broken due to broken code in
-# traverse_subtypes().  This function may not even be necessary anymore with
-# composite GenericType and ParentType classes.  These can just implement
-# their own contains() methods.
-
-
 # conversions
 # +------------------------------------------------
 # |           | b | i | f | c | d | d | t | s | o |
@@ -130,9 +124,10 @@ cdef class AtomicTypeConstructor(ScalarType):
         """
         subclass = type(self)
 
-        self._aliases = AliasManager(subclass.aliases | {subclass})
         self._init_identifier(subclass)
         self._init_instances(subclass)
+        for alias in subclass.aliases | {subclass}:
+            self._aliases.add(alias)
 
         # clean up subclass fields
         del subclass.aliases
@@ -147,7 +142,6 @@ cdef class AtomicTypeConstructor(ScalarType):
         """
         base = type(self)._base_instance
 
-        self._aliases = base._aliases
         self.slugify = base.slugify
         self._slug = self.slugify((), self._kwargs)
         self.instances = base.instances
@@ -828,15 +822,55 @@ cdef class HierarchicalType(AtomicType):
     def __init__(self, cls):
         self.__wrapped__ = cls()
         self._default = self.__wrapped__
-        self._kwargs = {}
         self._slug = self.__wrapped__._slug
         self._hash = self.__wrapped__._hash
 
-        self._aliases = self.__wrapped__._aliases
         self.slugify = self.__wrapped__.slugify
         self.instances = self.__wrapped__.instances
+        self._aliases = AliasManager(self)
+
+        wrapped_aliases = self.__wrapped__.aliases
+        while wrapped_aliases:
+            self._aliases.add(wrapped_aliases.pop())
 
         self._read_only = True
+
+    #################################
+    ####    COMPOSITE PATTERN    ####
+    #################################
+
+    @property
+    def default(self) -> AtomicType:
+        """The concrete type that this generic type defaults to.
+
+        This will be used whenever the generic type is specified without an
+        explicit backend.
+        """
+        return self._default
+
+    @default.setter
+    def default(self, val: type_specifier) -> None:
+        val = resolve.resolve_type(val)
+        if isinstance(val, CompositeType):
+            raise TypeError(f"default cannot be composite: {val}")
+
+        if val == self:
+            raise TypeError(
+                f"default cannot be circular (use `del type.default` "
+                f"instead): {val}"
+            )
+
+        if not self.contains(val):
+            raise TypeError(
+                f"default must be contained within this type's hierarchy: "
+                f"{val}"
+            )
+
+        self._default = val
+
+    @default.deleter
+    def default(self) -> None:
+        self._default = self.__wrapped__
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -864,9 +898,9 @@ cdef class HierarchicalType(AtomicType):
         return self.__wrapped__.name
 
     @property
-    def aliases(self) -> AliasManager:
-        """Return the aliases of the decorated type."""
-        return self.__wrapped__.aliases
+    def kwargs(self) -> MappingProxyType:
+        """Delegate to default implementation."""
+        return self._default.kwargs
 
     @property
     def type_def(self) -> type | None:
@@ -960,9 +994,9 @@ cdef class GenericType(HierarchicalType):
             )
         return any(typ.contains(other) for typ in self._backends.values())
 
-    #################################
-    ####    COMPOSITE PATTERN    ####
-    #################################
+    ###################
+    ####    NEW    ####
+    ###################
 
     @property
     def backends(self) -> MappingProxyType:
@@ -970,27 +1004,6 @@ cdef class GenericType(HierarchicalType):
         concretions.
         """
         return MappingProxyType(self._backends)
-
-    @property
-    def default_implementation(self) -> AtomicType:
-        """The concrete type that this generic type defaults to.
-
-        This will be used whenever the generic type is specified without an
-        explicit backend.
-        """
-        return self._default
-
-    @default_implementation.setter
-    def default_implementation(self, backend: str) -> None:
-        self._default = self._backends[backend]
-
-    @default_implementation.deleter
-    def default_implementation(self) -> None:
-        self._default = self.__wrapped__
-
-    ##########################
-    ####    DECORATORS    ####
-    ##########################
 
     def implementation(
         self,
@@ -1020,18 +1033,24 @@ cdef class GenericType(HierarchicalType):
                 f"backend specifier must be a string: {repr(backend)}"
             )
 
+        # TODO: decorator should be able to be applied to other
+        # HierarchicalTypes
+
         def decorator(cls: type) -> type:
             """Link the decorated type to this GenericType."""
-            if not issubclass(cls, AtomicType):
-                raise TypeError("@generic types can only contain AtomicTypes")
+            if isinstance(cls, type):
+                if not issubclass(cls, AtomicType):
+                    raise TypeError(
+                        f"@generic types can only contain AtomicTypes, not "
+                        f"{cls}"
+                    )
 
-            if cls.name is AtomicType.name:
-                cls.name = self.name
+                if cls.name is AtomicType.name:
+                    cls.name = self.name
 
-
-            cls._generic = self  # for AtomicType.generic
-            if cls.name == self.name:
-                cls._backend = backend  # for AtomicType.slugify
+                cls._generic = self  # for AtomicType.generic
+                if cls.name == self.name:
+                    cls._backend = backend  # for AtomicType.slugify
 
             def promise(instance):
                 """A promise that registers the base implementation with this
@@ -1045,7 +1064,7 @@ cdef class GenericType(HierarchicalType):
                     )
                 self._backends[backend] = instance
                 if default:
-                    self.default_implementation = backend
+                    self.default = instance
 
             cls.registry.promises.setdefault(cls, []).append(promise)
             return cls
@@ -1061,46 +1080,60 @@ cdef class ParentType(HierarchicalType):
         super().__init__(cls)
         self._subtypes = CompositeType()
 
-    #################################
-    ####    COMPOSITE PATTERN    ####
-    #################################
+    ##########################
+    ####    OVERLOADED    ####
+    ##########################
 
     @property
     def subtypes(self) -> CompositeType:
         """TODO"""
         return self._subtypes.copy()
 
-    @property
-    def default_subtype(self) -> AtomicType:
-        """The subtype that this parent type defaults to.
+    def contains(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
+        """TODO"""
+        pass
 
-        This will be used in place of the parent type during attribute access.
-        """
-        return self._default
+    #########################
+    ####    DECORATOR    ####
+    #########################
 
-    @default_subtype.setter
-    def default_subtype(self, subtype: AtomicType) -> None:
-        if subtype not in self._subtypes:
-            raise KeyError(f"{subtype}")
-        self._default = subtype
+    def subtype(
+        self,
+        cls: type | AtomicType = None,
+        *,
+        default: bool = False
+    ) -> type | AtomicType:
+        """A class decorator that registers a child type to this parent.
 
-    @default_subtype.deleter
-    def default_subtype(self) -> None:
-        self._default = self.__wrapped__
+        Parameters
+        ----------
+        cls : type | AtomicType
+            An :class:`AtomicType <pdcast.AtomicType>` subclass or other
+            :class:`HierarchicalType <pdcast.HierarchicalType>` to register to
+            this type.
+        default : bool, default False
+            Used to reassign the default value of the parent type to the child
+            type.
 
-    ##########################
-    ####    DECORATORS    ####
-    ##########################
+        Returns
+        -------
+        type | AtomicType
+            The child type.
 
-    def subtype(self, cls: type | None = None):
-        """A class decorator that adds a type as a subtype of this GenericType.
+        Notes
+        -----
+        TODO
         """
         def decorator(cls: type) -> type:
-            """Link the decorated type to this GenericType."""
+            """Link the decorated type to this ParentType."""
             if not issubclass(cls, AtomicType):
                 raise TypeError("@generic types can only contain AtomicTypes")
 
-            if cls._parent:
+            if hasattr(cls, "_parent"):
                 raise TypeError(
                     f"subtypes can only be registered to one parent at a "
                     f"time: '{cls.__qualname__}' is currently registered to "
@@ -1110,7 +1143,9 @@ cdef class ParentType(HierarchicalType):
             typ = cls
             while typ is not None:
                 if typ is self:
-                    raise TypeError("@generic type cannot contain itself")
+                    raise TypeError(
+                        "type hierarchy cannot contain circular references"
+                    )
                 typ = typ._parent
 
             # TODO: use promises
@@ -1121,24 +1156,3 @@ cdef class ParentType(HierarchicalType):
             return cls
 
         return decorator
-
-
-# TODO: move traversal into CompositeType.expand()
-
-
-cdef void _traverse_subtypes(type atomic_type, set result):
-    """Recursive helper for traverse_subtypes()"""
-    result.add(atomic_type)
-    for subtype in atomic_type._children:
-        if subtype in atomic_type.registry:
-            _traverse_subtypes(subtype, result=result)
-
-
-cdef set traverse_subtypes(type atomic_type):
-    """Traverse through an AtomicType's subtype tree, recursively gathering
-    every subtype definition that is contained within it or any of its
-    children.
-    """
-    cdef set result = set()
-    _traverse_subtypes(atomic_type, result)  # in-place
-    return result

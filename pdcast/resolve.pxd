@@ -1,3 +1,5 @@
+from pdcast cimport types
+
 
 # constants
 cdef dict na_strings
@@ -13,21 +15,23 @@ cdef list tokenize(str input_str)
 
 
 # factories
-cdef class TypeFactory:
+cdef class Resolver:
     cdef:
         dict aliases
 
 
-cdef class ClassFactory(TypeFactory):
+cdef class ClassResolver(Resolver):
     cdef:
         type specifier
 
 
-cdef class DtypeFactory(TypeFactory):
+cdef class DtypeResolver(Resolver):
     cdef:
         object specifier
 
 
-cdef class StringFactory(TypeFactory):
+cdef class StringResolver(Resolver):
     cdef:
         str specifier
+
+    cdef types.BaseType process_match(self, object match)
