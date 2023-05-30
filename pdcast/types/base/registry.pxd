@@ -1,7 +1,7 @@
 
 cdef class TypeRegistry:
     cdef:
-        set base_types
+        dict instances
         list pinned_aliases
         long long _hash
         CacheValue _aliases
@@ -9,7 +9,8 @@ cdef class TypeRegistry:
         CacheValue _resolvable
 
     cdef readonly:
-        dict promises
+        dict subtypes
+        dict implementations
 
     cdef void update_hash(self)
     cdef void pin(self, Type instance, AliasManager aliases)

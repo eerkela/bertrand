@@ -25,7 +25,7 @@ cdef class HierarchicalType(AtomicType):
 
 cdef class GenericType(HierarchicalType):
     cdef:
-        dict _backends
+        CacheValue _backends
 
 
 cdef class SuperType(HierarchicalType):

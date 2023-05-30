@@ -11,6 +11,83 @@ from pdcast.util.type_hints import type_specifier, dtype_like
 from .scalar cimport ScalarType
 
 
+# TODO: at the highest possible level, I have a collection of class definitions
+# that describe types.
+
+# Each type must be instantiated and its configuration pushed to the global
+# registry.
+
+# The registry should keep track of all the links between each type and update
+# them as necessary.
+
+
+
+
+# TODO: Whenever @generic/@supertype are called, they push configuration
+# changes to the TypeRegistry.
+
+# TypeRegistry maintains a dict of all generic classes to their implementation
+# types.
+# -> When GenericType.backends is requested, we search its type in this map
+# and return all the implementations that appear in registry.
+# -> When AtomicType.generic is requested, we search this map in reverse
+
+
+# TypeRegistry should map type classes to their instances.
+
+
+# TypeRegistry should maintain 3 separate maps:
+# .instances -> dict[type, ScalarType]
+# .generics -> dict[type, dict[str, type]]
+# .subtypes -> dict[type, set[type]]
+
+# It should then expose 2 convenience methods: get_implementations() and
+# get_subtypes() which are directly called in AtomicType
+
+# def get_implementations(self, cls: type) -> dict
+#     result = {}
+#     for backend, implementation in self.generics[cls].items():
+#         instance = self.instances.get(implementation, None)
+#         if instance is None:
+#             continue
+#         result[backend] = instance
+#     return result
+
+
+# def get_subtypes(self, cls: type) -> set:
+#     result = set()
+#     for subtype in self.subtypes[cls]:
+#         instance = self.instances.get(subtype, None)
+#         if instance is None:
+#             continue
+#         result.add(instance)
+#     return result
+
+
+
+
+# TODO: We can't use types as keys because they might be decorated in the future.
+# -> whenever a decorator is applied, we move all of its references into
+# the new type.
+
+
+
+
+# {
+#     GenericType: {
+#         backend: implementation,
+#         ...
+#     },
+#     GenericType: {
+#         ...
+#     }
+# }
+
+
+
+
+
+
 # TODO: aliases only need to interact with @register in the hierarchical case.
 # A concrete class's aliases are not added until it is actually instantiated.
 
@@ -72,28 +149,19 @@ def register(
     TODO: take from tutorial
 
     """
-    # TODO: one consequence of instantiating every type is that aliases might
-    # be tied to instances of that type rather than classes, which would enable
-    # flexible naming.  You could assign an alias for "pacific" that points to
-    # datetime[pandas, US/Pacific].  Aliases might then apply to composites
-    # as well.  "numeric" could be an alias for [bool, int, float, complex,
-    # decimal, ...].  You could thus create your own collections of types, and
-    # 'pin' them in a sense.
-
-    def register_decorator(cls: type | ScalarType) -> ScalarType:
+    def register_decorator(cls: type) -> type | ScalarType:
         """Add the type to the registry and instantiate it."""
-        if isinstance(cls, ScalarType):
-            instance = cls
-        else:
-            if not issubclass(cls, ScalarType):
-                raise TypeError(
-                    "`@register` can only be applied to AtomicType and "
-                    "AdapterType subclasses"
-                )
-            instance = cls()
+        if not issubclass(cls, ScalarType):
+            raise TypeError(
+                "`@register` can only be applied to AtomicType and "
+                "AdapterType subclasses"
+            )
 
-        if cond:
-            cls.registry.add(instance)
+        if not cond:
+            return cls
+
+        instance = cls()
+        cls.registry.add(instance)
         return instance
 
     if class_ is None:
@@ -123,9 +191,10 @@ cdef class TypeRegistry:
     """
 
     def __init__(self):
-        self.base_types = set()
+        self.instances = {}
+        self.subtypes = {}
+        self.implementations = {}
         self.pinned_aliases = []
-        self.promises = {}
         self.update_hash()
 
     #####################
@@ -185,15 +254,28 @@ cdef class TypeRegistry:
         TypeRegistry.remove : remove a type from the registry.
         TypeRegistry.clear : remove all types from the registry.
         """
-        self._validate_no_parameters(instance)
-        self._validate_name(instance)
+        # validate instance is not parametrized
+        if instance != instance.base_instance:
+            raise TypeError(f"{repr(instance)} must not be parametrized")
 
-        self.base_types.add(instance)
-        promises = self.promises.pop(type(instance), [])
-        while promises:
-            promise = promises.pop()
-            promise(instance)
+        # validate type is not already registered
+        if type(instance) in self.instances:
+            previous = self.instances[type(instance)]
+            raise RuntimeError(
+                f"{type(instance)} is already registered to {repr(previous)}"
+            )
 
+        # validate identifier is unique
+        slug = str(instance)
+        observed = {str(typ): typ for typ in self.instances.values()}
+        if slug in observed:
+            existing = observed[slug]
+            raise TypeError(
+                f"{repr(instance)} slug must be unique: '{slug}' is currently "
+                f"registered to {repr(existing)}"
+            )
+
+        self.instances[type(instance)] = instance
         self.update_hash()
 
     def remove(self, instance: ScalarType) -> None:
@@ -215,22 +297,10 @@ cdef class TypeRegistry:
         TypeRegistry.add : add a type to the registry.
         TypeRegistry.clear : remove all types from the registry.
         """
-        self.base_types.remove(instance)
+        del self.instances[type(instance)]
 
         # remove all aliases
         instance.aliases.clear()
-
-        # remove instance from supertype
-        if instance.supertype:
-            subtypes = instance.supertype._subtypes
-            subtypes.remove(instance)
-
-        # remove instance from generic
-        if instance.generic:
-            backends = instance.generic._backends
-            to_remove = [k for k, v in backends.items() if v == instance]
-            for k in to_remove:
-                del backends[k]
 
         # recur for each of the instance's children
         for typ in instance.subtypes:
@@ -239,6 +309,32 @@ cdef class TypeRegistry:
             self.remove(typ)
 
         self.update_hash()
+
+    #####################
+    ####    LINKS    ####
+    #####################
+
+    def get_subtypes(self, type typ) -> set:
+        """Get all the registered subtypes associated with a type."""
+        result = set()
+        candidates = self.subtypes[typ]
+        for subtype in candidates:
+            instance = self.instances.get(subtype, None)
+            if instance is None:
+                continue
+            result.add(instance)
+        return result
+
+    def get_implementations(self, type typ) -> dict:
+        """Get all the registered implementations associated with a type."""
+        result = {}
+        candidates = self.implementations[typ]
+        for backend, implementation in candidates.items():
+            instance = self.instances.get(implementation, None)
+            if instance is None:
+                continue
+            result[backend] = instance
+        return result
 
     #####################
     ####    REGEX    ####
@@ -305,7 +401,7 @@ cdef class TypeRegistry:
         cached = self._regex
         if not cached:
             # trivial case: empty registry
-            if not self.base_types:
+            if not self.aliases:
                 result = re.compile(".^")  # matches nothing
             else:
                 # escape regex characters
@@ -378,7 +474,7 @@ cdef class TypeRegistry:
 
     cdef void update_hash(self):
         """Hash the registry's internal state, for use in cached properties."""
-        self._hash = hash(tuple(self.base_types))
+        self._hash = hash(tuple(self.instances))
 
     cdef void pin(self, Type instance, AliasManager aliases):
         """Pin a type to the global alias namespace if it is not already being
@@ -397,52 +493,29 @@ cdef class TypeRegistry:
             if manager.instance is not instance
         ]
 
-    def _validate_no_parameters(self, instance: ScalarType) -> None:
-        """Ensure that a base type is not parametrized."""
-        if instance != instance.base_instance:
-            raise TypeError(f"{repr(instance)} must not be parametrized")
-
-    def _validate_name(self, instance: ScalarType) -> None:
-        """Ensure that a base type has a unique name attribute."""
-        # check slug is unique
-        slug = str(instance)
-        observed = {str(typ): typ for typ in self.base_types}
-        if slug in observed:
-            existing = observed[slug]
-            raise TypeError(
-                f"{repr(instance)} slug must be unique: '{slug}' is currently "
-                f"registered to {repr(existing)}"
-            )
-
-    # TODO: registry.add() should check if aliases are unique
-    # TODO: AliasManager.add() should delay pinning the type until it is
-    # actually registered.  Use promises for this.
-
-    # TODO: in general, init_base is responsible for making sure the type can
-    # be constructed sensibly as written.  Registry is responsible for making
-    # sure it does not conflict with any other types.
-
     ###############################
     ####    SPECIAL METHODS    ####
     ###############################
 
     def __contains__(self, val) -> bool:
-        return val in self.base_types
+        if not isinstance(val, type):
+            val = type(val)
+        return val in self.instances
 
     def __hash__(self) -> int:
         return self.hash
 
     def __iter__(self):
-        return iter(self.base_types)
+        return iter(self.instances.values())
 
     def __len__(self) -> int:
-        return len(self.base_types)
+        return len(self.instances)
 
     def __str__(self) -> str:
-        return str(self.base_types)
+        return str(set(self.instances.values()))
 
     def __repr__(self) -> str:
-        return repr(self.base_types)
+        return repr(set(self.instances.values()))
 
 
 cdef class AliasManager:

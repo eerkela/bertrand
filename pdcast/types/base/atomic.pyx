@@ -46,13 +46,6 @@ from ..array import abstract
 # TODO: .subtypes should include backends
 
 
-
-# TypeRegistry.remove() always does the following:
-# -> remove all aliases associated with that type.
-# -> remove from supertype.subtypes, generic.backends
-# -> recur for all of the type's subtypes
-
-
 # conversions
 # +------------------------------------------------
 # |           | b | i | f | c | d | d | t | s | o |
@@ -825,15 +818,23 @@ cdef class AtomicType(AtomicTypeConstructor):
 ############################
 
 
-# TODO: what if these don't instantiate themselves?
-# -> @subtype, @implementation would have to be class methods, and __init__
-# would have to instantiate all of its related instances.
-# -> Every decorator can then deal with just a raw class definition and not
-# instances.
-# -> __init__ arg cls is stored on the class itself
+# TODO: add a _default field to HierarchicalTypes that defaults to None.
+# In HierarchicalType.__init__, check if this is None and replace with wrapped
+# and delete from class.  In HierarchicalType.default, check if it is defined
+# on type(self).
+# In HierarchicalType.default, check if it is a type and 
+
+# The best way to think about these decorators is as procedural class creation.
+# Also like the builder pattern.
+
+# TODO: Can I encapsulate the signalling between class and instance in some
+# way?  I do it here with Hierarchical types and again with concrete types
+# and the AtomicType constructor.  Maybe _backends can contain *either* classes
+# or instances, and we just filter off any that are not instantiated in
+# .backends
 
 
-def generic(cls: type | HierarchicalType) -> GenericType:
+def generic(cls: type) -> type:
     """Class decorator to mark generic type definitions.
 
     Generic types are backend-agnostic and act as wildcard containers for
@@ -842,40 +843,41 @@ def generic(cls: type | HierarchicalType) -> GenericType:
     subtypes, which can be resolved as shown. 
     """
     if not issubclass(cls, AtomicType):
-        raise TypeError("@generic types must inherit from AtomicType")
-
-    # NOTE: we generate a unique subclass of GenericType for use as a key to
-    # TypeRegistry.promises.
+        raise TypeError("@generic can only be applied to AtomicTypes")
 
     class _GenericType(GenericType):
-        pass
+        __wrapped__ = cls
+        name = cls.name
 
-    return _GenericType(cls)
+    cls.registry.implementations[_GenericType] = {}
+    return _GenericType
 
 
-# TODO: supertype() needs to be able to decorate GenericType objects.
-
-
-def supertype(cls: type) -> SuperType:
+def supertype(cls: type) -> type:
     """Class decorator to mark parent type definitions.
 
     Supertypes are nodes within the ``pdcast`` type system.
     """
-    # NOTE: we generate a unique subclass of GenericType for use as a key to
-    # TypeRegistry.promises.
+    if not issubclass(cls, AtomicType):
+        raise TypeError("@supertype can only be applied to AtomicTypes")
 
     class _SuperType(SuperType):
-        pass
+        __wrapped__ = cls
+        name = cls.name
 
-    return _SuperType(cls)
+    cls.registry.subtypes[_SuperType] = []
+    return _SuperType
 
 
 cdef class HierarchicalType(AtomicType):
     """A Composite Pattern type object that can contain other types.
     """
 
-    def __init__(self, cls: type | HierarchicalType):
-        self.__wrapped__ = cls()
+    def __init__(self):
+        wrapped = type(self).__wrapped__  # passed from decorator
+        del type(self).__wrapped__
+
+        self.__wrapped__ = wrapped()
         self._default = self.__wrapped__
         self._slug = self.__wrapped__._slug
         self._hash = self.__wrapped__._hash
@@ -883,8 +885,6 @@ cdef class HierarchicalType(AtomicType):
         self.encode = self.__wrapped__.encode
         self.instances = self.__wrapped__.instances
         self._aliases = AliasManager(self)
-
-        # TODO: this has to somehow interact with promises
 
         wrapped_aliases = self.__wrapped__.aliases
         while wrapped_aliases:
@@ -949,11 +949,6 @@ cdef class HierarchicalType(AtomicType):
     #############################
     ####    CONFIGURATION    ####
     #############################
-
-    @property
-    def name(self) -> str:
-        """Return the name of the wrapped type."""
-        return self.__wrapped__.name
 
     @property
     def kwargs(self) -> MappingProxyType:
@@ -1026,9 +1021,8 @@ cdef class GenericType(HierarchicalType):
     """A hierarchical type that can contain other types as implementations.
     """
 
-    def __init__(self, cls):
-        super().__init__(cls)
-        self._backends = {None: self._default}
+    def __init__(self):
+        super().__init__()
 
     ##########################
     ####    OVERLOADED    ####
@@ -1048,7 +1042,7 @@ cdef class GenericType(HierarchicalType):
         """Forward constructor arguments to the appropriate implementation."""
         if backend is None:
             return self
-        return self._backends[backend].resolve(*args)    
+        return self.backends[backend].resolve(*args)    
 
     def contains(
         self,
@@ -1062,7 +1056,7 @@ cdef class GenericType(HierarchicalType):
                 self.contains(o, include_subtypes=include_subtypes)
                 for o in other
             )
-        return any(typ.contains(other) for typ in self._backends.values())
+        return any(typ.contains(other) for typ in self.backends.values())
 
     ###################
     ####    NEW    ####
@@ -1073,10 +1067,18 @@ cdef class GenericType(HierarchicalType):
         """A mapping of all backend specifiers to their corresponding
         concretions.
         """
-        return MappingProxyType(self._backends)
+        cached = self._backends
+        if not cached:
+            result = {None: self.__wrapped__}
+            result |= self.registry.get_implementations(type(self))
+            cached = CacheValue(MappingProxyType(result))
+            self._backends = cached
 
+        return cached.value
+
+    @classmethod
     def implementation(
-        self,
+        cls,
         backend: str,
         default: bool = False
     ):
@@ -1103,62 +1105,42 @@ cdef class GenericType(HierarchicalType):
                 f"backend specifier must be a string: {repr(backend)}"
             )
 
-        # if cls is type:
-        #   - check is subclass of AtomicType
-        #   - check if cls.name is AtomicType.name and insert self.name
-        #   - cls._generic = self
-        #   - flag to create a BackendEncoder
-        # if cls is HierarchicalType:
-        #   - check if cls.name raises a NotImplementedError.  If it does,
-        #       call a cdef function that reassigns the value of .name, which
-        #       is a cdef readonly instance attribute.  -> this will never
-        #       occur.  init_identifier requires a valid name
-        #   - cls._generic = self (cdef public)
-
-        # AtomicType has a readonly on_register list, initialized to
-        # getattr(type(self), "on_register", [])
-
-
-        def decorator(cls: type | HierarchicalType) -> type | HierarchicalType:
+        def decorator(implementation: type) -> type:
             """Link the decorated type to this GenericType."""
-            if isinstance(cls, HierarchicalType):
-                ...
-            else:
-                if not issubclass(cls, AtomicType):
-                    raise TypeError(
-                        f"@generic types can only contain AtomicTypes, not "
-                        f"{cls}"
-                    )
+            if not issubclass(implementation, AtomicType):
+                raise TypeError(
+                    f"GenericTypes can only contain AtomicTypes, not "
+                    f"{repr(implementation)}"
+                )
 
-                # TODO: these need to go into their own promises
-                if cls.name is AtomicType.name:
-                    cls.name = self.name
+            # marker for AtomicType.generic
+            implementation._generic = cls
 
-                cls._generic = self  # for AtomicType.generic
-                if cls.name == self.name:
-                    cls._backend = backend  # for AtomicType.encode
+            # allow namespace collisions w/ special encoding
+            if implementation.name is AtomicType.name:
+                implementation.name = cls.name
+            if implementation.name == cls.name:
+                implementation._backend = backend
 
-            def promise(instance):
-                """A promise that registers the base implementation with this
-                GenericType.
-                """
-                if backend in self._backends:
-                    raise TypeError(
-                        f"backend specifier must be unique: {repr(backend)} "
-                        f"is already registered to "
-                        f"{repr(self._backends[backend])}"
-                    )
-                self._backends[backend] = instance
-                if default:
-                    self.default = instance
+            candidates = cls.registry.implementations[cls]
+            if backend in candidates:
+                raise TypeError(
+                    f"backend specifier must be unique: {repr(backend)} is "
+                    f"reserved for {repr(candidates[backend])}"
+                )
+            candidates[backend] = implementation
 
-            # TODO: this has to work on both class and instance level
-            # -> we set a type key in on_add here, but expect instances.
-            # -> maybe we generate a unique subclass of GenericType every time
-            # @generic is called?
+            # TODO: figure out how to set default in one shot
 
-            cls.registry.promises.setdefault(cls, []).append(promise)
-            return cls
+            # def promise(instance):
+            #     """A promise that registers the base implementation with this
+            #     GenericType.
+            #     """
+            #     if default:
+            #         self.default = instance
+
+            # cls.registry.promises.setdefault(cls, []).append(promise)
+            return implementation
 
         return decorator
 
@@ -1238,8 +1220,6 @@ cdef class SuperType(HierarchicalType):
                         "type hierarchy cannot contain circular references"
                     )
                 typ = typ._parent
-
-            # TODO: use promises
 
             cls._parent = self
             self._subtypes |= cls()
