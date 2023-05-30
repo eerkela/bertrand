@@ -80,7 +80,31 @@ cdef class AtomicTypeConstructor(ScalarType):
     methods from the public interface.
     """   
 
-    cdef void _init_identifier(self):
+    cdef void init_base(self):
+        """Initialize a base (non-parametrized) instance of this type.
+
+        See :meth:`ScalarType.init_base` for more information on how this is
+        called and why it is necessary.
+        """
+        self.base_instance = self
+
+        self._init_encoder()
+        self._slug = self.encode((), self._kwargs)
+        self._init_instances()
+
+    cdef void init_parametrized(self):
+        """Initialize a parametrized instance of this type.
+
+        See :meth:`ScalarType.init_parametrized` for more information on how
+        this is called and why it is necessary.
+        """
+        base = self.base_instance
+
+        self.encode = base.encode
+        self._slug = self.encode((), self._kwargs)
+        self.instances = base.instances
+
+    cdef void _init_encoder(self):
         """Create a ArgumentEncoder to uniquely identify this type.
 
         Notes
@@ -115,7 +139,6 @@ cdef class AtomicTypeConstructor(ScalarType):
         else:
             encode = BackendEncoder(name, parameters, backend)
 
-        self._slug = encode((), self._kwargs)
         self.encode = encode
 
     cdef void _init_instances(self):
@@ -131,47 +154,10 @@ cdef class AtomicTypeConstructor(ScalarType):
         if not cache_size:
             instances = InstanceFactory(type(self))
         else:
-            encode = self.encode
-            instances = FlyweightFactory(type(self), encode, cache_size)
+            instances = FlyweightFactory(type(self), self.encode, cache_size)
             instances[self._slug] = self
 
         self.instances = instances
-
-    cdef void _init_aliases(self):
-        """Add aliases from the type definition to this type's AliasManager."""
-        for alias in set(self.aliases) | {type(self)}:
-            self._aliases.add(alias)
-
-        try:
-            aliases = object.__getattribute__(type(self), "aliases")
-            del type(self).aliases
-
-        except AttributeError:
-            pass
-
-    cdef void init_base(self):
-        """Initialize a base (non-parametrized) instance of this type.
-
-        See :meth:`ScalarType.init_base` for more information on how this is
-        called and why it is necessary.
-        """
-        self.base_instance = self
-
-        self._init_identifier()
-        self._init_instances()
-        self._init_aliases()
-
-    cdef void init_parametrized(self):
-        """Initialize a parametrized instance of this type.
-
-        See :meth:`ScalarType.init_parametrized` for more information on how
-        this is called and why it is necessary.
-        """
-        base = self.base_instance
-
-        self.encode = base.encode
-        self._slug = self.encode((), self._kwargs)
-        self.instances = base.instances
 
 
 cdef class AtomicType(AtomicTypeConstructor):
@@ -849,6 +835,12 @@ def generic(cls: type) -> type:
         __wrapped__ = cls
         name = cls.name
 
+    try:
+        _GenericType.aliases = object.__getattribute__(cls, "aliases")
+        del cls.aliases
+    except AttributeError:
+        pass
+
     cls.registry.implementations[_GenericType] = {}
     return _GenericType
 
@@ -878,17 +870,15 @@ cdef class HierarchicalType(AtomicType):
         del type(self).__wrapped__
 
         self.__wrapped__ = wrapped()
-        self._default = self.__wrapped__
-        self._slug = self.__wrapped__._slug
-        self._hash = self.__wrapped__._hash
 
-        self.encode = self.__wrapped__.encode
-        self.instances = self.__wrapped__.instances
+        # Type.__init__
         self._aliases = AliasManager(self)
 
-        wrapped_aliases = self.__wrapped__.aliases
-        while wrapped_aliases:
-            self._aliases.add(wrapped_aliases.pop())
+        # ScalarType.__init__
+        self.encode = self.__wrapped__.encode
+        self.instances = self.__wrapped__.instances
+        self._slug = self.__wrapped__._slug
+        self._hash = self.__wrapped__._hash
 
         self.base_instance = self
         self._read_only = True
@@ -904,7 +894,13 @@ cdef class HierarchicalType(AtomicType):
         This will be used whenever the generic type is specified without an
         explicit backend.
         """
-        return self._default
+        if self._default is not None:
+            return self._default
+
+        instance = self.registry.get_default(self)
+        if instance is None:
+            return self.__wrapped__
+        return instance
 
     @default.setter
     def default(self, val: type_specifier) -> None:
@@ -928,7 +924,7 @@ cdef class HierarchicalType(AtomicType):
 
     @default.deleter
     def default(self) -> None:
-        self._default = self.__wrapped__
+        self._default = None
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -936,15 +932,15 @@ cdef class HierarchicalType(AtomicType):
 
     def resolve(self, *args: str) -> AtomicType:
         """Forward constructor arguments to the appropriate implementation."""
-        return self._default.resolve(*args)
+        return self.default.resolve(*args)
 
     def detect(self, example: Any) -> AtomicType:
         """Forward scalar inference to the default implementation."""
-        return self._default.detect(example)
+        return self.default.detect(example)
 
     def from_dtype(self, dtype: dtype_like) -> AtomicType:
         """Forward dtype translation to the default implementation."""
-        return self._default.from_dtype(dtype)
+        return self.default.from_dtype(dtype)
 
     #############################
     ####    CONFIGURATION    ####
@@ -953,42 +949,42 @@ cdef class HierarchicalType(AtomicType):
     @property
     def kwargs(self) -> MappingProxyType:
         """Delegate `kwargs` to default."""
-        return self._default.kwargs
+        return self.default.kwargs
 
     @property
     def type_def(self) -> type | None:
         """Delegate `type_def` to default."""
-        return self._default.type_def
+        return self.default.type_def
 
     @property
     def dtype(self) -> np.dtype | ExtensionDtype:
         """Delegate `dtype` to default."""
-        return self._default.dtype
+        return self.default.dtype
 
     @property
     def itemsize(self) -> int | None:
         """Delegate `itemsize` to default."""
-        return self._default.itemsize
+        return self.default.itemsize
 
     @property
     def is_numeric(self) -> bool:
         """Delegate `is_numeric` to default."""
-        return self._default.is_numeric
+        return self.default.is_numeric
 
     @property
     def max(self) -> decimal.Decimal:
         """Delegate `max` to default."""
-        return self._default.max
+        return self.default.max
 
     @property
     def min(self) -> decimal.Decimal:
         """Delegate `min` to default."""
-        return self._default.min
+        return self.default.min
 
     @property
     def na_value(self) -> Any:
         """Delegate `na_value` to default."""
-        return self._default.na_value
+        return self.default.na_value
 
 
     #########################
@@ -1006,7 +1002,7 @@ cdef class HierarchicalType(AtomicType):
     ###############################
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._default, name)
+        return getattr(self.default, name)
 
     def __call__(self, *args, **kwargs):
         if not (args or kwargs):
@@ -1070,7 +1066,7 @@ cdef class GenericType(HierarchicalType):
         cached = self._backends
         if not cached:
             result = {None: self.__wrapped__}
-            result |= self.registry.get_implementations(type(self))
+            result |= self.registry.get_implementations(self)
             cached = CacheValue(MappingProxyType(result))
             self._backends = cached
 
@@ -1122,6 +1118,7 @@ cdef class GenericType(HierarchicalType):
             if implementation.name == cls.name:
                 implementation._backend = backend
 
+            # ensure backend is unique
             candidates = cls.registry.implementations[cls]
             if backend in candidates:
                 raise TypeError(
@@ -1130,16 +1127,11 @@ cdef class GenericType(HierarchicalType):
                 )
             candidates[backend] = implementation
 
-            # TODO: figure out how to set default in one shot
+            # register default implementation
+            if default:
+                # TODO: warn if replacing default
+                cls.registry.defaults[cls] = implementation
 
-            # def promise(instance):
-            #     """A promise that registers the base implementation with this
-            #     GenericType.
-            #     """
-            #     if default:
-            #         self.default = instance
-
-            # cls.registry.promises.setdefault(cls, []).append(promise)
             return implementation
 
         return decorator

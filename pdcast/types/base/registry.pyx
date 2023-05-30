@@ -9,6 +9,7 @@ from typing import Any
 from pdcast.util.type_hints import type_specifier, dtype_like
 
 from .scalar cimport ScalarType
+from .atomic cimport HierarchicalType
 
 
 # TODO: at the highest possible level, I have a collection of class definitions
@@ -157,11 +158,25 @@ def register(
                 "AdapterType subclasses"
             )
 
+        # short-circuit for conditional types
         if not cond:
             return cls
 
+        # convert type into its base (non-parametrized) instance and register
         instance = cls()
         cls.registry.add(instance)
+
+        # collect aliases associated with type
+        aliases = {cls}
+        try:
+            aliases |= object.__getattribute__(cls, "aliases")
+            del cls.aliases
+        except AttributeError:
+            pass
+
+        # register each alias
+        for alias in aliases:
+            instance.aliases.add(alias)
         return instance
 
     if class_ is None:
@@ -194,6 +209,7 @@ cdef class TypeRegistry:
         self.instances = {}
         self.subtypes = {}
         self.implementations = {}
+        self.defaults = {}
         self.pinned_aliases = []
         self.update_hash()
 
@@ -314,27 +330,34 @@ cdef class TypeRegistry:
     ####    LINKS    ####
     #####################
 
-    def get_subtypes(self, type typ) -> set:
+    def get_subtypes(self, HierarchicalType typ) -> set:
         """Get all the registered subtypes associated with a type."""
         result = set()
-        candidates = self.subtypes[typ]
+        candidates = self.subtypes[type(typ)]
         for subtype in candidates:
             instance = self.instances.get(subtype, None)
             if instance is None:
                 continue
             result.add(instance)
+
         return result
 
-    def get_implementations(self, type typ) -> dict:
+    def get_implementations(self, HierarchicalType typ) -> dict:
         """Get all the registered implementations associated with a type."""
         result = {}
-        candidates = self.implementations[typ]
+        candidates = self.implementations[type(typ)]
         for backend, implementation in candidates.items():
             instance = self.instances.get(implementation, None)
             if instance is None:
                 continue
             result[backend] = instance
+
         return result
+
+    def get_default(self, HierarchicalType typ) -> ScalarType:
+        """Get the default implementation for a hierarchical type."""
+        default = self.defaults.get(type(typ), None)
+        return self.instances.get(default, None)
 
     #####################
     ####    REGEX    ####

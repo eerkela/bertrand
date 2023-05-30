@@ -5,9 +5,8 @@ from .composite cimport CompositeType
 
 cdef class AtomicTypeConstructor(ScalarType):
 
-    cdef void _init_identifier(self)
+    cdef void _init_encoder(self)
     cdef void _init_instances(self)
-    cdef void _init_aliases(self)
 
 
 cdef class AtomicType(AtomicTypeConstructor):

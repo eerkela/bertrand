@@ -11,6 +11,7 @@ cdef class TypeRegistry:
     cdef readonly:
         dict subtypes
         dict implementations
+        dict defaults
 
     cdef void update_hash(self)
     cdef void pin(self, Type instance, AliasManager aliases)
