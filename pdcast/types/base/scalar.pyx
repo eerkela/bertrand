@@ -33,7 +33,7 @@ cdef class ScalarType(Type):
         super().__init__()
         self._kwargs = kwargs
 
-        if hasattr(self, "_base_instance"):
+        if self.base_instance:
             self.init_parametrized()
         else:
             self.init_base()

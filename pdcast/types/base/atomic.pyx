@@ -1,6 +1,7 @@
 """This module describes an ``AtomicType`` object, which serves as the base
 of the ``pdcast`` type system.
 """
+import decimal
 import inspect
 from types import MappingProxyType
 from typing import Any
@@ -26,6 +27,30 @@ from ..array import abstract
 
 # TODO: remove is_na() in favor of pd.isna() and convert make_nullable into
 # a .nullable property.
+
+
+# TODO: supertypes and generic types should automatically discover
+# larger/smaller implementations.
+# -> get self.leaves and filter.
+# -> for .larger, get all types with range wider than self.  Ties are broken
+# by itemsize, and secondary ties are broken by centering from zero.
+# -> for .smaller, get all types with itemsize smaller than self.  Ties are
+# broken by maximizing range, with secondary ties centered from zero.
+# -> yield each result in order.
+
+
+# TODO: store .max, .min as Decimal objects.  init_base can intercept these
+# and coerce them to decimal if needed.
+
+
+# TODO: .subtypes should include backends
+
+
+
+# TypeRegistry.remove() always does the following:
+# -> remove all aliases associated with that type.
+# -> remove from supertype.subtypes, generic.backends
+# -> recur for all of the type's subtypes
 
 
 # conversions
@@ -60,9 +85,9 @@ from ..array import abstract
 cdef class AtomicTypeConstructor(ScalarType):
     """A stub class that separates internal :class:`AtomicType` constructor
     methods from the public interface.
-    """
+    """   
 
-    cdef void _init_identifier(self, type subclass):
+    cdef void _init_identifier(self):
         """Create a ArgumentEncoder to uniquely identify this type.
 
         Notes
@@ -80,7 +105,10 @@ cdef class AtomicTypeConstructor(ScalarType):
         is what allows us to maintain generic namespaces with unique
         identifiers.
         """
-        name = subclass.name
+        name = self.name
+        if not isinstance(name, str):
+            raise TypeError(f"{repr(self)}.name must be a string")
+
         parameters = tuple(self._kwargs)
 
         # NOTE: appropriate slug generation depends on hierarchical
@@ -88,16 +116,16 @@ cdef class AtomicTypeConstructor(ScalarType):
         # append the backend specifier as the first parameter to maintain
         # uniqueness.
 
-        if hasattr(subclass, "_backend"):
-            backend = subclass._backend
-            encode = BackendEncoder(name, parameters, backend)
-        else:
+        backend = getattr(self, "_backend", None)
+        if backend is None:
             encode = ArgumentEncoder(name, parameters)
+        else:
+            encode = BackendEncoder(name, parameters, backend)
 
         self._slug = encode((), self._kwargs)
         self.encode = encode
 
-    cdef void _init_instances(self, type subclass):
+    cdef void _init_instances(self):
         """Create an InstanceFactory to control instance generation for this
         type.
 
@@ -108,13 +136,25 @@ cdef class AtomicTypeConstructor(ScalarType):
 
         # cache_size = 0 negates flyweight pattern
         if not cache_size:
-            instances = InstanceFactory(subclass)
+            instances = InstanceFactory(type(self))
         else:
             encode = self.encode
-            instances = FlyweightFactory(subclass, encode, cache_size)
+            instances = FlyweightFactory(type(self), encode, cache_size)
             instances[self._slug] = self
 
         self.instances = instances
+
+    cdef void _init_aliases(self):
+        """Add aliases from the type definition to this type's AliasManager."""
+        for alias in set(self.aliases) | {type(self)}:
+            self._aliases.add(alias)
+
+        try:
+            aliases = object.__getattribute__(type(self), "aliases")
+            del type(self).aliases
+
+        except AttributeError:
+            pass
 
     cdef void init_base(self):
         """Initialize a base (non-parametrized) instance of this type.
@@ -122,17 +162,11 @@ cdef class AtomicTypeConstructor(ScalarType):
         See :meth:`ScalarType.init_base` for more information on how this is
         called and why it is necessary.
         """
-        subclass = type(self)
+        self.base_instance = self
 
-        self._init_identifier(subclass)
-        self._init_instances(subclass)
-        for alias in subclass.aliases | {subclass}:
-            self._aliases.add(alias)
-
-        # clean up subclass fields
-        del subclass.aliases
-
-        subclass._base_instance = self
+        self._init_identifier()
+        self._init_instances()
+        self._init_aliases()
 
     cdef void init_parametrized(self):
         """Initialize a parametrized instance of this type.
@@ -140,7 +174,7 @@ cdef class AtomicTypeConstructor(ScalarType):
         See :meth:`ScalarType.init_parametrized` for more information on how
         this is called and why it is necessary.
         """
-        base = type(self)._base_instance
+        base = self.base_instance
 
         self.encode = base.encode
         self._slug = self.encode((), self._kwargs)
@@ -356,14 +390,14 @@ cdef class AtomicType(AtomicTypeConstructor):
         return None
 
     @property
-    def dtype(self) -> np.dtype | ExtensionDtype:
+    def dtype(self) -> dtype_like:
         """The numpy :class:`dtype <numpy.dtype>` or pandas
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to use
         for arrays of this type.
 
         Returns
         -------
-        numpy.dtype | pandas.api.extensions.ExtensionDtype
+        dtype_like
             The dtype to use for arrays of this type.
             :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>` are
             free to define their own storage backends and behavior.
@@ -408,26 +442,21 @@ cdef class AtomicType(AtomicTypeConstructor):
         return None
 
     @property
-    def na_value(self) -> Any:
-        """The representation to use for missing values of this type.
-
-        Returns
-        -------
-        Any
-            An NA-like value for this data type.
-
-        See Also
-        --------
-        AtomicType.is_na : for comparisons against this value.
-        """
-        return pd.NA
-
-    @property
     def is_numeric(self) -> bool:
         """Used to auto-generate :class:`AbstractDtypes <pdcast.AbstractDtype>`
         from this type.
         """
         return False
+
+    @property
+    def max(self) -> decimal.Decimal:
+        """TODO"""
+        return decimal.Decimal("inf")
+
+    @property
+    def min(self) -> decimal.Decimal:
+        """TODO"""
+        return decimal.Decimal("-inf")
 
     @property
     def is_nullable(self) -> bool:
@@ -458,6 +487,21 @@ cdef class AtomicType(AtomicTypeConstructor):
         raise NotImplementedError(
             f"'{type(self).__name__}' objects have no nullable alternative."
         )
+
+    @property
+    def na_value(self) -> Any:
+        """The representation to use for missing values of this type.
+
+        Returns
+        -------
+        Any
+            An NA-like value for this data type.
+
+        See Also
+        --------
+        AtomicType.is_na : for comparisons against this value.
+        """
+        return pd.NA
 
     def is_na(self, val: Any) -> bool | array_like:
         """Check if one or more values are considered missing in this
@@ -492,7 +536,7 @@ cdef class AtomicType(AtomicTypeConstructor):
     #########################
 
     # TODO: is_root = True, root = self, supertype = None, subtypes = {self}
-    # these are overloaded in ParentType
+    # these are overloaded in SuperType
 
     @property
     def is_root(self) -> bool:
@@ -607,7 +651,7 @@ cdef class AtomicType(AtomicTypeConstructor):
         The result of this accessor is cached between :class:`TypeRegistry`
         updates.
         """
-        return CompositeType()  # overridden in ParentType
+        return CompositeType()  # overridden in SuperType
 
     @property
     def is_generic(self) -> bool:
@@ -634,7 +678,7 @@ cdef class AtomicType(AtomicTypeConstructor):
         -----
         Candidate types will always be tested in order.
         """
-        # NOTE: this is overridden in ParentType/GenericType
+        # NOTE: this is overridden in SuperType/GenericType
         yield from ()
 
     @property
@@ -649,7 +693,7 @@ cdef class AtomicType(AtomicTypeConstructor):
         -----
         Candidate types will always be tested in order.
         """
-        # NOTE: this is overridden in ParentType/GenericType
+        # NOTE: this is overridden in SuperType/GenericType
         yield from ()
 
     ##########################
@@ -781,7 +825,15 @@ cdef class AtomicType(AtomicTypeConstructor):
 ############################
 
 
-def generic(cls: type) -> GenericType:
+# TODO: what if these don't instantiate themselves?
+# -> @subtype, @implementation would have to be class methods, and __init__
+# would have to instantiate all of its related instances.
+# -> Every decorator can then deal with just a raw class definition and not
+# instances.
+# -> __init__ arg cls is stored on the class itself
+
+
+def generic(cls: type | HierarchicalType) -> GenericType:
     """Class decorator to mark generic type definitions.
 
     Generic types are backend-agnostic and act as wildcard containers for
@@ -792,34 +844,37 @@ def generic(cls: type) -> GenericType:
     if not issubclass(cls, AtomicType):
         raise TypeError("@generic types must inherit from AtomicType")
 
-    # NOTE: cython __init__ is not introspectable.
-    if (
-        cls.__init__ != AtomicType.__init__ and
-        inspect.signature(cls).parameters
-    ):
-        raise TypeError("@generic types cannot be parametrized")
+    # NOTE: we generate a unique subclass of GenericType for use as a key to
+    # TypeRegistry.promises.
 
-    # print(dir(cls))
+    class _GenericType(GenericType):
+        pass
 
-    return GenericType(cls)
+    return _GenericType(cls)
 
 
 # TODO: supertype() needs to be able to decorate GenericType objects.
 
 
-def supertype(cls: type) -> ParentType:
+def supertype(cls: type) -> SuperType:
     """Class decorator to mark parent type definitions.
 
     Supertypes are nodes within the ``pdcast`` type system.
     """
-    pass
+    # NOTE: we generate a unique subclass of GenericType for use as a key to
+    # TypeRegistry.promises.
+
+    class _SuperType(SuperType):
+        pass
+
+    return _SuperType(cls)
 
 
 cdef class HierarchicalType(AtomicType):
     """A Composite Pattern type object that can contain other types.
     """
 
-    def __init__(self, cls):
+    def __init__(self, cls: type | HierarchicalType):
         self.__wrapped__ = cls()
         self._default = self.__wrapped__
         self._slug = self.__wrapped__._slug
@@ -829,10 +884,13 @@ cdef class HierarchicalType(AtomicType):
         self.instances = self.__wrapped__.instances
         self._aliases = AliasManager(self)
 
+        # TODO: this has to somehow interact with promises
+
         wrapped_aliases = self.__wrapped__.aliases
         while wrapped_aliases:
             self._aliases.add(wrapped_aliases.pop())
 
+        self.base_instance = self
         self._read_only = True
 
     #################################
@@ -894,37 +952,49 @@ cdef class HierarchicalType(AtomicType):
 
     @property
     def name(self) -> str:
-        """Return the name of the decorated type."""
+        """Return the name of the wrapped type."""
         return self.__wrapped__.name
 
     @property
     def kwargs(self) -> MappingProxyType:
-        """Delegate to default implementation."""
+        """Delegate `kwargs` to default."""
         return self._default.kwargs
 
     @property
     def type_def(self) -> type | None:
-        """Delegate `type_def` lookups to the default implementation."""
+        """Delegate `type_def` to default."""
         return self._default.type_def
 
     @property
     def dtype(self) -> np.dtype | ExtensionDtype:
-        """Delegate `dtype` lookups to the default implementation."""
+        """Delegate `dtype` to default."""
         return self._default.dtype
 
     @property
     def itemsize(self) -> int | None:
-        """Delegate `itemsize` lookups to the default implementation."""
+        """Delegate `itemsize` to default."""
         return self._default.itemsize
 
     @property
-    def na_value(self) -> Any:
-        return self._default.na_value
+    def is_numeric(self) -> bool:
+        """Delegate `is_numeric` to default."""
+        return self._default.is_numeric
 
     @property
-    def is_numeric(self) -> bool:
-        """Delegate `is_numeric` lookups to the default implementation."""
-        return self._default.is_numeric
+    def max(self) -> decimal.Decimal:
+        """Delegate `max` to default."""
+        return self._default.max
+
+    @property
+    def min(self) -> decimal.Decimal:
+        """Delegate `min` to default."""
+        return self._default.min
+
+    @property
+    def na_value(self) -> Any:
+        """Delegate `na_value` to default."""
+        return self._default.na_value
+
 
     #########################
     ####    TRAVERSAL    ####
@@ -1033,18 +1103,34 @@ cdef class GenericType(HierarchicalType):
                 f"backend specifier must be a string: {repr(backend)}"
             )
 
-        # TODO: decorator should be able to be applied to other
-        # HierarchicalTypes
+        # if cls is type:
+        #   - check is subclass of AtomicType
+        #   - check if cls.name is AtomicType.name and insert self.name
+        #   - cls._generic = self
+        #   - flag to create a BackendEncoder
+        # if cls is HierarchicalType:
+        #   - check if cls.name raises a NotImplementedError.  If it does,
+        #       call a cdef function that reassigns the value of .name, which
+        #       is a cdef readonly instance attribute.  -> this will never
+        #       occur.  init_identifier requires a valid name
+        #   - cls._generic = self (cdef public)
 
-        def decorator(cls: type) -> type:
+        # AtomicType has a readonly on_register list, initialized to
+        # getattr(type(self), "on_register", [])
+
+
+        def decorator(cls: type | HierarchicalType) -> type | HierarchicalType:
             """Link the decorated type to this GenericType."""
-            if isinstance(cls, type):
+            if isinstance(cls, HierarchicalType):
+                ...
+            else:
                 if not issubclass(cls, AtomicType):
                     raise TypeError(
                         f"@generic types can only contain AtomicTypes, not "
                         f"{cls}"
                     )
 
+                # TODO: these need to go into their own promises
                 if cls.name is AtomicType.name:
                     cls.name = self.name
 
@@ -1066,13 +1152,18 @@ cdef class GenericType(HierarchicalType):
                 if default:
                     self.default = instance
 
+            # TODO: this has to work on both class and instance level
+            # -> we set a type key in on_add here, but expect instances.
+            # -> maybe we generate a unique subclass of GenericType every time
+            # @generic is called?
+
             cls.registry.promises.setdefault(cls, []).append(promise)
             return cls
 
         return decorator
 
 
-cdef class ParentType(HierarchicalType):
+cdef class SuperType(HierarchicalType):
     """A hierarchical type that can contain other types as subtypes.
     """
 
@@ -1129,7 +1220,7 @@ cdef class ParentType(HierarchicalType):
         TODO
         """
         def decorator(cls: type) -> type:
-            """Link the decorated type to this ParentType."""
+            """Link the decorated type to this SuperType."""
             if not issubclass(cls, AtomicType):
                 raise TypeError("@generic types can only contain AtomicTypes")
 

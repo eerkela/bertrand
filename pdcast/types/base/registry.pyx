@@ -4,19 +4,23 @@ types and the relationships between them.
 import inspect
 import regex as re  # using alternate regex
 from types import MappingProxyType
+from typing import Any
 
 from pdcast.util.type_hints import type_specifier, dtype_like
 
 from .scalar cimport ScalarType
 
 
-# TODO: we probably have to adjust @subtype/@implementation decorators to
-# account for unregistered types.
+# TODO: aliases only need to interact with @register in the hierarchical case.
+# A concrete class's aliases are not added until it is actually instantiated.
 
+# -> If @generic, @supertype do not instantiate the wrapped class (or
+# themselves), then this can just work in the background.
 
-# TODO: @subtype should be decoupled from @generic
-# -> maybe separated into @generic, @supertype?  @supertype must be
-# cooperative
+# -> @generic returns an uninstantiated _GenericType class with an empty
+# __init__.  The wrapped class is added as a class-level __wrapped__ attribute.
+# When cls() is called, the attribute is taken from the class, instantiated as
+# an instance attribute, and deleted from the class.
 
 
 ######################
@@ -120,7 +124,7 @@ cdef class TypeRegistry:
 
     def __init__(self):
         self.base_types = set()
-        self.alias_map = []
+        self.pinned_aliases = []
         self.promises = {}
         self.update_hash()
 
@@ -187,8 +191,8 @@ cdef class TypeRegistry:
         self.base_types.add(instance)
         promises = self.promises.pop(type(instance), [])
         while promises:
-            delayed = promises.pop()
-            delayed(instance)
+            promise = promises.pop()
+            promise(instance)
 
         self.update_hash()
 
@@ -212,17 +216,28 @@ cdef class TypeRegistry:
         TypeRegistry.clear : remove all types from the registry.
         """
         self.base_types.remove(instance)
-        self.update_hash()
 
-    def clear(self):
-        """Clear the AtomicType registry, removing every type at once.
+        # remove all aliases
+        instance.aliases.clear()
 
-        See Also
-        --------
-        TypeRegistry.add : add a type to the registry.
-        TypeRegistry.remove : remove a single type from the registry.
-        """
-        self.base_types.clear()
+        # remove instance from supertype
+        if instance.supertype:
+            subtypes = instance.supertype._subtypes
+            subtypes.remove(instance)
+
+        # remove instance from generic
+        if instance.generic:
+            backends = instance.generic._backends
+            to_remove = [k for k, v in backends.items() if v == instance]
+            for k in to_remove:
+                del backends[k]
+
+        # recur for each of the instance's children
+        for typ in instance.subtypes:
+            self.remove(typ)
+        for typ in getattr(instance, "backends", {}).values():
+            self.remove(typ)
+
         self.update_hash()
 
     #####################
@@ -258,9 +273,8 @@ cdef class TypeRegistry:
         cached = self._aliases
         if not cached:
             result = {
-                alias: typ
-                for typ, manager in self.alias_map
-                for alias in manager
+                alias: manager.instance
+                for manager in self.pinned_aliases for alias in manager
             }
             cached = CacheValue(MappingProxyType(result))
             self._aliases = cached
@@ -370,45 +384,43 @@ cdef class TypeRegistry:
         """Pin a type to the global alias namespace if it is not already being
         tracked.
         """
-        cdef Type typ
-        cdef AliasManager _
-
-        for typ, _ in self.alias_map:
-            if typ is instance:
+        for manager in self.pinned_aliases:
+            if manager.instance is instance:
                 break
         else:
-            self.alias_map.append((instance, aliases))
+            self.pinned_aliases.append(aliases)
 
     cdef void unpin(self, Type instance):
         """Unpin a type from the global alias namespace."""
-        self.alias_map = [
-            (typ, manager) for typ, manager in self.alias_map
-            if typ is not instance
+        self.pinned_aliases = [
+            manager for manager in self.pinned_aliases
+            if manager.instance is not instance
         ]
 
-    def _validate_no_parameters(self, instance: ScalarType):
+    def _validate_no_parameters(self, instance: ScalarType) -> None:
         """Ensure that a base type is not parametrized."""
-        # TODO: inspect the type's kwargs by comparing against
-        # instance._base_instance.  Currently, this fails for GenericTypes
-        pass
+        if instance != instance.base_instance:
+            raise TypeError(f"{repr(instance)} must not be parametrized")
 
-    def _validate_name(self, instance: ScalarType):
+    def _validate_name(self, instance: ScalarType) -> None:
         """Ensure that a base type has a unique name attribute."""
-        if not isinstance(instance.name, str):
-            raise TypeError(f"{instance.__qualname__}.name must be a string")
+        # check slug is unique
+        slug = str(instance)
+        observed = {str(typ): typ for typ in self.base_types}
+        if slug in observed:
+            existing = observed[slug]
+            raise TypeError(
+                f"{repr(instance)} slug must be unique: '{slug}' is currently "
+                f"registered to {repr(existing)}"
+            )
 
-        # ensure typ.name is unique or inherited from generic type
-        # if (
-        #     isinstance(instance, atomic.AtomicType) and
-        #     instance._is_generic != False or
-        #    instance.name != instance._generic.name
-        #):
-        #    observed_names = {x.name for x in self.base_types}
-        #    if instance.name in observed_names:
-        #        raise TypeError(
-        #            f"name must be unique, not one of {observed_names}"
-        #        )
+    # TODO: registry.add() should check if aliases are unique
+    # TODO: AliasManager.add() should delay pinning the type until it is
+    # actually registered.  Use promises for this.
 
+    # TODO: in general, init_base is responsible for making sure the type can
+    # be constructed sensibly as written.  Registry is responsible for making
+    # sure it does not conflict with any other types.
 
     ###############################
     ####    SPECIAL METHODS    ####
@@ -685,60 +697,3 @@ cdef class CacheValue:
     def __bool__(self) -> bool:
         """Indicates whether a cached registry value is out of date."""
         return self.hash == Type.registry.hash
-
-
-# TODO: validate() is unused
-
-
-cdef int validate(
-    object typ,
-    str name,
-    object expected_type = None,
-    object signature = None,
-) except -1:
-    """Ensure that a subclass defines a particular named attribute."""
-    # ensure attribute exists
-    if not hasattr(typ, name):
-        raise TypeError(f"{typ.__name__} must define a `{name}` attribute")
-
-    # get attribute value
-    attr = getattr(typ, name)
-
-    # if an expected type is given, check it
-    if expected_type is not None:
-        if expected_type in ("method", "classmethod"):
-            bound = getattr(attr, "__self__", None)
-            if expected_type == "method" and bound:
-                raise TypeError(
-                    f"{typ.__name__}.{name}() must be an instance method"
-                )
-            elif expected_type == "classmethod" and bound != typ:
-                raise TypeError(
-                    f"{typ.__name__}.{name}() must be a classmethod"
-                )
-        elif not isinstance(attr, expected_type):
-            raise TypeError(
-                f"{typ.__name__}.{name} must be of type {expected_type}, not "
-                f"{type(attr)}"
-            )
-
-    # if attribute has a signature match, check it
-    if signature is not None:
-        if (
-            isinstance(signature, type) and
-            signature.__init__ == ScalarType.__init__
-        ):
-            expected = MappingProxyType({})
-        else:
-            expected = inspect.signature(signature).parameters
-
-        try:
-            attr_sig = inspect.signature(attr).parameters
-        except ValueError:  # cython methods aren't introspectable
-            attr_sig = MappingProxyType({})
-
-        if attr_sig != expected:
-            raise TypeError(
-                f"{typ.__name__}.{name}() must have the following signature: "
-                f"{dict(expected)}, not {attr_sig}"
-            )

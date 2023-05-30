@@ -5,8 +5,9 @@ from .composite cimport CompositeType
 
 cdef class AtomicTypeConstructor(ScalarType):
 
-    cdef void _init_identifier(self, type subclass)
-    cdef void _init_instances(self, type subclass)
+    cdef void _init_identifier(self)
+    cdef void _init_instances(self)
+    cdef void _init_aliases(self)
 
 
 cdef class AtomicType(AtomicTypeConstructor):
@@ -27,6 +28,6 @@ cdef class GenericType(HierarchicalType):
         dict _backends
 
 
-cdef class ParentType(HierarchicalType):
+cdef class SuperType(HierarchicalType):
     cdef:
         CompositeType _subtypes

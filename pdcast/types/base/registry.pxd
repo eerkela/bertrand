@@ -1,14 +1,8 @@
 
-cdef class CacheValue:
-    cdef readonly:
-        object value
-        long long hash
-
-
 cdef class TypeRegistry:
     cdef:
         set base_types
-        list alias_map
+        list pinned_aliases
         long long _hash
         CacheValue _aliases
         CacheValue _regex
@@ -24,8 +18,10 @@ cdef class TypeRegistry:
 
 cdef class AliasManager:
     cdef:
-        Type instance
         set aliases
+
+    cdef readonly:
+        Type instance
 
     cdef object normalize_specifier(self, alias)
     cdef void pin(self)
@@ -33,5 +29,16 @@ cdef class AliasManager:
 
 
 cdef class Type:
-    cdef readonly:
+    cdef:
         AliasManager _aliases
+
+
+cdef class CacheValue:
+    cdef readonly:
+        object value
+        long long hash
+
+
+cdef class TypeMap:
+    cdef:
+        list map

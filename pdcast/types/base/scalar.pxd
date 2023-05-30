@@ -11,6 +11,7 @@ cdef class ScalarType(Type):
     cdef readonly:
         ArgumentEncoder encode
         InstanceFactory instances
+        ScalarType base_instance
 
     cdef void init_base(self)
     cdef void init_parametrized(self)
