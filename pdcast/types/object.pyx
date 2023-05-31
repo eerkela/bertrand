@@ -8,7 +8,7 @@ cimport numpy as np
 import pandas as pd
 
 from pdcast import resolve
-from pdcast.util.type_hints import type_specifier
+from pdcast.util.type_hints import dtype_like, type_specifier
 
 from .base cimport AtomicType, CompositeType
 from .base import register
@@ -20,21 +20,22 @@ from .base import register
 
 
 @register
-class ObjectType(AtomicType, cache_size=64):
+class ObjectType(AtomicType):
 
+    cache_size = 64
     name = "object"
     aliases = {
         "object", "obj", "O", "pyobject", "object_", "object0", np.dtype("O")
     }
 
     def __init__(self, type_def: type = object):
-        super().__init__(type_def=type_def)
+        super(AtomicType, self).__init__(type_def=type_def)
 
     @property
-    def dtype(self) -> np.dtype | pd.api.extensions.ExtensionDtype:
+    def dtype(self) -> dtype_like:
         if self.type_def is object:
             return np.dtype("O")
-        return super().dtype
+        return super(AtomicType, self).dtype
 
     @property
     def type_def(self) -> type:
@@ -64,19 +65,10 @@ class ObjectType(AtomicType, cache_size=64):
             return isinstance(other, type(self))
         return super().contains(other, include_subtypes=include_subtypes)
 
-    @classmethod
-    def slugify(cls, type_def: type = object) -> str:
-        if type_def is object:
-            return cls.name
-        if type_def.__module__ in {None, "builtins", "__main__"}:
-            return f"{cls.name}[{type_def.__qualname__}]"
-        return f"{cls.name}[{type_def.__module__}.{type_def.__qualname__}]"
-
-    @classmethod
-    def resolve(cls, type_def: str = None) -> AtomicType:
+    def resolve(self, type_def: str = None) -> AtomicType:
         if type_def is None:
-            return cls.instance()
-        return cls.instance(type_def=from_caller(type_def))
+            return self()
+        return self(type_def=from_caller(type_def))
 
 
 #######################
@@ -107,9 +99,7 @@ cdef object from_caller(str name, int stack_index = 0):
     elif first in frame.f_builtins:
         result = frame.f_builtins[first]
     else:
-        raise ValueError(
-            f"could not find {name} in calling frame at position {stack_index}"
-        )
+        raise ValueError(f"could not find {repr(name)} in calling frame")
 
     # walk through any remaining path components
     cdef str component

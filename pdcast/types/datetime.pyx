@@ -70,12 +70,13 @@ class DatetimeType(AtomicType):
 
 @register
 @DatetimeType.implementation("numpy")
-class NumpyDatetime64Type(AtomicType, cache_size=64):
+class NumpyDatetime64Type(AtomicType):
 
     # NOTE: dtype is set to object due to pandas and its penchant for
     # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
     # a custom ExtensionDtype/AbstractDtype or the raw numpy dtypes here.
 
+    cache_size = 64
     aliases = {
         np.datetime64,
         np.dtype("M8"),
@@ -111,19 +112,11 @@ class NumpyDatetime64Type(AtomicType, cache_size=64):
             self.min = time.numpy_datetime64_to_ns(min_M8)
             self.max = time.numpy_datetime64_to_ns(max_M8)
 
-        super().__init__(unit=unit, step_size=step_size)
+        super(AtomicType, self).__init__(unit=unit, step_size=step_size)
 
     ###########################
     ####   TYPE METHODS    ####
     ###########################
-
-    @classmethod
-    def slugify(cls, unit: str = None, step_size: int = 1) -> str:
-        if unit is None:
-            return f"{cls.name}[{cls._backend}]"
-        if step_size == 1:
-            return f"{cls.name}[{cls._backend}, {unit}]"
-        return f"{cls.name}[{cls._backend}, {step_size}{unit}]"
 
     def contains(
         self,
@@ -142,18 +135,16 @@ class NumpyDatetime64Type(AtomicType, cache_size=64):
             return isinstance(other, type(self))
         return super().contains(other, include_subtypes=include_subtypes)
 
-    @classmethod
-    def detect(cls, example: np.datetime64, **defaults) -> AtomicType:
+    def detect(self, example: np.datetime64, **defaults) -> AtomicType:
         unit, step_size = np.datetime_data(example)
-        return cls.instance(unit=unit, step_size=step_size, **defaults)
+        return self(unit=unit, step_size=step_size, **defaults)
 
-    @classmethod
     def from_dtype(
-        cls,
+        self,
         dtype: np.dtype | pd.api.extensions.ExtensionDtype
     ) -> AtomicType:
         unit, step_size = np.datetime_data(dtype)
-        return cls.instance(
+        return self(
             unit=None if unit == "generic" else unit,
             step_size=step_size
         )
@@ -162,19 +153,18 @@ class NumpyDatetime64Type(AtomicType, cache_size=64):
     def larger(self) -> list:
         """Get a list of types that this type can be upcasted to."""
         if self.unit is None:
-            return [self.instance(unit=u) for u in time.valid_units]
+            return [self(unit=u) for u in time.valid_units]
         return []
 
-    @classmethod
-    def resolve(cls, context: str = None) -> AtomicType:
+    def resolve(self, context: str = None) -> AtomicType:
         if context is not None:
             match = M8_pattern.match(context)
             if not match:
                 raise ValueError(f"invalid unit: {repr(context)}")
             unit = match.group("unit")
             step_size = int(match.group("step_size") or 1)
-            return cls.instance(unit=unit, step_size=step_size)
-        return cls.instance()
+            return self(unit=unit, step_size=step_size)
+        return self()
 
 
 ######################
@@ -184,8 +174,9 @@ class NumpyDatetime64Type(AtomicType, cache_size=64):
 
 @register
 @DatetimeType.implementation("pandas")
-class PandasTimestampType(AtomicType, cache_size=64):
+class PandasTimestampType(AtomicType):
 
+    cache_size = 64
     aliases = {
         pd.Timestamp,
         pd.DatetimeTZDtype,
@@ -204,7 +195,7 @@ class PandasTimestampType(AtomicType, cache_size=64):
 
     def __init__(self, tz: datetime.tzinfo | str = None):
         tz = time.tz(tz, {})
-        super().__init__(tz=tz)
+        super(AtomicType, self).__init__(tz=tz)
 
     ########################
     ####    REQUIRED    ####
@@ -220,12 +211,6 @@ class PandasTimestampType(AtomicType, cache_size=64):
     ####    TYPE METHODS    ####
     ############################
 
-    @classmethod
-    def slugify(cls, tz: datetime.tzinfo | str = None):
-        if tz is None:
-            return f"{cls.name}[{cls._backend}]"
-        return f"{cls.name}[{cls._backend}, {str(tz))}]"
-
     def contains(
         self,
         other: type_specifier,
@@ -243,22 +228,19 @@ class PandasTimestampType(AtomicType, cache_size=64):
             return isinstance(other, type(self))
         return super().contains(other, include_subtypes=include_subtypes)
 
-    @classmethod
-    def detect(cls, example: pd.Timestamp, **defaults) -> AtomicType:
-        return cls.instance(tz=example.tzinfo, **defaults)
+    def detect(self, example: pd.Timestamp, **defaults) -> AtomicType:
+        return self(tz=example.tzinfo, **defaults)
 
-    @classmethod
     def from_dtype(
-        cls,
+        self,
         dtype: np.dtype | pd.api.extensions.ExtensionDtype
     ) -> AtomicType:
-        return cls.instance(tz=getattr(dtype, "tz", None))
+        return self(tz=getattr(dtype, "tz", None))
 
-    @classmethod
-    def resolve(cls, context: str = None) -> AtomicType:
+    def resolve(self, context: str = None) -> AtomicType:
         if context is not None:
-            return cls.instance(tz=time.tz(context, {}))
-        return cls.instance()
+            return self(tz=time.tz(context, {}))
+        return self()
 
 
 ######################
@@ -268,8 +250,9 @@ class PandasTimestampType(AtomicType, cache_size=64):
 
 @register
 @DatetimeType.implementation("python")
-class PythonDatetimeType(AtomicType, cache_size=64):
+class PythonDatetimeType(AtomicType):
 
+    cache_size = 64
     aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
     na_value = pd.NaT
     type_def = datetime.datetime
@@ -278,17 +261,11 @@ class PythonDatetimeType(AtomicType, cache_size=64):
 
     def __init__(self, tz: datetime.tzinfo = None):
         tz = time.tz(tz, {})
-        super().__init__(tz=tz)
+        super(AtomicType, self).__init__(tz=tz)
 
     ############################
     ####    TYPE METHODS    ####
     ############################
-
-    @classmethod
-    def slugify(cls, tz: datetime.tzinfo = None):
-        if tz is None:
-            return f"{cls.name}[{cls._backend}]"
-        return f"{cls.name}[{cls._backend}, {str(tz))}]"
 
     def contains(
         self,
@@ -307,15 +284,13 @@ class PythonDatetimeType(AtomicType, cache_size=64):
             return isinstance(other, type(self))
         return super().contains(other, include_subtypes=include_subtypes)
 
-    @classmethod
-    def detect(cls, example: datetime.datetime, **defaults) -> AtomicType:
-        return cls.instance(tz=example.tzinfo, **defaults)
+    def detect(self, example: datetime.datetime, **defaults) -> AtomicType:
+        return self(tz=example.tzinfo, **defaults)
 
-    @classmethod
-    def resolve(cls, context: str = None) -> AtomicType:
+    def resolve(self, context: str = None) -> AtomicType:
         if context is not None:
-            return cls.instance(tz=time.tz(context, {}))
-        return cls.instance()
+            return self(tz=time.tz(context, {}))
+        return self()
 
 
 #######################

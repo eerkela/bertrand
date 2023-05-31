@@ -23,6 +23,11 @@ from .registry cimport Type, AliasManager
 ######################
 
 
+cdef Exception READ_ONLY_ERROR = (
+    AttributeError("ScalarType objects are read-only")
+)
+
+
 cdef class ScalarType(Type):
     """Base type for :class:`AtomicType` and :class:`AdapterType` objects.
 
@@ -239,7 +244,7 @@ cdef class ScalarType(Type):
 
         # prevent assignment outside __init__()
         elif self._read_only:
-            raise AttributeError("ScalarType objects are read-only")
+            raise READ_ONLY_ERROR
         else:
             self.__dict__[name] = value
 

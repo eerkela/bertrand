@@ -1,7 +1,6 @@
 
 cdef class TypeRegistry:
     cdef:
-        dict instances
         list pinned_aliases
         long long _hash
         CacheValue _aliases
@@ -9,7 +8,10 @@ cdef class TypeRegistry:
         CacheValue _resolvable
 
     cdef readonly:
+        dict instances
+        dict supertypes
         dict subtypes
+        dict generics
         dict implementations
         dict defaults
 

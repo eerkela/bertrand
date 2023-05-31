@@ -24,10 +24,6 @@ class DecimalType(AtomicType):
 
     name = "decimal"
     aliases = {"decimal"}
-    type_def = decimal.Decimal
-    itemsize = sys.getsizeof(decimal.Decimal(0))
-    na_value = decimal.Decimal("nan")
-    is_numeric = True
 
 
 ##############################
@@ -36,7 +32,7 @@ class DecimalType(AtomicType):
 
 
 @register
-@DecimalType.implementation("python")
+@DecimalType.implementation("python", default=True)
 class PythonDecimalType(AtomicType):
 
     aliases = {decimal.Decimal}

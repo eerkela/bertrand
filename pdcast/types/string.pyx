@@ -7,6 +7,8 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
+from pdcast.util.type_hints import dtype_like
+
 from .base cimport AtomicType, Type
 from .base import generic, register
 
@@ -58,10 +60,7 @@ class StringType(AtomicType):
     type_def = str
 
     @classmethod
-    def from_dtype(
-        cls,
-        dtype: np.dtype | pd.api.extensions.ExtensionDtype
-    ) -> AtomicType:
+    def from_dtype(cls, dtype: dtype_like) -> AtomicType:
         # string extension type special case
         if isinstance(dtype, pd.StringDtype):
             if dtype.storage == "pyarrow":

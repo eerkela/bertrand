@@ -1,6 +1,9 @@
 from .registry cimport Type, AliasManager
 
 
+cdef Exception READ_ONLY_ERROR
+
+
 cdef class ScalarType(Type):
     cdef:
         dict _kwargs

@@ -98,7 +98,7 @@ cdef class Detector:
     """A factory that returns type objects from example data."""
 
     def __init__(self):
-        self.aliases = types.registry.aliases
+        self.aliases = dict(types.registry.aliases)
 
     def __call__(self) -> types.Type:
         raise NotImplementedError(f"{type(self)} does not implement __call__")

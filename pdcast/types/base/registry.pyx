@@ -9,7 +9,7 @@ from typing import Any
 from pdcast.util.type_hints import type_specifier, dtype_like
 
 from .scalar cimport ScalarType
-from .atomic cimport HierarchicalType
+from .atomic cimport AtomicType, HierarchicalType, GenericType, SuperType
 
 
 # TODO: Whenever @generic/@supertype are called, they push configuration
@@ -130,7 +130,9 @@ cdef class TypeRegistry:
 
     def __init__(self):
         self.instances = {}
+        self.supertypes = {}
         self.subtypes = {}
+        self.generics = {}
         self.implementations = {}
         self.defaults = {}
         self.pinned_aliases = []
@@ -253,7 +255,14 @@ cdef class TypeRegistry:
     ####    LINKS    ####
     #####################
 
-    def get_subtypes(self, HierarchicalType typ) -> set:
+    def get_supertype(self, AtomicType typ) -> SuperType:
+        """Get a type's supertype if it is registered."""
+        result = self.supertypes.get(type(typ), None)
+        if result is not None:
+            result = self.instances.get(result, None)
+        return result
+
+    def get_subtypes(self, SuperType typ) -> set:
         """Get all the registered subtypes associated with a type."""
         result = set()
         candidates = self.subtypes[type(typ)]
@@ -265,7 +274,14 @@ cdef class TypeRegistry:
 
         return result
 
-    def get_implementations(self, HierarchicalType typ) -> dict:
+    def get_generic(self, AtomicType typ) -> GenericType:
+        """Get a type's generic implementation if it is registered."""
+        result = self.generics.get(type(typ), None)
+        if result is not None:
+            result = self.instances.get(result, None)
+        return result
+
+    def get_implementations(self, GenericType typ) -> dict:
         """Get all the registered implementations associated with a type."""
         result = {}
         candidates = self.implementations[type(typ)]
@@ -277,7 +293,7 @@ cdef class TypeRegistry:
 
         return result
 
-    def get_default(self, HierarchicalType typ) -> ScalarType:
+    def get_default(self, HierarchicalType typ) -> AtomicType:
         """Get the default implementation for a hierarchical type."""
         default = self.defaults.get(type(typ), None)
         return self.instances.get(default, None)
