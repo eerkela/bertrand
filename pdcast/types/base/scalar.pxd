@@ -9,7 +9,7 @@ cdef class ScalarType(Type):
         bint _read_only
 
     cdef readonly:
-        ArgumentEncoder encode
+        ArgumentEncoder encoder
         InstanceFactory instances
         ScalarType base_instance
 
@@ -36,4 +36,4 @@ cdef class InstanceFactory:
 cdef class FlyweightFactory(InstanceFactory):
     cdef:
         dict instances
-        ArgumentEncoder encode
+        ArgumentEncoder encoder

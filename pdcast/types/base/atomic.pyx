@@ -5,6 +5,7 @@ import decimal
 import inspect
 from types import MappingProxyType
 from typing import Any
+import warnings
 
 cimport numpy as np
 import numpy as np
@@ -89,7 +90,7 @@ cdef class AtomicTypeConstructor(ScalarType):
         self.base_instance = self
 
         self._init_encoder()
-        self._slug = self.encode((), self._kwargs)
+        self._slug = self.encoder((), self._kwargs)
         self._init_instances()
 
     cdef void init_parametrized(self):
@@ -100,8 +101,8 @@ cdef class AtomicTypeConstructor(ScalarType):
         """
         base = self.base_instance
 
-        self.encode = base.encode
-        self._slug = self.encode((), self._kwargs)
+        self.encoder = base.encoder
+        self._slug = self.encoder((), self._kwargs)
         self.instances = base.instances
 
     cdef void _init_encoder(self):
@@ -133,13 +134,13 @@ cdef class AtomicTypeConstructor(ScalarType):
         # append the backend specifier as the first parameter to maintain
         # uniqueness.
 
-        backend = getattr(self, "_backend", None)
+        backend = getattr(type(self), "_backend", None)
         if backend is None:
-            encode = ArgumentEncoder(name, parameters)
+            encoder = ArgumentEncoder(name, parameters)
         else:
-            encode = BackendEncoder(name, parameters, backend)
+            encoder = BackendEncoder(name, parameters, backend)
 
-        self.encode = encode
+        self.encoder = encoder
 
     cdef void _init_instances(self):
         """Create an InstanceFactory to control instance generation for this
@@ -154,7 +155,7 @@ cdef class AtomicTypeConstructor(ScalarType):
         if not cache_size:
             instances = InstanceFactory(type(self))
         else:
-            instances = FlyweightFactory(type(self), self.encode, cache_size)
+            instances = FlyweightFactory(type(self), self.encoder, cache_size)
             instances[self._slug] = self
 
         self.instances = instances
@@ -804,22 +805,6 @@ cdef class AtomicType(AtomicTypeConstructor):
 ############################
 
 
-# TODO: add a _default field to HierarchicalTypes that defaults to None.
-# In HierarchicalType.__init__, check if this is None and replace with wrapped
-# and delete from class.  In HierarchicalType.default, check if it is defined
-# on type(self).
-# In HierarchicalType.default, check if it is a type and 
-
-# The best way to think about these decorators is as procedural class creation.
-# Also like the builder pattern.
-
-# TODO: Can I encapsulate the signalling between class and instance in some
-# way?  I do it here with Hierarchical types and again with concrete types
-# and the AtomicType constructor.  Maybe _backends can contain *either* classes
-# or instances, and we just filter off any that are not instantiated in
-# .backends
-
-
 def generic(cls: type) -> type:
     """Class decorator to mark generic type definitions.
 
@@ -875,7 +860,7 @@ cdef class HierarchicalType(AtomicType):
         self._aliases = AliasManager(self)
 
         # ScalarType.__init__
-        self.encode = self.__wrapped__.encode
+        self.encoder = self.__wrapped__.encoder
         self.instances = self.__wrapped__.instances
         self._slug = self.__wrapped__._slug
         self._hash = self.__wrapped__._hash
@@ -1076,7 +1061,8 @@ cdef class GenericType(HierarchicalType):
     def implementation(
         cls,
         backend: str,
-        default: bool = False
+        default: bool = False,
+        warn: bool = True
     ):
         """A class decorator that registers a type definition as an
         implementation of this type.
@@ -1129,7 +1115,12 @@ cdef class GenericType(HierarchicalType):
 
             # register default implementation
             if default:
-                # TODO: warn if replacing default
+                if warn and cls in cls.registry.defaults:
+                    warn_msg = (
+                        f"overwriting default for {cls} (use `warn=False` to "
+                        f"silence this message)"
+                    )
+                    warnings.warn(warn_msg, UserWarning)
                 cls.registry.defaults[cls] = implementation
 
             return implementation

@@ -362,11 +362,11 @@ cdef class FlyweightFactory(InstanceFactory):
     def __init__(
         self,
         type base_class,
-        ArgumentEncoder encode,
+        ArgumentEncoder encoder,
         int cache_size
     ):
         super().__init__(base_class)
-        self.encode = encode
+        self.encoder = encoder
         if cache_size < 0:
             self.instances = {}
         else:
@@ -376,7 +376,7 @@ cdef class FlyweightFactory(InstanceFactory):
         cdef str slug
         cdef ScalarType instance
 
-        slug = self.encode(args, kwargs)
+        slug = self.encoder(args, kwargs)
         instance = self.instances.get(slug, None)
         if instance is None:
             instance = self.base_class(*args, **kwargs)

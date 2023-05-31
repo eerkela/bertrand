@@ -12,93 +12,16 @@ from .scalar cimport ScalarType
 from .atomic cimport HierarchicalType
 
 
-# TODO: at the highest possible level, I have a collection of class definitions
-# that describe types.
-
-# Each type must be instantiated and its configuration pushed to the global
-# registry.
-
-# The registry should keep track of all the links between each type and update
-# them as necessary.
-
-
-
-
 # TODO: Whenever @generic/@supertype are called, they push configuration
 # changes to the TypeRegistry.
 
 # TypeRegistry maintains a dict of all generic classes to their implementation
 # types.
-# -> When GenericType.backends is requested, we search its type in this map
-# and return all the implementations that appear in registry.
 # -> When AtomicType.generic is requested, we search this map in reverse
 
-
-# TypeRegistry should map type classes to their instances.
-
-
-# TypeRegistry should maintain 3 separate maps:
-# .instances -> dict[type, ScalarType]
-# .generics -> dict[type, dict[str, type]]
-# .subtypes -> dict[type, set[type]]
-
-# It should then expose 2 convenience methods: get_implementations() and
-# get_subtypes() which are directly called in AtomicType
-
-# def get_implementations(self, cls: type) -> dict
-#     result = {}
-#     for backend, implementation in self.generics[cls].items():
-#         instance = self.instances.get(implementation, None)
-#         if instance is None:
-#             continue
-#         result[backend] = instance
-#     return result
-
-
-# def get_subtypes(self, cls: type) -> set:
-#     result = set()
-#     for subtype in self.subtypes[cls]:
-#         instance = self.instances.get(subtype, None)
-#         if instance is None:
-#             continue
-#         result.add(instance)
-#     return result
-
-
-
-
-# TODO: We can't use types as keys because they might be decorated in the future.
-# -> whenever a decorator is applied, we move all of its references into
-# the new type.
-
-
-
-
-# {
-#     GenericType: {
-#         backend: implementation,
-#         ...
-#     },
-#     GenericType: {
-#         ...
-#     }
-# }
-
-
-
-
-
-
-# TODO: aliases only need to interact with @register in the hierarchical case.
-# A concrete class's aliases are not added until it is actually instantiated.
-
-# -> If @generic, @supertype do not instantiate the wrapped class (or
-# themselves), then this can just work in the background.
-
-# -> @generic returns an uninstantiated _GenericType class with an empty
-# __init__.  The wrapped class is added as a class-level __wrapped__ attribute.
-# When cls() is called, the attribute is taken from the class, instantiated as
-# an instance attribute, and deleted from the class.
+# TODO: When a hierarchical decorator is applied to another hierarchical type,
+# we need to update any registry configuration that references the original
+# type.
 
 
 ######################
