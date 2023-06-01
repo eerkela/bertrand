@@ -97,9 +97,9 @@ def register(
         except AttributeError:
             pass
 
-        # register each alias
         for alias in aliases:
-            instance.aliases.add(alias)
+            instance.aliases.add(alias)  # registers with resolve_type()
+
         return instance
 
     if class_ is None:

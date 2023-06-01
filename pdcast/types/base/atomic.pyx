@@ -26,13 +26,6 @@ from .composite cimport CompositeType
 from ..array import abstract
 
 
-# TODO: pdcast.resolve_type("datetime[numpy]") is pdcast.NumpyDatetime64Type == False
-# -> something's wonky with parameter encoding.
-# pdcast.NumpyDatetime64Type != pdcast.NumpyDatetime64Type()
-
-# appears to only be true for base instance.
-
-
 # TODO: add examples/raises for each method
 
 # TODO: remove is_na() in favor of pd.isna() and convert make_nullable into
@@ -54,30 +47,6 @@ from ..array import abstract
 
 
 # TODO: .subtypes should include backends
-
-
-# conversions
-# +------------------------------------------------
-# |           | b | i | f | c | d | d | t | s | o |
-# +-----------+------------------------------------
-# | bool      | x | x | x | x | x | x | x | x | x |
-# +-----------+---+---+---+---+---+---+---+---+---+
-# | int       | x | x | x | x | x | x | x | x | x |
-# +-----------+---+---+---+---+---+---+---+---+---+
-# | float     | x | x | x | x | x | x | x | x | x |
-# +-----------+---+---+---+---+---+---+---+---+---+
-# | complex   | x | x | x | x | x | x | x | x | x |
-# +-----------+---+---+---+---+---+---+---+---+---+
-# | decimal   | x | x | x | x | x | x | x | x | x |
-# +-----------+---+---+---+---+---+---+---+---+---+
-# | datetime  | x | x | x | x | x | x | x | x | x |
-# +-----------+---+---+---+---+---+---+---+---+---+
-# | timedelta | x | x | x | x | x | x | x | x | x |
-# +-----------+---+---+---+---+---+---+---+---+---+
-# | string    | x | x | x | x | x | x | x | x | x |
-# +-----------+---+---+---+---+---+---+---+---+---+
-# | object    | x | x | x | x | x | x | x | x | x |
-# +-----------+---+---+---+---+---+---+---+---+---+
 
 
 ######################
@@ -136,8 +105,6 @@ cdef class AtomicTypeConstructor(ScalarType):
         if not isinstance(name, str):
             raise TypeError(f"{repr(self)}.name must be a string")
 
-        parameters = tuple(self._kwargs)
-
         # NOTE: appropriate slug generation depends on hierarchical
         # configuration.  If name is inherited from GenericType, we have to
         # append the backend specifier as the first parameter to maintain
@@ -145,9 +112,9 @@ cdef class AtomicTypeConstructor(ScalarType):
 
         backend = getattr(type(self), "_backend", None)
         if backend is None:
-            encoder = ArgumentEncoder(name, parameters)
+            encoder = ArgumentEncoder(name, self._kwargs)
         else:
-            encoder = BackendEncoder(name, parameters, backend)
+            encoder = BackendEncoder(name, self._kwargs, backend)
 
         self.encoder = encoder
 
@@ -714,7 +681,9 @@ cdef class AtomicType(AtomicTypeConstructor):
         """A :class:`CompositeType <pdcast.CompositeType>` containing all the
         leaf nodes associated with this type's subtypes.
         """
-        return CompositeType()  # overridden in SuperType/GenericType
+        # TODO: atm this does not include self
+        candidates = self.subtypes.expand()
+        return CompositeType(typ for typ in candidates if typ.is_leaf)
 
     @property
     def larger(self) -> Iterator[AtomicType]:
@@ -729,7 +698,22 @@ cdef class AtomicType(AtomicTypeConstructor):
         -----
         Candidate types will always be tested in order.
         """
-        yield from ()  # overridden in SuperType/GenericType
+        leaves = CompositeType()
+        for implementation in self.backends.values():
+            leaves |= implementation.leaves
+
+        # filter off any leaves with range less than self
+        candidates = [
+            typ for typ in leaves if typ.max > self.max or typ.min < self.min
+        ]
+
+        # sort according to range, preferring types centered near zero
+        coverage = lambda typ: typ.max - typ.min
+        bias = lambda typ: abs(typ.max + typ.min)
+        itemsize = lambda typ: typ.itemsize or np.inf
+        key = lambda typ: (coverage(typ), bias(typ), itemsize(typ))
+
+        yield from sorted(candidates, key=key)
 
     @property
     def smaller(self) -> Iterator[AtomicType]:
@@ -743,7 +727,21 @@ cdef class AtomicType(AtomicTypeConstructor):
         -----
         Candidate types will always be tested in order.
         """
-        yield from ()  # overridden in SuperType/GenericType
+        leaves = CompositeType()
+        for implementation in self.backends.values():
+            leaves |= implementation.leaves
+
+        # filter off any leaves with itemsize greater than self
+        itemsize = lambda typ: typ.itemsize or np.inf
+        candidates = [typ for typ in leaves if itemsize(typ) < itemsize(self)]
+
+        # sort by itemsize then range, preferring types centered near zero
+        coverage = lambda typ: typ.max - typ.min
+        bias = lambda typ: abs(typ.max + typ.min)
+        key = lambda typ: (itemsize(typ), coverage(typ), bias(typ))
+
+        yield from sorted(candidates, key=key)
+
 
     ########################
     ####    ADAPTERS    ####
@@ -845,6 +843,7 @@ def generic(cls: type) -> type:
         __wrapped__ = cls
         name = cls.name
 
+    # copy aliases up the stack
     try:
         _GenericType.aliases = object.__getattribute__(cls, "aliases")
         del cls.aliases
@@ -867,6 +866,7 @@ def supertype(cls: type) -> type:
         __wrapped__ = cls
         name = cls.name
 
+    # copy aliases up the stack
     try:
         _SuperType.aliases = object.__getattribute__(cls, "aliases")
         del cls.aliases
@@ -1023,7 +1023,7 @@ cdef class HierarchicalType(AtomicType):
     def __call__(self, *args, **kwargs):
         if not (args or kwargs):
             return self
-        return self.instances(*args, **kwargs)
+        return self.instances(args, kwargs)
 
     def __repr__(self) -> str:
         return repr(self.__wrapped__)
@@ -1122,10 +1122,15 @@ cdef class GenericType(HierarchicalType):
             cls.registry.generics[implementation] = cls
 
             # allow namespace collisions w/ special encoding
-            if implementation.name is AtomicType.name:
-                implementation.name = cls.name
-            if implementation.name == cls.name:
-                implementation._backend = backend
+            base_type = implementation
+            while issubclass(base_type, HierarchicalType):
+                base_type = base_type.__wrapped__
+            try:
+                object.__getattribute__(base_type, "name")
+            except AttributeError:
+                base_type.name = cls.name
+            if base_type.name == cls.name:
+                base_type._backend = backend
 
             # ensure backend is unique
             candidates = cls.registry.implementations[cls]
@@ -1140,8 +1145,8 @@ cdef class GenericType(HierarchicalType):
             if default:
                 if warn and cls in cls.registry.defaults:
                     warn_msg = (
-                        f"overwriting default for {cls} (use `warn=False` to "
-                        f"silence this message)"
+                        f"overwriting default for {repr(cls)} (use "
+                        f"`warn=False` to silence this message)"
                     )
                     warnings.warn(warn_msg, UserWarning)
                 cls.registry.defaults[cls] = implementation
@@ -1195,17 +1200,19 @@ cdef class SuperType(HierarchicalType):
     ####    NEW    ####
     ###################
 
+    @classmethod
     def subtype(
-        self,
-        cls: type | AtomicType = None,
+        cls,
+        subtype: type | AtomicType = None,
         *,
-        default: bool = False
+        default: bool = False,
+        warn: bool = True
     ) -> type | AtomicType:
         """A class decorator that registers a child type to this parent.
 
         Parameters
         ----------
-        cls : type | AtomicType
+        subtype : type | AtomicType
             An :class:`AtomicType <pdcast.AtomicType>` subclass or other
             :class:`HierarchicalType <pdcast.HierarchicalType>` to register to
             this type.
@@ -1222,29 +1229,46 @@ cdef class SuperType(HierarchicalType):
         -----
         TODO
         """
-        def decorator(cls: type) -> type:
+        def decorator(_subtype: type) -> type:
             """Link the decorated type to this SuperType."""
-            if not issubclass(cls, AtomicType):
-                raise TypeError("@generic types can only contain AtomicTypes")
-
-            if hasattr(cls, "_parent"):
+            if not issubclass(_subtype, AtomicType):
                 raise TypeError(
-                    f"subtypes can only be registered to one parent at a "
-                    f"time: '{cls.__qualname__}' is currently registered to "
-                    f"'{cls._parent.__qualname__}'"
+                    f"SuperTypes can only contain AtomicTypes, not "
+                    f"{repr(_subtype)}"
                 )
 
-            typ = cls
+            # if _subtype in cls.registry.supertypes:
+            #     raise TypeError(
+            #         f"subtypes can only be registered to one parent at a "
+            #         f"time: '{_subtype.__qualname__}' is currently registered to "
+            #         f"'{_subtype._parent.__qualname__}'"
+            #     )
+
+            # ensure hierarchy does not contain cycles
+            typ = _subtype
             while typ is not None:
-                if typ is self:
+                if typ is cls:
                     raise TypeError(
-                        "type hierarchy cannot contain circular references"
+                        f"type hierarchy cannot contain circular references: "
+                        f"{repr(cls)}"
                     )
-                typ = typ._parent
+                typ = cls.registry.supertypes.get(typ, None)
 
-            cls._parent = self
-            self._subtypes |= cls()
-            self.registry.flush()
-            return cls
+            # marker for AtomicType.supertype
+            cls.registry.supertypes[_subtype] = cls
 
+            # register default implementation
+            if default:
+                if warn and cls in cls.registry.defaults:
+                    warn_msg = (
+                        f"overwriting default for {repr(cls)} (use "
+                        f"`warn=False` to silence this message)"
+                    )
+                    warnings.warn(warn_msg, UserWarning)
+                cls.registry.defaults[cls] = _subtype
+
+            return _subtype
+
+        if subtype is not None:
+            return decorator(subtype)
         return decorator

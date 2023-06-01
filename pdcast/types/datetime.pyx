@@ -114,9 +114,38 @@ class NumpyDatetime64Type(AtomicType):
 
         super(AtomicType, self).__init__(unit=unit, step_size=step_size)
 
-    ###########################
-    ####   TYPE METHODS    ####
-    ###########################
+    def detect(self, example: np.datetime64, **defaults) -> AtomicType:
+        unit, step_size = np.datetime_data(example)
+        return self(unit=unit, step_size=step_size, **defaults)
+
+    def from_dtype(
+        self,
+        dtype: np.dtype | pd.api.extensions.ExtensionDtype
+    ) -> AtomicType:
+        unit, step_size = np.datetime_data(dtype)
+        return self(
+            unit=None if unit == "generic" else unit,
+            step_size=step_size
+        )
+
+    @property
+    def larger(self) -> Iterator[AtomicType]:
+        """Get an iterator of types that this type can be upcasted to."""
+        if self.unit is None:
+            for unit in time.valid_units:
+                yield self(unit=unit)
+        else:
+            yield from ()
+
+    def resolve(self, context: str = None) -> AtomicType:
+        if context is not None:
+            match = M8_pattern.match(context)
+            if not match:
+                raise ValueError(f"invalid unit: {repr(context)}")
+            unit = match.group("unit")
+            step_size = int(match.group("step_size") or 1)
+            return self(unit=unit, step_size=step_size)
+        return self()
 
     def contains(
         self,
@@ -134,37 +163,6 @@ class NumpyDatetime64Type(AtomicType):
         if self.unit is None:
             return isinstance(other, type(self))
         return super().contains(other, include_subtypes=include_subtypes)
-
-    def detect(self, example: np.datetime64, **defaults) -> AtomicType:
-        unit, step_size = np.datetime_data(example)
-        return self(unit=unit, step_size=step_size, **defaults)
-
-    def from_dtype(
-        self,
-        dtype: np.dtype | pd.api.extensions.ExtensionDtype
-    ) -> AtomicType:
-        unit, step_size = np.datetime_data(dtype)
-        return self(
-            unit=None if unit == "generic" else unit,
-            step_size=step_size
-        )
-
-    @property
-    def larger(self) -> list:
-        """Get a list of types that this type can be upcasted to."""
-        if self.unit is None:
-            return [self(unit=u) for u in time.valid_units]
-        return []
-
-    def resolve(self, context: str = None) -> AtomicType:
-        if context is not None:
-            match = M8_pattern.match(context)
-            if not match:
-                raise ValueError(f"invalid unit: {repr(context)}")
-            unit = match.group("unit")
-            step_size = int(match.group("step_size") or 1)
-            return self(unit=unit, step_size=step_size)
-        return self()
 
 
 ######################

@@ -56,18 +56,22 @@ class StringType(AtomicType):
         "unicode_",
         "U",
     }
-    dtype = default_string_dtype
-    type_def = str
 
-    @classmethod
-    def from_dtype(cls, dtype: dtype_like) -> AtomicType:
+    def from_dtype(self, dtype: dtype_like) -> AtomicType:
         # string extension type special case
         if isinstance(dtype, pd.StringDtype):
             if dtype.storage == "pyarrow":
-                return PyArrowStringType.instance()
-            return PythonStringType.instance()
+                if PyArrowStringType not in self.registry:
+                    raise ValueError("PyArrow string backend is not registered")
 
-        return cls.instance()
+                return PyArrowStringType
+
+            if PythonStringType not in self.registry:
+                raise ValueError("Python string backend is not registered")
+
+            return PythonStringType
+
+        return self
 
 
 #####################
@@ -76,7 +80,7 @@ class StringType(AtomicType):
 
 
 @register
-@StringType.implementation("python")
+@StringType.implementation("python", default=True)
 class PythonStringType(AtomicType):
 
     aliases = set()
@@ -98,7 +102,7 @@ if pyarrow_installed:
 
 
     @register
-    @StringType.implementation("pyarrow")
+    @StringType.implementation("pyarrow", default=True, warn=False)
     class PyArrowStringType(AtomicType):
 
         aliases = set()

@@ -250,7 +250,7 @@ cdef class ScalarType(Type):
 
     def __call__(self, *args, **kwargs) -> ScalarType:
         """Constructor for parametrized types."""
-        return self.instances(*args, **kwargs)
+        return self.instances(args, kwargs)
 
     def __contains__(self, other: type_specifier) -> bool:
         """Implement the ``in`` keyword for membership checks.
@@ -289,30 +289,31 @@ cdef class ArgumentEncoder:
     base name and parameters.
     """
 
-    def __init__(self, str name, tuple parameters):
+    def __init__(self, str name, dict parameters):
         self.name = name
-        self.parameters = parameters
+        self.parameters = tuple(parameters)
+        self.defaults = {k: str(v) for k, v in parameters.items()}
 
     @cython.wraparound(False)
     def __call__(self, tuple args, dict kwargs) -> str:
         """Construct a string representation with the given *args, **kwargs."""
         cdef unsigned short arg_length = len(args)
         cdef unsigned short kwarg_length = len(kwargs)
+        cdef dict ordered
         cdef unsigned short i
-        cdef list ordered = []
-        cdef object param
+        cdef str param
 
+        ordered = self.defaults.copy()
         for i in range(arg_length + kwarg_length):
+            param = self.parameters[i]
             if i < arg_length:
-                param = args[i]
+                ordered[param] = str(args[i])
             else:
-                param = kwargs[self.parameters[i]]
-    
-            ordered.append(str(param))
+                ordered[param] = str(kwargs[param])
 
         if not ordered:
             return self.name
-        return f"{self.name}[{', '.join(ordered)}]"
+        return f"{self.name}[{', '.join(ordered.values())}]"
 
 
 cdef class BackendEncoder:
@@ -320,7 +321,7 @@ cdef class BackendEncoder:
     the first parameter of the returned slug.
     """
 
-    def __init__(self, str name, tuple parameters, str backend):
+    def __init__(self, str name, dict parameters, str backend):
         super().__init__(name, parameters)
         self.backend = backend
 
@@ -329,19 +330,21 @@ cdef class BackendEncoder:
         """Construct a string representation with the given *args, **kwargs."""
         cdef unsigned short arg_length = len(args)
         cdef unsigned short kwarg_length = len(kwargs)
+        cdef dict ordered
         cdef unsigned short i
-        cdef list ordered = [self.backend]
-        cdef object param
+        cdef str param
 
+        ordered = self.defaults.copy()
         for i in range(arg_length + kwarg_length):
+            param = self.parameters[i]
             if i < arg_length:
-                param = args[i]
+                ordered[param] = str(args[i])
             else:
-                param = kwargs[self.parameters[i]]
-    
-            ordered.append(str(param))
+                ordered[param] = str(kwargs[param])
 
-        return f"{self.name}[{', '.join(ordered)}]"
+        if not ordered:
+            return f"{self.name}[{self.backend}]"
+        return f"{self.name}[{self.backend}, {', '.join(ordered.values())}]"
 
 
 #############################
@@ -357,7 +360,7 @@ cdef class InstanceFactory:
     def __init__(self, type base_class):
         self.base_class = base_class
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, tuple args, dict kwargs):
         raise self.base_class(*args, **kwargs)
 
 
@@ -377,7 +380,7 @@ cdef class FlyweightFactory(InstanceFactory):
         else:
             self.instances = LRUDict(maxsize=cache_size)
 
-    def __call__(self, *args, **kwargs) -> ScalarType:
+    def __call__(self, tuple args, dict kwargs) -> ScalarType:
         cdef str slug
         cdef ScalarType instance
 
