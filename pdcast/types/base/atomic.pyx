@@ -828,6 +828,40 @@ cdef class AtomicType(AtomicTypeConstructor):
 ############################
 
 
+# TODO: @supertype, @generic need to transfer defaults, etc to the decorating
+# type.
+# pdcast.registry.defaults[type(pdcast.SignedIntegerType)]  # KeyError
+# pdcast.registry.defaults[type(pdcast.SignedIntegerType.__wrapped__)]  # fine
+
+# TODO: problem is that @implementation, @subtype point to the decorating type
+# and not any that might be added above it.  There are 2 solutions:
+# -> have HierarchicalType contain a class level self reference, which is
+# inserted into the decorator.
+# -> merge @subtype, @generic into a single decorator that combines both
+# functions.
+
+# The second one might actually be a better solution.  Maybe it can be renamed
+# simply ParentType/@parent
+
+# @register
+# @parent
+# class IntegerType(AtomicType)
+
+# @register
+# @IntegerType.subtype(default=True)
+# @parent
+# class SignedIntegerType(AtomicType)
+
+# @register
+# @NumpyIntegerType.subtype(default=True)
+# @SignedIntegerType.implementation("numpy")
+# @parent
+# class NumpySignedIntegerType(AtomicType)
+
+
+# TODO: .backends[None] should reference default, not __wrapped__
+
+
 def generic(cls: type) -> type:
     """Class decorator to mark generic type definitions.
 

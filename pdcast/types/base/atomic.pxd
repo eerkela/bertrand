@@ -36,4 +36,4 @@ cdef class GenericType(HierarchicalType):
 
 cdef class SuperType(HierarchicalType):
     cdef:
-        CompositeType _subtypes
+        CacheValue _subtypes

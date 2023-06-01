@@ -14,6 +14,11 @@ from .base import generic, register, supertype
 # TODO: str(pdcast.resolve_type("int[numpy]")) == "int64[numpy]"
 # TODO: str(pdcast.resolve_type("unsigned[numpy]")) == "uint64[numpy]"
 
+# pdcast.resolve_type("int[numpy]").name   <-   wrong
+
+# pdcast.NumpyIntegerType.name
+# NotImplementedError: '_SuperType' is missing a `name` field.
+
 
 ######################
 ####    MIXINS    ####
@@ -78,11 +83,6 @@ class IntegerType(IntegerMixin, NumpyIntegerMixin, AtomicType):
 
     name = "int"
     aliases = {"int", "integer"}
-    dtype = np.dtype(np.int64)
-    itemsize = 8
-    type_def = int
-    max = 2**63 - 1
-    min = -2**63
 
 
 @register

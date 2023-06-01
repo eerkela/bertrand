@@ -163,10 +163,6 @@ cdef class TypeRegistry:
         """
         self._hash += 1
 
-    ##########################
-    ####    ADD/REMOVE    ####
-    ##########################
-
     def add(self, instance: ScalarType) -> None:
         """Validate a base type and add it to the registry.
 

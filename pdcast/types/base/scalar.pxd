@@ -21,7 +21,7 @@ cdef class ScalarType(Type):
 
 
 cdef class ArgumentEncoder:
-    cdef readonly:
+    cdef:
         str name
         tuple parameters
         dict defaults
