@@ -10,7 +10,7 @@ cimport numpy as np
 from pdcast.util.type_hints import numeric
 
 from .base cimport AtomicType, CompositeType
-from .base import generic, register, supertype
+from .base import parent, register
 import pdcast.types.complex as complex_types
 
 
@@ -66,8 +66,7 @@ class FloatMixin:
 
 
 @register
-@generic
-@supertype
+@parent
 class FloatType(FloatMixin, AtomicType):
     """Generic float supertype"""
 
@@ -84,7 +83,7 @@ class FloatType(FloatMixin, AtomicType):
 
 @register
 @FloatType.subtype
-@generic
+@parent
 class Float16Type(FloatMixin, AtomicType):
 
     name = "float16"
@@ -100,7 +99,7 @@ class Float16Type(FloatMixin, AtomicType):
 
 @register
 @FloatType.subtype
-@generic
+@parent
 class Float32Type(FloatMixin, AtomicType):
 
     name = "float32"
@@ -116,7 +115,7 @@ class Float32Type(FloatMixin, AtomicType):
 
 @register
 @FloatType.subtype
-@generic
+@parent
 class Float64Type(FloatMixin, AtomicType):
 
     name = "float64"
@@ -132,7 +131,7 @@ class Float64Type(FloatMixin, AtomicType):
 
 @register(cond=has_longdouble)
 @FloatType.subtype
-@generic
+@parent
 class Float80Type(FloatMixin, AtomicType):
 
     name = "float80"
@@ -156,7 +155,7 @@ class Float80Type(FloatMixin, AtomicType):
 
 @register
 @FloatType.implementation("numpy")
-@supertype
+@parent
 class NumpyFloatType(FloatMixin, AtomicType):
 
     aliases = {np.floating}

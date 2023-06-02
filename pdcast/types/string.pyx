@@ -10,7 +10,7 @@ import pandas as pd
 from pdcast.util.type_hints import dtype_like
 
 from .base cimport AtomicType, Type
-from .base import generic, register
+from .base import parent, register
 
 
 #########################
@@ -38,7 +38,7 @@ except ImportError:
 
 
 @register
-@generic
+@parent
 class StringType(AtomicType):
     """String supertype."""
 

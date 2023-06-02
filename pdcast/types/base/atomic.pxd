@@ -21,19 +21,11 @@ cdef class AtomicType(AtomicTypeConstructor):
         object _na_value
 
 
-cdef class HierarchicalType(AtomicType):
+cdef class ParentType(AtomicType):
     cdef:
         AtomicType _default
+        CacheValue _backends
+        CacheValue _subtypes
 
     cdef readonly:
         AtomicType __wrapped__
-
-
-cdef class GenericType(HierarchicalType):
-    cdef:
-        CacheValue _backends
-
-
-cdef class SuperType(HierarchicalType):
-    cdef:
-        CacheValue _subtypes

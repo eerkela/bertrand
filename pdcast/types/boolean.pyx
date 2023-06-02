@@ -8,7 +8,7 @@ cimport numpy as np
 import pandas as pd
 
 from .base cimport AtomicType
-from .base import generic, register
+from .base import parent, register
 
 
 ######################
@@ -49,7 +49,7 @@ class NumpyBooleanMixin:
 
 
 @register
-@generic
+@parent
 class BooleanType(AtomicType):
     """Generic boolean type.
 

@@ -34,17 +34,33 @@ cdef class ScalarType(Type):
     This allows inherited types to manage aliases and update them at runtime.
     """
 
+    base_instance: ScalarType = None
+
     def __init__(self, **kwargs):
         super().__init__()
         self._kwargs = kwargs
 
-        if self.base_instance:
-            self.init_parametrized()
-        else:
+        if not type(self).base_instance:
             self.init_base()
+        else:
+            self.init_parametrized()
 
         self._hash = hash(self._slug)
         self._read_only = True
+
+    @staticmethod
+    cdef void set_encoder(type cls, ArgumentEncoder encoder):
+        """Inject a configurable ArgumentEncoder to generate string identifiers
+        for this type.
+        """
+        cls.encoder = encoder
+
+    @staticmethod
+    cdef void set_instances(type cls, InstanceFactory instances):
+        """Inject a configurable InstanceFactory to control instance creation
+        for this type.
+        """
+        cls.instances = instances
 
     cdef void init_base(self):
         """Initialize a base (non-parametrized) instance of this type.
@@ -71,10 +87,16 @@ cdef class ScalarType(Type):
             __init_subclass__ method will raise a compilation error instead.
 
         """
-        raise NotImplementedError(
-            f"{repr(type(self).__qualname__)} must implement an init_base() "
-            f"method"
-        )
+        type(self).base_instance = self
+
+        encoder = type(self).encoder
+        encoder.set_name(self.name)
+        encoder.set_kwargs(self._kwargs)
+
+        # optimization: attributes are copied into cdef'ed instance attributes
+        self.encoder = encoder
+        self.instances = type(self).instances
+
 
     cdef void init_parametrized(self):
         """Initialize a parametrized instance of this type with attributes
@@ -89,10 +111,9 @@ cdef class ScalarType(Type):
         Every attribute that is assigned in init_base should also be assigned
         here.
         """
-        raise NotImplementedError(
-            f"{repr(type(self).__qualname__)} must implement an "
-            "init_parametrized() method"
-        )
+        cdef ScalarType base = type(self).base_instance
+
+        self.encoder = base.encoder
 
     ##########################
     ####    ATTRIBUTES    ####
@@ -293,6 +314,19 @@ cdef class ArgumentEncoder:
         self.name = name
         self.parameters = tuple(parameters)
         self.defaults = {k: str(v) for k, v in parameters.items()}
+
+    cdef void set_name(self, str name):
+        """Set this encoder's base name, which will be prepended to every
+        string it generates.
+        """
+        self.name = name
+
+    cdef void set_kwargs(self, dict kwargs):
+        """Set this encoder's expected arguments, which will be concatenated
+        into a comma-separated list.
+        """
+        self.parameters = tuple(kwargs)
+        self.defaults = {k: str(v) for k, v in kwargs.items()}
 
     @cython.wraparound(False)
     def __call__(self, tuple args, dict kwargs) -> str:

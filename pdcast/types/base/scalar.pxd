@@ -14,7 +14,12 @@ cdef class ScalarType(Type):
     cdef readonly:
         ArgumentEncoder encoder
         InstanceFactory instances
-        ScalarType base_instance
+
+    @staticmethod
+    cdef void set_encoder(type cls, ArgumentEncoder encoder)
+
+    @staticmethod
+    cdef void set_instances(type cls, InstanceFactory instances)
 
     cdef void init_base(self)
     cdef void init_parametrized(self)
@@ -25,6 +30,9 @@ cdef class ArgumentEncoder:
         str name
         tuple parameters
         dict defaults
+
+    cdef void set_name(self, str name)
+    cdef void set_kwargs(self, dict kwargs)
 
 
 cdef class BackendEncoder(ArgumentEncoder):

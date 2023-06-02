@@ -11,10 +11,6 @@ from .scalar cimport ScalarType
 from .registry cimport AliasManager, Type
 
 
-# TODO: if supporting dynamic aliases, CompositeType must implement
-# from_string, from_dtype
-
-
 cdef class CompositeType(Type):
     """Set-like container for type objects.
 
@@ -81,12 +77,11 @@ cdef class CompositeType(Type):
         result = self.copy()
         if expand_generics:
             for original in self:
-                backends = getattr(original, "backends", {None: original})
-                for typ in backends.values():
+                for typ in original.backends.values():
                     result.add(typ)
 
         for typ in result.copy():
-            result |= traverse_subtypes(typ, result)
+            result |= traverse_subtypes(typ)
 
         return result
 
@@ -398,16 +393,23 @@ cdef class CompositeType(Type):
 #######################
 
 
-cdef CompositeType traverse_subtypes(
+cdef void _traverse_subtypes(
     ScalarType typ,
-    CompositeType result
+    set result
 ):
-    """Traverse through a scalar type's subtype tree, recursively gathering
+    """Recursive inner function for `traverse_subtypes()`."""
+    cdef CompositeType subtypes = typ.subtypes
+
+    result.update(typ.subtypes)
+    for subtype in subtypes:
+        _traverse_subtypes(subtype, result)
+
+
+cdef CompositeType traverse_subtypes(ScalarType typ):
+    """Traverse through a scalar type's subtype tree, recursively flattening
     all its children.
     """
-    cdef CompositeType subtypes
+    cdef set result = set()
 
-    subtypes = getattr(typ, "subtypes", CompositeType())
-    return result.union(
-        traverse_subtypes(subtype, result) for subtype in subtypes
-    )
+    _traverse_subtypes(typ, result)
+    return CompositeType(result)

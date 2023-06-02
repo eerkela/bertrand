@@ -9,19 +9,7 @@ from typing import Any
 from pdcast.util.type_hints import type_specifier, dtype_like
 
 from .scalar cimport ScalarType
-from .atomic cimport AtomicType, HierarchicalType, GenericType, SuperType
-
-
-# TODO: Whenever @generic/@supertype are called, they push configuration
-# changes to the TypeRegistry.
-
-# TypeRegistry maintains a dict of all generic classes to their implementation
-# types.
-# -> When AtomicType.generic is requested, we search this map in reverse
-
-# TODO: When a hierarchical decorator is applied to another hierarchical type,
-# we need to update any registry configuration that references the original
-# type.
+from .atomic cimport AtomicType, ParentType
 
 
 ######################
@@ -30,7 +18,7 @@ from .atomic cimport AtomicType, HierarchicalType, GenericType, SuperType
 
 
 def register(
-    class_: type | ScalarType | None = None,
+    class_: type = None,
     *,
     cond: bool = True
 ) -> ScalarType:
@@ -38,7 +26,7 @@ def register(
 
     Parameters
     ----------
-    class_ : type | GenericType | None
+    class_ : type
         The type definition to register.
     cond : bool, default True
         Used to create :ref:`conditional types <tutorial.conditional>`.  The
@@ -251,14 +239,14 @@ cdef class TypeRegistry:
     ####    LINKS    ####
     #####################
 
-    def get_supertype(self, AtomicType typ) -> SuperType:
+    def get_supertype(self, AtomicType typ) -> ParentType:
         """Get a type's supertype if it is registered."""
         result = self.supertypes.get(type(typ), None)
         if result is not None:
             result = self.instances.get(result, None)
         return result
 
-    def get_subtypes(self, SuperType typ) -> set:
+    def get_subtypes(self, ParentType typ) -> set:
         """Get all the registered subtypes associated with a type."""
         result = set()
         candidates = self.subtypes[type(typ)]
@@ -270,14 +258,14 @@ cdef class TypeRegistry:
 
         return result
 
-    def get_generic(self, AtomicType typ) -> GenericType:
+    def get_generic(self, AtomicType typ) -> ParentType:
         """Get a type's generic implementation if it is registered."""
         result = self.generics.get(type(typ), None)
         if result is not None:
             result = self.instances.get(result, None)
         return result
 
-    def get_implementations(self, GenericType typ) -> dict:
+    def get_implementations(self, ParentType typ) -> dict:
         """Get all the registered implementations associated with a type."""
         result = {}
         candidates = self.implementations[type(typ)]
@@ -289,7 +277,7 @@ cdef class TypeRegistry:
 
         return result
 
-    def get_default(self, HierarchicalType typ) -> AtomicType:
+    def get_default(self, ParentType typ) -> AtomicType:
         """Get the default implementation for a hierarchical type."""
         default = self.defaults.get(type(typ), None)
         return self.instances.get(default, None)

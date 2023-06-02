@@ -13,7 +13,7 @@ from pdcast.util import time
 from pdcast.util.type_hints import type_specifier
 
 from .base cimport AtomicType, CompositeType
-from .base import generic, register
+from .base import parent, register
 
 
 # TODO: PandasTimestampType.from_string cannot convert quarterly dates
@@ -25,7 +25,7 @@ from .base import generic, register
 
 
 @register
-@generic
+@parent
 class DatetimeType(AtomicType):
 
     name = "datetime"

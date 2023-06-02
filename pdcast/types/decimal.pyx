@@ -7,7 +7,7 @@ import sys
 from pdcast.util.type_hints import numeric
 
 from .base cimport AtomicType, CompositeType
-from .base import generic, register
+from .base import parent, register
 
 
 # https://github.com/pandas-dev/pandas/blob/e246c3b05924ac1fe083565a765ce847fcad3d91/pandas/tests/extension/decimal/array.py
@@ -19,7 +19,7 @@ from .base import generic, register
 
 
 @register
-@generic
+@parent
 class DecimalType(AtomicType):
 
     name = "decimal"

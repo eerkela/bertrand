@@ -31,22 +31,10 @@ from ..array import abstract
 # TODO: remove is_na() in favor of pd.isna() and convert make_nullable into
 # a .nullable property.
 
-
-# TODO: supertypes and generic types should automatically discover
-# larger/smaller implementations.
-# -> get self.leaves and filter.
-# -> for .larger, get all types with range wider than self.  Ties are broken
-# by itemsize, and secondary ties are broken by centering from zero.
-# -> for .smaller, get all types with itemsize smaller than self.  Ties are
-# broken by maximizing range, with secondary ties centered from zero.
-# -> yield each result in order.
-
-
 # TODO: store .max, .min as Decimal objects.  init_base can intercept these
 # and coerce them to decimal if needed.
 
-
-# TODO: .subtypes should include backends
+# TODO: does it make sense for @implementation to decorate a parent type?
 
 
 ######################
@@ -97,18 +85,16 @@ cdef class AtomicTypeConstructor(ScalarType):
                 unique backend specifier and zero or more parameter strings.
 
         The second option is chosen whenever a concrete implementation is
-        registered to a :class:`GenericType` that shares the same name.  This
-        is what allows us to maintain generic namespaces with unique
-        identifiers.
+        registered to a parent that shares the same name.  This is what allows
+        us to maintain generic namespaces with unique identifiers.
         """
         name = self.name
         if not isinstance(name, str):
             raise TypeError(f"{repr(self)}.name must be a string")
 
         # NOTE: appropriate slug generation depends on hierarchical
-        # configuration.  If name is inherited from GenericType, we have to
-        # append the backend specifier as the first parameter to maintain
-        # uniqueness.
+        # configuration.  If name is inherited from parent, we have to append
+        # the backend specifier as the first parameter to maintain uniqueness.
 
         backend = getattr(type(self), "_backend", None)
         if backend is None:
@@ -635,13 +621,11 @@ cdef class AtomicType(AtomicTypeConstructor):
 
     @property
     def is_generic(self) -> bool:
-        """Indicates whether this type is decorated with
-        :func:`@generic <generic>`.
-        """
-        return False  # Overridden in Generictype
+        """Indicates whether this type is managing any backends."""
+        return False  # overridden in ParentType
 
     @property
-    def generic(self) -> GenericType:
+    def generic(self) -> ParentType:
         """The generic equivalent of this type, if one exists."""
         return self.registry.get_generic(self)
 
@@ -669,20 +653,19 @@ cdef class AtomicType(AtomicTypeConstructor):
         The result of this accessor is cached between :class:`TypeRegistry`
         updates.
         """
-        return CompositeType()  # overridden in SuperType
+        return CompositeType()  # overridden in ParentType
 
     @property
     def is_leaf(self) -> bool:
         """Indicates whether this type has subtypes."""
-        return True  # overridden in SuperType/GenericType
+        return True  # overridden in ParentType
 
     @property
     def leaves(self) -> CompositeType:
         """A :class:`CompositeType <pdcast.CompositeType>` containing all the
         leaf nodes associated with this type's subtypes.
         """
-        # TODO: atm this does not include self
-        candidates = self.subtypes.expand()
+        candidates = CompositeType(self).expand()
         return CompositeType(typ for typ in candidates if typ.is_leaf)
 
     @property
@@ -828,41 +811,11 @@ cdef class AtomicType(AtomicTypeConstructor):
 ############################
 
 
-# TODO: @supertype, @generic need to transfer defaults, etc to the decorating
-# type.
-# pdcast.registry.defaults[type(pdcast.SignedIntegerType)]  # KeyError
-# pdcast.registry.defaults[type(pdcast.SignedIntegerType.__wrapped__)]  # fine
-
-# TODO: problem is that @implementation, @subtype point to the decorating type
-# and not any that might be added above it.  There are 2 solutions:
-# -> have HierarchicalType contain a class level self reference, which is
-# inserted into the decorator.
-# -> merge @subtype, @generic into a single decorator that combines both
-# functions.
-
-# The second one might actually be a better solution.  Maybe it can be renamed
-# simply ParentType/@parent
-
-# @register
-# @parent
-# class IntegerType(AtomicType)
-
-# @register
-# @IntegerType.subtype(default=True)
-# @parent
-# class SignedIntegerType(AtomicType)
-
-# @register
-# @NumpyIntegerType.subtype(default=True)
-# @SignedIntegerType.implementation("numpy")
-# @parent
-# class NumpySignedIntegerType(AtomicType)
+# TODO: if @parent comes after @implementation/@subtype, then we need to
+# modify the global registry to point to the new type.
 
 
-# TODO: .backends[None] should reference default, not __wrapped__
-
-
-def generic(cls: type) -> type:
+def parent(cls: type) -> type:
     """Class decorator to mark generic type definitions.
 
     Generic types are backend-agnostic and act as wildcard containers for
@@ -871,47 +824,25 @@ def generic(cls: type) -> type:
     subtypes, which can be resolved as shown. 
     """
     if not issubclass(cls, AtomicType):
-        raise TypeError("@generic can only be applied to AtomicTypes")
+        raise TypeError("@parent can only be applied to AtomicTypes")
 
-    class _GenericType(GenericType):
+    class _ParentType(ParentType):
         __wrapped__ = cls
         name = cls.name
 
     # copy aliases up the stack
     try:
-        _GenericType.aliases = object.__getattribute__(cls, "aliases")
+        _ParentType.aliases = object.__getattribute__(cls, "aliases")
         del cls.aliases
     except AttributeError:
         pass
 
-    cls.registry.implementations[_GenericType] = {}
-    return _GenericType
+    cls.registry.implementations[_ParentType] = {}
+    cls.registry.subtypes[_ParentType] = set()
+    return _ParentType
 
 
-def supertype(cls: type) -> type:
-    """Class decorator to mark parent type definitions.
-
-    Supertypes are nodes within the ``pdcast`` type system.
-    """
-    if not issubclass(cls, AtomicType):
-        raise TypeError("@supertype can only be applied to AtomicTypes")
-
-    class _SuperType(SuperType):
-        __wrapped__ = cls
-        name = cls.name
-
-    # copy aliases up the stack
-    try:
-        _SuperType.aliases = object.__getattribute__(cls, "aliases")
-        del cls.aliases
-    except AttributeError:
-        pass
-
-    cls.registry.subtypes[_SuperType] = []
-    return _SuperType
-
-
-cdef class HierarchicalType(AtomicType):
+cdef class ParentType(AtomicType):
     """A Composite Pattern type object that can contain other types.
     """
 
@@ -977,13 +908,226 @@ cdef class HierarchicalType(AtomicType):
     def default(self) -> None:
         self._default = None
 
-    ############################
-    ####    CONSTRUCTORS    ####
-    ############################
+    @classmethod
+    def implementation(
+        cls,
+        backend: str,
+        default: bool = False,
+        warn: bool = True
+    ):
+        """A class decorator that registers a type definition as an
+        implementation of this :class:`ParentType <pdcast.ParentType>`.
 
-    def resolve(self, *args: str) -> AtomicType:
+        Parameters
+        ----------
+        backend : str
+            A unique string to identify the decorated type.  This type will be
+            automatically parametrized to accept this specifier as its first
+            argument during :func:`resolve_type <pdcast.resolve_type>` lookups.
+        default : bool
+            If ``True``, set the decorated type as the default implementation
+            for this type.
+
+        Notes
+        -----
+        Any additional arguments will be dynamically passed to the
+        implementation's :meth:`resolve()` constructor.
+        """
+        if not isinstance(backend, str):
+            raise TypeError(
+                f"backend specifier must be a string: {repr(backend)}"
+            )
+
+        def decorator(implementation: type) -> type:
+            """Link the decorated type as an implementation of this parent."""
+            if not issubclass(implementation, AtomicType):
+                raise TypeError(
+                    f"ParentTypes can only contain AtomicTypes, not "
+                    f"{repr(implementation)}"
+                )
+
+            # marker for AtomicType.generic
+            cls.registry.generics[implementation] = cls
+
+            # allow namespace collisions w/ special encoding
+            base_type = implementation
+            while issubclass(base_type, ParentType):  # TODO: necessary?
+                base_type = base_type.__wrapped__
+            try:
+                object.__getattribute__(base_type, "name")
+            except AttributeError:
+                base_type.name = cls.name
+            if base_type.name == cls.name:
+                base_type._backend = backend
+
+            # register backend
+            candidates = cls.registry.implementations[cls]
+            if backend in candidates:
+                raise TypeError(
+                    f"backend specifier must be unique: {repr(backend)} is "
+                    f"reserved for {repr(candidates[backend])}"
+                )
+            candidates[backend] = implementation
+
+            # register default implementation
+            if default:
+                if warn and cls in cls.registry.defaults:
+                    warn_msg = (
+                        f"overwriting default for {repr(cls)} (use "
+                        f"`warn=False` to silence this message)"
+                    )
+                    warnings.warn(warn_msg, UserWarning)
+                cls.registry.defaults[cls] = implementation
+
+            return implementation
+
+        return decorator
+
+
+    @classmethod
+    def subtype(
+        cls,
+        subtype: type | AtomicType = None,
+        *,
+        default: bool = False,
+        warn: bool = True
+    ):
+        """A class decorator that registers a child type to this parent.
+
+        Parameters
+        ----------
+        subtype : type | AtomicType
+            An :class:`AtomicType <pdcast.AtomicType>` or
+            :class:`ParentType <pdcast.ParentType>` subclass to register to
+            this type.
+        default : bool, default False
+            Used to reassign the default value of the parent type to the child
+            type.
+
+        Returns
+        -------
+        type | AtomicType
+            The child type.
+
+        Notes
+        -----
+        TODO
+        """
+        def decorator(_subtype: type) -> type:
+            """Link the decorated type as a subtype of this parent."""
+            if not issubclass(_subtype, AtomicType):
+                raise TypeError(
+                    f"ParentTypes can only contain AtomicTypes, not "
+                    f"{repr(_subtype)}"
+                )
+
+            # if _subtype in cls.registry.supertypes:
+            #     raise TypeError(
+            #         f"subtypes can only be registered to one parent at a "
+            #         f"time: '{_subtype.__qualname__}' is currently registered to "
+            #         f"'{_subtype._parent.__qualname__}'"
+            #     )
+
+            # ensure hierarchy does not contain cycles
+            typ = _subtype
+            while typ is not None:
+                if typ is cls:
+                    raise TypeError(
+                        f"type hierarchy cannot contain circular references: "
+                        f"{repr(cls)}"
+                    )
+                typ = cls.registry.supertypes.get(typ, None)
+
+            # marker for AtomicType.supertype
+            cls.registry.supertypes[_subtype] = cls
+
+            # register subtype
+            cls.registry.subtypes[cls].add(_subtype)
+
+            # register default implementation
+            if default:
+                if warn and cls in cls.registry.defaults:
+                    warn_msg = (
+                        f"overwriting default for {repr(cls)} (use "
+                        f"`warn=False` to silence this message)"
+                    )
+                    warnings.warn(warn_msg, UserWarning)
+                cls.registry.defaults[cls] = _subtype
+
+            return _subtype
+
+        if subtype is not None:
+            return decorator(subtype)
+        return decorator
+
+    ##########################
+    ####    OVERLOADED    ####
+    ##########################
+
+    @property
+    def is_generic(self) -> bool:
+        """Indicates whether this type is managing any backends."""
+        return bool(self.registry.get_implementations(self))
+
+    @property
+    def backends(self) -> MappingProxyType:
+        """A mapping of all backend specifiers to their corresponding
+        concretions.
+        """
+        cached = self._backends
+        if not cached:
+            result = {None: self.default}
+            result |= self.registry.get_implementations(self)
+            cached = CacheValue(MappingProxyType(result))
+            self._backends = cached
+
+        return cached.value
+
+    @property
+    def subtypes(self) -> CompositeType:
+        """A :class:`CompositeType` containing every subtype that is
+        currently registered to this :class:`ParentType`.
+        """
+        cached = self._subtypes
+        if not cached:
+            result = self.registry.get_subtypes(self)
+            cached = CacheValue(CompositeType(result))
+            self._subtypes = cached
+
+        return cached.value
+
+    @property
+    def is_leaf(self) -> bool:
+        """Indicates whether this type has subtypes."""
+        return not self.subtypes and not self.is_generic
+
+    def resolve(self, backend: str | None = None, *args) -> AtomicType:
         """Forward constructor arguments to the appropriate implementation."""
-        return self.default.resolve(*args)
+        if backend is None:
+            return self
+        return self.backends[backend].resolve(*args)  
+
+    def contains(
+        self,
+        other: type_specifier,
+        include_subtypes: bool = True
+    ) -> bool:
+        """Extend membership checks to this type's subtypes/implementations."""
+        other = resolve.resolve_type(other)
+        if isinstance(other, CompositeType):
+            return all(
+                self.contains(o, include_subtypes=include_subtypes)
+                for o in other
+            )
+
+        children = {self.__wrapped__}
+        children |= {typ for typ in self.backends.values()}
+        children |= {typ for typ in self.subtypes}
+        return any(typ.contains(other) for typ in children)
+
+    #########################
+    ####    DELEGATED    ####
+    #########################
 
     def detect(self, example: Any) -> AtomicType:
         """Forward scalar inference to the default implementation."""
@@ -992,10 +1136,6 @@ cdef class HierarchicalType(AtomicType):
     def from_dtype(self, dtype: dtype_like) -> AtomicType:
         """Forward dtype translation to the default implementation."""
         return self.default.from_dtype(dtype)
-
-    #############################
-    ####    CONFIGURATION    ####
-    #############################
 
     @property
     def kwargs(self) -> MappingProxyType:
@@ -1033,26 +1173,21 @@ cdef class HierarchicalType(AtomicType):
         return self.default.min
 
     @property
+    def is_nullable(self) -> bool:
+        """Delegate `is_nullable` to default."""
+        return self.default.is_nullable
+
+    @property
     def na_value(self) -> Any:
         """Delegate `na_value` to default."""
         return self.default.na_value
 
-    #########################
-    ####    TRAVERSAL    ####
-    #########################
-
-    # TODO: delegate all AtomicType/ScalarType attributes to default.
-
-    ##########################
-    ####    MEMBERSHIP    ####
-    ##########################
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.default, name)
 
     ###############################
     ####    SPECIAL METHODS    ####
     ###############################
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.default, name)
 
     def __call__(self, *args, **kwargs):
         if not (args or kwargs):
@@ -1061,248 +1196,3 @@ cdef class HierarchicalType(AtomicType):
 
     def __repr__(self) -> str:
         return repr(self.__wrapped__)
-
-
-cdef class GenericType(HierarchicalType):
-    """A hierarchical type that can contain other types as implementations.
-    """
-
-    ##########################
-    ####    OVERLOADED    ####
-    ##########################
-
-    def resolve(self, backend: str | None = None, *args) -> AtomicType:
-        """Forward constructor arguments to the appropriate implementation."""
-        if backend is None:
-            return self
-        return self.backends[backend].resolve(*args)    
-
-    @property
-    def is_generic(self) -> bool:
-        """True by definition."""
-        return True
-
-    @property
-    def backends(self) -> MappingProxyType:
-        """A mapping of all backend specifiers to their corresponding
-        concretions.
-        """
-        cached = self._backends
-        if not cached:
-            result = {None: self.__wrapped__}
-            result |= self.registry.get_implementations(self)
-            cached = CacheValue(MappingProxyType(result))
-            self._backends = cached
-
-        return cached.value
-
-    def contains(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
-        """Extend membership checks to all of this type's implementations."""
-        other = resolve.resolve_type(other)
-        if isinstance(other, CompositeType):
-            return all(
-                self.contains(o, include_subtypes=include_subtypes)
-                for o in other
-            )
-        return any(typ.contains(other) for typ in self.backends.values())
-
-    ###################
-    ####    NEW    ####
-    ###################
-
-    @classmethod
-    def implementation(
-        cls,
-        backend: str,
-        default: bool = False,
-        warn: bool = True
-    ):
-        """A class decorator that registers a type definition as an
-        implementation of this type.
-
-        Parameters
-        ----------
-        backend : str
-            A unique string to identify the decorated type.  This type will be
-            automatically parametrized to accept this specifier as its first
-            argument during :func:`resolve_type <pdcast.resolve_type>` lookups.
-        default : bool
-            If ``True``, set the decorated type as the default implementation
-            for this type.
-
-        Notes
-        -----
-        Any additional arguments will be dynamically passed to the
-        implementation's :meth:`resolve()` constructor.
-        """
-        if not isinstance(backend, str):
-            raise TypeError(
-                f"backend specifier must be a string: {repr(backend)}"
-            )
-
-        def decorator(implementation: type) -> type:
-            """Link the decorated type to this GenericType."""
-            if not issubclass(implementation, AtomicType):
-                raise TypeError(
-                    f"GenericTypes can only contain AtomicTypes, not "
-                    f"{repr(implementation)}"
-                )
-
-            # marker for AtomicType.generic
-            cls.registry.generics[implementation] = cls
-
-            # allow namespace collisions w/ special encoding
-            base_type = implementation
-            while issubclass(base_type, HierarchicalType):
-                base_type = base_type.__wrapped__
-            try:
-                object.__getattribute__(base_type, "name")
-            except AttributeError:
-                base_type.name = cls.name
-            if base_type.name == cls.name:
-                base_type._backend = backend
-
-            # ensure backend is unique
-            candidates = cls.registry.implementations[cls]
-            if backend in candidates:
-                raise TypeError(
-                    f"backend specifier must be unique: {repr(backend)} is "
-                    f"reserved for {repr(candidates[backend])}"
-                )
-            candidates[backend] = implementation
-
-            # register default implementation
-            if default:
-                if warn and cls in cls.registry.defaults:
-                    warn_msg = (
-                        f"overwriting default for {repr(cls)} (use "
-                        f"`warn=False` to silence this message)"
-                    )
-                    warnings.warn(warn_msg, UserWarning)
-                cls.registry.defaults[cls] = implementation
-
-            return implementation
-
-        return decorator
-
-
-cdef class SuperType(HierarchicalType):
-    """A hierarchical type that can contain other types as subtypes.
-    """
-
-    ##########################
-    ####    OVERLOADED    ####
-    ##########################
-
-    @property
-    def subtypes(self) -> CompositeType:
-        """A :class:`CompositeType` containing every subtype that is
-        currently registered to this :class:`SuperType`.
-        """
-        cached = self._subtypes
-        if not cached:
-            result = self.registry.get_subtypes(self)
-            cached = CacheValue(CompositeType(result))
-            self._subtypes = cached
-
-        return cached.value
-
-    @property
-    def is_leaf(self) -> bool:
-        """Indicates whether this type has subtypes."""
-        return not self.subtypes
-
-    def contains(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
-        """TODO"""
-        other = resolve.resolve_type(other)
-        if isinstance(other, CompositeType):
-            return all(
-                self.contains(o, include_subtypes=include_subtypes)
-                for o in other
-            )
-        return self.subtypes.contains(other, include_subtypes=include_subtypes)
-
-    ###################
-    ####    NEW    ####
-    ###################
-
-    @classmethod
-    def subtype(
-        cls,
-        subtype: type | AtomicType = None,
-        *,
-        default: bool = False,
-        warn: bool = True
-    ) -> type | AtomicType:
-        """A class decorator that registers a child type to this parent.
-
-        Parameters
-        ----------
-        subtype : type | AtomicType
-            An :class:`AtomicType <pdcast.AtomicType>` subclass or other
-            :class:`HierarchicalType <pdcast.HierarchicalType>` to register to
-            this type.
-        default : bool, default False
-            Used to reassign the default value of the parent type to the child
-            type.
-
-        Returns
-        -------
-        type | AtomicType
-            The child type.
-
-        Notes
-        -----
-        TODO
-        """
-        def decorator(_subtype: type) -> type:
-            """Link the decorated type to this SuperType."""
-            if not issubclass(_subtype, AtomicType):
-                raise TypeError(
-                    f"SuperTypes can only contain AtomicTypes, not "
-                    f"{repr(_subtype)}"
-                )
-
-            # if _subtype in cls.registry.supertypes:
-            #     raise TypeError(
-            #         f"subtypes can only be registered to one parent at a "
-            #         f"time: '{_subtype.__qualname__}' is currently registered to "
-            #         f"'{_subtype._parent.__qualname__}'"
-            #     )
-
-            # ensure hierarchy does not contain cycles
-            typ = _subtype
-            while typ is not None:
-                if typ is cls:
-                    raise TypeError(
-                        f"type hierarchy cannot contain circular references: "
-                        f"{repr(cls)}"
-                    )
-                typ = cls.registry.supertypes.get(typ, None)
-
-            # marker for AtomicType.supertype
-            cls.registry.supertypes[_subtype] = cls
-
-            # register default implementation
-            if default:
-                if warn and cls in cls.registry.defaults:
-                    warn_msg = (
-                        f"overwriting default for {repr(cls)} (use "
-                        f"`warn=False` to silence this message)"
-                    )
-                    warnings.warn(warn_msg, UserWarning)
-                cls.registry.defaults[cls] = _subtype
-
-            return _subtype
-
-        if subtype is not None:
-            return decorator(subtype)
-        return decorator
