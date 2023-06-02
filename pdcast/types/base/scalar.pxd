@@ -15,12 +15,6 @@ cdef class ScalarType(Type):
         ArgumentEncoder encoder
         InstanceFactory instances
 
-    @staticmethod
-    cdef void set_encoder(type cls, ArgumentEncoder encoder)
-
-    @staticmethod
-    cdef void set_instances(type cls, InstanceFactory instances)
-
     cdef void init_base(self)
     cdef void init_parametrized(self)
 

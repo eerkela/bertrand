@@ -17,7 +17,7 @@ from pdcast.util.type_hints import (
     array_like, dtype_like, numeric, type_specifier
 )
 
-from .registry cimport AliasManager, CacheValue
+from .registry cimport AliasManager, CacheValue, TypeRegistry
 from .scalar cimport (
     READ_ONLY_ERROR, ScalarType, ArgumentEncoder, BackendEncoder,
     InstanceFactory, FlyweightFactory
@@ -42,88 +42,7 @@ from ..array import abstract
 ######################
 
 
-cdef class AtomicTypeConstructor(ScalarType):
-    """A stub class that separates internal :class:`AtomicType` constructor
-    methods from the public interface.
-    """   
-
-    cdef void init_base(self):
-        """Initialize a base (non-parametrized) instance of this type.
-
-        See :meth:`ScalarType.init_base` for more information on how this is
-        called and why it is necessary.
-        """
-        self.base_instance = self
-
-        self._init_encoder()
-        self._slug = self.encoder((), self._kwargs)
-        self._init_instances()
-
-    cdef void init_parametrized(self):
-        """Initialize a parametrized instance of this type.
-
-        See :meth:`ScalarType.init_parametrized` for more information on how
-        this is called and why it is necessary.
-        """
-        base = self.base_instance
-
-        self.encoder = base.encoder
-        self._slug = self.encoder((), self._kwargs)
-        self.instances = base.instances
-
-    cdef void _init_encoder(self):
-        """Create a ArgumentEncoder to uniquely identify this type.
-
-        Notes
-        -----
-        There are two possible algorithms for generating identification strings
-        based on decorator configuration:
-
-            (1) A unique name followed by a bracketed list of parameter
-                strings.
-            (2) A non-unique name followed by a bracketed list containing a
-                unique backend specifier and zero or more parameter strings.
-
-        The second option is chosen whenever a concrete implementation is
-        registered to a parent that shares the same name.  This is what allows
-        us to maintain generic namespaces with unique identifiers.
-        """
-        name = self.name
-        if not isinstance(name, str):
-            raise TypeError(f"{repr(self)}.name must be a string")
-
-        # NOTE: appropriate slug generation depends on hierarchical
-        # configuration.  If name is inherited from parent, we have to append
-        # the backend specifier as the first parameter to maintain uniqueness.
-
-        backend = getattr(type(self), "_backend", None)
-        if backend is None:
-            encoder = ArgumentEncoder(name, self._kwargs)
-        else:
-            encoder = BackendEncoder(name, self._kwargs, backend)
-
-        self.encoder = encoder
-
-    cdef void _init_instances(self):
-        """Create an InstanceFactory to control instance generation for this
-        type.
-
-        The chosen factory depends on the value of
-        :attr:`AtomicType.cache_size`.
-        """
-        cache_size = self.cache_size
-
-        # cache_size = 0 negates flyweight pattern
-        if not cache_size:
-            instances = InstanceFactory(type(self))
-        else:
-            instances = FlyweightFactory(type(self), self.encoder, cache_size)
-            instances[self._slug] = self
-
-        self.instances = instances
-
-
-cdef class AtomicType(AtomicTypeConstructor):
+cdef class AtomicType(ScalarType):
     """Abstract base class for all user-defined scalar types.
 
     :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
@@ -690,7 +609,11 @@ cdef class AtomicType(AtomicTypeConstructor):
             typ for typ in leaves if typ.max > self.max or typ.min < self.min
         ]
 
-        # sort according to range, preferring types centered near zero
+        # TODO: have a problem with ordering of numpy/pandas types.  Preference
+        # should be given to types that are within the same family.
+        # -> Find a way to compare roots.  Have to unwrap ParentTypes first.
+
+        # sort by range, preferring like types centered near zero
         coverage = lambda typ: typ.max - typ.min
         bias = lambda typ: abs(typ.max + typ.min)
         itemsize = lambda typ: typ.itemsize or np.inf
@@ -718,7 +641,7 @@ cdef class AtomicType(AtomicTypeConstructor):
         itemsize = lambda typ: typ.itemsize or np.inf
         candidates = [typ for typ in leaves if itemsize(typ) < itemsize(self)]
 
-        # sort by itemsize then range, preferring types centered near zero
+        # sort by itemsize + range, preferring like types centered near zero
         coverage = lambda typ: typ.max - typ.min
         bias = lambda typ: abs(typ.max + typ.min)
         key = lambda typ: (itemsize(typ), coverage(typ), bias(typ))
@@ -946,38 +869,24 @@ cdef class ParentType(AtomicType):
                     f"{repr(implementation)}"
                 )
 
-            # marker for AtomicType.generic
-            cls.registry.generics[implementation] = cls
-
-            # allow namespace collisions w/ special encoding
-            base_type = implementation
-            while issubclass(base_type, ParentType):  # TODO: necessary?
-                base_type = base_type.__wrapped__
-            try:
-                object.__getattribute__(base_type, "name")
-            except AttributeError:
-                base_type.name = cls.name
-            if base_type.name == cls.name:
-                base_type._backend = backend
-
-            # register backend
-            candidates = cls.registry.implementations[cls]
+            # ensure backend is unique
+            registry = cls.registry
+            candidates = registry.implementations[cls]
             if backend in candidates:
                 raise TypeError(
                     f"backend specifier must be unique: {repr(backend)} is "
                     f"reserved for {repr(candidates[backend])}"
                 )
-            candidates[backend] = implementation
 
-            # register default implementation
+            # allow name collisions with special encoding
+            inherit_name(cls, implementation, backend)
+
+            candidates[backend] = implementation  # parent -> implementation
+            registry.generics[implementation] = cls  # implementation -> parent
+
+            # register as default
             if default:
-                if warn and cls in cls.registry.defaults:
-                    warn_msg = (
-                        f"overwriting default for {repr(cls)} (use "
-                        f"`warn=False` to silence this message)"
-                    )
-                    warnings.warn(warn_msg, UserWarning)
-                cls.registry.defaults[cls] = implementation
+                register_default(cls, implementation, warn=warn)
 
             return implementation
 
@@ -1038,21 +947,11 @@ cdef class ParentType(AtomicType):
                     )
                 typ = cls.registry.supertypes.get(typ, None)
 
-            # marker for AtomicType.supertype
-            cls.registry.supertypes[_subtype] = cls
+            cls.registry.subtypes[cls].add(_subtype)  # parent -> subtype
+            cls.registry.supertypes[_subtype] = cls  # subtype -> parent
 
-            # register subtype
-            cls.registry.subtypes[cls].add(_subtype)
-
-            # register default implementation
             if default:
-                if warn and cls in cls.registry.defaults:
-                    warn_msg = (
-                        f"overwriting default for {repr(cls)} (use "
-                        f"`warn=False` to silence this message)"
-                    )
-                    warnings.warn(warn_msg, UserWarning)
-                cls.registry.defaults[cls] = _subtype
+                register_default(cls, _subtype, warn=warn)
 
             return _subtype
 
@@ -1196,3 +1095,38 @@ cdef class ParentType(AtomicType):
 
     def __repr__(self) -> str:
         return repr(self.__wrapped__)
+
+
+cdef void register_default(type parent, type child, bint warn):
+    """
+    """
+    cdef TypeRegistry registry = parent.registry
+
+    if warn and parent in registry.defaults:
+        warn_msg = (
+            f"overwriting default for {repr(parent)} (use `warn=False` to "
+            f"silence this message)"
+        )
+        warnings.warn(warn_msg, UserWarning)
+
+    registry.defaults[parent] = child
+
+
+cdef void inherit_name(type parent, type child, str backend):
+    """Copy the name of the parent type onto the child type."""
+    cdef type base
+
+    # unwrap nested ParentTypes
+    base = child
+    while issubclass(base, ParentType):
+        base = base.__wrapped__
+
+    # replace name
+    try:
+        object.__getattribute__(base, "name")
+    except AttributeError:
+        base.name = parent.name
+
+    # allow conflicts with special encoding
+    if base.name == parent.name:
+        base.set_encoder(BackendEncoder(backend))

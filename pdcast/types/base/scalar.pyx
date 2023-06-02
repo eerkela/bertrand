@@ -34,6 +34,7 @@ cdef class ScalarType(Type):
     This allows inherited types to manage aliases and update them at runtime.
     """
 
+    cache_size: int = 0
     base_instance: ScalarType = None
 
     def __init__(self, **kwargs):
@@ -48,19 +49,15 @@ cdef class ScalarType(Type):
         self._hash = hash(self._slug)
         self._read_only = True
 
-    @staticmethod
-    cdef void set_encoder(type cls, ArgumentEncoder encoder):
-        """Inject a configurable ArgumentEncoder to generate string identifiers
-        for this type.
-        """
-        cls.encoder = encoder
+    @classmethod
+    def set_encoder(cls, ArgumentEncoder encoder) -> None:
+        """Inject a custom ArgumentEncoder to generate string identifiers for
+        instances of this type.
 
-    @staticmethod
-    cdef void set_instances(type cls, InstanceFactory instances):
-        """Inject a configurable InstanceFactory to control instance creation
-        for this type.
+        The output from these encoders directly determine how flyweights are
+        identifed.
         """
-        cls.instances = instances
+        cls._encoder = encoder
 
     cdef void init_base(self):
         """Initialize a base (non-parametrized) instance of this type.
@@ -87,16 +84,29 @@ cdef class ScalarType(Type):
             __init_subclass__ method will raise a compilation error instead.
 
         """
+        if not isinstance(type(self).name, str):
+            raise TypeError(
+                f"{repr(self)}.name must be a string, not {repr(self.name)}"
+            )
+
         type(self).base_instance = self
 
-        encoder = type(self).encoder
-        encoder.set_name(self.name)
-        encoder.set_kwargs(self._kwargs)
+        # pass name, parameters to encoder
+        self.encoder = getattr(type(self), "_encoder", ArgumentEncoder())
+        self.encoder.set_name(self.name)
+        self.encoder.set_kwargs(self._kwargs)
+        self._slug = self.encoder((), {})  # encode self
 
-        # optimization: attributes are copied into cdef'ed instance attributes
-        self.encoder = encoder
-        self.instances = type(self).instances
-
+        # create instance manager
+        if not self.cache_size:
+            self.instances = InstanceFactory(type(self))
+        else:
+            self.instances = FlyweightFactory(
+                type(self),
+                self.encoder,
+                self.cache_size
+            )
+            self.instances[self._slug] = self
 
     cdef void init_parametrized(self):
         """Initialize a parametrized instance of this type with attributes
@@ -114,6 +124,8 @@ cdef class ScalarType(Type):
         cdef ScalarType base = type(self).base_instance
 
         self.encoder = base.encoder
+        self._slug = self.encoder((), self._kwargs)
+        self.instances = base.instances
 
     ##########################
     ####    ATTRIBUTES    ####
@@ -310,11 +322,6 @@ cdef class ArgumentEncoder:
     base name and parameters.
     """
 
-    def __init__(self, str name, dict parameters):
-        self.name = name
-        self.parameters = tuple(parameters)
-        self.defaults = {k: str(v) for k, v in parameters.items()}
-
     cdef void set_name(self, str name):
         """Set this encoder's base name, which will be prepended to every
         string it generates.
@@ -355,8 +362,7 @@ cdef class BackendEncoder:
     the first parameter of the returned slug.
     """
 
-    def __init__(self, str name, dict parameters, str backend):
-        super().__init__(name, parameters)
+    def __init__(self, str backend):
         self.backend = backend
 
     @cython.wraparound(False)

@@ -3,13 +3,7 @@ from .scalar cimport ScalarType
 from .composite cimport CompositeType
 
 
-cdef class AtomicTypeConstructor(ScalarType):
-
-    cdef void _init_encoder(self)
-    cdef void _init_instances(self)
-
-
-cdef class AtomicType(AtomicTypeConstructor):
+cdef class AtomicType(ScalarType):
     cdef:
         type _type_def
         object _dtype
