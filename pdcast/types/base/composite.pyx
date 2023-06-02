@@ -8,6 +8,7 @@ from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
 from .scalar cimport ScalarType
+from .atomic cimport AtomicType
 from .registry cimport AliasManager, Type
 
 
@@ -23,7 +24,7 @@ cdef class CompositeType(Type):
     def __init__(
         self,
         object types = None,
-        np.ndarray[object] index = None
+        AtomicType[:] index = None
     ):
         super().__init__()
 
@@ -36,7 +37,7 @@ cdef class CompositeType(Type):
         elif isinstance(types, CompositeType):
             self.types = types.types.copy()
             if index is None:
-                index = types.index
+                index = types._index
 
         else:
             invalid = False
@@ -59,14 +60,19 @@ cdef class CompositeType(Type):
                     f"{type(types)}"
                 )
 
-        self.index = index
+        self._index = index
 
     ###############################
     ####    UTILITY METHODS    ####
     ###############################
 
+    @property
+    def index(self) -> np.ndarray:
+        """TODO"""
+        return np.asarray(self._index, dtype=object)
+
     cdef void forget_index(self):
-        self.index = None
+        self._index = None
 
     def expand(self, expand_generics: bool = True) -> CompositeType:
         """Expand the contained types to include each of their subtypes."""

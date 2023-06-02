@@ -31,10 +31,11 @@ from ..array import abstract
 # TODO: remove is_na() in favor of pd.isna() and convert make_nullable into
 # a .nullable property.
 
-# TODO: store .max, .min as Decimal objects.  init_base can intercept these
-# and coerce them to decimal if needed.
+# TODO: .max/.min are stored as arbitrary objects.
 
 # TODO: does it make sense for @implementation to decorate a parent type?
+
+# -> inject separate strategies for @parent .larger/.smaller?
 
 
 ######################
@@ -45,8 +46,8 @@ from ..array import abstract
 cdef class AtomicType(ScalarType):
     """Abstract base class for all user-defined scalar types.
 
-    :class:`AtomicTypes <AtomicType>` are the most fundamental unit of the
-    ``pdcast`` type system.  They are used to describe scalar values of a
+    :class:`AtomicTypes <pdcast.AtomicType>` are the most fundamental unit of
+    the ``pdcast`` type system.  They are used to describe scalar values of a
     particular type (i.e. :class:`int <python:int>`, :class:`numpy.float32`,
     etc.), and can be linked together into hierarchical tree structures.
 
@@ -67,7 +68,6 @@ cdef class AtomicType(ScalarType):
     .. code:: python
 
         @pdcast.register
-        @ParentType.subtype
         @GenericType.implementation("backend")  # inherits .name
         class ImplementationType(pdcast.AtomicType):
 
@@ -82,10 +82,11 @@ cdef class AtomicType(ScalarType):
                 # custom arg parsing goes here, along with any new attributes
                 super().__init__(x=x, y=y)  # no new attributes after this point
 
-            # further customizations
+            # further customizations as necessary
 
-    Where ``ParentType`` and ``GenericType`` reference other :class:`AtomicType`
-    definitions that ``ImplementationType`` is linked to.
+    Where ``GenericType`` references an abstract
+    :func:`@parent <pdcast.parent>` type that ``ImplementationType`` is linked
+    to.
     """
 
     # NOTE: this is a sample __init__ method for a parametrized type.
@@ -105,7 +106,7 @@ cdef class AtomicType(ScalarType):
     
     # NOTE: we don't have to explicitly assign self.foo/bar ourselves;
     # super().__init__() does this for us.  It also makes the type read-only,
-    # so any attribute assignment will fail after it is called.
+    # so any attribute assignment after it is called will fail.
 
     ############################
     ####    CONSTRUCTORS    ####
@@ -227,6 +228,11 @@ cdef class AtomicType(ScalarType):
     # disables the flyweight pattern entirely, though this is not recommended.
 
     cache_size = -1
+
+    @property
+    def family(self) -> str:
+        """A family to associate with this type."""
+        return None
 
     @property
     def type_def(self) -> type | None:

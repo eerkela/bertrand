@@ -41,5 +41,5 @@ cdef class InstanceFactory:
 
 cdef class FlyweightFactory(InstanceFactory):
     cdef:
-        dict instances
         ArgumentEncoder encoder
+        dict cache

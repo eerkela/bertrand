@@ -35,8 +35,8 @@ generic
 """
 from .array import AbstractArray, AbstractDtype
 from .base import (
-    Type, ScalarType, AdapterType, AtomicType, CompositeType, ParentType,
-    TypeRegistry, parent, register
+    TypeRegistry, Type, CompositeType, ScalarType, AdapterType, AtomicType,
+    ParentType, parent, register
 )
 from .boolean import (
     BooleanType, NumpyBooleanType, PandasBooleanType, PythonBooleanType
@@ -83,10 +83,10 @@ from .object import ObjectType
 #     from .complex import Complex160Type, NumpyComplex160Type
 # except ImportError:
 #     pass
-# try:
-#     from .string import PyArrowStringType
-# except ImportError:
-#     pass
+try:
+    from .string import PyArrowStringType
+except ImportError:
+    pass
 
 
 # global objects

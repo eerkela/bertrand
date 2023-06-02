@@ -17,11 +17,7 @@ from .atomic cimport AtomicType, ParentType
 ######################
 
 
-def register(
-    class_: type = None,
-    *,
-    cond: bool = True
-) -> ScalarType:
+def register(class_: type = None, *, cond: bool = True) -> ScalarType:
     """Validate a scalar type definition and add it to the registry.
 
     Parameters

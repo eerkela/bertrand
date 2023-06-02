@@ -106,7 +106,7 @@ cdef class ScalarType(Type):
                 self.encoder,
                 self.cache_size
             )
-            self.instances[self._slug] = self
+            self.instances._add(self._slug, self)
 
     cdef void init_parametrized(self):
         """Initialize a parametrized instance of this type with attributes
@@ -416,26 +416,55 @@ cdef class FlyweightFactory(InstanceFactory):
         super().__init__(base_class)
         self.encoder = encoder
         if cache_size < 0:
-            self.instances = {}
+            self.cache = {}
         else:
-            self.instances = LRUDict(maxsize=cache_size)
+            self.cache = LRUDict(maxsize=cache_size)
+
+    def _add(self, str key, ScalarType value) -> None:
+        """Private method to manually add a key to the flyweight cache."""
+        self.cache[key] = value
+
+    def keys(self):
+        """Dict-like ``keys()`` indexer."""
+        return self.cache.keys()
+
+    def values(self):
+        """Dict-like ``values()`` indexer."""
+        return self.cache.values()
+
+    def items(self):
+        """Dict-like ``items()`` indexer."""
+        return self.cache.items()
 
     def __call__(self, tuple args, dict kwargs) -> ScalarType:
+        """Retrieve a previous instance or generate a new one according to the
+        flyweight pattern.
+        """
         cdef str slug
         cdef ScalarType instance
 
         slug = self.encoder(args, kwargs)
-        instance = self.instances.get(slug, None)
+        instance = self.cache.get(slug, None)
         if instance is None:
             instance = self.base_class(*args, **kwargs)
-            self.instances[slug] = instance
+            self.cache[slug] = instance
         return instance
 
-    def __repr__(self) -> str:
-        return repr(self.instances)
+    def __contains__(self, str key) -> bool:
+        """Check if the given identifier corresponds to a cached instance."""
+        return key in self.cache
 
     def __getitem__(self, str key) -> ScalarType:
-        return self.instances[key]
+        """Get an instance by its identifier."""
+        return self.cache[key]
 
-    def __setitem__(self, str key, ScalarType value) -> None:
-        self.instances[key] = value
+    def __len__(self) -> int:
+        """Get the total number of cached instances."""
+        return len(self.cache)
+
+    def __iter__(self):
+        """Iterate through the cached identifiers."""
+        return iter(self.cache)
+
+    def __repr__(self) -> str:
+        return repr(self.cache)
