@@ -8,7 +8,7 @@ cimport numpy as np
 
 from pdcast.util.type_hints import numeric
 
-from .base cimport AtomicType, ParentType, CompositeType
+from .base cimport ScalarType, AbstractType, CompositeType
 from .base import register
 import pdcast.types.float as float_types
 
@@ -32,7 +32,7 @@ class ComplexMixin:
     ############################
 
     @property
-    def equiv_float(self) -> AtomicType:
+    def equiv_float(self) -> ScalarType:
         f_root = float_types.FloatType()
         candidates = [x for y in f_root.backends.values() for x in y.subtypes]
         for x in candidates:
@@ -65,7 +65,7 @@ class ComplexMixin:
 
 
 @register
-class ComplexType(ParentType):
+class ComplexType(AbstractType):
 
     name = "complex"
     aliases = {
@@ -76,7 +76,7 @@ class ComplexType(ParentType):
 
 @register
 @ComplexType.implementation("numpy")
-class NumpyComplexType(ParentType):
+class NumpyComplexType(AbstractType):
 
     aliases = {np.complexfloating}
     _equiv_float = "NumpyFloatType"
@@ -89,7 +89,7 @@ class NumpyComplexType(ParentType):
 
 @register
 @ComplexType.subtype
-class Complex64Type(ParentType):
+class Complex64Type(AbstractType):
 
     name = "complex64"
     aliases = {
@@ -102,7 +102,7 @@ class Complex64Type(ParentType):
 @NumpyComplexType.subtype
 @Complex64Type.default
 @Complex64Type.implementation("numpy")
-class NumpyComplex64Type(ComplexMixin, AtomicType):
+class NumpyComplex64Type(ComplexMixin, ScalarType):
 
     aliases = {np.complex64, np.dtype(np.complex64)}
     dtype = np.dtype(np.complex64)
@@ -122,7 +122,7 @@ class NumpyComplex64Type(ComplexMixin, AtomicType):
 @register
 @ComplexType.default
 @ComplexType.subtype
-class Complex128Type(ParentType):
+class Complex128Type(AbstractType):
 
     name = "complex128"
     aliases = {
@@ -136,7 +136,7 @@ class Complex128Type(ParentType):
 @NumpyComplexType.subtype
 @Complex128Type.default
 @Complex128Type.implementation("numpy")
-class NumpyComplex128Type(ComplexMixin, AtomicType):
+class NumpyComplex128Type(ComplexMixin, ScalarType):
 
     aliases = {np.complex128, np.dtype(np.complex128)}
     dtype = np.dtype(np.complex128)
@@ -151,7 +151,7 @@ class NumpyComplex128Type(ComplexMixin, AtomicType):
 @register
 @ComplexType.implementation("python")
 @Complex128Type.implementation("python")
-class PythonComplexType(ComplexMixin, AtomicType):
+class PythonComplexType(ComplexMixin, ScalarType):
 
     aliases = {complex}
     itemsize = sys.getsizeof(0+0j)
@@ -169,7 +169,7 @@ class PythonComplexType(ComplexMixin, AtomicType):
 
 @register(cond=has_clongdouble)
 @ComplexType.subtype
-class Complex160Type(ParentType):
+class Complex160Type(AbstractType):
 
     name = "complex160"
     aliases = {
@@ -184,7 +184,7 @@ class Complex160Type(ParentType):
 @NumpyComplexType.subtype
 @Complex160Type.default
 @Complex160Type.implementation("numpy")
-class NumpyComplex160Type(ComplexMixin, AtomicType):
+class NumpyComplex160Type(ComplexMixin, ScalarType):
 
     aliases = {np.clongdouble, np.dtype(np.clongdouble)}
     dtype = np.dtype(np.clongdouble)

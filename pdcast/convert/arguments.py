@@ -109,7 +109,7 @@ def dtype(
     val: type_specifier,
     state: dict,
     supertype: type_specifier = None
-) -> types.AtomicType | types.AdapterType:
+) -> types.VectorType:
     """Resolve a type specifier and reject it if it is composite or not a
     subtype of the given supertype.
     """

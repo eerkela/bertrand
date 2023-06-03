@@ -7,8 +7,8 @@ import numpy as np
 from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
-from .scalar cimport ScalarType
-from .atomic cimport AtomicType
+from .vector cimport VectorType
+from .atomic cimport ScalarType
 from .registry cimport AliasManager, Type
 
 
@@ -16,7 +16,7 @@ cdef class CompositeType(Type):
     """Set-like container for type objects.
 
     Implements the same interface as the built-in set type, but is restricted
-    to contain only AtomicType and AdapterType objects.  Also extends
+    to contain only ScalarType and DecoratorType objects.  Also extends
     subset/superset/membership checks to include subtypes for each of the
     contained scalar types.
     """
@@ -24,14 +24,14 @@ cdef class CompositeType(Type):
     def __init__(
         self,
         object types = None,
-        AtomicType[:] index = None
+        ScalarType[:] index = None
     ):
         super().__init__()
 
         if types is None:
             self.types = set()
 
-        elif isinstance(types, ScalarType):
+        elif isinstance(types, VectorType):
             self.types = {types}
 
         elif isinstance(types, CompositeType):
@@ -77,8 +77,8 @@ cdef class CompositeType(Type):
     def expand(self, expand_generics: bool = True) -> CompositeType:
         """Expand the contained types to include each of their subtypes."""
         cdef CompositeType result
-        cdef ScalarType original
-        cdef ScalarType typ
+        cdef VectorType original
+        cdef VectorType typ
 
         result = self.copy()
         if expand_generics:
@@ -96,8 +96,8 @@ cdef class CompositeType(Type):
         redundant if it is fully encapsulated within the other members of the
         CompositeType.
         """
-        cdef ScalarType atomic_type
-        cdef ScalarType t
+        cdef VectorType atomic_type
+        cdef VectorType t
 
         # for every type a in self, check if there is another type b such that
         # a != b and b contains a.  If true, the type is redundant.
@@ -145,7 +145,7 @@ cdef class CompositeType(Type):
     def add(self, typespec: type_specifier) -> None:
         """Add a type specifier to the CompositeType."""
         cdef CompositeType other
-        cdef ScalarType typ
+        cdef VectorType typ
 
         other = resolve.resolve_type([typespec])
         self.types.update(typ for typ in other)
@@ -156,7 +156,7 @@ cdef class CompositeType(Type):
         KeyError if `typespec` is not contained in the set.
         """
         cdef CompositeType other
-        cdef ScalarType typ
+        cdef VectorType typ
 
         other = resolve.resolve_type([typespec])
         for typ in other:
@@ -169,7 +169,7 @@ cdef class CompositeType(Type):
         present.
         """
         cdef CompositeType other
-        cdef ScalarType typ
+        cdef VectorType typ
 
         other = resolve.resolve_type([typespec])
         for typ in other:
@@ -177,7 +177,7 @@ cdef class CompositeType(Type):
 
         self.forget_index()
 
-    def pop(self) -> ScalarType:
+    def pop(self) -> VectorType:
         """Remove and return an arbitrary type from the CompositeType. Raises a
         KeyError if the CompositeType is empty.
         """
@@ -225,7 +225,7 @@ cdef class CompositeType(Type):
         """
         cdef CompositeType result
         cdef CompositeType other
-        cdef ScalarType typ
+        cdef VectorType typ
 
         result = self.expand()
 
@@ -252,7 +252,7 @@ cdef class CompositeType(Type):
     def __and__(self, typespec: type_specifier) -> CompositeType:
         """Return the intersection of two CompositeTypes."""
         cdef CompositeType other
-        cdef ScalarType typ
+        cdef VectorType typ
         cdef set forward
         cdef set backward
 
@@ -265,8 +265,8 @@ cdef class CompositeType(Type):
         """Return the difference of two CompositeTypes."""
         cdef CompositeType result
         cdef CompositeType other
-        cdef ScalarType typ
-        cdef ScalarType other_type
+        cdef VectorType typ
+        cdef VectorType other_type
 
         result = self.expand()
 
@@ -400,7 +400,7 @@ cdef class CompositeType(Type):
 
 
 cdef void _traverse_subtypes(
-    ScalarType typ,
+    VectorType typ,
     set result
 ):
     """Recursive inner function for `traverse_subtypes()`."""
@@ -411,7 +411,7 @@ cdef void _traverse_subtypes(
         _traverse_subtypes(subtype, result)
 
 
-cdef CompositeType traverse_subtypes(ScalarType typ):
+cdef CompositeType traverse_subtypes(VectorType typ):
     """Traverse through a scalar type's subtype tree, recursively flattening
     all its children.
     """

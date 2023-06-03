@@ -7,7 +7,7 @@ from pdcast.util.round cimport Tolerance
 # functions
 cpdef tuple boundscheck(
     object series,
-    types.AtomicType dtype,
+    types.ScalarType dtype,
     str errors = *
 )
 cpdef object downcast_integer(

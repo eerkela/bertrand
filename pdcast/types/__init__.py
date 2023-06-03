@@ -4,11 +4,11 @@ arbitrary data.
 
 Base Classes
 ------------
-AtomicType
+ScalarType
     Base unit of the ``pdcast`` type system.  This describes the type of a
     scalar element of the associated type.
 
-AdapterType
+DecoratorType
     A type that acts as a wrapper for another type.  Common examples of this
     are for sparse or categorical data, which can be in any type.
 
@@ -23,20 +23,20 @@ TypeRegistry
 Decorators
 ----------
 register
-    Add a subclass of ``AtomicType`` or ``AdapterType`` to the ``pdcast`` type
+    Add a subclass of ``ScalarType`` or ``DecoratorType`` to the ``pdcast`` type
     system.
 
 subtype
-    Register a subclass of ``AtomicType`` as a subtype of another type.
+    Register a subclass of ``ScalarType`` as a subtype of another type.
 
 generic
-    Transform a subclass of ``AtomicType`` into a generic type, which can
+    Transform a subclass of ``ScalarType`` into a generic type, which can
     reference other types as backends.
 """
 from .array import AbstractArray, AbstractDtype
 from .base import (
-    TypeRegistry, Type, CompositeType, ScalarType, AdapterType, AtomicType,
-    ParentType, register
+    TypeRegistry, Type, CompositeType, VectorType, DecoratorType, ScalarType,
+    AbstractType, register
 )
 from .boolean import (
     BooleanType, NumpyBooleanType, PandasBooleanType, PythonBooleanType
@@ -90,4 +90,4 @@ except ImportError:
 
 
 # global objects
-registry = AtomicType.registry
+registry = ScalarType.registry

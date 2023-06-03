@@ -8,8 +8,8 @@ from typing import Any
 
 from pdcast.util.type_hints import type_specifier, dtype_like
 
-from .scalar cimport ScalarType
-from .atomic cimport AtomicType, ParentType
+from .vector cimport VectorType
+from .atomic cimport ScalarType, AbstractType
 
 
 ######################
@@ -30,7 +30,7 @@ def register(class_: type = None, *, cond: bool = True):
 
     Returns
     -------
-    ScalarType
+    VectorType
         A base (unparametrized) instance of the decorated type.  This is always
         equal to the direct output of ``class_.instance()``, without arguments.
 
@@ -44,11 +44,11 @@ def register(class_: type = None, *, cond: bool = True):
     -----
     The properties that this decorator validates are as follows:
 
-        *   :attr:`class_.name <AtomicType.name>`: this must be unique or
+        *   :attr:`class_.name <ScalarType.name>`: this must be unique or
             inherited from a :func:`generic() <pdcast.generic>` type.
-        *   :attr:`class_.aliases <AtomicType.aliases>`: these must contain
+        *   :attr:`class_.aliases <ScalarType.aliases>`: these must contain
             only valid type specifiers, each of which must be unique.
-        *   :meth:`class_.encode() <AtomicType.encode>`: this must be a
+        *   :meth:`class_.encode() <ScalarType.encode>`: this must be a
             classmethod whose signature matches the decorated class's
             ``__init__``.
 
@@ -57,12 +57,12 @@ def register(class_: type = None, *, cond: bool = True):
     TODO: take from tutorial
 
     """
-    def register_decorator(cls: type) -> type | ScalarType:
+    def register_decorator(cls: type) -> type | VectorType:
         """Add the type to the registry and instantiate it."""
-        if not issubclass(cls, ScalarType):
+        if not issubclass(cls, VectorType):
             raise TypeError(
-                "`@register` can only be applied to AtomicType and "
-                "AdapterType subclasses"
+                "`@register` can only be applied to ScalarType and "
+                "DecoratorType subclasses"
             )
 
         # short-circuit for conditional types
@@ -136,8 +136,8 @@ cdef class TypeRegistry:
         :meth:`added <pdcast.TypeRegistry.add>` or
         :meth:`removed <pdcast.TypeRegistry.remove>` from the registry.  It is
         also updated whenever a registered type
-        :meth:`gains <pdcast.ScalarType.register_alias>` or
-        :meth:`loses <pdcast.ScalarType.remove_alias>` an alias.
+        :meth:`gains <pdcast.VectorType.register_alias>` or
+        :meth:`loses <pdcast.VectorType.remove_alias>` an alias.
         """
         return self._hash
 
@@ -147,16 +147,16 @@ cdef class TypeRegistry:
         """
         self._hash += 1
 
-    def add(self, instance: ScalarType) -> None:
+    def add(self, instance: VectorType) -> None:
         """Validate a base type and add it to the registry.
 
         Parameters
         ----------
-        instance : ScalarType
-            An instance of a :class:`ScalarType <pdcast.ScalarType>` to add to
+        instance : VectorType
+            An instance of a :class:`VectorType <pdcast.VectorType>` to add to
             the registry.  This instance must not be parametrized, and it must
-            implement at least the :attr:`name <pdcast.ScalarType.name>` and
-            :attr:`aliases <pdcast.ScalarType.aliases>` attributes  to be
+            implement at least the :attr:`name <pdcast.VectorType.name>` and
+            :attr:`aliases <pdcast.VectorType.aliases>` attributes  to be
             considered valid.
 
         Raises
@@ -164,9 +164,9 @@ cdef class TypeRegistry:
         TypeError
             If the instance is malformed in some way.  This can happen if the
             type is parametrized, does not have an appropriate
-            :attr:`name <pdcast.ScalarType.name>` or
-            :attr:`aliases <pdcast.ScalarType.aliases>`, or if the signature of
-            its :meth:`encode <pdcast.ScalarType.encode>` method does not
+            :attr:`name <pdcast.VectorType.name>` or
+            :attr:`aliases <pdcast.VectorType.aliases>`, or if the signature of
+            its :meth:`encode <pdcast.VectorType.encode>` method does not
             match its constructor.
 
         See Also
@@ -199,12 +199,12 @@ cdef class TypeRegistry:
         self.instances[type(instance)] = instance
         self.update_hash()
 
-    def remove(self, instance: ScalarType) -> None:
+    def remove(self, instance: VectorType) -> None:
         """Remove a base type from the registry.
 
         Parameters
         ----------
-        instance : ScalarType
+        instance : VectorType
             The type to remove.
 
         Raises
@@ -235,14 +235,15 @@ cdef class TypeRegistry:
     ####    LINKS    ####
     #####################
 
-    def get_supertype(self, AtomicType typ) -> ParentType:
+    def get_supertype(self, ScalarType typ) -> AbstractType:
         """Get a type's supertype if it is registered."""
         result = self.supertypes.get(type(typ), None)
         return self.instances.get(result, None)
 
-    def get_subtypes(self, ParentType typ) -> set:
+    def get_subtypes(self, AbstractType typ) -> set:
         """Get all the registered subtypes associated with a type."""
         result = set()
+        
         candidates = self.subtypes.get(type(typ), set())
         for subtype in candidates:
             instance = self.instances.get(subtype, None)
@@ -252,14 +253,14 @@ cdef class TypeRegistry:
 
         return result
 
-    def get_generic(self, AtomicType typ) -> ParentType:
+    def get_generic(self, ScalarType typ) -> AbstractType:
         """Get a type's generic implementation if it is registered."""
         result = self.generics.get(type(typ), None)
         if result is not None:
             result = self.instances.get(result, None)
         return result
 
-    def get_implementations(self, ParentType typ) -> dict:
+    def get_implementations(self, AbstractType typ) -> dict:
         """Get all the registered implementations associated with a type."""
         result = {}
         candidates = self.implementations.get(type(typ), {})
@@ -271,7 +272,7 @@ cdef class TypeRegistry:
 
         return result
 
-    def get_default(self, ParentType typ) -> AtomicType:
+    def get_default(self, AbstractType typ) -> ScalarType:
         """Get the default implementation for a hierarchical type."""
         default = self.defaults.get(type(typ), None)
         default = self.instances.get(default, None)
@@ -307,8 +308,8 @@ cdef class TypeRegistry:
         This is a cached property tied to the current state of the registry.
         Whenever a new type is :meth:`added <pdcast.TypeRegistry.add>`,
         :meth:`removed <pdcast.TypeRegistry.remove>`, or
-        :meth:`gains <pdcast.ScalarType.register_alias>`\ /
-        :meth:`loses <pdcast.ScalarType.remove_alias>` an alias, it will be
+        :meth:`gains <pdcast.VectorType.register_alias>`\ /
+        :meth:`loses <pdcast.VectorType.remove_alias>` an alias, it will be
         regenerated to reflect that change.
         """
         cached = self._aliases
@@ -674,26 +675,26 @@ cdef class Type:
 
             *   Strings are used by the :ref:`type specification mini-language
                 <resolve_type.mini_language>` to trigger :meth:`resolution
-                <AtomicType.resolve>` of the associated type.
+                <ScalarType.resolve>` of the associated type.
             *   Numpy/pandas :class:`dtype <numpy.dtype>`\ /\
                 :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
                 objects are used by :func:`detect_type` for *O(1)* type
                 inference.  In both cases, parametrized dtypes can be handled
-                by adding a root dtype to :attr:`aliases <AtomicType.aliases>`.
+                by adding a root dtype to :attr:`aliases <ScalarType.aliases>`.
                 For numpy :class:`dtypes <numpy.dtype>`, this will be the
                 root of their :func:`numpy.issubdtype` hierarchy.  For pandas
                 :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`,
                 it is its :class:`type() <python:type>` directly.  When either
                 of these are encountered, they will invoke the type's
-                :meth:`from_dtype() <AtomicType.from_dtype>` constructor.
+                :meth:`from_dtype() <ScalarType.from_dtype>` constructor.
             *   Raw Python types are used by :func:`detect_type` for scalar or
                 unlabeled vector inference.  If the type of a scalar element
-                appears in :attr:`aliases <AtomicType.aliases>`, then the
-                associated type's :meth:`detect() <AtomicType.detect>` method
+                appears in :attr:`aliases <ScalarType.aliases>`, then the
+                associated type's :meth:`detect() <ScalarType.detect>` method
                 will be called on it.
 
         All aliases are recognized by :func:`resolve_type` and the set always
-        includes the :class:`AtomicType` itself.
+        includes the :class:`ScalarType` itself.
         """
         return self._aliases
 

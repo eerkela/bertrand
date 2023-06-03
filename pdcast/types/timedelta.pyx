@@ -12,7 +12,7 @@ from pdcast import resolve
 from pdcast.util import time
 from pdcast.util.type_hints import type_specifier
 
-from .base cimport AtomicType, CompositeType
+from .base cimport ScalarType, CompositeType
 from .base import generic, register
 
 
@@ -28,7 +28,7 @@ from .base import generic, register
 
 @register
 @generic
-class TimedeltaType(AtomicType):
+class TimedeltaType(ScalarType):
 
     name = "timedelta"
     aliases = {"timedelta"}
@@ -80,7 +80,7 @@ class TimedeltaType(AtomicType):
 
 @register
 @TimedeltaType.implementation("numpy")
-class NumpyTimedelta64Type(AtomicType, cache_size=64):
+class NumpyTimedelta64Type(ScalarType, cache_size=64):
 
     # NOTE: dtype is set to object due to pandas and its penchant for
     # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
@@ -153,7 +153,7 @@ class NumpyTimedelta64Type(AtomicType, cache_size=64):
         return super().contains(other, include_subtypes=include_subtypes)
 
     @classmethod
-    def detect(cls, example: np.datetime64, **defaults) -> AtomicType:
+    def detect(cls, example: np.datetime64, **defaults) -> ScalarType:
         unit, step_size = np.datetime_data(example)
         return cls.instance(unit=unit, step_size=step_size, **defaults)
 
@@ -161,7 +161,7 @@ class NumpyTimedelta64Type(AtomicType, cache_size=64):
     def from_dtype(
         cls,
         dtype: np.dtype | pd.api.extensions.ExtensionDtype
-    ) -> AtomicType:
+    ) -> ScalarType:
         unit, step_size = np.datetime_data(dtype)
         return cls.instance(
             unit=None if unit == "generic" else unit,
@@ -176,7 +176,7 @@ class NumpyTimedelta64Type(AtomicType, cache_size=64):
         return []
 
     @classmethod
-    def resolve(cls, context: str = None) -> AtomicType:
+    def resolve(cls, context: str = None) -> ScalarType:
         if context is not None:
             match = m8_pattern.match(context)
             if not match:
@@ -194,7 +194,7 @@ class NumpyTimedelta64Type(AtomicType, cache_size=64):
 
 @register
 @TimedeltaType.implementation("pandas")
-class PandasTimedeltaType(AtomicType):
+class PandasTimedeltaType(ScalarType):
 
     aliases = {pd.Timedelta, "Timedelta", "pandas.Timedelta", "pd.Timedelta"}
     dtype = np.dtype("m8[ns]")
@@ -212,7 +212,7 @@ class PandasTimedeltaType(AtomicType):
 
 @register
 @TimedeltaType.implementation("python")
-class PythonTimedeltaType(AtomicType):
+class PythonTimedeltaType(ScalarType):
 
     aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
     na_value = pd.NaT

@@ -34,9 +34,9 @@ The following data structures define the standard interface for the ``pdcast``
 
 .. list-table::
 
-    * - :class:`AtomicType`
+    * - :class:`ScalarType`
       - TODO
-    * - :class:`AdapterType`
+    * - :class:`DecoratorType`
       - TODO
     * - :class:`CompositeType`
       - TODO
@@ -102,8 +102,8 @@ structures when :func:`attach` is invoked.
     pdcast.attachable <attachable>
     pdcast.attach <attach>
     pdcast.detach <detach>
-    pdcast.AtomicType <AtomicType>
-    pdcast.AdapterType <AdapterType>
+    pdcast.ScalarType <ScalarType>
+    pdcast.DecoratorType <DecoratorType>
     pdcast.CompositeType <CompositeType>
     pdcast.TypeRegistry <TypeRegistry>
     pdcast.register <register>

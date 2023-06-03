@@ -9,7 +9,7 @@ cimport numpy as np
 
 from pdcast.util.type_hints import numeric
 
-from .base cimport AtomicType, ParentType, CompositeType
+from .base cimport ScalarType, AbstractType, CompositeType
 from .base import register
 import pdcast.types.complex as complex_types
 
@@ -33,7 +33,7 @@ class FloatMixin:
     ############################
 
     @property
-    def equiv_complex(self) -> AtomicType:
+    def equiv_complex(self) -> ScalarType:
         c_root = complex_types.ComplexType()
         candidates = [x for y in c_root.backends.values() for x in y.subtypes]
         for x in candidates:
@@ -66,7 +66,7 @@ class FloatMixin:
 
 
 @register
-class FloatType(ParentType):
+class FloatType(AbstractType):
     """Generic float supertype"""
 
     name = "float"
@@ -76,7 +76,7 @@ class FloatType(ParentType):
 
 @register
 @FloatType.implementation("numpy")
-class NumpyFloatType(ParentType):
+class NumpyFloatType(AbstractType):
 
     aliases = {np.floating}
     _equiv_complex = "NumpyComplexType"
@@ -89,7 +89,7 @@ class NumpyFloatType(ParentType):
 
 @register
 @FloatType.subtype
-class Float16Type(ParentType):
+class Float16Type(AbstractType):
 
     name = "float16"
     aliases = {"float16", "half", "f2", "e"}
@@ -100,7 +100,7 @@ class Float16Type(ParentType):
 @NumpyFloatType.subtype
 @Float16Type.default
 @Float16Type.implementation("numpy")
-class NumpyFloat16Type(FloatMixin, AtomicType):
+class NumpyFloat16Type(FloatMixin, ScalarType):
 
     aliases = {np.float16, np.dtype(np.float16)}
     dtype = np.dtype(np.float16)
@@ -119,7 +119,7 @@ class NumpyFloat16Type(FloatMixin, AtomicType):
 
 @register
 @FloatType.subtype
-class Float32Type(ParentType):
+class Float32Type(AbstractType):
 
     name = "float32"
     aliases = {"float32", "single", "f4"}
@@ -130,7 +130,7 @@ class Float32Type(ParentType):
 @NumpyFloatType.subtype
 @Float32Type.default
 @Float32Type.implementation("numpy")
-class NumpyFloat32Type(FloatMixin, AtomicType):
+class NumpyFloat32Type(FloatMixin, ScalarType):
 
     aliases = {np.float32, np.dtype(np.float32)}
     _equiv_complex = "NumpyComplex64Type"
@@ -144,7 +144,7 @@ class NumpyFloat32Type(FloatMixin, AtomicType):
 @register
 @FloatType.default
 @FloatType.subtype
-class Float64Type(FloatMixin, ParentType):
+class Float64Type(FloatMixin, AbstractType):
 
     name = "float64"
     aliases = {"float64", "double", "float_", "f8", "d"}
@@ -156,7 +156,7 @@ class Float64Type(FloatMixin, ParentType):
 @NumpyFloatType.subtype
 @Float64Type.default
 @Float64Type.implementation("numpy")
-class NumpyFloat64Type(FloatMixin, AtomicType):
+class NumpyFloat64Type(FloatMixin, ScalarType):
 
     aliases = {np.float64, np.dtype(np.float64)}
     dtype = np.dtype(np.float64)
@@ -171,7 +171,7 @@ class NumpyFloat64Type(FloatMixin, AtomicType):
 @register
 @FloatType.implementation("python")
 @Float64Type.implementation("python")
-class PythonFloatType(FloatMixin, AtomicType):
+class PythonFloatType(FloatMixin, ScalarType):
 
     aliases = {float}
     itemsize = sys.getsizeof(0.0)
@@ -189,7 +189,7 @@ class PythonFloatType(FloatMixin, AtomicType):
 
 @register(cond=has_longdouble)
 @FloatType.subtype
-class Float80Type(FloatMixin, ParentType):
+class Float80Type(FloatMixin, AbstractType):
 
     name = "float80"
     aliases = {
@@ -203,7 +203,7 @@ class Float80Type(FloatMixin, ParentType):
 @NumpyFloatType.subtype
 @Float80Type.default
 @Float80Type.implementation("numpy")
-class NumpyFloat80Type(FloatMixin, AtomicType):
+class NumpyFloat80Type(FloatMixin, ScalarType):
 
     aliases = {np.longdouble, np.dtype(np.longdouble)}
     dtype = np.dtype(np.longdouble)

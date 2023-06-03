@@ -23,7 +23,7 @@ from pdcast.util.round cimport Tolerance
 
 cpdef tuple boundscheck(
     object series,
-    types.AtomicType dtype,
+    types.ScalarType dtype,
     str errors = "raise"
 ):
     """Ensure that a series fits within the allowable range of a given data
@@ -35,8 +35,8 @@ cpdef tuple boundscheck(
 
     Parameters
     ----------
-    dtype : AtomicType
-        An AtomicType whose range will be used for the check.
+    dtype : ScalarType
+        An ScalarType whose range will be used for the check.
     errors : str, default "raise"
         The error-handling rule to apply to the range check.  Must be one
         of "raise", "ignore", or "coerce".
@@ -47,7 +47,7 @@ cpdef tuple boundscheck(
         A series whose elements fit within the range of the specified type.
         In most cases, this will be the original series, but if overflow is
         detected and errors="coerce", then it may be a subset of the original.
-    dtype : AtomicType
+    dtype : ScalarType
         A type that fits the observed range of the series.  In most cases,
         this will be the original data type, but if overflow is detected
         and the type is upcastable, then it may be larger.
@@ -58,7 +58,7 @@ cpdef tuple boundscheck(
         If ``dtype`` cannot fit the observed range of the series, cannot
         be upcasted to fit, and ``errors != "coerce"``
     """
-    cdef types.ScalarType series_type = detect_type(series)
+    cdef types.VectorType series_type = detect_type(series)
 
     # trivial case for empty series
     if series_type is None:
@@ -107,7 +107,7 @@ cpdef object downcast_integer(
     """Reduce the itemsize of an integer type to fit the observed range."""
     from pdcast import convert
 
-    cdef types.ScalarType series_type = detect_type(series)
+    cdef types.VectorType series_type = detect_type(series)
     cdef list smaller = series_type.smaller
     cdef object min_val
     cdef object max_val
@@ -154,7 +154,7 @@ cpdef object downcast_float(
     """Reduce the itemsize of a float type to fit the observed range."""
     from pdcast import convert
 
-    cdef types.ScalarType series_type = detect_type(series)
+    cdef types.VectorType series_type = detect_type(series)
     cdef list smaller = series_type.smaller
 
     # filter based on `smallest`
@@ -241,8 +241,8 @@ cpdef object real(object series):
     pd.Series
         The real component of the series.
     """
-    cdef types.ScalarType series_type
-    cdef types.ScalarType target
+    cdef types.VectorType series_type
+    cdef types.VectorType target
 
     # NOTE: np.real() fails when applied to object arrays that may contain
     # complex values.  In this case, we reduce it to a loop.
@@ -273,8 +273,8 @@ cpdef object imag(object series):
     pd.Series
         The imaginary component of the series.
     """
-    cdef types.ScalarType series_type
-    cdef types.ScalarType target
+    cdef types.VectorType series_type
+    cdef types.VectorType target
 
     # NOTE: np.imag() fails when applied to object arrays that may contain
     # complex values.  In this case, we reduce it to a loop.
@@ -337,7 +337,7 @@ cdef object elementwise_imag = np.frompyfunc(np.imag, 1, 1)
 cdef list filter_smallest(
     list smaller,
     types.CompositeType smallest,
-    types.ScalarType series_type
+    types.VectorType series_type
 ):
     """Filter a list of downcast candidates based on a set of lower limits."""
     # trivial case: series type is directly contained in lower limits
@@ -361,10 +361,10 @@ cdef object combine_real_imag(
     object real_part,
     object imag_part
 ):
-    cdef types.ScalarType real_type = detect_type(real_part)
-    cdef types.ScalarType imag_type = detect_type(imag_part)
-    cdef types.ScalarType largest
-    cdef types.ScalarType target
+    cdef types.VectorType real_type = detect_type(real_part)
+    cdef types.VectorType imag_type = detect_type(imag_part)
+    cdef types.VectorType largest
+    cdef types.VectorType target
     cdef object result
 
     largest = max([real_type, imag_type], key=lambda x: x.itemsize or np.inf)

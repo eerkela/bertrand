@@ -17,7 +17,7 @@ from .base import cast, generic_to_object, safe_apply
 @cast.overload("object", "bool")
 def object_to_boolean(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     call: Callable,
     errors: str,
     **unused
@@ -47,7 +47,7 @@ def object_to_boolean(
 @cast.overload("object", "int")
 def object_to_integer(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     call: Callable,
     errors: str,
     **unused
@@ -77,7 +77,7 @@ def object_to_integer(
 @cast.overload("object", "float")
 def object_to_float(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     call: Callable,
     errors: str,
     **unused
@@ -107,7 +107,7 @@ def object_to_float(
 @cast.overload("object", "complex")
 def object_to_complex(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     call: Callable,
     errors: str,
     **unused
@@ -137,7 +137,7 @@ def object_to_complex(
 @cast.overload("object", "decimal")
 def object_to_decimal(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     call: Callable,
     errors: str,
     **unused
@@ -154,7 +154,7 @@ def object_to_decimal(
 @cast.overload("object", "datetime")
 def object_to_datetime(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     call: Callable,
     errors: str,
     **unused
@@ -172,7 +172,7 @@ def object_to_datetime(
 @cast.overload("object", "timedelta")
 def object_to_timedelta(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     call: Callable,
     errors: str,
     **unused
@@ -195,7 +195,7 @@ def object_to_timedelta(
 @cast.overload("object", "string")
 def object_to_string(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     call: Callable,
     errors: str,
     **unused

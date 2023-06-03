@@ -1,9 +1,9 @@
 from .registry cimport CacheValue
-from .scalar cimport ScalarType
+from .vector cimport VectorType
 from .composite cimport CompositeType
 
 
-cdef class AtomicType(ScalarType):
+cdef class ScalarType(VectorType):
     cdef:
         type _type_def
         object _dtype
@@ -15,7 +15,7 @@ cdef class AtomicType(ScalarType):
         object _na_value
 
 
-cdef class ParentType(AtomicType):
+cdef class AbstractType(ScalarType):
     cdef:
         CacheValue _backends
         CacheValue _subtypes

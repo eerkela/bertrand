@@ -27,7 +27,7 @@ from .base import cast, generic_to_integer
 @cast.overload("datetime", "bool")
 def datetime_to_boolean(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tol: Tolerance,
     rounding: str,
     unit: str,
@@ -64,7 +64,7 @@ def datetime_to_boolean(
 @cast.overload("datetime[pandas]", "int")
 def pandas_timestamp_to_integer(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     tol: Tolerance,
     unit: str,
@@ -119,7 +119,7 @@ def pandas_timestamp_to_integer(
 @cast.overload("datetime[python]", "int")
 def python_datetime_to_integer(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     tol: Tolerance,
     unit: str,
@@ -180,7 +180,7 @@ def python_datetime_to_integer(
 @cast.overload("datetime[numpy]", "int")
 def numpy_datetime64_to_integer(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     tol: Tolerance,
     unit: str,
@@ -248,7 +248,7 @@ def numpy_datetime64_to_integer(
 @cast.overload("datetime", "float")
 def datetime_to_float(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     unit: str,
     step_size: int,
     since: time.Epoch,
@@ -306,7 +306,7 @@ def datetime_to_float(
 @cast.overload("datetime", "complex")
 def datetime_to_complex(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     downcast: types.CompositeType,
     **unused
 ) -> pd.Series:
@@ -319,7 +319,7 @@ def datetime_to_complex(
 @cast.overload("datetime", "decimal")
 def datetime_to_decimal(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     unit: str,
     step_size: int,
     since: time.Epoch,
@@ -372,7 +372,7 @@ def datetime_to_decimal(
 @cast.overload("datetime", "datetime")
 def datetime_to_datetime(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     unit: str,
     step_size: int,
@@ -416,7 +416,7 @@ def datetime_to_datetime(
 @cast.overload("datetime[pandas]", "datetime[pandas]")
 def pandas_timestamp_to_pandas_timestamp(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tz: datetime.tzinfo,
     **unused
 ) -> pd.Series:
@@ -440,7 +440,7 @@ def pandas_timestamp_to_pandas_timestamp(
 @cast.overload("datetime[python]", "datetime[python]")
 def python_datetime_to_python_datetime(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tz: datetime.tzinfo,
     **unused
 ) -> pd.Series:
@@ -462,7 +462,7 @@ def python_datetime_to_python_datetime(
 @cast.overload("datetime", "timedelta")
 def datetime_to_timedelta(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     unit: str,
     step_size: int,
     rounding: str,

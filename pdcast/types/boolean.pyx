@@ -7,7 +7,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AtomicType, ParentType
+from .base cimport ScalarType, AbstractType
 from .base import register
 
 
@@ -42,7 +42,7 @@ class NumpyBooleanMixin:
     def is_nullable(self) -> bool:
         return False
 
-    def make_nullable(self) -> AtomicType:
+    def make_nullable(self) -> ScalarType:
         return self.generic("pandas", **self.kwargs)
 
 
@@ -52,7 +52,7 @@ class NumpyBooleanMixin:
 
 
 @register
-class BooleanType(ParentType):
+class BooleanType(AbstractType):
     """Generic boolean type.
 
     *   **aliases:** ``"bool"``, ``"boolean"``, ``"bool_"``, ``"bool8"``,
@@ -99,7 +99,7 @@ class BooleanType(ParentType):
 @register
 @BooleanType.default
 @BooleanType.implementation("numpy")
-class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
+class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, ScalarType):
     """Numpy boolean type.
 
     *   **aliases:** :class:`numpy.bool_`, ``numpy.dtype(bool)``
@@ -139,7 +139,7 @@ class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
 
 @register
 @BooleanType.implementation("pandas")
-class PandasBooleanType(BooleanMixin, AtomicType):
+class PandasBooleanType(BooleanMixin, ScalarType):
     """Pandas boolean type.
 
     *   **aliases:** ``"Boolean"``, :class:`pandas.BooleanDtype`
@@ -180,7 +180,7 @@ class PandasBooleanType(BooleanMixin, AtomicType):
 
 @register
 @BooleanType.implementation("python")
-class PythonBooleanType(BooleanMixin, AtomicType):
+class PythonBooleanType(BooleanMixin, ScalarType):
     """Python boolean type.
 
     *   **aliases:** :class:`bool <python:bool>`

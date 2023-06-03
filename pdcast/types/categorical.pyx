@@ -10,7 +10,7 @@ from pdcast import resolve
 
 from pdcast.util.type_hints import type_specifier
 
-from .base cimport AdapterType, CompositeType, ScalarType
+from .base cimport DecoratorType, CompositeType, VectorType
 from .base import register
 
 
@@ -19,8 +19,8 @@ from .base import register
 
 
 @register
-class CategoricalType(AdapterType):
-    """Categorical adapter for :class:`AtomicType` objects.
+class CategoricalType(DecoratorType):
+    """Categorical adapter for :class:`ScalarType` objects.
 
     This adapter keeps track of categorical levels for series objects of the
     wrapped type.
@@ -33,14 +33,14 @@ class CategoricalType(AdapterType):
     }
     _priority = 5
 
-    def __init__(self, wrapped: ScalarType = None, levels: list = None):
+    def __init__(self, wrapped: VectorType = None, levels: list = None):
         # do not re-wrap CategoricalTypes
         if isinstance(wrapped, CategoricalType):  # 1st order
             if levels is None:
                 levels = wrapped.levels
             wrapped = wrapped.wrapped
         elif wrapped is not None:  # 2nd order
-            for x in wrapped.adapters:
+            for x in wrapped.decorators:
                 if isinstance(x.wrapped, CategoricalType):
                     if levels is None:
                         levels = x.levels
@@ -48,7 +48,7 @@ class CategoricalType(AdapterType):
                     x.wrapped = self
                     break
 
-        # call AdapterType.__init__()
+        # call DecoratorType.__init__()
         super().__init__(wrapped=wrapped, levels=levels)
 
     ############################
@@ -59,7 +59,7 @@ class CategoricalType(AdapterType):
     def from_dtype(
         cls,
         dtype: pd.api.extensions.ExtensionDtype
-    ) -> AdapterType:
+    ) -> DecoratorType:
         return cls(
             wrapped=detect.detect_type(dtype.categories),
             levels=dtype.categories.tolist()
@@ -70,13 +70,13 @@ class CategoricalType(AdapterType):
         cls,
         wrapped: str = None,
         levels: str = None
-    ) -> AdapterType:
+    ) -> DecoratorType:
         from pdcast.convert import cast
 
         if wrapped is None:
             return cls()
 
-        cdef ScalarType instance = resolve.resolve_type(wrapped)
+        cdef VectorType instance = resolve.resolve_type(wrapped)
         cdef list parsed = None
 
         # resolve levels
@@ -88,7 +88,7 @@ class CategoricalType(AdapterType):
             parsed = cast(tokens, instance).tolist()
 
         # insert into sorted adapter stack according to priority
-        for x in instance.adapters:
+        for x in instance.decorators:
             if x._priority <= cls._priority:  # initial
                 break
             if getattr(x.wrapped, "_priority", -np.inf) <= cls._priority:
@@ -101,7 +101,7 @@ class CategoricalType(AdapterType):
     @classmethod
     def slugify(
         cls,
-        wrapped: ScalarType = None,
+        wrapped: VectorType = None,
         levels: list = None
     ) -> str:
         if wrapped is None:

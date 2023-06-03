@@ -125,7 +125,7 @@ In contrast, the ``pdcast`` equivalents are guaranteed to be valid.
 .. note::
 
     If a class has not been explicitly registered as a recognized
-    :attr:`alias <AtomicType.aliases>`, then a new :class:`ObjectType` will be
+    :attr:`alias <ScalarType.aliases>`, then a new :class:`ObjectType` will be
     built around it.
 
     .. doctest::
@@ -149,12 +149,12 @@ customized on a per-type basis.  Here's how it works:
 
 A ``typespec`` string is composed of 2 parts:
 
-#.  a registered string :attr:`alias <AtomicType.aliases>`.
+#.  a registered string :attr:`alias <ScalarType.aliases>`.
 #.  an optional list of comma-separated arguments nested within ``[]``
     characters.
 
 This resembles a callable grammar.  In fact, it directly translates to a call
-to the type's :meth:`resolve() <AtomicType.resolve>` constructor, which can be
+to the type's :meth:`resolve() <ScalarType.resolve>` constructor, which can be
 customized to alter its behavior.  This leaves each type free to assign its own
 meaning to the optional arguments and parse them accordingly.
 
@@ -164,12 +164,12 @@ state of the ``pdcast`` type system.  This is done via `recursive regular
 expressions <https://perldoc.perl.org/perlre#(?PARNO)-(?-PARNO)-(?+PARNO)-(?R)-(?0)>`_,
 which allow the arguments to include nested sequences or even other type
 specifiers of arbitrary depth.  These are then tokenized and passed as
-arguments to the type's :meth:`resolve <AtomicType.resolve>` method, which
+arguments to the type's :meth:`resolve <ScalarType.resolve>` method, which
 parses them and returns an instance of the associated type.
 
 Most types don't accept any arguments at all.  The exceptions are
 :doc:`datetimes <../types/datetime>`, :doc:`timedeltas <../types/timedelta>`,
-:class:`object <ObjectType>` types, :class:`AdapterTypes <AdapterType>`, and
+:class:`object <ObjectType>` types, :class:`DecoratorTypes <DecoratorType>`, and
 any type that has been marked as :func:`generic <generic>`.  Check the
 documentation for each type to find the available arguments and their
 associated meanings.

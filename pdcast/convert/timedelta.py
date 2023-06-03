@@ -19,7 +19,7 @@ from .base import cast, generic_to_integer
 @cast.overload("timedelta", "bool")
 def timedelta_to_boolean(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tol: Tolerance,
     rounding: str,
     unit: str,
@@ -56,7 +56,7 @@ def timedelta_to_boolean(
 @cast.overload("timedelta[pandas]", "int")
 def pandas_timedelta_to_integer(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     tol: Tolerance,
     unit: str,
@@ -102,7 +102,7 @@ def pandas_timedelta_to_integer(
 @cast.overload("timedelta[python]", "int")
 def python_timedelta_to_integer(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     tol: Tolerance,
     unit: str,
@@ -149,7 +149,7 @@ def python_timedelta_to_integer(
 @cast.overload("timedelta[numpy]", "int")
 def numpy_timedelta64_to_integer(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     tol: Tolerance,
     unit: str,
@@ -191,7 +191,7 @@ def numpy_timedelta64_to_integer(
 @cast.overload("timedelta", "float")
 def timedelta_to_float(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     unit: str,
     step_size: int,
     since: time.Epoch,
@@ -249,7 +249,7 @@ def timedelta_to_float(
 @cast.overload("timedelta", "complex")
 def timedelta_to_complex(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     downcast: types.CompositeType,
     **unused
 ) -> pd.Series:
@@ -262,7 +262,7 @@ def timedelta_to_complex(
 @cast.overload("timedelta", "decimal")
 def timedelta_to_decimal(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     unit: str,
     step_size: int,
     since: time.Epoch,
@@ -315,7 +315,7 @@ def timedelta_to_decimal(
 @cast.overload("timedelta", "datetime")
 def timedelta_to_datetime(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     unit: str,
     step_size: int,
     rounding: str,
@@ -352,7 +352,7 @@ def timedelta_to_datetime(
 @cast.overload("timedelta", "timedelta")
 def timedelta_to_timedelta(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     unit: str,
     step_size: int,
     downcast: types.CompositeType,

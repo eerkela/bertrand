@@ -28,18 +28,18 @@ doc:
 
 
 clean:
-#	TODO: replace find with python3 invocations.  Can use pathlib.
 #	remove compiled cython elements
 	@find pdcast/ -name "*.c" -type f -delete
 	@find pdcast/ -name "*.so" -type f -delete
-	@rm -r build/
+	@rm -rf build/
 
 #	clear __pycache__
-	@find . | grep -E '(/__pycache__$|\.pyc$|\.pyo$)' | xargs rm -rf
+	@find . -type d -name "__pycache__" -exec rm -rf {} +
+	@find . -type f -name "*.py[co]" -delete
 
 #	remove documentation stubs
-	@rm -r docs/build
-	@rm -r docs/source/generated
+	@rm -rf docs/build
+	@rm -rf docs/source/generated
 
 
 test:

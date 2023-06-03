@@ -3,7 +3,7 @@ from vectorized example data.
 
 The classes that are recognized by this function can be managed via the
 ``register_alias()``, ``remove_alias()``, and ``clear_aliases()`` methods that
-are attached to every ``AtomicType`` and ``AdapterType`` definition.
+are attached to every ``ScalarType`` and ``DecoratorType`` definition.
 """
 from typing import Any, Iterable
 
@@ -39,19 +39,19 @@ def detect_type(data: Any, skip_na: bool = True) -> types.Type | dict:
 
     Returns
     -------
-    AtomicType | AdapterType | CompositeType
+    ScalarType | DecoratorType | CompositeType
         The observed type of the example data.  If the example is homogenous,
-        this will be an :class:`AtomicType` or :class:`AdapterType` instance.
+        this will be an :class:`ScalarType` or :class:`DecoratorType` instance.
         If the example contains elements of mixed type, it will be a
         :class:`CompositeType` object.
 
     See Also
     --------
-    AtomicType.detect : customizable detection of scalar objects.
-    AtomicType.from_dtype : customizable resolution of
+    ScalarType.detect : customizable detection of scalar objects.
+    ScalarType.from_dtype : customizable resolution of
         :ref:`numpy <resolve_type.type_specifiers.numpy>`\ /\ 
         :ref:`pandas <resolve_type.type_specifiers.pandas>` data types.
-    AdapterType.from_dtype : customizable resolution of
+    DecoratorType.from_dtype : customizable resolution of
         :ref:`numpy <resolve_type.type_specifiers.numpy>`\ /\ 
         :ref:`pandas <resolve_type.type_specifiers.pandas>` data types.
     """
@@ -72,7 +72,7 @@ def detect_type(data: Any, skip_na: bool = True) -> types.Type | dict:
 
     # build factory
     if hasattr(data, "__iter__") and not isinstance(data, type):
-        if data_type in types.AtomicType.registry.aliases:
+        if data_type in types.ScalarType.registry.aliases:
             factory = ScalarDetector(data, data_type)
         elif hasattr(data, "dtype"):
             factory = ArrayDetector(data, skip_na=skip_na)
@@ -112,11 +112,11 @@ cdef class ScalarDetector(Detector):
         self.example = example
         self.example_type = example_type
 
-    def __call__(self) -> types.AtomicType:
+    def __call__(self) -> types.ScalarType:
         if pd.isna(self.example):
             return None
 
-        cdef types.AtomicType result
+        cdef types.ScalarType result
 
         result = self.aliases.get(self.example_type, None)
         if result is None:
@@ -134,7 +134,7 @@ cdef class ArrayDetector(Detector):
         self.dtype = data.dtype
         self.skip_na = skip_na
 
-    def __call__(self) -> types.ScalarType:
+    def __call__(self) -> types.VectorType:
         dtype = self.dtype
 
         # strip sparse types
@@ -204,9 +204,9 @@ cdef types.CompositeType detect_vector_type(object[:] arr, dict lookup):
     cdef long long i
     cdef object element
     cdef type element_type
-    cdef types.AtomicType result
+    cdef types.ScalarType result
     cdef set observed = set()
-    cdef types.AtomicType[:] index = np.empty(arr_length, dtype=object)
+    cdef types.ScalarType[:] index = np.empty(arr_length, dtype=object)
 
     for i in range(arr_length):
         element = arr[i]

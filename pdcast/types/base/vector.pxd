@@ -4,7 +4,7 @@ from .registry cimport Type, AliasManager
 cdef Exception READ_ONLY_ERROR
 
 
-cdef class ScalarType(Type):
+cdef class VectorType(Type):
     cdef:
         dict _kwargs
         str _slug

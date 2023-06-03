@@ -6,7 +6,7 @@ import sys
 
 from pdcast.util.type_hints import numeric
 
-from .base cimport AtomicType, ParentType, CompositeType
+from .base cimport ScalarType, AbstractType, CompositeType
 from .base import register
 
 
@@ -19,7 +19,7 @@ from .base import register
 
 
 @register
-class DecimalType(ParentType):
+class DecimalType(AbstractType):
 
     name = "decimal"
     aliases = {"decimal"}
@@ -33,7 +33,7 @@ class DecimalType(ParentType):
 @register
 @DecimalType.default
 @DecimalType.implementation("python")
-class PythonDecimalType(AtomicType):
+class PythonDecimalType(ScalarType):
 
     aliases = {decimal.Decimal}
     type_def = decimal.Decimal

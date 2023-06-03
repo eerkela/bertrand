@@ -9,7 +9,7 @@ import pandas as pd
 from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
-from .base cimport AdapterType, CompositeType, ScalarType
+from .base cimport DecoratorType, CompositeType, VectorType
 from .base import register
 
 
@@ -28,12 +28,12 @@ from .base import register
 
 
 @register
-class SparseType(AdapterType, priority=10):
+class SparseType(DecoratorType, priority=10):
 
     name = "sparse"
     aliases = {pd.SparseDtype, "sparse", "Sparse"}
 
-    def __init__(self, wrapped: ScalarType = None, fill_value: Any = None):
+    def __init__(self, wrapped: VectorType = None, fill_value: Any = None):
         super(type(self), self).__init__(wrapped, fill_value=fill_value)
 
     @property
@@ -52,7 +52,7 @@ class SparseType(AdapterType, priority=10):
     def from_dtype(
         cls,
         dtype: pd.api.extensions.ExtensionDtype
-    ) -> AdapterType:
+    ) -> DecoratorType:
         """Convert a pandas SparseDtype into a
         :class:`SparseType <pdcast.SparseType>` object.
         """
@@ -66,7 +66,7 @@ class SparseType(AdapterType, priority=10):
         cls,
         wrapped: str = None,
         fill_value: str = None
-    ) -> AdapterType:
+    ) -> DecoratorType:
         """Resolve a sparse specifier in the
         :ref:`type specification mini langauge <resolve_type.mini_language>`.
         """
@@ -75,7 +75,7 @@ class SparseType(AdapterType, priority=10):
         if wrapped is None:
             return cls()
 
-        cdef ScalarType instance = resolve.resolve_type(wrapped)
+        cdef VectorType instance = resolve.resolve_type(wrapped)
         cdef object parsed = None
 
         # resolve fill_value
@@ -86,7 +86,7 @@ class SparseType(AdapterType, priority=10):
                 parsed = cast(fill_value, instance)[0]
 
         # insert into sorted adapter stack according to priority
-        for x in instance.adapters:
+        for x in instance.decorators:
             if x._priority <= cls._priority:  # initial
                 break
             if getattr(x.wrapped, "_priority", -np.inf) <= cls._priority:
@@ -99,7 +99,7 @@ class SparseType(AdapterType, priority=10):
     @classmethod
     def slugify(
         cls,
-        wrapped: ScalarType = None,
+        wrapped: VectorType = None,
         fill_value: Any = None
     ) -> str:
         """Create a unique string representation of a
@@ -177,7 +177,7 @@ class SparseType(AdapterType, priority=10):
 
     def transform(self, series: pd.Series) -> pd.Series:
         """Convert a series into a sparse format with the given fill_value."""
-        # apply custom logic for each AtomicType
+        # apply custom logic for each ScalarType
         return self.atomic_type.make_sparse(
             series,
             fill_value=self.fill_value

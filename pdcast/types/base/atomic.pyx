@@ -1,4 +1,4 @@
-"""This module describes an ``AtomicType`` object, which serves as the base
+"""This module describes an ``ScalarType`` object, which serves as the base
 of the ``pdcast`` type system.
 """
 import decimal
@@ -18,8 +18,8 @@ from pdcast.util.type_hints import (
 )
 
 from .registry cimport AliasManager, CacheValue, TypeRegistry
-from .scalar cimport (
-    READ_ONLY_ERROR, ScalarType, ArgumentEncoder, BackendEncoder,
+from .vector cimport (
+    READ_ONLY_ERROR, VectorType, ArgumentEncoder, BackendEncoder,
     InstanceFactory, FlyweightFactory
 )
 from .composite cimport CompositeType
@@ -37,37 +37,6 @@ from ..array import abstract
 
 # -> inject separate strategies for @parent .larger/.smaller?
 
-# TODO: ParentTypes -> AbstractTypes.  These can implement their own
-# interface, and that interface will be enforced for all of its
-# implementations.  These work like the ABCMeta python class.
-
-# -> this basically boils down to a dir() comparison.  The inheriting class
-# should include all of the members of its parent(s).
-
-
-
-# @register
-# class IntegerType(AbstractType):
-#     ...
-
-# @register
-# @IntegerType.implementation("numpy")
-# class NumpyIntegerType(AbstractType):
-#     ...
-
-# @register
-# @IntegerType.default
-# @IntegerType.subtype
-# class SignedIntegerType(AbstractType):
-#     ...
-
-# @register
-# @NumpyIntegerType.default
-# @NumpyIntegerType.subtype
-# @SignedIntegerType.implementation("numpy")
-# class NumpySignedIntegerType(AbstractType):
-#     ...
-
 
 # Type System
 # Detection, resolution & type checks
@@ -81,10 +50,10 @@ from ..array import abstract
 ######################
 
 
-cdef class AtomicType(ScalarType):
+cdef class ScalarType(VectorType):
     """Abstract base class for all user-defined scalar types.
 
-    :class:`AtomicTypes <pdcast.AtomicType>` are the most fundamental unit of
+    :class:`ScalarTypes <pdcast.ScalarType>` are the most fundamental unit of
     the ``pdcast`` type system.  They are used to describe scalar values of a
     particular type (i.e. :class:`int <python:int>`, :class:`numpy.float32`,
     etc.), and can be linked together into hierarchical tree structures.
@@ -100,14 +69,14 @@ cdef class AtomicType(ScalarType):
 
     Examples
     --------
-    All in all, a typical :class:`AtomicType` definition could look something
+    All in all, a typical :class:`ScalarType` definition could look something
     like this:
 
     .. code:: python
 
         @pdcast.register
         @GenericType.implementation("backend")  # inherits .name
-        class ImplementationType(pdcast.AtomicType):
+        class ImplementationType(pdcast.ScalarType):
 
             _cache_size = 128
             aliases = {"foo", "bar", "baz", np.dtype(np.int64), int, ...}
@@ -150,8 +119,8 @@ cdef class AtomicType(ScalarType):
     ####    CONSTRUCTORS    ####
     ############################
 
-    def resolve(self, *args: str) -> AtomicType:
-        """Construct a new :class:`AtomicType` in the :ref:`type specification
+    def resolve(self, *args: str) -> ScalarType:
+        """Construct a new :class:`ScalarType` in the :ref:`type specification
         mini-language <resolve_type.mini_language>`.
 
         Override this if a type implements custom parsing rules for any
@@ -166,11 +135,11 @@ cdef class AtomicType(ScalarType):
 
         See Also
         --------
-        AdapterType.resolve : the adapter equivalent of this method.
+        DecoratorType.resolve : the adapter equivalent of this method.
 
         Returns
         -------
-        AtomicType
+        ScalarType
             A flyweight for the specified type.  If this method is given the
             same inputs again in the future, then this will be a simple
             reference to the previous instance.
@@ -178,8 +147,8 @@ cdef class AtomicType(ScalarType):
         # NOTE: any special string conversion logic goes here
         return self(*args)
 
-    def detect(self, example: Any) -> AtomicType:
-        """Construct a new :class:`AtomicType` from scalar example data.
+    def detect(self, example: Any) -> ScalarType:
+        """Construct a new :class:`ScalarType` from scalar example data.
 
         Override this if a type has attributes that depend on the value of a
         corresponding scalar (e.g. datetime64 units, timezones, etc.)
@@ -192,7 +161,7 @@ cdef class AtomicType(ScalarType):
 
         Returns
         -------
-        AtomicType
+        ScalarType
             A flyweight for the specified type.  If this method is given the
             same input again in the future, then this will be a simple
             reference to the previous instance.
@@ -206,7 +175,7 @@ cdef class AtomicType(ScalarType):
 
         In order for this method to be called, the output of
         :class:`type() <python:type>` on the example must be registered as one
-        of this type's :attr:`aliases <AtomicType.aliases>`.
+        of this type's :attr:`aliases <ScalarType.aliases>`.
 
         If the input to :func:`detect_type` is vectorized, then this method
         will be called at each index.
@@ -214,8 +183,8 @@ cdef class AtomicType(ScalarType):
         # NOTE: any special scalar parsing logic goes here
         return self()
 
-    def from_dtype(self, dtype: np.dtype | ExtensionDtype) -> AtomicType:
-        """Construct an :class:`AtomicType` from a corresponding numpy/pandas
+    def from_dtype(self, dtype: np.dtype | ExtensionDtype) -> ScalarType:
+        """Construct an :class:`ScalarType` from a corresponding numpy/pandas
         :class:`dtype <numpy.dtype>`\ /\
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
 
@@ -232,24 +201,24 @@ cdef class AtomicType(ScalarType):
 
         Returns
         -------
-        AtomicType
+        ScalarType
             A flyweight for the specified type.  If this method is given the
             same input again in the future, then this will be a simple
             reference to the previous instance.
 
         See Also
         --------
-        AdapterType.from_dtype : the adapter equivalent of this method.
+        DecoratorType.from_dtype : the adapter equivalent of this method.
 
         Notes
         -----
         For numpy :class:`dtypes <numpy.dtype>`, the input to this function
-        must be a member of the type's :attr:`aliases <AtomicType.aliases>`
+        must be a member of the type's :attr:`aliases <ScalarType.aliases>`
         attribute.
 
         For pandas :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`,
         the input's **type** must be a member of
-        :attr:`aliases <AtomicType.aliases>`, not the dtype itself.  This
+        :attr:`aliases <ScalarType.aliases>`, not the dtype itself.  This
         asymmetry allows pandas dtypes to be arbitrarily parameterized when
         passed to this method.
         """
@@ -368,7 +337,7 @@ cdef class AtomicType(ScalarType):
         """Indicates whether a type supports missing values.
 
         Set this ``False`` where necessary to invoke :meth:`make_nullable
-        <AtomicType.make_nullable>`.  This allows automatic conversion to a
+        <ScalarType.make_nullable>`.  This allows automatic conversion to a
         nullable alternative when missing values are detected/coerced.
         """
         if self._is_nullable is None:
@@ -387,15 +356,15 @@ cdef class AtomicType(ScalarType):
 
         See Also
         --------
-        AtomicType.is_na : for comparisons against this value.
+        ScalarType.is_na : for comparisons against this value.
         """
         if self._na_value is None:
             return pd.NA
 
         return self._na_value
 
-    def make_nullable(self) -> AtomicType:
-        """Convert a non-nullable :class:`AtomicType` into one that can accept
+    def make_nullable(self) -> ScalarType:
+        """Convert a non-nullable :class:`ScalarType` into one that can accept
         missing values.
 
         Override this to control how this type is coerced when missing values
@@ -403,7 +372,7 @@ cdef class AtomicType(ScalarType):
 
         Returns
         -------
-        AtomicType
+        ScalarType
             A nullable version of this data type to be used when missing or
             coerced values are detected during a conversion.
         """
@@ -471,7 +440,7 @@ cdef class AtomicType(ScalarType):
         Notes
         -----
         This method also controls the behavior of the ``in`` keyword for
-        :class:`AtomicTypes <AtomicType>`.
+        :class:`ScalarTypes <ScalarType>`.
         """
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
@@ -553,12 +522,12 @@ cdef class AtomicType(ScalarType):
         -------
         bool
             ``True`` if this type has no :attr:`supertype
-            <AtomicType.supertype>`, ``False`` otherwise.
+            <ScalarType.supertype>`, ``False`` otherwise.
         """
         return self.supertype is None
 
     @property
-    def root(self) -> AtomicType:
+    def root(self) -> ScalarType:
         """The root node of this type's subtype hierarchy."""
         result = self
         while result.supertype:
@@ -566,8 +535,8 @@ cdef class AtomicType(ScalarType):
         return result
 
     @property
-    def supertype(self) -> AtomicType:
-        """An :class:`AtomicType` representing the supertype that this type is
+    def supertype(self) -> AbstractType:
+        """An :class:`ScalarType` representing the supertype that this type is
         registered to, if one exists.
 
         Notes
@@ -580,10 +549,10 @@ cdef class AtomicType(ScalarType):
     @property
     def is_generic(self) -> bool:
         """Indicates whether this type is managing any backends."""
-        return False  # overridden in ParentType
+        return False  # overridden in AbstractType
 
     @property
-    def generic(self) -> ParentType:
+    def generic(self) -> AbstractType:
         """The generic equivalent of this type, if one exists."""
         return self.registry.get_generic(self)
 
@@ -611,12 +580,12 @@ cdef class AtomicType(ScalarType):
         The result of this accessor is cached between :class:`TypeRegistry`
         updates.
         """
-        return CompositeType()  # overridden in ParentType
+        return CompositeType()  # overridden in AbstractType
 
     @property
     def is_leaf(self) -> bool:
         """Indicates whether this type has subtypes."""
-        return True  # overridden in ParentType
+        return True  # overridden in AbstractType
 
     @property
     def leaves(self) -> CompositeType:
@@ -627,9 +596,9 @@ cdef class AtomicType(ScalarType):
         return CompositeType(typ for typ in candidates if typ.is_leaf)
 
     @property
-    def larger(self) -> Iterator[AtomicType]:
+    def larger(self) -> Iterator[ScalarType]:
         """A list of types that this type can be
-        :meth:`upcasted <AtomicType.upcast>` to in the event of overflow.
+        :meth:`upcasted <ScalarType.upcast>` to in the event of overflow.
 
         Override this to change the behavior of a bounded type (with
         appropriate `.min`/`.max` fields) when an ``OverflowError`` is
@@ -650,7 +619,7 @@ cdef class AtomicType(ScalarType):
 
         # TODO: have a problem with ordering of numpy/pandas types.  Preference
         # should be given to types that are within the same family.
-        # -> Find a way to compare roots.  Have to unwrap ParentTypes first.
+        # -> Find a way to compare roots.  Have to unwrap AbstractTypes first.
 
         # sort by range, preferring like types centered near zero
         coverage = lambda typ: typ.max - typ.min
@@ -661,9 +630,9 @@ cdef class AtomicType(ScalarType):
         yield from sorted(candidates, key=key)
 
     @property
-    def smaller(self) -> Iterator[AtomicType]:
+    def smaller(self) -> Iterator[ScalarType]:
         """A list of types that this type can be
-        :meth:`downcasted <AtomicType.downcast>` to if directed.
+        :meth:`downcasted <ScalarType.downcast>` to if directed.
 
         Override this to change the behavior of a type when the ``downcast``
         argument is supplied to a conversion function.
@@ -773,7 +742,7 @@ cdef class AtomicType(ScalarType):
 ############################
 
 
-cdef class ParentType(AtomicType):
+cdef class AbstractType(ScalarType):
     """A Composite Pattern type object that can contain other types.
     """
 
@@ -797,12 +766,12 @@ cdef class ParentType(AtomicType):
         """
         def decorator(_concrete: type):
             """Link the decorated type as the default value of this parent."""
-            if not issubclass(_concrete, AtomicType):
+            if not issubclass(_concrete, ScalarType):
                 raise abstract_decorator_error(_concrete)
 
             # ensure that the decorated concretion is a subtype or implementation
             registry = cls.registry
-            candidates = registry.subtypes.get(cls, set())
+            candidates = registry.subtypes.get(cls, set()).copy()
             candidates |= set(registry.implementations.get(cls, {}).values())
             if _concrete not in candidates:
                 raise TypeError(
@@ -827,7 +796,7 @@ cdef class ParentType(AtomicType):
     @classmethod
     def implementation(cls, backend: str, validate: bool = True):
         """A class decorator that registers a type definition as an
-        implementation of this :class:`ParentType <pdcast.ParentType>`.
+        implementation of this :class:`AbstractType <pdcast.AbstractType>`.
 
         Parameters
         ----------
@@ -851,7 +820,7 @@ cdef class ParentType(AtomicType):
 
         def decorator(implementation: type):
             """Link the decorated type as an implementation of this parent."""
-            if not issubclass(implementation, AtomicType):
+            if not issubclass(implementation, ScalarType):
                 raise abstract_decorator_error(implementation)
 
             if validate:
@@ -882,9 +851,9 @@ cdef class ParentType(AtomicType):
 
         Parameters
         ----------
-        subtype : type | AtomicType
-            An :class:`AtomicType <pdcast.AtomicType>` or
-            :class:`ParentType <pdcast.ParentType>` subclass to register to
+        subtype : type | ScalarType
+            An :class:`ScalarType <pdcast.ScalarType>` or
+            :class:`AbstractType <pdcast.AbstractType>` subclass to register to
             this type.
         default : bool, default False
             Used to reassign the default value of the parent type to the child
@@ -892,7 +861,7 @@ cdef class ParentType(AtomicType):
 
         Returns
         -------
-        type | AtomicType
+        type | ScalarType
             The child type.
 
         Notes
@@ -901,7 +870,7 @@ cdef class ParentType(AtomicType):
         """
         def decorator(_subtype: type):
             """Link the decorated type as a subtype of this parent."""
-            if not issubclass(_subtype, AtomicType):
+            if not issubclass(_subtype, ScalarType):
                 raise abstract_decorator_error(_subtype)
 
             if validate:
@@ -957,7 +926,7 @@ cdef class ParentType(AtomicType):
     @property
     def subtypes(self) -> CompositeType:
         """A :class:`CompositeType` containing every subtype that is
-        currently registered to this :class:`ParentType`.
+        currently registered to this :class:`AbstractType`.
         """
         cached = self._subtypes
         if not cached:
@@ -972,7 +941,7 @@ cdef class ParentType(AtomicType):
         """Indicates whether this type has subtypes."""
         return not self.subtypes and not self.is_generic
 
-    def resolve(self, backend: str | None = None, *args) -> AtomicType:
+    def resolve(self, backend: str | None = None, *args) -> ScalarType:
         """Forward constructor arguments to the appropriate implementation."""
         if backend is None:
             return self
@@ -1002,11 +971,11 @@ cdef class ParentType(AtomicType):
     ####    DELEGATED    ####
     #########################
 
-    def detect(self, example: Any) -> AtomicType:
+    def detect(self, example: Any) -> ScalarType:
         """Forward scalar inference to the default implementation."""
         return self.registry.get_default(self).detect(example)
 
-    def from_dtype(self, dtype: dtype_like) -> AtomicType:
+    def from_dtype(self, dtype: dtype_like) -> ScalarType:
         """Forward dtype translation to the default implementation."""
         return self.registry.get_default(self).from_dtype(dtype)
 
@@ -1065,11 +1034,11 @@ cdef set PYTHON_ATTRS = {"__dict__", "__module__", "__weakref__"}
 
 
 cdef Exception abstract_decorator_error(type offender):
-    """Return a standardized error message when a ParentType's class decorators
+    """Return a standardized error message when a AbstractType's class decorators
     are applied to a non-type class.
     """
     return TypeError(
-        f"ParentTypes can only contain AtomicTypes, not {repr(offender)}"
+        f"AbstractTypes can only contain ScalarTypes, not {repr(offender)}"
     )
 
 
@@ -1077,7 +1046,7 @@ cdef void validate_interface(type parent, type child):
     """Ensure that the child type implements the abstract type's interface."""
     parent_attrs = [
         attr for attr in dir(parent)
-        if attr not in dir(ParentType) and attr not in PYTHON_ATTRS
+        if attr not in dir(AbstractType) and attr not in PYTHON_ATTRS
     ]
     child_attrs = dir(child)
 

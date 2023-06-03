@@ -23,7 +23,7 @@ from .base import (
 @cast.overload("string", "bool")
 def string_to_boolean(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     true: set,
     false: set,
     errors: str,
@@ -53,7 +53,7 @@ def string_to_boolean(
 @cast.overload("string", "int")
 def string_to_integer(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     base: int,
     errors: str,
     **unused
@@ -74,7 +74,7 @@ def string_to_integer(
 @cast.overload("string", "float")
 def string_to_float(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tol: Tolerance,
     errors: str,
     **unused
@@ -88,7 +88,7 @@ def string_to_float(
 @cast.overload("string", "complex")
 def string_to_complex(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
@@ -134,7 +134,7 @@ def string_to_complex(
 @cast.overload("string", "datetime")
 def string_to_datetime(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     errors: str,
     **unused
 ) -> pd.Series:
@@ -164,7 +164,7 @@ def string_to_datetime(
 @cast.overload("string", "datetime[pandas]")
 def string_to_pandas_timestamp(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tz: datetime.tzinfo,
     format: str,
     day_first: bool,
@@ -240,7 +240,7 @@ def string_to_pandas_timestamp(
 @cast.overload("string", "datetime[python]")
 def string_to_python_datetime(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     tz: datetime.tzinfo,
     day_first: bool,
     year_first: bool,
@@ -274,7 +274,7 @@ def string_to_python_datetime(
 @cast.overload("string", "datetime[numpy]")
 def string_to_numpy_datetime64(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     format: str,
     tz: datetime.tzinfo,
     errors: str,
@@ -306,7 +306,7 @@ def string_to_numpy_datetime64(
 @cast.overload("string", "timedelta")
 def string_to_timedelta(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     unit: str,
     step_size: int,
     since: time.Epoch,

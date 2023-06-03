@@ -12,7 +12,7 @@ from pdcast import resolve
 from pdcast.util import time
 from pdcast.util.type_hints import type_specifier
 
-from .base cimport AtomicType, ParentType, CompositeType
+from .base cimport ScalarType, AbstractType, CompositeType
 from .base import register
 
 
@@ -25,7 +25,7 @@ from .base import register
 
 
 @register
-class DatetimeType(ParentType):
+class DatetimeType(AbstractType):
 
     name = "datetime"
     aliases = {"datetime"}
@@ -69,7 +69,7 @@ class DatetimeType(ParentType):
 
 @register
 @DatetimeType.implementation("numpy")
-class NumpyDatetime64Type(AtomicType):
+class NumpyDatetime64Type(ScalarType):
 
     # NOTE: dtype is set to object due to pandas and its penchant for
     # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
@@ -111,16 +111,16 @@ class NumpyDatetime64Type(AtomicType):
             self.min = time.numpy_datetime64_to_ns(min_M8)
             self.max = time.numpy_datetime64_to_ns(max_M8)
 
-        super(AtomicType, self).__init__(unit=unit, step_size=step_size)
+        super(ScalarType, self).__init__(unit=unit, step_size=step_size)
 
-    def detect(self, example: np.datetime64, **defaults) -> AtomicType:
+    def detect(self, example: np.datetime64, **defaults) -> ScalarType:
         unit, step_size = np.datetime_data(example)
         return self(unit=unit, step_size=step_size, **defaults)
 
     def from_dtype(
         self,
         dtype: np.dtype | pd.api.extensions.ExtensionDtype
-    ) -> AtomicType:
+    ) -> ScalarType:
         unit, step_size = np.datetime_data(dtype)
         return self(
             unit=None if unit == "generic" else unit,
@@ -128,7 +128,7 @@ class NumpyDatetime64Type(AtomicType):
         )
 
     @property
-    def larger(self) -> Iterator[AtomicType]:
+    def larger(self) -> Iterator[ScalarType]:
         """Get an iterator of types that this type can be upcasted to."""
         if self.unit is None:
             for unit in time.valid_units:
@@ -136,7 +136,7 @@ class NumpyDatetime64Type(AtomicType):
         else:
             yield from ()
 
-    def resolve(self, context: str = None) -> AtomicType:
+    def resolve(self, context: str = None) -> ScalarType:
         if context is not None:
             match = M8_pattern.match(context)
             if not match:
@@ -171,7 +171,7 @@ class NumpyDatetime64Type(AtomicType):
 
 @register
 @DatetimeType.implementation("pandas")
-class PandasTimestampType(AtomicType):
+class PandasTimestampType(ScalarType):
 
     _cache_size = 64
     aliases = {
@@ -192,7 +192,7 @@ class PandasTimestampType(AtomicType):
 
     def __init__(self, tz: datetime.tzinfo | str = None):
         tz = time.tz(tz, {})
-        super(AtomicType, self).__init__(tz=tz)
+        super(ScalarType, self).__init__(tz=tz)
 
     ########################
     ####    REQUIRED    ####
@@ -225,16 +225,16 @@ class PandasTimestampType(AtomicType):
             return isinstance(other, type(self))
         return super().contains(other, include_subtypes=include_subtypes)
 
-    def detect(self, example: pd.Timestamp, **defaults) -> AtomicType:
+    def detect(self, example: pd.Timestamp, **defaults) -> ScalarType:
         return self(tz=example.tzinfo, **defaults)
 
     def from_dtype(
         self,
         dtype: np.dtype | pd.api.extensions.ExtensionDtype
-    ) -> AtomicType:
+    ) -> ScalarType:
         return self(tz=getattr(dtype, "tz", None))
 
-    def resolve(self, context: str = None) -> AtomicType:
+    def resolve(self, context: str = None) -> ScalarType:
         if context is not None:
             return self(tz=time.tz(context, {}))
         return self()
@@ -247,7 +247,7 @@ class PandasTimestampType(AtomicType):
 
 @register
 @DatetimeType.implementation("python")
-class PythonDatetimeType(AtomicType):
+class PythonDatetimeType(ScalarType):
 
     _cache_size = 64
     aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
@@ -258,7 +258,7 @@ class PythonDatetimeType(AtomicType):
 
     def __init__(self, tz: datetime.tzinfo = None):
         tz = time.tz(tz, {})
-        super(AtomicType, self).__init__(tz=tz)
+        super(ScalarType, self).__init__(tz=tz)
 
     ############################
     ####    TYPE METHODS    ####
@@ -281,10 +281,10 @@ class PythonDatetimeType(AtomicType):
             return isinstance(other, type(self))
         return super().contains(other, include_subtypes=include_subtypes)
 
-    def detect(self, example: datetime.datetime, **defaults) -> AtomicType:
+    def detect(self, example: datetime.datetime, **defaults) -> ScalarType:
         return self(tz=example.tzinfo, **defaults)
 
-    def resolve(self, context: str = None) -> AtomicType:
+    def resolve(self, context: str = None) -> ScalarType:
         if context is not None:
             return self(tz=time.tz(context, {}))
         return self()

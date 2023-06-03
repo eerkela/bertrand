@@ -1,13 +1,13 @@
 .. currentmodule:: pdcast
 
-.. _AdapterType:
+.. _DecoratorType:
 
-pdcast.AdapterType
-==================
+pdcast.DecoratorType
+====================
 
-.. autoclass:: AdapterType
+.. autoclass:: DecoratorType
 
-.. _AdapterType.constructors:
+.. _DecoratorType.constructors:
 
 Constructors
 ------------
@@ -16,12 +16,12 @@ These are used by
 .. autosummary::
     :toctree: ../../generated/
 
-    AdapterType.resolve
-    AdapterType.from_dtype
-    AdapterType.replace
-    AdapterType.slugify
+    DecoratorType.resolve
+    DecoratorType.from_dtype
+    DecoratorType.replace
+    DecoratorType.slugify
 
-.. _AdapterType.aliases:
+.. _DecoratorType.aliases:
 
 Aliases
 -------
@@ -29,11 +29,11 @@ Aliases
 .. autosummary::
     :toctree: ../../generated/
 
-    AdapterType.clear_aliases <ScalarType.clear_aliases>
-    AdapterType.register_alias <ScalarType.register_alias>
-    AdapterType.remove_alias <ScalarType.remove_alias>
+    DecoratorType.clear_aliases <VectorType.clear_aliases>
+    DecoratorType.register_alias <VectorType.register_alias>
+    DecoratorType.remove_alias <VectorType.remove_alias>
 
-.. _AdapterType.hierarchy:
+.. _DecoratorType.hierarchy:
 
 Subtypes/Supertypes
 -------------------
@@ -41,9 +41,9 @@ Subtypes/Supertypes
 .. autosummary::
     :toctree: ../../generated/
 
-    AdapterType.contains
+    DecoratorType.contains
 
-.. _AdapterType.adapters:
+.. _DecoratorType.decorators:
 
 Adapters
 --------
@@ -51,14 +51,14 @@ Adapters
 .. autosummary::
     :toctree: ../../generated/
 
-    AdapterType.wrapped
-    AdapterType.atomic_type
-    AdapterType.unwrap
-    AdapterType.adapters
-    AdapterType.transform
-    AdapterType.inverse_transform
+    DecoratorType.wrapped
+    DecoratorType.atomic_type
+    DecoratorType.unwrap
+    DecoratorType.decorators
+    DecoratorType.transform
+    DecoratorType.inverse_transform
 
-.. _AdapterType.special:
+.. _DecoratorType.special:
 
 Special Methods
 ---------------
@@ -66,21 +66,21 @@ Special Methods
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.__contains__
-    AtomicType.__eq__
-    AtomicType.__hash__
-    AtomicType.__init_subclass__
-    AtomicType.__str__
-    AtomicType.__repr__
+    ScalarType.__contains__
+    ScalarType.__eq__
+    ScalarType.__hash__
+    ScalarType.__init_subclass__
+    ScalarType.__str__
+    ScalarType.__repr__
 
 
 
 
-``AdapterType``\s are types that modify other types.  These include sparse and
-categorical types, which provide a wrapper on top of a base ``AtomicType``
+``DecoratorType``\s are types that modify other types.  These include sparse and
+categorical types, which provide a wrapper on top of a base ``ScalarType``
 instance, adding information related to fill values and levels, respectively.
 These must be provided at least one argument (the type being wrapped), which
-can be another ``AdapterType`` specifier, allowing them to be arbitrarily
+can be another ``DecoratorType`` specifier, allowing them to be arbitrarily
 nested.
 
 Here are some examples of basic adapter types:

@@ -16,7 +16,7 @@ pdcast.detect_type
 .. _detect_type.scalar:
 
 Scalar data
---------------
+-----------
 :func:`detect_type` can be used to parse scalar objects, similar to the
 built-in :class:`type() <python:type>` function.
 
@@ -30,7 +30,7 @@ built-in :class:`type() <python:type>` function.
 .. note::
 
     If the :class:`type() <python:type>` of an object has not been registered
-    as an :attr:`alias <AtomicType.aliases>`, then a new :class:`ObjectType`
+    as an :attr:`alias <ScalarType.aliases>`, then a new :class:`ObjectType`
     will be built around it.
 
     .. doctest::
@@ -106,8 +106,8 @@ This also tracks the type that was observed at each
 
 .. note::
 
-    This is space-efficient thanks to :class:`AtomicType`\'s
-    :ref:`flyweight construction <AtomicType.allocation>`.
+    This is space-efficient thanks to :class:`ScalarType`\'s
+    :ref:`flyweight construction <ScalarType.allocation>`.
 
 .. _detect_type.pandas:
 

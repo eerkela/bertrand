@@ -357,11 +357,11 @@ class DispatchFunc(BaseDecorator):
         except that it does not interact with type annotations in any way.
         Instead, if a type is not provided as an argument to this method, it
         will be disregarded during dispatch lookups, unless the decorated
-        callable is a method of an :class:`AtomicType <pdcast.AtomicType>` or
-        :class:`AdapterType <pdcast.AdapterType>` subclass.  In that case, the
+        callable is a method of an :class:`ScalarType <pdcast.ScalarType>` or
+        :class:`DecoratorType <pdcast.DecoratorType>` subclass.  In that case, the
         attached type will be automatically bound to the dispatched
         implementation during
-        :meth:`__init_subclass__() <AtomicType.__init_subclass__>`.
+        :meth:`__init_subclass__() <ScalarType.__init_subclass__>`.
 
         Examples
         --------
@@ -627,7 +627,7 @@ class HomogenousDispatch(DispatchStrategy):
         func: DispatchFunc,
         dispatched: dict[str, Any],
         frame: pd.DataFrame,
-        detected: dict[str, types.ScalarType],
+        detected: dict[str, types.VectorType],
         names: dict[str, str],
         hasnans: bool,
         original_index: pd.Index
@@ -707,7 +707,7 @@ class CompositeDispatch(DispatchStrategy):
         func: DispatchFunc,
         dispatched: dict[str, Any],
         frame: pd.DataFrame,
-        detected: dict[str, types.ScalarType | types.CompositeType],
+        detected: dict[str, types.VectorType | types.CompositeType],
         names: dict[str, str],
         hasnans: bool,
         original_index: pd.Index,
@@ -869,8 +869,8 @@ class CompositeDispatch(DispatchStrategy):
     def _standardize_same_family(
         self,
         computed: list[pd.Series],
-        observed: set[types.ScalarType]
-    ) -> tuple[list[pd.Series], set[types.ScalarType]]:
+        observed: set[types.VectorType]
+    ) -> tuple[list[pd.Series], set[types.VectorType]]:
         """If the dispatched implementations return series objects of different
         types within the same family, then attempt to standardize their
         results.

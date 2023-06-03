@@ -31,7 +31,7 @@ pdcast.dispatch
         performance slightly.  If it is set to ``True``, then the indices of
         each missing value will still be detected, but operations will proceed
         as if some were found even if this is not the case.
-    element_type : BaseType
+    element_type : Type
         Specifies the element type of the series.  Only use this if you know
         in advance what elements are stored in the series.  Providing it does
         not change functionality, but may avoid a call to :func:`detect_type`

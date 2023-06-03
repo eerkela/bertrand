@@ -134,7 +134,7 @@ The behavior of this function can be customized using the following arguments.
         ...         raise ValueError(f"`foo` must be one of ('bar', 'baz')")
         ...     return val
 
-    This allows the type's :ref:`delegated <AtomicType.conversions>`
+    This allows the type's :ref:`delegated <ScalarType.conversions>`
     conversion methods to access ``foo`` simply by adding it to their call
     signature.
 
@@ -143,7 +143,7 @@ The behavior of this function can be customized using the following arguments.
         def to_integer(
             self,
             series: pdcast.SeriesWrapper,
-            dtype: pdcast.AtomicType,
+            dtype: pdcast.ScalarType,
             foo: str,
             **unused
         ) -> pdcast.SeriesWrapper:
@@ -192,10 +192,10 @@ Special cases
 Mixed data
 ^^^^^^^^^^
 
-.. _cast.adapters:
+.. _cast.decorators:
 
-Adapters
-^^^^^^^^
+Decorators
+^^^^^^^^^^
 
 .. _cast.anonymous:
 
@@ -221,8 +221,8 @@ allowing users to seamlessly convert existing data structures into the
     2    3
     dtype: decimal
 
-This also applies to naked :class:`adapters <AdapterType>`, which are those
-without an associated :class:`AtomicType`.  In this case, the adapter will be
+This also applies to naked :class:`adapters <DecoratorType>`, which are those
+without an associated :class:`ScalarType`.  In this case, the adapter will be
 wrapped around the inferred data type.
 
 .. doctest::

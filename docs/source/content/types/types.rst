@@ -147,15 +147,15 @@ related :ref:`type specifier <resolve_type.type_specifiers>`.
     :class:`float128 <numpy.float128>` for 64-bit).
     :class:`float80 <Float80Type>` was chosen to reflect the actual number of
     significant bits in the specification, rather than the length it occupies
-    in memory.  The type's :attr:`itemsize <AtomicType.itemsize>` differs from
+    in memory.  The type's :attr:`itemsize <ScalarType.itemsize>` differs from
     this, and is always accurate for the system in question.
 .. [#complex_longdouble] Complex equivalent of [1]
 .. [#depends_pyarrow] "pyarrow" backend requires `PyArrow
     <https://arrow.apache.org/docs/python/index.html>`_\>=1.0.0.
 .. [#object] by default, :class:`ObjectTypes <ObjectType>` describe *any* raw
     python type, storing instances internally as a ``dtype: object`` array.
-.. [#adapter] These are :class:`AdapterTypes <AdapterType>`, which can be used
-    modify the behavior of other types.  See the :ref:`API docs <AdapterType>`
+.. [#adapter] These are :class:`DecoratorTypes <DecoratorType>`, which can be used
+    modify the behavior of other types.  See the :ref:`API docs <DecoratorType>`
     for more information.
 
 .. toctree::

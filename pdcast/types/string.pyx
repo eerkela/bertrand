@@ -9,7 +9,7 @@ import pandas as pd
 
 from pdcast.util.type_hints import dtype_like
 
-from .base cimport AtomicType, ParentType, Type
+from .base cimport ScalarType, AbstractType, Type
 from .base import register
 
 
@@ -38,7 +38,7 @@ except ImportError:
 
 
 @register
-class StringType(ParentType):
+class StringType(AbstractType):
     """String supertype."""
 
     name = "string"
@@ -56,7 +56,7 @@ class StringType(ParentType):
         "U",
     }
 
-    def from_dtype(self, dtype: dtype_like) -> AtomicType:
+    def from_dtype(self, dtype: dtype_like) -> ScalarType:
         # string extension type special case
         if isinstance(dtype, pd.StringDtype):
             if dtype.storage == "pyarrow":
@@ -81,7 +81,7 @@ class StringType(ParentType):
 @register
 @StringType.default
 @StringType.implementation("python")
-class PythonStringType(AtomicType):
+class PythonStringType(ScalarType):
 
     aliases = set()
     dtype = pd.StringDtype("python")
@@ -104,7 +104,7 @@ if pyarrow_installed:
     @register
     @StringType.default(warn=False)
     @StringType.implementation("pyarrow")
-    class PyArrowStringType(AtomicType):
+    class PyArrowStringType(ScalarType):
 
         aliases = set()
         dtype = pd.StringDtype("pyarrow")

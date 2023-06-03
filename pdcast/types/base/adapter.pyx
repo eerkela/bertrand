@@ -1,5 +1,5 @@
-"""This module describes an ``AdapterType`` object, which can be subclassed
-to create a dynamic wrapper around an ``AtomicType``.
+"""This module describes an ``DecoratorType`` object, which can be subclassed
+to create a dynamic wrapper around an ``ScalarType``.
 """
 from types import MappingProxyType
 from typing import Any, Iterator
@@ -12,12 +12,12 @@ from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
 from .registry cimport AliasManager
-from .atomic cimport AtomicType
-from .scalar cimport ScalarType, ArgumentEncoder, InstanceFactory
+from .atomic cimport ScalarType
+from .vector cimport VectorType, ArgumentEncoder, InstanceFactory
 from .composite cimport CompositeType
 
 
-cdef class AdapterType(ScalarType):
+cdef class DecoratorType(VectorType):
     """Abstract base class for all `Decorator pattern
     <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_ type
     objects.
@@ -25,7 +25,7 @@ cdef class AdapterType(ScalarType):
     These are used to dynamically modify the behavior of other types, for
     instance by marking them as sparse or categorical.  They can be nested to
     form a singly-linked list that can be iteratively unwrapped using a type's
-    :attr:`.adapters <AdapterType.adapters>` attribute.  Conversions and other
+    :attr:`.decorators <DecoratorType.decorators>` attribute.  Conversions and other
     type-related functionality will automatically take these adapters into
     account, unwrapping them to the appropriate level before re-packaging the
     result.
@@ -42,9 +42,9 @@ cdef class AdapterType(ScalarType):
 
     Parameters
     ----------
-    wrapped : AtomicType | AdapterType
+    wrapped : ScalarType | DecoratorType
         The type object to wrap.  Any attributes that are not caught by the
-        :class:`AdapterType` itself will be automatically delegated to this
+        :class:`DecoratorType` itself will be automatically delegated to this
         object, in accordance with the `Decorator pattern
         <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_.
     **kwargs : dict
@@ -59,7 +59,7 @@ cdef class AdapterType(ScalarType):
     name : str
         A unique name for each type, which must be defined at the class level.
         This is used in conjunction with :meth:`encode()
-        <AdapterType.encode>` to generate string representations of the
+        <DecoratorType.encode>` to generate string representations of the
         associated type.
     aliases : set[str | ExtensionDtype]
         A set of unique aliases for this type, which must be defined at the
@@ -68,25 +68,25 @@ cdef class AdapterType(ScalarType):
 
         .. note::
 
-            These work slightly differently from :attr:`AtomicType.aliases` in
+            These work slightly differently from :attr:`ScalarType.aliases` in
             that they do not support ``type`` or ``np.dtype`` objects.  This is
-            because :class:`AdapterTypes <AdapterType>` cannot describe scalar
+            because :class:`DecoratorTypes <DecoratorType>` cannot describe scalar
             (non-vectorized) data, and there is no direct equivalent within
             the numpy typing system.  Strings and ``ExtensionDtypes`` work
-            identically to their :class:`AtomicType` equivalents.
+            identically to their :class:`ScalarType` equivalents.
 
     Notes
     -----
     .. _adapter_type.inheritance:
 
-    :class:`AdapterTypes <AdapterType>` are `metaclasses <https://peps.python.org/pep-0487/>`_
+    :class:`DecoratorTypes <DecoratorType>` are `metaclasses <https://peps.python.org/pep-0487/>`_
     that are limited to **first-order inheritance**.  This means that they must
-    inherit from :class:`AdapterType` *directly*, and cannot have any children
+    inherit from :class:`DecoratorType` *directly*, and cannot have any children
     of their own.  For example:
 
     .. code:: python
 
-        class Type1(pdcast.AdapterType):   # valid
+        class Type1(pdcast.DecoratorType):   # valid
             ...
 
         class Type2(Type1):   # invalid
@@ -102,32 +102,32 @@ cdef class AdapterType(ScalarType):
             # shared attributes/methods go here
             ...
 
-        class Type1(Mixin, pdcast.AdapterType):
+        class Type1(Mixin, pdcast.DecoratorType):
             ...
 
-        class Type2(Mixin, pdcast.AdapterType):
+        class Type2(Mixin, pdcast.DecoratorType):
             ...
 
     .. note::
 
-        Note that ``Mixin`` comes **before** :class:`AdapterType` in each
+        Note that ``Mixin`` comes **before** :class:`DecoratorType` in each
         inheritance signature.  This ensures correct `Method Resolution Order
         (MRO) <https://en.wikipedia.org/wiki/C3_linearization>`_.
 
     .. _adapter_type.allocation:
 
-    :class:`AdapterTypes <AdapterType>` are **not** cached as `flyweights
+    :class:`DecoratorTypes <DecoratorType>` are **not** cached as `flyweights
     <https://python-patterns.guide/gang-of-four/flyweight/>`_, unlike
-    :class:`AtomicType`.
+    :class:`ScalarType`.
     """
 
     priority = 0
 
-    def __init__(self, wrapped: ScalarType, **kwargs):
+    def __init__(self, wrapped: VectorType, **kwargs):
         # generate PrioritySorter and insert into wrapped
 
         # -> get _insort from class priority
-        if isinstance(wrapped, AdapterType):
+        if isinstance(wrapped, DecoratorType):
             wrapped, kwargs = self._insort(self, wrapped, kwargs)
 
         self._wrapped = wrapped
@@ -148,7 +148,7 @@ cdef class AdapterType(ScalarType):
             self._aliases.add(alias)
 
         # clean up subclass fields
-        del subclass.aliases  # pass to AtomicType.aliases
+        del subclass.aliases  # pass to ScalarType.aliases
 
         subclass._base_instance = self
 
@@ -164,8 +164,8 @@ cdef class AdapterType(ScalarType):
     ############################
 
     @classmethod
-    def resolve(cls, wrapped: str = None, *args: str) -> AdapterType:
-        """Construct a new :class:`AdapterType` in the :ref:`type specification
+    def resolve(cls, wrapped: str = None, *args: str) -> DecoratorType:
+        """Construct a new :class:`DecoratorType` in the :ref:`type specification
         mini-language <resolve_type.mini_language>`.
 
         Override this if a type implements custom parsing rules for any
@@ -184,35 +184,35 @@ cdef class AdapterType(ScalarType):
 
         Returns
         -------
-        AdapterType
-            An :class:`AdapterType` with the appropriate configuration based
+        DecoratorType
+            An :class:`DecoratorType` with the appropriate configuration based
             on the arguments that were passed to this constructor.
 
         See Also
         --------
-        AtomicType.resolve : The scalar equivalent of this method.
+        ScalarType.resolve : The scalar equivalent of this method.
 
         Notes
         -----
         If ``wrapped`` is not specified, then this method will return a *naked*
-        :class:`AdapterType`, meaning that it is not backed by an associated
-        :class:`AtomicType` instance.  This technically breaks the `Decorator
+        :class:`DecoratorType`, meaning that it is not backed by an associated
+        :class:`ScalarType` instance.  This technically breaks the `Decorator
         Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_,
         limiting the usefulness of these types.
 
-        Naked :class:`AdapterTypes <AdapterType>` act as wildcards when
+        Naked :class:`DecoratorTypes <DecoratorType>` act as wildcards when
         provided to :doc:`conversion functions </content/api/cast>` or
         :func:`typechecks <typecheck>`.  Additionally, new :func:`@dispatch
-        <dispatch>` methods can be attached to :class:`AdapterTypes
-        <AdapterType>` by providing a naked example of that type.
+        <dispatch>` methods can be attached to :class:`DecoratorTypes
+        <DecoratorType>` by providing a naked example of that type.
         """
         if wrapped is None:
             return cls()
 
-        cdef ScalarType instance = resolve.resolve_type(wrapped)
+        cdef VectorType instance = resolve.resolve_type(wrapped)
 
         # insert into sorted adapter stack according to priority
-        for x in instance.adapters:
+        for x in instance.decorators:
             if x._priority <= cls._priority:  # initial
                 break
             if getattr(x.wrapped, "_priority", -np.inf) <= cls._priority:
@@ -223,8 +223,8 @@ cdef class AdapterType(ScalarType):
         return cls(instance, *args)
 
     @classmethod
-    def from_dtype(cls, dtype: pd.api.extension.ExtensionDtype) -> AdapterType:
-        """Construct an :class:`AdapterType` from a corresponding pandas
+    def from_dtype(cls, dtype: pd.api.extension.ExtensionDtype) -> DecoratorType:
+        """Construct an :class:`DecoratorType` from a corresponding pandas
         ``ExtensionDtype``.
 
         Override this if a type must parse the attributes of an associated
@@ -237,32 +237,32 @@ cdef class AdapterType(ScalarType):
 
         Returns
         -------
-        AdapterType
-            An :class:`AdapterType` with the appropriate configuration based
+        DecoratorType
+            An :class:`DecoratorType` with the appropriate configuration based
             on the ``ExtensionDtype`` that was passed to this constructor.
 
         See Also
         --------
-        AtomicType.from_dtype : The scalar equivalent of this method.
+        ScalarType.from_dtype : The scalar equivalent of this method.
 
         Notes
         -----
         If a raw ``ExtensionDtype`` class is provided to this function, then it
-        will return a *naked* :class:`AdapterType`, meaning that it is not
-        backed by an associated :class:`AtomicType` instance.  This technically
+        will return a *naked* :class:`DecoratorType`, meaning that it is not
+        backed by an associated :class:`ScalarType` instance.  This technically
         breaks the `Decorator Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_,
         limiting the usefulness of these types.
 
-        Naked :class:`AdapterTypes <AdapterType>` act as wildcards when
+        Naked :class:`DecoratorTypes <DecoratorType>` act as wildcards when
         provided to :doc:`conversion functions </content/api/cast>` or
         :func:`typechecks <typecheck>`.  Additionally, new :func:`@dispatch
-        <dispatch>` methods can be attached to :class:`AdapterTypes
-        <AdapterType>` by providing a naked example of that type.
+        <dispatch>` methods can be attached to :class:`DecoratorTypes
+        <DecoratorType>` by providing a naked example of that type.
         """
         return cls()  # NOTE: By default, types ignore extension metadata
 
-    def replace(self, **kwargs) -> AdapterType:
-        # extract kwargs pertaining to AdapterType
+    def replace(self, **kwargs) -> DecoratorType:
+        # extract kwargs pertaining to DecoratorType
         adapter_kwargs = {}
         atomic_kwargs = {}
         for k, v in kwargs.items():
@@ -278,7 +278,7 @@ cdef class AdapterType(ScalarType):
         # pass non-adapter kwargs down to wrapped.replace()
         wrapped = wrapped.replace(**atomic_kwargs)
 
-        # construct new AdapterType
+        # construct new DecoratorType
         return type(self)(wrapped=wrapped, **adapter_kwargs)
 
     ##########################
@@ -286,29 +286,29 @@ cdef class AdapterType(ScalarType):
     ##########################
 
     @property
-    def adapters(self) -> Iterator[AdapterType]:
-        """Iterate through every AdapterType that is attached to the wrapped
-        AtomicType.
+    def decorators(self) -> Iterator[DecoratorType]:
+        """Iterate through every DecoratorType that is attached to the wrapped
+        ScalarType.
         """
         frame = self
-        while isinstance(frame, AdapterType):
+        while isinstance(frame, DecoratorType):
             yield frame
             frame = frame.wrapped
 
     @property
-    def atomic_type(self) -> AtomicType:
-        """Access the underlying AtomicType instance with every adapter removed
+    def atomic_type(self) -> ScalarType:
+        """Access the underlying ScalarType instance with every adapter removed
         from it.
         """
         result = self.wrapped
-        while isinstance(result, AdapterType):
+        while isinstance(result, DecoratorType):
             result = result.wrapped
         return result
 
     @atomic_type.setter
-    def atomic_type(self, val: ScalarType) -> None:
+    def atomic_type(self, val: VectorType) -> None:
         lowest = self
-        while isinstance(lowest.wrapped, AdapterType):
+        while isinstance(lowest.wrapped, DecoratorType):
             lowest = lowest.wrapped
         lowest.wrapped = val
 
@@ -320,13 +320,13 @@ cdef class AdapterType(ScalarType):
         }
 
     @property
-    def wrapped(self) -> ScalarType:
-        """Access the type object that this AdapterType modifies."""
+    def wrapped(self) -> VectorType:
+        """Access the type object that this DecoratorType modifies."""
         return self._wrapped
 
     @wrapped.setter
-    def wrapped(self, val: ScalarType) -> None:
-        """Change the type object that this AdapterType modifies."""
+    def wrapped(self, val: VectorType) -> None:
+        """Change the type object that this DecoratorType modifies."""
         self._wrapped = val
         self.kwargs = self.kwargs | {"wrapped": val}
         self._slug = self.encode((), self.kwargs)
@@ -341,11 +341,11 @@ cdef class AdapterType(ScalarType):
         other: type_specifier,
         include_subtypes: bool = True
     ) -> bool:
-        """Test whether `other` is a subtype of the given AtomicType.
+        """Test whether `other` is a subtype of the given ScalarType.
         This is functionally equivalent to `other in self`, except that it
         applies automatic type resolution to `other`.
 
-        For AdapterTypes, this merely delegates to AtomicType.contains().
+        For DecoratorTypes, this merely delegates to ScalarType.contains().
         """
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
@@ -368,14 +368,14 @@ cdef class AdapterType(ScalarType):
 
     def transform(self, series: pd.Series) -> pd.Series:
         """Given an unwrapped conversion result, apply all the necessary logic
-        to bring it into alignment with this AdapterType and all its children.
+        to bring it into alignment with this DecoratorType and all its children.
 
         This is a recursive method that traverses the `adapters` linked list
         in reverse order (from the inside out).  At the first level, the
         unwrapped series is passed as input to that adapter's
         `transform()` method, which may be overridden as needed.  That
         method must return a properly-wrapped copy of the original, which is
-        passed to the next adapter and so on.  Thus, if an AdapterType seeks to
+        passed to the next adapter and so on.  Thus, if an DecoratorType seeks to
         change any aspect of the series it adapts (as is the case with
         sparse/categorical types), then it must override this method and invoke
         it *before* applying its own logic, like so:
@@ -388,8 +388,8 @@ cdef class AdapterType(ScalarType):
         """
         return series
 
-    def unwrap(self) -> AtomicType:
-        """Strip any AdapterTypes that have been attached to this AtomicType.
+    def unwrap(self) -> ScalarType:
+        """Strip any DecoratorTypes that have been attached to this ScalarType.
         """
         return self.atomic_type
 
@@ -409,11 +409,11 @@ cdef class AdapterType(ScalarType):
         except KeyError as err:
             val = getattr(self.wrapped, name)
 
-        # decorate callables to return AdapterTypes
+        # decorate callables to return DecoratorTypes
         if callable(val):
             def sticky_wrapper(*args, **kwargs):
                 result = val(*args, **kwargs)
-                if isinstance(result, ScalarType):
+                if isinstance(result, VectorType):
                     result = self.replace(wrapped=result)
                 elif isinstance(result, CompositeType):
                     result = CompositeType(
@@ -423,15 +423,15 @@ cdef class AdapterType(ScalarType):
 
             return sticky_wrapper
 
-        # wrap properties as AdapterTypes
-        if isinstance(val, ScalarType):
+        # wrap properties as DecoratorTypes
+        if isinstance(val, VectorType):
             val = self.replace(wrapped=val)
         elif isinstance(val, CompositeType):
             val = CompositeType({self.replace(wrapped=t) for t in val})
 
         return val
 
-    def __getitem__(self, key: Any) -> AdapterType:
+    def __getitem__(self, key: Any) -> DecoratorType:
         if isinstance(key, tuple):
             wrapped = resolve.resolve_type(key[0])
             return self(wrapped, *key[1:])
@@ -446,13 +446,13 @@ cdef class AdapterType(ScalarType):
 
 cdef class DecoratorSorter:
     """Interface for controlling the insertion and sorting of nested
-    AdapterTypes.
+    DecoratorTypes.
     """
 
     def __init__(self, type base_class):
         self.base_class = base_class
 
-    cdef dict copy_parameters(self, AdapterType wrapper, dict kwargs):
+    cdef dict copy_parameters(self, DecoratorType wrapper, dict kwargs):
         """Copy the parameters from one type to another"""
         return {
             param: getattr(wrapper, param) for param, value in kwargs.items()
@@ -461,8 +461,8 @@ cdef class DecoratorSorter:
 
     def __call__(
         self,
-        AdapterType instance,
-        AdapterType stack,
+        DecoratorType instance,
+        DecoratorType stack,
         dict kwargs
     ) -> tuple:
         """Search the stack for """
@@ -484,8 +484,8 @@ cdef class PrioritySorter(DecoratorSorter):
 
     def __call__(
         self,
-        AdapterType instance,
-        AdapterType stack,
+        DecoratorType instance,
+        DecoratorType stack,
         dict kwargs
     ) -> tuple:
         # 1st order duplicate
@@ -493,7 +493,7 @@ cdef class PrioritySorter(DecoratorSorter):
             return stack.wrapped, self.copy_parameters(stack, kwargs)
 
         # 2nd order duplicate
-        for decorator in stack.adapters:
+        for decorator in stack.decorators:
             next_ = decorator.wrapped
             if isinstance(next_, self.base_class):
                 decorator.wrapped = instance

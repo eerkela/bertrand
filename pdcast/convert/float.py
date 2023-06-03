@@ -20,7 +20,7 @@ from .base import (
 @cast.overload("float", "bool")
 def float_to_boolean(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     tol: Tolerance,
     errors: str,
@@ -40,7 +40,7 @@ def float_to_boolean(
 @cast.overload("float", "int")
 def float_to_integer(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     tol: Tolerance,
     downcast: types.CompositeType,
@@ -69,7 +69,7 @@ try:  # float80 might not be defined on all systems
     @cast.overload("float80", "decimal")
     def longdouble_to_decimal(
         series: pd.Series,
-        dtype: types.AtomicType,
+        dtype: types.ScalarType,
         errors: str,
         **unused
     ) -> pd.Series:

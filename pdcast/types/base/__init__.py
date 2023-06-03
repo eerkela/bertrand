@@ -2,7 +2,7 @@
 of the ``pdcast`` type system.
 """
 from .registry import *
-from .scalar import *
+from .vector import *
 from .atomic import *
 from .adapter import *
 from .composite import *

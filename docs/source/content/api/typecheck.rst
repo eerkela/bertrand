@@ -24,7 +24,7 @@ same semantics as its built-in equivalent.
 Generic types
 ^^^^^^^^^^^^^
 :func:`generic <generic>` types act as wildcards, which can match any of their
-:func:`backends <AtomicType.register_backend>`.
+:func:`backends <ScalarType.register_backend>`.
 
 .. doctest::
 
@@ -52,7 +52,7 @@ will be included in membership checks.
 Adapters
 ^^^^^^^^
 By default, :func:`typecheck` requires an exact match for any
-:class:`adapters <AdapterType>` that are attached to either the example data
+:class:`adapters <DecoratorType>` that are attached to either the example data
 or the comparison type.  For instance:
 
 .. doctest::
@@ -65,7 +65,7 @@ or the comparison type.  For instance:
     True
 
 These can be ignored by setting ``ignore_adapters=True``, which strips
-:class:`adapters <AdapterType>` from both sides of the comparison.
+:class:`adapters <DecoratorType>` from both sides of the comparison.
 
 .. doctest::
 

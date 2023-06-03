@@ -3,13 +3,13 @@ type specifiers in any of the following types:
     * Numpy/pandas dtype objects.
     * Raw python types (e.g. ``int``, ``float``, etc.).
     * Strings that conform to the type resolution mini-language.
-    * Other AtomicType/CompositeType objects.
+    * Other ScalarType/CompositeType objects.
     * An iterable containing any of the above.
 
 Custom aliases can be added or removed from the pool that is recognized by this
 function through the ``register_alias()``, ``remove_alias()``, and
-``clear_aliases()`` methods that are attached to every ``AtomicType`` and
-``AdapterType`` definition.
+``clear_aliases()`` methods that are attached to every ``ScalarType`` and
+``DecoratorType`` definition.
 """
 import regex as re  # alternate (PCRE-style) python regex engine
 
@@ -44,7 +44,7 @@ def resolve_type(typespec: type_specifier) -> types.Type:
 
     Returns
     -------
-    AtomicType | AdapterType | CompositeType
+    ScalarType | DecoratorType | CompositeType
         A type object corresponding to the given specifier.  If the specifier
         is an iterable, this will always be a :class:`CompositeType` object.
 
@@ -55,11 +55,11 @@ def resolve_type(typespec: type_specifier) -> types.Type:
 
     See Also
     --------
-    AtomicType.from_dtype : customizable resolution of numpy/pandas data types.
-    AdapterType.from_dtype : customizable resolution of numpy/pandas data types.
-    AtomicType.resolve : customizable semantics for the
+    ScalarType.from_dtype : customizable resolution of numpy/pandas data types.
+    DecoratorType.from_dtype : customizable resolution of numpy/pandas data types.
+    ScalarType.resolve : customizable semantics for the
         :ref:`type specification mini-language <resolve_type.mini_language>`.
-    AdapterType.resolve : customizable semantics for the
+    DecoratorType.resolve : customizable semantics for the
         :ref:`type specification mini-language <resolve_type.mini_language>`.
     """
     # trivial case

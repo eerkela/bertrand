@@ -10,7 +10,7 @@ from .base import cast
 @cast.overload("bool", "decimal")
 def boolean_to_decimal(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     **unused
 ) -> pd.Series:
     """Convert boolean data to a decimal data type."""
@@ -23,7 +23,7 @@ def boolean_to_decimal(
 @cast.overload("bool", "datetime")
 def boolean_to_datetime(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     **unused
 ) -> pd.Series:
     """Convert boolean data to a datetime format."""
@@ -35,7 +35,7 @@ def boolean_to_datetime(
 @cast.overload("bool", "timedelta")
 def boolean_to_timedelta(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     **unused
 ) -> pd.Series:
     """Convert boolean data to a timedelta format."""

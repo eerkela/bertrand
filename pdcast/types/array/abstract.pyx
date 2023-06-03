@@ -1,12 +1,12 @@
 """This module describes a mechanism for automatically generating pandas
 ``ExtensionDtype`` and ``ExtensionArray`` objects from an associated
-``AtomicType``.
+``ScalarType``.
 
 Classes
 -------
 AbstractDtype
     A pandas ``ExtensionDtype`` that delegates certain functionality to its
-    associated ``AtomicType`` and comes with its own ``ExtensionArray``.
+    associated ``ScalarType`` and comes with its own ``ExtensionArray``.
 
 AbstractArray
     A pandas ``ExtensionArray`` that stores arbitrary objects in an
@@ -57,7 +57,7 @@ def construct_extension_dtype(
     of this type.
 
     This method is only invoked if no explicit ``dtype`` is assigned to
-    this ``AtomicType``.
+    this ``ScalarType``.
     """
     _kind = kind
     class_doc = (
@@ -132,7 +132,7 @@ def construct_array_type(
 class AbstractDtype(ExtensionDtype):
     """Base class for automatically-generated ExtensionDtype definitions.
 
-    This class allows :class:`AtomicType` definitions that do not define an
+    This class allows :class:`ScalarType` definitions that do not define an
     explicit ``.dtype`` field to automatically generate one according to
     :ref:`existing pandas guidelines <pandas:extending>`.  The resulting arrays
     are essentially identical to ``dtype: object`` arrays, but are explicitly
@@ -144,7 +144,7 @@ class AbstractDtype(ExtensionDtype):
         # require use of construct_extension_dtype() factory
         if not hasattr(self, "_atomic_type"):
             raise NotImplementedError(
-                f"AbstractDtype must have an associated AtomicType"
+                f"AbstractDtype must have an associated ScalarType"
             )
 
     @classmethod
@@ -199,7 +199,7 @@ class AbstractDtype(ExtensionDtype):
         result = dir(type(self))
         result += list(self.__dict__.keys())
 
-        # AtomicType kwargs
+        # ScalarType kwargs
         result += [x for x in self._atomic_type.kwargs if x not in result]
         return result
 
@@ -220,7 +220,7 @@ class AbstractDtype(ExtensionDtype):
 class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
     """Base class for automatically-generated ExtensionArray definitions.
 
-    This class allows :class:`AtomicType` definitions that do not define an
+    This class allows :class:`ScalarType` definitions that do not define an
     explicit ``.dtype`` field to automatically generate one according to the
     :ref:`existing pandas guidelines <pandas:extending>`.  The resulting arrays
     are essentially identical to ``dtype: object`` arrays, but are explicitly
@@ -240,7 +240,7 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
         # require use of construct_array_type() factory
         if not hasattr(self, "_atomic_type"):
             raise NotImplementedError(
-                f"AbstractArray must have an associated AtomicType"
+                f"AbstractArray must have an associated ScalarType"
             )
 
     @classmethod

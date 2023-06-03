@@ -33,7 +33,7 @@ def typecheck(
         Specifies whether to include :func:`subtypes <subtype>` in comparisons
         (True), or only check for backend matches (False).
     ignore_adapters : bool, default False
-        Specifies whether to ignore :class:`adapters <AdapterType>` that are
+        Specifies whether to ignore :class:`adapters <DecoratorType>` that are
         detected in example data.  By default, the comparison type must match
         these exactly.  Setting this ``True`` eliminates that requirement,
         allowing specifiers like ``"int"`` to also match decorated
@@ -52,8 +52,8 @@ def typecheck(
 
     See Also
     --------
-    AtomicType.contains : Customizable membership checks.
-    AdapterType.contains : Customizable membership checks.
+    ScalarType.contains : Customizable membership checks.
+    DecoratorType.contains : Customizable membership checks.
     """
     # DataFrame (columnwise) case
     if isinstance(data, pd.DataFrame):

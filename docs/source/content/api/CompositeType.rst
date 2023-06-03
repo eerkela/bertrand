@@ -89,8 +89,8 @@ Special Methods
 
 Notes
 -----
-``CompositeType``\s are set-like containers for ``AtomicType`` and
-``AdapterType`` objects.  They implement a standard set interface, with all the
+``CompositeType``\s are set-like containers for ``ScalarType`` and
+``DecoratorType`` objects.  They implement a standard set interface, with all the
 same methods as the built in ``set`` type.  They can be constructed by
 providing multiple type specifiers to ``pdcast.resolve_type()``, either in
 comma-separated string form or by providing an iterable.
@@ -107,7 +107,7 @@ comma-separated string form or by providing an iterable.
 ``CompositeType`` objects implicitly include subtypes for each of their
 elements, and automatically resolve comparison targets.  This allows for easy
 membership tests that account for subtypes in the same way as
-``AtomicType.contains()``.
+``ScalarType.contains()``.
 
 .. doctest::
 

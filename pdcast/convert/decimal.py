@@ -28,7 +28,7 @@ from .base import (
 @cast.overload("decimal", "bool")
 def decimal_to_boolean(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     tol: Tolerance,
     errors: str,
@@ -48,7 +48,7 @@ def decimal_to_boolean(
 @cast.overload("decimal", "integer")
 def decimal_to_integer(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     tol: Tolerance,
     downcast: types.CompositeType,
@@ -75,7 +75,7 @@ def decimal_to_integer(
 @cast.overload("decimal", "float")
 def decimal_to_float(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
@@ -126,7 +126,7 @@ def decimal_to_float(
 @cast.overload("decimal", "complex")
 def decimal_to_complex(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
@@ -154,7 +154,7 @@ def decimal_to_complex(
 @cast.overload("decimal", "decimal")
 def decimal_to_decimal(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     errors: str,
     **unused
 ) -> pd.Series:
@@ -172,7 +172,7 @@ def decimal_to_decimal(
 @cast.overload("decimal", "datetime")
 def decimal_to_datetime(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     unit: str,
     step_size: int,
     since: time.Epoch,
@@ -207,7 +207,7 @@ def decimal_to_datetime(
 @cast.overload("decimal", "timedelta")
 def decimal_to_timedelta(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     unit: str,
     step_size: int,
     since: time.Epoch,

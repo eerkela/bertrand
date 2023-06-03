@@ -1,4 +1,4 @@
-"""This module describes a ScalarType object, which represents a homogenous
+"""This module describes a VectorType object, which represents a homogenous
 vector type in the pdcast type system.
 """
 from types import MappingProxyType
@@ -24,19 +24,19 @@ from .registry cimport Type, AliasManager
 
 
 cdef Exception READ_ONLY_ERROR = (
-    AttributeError("ScalarType objects are read-only")
+    AttributeError("VectorType objects are read-only")
 )
 
 
-cdef class ScalarType(Type):
-    """Base type for :class:`AtomicType` and :class:`AdapterType` objects.
+cdef class VectorType(Type):
+    """Base type for :class:`ScalarType` and :class:`DecoratorType` objects.
 
     This allows inherited types to manage aliases and update them at runtime.
     """
 
     _encoder: ArgumentEncoder = None
     _cache_size: int = 0
-    base_instance: ScalarType = None
+    base_instance: VectorType = None
 
     def __init__(self, **kwargs):
         super().__init__()
@@ -124,7 +124,7 @@ cdef class ScalarType(Type):
         Every attribute that is assigned in init_base should also be assigned
         here.
         """
-        cdef ScalarType base = type(self).base_instance
+        cdef VectorType base = type(self).base_instance
 
         self.encoder = base.encoder
         self._slug = self.encoder((), self._kwargs)
@@ -139,7 +139,7 @@ cdef class ScalarType(Type):
         """A unique name for each type.
 
         This must be defined at the **class level**.  It is used in conjunction
-        with :meth:`encode() <AtomicType.encode>` to generate string
+        with :meth:`encode() <ScalarType.encode>` to generate string
         representations of the associated type, which use this as their base.
 
         Returns
@@ -150,7 +150,7 @@ cdef class ScalarType(Type):
         Notes
         -----
         Names can also be inherited from :func:`generic <generic>` types via
-        :meth:`@AtomicType.register_backend <AtomicType.register_backend>`.
+        :meth:`@ScalarType.register_backend <ScalarType.register_backend>`.
         """
         raise NotImplementedError(
             f"'{type(self).__name__}' is missing a `name` field."
@@ -164,7 +164,7 @@ cdef class ScalarType(Type):
         -------
         MappingProxyType
             A read-only view on the parameter values for this
-            :class:`ScalarType`.
+            :class:`VectorType`.
 
         Notes
         -----
@@ -175,9 +175,9 @@ cdef class ScalarType(Type):
         return MappingProxyType({} if self._kwargs is None else self._kwargs)
 
     @property
-    def adapters(self) -> Iterator:
-        """An iterator that yields each :class:`AdapterType` that is attached
-        to this :class:`ScalarType <pdcast.ScalarType>`.
+    def decorators(self) -> Iterator:
+        """An iterator that yields each :class:`DecoratorType` that is attached
+        to this :class:`VectorType <pdcast.VectorType>`.
         """
         yield from ()
 
@@ -185,13 +185,13 @@ cdef class ScalarType(Type):
     ####    METHODS    ####
     #######################
 
-    def unwrap(self) -> ScalarType:
-        """Remove all :class:`AdapterTypes <pdcast.AdapterType>` from this
-        :class:`ScalarType <pdcast.ScalarType>`.
+    def unwrap(self) -> VectorType:
+        """Remove all :class:`DecoratorTypes <pdcast.DecoratorType>` from this
+        :class:`VectorType <pdcast.VectorType>`.
         """
         return self
 
-    def replace(self, **kwargs) -> ScalarType:
+    def replace(self, **kwargs) -> VectorType:
         """Return a modified copy of a type with the values specified in
         ``**kwargs``.
 
@@ -204,14 +204,14 @@ cdef class ScalarType(Type):
 
         Returns
         -------
-        AtomicType
+        ScalarType
             A flyweight for the specified type.  If this method is given the
             same input again in the future, then this will be a simple
             reference to the previous instance.
 
         Notes
         -----
-        This method respects the immutability of :class:`AtomicType` objects.
+        This method respects the immutability of :class:`ScalarType` objects.
         It always returns a flyweight with the new values.
         """
         cdef dict merged = {**self.kwargs, **kwargs}
@@ -222,7 +222,7 @@ cdef class ScalarType(Type):
         other: type_specifier,
         include_subtypes: bool = True
     ) -> bool:
-        """Reverse of :meth:`AtomicType.contains`.
+        """Reverse of :meth:`ScalarType.contains`.
 
         Parameters
         ----------
@@ -242,7 +242,7 @@ cdef class ScalarType(Type):
 
         Notes
         -----
-        This method performs the same check as :meth:`AtomicType.contains`,
+        This method performs the same check as :meth:`ScalarType.contains`,
         except in reverse.  It is functionally equivalent to
         ``other.contains(self)``.
         """
@@ -256,7 +256,7 @@ cdef class ScalarType(Type):
     ###############################
 
     def __getattr__(self, name: str) -> Any:
-        """Pass attribute lookups to :attr:`kwargs <pdcast.ScalarType.kwargs>`.
+        """Pass attribute lookups to :attr:`kwargs <pdcast.VectorType.kwargs>`.
         """
         try:
             return self.kwargs[name]
@@ -268,7 +268,7 @@ cdef class ScalarType(Type):
             raise AttributeError(err_msg) from err
 
     def __setattr__(self, str name, object value) -> None:
-        """Make :class:`ScalarType <pdcast.ScalarType>` instances read-only
+        """Make :class:`VectorType <pdcast.VectorType>` instances read-only
         after ``__init__``.
 
         Explicit @property setters will still be invoked as normal.
@@ -284,7 +284,7 @@ cdef class ScalarType(Type):
         else:
             self.__dict__[name] = value
 
-    def __call__(self, *args, **kwargs) -> ScalarType:
+    def __call__(self, *args, **kwargs) -> VectorType:
         """Constructor for parametrized types."""
         return self.instances(args, kwargs)
 
@@ -300,7 +300,7 @@ cdef class ScalarType(Type):
         from pdcast.resolve import resolve_type
 
         other = resolve_type(other)
-        return isinstance(other, ScalarType) and hash(self) == hash(other)
+        return isinstance(other, VectorType) and hash(self) == hash(other)
 
     def __hash__(self) -> int:
         """Return the hash of this type's string identifier."""
@@ -397,7 +397,7 @@ cdef class BackendEncoder:
 
 cdef class InstanceFactory:
     """An interface for controlling instance creation for
-    :class:`ScalarType <pdcast.ScalarType>` objects.
+    :class:`VectorType <pdcast.VectorType>` objects.
     """
 
     def __init__(self, type base_class):
@@ -423,7 +423,7 @@ cdef class FlyweightFactory(InstanceFactory):
         else:
             self.cache = LRUDict(maxsize=cache_size)
 
-    def _add(self, str key, ScalarType value) -> None:
+    def _add(self, str key, VectorType value) -> None:
         """Private method to manually add a key to the flyweight cache."""
         self.cache[key] = value
 
@@ -439,12 +439,12 @@ cdef class FlyweightFactory(InstanceFactory):
         """Dict-like ``items()`` indexer."""
         return self.cache.items()
 
-    def __call__(self, tuple args, dict kwargs) -> ScalarType:
+    def __call__(self, tuple args, dict kwargs) -> VectorType:
         """Retrieve a previous instance or generate a new one according to the
         flyweight pattern.
         """
         cdef str slug
-        cdef ScalarType instance
+        cdef VectorType instance
 
         slug = self.encoder(args, kwargs)
         instance = self.cache.get(slug, None)
@@ -457,7 +457,7 @@ cdef class FlyweightFactory(InstanceFactory):
         """Check if the given identifier corresponds to a cached instance."""
         return key in self.cache
 
-    def __getitem__(self, str key) -> ScalarType:
+    def __getitem__(self, str key) -> VectorType:
         """Get an instance by its identifier."""
         return self.cache[key]
 

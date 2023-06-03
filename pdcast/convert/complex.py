@@ -13,7 +13,7 @@ from .base import cast, generic_to_float
 @cast.overload("complex", "bool")
 def complex_to_boolean(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     tol: Tolerance,
     errors: str,
@@ -41,7 +41,7 @@ def complex_to_boolean(
 @cast.overload("complex", "int")
 def complex_to_integer(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     rounding: str,
     tol: Tolerance,
     downcast: types.CompositeType,
@@ -71,7 +71,7 @@ def complex_to_integer(
 @cast.overload("complex", "float")
 def complex_to_float(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
@@ -101,7 +101,7 @@ def complex_to_float(
 @cast.overload("complex", "decimal")
 def complex_to_decimal(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tol: Tolerance,
     errors: str,
     **unused

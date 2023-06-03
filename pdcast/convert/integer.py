@@ -28,7 +28,7 @@ from .base import (
 @cast.overload("int", "bool")
 def integer_to_boolean(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     errors: str,
     **unused
 ) -> pd.Series:
@@ -40,7 +40,7 @@ def integer_to_boolean(
 @cast.overload("int", "int")
 def integer_to_integer(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
@@ -64,7 +64,7 @@ def integer_to_integer(
 @cast.overload("int", "float")
 def integer_to_float(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
@@ -99,7 +99,7 @@ def integer_to_float(
 @cast.overload("int", "complex")
 def integer_to_complex(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
@@ -127,7 +127,7 @@ def integer_to_complex(
 @cast.overload("int", "decimal")
 def integer_to_decimal(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     **unused
 ) -> pd.Series:
     """Convert integer data to a decimal data type."""
@@ -140,7 +140,7 @@ def integer_to_decimal(
 @cast.overload("int", "datetime")
 def integer_to_datetime(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     unit: str,
     step_size: int,
     since: time.Epoch,
@@ -175,7 +175,7 @@ def integer_to_datetime(
 @cast.overload("int", "datetime[pandas]")
 def integer_to_pandas_timestamp(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     unit: str,
     step_size: int,
     since: time.Epoch,
@@ -212,7 +212,7 @@ def integer_to_pandas_timestamp(
 @cast.overload("int", "datetime[python]")
 def integer_to_python_datetime(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     unit: str,
     step_size: int,
     since: time.Epoch,
@@ -244,7 +244,7 @@ def integer_to_python_datetime(
 @cast.overload("int", "datetime[numpy]")
 def integer_to_numpy_datetime64(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     unit: str,
     step_size: int,
     rounding: str,
@@ -288,7 +288,7 @@ def integer_to_numpy_datetime64(
 @cast.overload("int", "timedelta")
 def integer_to_timedelta(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     unit: str,
     step_size: int,
     since: time.Epoch,
@@ -317,7 +317,7 @@ def integer_to_timedelta(
 @cast.overload("int", "timedelta[pandas]")
 def integer_to_pandas_timedelta(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     unit: str,
     step_size: int,
     since: time.Epoch,
@@ -338,7 +338,7 @@ def integer_to_pandas_timedelta(
 @cast.overload("int", "timedelta[python]")
 def integer_to_python_timedelta(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     unit: str,
     step_size: int,
     rounding: str,
@@ -368,7 +368,7 @@ def integer_to_python_timedelta(
 @cast.overload("int", "timedelta[numpy]")
 def integer_to_numpy_timedelta64(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     unit: str,
     step_size: int,
     rounding: str,
@@ -408,7 +408,7 @@ def integer_to_numpy_timedelta64(
 @cast.overload("int", "string")
 def integer_to_string(
     series: pd.Series,
-    dtype: types.ScalarType,
+    dtype: types.VectorType,
     base: int,
     format: str,
     errors: str,

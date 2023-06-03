@@ -10,7 +10,7 @@ import pandas as pd
 from pdcast import resolve
 from pdcast.util.type_hints import dtype_like, type_specifier
 
-from .base cimport AtomicType, CompositeType
+from .base cimport ScalarType, CompositeType
 from .base import register
 
 
@@ -20,7 +20,7 @@ from .base import register
 
 
 @register
-class ObjectType(AtomicType):
+class ObjectType(ScalarType):
 
     _cache_size = 64
     name = "object"
@@ -29,13 +29,13 @@ class ObjectType(AtomicType):
     }
 
     def __init__(self, type_def: type = object):
-        super(AtomicType, self).__init__(type_def=type_def)
+        super(ScalarType, self).__init__(type_def=type_def)
 
     @property
     def dtype(self) -> dtype_like:
         if self.type_def is object:
             return np.dtype("O")
-        return super(AtomicType, self).dtype
+        return super(ScalarType, self).dtype
 
     @property
     def type_def(self) -> type:
@@ -65,7 +65,7 @@ class ObjectType(AtomicType):
             return isinstance(other, type(self))
         return super().contains(other, include_subtypes=include_subtypes)
 
-    def resolve(self, type_def: str = None) -> AtomicType:
+    def resolve(self, type_def: str = None) -> ScalarType:
         if type_def is None:
             return self()
         return self(type_def=from_caller(type_def))

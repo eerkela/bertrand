@@ -1,24 +1,24 @@
 .. currentmodule:: pdcast
 
-.. _AtomicType:
+.. _ScalarType:
 
-pdcast.AtomicType
+pdcast.ScalarType
 =================
 
-.. autoclass:: AtomicType
+.. autoclass:: ScalarType
 
-.. _AtomicType.inheritance:
+.. _ScalarType.inheritance:
 
 Inheritance
 -----------
-:class:`AtomicTypes <AtomicType>` are `metaclasses
+:class:`ScalarTypes <ScalarType>` are `metaclasses
 <https://peps.python.org/pep-0487/>`_ that are limited to **first-order
-inheritance**.  This means that they must inherit from :class:`AtomicType`
+inheritance**.  This means that they must inherit from :class:`ScalarType`
 *directly*, and cannot have any children of their own.  For example:
 
 .. code:: python
 
-    class Type1(pdcast.AtomicType):   # valid
+    class Type1(pdcast.ScalarType):   # valid
         ...
 
     class Type2(Type1):   # invalid
@@ -34,28 +34,28 @@ like so:
         # shared attributes/methods go here
         ...
 
-    class Type1(Mixin, pdcast.AtomicType):
+    class Type1(Mixin, pdcast.ScalarType):
         ...
 
-    class Type2(Mixin, pdcast.AtomicType):
+    class Type2(Mixin, pdcast.ScalarType):
         ...
 
 .. note::
 
-    Note that ``Mixin`` comes **before** :class:`AtomicType` in each
+    Note that ``Mixin`` comes **before** :class:`ScalarType` in each
     inheritance signature.  This ensures correct `Method Resolution Order (MRO)
     <https://en.wikipedia.org/wiki/C3_linearization>`_.
 
-.. _AtomicType.allocation:
+.. _ScalarType.allocation:
 
 Memory Allocation
 -----------------
-Additionally, :class:`AtomicType` instances are `flyweights
+Additionally, :class:`ScalarType` instances are `flyweights
 <https://python-patterns.guide/gang-of-four/flyweight/>`_ that are identified
-by their :meth:`slug <AtomicType.slugify>` attribute.  This allows them to be
+by their :meth:`slug <ScalarType.slugify>` attribute.  This allows them to be
 extremely memory-efficient (especially when stored in arrays) but also requires
 each one to be completely immutable.  As a result, all
-:class:`AtomicTypes <AtomicType>` are strictly **read-only** after they are
+:class:`ScalarTypes <ScalarType>` are strictly **read-only** after they are
 constructed.
 
 .. testsetup:: allocation
@@ -69,7 +69,7 @@ constructed.
     >>> pdcast.resolve_type("int").new_attribute = 2
     Traceback (most recent call last):
         ...
-    AttributeError: AtomicType objects are read-only
+    AttributeError: ScalarType objects are read-only
 
 Some types might be parameterized with continuous or unpredictable inputs,
 which could cause `memory leaks <https://en.wikipedia.org/wiki/Memory_leak>`_.
@@ -80,7 +80,7 @@ type's inheritance signature, like so:
 
 .. code:: python
 
-    class CustomType(pdcast.AtomicType, cache_size=128):
+    class CustomType(pdcast.ScalarType, cache_size=128):
         ...
 
 .. note::
@@ -88,24 +88,24 @@ type's inheritance signature, like so:
     Setting ``cache_size`` to 0 effectively eliminates flyweight caching for
     the type in question, though this is not recommended.
 
-.. _AtomicType.required:
+.. _ScalarType.required:
 
 Required Attributes
 -------------------
-:class:`AtomicTypes <AtomicType>` must implement the following attributes to
+:class:`ScalarTypes <ScalarType>` must implement the following attributes to
 be considered valid.
 
 .. autosummary::
     :toctree: ../../generated
 
-    AtomicType.name
-    AtomicType.aliases
-    AtomicType.type_def
-    AtomicType.dtype
-    AtomicType.itemsize
-    AtomicType.na_value
+    ScalarType.name
+    ScalarType.aliases
+    ScalarType.type_def
+    ScalarType.dtype
+    ScalarType.itemsize
+    ScalarType.na_value
 
-.. _AtomicType.constructors:
+.. _ScalarType.constructors:
 
 Constructors
 ------------
@@ -115,28 +115,28 @@ These should always be preferred over direct instantiation to allow for the
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.instance
-    AtomicType.resolve
-    AtomicType.detect
-    AtomicType.from_dtype
-    AtomicType.replace
-    AtomicType.slugify
-    AtomicType.kwargs
+    ScalarType.instance
+    ScalarType.resolve
+    ScalarType.detect
+    ScalarType.from_dtype
+    ScalarType.replace
+    ScalarType.slugify
+    ScalarType.kwargs
 
-.. _AtomicType.aliases:
+.. _ScalarType.aliases:
 
 Aliases
 -------
-See :attr:`AtomicType.aliases` for more information on how aliases are used.
+See :attr:`ScalarType.aliases` for more information on how aliases are used.
 
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.register_alias <ScalarType.register_alias>
-    AtomicType.remove_alias <ScalarType.remove_alias>
-    AtomicType.clear_aliases <ScalarType.clear_aliases>
+    ScalarType.register_alias <VectorType.register_alias>
+    ScalarType.remove_alias <VectorType.remove_alias>
+    ScalarType.clear_aliases <VectorType.clear_aliases>
 
-.. _AtomicType.subtypes:
+.. _ScalarType.subtypes:
 
 Subtypes/Supertypes
 -------------------
@@ -146,14 +146,14 @@ define subtypes.
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.is_root
-    AtomicType.root
-    AtomicType.supertype
-    AtomicType.subtypes
-    AtomicType.contains
-    AtomicType.is_subtype
+    ScalarType.is_root
+    ScalarType.root
+    ScalarType.supertype
+    ScalarType.subtypes
+    ScalarType.contains
+    ScalarType.is_subtype
 
-.. _AtomicType.generic:
+.. _ScalarType.generic:
 
 Generic Backends
 ----------------
@@ -163,28 +163,28 @@ leverage generic types and register individual backends.
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.is_generic
-    AtomicType.backend
-    AtomicType.generic
-    AtomicType.backends
-    AtomicType.register_backend
+    ScalarType.is_generic
+    ScalarType.backend
+    ScalarType.generic
+    ScalarType.backends
+    ScalarType.register_backend
 
-.. _AtomicType.adapters:
+.. _ScalarType.decorators:
 
 Adapters
 --------
-See :class:`AdapterType` for more information on how to wrap
-:class:`AtomicTypes <AtomicType>` with adapters.
+See :class:`DecoratorType` for more information on how to wrap
+:class:`ScalarTypes <ScalarType>` with adapters.
 
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.adapters
-    AtomicType.unwrap
-    AtomicType.make_sparse
-    AtomicType.make_categorical
+    ScalarType.decorators
+    ScalarType.unwrap
+    ScalarType.make_sparse
+    ScalarType.make_categorical
 
-.. _AtomicType.downcast:
+.. _ScalarType.downcast:
 
 Upcast/Downcast
 ---------------
@@ -192,10 +192,10 @@ Upcast/Downcast
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.larger
-    AtomicType.smaller
+    ScalarType.larger
+    ScalarType.smaller
 
-.. _AtomicType.missing:
+.. _ScalarType.missing:
 
 Missing Values
 --------------
@@ -203,11 +203,11 @@ Missing Values
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.is_nullable
-    AtomicType.is_na
-    AtomicType.make_nullable
+    ScalarType.is_nullable
+    ScalarType.is_na
+    ScalarType.make_nullable
 
-.. _AtomicType.special:
+.. _ScalarType.special:
 
 Special Methods
 ---------------
@@ -215,8 +215,8 @@ Special Methods
 .. autosummary::
     :toctree: ../../generated/
 
-    AtomicType.__contains__
-    AtomicType.__eq__
-    AtomicType.__hash__
-    AtomicType.__str__
-    AtomicType.__repr__
+    ScalarType.__contains__
+    ScalarType.__eq__
+    ScalarType.__hash__
+    ScalarType.__str__
+    ScalarType.__repr__

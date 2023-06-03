@@ -7,7 +7,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AtomicType, ParentType, CompositeType
+from .base cimport ScalarType, AbstractType, CompositeType
 from .base import register
 
 
@@ -69,7 +69,7 @@ class NumpyIntegerMixin:
 
     is_nullable = False
 
-    def make_nullable(self) -> AtomicType:
+    def make_nullable(self) -> ScalarType:
         return self.generic.instance(backend="pandas", **self.kwargs)
 
 
@@ -79,7 +79,7 @@ class NumpyIntegerMixin:
 
 
 @register
-class IntegerType(ParentType):
+class IntegerType(AbstractType):
     """Generic integer supertype."""
 
     name = "int"
@@ -88,7 +88,7 @@ class IntegerType(ParentType):
 
 @register
 @IntegerType.implementation("numpy")
-class NumpyIntegerType(ParentType):
+class NumpyIntegerType(AbstractType):
     """Numpy integer type."""
 
     aliases = {np.integer}
@@ -96,7 +96,7 @@ class NumpyIntegerType(ParentType):
 
 @register
 @IntegerType.implementation("pandas")
-class PandasIntegerType(ParentType):
+class PandasIntegerType(AbstractType):
     """Pandas integer supertype."""
 
     aliases = set()
@@ -110,7 +110,7 @@ class PandasIntegerType(ParentType):
 @register
 @IntegerType.default
 @IntegerType.subtype
-class SignedIntegerType(ParentType):
+class SignedIntegerType(AbstractType):
     """Generic signed integer supertype."""
 
     name = "signed"
@@ -121,7 +121,7 @@ class SignedIntegerType(ParentType):
 @NumpyIntegerType.default
 @NumpyIntegerType.subtype
 @SignedIntegerType.implementation("numpy")
-class NumpySignedIntegerType(ParentType):
+class NumpySignedIntegerType(AbstractType):
     """Numpy signed integer type."""
 
     aliases = {np.signedinteger}
@@ -131,7 +131,7 @@ class NumpySignedIntegerType(ParentType):
 @PandasIntegerType.default
 @PandasIntegerType.subtype
 @SignedIntegerType.implementation("pandas")
-class PandasSignedIntegerType(ParentType):
+class PandasSignedIntegerType(AbstractType):
     """Python signed integer supertype."""
 
     aliases = set()
@@ -140,7 +140,7 @@ class PandasSignedIntegerType(ParentType):
 @register
 @SignedIntegerType.implementation("python")
 @IntegerType.implementation("python")
-class PythonIntegerType(IntegerMixin, AtomicType):
+class PythonIntegerType(IntegerMixin, ScalarType):
     """Python integer supertype."""
 
     aliases = {int}
@@ -156,7 +156,7 @@ class PythonIntegerType(IntegerMixin, AtomicType):
 
 @register
 @IntegerType.subtype
-class UnsignedIntegerType(ParentType):
+class UnsignedIntegerType(AbstractType):
     """Generic 8-bit unsigned integer type."""
 
     name = "unsigned"
@@ -166,7 +166,7 @@ class UnsignedIntegerType(ParentType):
 @register
 @NumpyIntegerType.subtype
 @UnsignedIntegerType.implementation("numpy")
-class NumpyUnsignedIntegerType(ParentType):
+class NumpyUnsignedIntegerType(AbstractType):
     """Numpy unsigned integer type."""
 
     aliases = {np.unsignedinteger}
@@ -175,7 +175,7 @@ class NumpyUnsignedIntegerType(ParentType):
 @register
 @PandasIntegerType.subtype
 @UnsignedIntegerType.implementation("pandas")
-class PandasUnsignedIntegerType(ParentType):
+class PandasUnsignedIntegerType(AbstractType):
     """Numpy unsigned integer type."""
 
     aliases = set()
@@ -188,7 +188,7 @@ class PandasUnsignedIntegerType(ParentType):
 
 @register
 @SignedIntegerType.subtype
-class Int8Type(ParentType):
+class Int8Type(AbstractType):
     """Generic 8-bit signed integer type."""
 
     name = "int8"
@@ -199,7 +199,7 @@ class Int8Type(ParentType):
 @NumpySignedIntegerType.subtype
 @Int8Type.default
 @Int8Type.implementation("numpy")
-class NumpyInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
+class NumpyInt8Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
     """8-bit numpy integer subtype."""
 
     aliases = {np.int8, np.dtype(np.int8)}
@@ -213,7 +213,7 @@ class NumpyInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 @register
 @PandasSignedIntegerType.subtype
 @Int8Type.implementation("pandas")
-class PandasInt8Type(IntegerMixin, AtomicType):
+class PandasInt8Type(IntegerMixin, ScalarType):
     """8-bit numpy integer subtype."""
 
     aliases = {pd.Int8Dtype, "Int8"}
@@ -231,7 +231,7 @@ class PandasInt8Type(IntegerMixin, AtomicType):
 
 @register
 @SignedIntegerType.subtype
-class Int16Type(ParentType):
+class Int16Type(AbstractType):
     """Generic 16-bit signed integer type."""
 
     name = "int16"
@@ -242,7 +242,7 @@ class Int16Type(ParentType):
 @NumpySignedIntegerType.subtype
 @Int16Type.default
 @Int16Type.implementation("numpy")
-class NumpyInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
+class NumpyInt16Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
     """16-bit numpy integer subtype."""
 
     aliases = {np.int16, np.dtype(np.int16)}
@@ -256,7 +256,7 @@ class NumpyInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 @register
 @PandasSignedIntegerType.subtype
 @Int16Type.implementation("pandas")
-class PandasInt16Type(IntegerMixin, AtomicType):
+class PandasInt16Type(IntegerMixin, ScalarType):
     """16-bit numpy integer subtype."""
 
     aliases = {pd.Int16Dtype, "Int16"}
@@ -274,7 +274,7 @@ class PandasInt16Type(IntegerMixin, AtomicType):
 
 @register
 @SignedIntegerType.subtype
-class Int32Type(ParentType):
+class Int32Type(AbstractType):
     """Generic 32-bit signed integer type."""
 
     name = "int32"
@@ -285,7 +285,7 @@ class Int32Type(ParentType):
 @NumpySignedIntegerType.subtype
 @Int32Type.default
 @Int32Type.implementation("numpy")
-class NumpyInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
+class NumpyInt32Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
     """32-bit numpy integer subtype."""
 
     aliases = {np.int32, np.dtype(np.int32)}
@@ -299,7 +299,7 @@ class NumpyInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 @register
 @PandasSignedIntegerType.subtype
 @Int32Type.implementation("pandas")
-class PandasInt32Type(IntegerMixin, AtomicType):
+class PandasInt32Type(IntegerMixin, ScalarType):
     """32-bit numpy integer subtype."""
 
     aliases = {pd.Int32Dtype, "Int32"}
@@ -318,7 +318,7 @@ class PandasInt32Type(IntegerMixin, AtomicType):
 @register
 @SignedIntegerType.default
 @SignedIntegerType.subtype
-class Int64Type(ParentType):
+class Int64Type(AbstractType):
     """Generic 64-bit signed integer type."""
 
     name = "int64"
@@ -330,7 +330,7 @@ class Int64Type(ParentType):
 @NumpySignedIntegerType.subtype
 @Int64Type.default
 @Int64Type.implementation("numpy")
-class NumpyInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
+class NumpyInt64Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
     """64-bit numpy integer subtype."""
 
     aliases = {np.int64, np.dtype(np.int64)}
@@ -345,7 +345,7 @@ class NumpyInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 @PandasSignedIntegerType.default
 @PandasSignedIntegerType.subtype
 @Int64Type.implementation("pandas")
-class PandasInt64Type(IntegerMixin, AtomicType):
+class PandasInt64Type(IntegerMixin, ScalarType):
     """64-bit numpy integer subtype."""
 
     aliases = {pd.Int64Dtype, "Int64"}
@@ -363,7 +363,7 @@ class PandasInt64Type(IntegerMixin, AtomicType):
 
 @register
 @UnsignedIntegerType.subtype
-class UInt8Type(ParentType):
+class UInt8Type(AbstractType):
     """Generic 8-bit unsigned integer type."""
 
     name = "uint8"
@@ -374,7 +374,7 @@ class UInt8Type(ParentType):
 @NumpyUnsignedIntegerType.subtype
 @UInt8Type.default
 @UInt8Type.implementation("numpy")
-class NumpyUInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
+class NumpyUInt8Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
     """8-bit numpy unsigned integer subtype."""
 
     aliases = {np.uint8, np.dtype(np.uint8)}
@@ -388,7 +388,7 @@ class NumpyUInt8Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 @register
 @PandasUnsignedIntegerType.subtype
 @UInt8Type.implementation("pandas")
-class PandasUInt8Type(IntegerMixin, AtomicType):
+class PandasUInt8Type(IntegerMixin, ScalarType):
     """8-bit numpy integer subtype."""
 
     aliases = {pd.UInt8Dtype, "UInt8"}
@@ -406,7 +406,7 @@ class PandasUInt8Type(IntegerMixin, AtomicType):
 
 @register
 @UnsignedIntegerType.subtype
-class UInt16Type(ParentType):
+class UInt16Type(AbstractType):
     """Generic 16-bit unsigned integer type."""
 
     name = "uint16"
@@ -417,7 +417,7 @@ class UInt16Type(ParentType):
 @NumpyUnsignedIntegerType.subtype
 @UInt16Type.default
 @UInt16Type.implementation("numpy")
-class NumpyUInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
+class NumpyUInt16Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
     """16-bit numpy unsigned integer subtype."""
 
     aliases = {np.uint16, np.dtype(np.uint16)}
@@ -431,7 +431,7 @@ class NumpyUInt16Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 @register
 @PandasUnsignedIntegerType.subtype
 @UInt16Type.implementation("pandas")
-class PandasUInt16Type(IntegerMixin, AtomicType):
+class PandasUInt16Type(IntegerMixin, ScalarType):
     """16-bit numpy integer subtype."""
 
     aliases = {pd.UInt16Dtype, "UInt16"}
@@ -449,7 +449,7 @@ class PandasUInt16Type(IntegerMixin, AtomicType):
 
 @register
 @UnsignedIntegerType.subtype
-class UInt32Type(ParentType):
+class UInt32Type(AbstractType):
     """Generic 32-bit unsigned integer type."""
 
     name = "uint32"
@@ -460,7 +460,7 @@ class UInt32Type(ParentType):
 @NumpyUnsignedIntegerType.subtype
 @UInt32Type.default
 @UInt32Type.implementation("numpy")
-class NumpyUInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
+class NumpyUInt32Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
     """32-bit numpy unsigned integer subtype."""
 
     aliases = {np.uint32, np.dtype(np.uint32)}
@@ -474,7 +474,7 @@ class NumpyUInt32Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 @register
 @PandasUnsignedIntegerType.subtype
 @UInt32Type.implementation("pandas")
-class PandasUInt32Type(IntegerMixin, AtomicType):
+class PandasUInt32Type(IntegerMixin, ScalarType):
     """32-bit numpy integer subtype."""
 
     aliases = {pd.UInt32Dtype, "UInt32"}
@@ -493,7 +493,7 @@ class PandasUInt32Type(IntegerMixin, AtomicType):
 @register
 @UnsignedIntegerType.default
 @UnsignedIntegerType.subtype
-class UInt64Type(ParentType):
+class UInt64Type(AbstractType):
     """Generic 64-bit unsigned integer type."""
 
     name = "uint64"
@@ -505,7 +505,7 @@ class UInt64Type(ParentType):
 @NumpyUnsignedIntegerType.subtype
 @UInt64Type.default
 @UInt64Type.implementation("numpy")
-class NumpyUInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
+class NumpyUInt64Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
     """64-bit numpy unsigned integer subtype."""
 
     aliases = {np.uint64, np.dtype(np.uint64)}
@@ -520,7 +520,7 @@ class NumpyUInt64Type(IntegerMixin, NumpyIntegerMixin, AtomicType):
 @PandasUnsignedIntegerType.default
 @PandasUnsignedIntegerType.subtype
 @UInt64Type.implementation("pandas")
-class PandasUInt64Type(IntegerMixin, AtomicType):
+class PandasUInt64Type(IntegerMixin, ScalarType):
     """64-bit numpy integer subtype."""
 
     aliases = {pd.UInt64Dtype, "UInt64"}
@@ -627,4 +627,4 @@ cdef dict platform_specific_aliases = {
     "P": "size_t",
 }
 for alias, lookup in platform_specific_aliases.items():
-    AtomicType.registry.aliases[lookup].aliases.add(alias)
+    ScalarType.registry.aliases[lookup].aliases.add(alias)

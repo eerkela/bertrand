@@ -923,7 +923,7 @@ And it even works on ``dtype: object`` series:
     True
 
 This is accomplished by a combination of :ref:`inference <detect_type>` and
-:doc:`validation <../generated/pdcast.AtomicType.contains>`, which can
+:doc:`validation <../generated/pdcast.ScalarType.contains>`, which can
 be customized on a per-type basis.  Since these functions do not rely on a
 potentially inaccurate ``.dtype`` field, we can apply this to arbitrary data:
 

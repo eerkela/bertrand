@@ -169,9 +169,9 @@ def cast(
     
     This function dispatches to one of the
     :ref:`delegated <atomic_type.conversions>` conversion methods that are
-    attached to each :class:`AtomicType`.  Types can override these methods to
+    attached to each :class:`ScalarType`.  Types can override these methods to
     change the behavior of :func:`cast`.  The method that is chosen is based on
-    the :attr:`family <AtomicType.family>` of its ``dtype`` argument.
+    the :attr:`family <ScalarType.family>` of its ``dtype`` argument.
     """
     series_type = detect_type(series)
 
@@ -292,7 +292,7 @@ wildcard = (
 @cast.overload(wildcard, "bool")
 def generic_to_boolean(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     errors: str,
     **unused
 ) -> pd.Series:
@@ -316,7 +316,7 @@ def generic_to_boolean(
 @cast.overload(wildcard, "int")
 def generic_to_integer(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tol: Tolerance,
     errors: str,
     downcast: types.CompositeType,
@@ -344,7 +344,7 @@ def generic_to_integer(
 @cast.overload(wildcard, "float")
 def generic_to_float(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
@@ -365,7 +365,7 @@ def generic_to_float(
 @cast.overload(wildcard, "complex")
 def generic_to_complex(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     tol: Tolerance,
     downcast: types.CompositeType,
     errors: str,
@@ -386,7 +386,7 @@ def generic_to_complex(
 @cast.overload(wildcard, "decimal")
 def generic_to_decimal(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     errors: str,
     **unused
 ) -> pd.Series:
@@ -404,7 +404,7 @@ def generic_to_decimal(
 @cast.overload(wildcard, "datetime")
 def generic_to_datetime(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to datetime representation."""
@@ -416,7 +416,7 @@ def generic_to_datetime(
 @cast.overload(wildcard, "timedelta")
 def generic_to_timedelta(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     **unused
 ) -> pd.Series:
     """Convert arbitrary data to timedelta representation."""
@@ -428,7 +428,7 @@ def generic_to_timedelta(
 @cast.overload(wildcard, "string")
 def generic_to_string(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     format: str,
     errors: str,
     **unused
@@ -450,7 +450,7 @@ def generic_to_string(
 @cast.overload(wildcard, "object")
 def generic_to_object(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     call: Callable,
     errors: str,
     **unused
@@ -483,7 +483,7 @@ pandas_integer_dtypes = {
 
 def safe_apply(
     series: pd.Series,
-    dtype: types.AtomicType,
+    dtype: types.ScalarType,
     call: Callable,
     errors: str
 ) -> pd.Series:
