@@ -22,7 +22,7 @@ from .base import register
 @register
 class ObjectType(AtomicType):
 
-    cache_size = 64
+    _cache_size = 64
     name = "object"
     aliases = {
         "object", "obj", "O", "pyobject", "object_", "object0", np.dtype("O")

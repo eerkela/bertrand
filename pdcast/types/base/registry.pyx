@@ -17,7 +17,7 @@ from .atomic cimport AtomicType, ParentType
 ######################
 
 
-def register(class_: type = None, *, cond: bool = True) -> ScalarType:
+def register(class_: type = None, *, cond: bool = True):
     """Validate a scalar type definition and add it to the registry.
 
     Parameters
@@ -238,14 +238,12 @@ cdef class TypeRegistry:
     def get_supertype(self, AtomicType typ) -> ParentType:
         """Get a type's supertype if it is registered."""
         result = self.supertypes.get(type(typ), None)
-        if result is not None:
-            result = self.instances.get(result, None)
-        return result
+        return self.instances.get(result, None)
 
     def get_subtypes(self, ParentType typ) -> set:
         """Get all the registered subtypes associated with a type."""
         result = set()
-        candidates = self.subtypes[type(typ)]
+        candidates = self.subtypes.get(type(typ), set())
         for subtype in candidates:
             instance = self.instances.get(subtype, None)
             if instance is None:
@@ -264,7 +262,7 @@ cdef class TypeRegistry:
     def get_implementations(self, ParentType typ) -> dict:
         """Get all the registered implementations associated with a type."""
         result = {}
-        candidates = self.implementations[type(typ)]
+        candidates = self.implementations.get(type(typ), {})
         for backend, implementation in candidates.items():
             instance = self.instances.get(implementation, None)
             if instance is None:
@@ -276,7 +274,12 @@ cdef class TypeRegistry:
     def get_default(self, ParentType typ) -> AtomicType:
         """Get the default implementation for a hierarchical type."""
         default = self.defaults.get(type(typ), None)
-        return self.instances.get(default, None)
+        default = self.instances.get(default, None)
+        if default is None:
+            raise NotImplementedError(
+                f"{repr(typ)} has no default implementation"
+            )
+        return default
 
     #####################
     ####    REGEX    ####

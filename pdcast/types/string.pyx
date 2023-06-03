@@ -9,8 +9,8 @@ import pandas as pd
 
 from pdcast.util.type_hints import dtype_like
 
-from .base cimport AtomicType, Type
-from .base import parent, register
+from .base cimport AtomicType, ParentType, Type
+from .base import register
 
 
 #########################
@@ -38,8 +38,7 @@ except ImportError:
 
 
 @register
-@parent
-class StringType(AtomicType):
+class StringType(ParentType):
     """String supertype."""
 
     name = "string"
@@ -80,7 +79,8 @@ class StringType(AtomicType):
 
 
 @register
-@StringType.implementation("python", default=True)
+@StringType.default
+@StringType.implementation("python")
 class PythonStringType(AtomicType):
 
     aliases = set()
@@ -102,7 +102,8 @@ if pyarrow_installed:
 
 
     @register
-    @StringType.implementation("pyarrow", default=True, warn=False)
+    @StringType.default(warn=False)
+    @StringType.implementation("pyarrow")
     class PyArrowStringType(AtomicType):
 
         aliases = set()

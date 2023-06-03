@@ -37,6 +37,44 @@ from ..array import abstract
 
 # -> inject separate strategies for @parent .larger/.smaller?
 
+# TODO: ParentTypes -> AbstractTypes.  These can implement their own
+# interface, and that interface will be enforced for all of its
+# implementations.  These work like the ABCMeta python class.
+
+# -> this basically boils down to a dir() comparison.  The inheriting class
+# should include all of the members of its parent(s).
+
+
+
+# @register
+# class IntegerType(AbstractType):
+#     ...
+
+# @register
+# @IntegerType.implementation("numpy")
+# class NumpyIntegerType(AbstractType):
+#     ...
+
+# @register
+# @IntegerType.default
+# @IntegerType.subtype
+# class SignedIntegerType(AbstractType):
+#     ...
+
+# @register
+# @NumpyIntegerType.default
+# @NumpyIntegerType.subtype
+# @SignedIntegerType.implementation("numpy")
+# class NumpySignedIntegerType(AbstractType):
+#     ...
+
+
+# Type System
+# Detection, resolution & type checks
+# Multiple dispatch
+# Extension functions
+# Conversions
+
 
 ######################
 ####    ATOMIC    ####
@@ -71,7 +109,7 @@ cdef class AtomicType(ScalarType):
         @GenericType.implementation("backend")  # inherits .name
         class ImplementationType(pdcast.AtomicType):
 
-            cache_size = 128
+            _cache_size = 128
             aliases = {"foo", "bar", "baz", np.dtype(np.int64), int, ...}
             type_def = int
             dtype = np.dtype(np.int64)
@@ -222,17 +260,12 @@ cdef class AtomicType(ScalarType):
     ####    CONFIGURATION    ####
     #############################
 
-    # NOTE: `cache_size` dictates the number of flyweights to store in a type's
-    # instance factory.  Values < 0 indicate an unlimited cache size while
-    # values > 0 specify a Least Recently Used (LRU) caching strategy.  0
+    # NOTE: `_cache_size` dictates the number of flyweights to store in a
+    # type's instance factory.  Values < 0 indicate an unlimited cache size
+    # while values > 0 specify a Least Recently Used (LRU) caching strategy.  0
     # disables the flyweight pattern entirely, though this is not recommended.
 
-    cache_size = -1
-
-    @property
-    def family(self) -> str:
-        """A family to associate with this type."""
-        return None
+    _cache_size = -1
 
     @property
     def type_def(self) -> type | None:
@@ -740,110 +773,59 @@ cdef class AtomicType(ScalarType):
 ############################
 
 
-# TODO: if @parent comes after @implementation/@subtype, then we need to
-# modify the global registry to point to the new type.
-
-
-def parent(cls: type) -> type:
-    """Class decorator to mark generic type definitions.
-
-    Generic types are backend-agnostic and act as wildcard containers for
-    more specialized subtypes.  For instance, the generic "int" can contain
-    the backend-specific "int[numpy]", "int[pandas]", and "int[python]"
-    subtypes, which can be resolved as shown. 
-    """
-    if not issubclass(cls, AtomicType):
-        raise TypeError("@parent can only be applied to AtomicTypes")
-
-    class _ParentType(ParentType):
-        __wrapped__ = cls
-        name = cls.name
-
-    # copy aliases up the stack
-    try:
-        _ParentType.aliases = object.__getattribute__(cls, "aliases")
-        del cls.aliases
-    except AttributeError:
-        pass
-
-    cls.registry.implementations[_ParentType] = {}
-    cls.registry.subtypes[_ParentType] = set()
-    return _ParentType
-
-
 cdef class ParentType(AtomicType):
     """A Composite Pattern type object that can contain other types.
     """
 
-    def __init__(self):
-        wrapped = type(self).__wrapped__  # passed from decorator
-        del type(self).__wrapped__
-
-        # instantiate wrapped type
-        self.__wrapped__ = wrapped()
-
-        # Type.__init__
-        self._aliases = AliasManager(self)
-
-        # ScalarType.__init__
-        self.encoder = self.__wrapped__.encoder
-        self.instances = self.__wrapped__.instances
-        self._slug = self.__wrapped__._slug
-        self._hash = self.__wrapped__._hash
-
-        self.base_instance = self
-        self._read_only = True
+    def __init__(self, **kwargs):
+        if kwargs:
+            raise NotImplementedError(
+                f"abstract types cannot be parametrized: {repr(self)}"
+            )
+        super().__init__()
 
     #################################
     ####    COMPOSITE PATTERN    ####
     #################################
 
-    @property
-    def default(self) -> AtomicType:
-        """The concrete type that this generic type defaults to.
+    @classmethod
+    def default(cls, concretion: type = None, *, warn: bool = True):
+        """A class decorator that assigns a concretion of this type as its
+        default value.
 
-        This will be used whenever the generic type is specified without an
-        explicit backend.
+        Attribute lookups for the parent type will be forwarded to its default.
         """
-        if self._default is not None:
-            return self._default
+        def decorator(_concrete: type):
+            """Link the decorated type as the default value of this parent."""
+            if not issubclass(_concrete, AtomicType):
+                raise abstract_decorator_error(_concrete)
 
-        instance = self.registry.get_default(self)
-        if instance is None:
-            return self.__wrapped__
-        return instance
+            # ensure that the decorated concretion is a subtype or implementation
+            registry = cls.registry
+            candidates = registry.subtypes.get(cls, set())
+            candidates |= set(registry.implementations.get(cls, {}).values())
+            if _concrete not in candidates:
+                raise TypeError(
+                    f"@default must be a member of the '{cls.__qualname__}' "
+                    f"hierarchy: '{_concrete.__qualname__}'"
+                )
 
-    @default.setter
-    def default(self, val: type_specifier) -> None:
-        val = resolve.resolve_type(val)
-        if isinstance(val, CompositeType):
-            raise TypeError(f"default cannot be composite: {val}")
+            if warn and cls in registry.defaults:
+                warn_msg = (
+                    f"overwriting default for {repr(cls)} (use `warn=False` "
+                    f"to silence this message)"
+                )
+                warnings.warn(warn_msg, UserWarning)
 
-        if val == self:
-            raise TypeError(
-                f"default cannot be circular (use `del type.default` "
-                f"instead): {val}"
-            )
+            registry.defaults[cls] = _concrete
+            return _concrete
 
-        if not self.contains(val):
-            raise TypeError(
-                f"default must be contained within this type's hierarchy: "
-                f"{val}"
-            )
-
-        self._default = val
-
-    @default.deleter
-    def default(self) -> None:
-        self._default = None
+        if concretion is not None:
+            return decorator(concretion)
+        return decorator
 
     @classmethod
-    def implementation(
-        cls,
-        backend: str,
-        default: bool = False,
-        warn: bool = True
-    ):
+    def implementation(cls, backend: str, validate: bool = True):
         """A class decorator that registers a type definition as an
         implementation of this :class:`ParentType <pdcast.ParentType>`.
 
@@ -867,17 +849,17 @@ cdef class ParentType(AtomicType):
                 f"backend specifier must be a string: {repr(backend)}"
             )
 
-        def decorator(implementation: type) -> type:
+        def decorator(implementation: type):
             """Link the decorated type as an implementation of this parent."""
             if not issubclass(implementation, AtomicType):
-                raise TypeError(
-                    f"ParentTypes can only contain AtomicTypes, not "
-                    f"{repr(implementation)}"
-                )
+                raise abstract_decorator_error(implementation)
+
+            if validate:
+                validate_interface(cls, implementation)
 
             # ensure backend is unique
             registry = cls.registry
-            candidates = registry.implementations[cls]
+            candidates = registry.implementations.setdefault(cls, {})
             if backend in candidates:
                 raise TypeError(
                     f"backend specifier must be unique: {repr(backend)} is "
@@ -887,26 +869,15 @@ cdef class ParentType(AtomicType):
             # allow name collisions with special encoding
             inherit_name(cls, implementation, backend)
 
-            candidates[backend] = implementation  # parent -> implementation
-            registry.generics[implementation] = cls  # implementation -> parent
-
-            # register as default
-            if default:
-                register_default(cls, implementation, warn=warn)
-
+            # link parent -> implementation, implementation -> parent
+            candidates[backend] = implementation
+            registry.generics[implementation] = cls
             return implementation
 
         return decorator
 
-
     @classmethod
-    def subtype(
-        cls,
-        subtype: type | AtomicType = None,
-        *,
-        default: bool = False,
-        warn: bool = True
-    ):
+    def subtype(cls, subtype: type = None, *, validate: bool = True):
         """A class decorator that registers a child type to this parent.
 
         Parameters
@@ -928,20 +899,15 @@ cdef class ParentType(AtomicType):
         -----
         TODO
         """
-        def decorator(_subtype: type) -> type:
+        def decorator(_subtype: type):
             """Link the decorated type as a subtype of this parent."""
             if not issubclass(_subtype, AtomicType):
-                raise TypeError(
-                    f"ParentTypes can only contain AtomicTypes, not "
-                    f"{repr(_subtype)}"
-                )
+                raise abstract_decorator_error(_subtype)
 
-            # if _subtype in cls.registry.supertypes:
-            #     raise TypeError(
-            #         f"subtypes can only be registered to one parent at a "
-            #         f"time: '{_subtype.__qualname__}' is currently registered to "
-            #         f"'{_subtype._parent.__qualname__}'"
-            #     )
+            if validate:
+                validate_interface(cls, _subtype)
+
+            registry = cls.registry
 
             # ensure hierarchy does not contain cycles
             typ = _subtype
@@ -951,14 +917,11 @@ cdef class ParentType(AtomicType):
                         f"type hierarchy cannot contain circular references: "
                         f"{repr(cls)}"
                     )
-                typ = cls.registry.supertypes.get(typ, None)
+                typ = registry.supertypes.get(typ, None)
 
-            cls.registry.subtypes[cls].add(_subtype)  # parent -> subtype
-            cls.registry.supertypes[_subtype] = cls  # subtype -> parent
-
-            if default:
-                register_default(cls, _subtype, warn=warn)
-
+            # link parent -> subtype, subtype -> parent
+            registry.subtypes.setdefault(cls, set()).add(_subtype)
+            registry.supertypes[_subtype] = cls
             return _subtype
 
         if subtype is not None:
@@ -981,7 +944,10 @@ cdef class ParentType(AtomicType):
         """
         cached = self._backends
         if not cached:
-            result = {None: self.default}
+            try:
+                result = {None: self.registry.get_default(self)}
+            except NotImplementedError:
+                result = {}
             result |= self.registry.get_implementations(self)
             cached = CacheValue(MappingProxyType(result))
             self._backends = cached
@@ -1025,8 +991,10 @@ cdef class ParentType(AtomicType):
                 for o in other
             )
 
-        children = {self.__wrapped__}
-        children |= {typ for typ in self.backends.values()}
+        if other == self:
+            return True
+
+        children = {typ for typ in self.backends.values()}
         children |= {typ for typ in self.subtypes}
         return any(typ.contains(other) for typ in children)
 
@@ -1036,103 +1004,161 @@ cdef class ParentType(AtomicType):
 
     def detect(self, example: Any) -> AtomicType:
         """Forward scalar inference to the default implementation."""
-        return self.default.detect(example)
+        return self.registry.get_default(self).detect(example)
 
     def from_dtype(self, dtype: dtype_like) -> AtomicType:
         """Forward dtype translation to the default implementation."""
-        return self.default.from_dtype(dtype)
-
-    @property
-    def kwargs(self) -> MappingProxyType:
-        """Delegate `kwargs` to default."""
-        return self.default.kwargs
+        return self.registry.get_default(self).from_dtype(dtype)
 
     @property
     def type_def(self) -> type | None:
         """Delegate `type_def` to default."""
-        return self.default.type_def
+        return self.registry.get_default(self).type_def
 
     @property
     def dtype(self) -> np.dtype | ExtensionDtype:
         """Delegate `dtype` to default."""
-        return self.default.dtype
+        return self.registry.get_default(self).dtype
 
     @property
     def itemsize(self) -> int | None:
         """Delegate `itemsize` to default."""
-        return self.default.itemsize
+        return self.registry.get_default(self).itemsize
 
     @property
     def is_numeric(self) -> bool:
         """Delegate `is_numeric` to default."""
-        return self.default.is_numeric
+        return self.registry.get_default(self).is_numeric
 
     @property
     def max(self) -> decimal.Decimal:
         """Delegate `max` to default."""
-        return self.default.max
+        return self.registry.get_default(self).max
 
     @property
     def min(self) -> decimal.Decimal:
         """Delegate `min` to default."""
-        return self.default.min
+        return self.registry.get_default(self).min
 
     @property
     def is_nullable(self) -> bool:
         """Delegate `is_nullable` to default."""
-        return self.default.is_nullable
+        return self.registry.get_default(self).is_nullable
 
     @property
     def na_value(self) -> Any:
         """Delegate `na_value` to default."""
-        return self.default.na_value
+        return self.registry.get_default(self).na_value
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self.default, name)
-
-    ###############################
-    ####    SPECIAL METHODS    ####
-    ###############################
-
-    def __call__(self, *args, **kwargs):
-        if not (args or kwargs):
-            return self
-        return self.instances(args, kwargs)
-
-    def __repr__(self) -> str:
-        return repr(self.__wrapped__)
+        return getattr(self.registry.get_default(self), name)
 
 
-cdef void register_default(type parent, type child, bint warn):
+#######################
+####    PRIVATE    ####
+#######################
+
+
+# These attributes are not implemented by cython extension types, but are
+# inserted whenever a python class inherits from it.
+cdef set PYTHON_ATTRS = {"__dict__", "__module__", "__weakref__"}
+
+
+cdef Exception abstract_decorator_error(type offender):
+    """Return a standardized error message when a ParentType's class decorators
+    are applied to a non-type class.
     """
-    """
-    cdef TypeRegistry registry = parent.registry
+    return TypeError(
+        f"ParentTypes can only contain AtomicTypes, not {repr(offender)}"
+    )
 
-    if warn and parent in registry.defaults:
-        warn_msg = (
-            f"overwriting default for {repr(parent)} (use `warn=False` to "
-            f"silence this message)"
+
+cdef void validate_interface(type parent, type child):
+    """Ensure that the child type implements the abstract type's interface."""
+    parent_attrs = [
+        attr for attr in dir(parent)
+        if attr not in dir(ParentType) and attr not in PYTHON_ATTRS
+    ]
+    child_attrs = dir(child)
+
+    # ensure child implements all the attributes of the parent
+    missing = set(parent_attrs) - set(child_attrs)
+    if missing:
+        raise TypeError(f"'{child.__qualname__}' must implement {missing}")
+
+    # ensure method signatures match
+    for attr_name in parent_attrs:
+        parent_attr = getattr(parent, attr_name)
+        child_attr = getattr(child, attr_name)
+        if callable(parent_attr):
+            compare_methods(parent_attr, child_attr, child, attr_name)
+        else:
+            compare_properties(parent_attr, child_attr, child, attr_name)
+
+
+cdef void compare_methods(
+    object parent_method,
+    object child_method,
+    type child,
+    str method_name
+):
+    """Compare two method attributes, ensuring that the child conforms to the
+    parent.
+    """
+    parent_signature = inspect.signature(parent_method)
+
+    # reconstruct signature as string
+    reconstructed = []
+    for arg_name, param in parent_signature.parameters.items():
+        component = arg_name
+        if param.annotation is not param.empty:
+            component += f": {param.annotation}"
+        if param.default is not param.empty:
+            component += f" = {param.default}"
+        reconstructed.append(component)
+    reconstructed = ", ".join(reconstructed)
+
+    # ensure child attr is callable
+    if not callable(child_method):
+        raise TypeError(
+            f"'{child.__qualname__}.{method_name}' must be callable with "
+            f"signature '{method_name}({reconstructed})'"
         )
-        warnings.warn(warn_msg, UserWarning)
 
-    registry.defaults[parent] = child
+    # ensure child inherits parent arguments (names, not annotations/defaults)
+    child_signature = inspect.signature(child_method)
+    parent_args = list(parent_signature.parameters)
+    child_args = list(child_signature.parameters)
+    if parent_args != child_args:
+        raise TypeError(
+            f"'{child.__qualname__}.{method_name}()' must take arguments "
+            f"{parent_args} (observed: {child_args})"
+        )
+
+
+cdef void compare_properties(
+    object parent_prop,
+    object child_prop,
+    type child,
+    str prop_name
+):
+    """Compare two non-callable attributes, ensuring that the child conforms
+    to the parent.
+    """
+    if callable(child_prop):
+        raise TypeError(
+            f"'{child.__qualname__}.{prop_name}' must not be callable"
+        )
 
 
 cdef void inherit_name(type parent, type child, str backend):
     """Copy the name of the parent type onto the child type."""
-    cdef type base
-
-    # unwrap nested ParentTypes
-    base = child
-    while issubclass(base, ParentType):
-        base = base.__wrapped__
-
     # replace name
     try:
-        object.__getattribute__(base, "name")
+        object.__getattribute__(child, "name")
     except AttributeError:
-        base.name = parent.name
+        child.name = parent.name
 
     # allow conflicts with special encoding
-    if base.name == parent.name:
-        base.set_encoder(BackendEncoder(backend))
+    if child.name == parent.name:
+        child.set_encoder(BackendEncoder(backend))

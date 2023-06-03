@@ -7,13 +7,16 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from .base cimport AtomicType
-from .base import parent, register
+from .base cimport AtomicType, ParentType
+from .base import register
 
 
 ######################
 ####    MIXINS    ####
 ######################
+
+
+# TODO: make_nullable doesn't work without .instance()
 
 
 class BooleanMixin:
@@ -49,8 +52,7 @@ class NumpyBooleanMixin:
 
 
 @register
-@parent
-class BooleanType(AtomicType):
+class BooleanType(ParentType):
     """Generic boolean type.
 
     *   **aliases:** ``"bool"``, ``"boolean"``, ``"bool_"``, ``"bool8"``,
@@ -85,7 +87,6 @@ class BooleanType(AtomicType):
         PythonBooleanType()
     """
 
-    # standard type definition
     name = "bool"
     aliases = {"bool", "boolean", "bool_", "bool8", "b1", "?"}
 
@@ -96,7 +97,8 @@ class BooleanType(AtomicType):
 
 
 @register
-@BooleanType.implementation("numpy", default=True)
+@BooleanType.default
+@BooleanType.implementation("numpy")
 class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, AtomicType):
     """Numpy boolean type.
 

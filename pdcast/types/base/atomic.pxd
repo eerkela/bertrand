@@ -17,9 +17,5 @@ cdef class AtomicType(ScalarType):
 
 cdef class ParentType(AtomicType):
     cdef:
-        AtomicType _default
         CacheValue _backends
         CacheValue _subtypes
-
-    cdef readonly:
-        AtomicType __wrapped__

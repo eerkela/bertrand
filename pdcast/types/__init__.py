@@ -36,7 +36,7 @@ generic
 from .array import AbstractArray, AbstractDtype
 from .base import (
     TypeRegistry, Type, CompositeType, ScalarType, AdapterType, AtomicType,
-    ParentType, parent, register
+    ParentType, register
 )
 from .boolean import (
     BooleanType, NumpyBooleanType, PandasBooleanType, PythonBooleanType
@@ -52,14 +52,14 @@ from .integer import (
     PandasUInt8Type, PandasUInt16Type, PandasUInt32Type, PandasUInt64Type,
     PythonIntegerType
 )
-# from .float import (
-#     FloatType, Float16Type, Float32Type, Float64Type, NumpyFloatType,
-#     NumpyFloat16Type, NumpyFloat32Type, NumpyFloat64Type, PythonFloatType
-# )
-# from .complex import (
-#     ComplexType, Complex64Type, Complex128Type, NumpyComplexType,
-#     NumpyComplex64Type, NumpyComplex128Type, PythonComplexType
-# )
+from .float import (
+    FloatType, Float16Type, Float32Type, Float64Type, NumpyFloatType,
+    NumpyFloat16Type, NumpyFloat32Type, NumpyFloat64Type, PythonFloatType
+)
+from .complex import (
+    ComplexType, Complex64Type, Complex128Type, NumpyComplexType,
+    NumpyComplex64Type, NumpyComplex128Type, PythonComplexType
+)
 from .decimal import DecimalType, PythonDecimalType
 from .datetime import (
     DatetimeType, NumpyDatetime64Type, PandasTimestampType, PythonDatetimeType

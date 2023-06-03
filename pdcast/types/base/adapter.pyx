@@ -121,10 +121,12 @@ cdef class AdapterType(ScalarType):
     :class:`AtomicType`.
     """
 
-    init_subclass = True
     priority = 0
 
     def __init__(self, wrapped: ScalarType, **kwargs):
+        # generate PrioritySorter and insert into wrapped
+
+        # -> get _insort from class priority
         if isinstance(wrapped, AdapterType):
             wrapped, kwargs = self._insort(self, wrapped, kwargs)
 

@@ -34,7 +34,8 @@ cdef class ScalarType(Type):
     This allows inherited types to manage aliases and update them at runtime.
     """
 
-    cache_size: int = 0
+    _encoder: ArgumentEncoder = None
+    _cache_size: int = 0
     base_instance: ScalarType = None
 
     def __init__(self, **kwargs):
@@ -92,19 +93,21 @@ cdef class ScalarType(Type):
         type(self).base_instance = self
 
         # pass name, parameters to encoder
-        self.encoder = getattr(type(self), "_encoder", ArgumentEncoder())
+        self.encoder = type(self)._encoder
+        if self.encoder is None:
+            self.encoder = ArgumentEncoder()
         self.encoder.set_name(self.name)
         self.encoder.set_kwargs(self._kwargs)
         self._slug = self.encoder((), {})  # encode self
 
         # create instance manager
-        if not self.cache_size:
+        if not self._cache_size:
             self.instances = InstanceFactory(type(self))
         else:
             self.instances = FlyweightFactory(
                 type(self),
                 self.encoder,
-                self.cache_size
+                self._cache_size
             )
             self.instances._add(self._slug, self)
 
@@ -169,7 +172,7 @@ cdef class ScalarType(Type):
         :class:`dtype <numpy.dtype>`\ /
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` objects.
         """
-        return MappingProxyType(self._kwargs)
+        return MappingProxyType({} if self._kwargs is None else self._kwargs)
 
     @property
     def adapters(self) -> Iterator:
@@ -401,7 +404,7 @@ cdef class InstanceFactory:
         self.base_class = base_class
 
     def __call__(self, tuple args, dict kwargs):
-        raise self.base_class(*args, **kwargs)
+        return self.base_class(*args, **kwargs)
 
 
 cdef class FlyweightFactory(InstanceFactory):

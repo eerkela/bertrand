@@ -8,8 +8,8 @@ cimport numpy as np
 
 from pdcast.util.type_hints import numeric
 
-from .base cimport AtomicType, CompositeType
-from .base import generic, register
+from .base cimport AtomicType, ParentType, CompositeType
+from .base import register
 import pdcast.types.float as float_types
 
 
@@ -33,7 +33,7 @@ class ComplexMixin:
 
     @property
     def equiv_float(self) -> AtomicType:
-        f_root = float_types.FloatType.instance()
+        f_root = float_types.FloatType()
         candidates = [x for y in f_root.backends.values() for x in y.subtypes]
         for x in candidates:
             if type(x).__name__ == self._equiv_float:
@@ -59,105 +59,48 @@ class ComplexMixin:
         return result
 
 
-#######################
-####    GENERIC    ####
-#######################
+############################
+####    ROOT COMPLEX    ####
+############################
 
 
 @register
-@generic
-class ComplexType(ComplexMixin, AtomicType):
+class ComplexType(ParentType):
 
     name = "complex"
     aliases = {
         "complex", "cfloat", "complex float", "complex floating", "c"
     }
-    dtype = np.dtype(np.complex128)
-    itemsize = 16
-    na_value = complex("nan+nanj")
-    type_def = complex
-    max = 2**53
-    min = -2**53
     _equiv_float = "FloatType"
 
 
 @register
-@generic
+@ComplexType.implementation("numpy")
+class NumpyComplexType(ParentType):
+
+    aliases = {np.complexfloating}
+    _equiv_float = "NumpyFloatType"
+
+
+#########################
+####    COMPLEX64    ####
+#########################
+
+
+@register
 @ComplexType.subtype
-class Complex64Type(ComplexMixin, AtomicType):
+class Complex64Type(ParentType):
 
     name = "complex64"
     aliases = {
         "complex64", "csingle", "complex single", "singlecomplex", "c8", "F"
     }
-    dtype = np.dtype(np.complex64)
-    itemsize = 8
-    na_value = np.complex64("nan+nanj")
-    type_def = np.complex64
-    max = 2**24
-    min = -2**24
     _equiv_float = "Float32Type"
 
 
 @register
-@generic
-@ComplexType.subtype
-class Complex128Type(ComplexMixin, AtomicType):
-
-    name = "complex128"
-    aliases = {
-        "complex128", "cdouble", "complex double", "complex_", "c16", "D"
-    }
-    dtype = np.dtype(np.complex128)
-    itemsize = 16
-    na_value = np.complex128("nan+nanj")
-    type_def = np.complex128
-    max = 2**53
-    min = -2**53
-    _equiv_float = "Float64Type"
-
-
-@register(cond=has_clongdouble)
-@generic
-@ComplexType.subtype
-class Complex160Type(ComplexMixin, AtomicType):
-
-    name = "complex160"
-    aliases = {
-        "complex160", "clongdouble", "clongfloat", "complex longdouble",
-        "complex longfloat", "complex long double", "complex long float",
-        "longcomplex", "long complex", "c20", "G"
-    }
-    dtype = np.dtype(np.clongdouble)
-    itemsize = np.dtype(np.clongdouble).itemsize
-    na_value = np.clongdouble("nan+nanj")
-    type_def = np.clongdouble
-    max = 2**64
-    min = -2**64
-    _equiv_float = "Float80Type"
-
-
-#####################
-####    NUMPY    ####
-#####################
-
-
-@register
-@ComplexType.implementation("numpy")
-class NumpyComplexType(ComplexMixin, AtomicType):
-
-    aliases = {np.complexfloating}
-    dtype = np.dtype(np.complex128)
-    itemsize = 16
-    na_value = np.complex128("nan+nanj")
-    type_def = np.complex128
-    max = 2**53
-    min = -2**53
-    _equiv_float = "NumpyFloatType"
-
-
-@register
 @NumpyComplexType.subtype
+@Complex64Type.default
 @Complex64Type.implementation("numpy")
 class NumpyComplex64Type(ComplexMixin, AtomicType):
 
@@ -171,8 +114,27 @@ class NumpyComplex64Type(ComplexMixin, AtomicType):
     _equiv_float = "NumpyFloat32Type"
 
 
+##########################
+####    COMPLEX128    ####
+##########################
+
+
 @register
+@ComplexType.default
+@ComplexType.subtype
+class Complex128Type(ParentType):
+
+    name = "complex128"
+    aliases = {
+        "complex128", "cdouble", "complex double", "complex_", "c16", "D"
+    }
+    _equiv_float = "Float64Type"
+
+
+@register
+@NumpyComplexType.default
 @NumpyComplexType.subtype
+@Complex128Type.default
 @Complex128Type.implementation("numpy")
 class NumpyComplex128Type(ComplexMixin, AtomicType):
 
@@ -184,26 +146,6 @@ class NumpyComplex128Type(ComplexMixin, AtomicType):
     max = 2**53
     min = -2**53
     _equiv_float = "NumpyFloat64Type"
-
-
-@register(cond=has_clongdouble)
-@NumpyComplexType.subtype
-@Complex160Type.implementation("numpy")
-class NumpyComplex160Type(ComplexMixin, AtomicType):
-
-    aliases = {np.clongdouble, np.dtype(np.clongdouble)}
-    dtype = np.dtype(np.clongdouble)
-    itemsize = np.dtype(np.clongdouble).itemsize
-    na_value = np.clongdouble("nan+nanj")
-    type_def = np.clongdouble
-    max = 2**64
-    min = -2**64
-    _equiv_float = "NumpyFloat80Type"
-
-
-######################
-####    PYTHON    ####
-######################
 
 
 @register
@@ -218,3 +160,37 @@ class PythonComplexType(ComplexMixin, AtomicType):
     max = 2**53
     min = -2**53
     _equiv_float = "PythonFloatType"
+
+
+#########################################
+####    COMPLEX LONG DOUBLE (x86)    ####
+#########################################
+
+
+@register(cond=has_clongdouble)
+@ComplexType.subtype
+class Complex160Type(ParentType):
+
+    name = "complex160"
+    aliases = {
+        "complex160", "clongdouble", "clongfloat", "complex longdouble",
+        "complex longfloat", "complex long double", "complex long float",
+        "longcomplex", "long complex", "c20", "G"
+    }
+    _equiv_float = "Float80Type"
+
+
+@register(cond=has_clongdouble)
+@NumpyComplexType.subtype
+@Complex160Type.default
+@Complex160Type.implementation("numpy")
+class NumpyComplex160Type(ComplexMixin, AtomicType):
+
+    aliases = {np.clongdouble, np.dtype(np.clongdouble)}
+    dtype = np.dtype(np.clongdouble)
+    itemsize = np.dtype(np.clongdouble).itemsize
+    na_value = np.clongdouble("nan+nanj")
+    type_def = np.clongdouble
+    max = 2**64
+    min = -2**64
+    _equiv_float = "NumpyFloat80Type"

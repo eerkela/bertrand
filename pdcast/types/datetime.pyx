@@ -12,8 +12,8 @@ from pdcast import resolve
 from pdcast.util import time
 from pdcast.util.type_hints import type_specifier
 
-from .base cimport AtomicType, CompositeType
-from .base import parent, register
+from .base cimport AtomicType, ParentType, CompositeType
+from .base import register
 
 
 # TODO: PandasTimestampType.from_string cannot convert quarterly dates
@@ -25,8 +25,7 @@ from .base import parent, register
 
 
 @register
-@parent
-class DatetimeType(AtomicType):
+class DatetimeType(ParentType):
 
     name = "datetime"
     aliases = {"datetime"}
@@ -76,7 +75,7 @@ class NumpyDatetime64Type(AtomicType):
     # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
     # a custom ExtensionDtype/AbstractDtype or the raw numpy dtypes here.
 
-    cache_size = 64
+    _cache_size = 64
     aliases = {
         np.datetime64,
         np.dtype("M8"),
@@ -174,7 +173,7 @@ class NumpyDatetime64Type(AtomicType):
 @DatetimeType.implementation("pandas")
 class PandasTimestampType(AtomicType):
 
-    cache_size = 64
+    _cache_size = 64
     aliases = {
         pd.Timestamp,
         pd.DatetimeTZDtype,
@@ -250,7 +249,7 @@ class PandasTimestampType(AtomicType):
 @DatetimeType.implementation("python")
 class PythonDatetimeType(AtomicType):
 
-    cache_size = 64
+    _cache_size = 64
     aliases = {datetime.datetime, "pydatetime", "datetime.datetime"}
     na_value = pd.NaT
     type_def = datetime.datetime
