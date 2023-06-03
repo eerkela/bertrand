@@ -64,7 +64,7 @@ class CategoricalType(DecoratorType):
         )
 
     @classmethod
-    def resolve(
+    def from_string(
         cls,
         wrapped: str = None,
         levels: str = None

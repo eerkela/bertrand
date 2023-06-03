@@ -121,7 +121,7 @@ cdef class ScalarDetector(Detector):
         result = self.aliases.get(self.example_type, None)
         if result is None:
             return types.ObjectType[self.example_type]
-        return result.detect(self.example)
+        return result.from_scalar(self.example)
 
 
 cdef class ArrayDetector(Detector):
@@ -216,7 +216,7 @@ cdef types.CompositeType detect_vector_type(object[:] arr, dict lookup):
         if result is None:
             result = types.ObjectType(element_type)
         else:
-            result = result.detect(element)
+            result = result.from_scalar(element)
 
         observed.add(result)
         index[i] = result

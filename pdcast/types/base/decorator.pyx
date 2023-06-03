@@ -164,7 +164,7 @@ cdef class DecoratorType(VectorType):
     ############################
 
     @classmethod
-    def resolve(cls, wrapped: str = None, *args: str) -> DecoratorType:
+    def from_string(cls, wrapped: str = None, *args: str) -> DecoratorType:
         """Construct a new :class:`DecoratorType` in the :ref:`type specification
         mini-language <resolve_type.mini_language>`.
 

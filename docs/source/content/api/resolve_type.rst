@@ -154,7 +154,7 @@ A ``typespec`` string is composed of 2 parts:
     characters.
 
 This resembles a callable grammar.  In fact, it directly translates to a call
-to the type's :meth:`resolve() <ScalarType.resolve>` constructor, which can be
+to the type's :meth:`from_string() <ScalarType.from_string>` constructor, which can be
 customized to alter its behavior.  This leaves each type free to assign its own
 meaning to the optional arguments and parse them accordingly.
 

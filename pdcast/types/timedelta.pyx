@@ -153,7 +153,7 @@ class NumpyTimedelta64Type(ScalarType, cache_size=64):
         return super().contains(other, include_subtypes=include_subtypes)
 
     @classmethod
-    def detect(cls, example: np.datetime64, **defaults) -> ScalarType:
+    def from_scalar(cls, example: np.datetime64, **defaults) -> ScalarType:
         unit, step_size = np.datetime_data(example)
         return cls.instance(unit=unit, step_size=step_size, **defaults)
 
@@ -176,7 +176,7 @@ class NumpyTimedelta64Type(ScalarType, cache_size=64):
         return []
 
     @classmethod
-    def resolve(cls, context: str = None) -> ScalarType:
+    def from_string(cls, context: str = None) -> ScalarType:
         if context is not None:
             match = m8_pattern.match(context)
             if not match:

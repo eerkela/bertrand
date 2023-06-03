@@ -690,7 +690,7 @@ cdef class Type:
             *   Raw Python types are used by :func:`detect_type` for scalar or
                 unlabeled vector inference.  If the type of a scalar element
                 appears in :attr:`aliases <ScalarType.aliases>`, then the
-                associated type's :meth:`detect() <ScalarType.detect>` method
+                associated type's :meth:`from_scalar() <ScalarType.from_scalar>` method
                 will be called on it.
 
         All aliases are recognized by :func:`resolve_type` and the set always

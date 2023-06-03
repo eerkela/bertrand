@@ -221,7 +221,7 @@ cdef class StringResolver(Resolver):
         if hasattr(instance, "resolve"):
             args = match_dict["args"]
             tokens = [] if not args else tokenize(args)
-            instance = instance.resolve(*tokens)
+            instance = instance.from_string(*tokens)
 
         return instance
 

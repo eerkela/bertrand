@@ -62,7 +62,7 @@ class SparseType(DecoratorType, priority=10):
         )
 
     @classmethod
-    def resolve(
+    def from_string(
         cls,
         wrapped: str = None,
         fill_value: str = None

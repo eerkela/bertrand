@@ -65,7 +65,7 @@ class ObjectType(ScalarType):
             return isinstance(other, type(self))
         return super().contains(other, include_subtypes=include_subtypes)
 
-    def resolve(self, type_def: str = None) -> ScalarType:
+    def from_string(self, type_def: str = None) -> ScalarType:
         if type_def is None:
             return self()
         return self(type_def=from_caller(type_def))

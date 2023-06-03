@@ -118,7 +118,7 @@ cdef class ScalarType(VectorType):
     ####    CONSTRUCTORS    ####
     ############################
 
-    def resolve(self, *args: str) -> ScalarType:
+    def from_string(self, *args: str) -> ScalarType:
         """Construct a new :class:`ScalarType` in the :ref:`type specification
         mini-language <resolve_type.mini_language>`.
 
@@ -145,42 +145,6 @@ cdef class ScalarType(VectorType):
         """
         # NOTE: any special string conversion logic goes here
         return self(*args)
-
-    def detect(self, example: Any) -> ScalarType:
-        """Construct a new :class:`ScalarType` from scalar example data.
-
-        Override this if a type has attributes that depend on the value of a
-        corresponding scalar (e.g. datetime64 units, timezones, etc.)
-
-        Parameters
-        ----------
-        example : Any
-            A scalar example of this type (e.g. ``1``, ``42.0``, ``"foo"``,
-            etc.).
-
-        Returns
-        -------
-        ScalarType
-            A flyweight for the specified type.  If this method is given the
-            same input again in the future, then this will be a simple
-            reference to the previous instance.
-
-        Notes
-        -----
-        This method is called during :func:`detect_type` operations when there
-        is no explicit ``.dtype`` field to interpret.  This might be the case
-        for objects that are stored in a base Python list or ``dtype: object``
-        array, for instance.
-
-        In order for this method to be called, the output of
-        :class:`type() <python:type>` on the example must be registered as one
-        of this type's :attr:`aliases <ScalarType.aliases>`.
-
-        If the input to :func:`detect_type` is vectorized, then this method
-        will be called at each index.
-        """
-        # NOTE: any special scalar parsing logic goes here
-        return self()
 
     def from_dtype(self, dtype: np.dtype | ExtensionDtype) -> ScalarType:
         """Construct an :class:`ScalarType` from a corresponding numpy/pandas
@@ -222,6 +186,42 @@ cdef class ScalarType(VectorType):
         passed to this method.
         """
         # NOTE: any special dtype parsing logic goes here.
+        return self()
+
+    def from_scalar(self, example: Any) -> ScalarType:
+        """Construct a new :class:`ScalarType` from scalar example data.
+
+        Override this if a type has attributes that depend on the value of a
+        corresponding scalar (e.g. datetime64 units, timezones, etc.)
+
+        Parameters
+        ----------
+        example : Any
+            A scalar example of this type (e.g. ``1``, ``42.0``, ``"foo"``,
+            etc.).
+
+        Returns
+        -------
+        ScalarType
+            A flyweight for the specified type.  If this method is given the
+            same input again in the future, then this will be a simple
+            reference to the previous instance.
+
+        Notes
+        -----
+        This method is called during :func:`detect_type` operations when there
+        is no explicit ``.dtype`` field to interpret.  This might be the case
+        for objects that are stored in a base Python list or ``dtype: object``
+        array, for instance.
+
+        In order for this method to be called, the output of
+        :class:`type() <python:type>` on the example must be registered as one
+        of this type's :attr:`aliases <ScalarType.aliases>`.
+
+        If the input to :func:`detect_type` is vectorized, then this method
+        will be called at each index.
+        """
+        # NOTE: any special scalar parsing logic goes here
         return self()
 
     #############################
@@ -784,7 +784,7 @@ cdef class AbstractType(ScalarType):
         Notes
         -----
         Any additional arguments will be dynamically passed to the
-        implementation's :meth:`resolve()` constructor.
+        implementation's :meth:`from_string()` constructor.
         """
         if not isinstance(backend, str):
             raise TypeError(
@@ -914,11 +914,11 @@ cdef class AbstractType(ScalarType):
         """Indicates whether this type has subtypes."""
         return not self.subtypes and not self.is_generic
 
-    def resolve(self, backend: str | None = None, *args) -> ScalarType:
+    def from_string(self, backend: str | None = None, *args) -> ScalarType:
         """Forward constructor arguments to the appropriate implementation."""
         if backend is None:
             return self
-        return self.backends[backend].resolve(*args)  
+        return self.backends[backend].from_string(*args)  
 
     def contains(
         self,
@@ -944,13 +944,13 @@ cdef class AbstractType(ScalarType):
     ####    DELEGATED    ####
     #########################
 
-    def detect(self, example: Any) -> ScalarType:
-        """Forward scalar inference to the default implementation."""
-        return self.registry.get_default(self).detect(example)
-
     def from_dtype(self, dtype: dtype_like) -> ScalarType:
         """Forward dtype translation to the default implementation."""
         return self.registry.get_default(self).from_dtype(dtype)
+
+    def from_scalar(self, example: Any) -> ScalarType:
+        """Forward scalar inference to the default implementation."""
+        return self.registry.get_default(self).from_scalar(example)
 
     @property
     def type_def(self) -> type | None:

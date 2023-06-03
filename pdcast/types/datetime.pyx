@@ -113,7 +113,7 @@ class NumpyDatetime64Type(ScalarType):
 
         super(ScalarType, self).__init__(unit=unit, step_size=step_size)
 
-    def detect(self, example: np.datetime64, **defaults) -> ScalarType:
+    def from_scalar(self, example: np.datetime64, **defaults) -> ScalarType:
         unit, step_size = np.datetime_data(example)
         return self(unit=unit, step_size=step_size, **defaults)
 
@@ -136,7 +136,7 @@ class NumpyDatetime64Type(ScalarType):
         else:
             yield from ()
 
-    def resolve(self, context: str = None) -> ScalarType:
+    def from_string(self, context: str = None) -> ScalarType:
         if context is not None:
             match = M8_pattern.match(context)
             if not match:
@@ -225,7 +225,7 @@ class PandasTimestampType(ScalarType):
             return isinstance(other, type(self))
         return super().contains(other, include_subtypes=include_subtypes)
 
-    def detect(self, example: pd.Timestamp, **defaults) -> ScalarType:
+    def from_scalar(self, example: pd.Timestamp, **defaults) -> ScalarType:
         return self(tz=example.tzinfo, **defaults)
 
     def from_dtype(
@@ -234,7 +234,7 @@ class PandasTimestampType(ScalarType):
     ) -> ScalarType:
         return self(tz=getattr(dtype, "tz", None))
 
-    def resolve(self, context: str = None) -> ScalarType:
+    def from_string(self, context: str = None) -> ScalarType:
         if context is not None:
             return self(tz=time.tz(context, {}))
         return self()
@@ -281,10 +281,10 @@ class PythonDatetimeType(ScalarType):
             return isinstance(other, type(self))
         return super().contains(other, include_subtypes=include_subtypes)
 
-    def detect(self, example: datetime.datetime, **defaults) -> ScalarType:
+    def from_scalar(self, example: datetime.datetime, **defaults) -> ScalarType:
         return self(tz=example.tzinfo, **defaults)
 
-    def resolve(self, context: str = None) -> ScalarType:
+    def from_string(self, context: str = None) -> ScalarType:
         if context is not None:
             return self(tz=time.tz(context, {}))
         return self()
