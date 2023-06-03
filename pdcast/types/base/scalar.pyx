@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.extensions import ExtensionDtype
 
-from pdcast import resolve
+from pdcast.resolve import resolve_type
 from pdcast.util.type_hints import (
     array_like, dtype_like, numeric, type_specifier
 )
@@ -442,7 +442,7 @@ cdef class ScalarType(VectorType):
         This method also controls the behavior of the ``in`` keyword for
         :class:`ScalarTypes <ScalarType>`.
         """
-        other = resolve.resolve_type(other)
+        other = resolve_type(other)
         if isinstance(other, CompositeType):
             return all(
                 self.contains(o, include_subtypes=include_subtypes)
@@ -959,7 +959,7 @@ cdef class AbstractType(ScalarType):
         include_subtypes: bool = True
     ) -> bool:
         """Extend membership checks to this type's subtypes/implementations."""
-        other = resolve.resolve_type(other)
+        other = resolve_type(other)
         if isinstance(other, CompositeType):
             return all(
                 self.contains(o, include_subtypes=include_subtypes)

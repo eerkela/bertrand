@@ -17,8 +17,8 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-import pdcast.types as types
-cimport pdcast.types as types
+from pdcast import types
+from pdcast cimport types
 from pdcast.types.array import ObjectDtype
 
 from pdcast.util.type_hints import type_specifier

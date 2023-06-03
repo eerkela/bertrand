@@ -4,7 +4,7 @@ group types into a set-like container.
 cimport numpy as np
 import numpy as np
 
-from pdcast import resolve
+from pdcast.resolve import resolve_type
 from pdcast.util.type_hints import type_specifier
 
 from .vector cimport VectorType
@@ -114,7 +114,7 @@ cdef class CompositeType(Type):
         """Do a collective membership test involving the whole composite,
         rather than its individual components.
         """
-        other = resolve.resolve_type(other)
+        other = resolve_type(other)
         if isinstance(other, CompositeType):
             return all(
                 self.contains(other_typ, include_subtypes=include_subtypes)
@@ -135,7 +135,7 @@ cdef class CompositeType(Type):
         """Do a collective membership test involving the whole composite,
         rather than its individual components.
         """
-        other = resolve.resolve_type(other)
+        other = resolve_type(other)
         return other.contains(self, *args, **kwargs)
 
     #############################
@@ -147,7 +147,7 @@ cdef class CompositeType(Type):
         cdef CompositeType other
         cdef VectorType typ
 
-        other = resolve.resolve_type([typespec])
+        other = resolve_type([typespec])
         self.types.update(typ for typ in other)
         self.forget_index()
 
@@ -158,7 +158,7 @@ cdef class CompositeType(Type):
         cdef CompositeType other
         cdef VectorType typ
 
-        other = resolve.resolve_type([typespec])
+        other = resolve_type([typespec])
         for typ in other:
             self.types.remove(typ)
 
@@ -171,7 +171,7 @@ cdef class CompositeType(Type):
         cdef CompositeType other
         cdef VectorType typ
 
-        other = resolve.resolve_type([typespec])
+        other = resolve_type([typespec])
         for typ in other:
             self.types.discard(typ)
 
@@ -231,7 +231,7 @@ cdef class CompositeType(Type):
 
         has_child = lambda typ: any(other_type in typ for other_type in other)
         for item in others:
-            other = resolve.resolve_type([item]).expand()
+            other = resolve_type([item]).expand()
             result = CompositeType(typ for typ in result if not has_child(typ))
 
         return result.collapse()
@@ -246,7 +246,7 @@ cdef class CompositeType(Type):
         """Return the union of two CompositeTypes."""
         cdef CompositeType other
 
-        other = resolve.resolve_type([typespec])
+        other = resolve_type([typespec])
         return CompositeType(self.types | other.types)
 
     def __and__(self, typespec: type_specifier) -> CompositeType:
@@ -256,7 +256,7 @@ cdef class CompositeType(Type):
         cdef set forward
         cdef set backward
 
-        other = resolve.resolve_type([typespec])
+        other = resolve_type([typespec])
         forward = {typ for typ in self if typ in other}
         backward = {typ for typ in other if typ in self}
         return CompositeType(forward | backward)
@@ -270,7 +270,7 @@ cdef class CompositeType(Type):
 
         result = self.expand()
 
-        other = resolve.resolve_type([typespec]).expand()
+        other = resolve_type([typespec]).expand()
         has_child = lambda typ: any(other_type in typ for other_type in other)
         result = CompositeType(typ for typ in result if not has_child(typ))
 
@@ -280,7 +280,7 @@ cdef class CompositeType(Type):
         """Return the symmetric difference of two CompositeTypes."""
         cdef CompositeType other
 
-        other = resolve.resolve_type([typespec])
+        other = resolve_type([typespec])
         return (self - other) | (other - self)
 
     ###################################
@@ -336,7 +336,7 @@ cdef class CompositeType(Type):
         """
         cdef Type other
 
-        other = resolve.resolve_type(typespec)
+        other = resolve_type(typespec)
         return self != other and self >= other
 
     def __ge__(self, typespec: type_specifier) -> bool:
@@ -348,7 +348,7 @@ cdef class CompositeType(Type):
         """Test whether `self` and `other` contain identical types."""
         cdef CompositeType other
 
-        other = resolve.resolve_type([typespec])
+        other = resolve_type([typespec])
         return self.types == other.types
 
     def __lt__(self, typespec: type_specifier) -> bool:
@@ -357,12 +357,12 @@ cdef class CompositeType(Type):
         """
         cdef Type other
 
-        other = resolve.resolve_type(typespec)
+        other = resolve_type(typespec)
         return self != other and self <= other
 
     def __le__(self, typespec: type_specifier) -> bool:
         """Test whether every element in `self` is contained within `other`."""
-        return resolve.resolve_type(typespec).contains(self)
+        return resolve_type(typespec).contains(self)
 
     ####################
     ####    MISC    ####

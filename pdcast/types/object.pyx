@@ -7,7 +7,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdcast import resolve
+from pdcast.resolve import resolve_type
 from pdcast.util.type_hints import dtype_like, type_specifier
 
 from .base cimport ScalarType, CompositeType
@@ -53,7 +53,7 @@ class ObjectType(ScalarType):
         """Test whether a type is contained within this type's subtype
         hierarchy.
         """
-        other = resolve.resolve_type(other)
+        other = resolve_type(other)
         if isinstance(other, CompositeType):
             return all(
                 self.contains(o, include_subtypes=include_subtypes)

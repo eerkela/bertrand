@@ -16,8 +16,8 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from pdcast import detect
-from pdcast import resolve
+from pdcast.detect import detect_type
+from pdcast.resolve import resolve_type
 from pdcast import types
 from pdcast.util.structs import LRUDict
 from pdcast.util.type_hints import type_specifier
@@ -414,7 +414,7 @@ class DispatchFunc(FunctionDecorator):
                 )
 
             # generate dispatch keys
-            paths = [resolve.resolve_type([spec]) for spec in paths]
+            paths = [resolve_type([spec]) for spec in paths]
             paths = list(itertools.product(*paths))
 
             # merge with dispatch table
@@ -484,7 +484,7 @@ class DispatchFunc(FunctionDecorator):
             hasnans = frame.shape[0] < original_index.shape[0]
 
         # detect type of each column
-        detected = detect.detect_type(frame)
+        detected = detect_type(frame)
 
         # composite case
         if any(isinstance(v, types.CompositeType) for v in detected.values()):
@@ -607,7 +607,7 @@ class DirectDispatch(DispatchStrategy):
     ):
         self.func = func
         self.dispatched = dispatched
-        self.key = tuple(detect.detect_type(v) for v in dispatched.values())
+        self.key = tuple(detect_type(v) for v in dispatched.values())
 
     def execute(self, bound: inspect.BoundArguments) -> Any:
         """Call the dispatched function with the bound arguments."""
@@ -670,7 +670,7 @@ class HomogenousDispatch(DispatchStrategy):
 
             # replace missing values, aligning on index
             if self.hasnans or result.shape[0] < self.index.shape[0]:
-                output_type = detect.detect_type(result)
+                output_type = detect_type(result)
                 output_index = pd.RangeIndex(0, self.original_index.shape[0])
                 if isinstance(result, pd.Series):
                     nullable = output_type.make_nullable()
@@ -824,7 +824,7 @@ class CompositeDispatch(DispatchStrategy):
 
     def _combine_series(self, computed: list) -> pd.Series:
         """Merge the computed series results by index."""
-        observed = [detect.detect_type(series) for series in computed]
+        observed = [detect_type(series) for series in computed]
         unique = set(observed)
 
         # if results are composite but in same family, attempt to standardize
@@ -908,7 +908,7 @@ def resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
 
     key_type = []
     for spec in key:
-        spec_type = resolve.resolve_type(spec)
+        spec_type = resolve_type(spec)
         if isinstance(spec_type, types.CompositeType):
             raise TypeError(f"key must not be composite: {repr(spec)}")
         key_type.append(spec_type)

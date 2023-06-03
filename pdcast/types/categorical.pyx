@@ -4,10 +4,8 @@ dynamically wrap other types.
 import numpy as np
 import pandas as pd
 
-from pdcast cimport detect
-from pdcast import detect
 from pdcast import resolve
-
+from pdcast.detect import detect_type
 from pdcast.util.type_hints import type_specifier
 
 from .base cimport DecoratorType, CompositeType, VectorType
@@ -61,7 +59,7 @@ class CategoricalType(DecoratorType):
         dtype: pd.api.extensions.ExtensionDtype
     ) -> DecoratorType:
         return cls(
-            wrapped=detect.detect_type(dtype.categories),
+            wrapped=detect_type(dtype.categories),
             levels=dtype.categories.tolist()
         )
 

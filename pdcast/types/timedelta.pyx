@@ -8,7 +8,7 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 
-from pdcast import resolve
+from pdcast.resolve import resolve_type
 from pdcast.util import time
 from pdcast.util.type_hints import type_specifier
 
@@ -140,7 +140,7 @@ class NumpyTimedelta64Type(ScalarType, cache_size=64):
         other: type_specifier,
         include_subtypes: bool = True
     ) -> bool:
-        other = resolve.resolve_type(other)
+        other = resolve_type(other)
         if isinstance(other, CompositeType):
             return all(
                 self.contains(o, include_subtypes=include_subtypes)

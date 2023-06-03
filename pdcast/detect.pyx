@@ -13,9 +13,9 @@ import numpy as np
 import pandas as pd
 
 from pdcast.decorators import attachable
-import pdcast.resolve as resolve
-cimport pdcast.types as types
-import pdcast.types as types
+from pdcast.resolve import resolve_type
+from pdcast import types
+from pdcast cimport types
 from pdcast.util.vector cimport as_array
 
 
@@ -150,11 +150,11 @@ cdef class ArrayDetector(Detector):
             # special cases for pd.Timestamp/pd.Timedelta series
             if isinstance(self.data, pandas_arrays):
                 if dtype == np.dtype("M8[ns]"):
-                    dtype = resolve.resolve_type(types.PandasTimestampType)
+                    dtype = resolve_type(types.PandasTimestampType)
                 elif dtype == np.dtype("m8[ns]"):
-                    dtype = resolve.resolve_type(types.PandasTimedeltaType)
+                    dtype = resolve_type(types.PandasTimedeltaType)
 
-            result = resolve.resolve_type([dtype])
+            result = resolve_type([dtype])
             if len(result) == 1:
                 result = result.pop()
 

@@ -8,7 +8,7 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from pdcast import resolve
+from pdcast import resolve  # importing directly causes an ImportError
 from pdcast.util.type_hints import type_specifier
 
 from .registry cimport AliasManager

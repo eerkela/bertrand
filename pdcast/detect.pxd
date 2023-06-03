@@ -1,5 +1,5 @@
 cimport numpy as np
-cimport pdcast.types as types
+from pdcast cimport types
 
 
 # factories
