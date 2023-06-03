@@ -421,7 +421,7 @@ class ObjectArray(ExtensionArray, ExtensionScalarOpsMixin):
         return self._data.astype(dtype=dtype, copy=copy)
 
     def isna(self):
-        return self._atomic_type.is_na(self._data)
+        return pd.isna(self._data)
 
     def _values_for_argsort(self) -> np.ndarray:
         """Return values for sorting.

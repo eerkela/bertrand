@@ -120,7 +120,7 @@ cpdef object downcast_integer(
     max_val = series.max()
 
     # get observed range as python ints (prevents inconsistent comparison)
-    if series_type.is_na(min_val):  # series is empty
+    if pd.isna(min_val):  # series is empty
         # NOTE: we swap min/max to maintain upcast behavior for generic types
         min_val = series_type.max
         max_val = series_type.min

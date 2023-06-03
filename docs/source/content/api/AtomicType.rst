@@ -204,7 +204,6 @@ Missing Values
     :toctree: ../../generated/
 
     ScalarType.is_nullable
-    ScalarType.is_na
     ScalarType.make_nullable
 
 .. _ScalarType.special:

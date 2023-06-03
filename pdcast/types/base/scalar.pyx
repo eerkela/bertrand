@@ -28,14 +28,13 @@ from ..array import construct_object_dtype
 
 # TODO: add examples/raises for each method
 
-# TODO: remove is_na() in favor of pd.isna() and convert make_nullable into
-# a .nullable property.
+# TODO: convert make_nullable into a .nullable property.
 
-# TODO: .max/.min are stored as arbitrary objects.
+# TODO: .max/.min are currently stored as arbitrary objects.
 
-# TODO: does it make sense for @implementation to decorate a parent type?
-
-# -> inject separate strategies for @parent .larger/.smaller?
+# TODO: inject separate strategies for @parent .larger/.smaller?
+# -> too complex, just do the extra filtering in the caller.  Should still
+# sort by family though.
 
 
 # Type System
@@ -353,10 +352,6 @@ cdef class ScalarType(VectorType):
         -------
         Any
             An NA-like value for this data type.
-
-        See Also
-        --------
-        ScalarType.is_na : for comparisons against this value.
         """
         if self._na_value is None:
             return pd.NA
@@ -382,34 +377,6 @@ cdef class ScalarType(VectorType):
         raise NotImplementedError(
             f"'{type(self).__name__}' objects have no nullable alternative."
         )
-
-    def is_na(self, val: Any) -> bool | array_like:
-        """Check if one or more values are considered missing in this
-        representation.
-
-        Parameters
-        ----------
-        val : Any
-            A scalar or 1D vector of values to check for NA equality.
-
-        Returns
-        -------
-        bool | array-like
-            ``True`` where ``val`` is equal to this type's ``na_value``,
-            ``False`` otherwise.  If the input is vectorized, then the output
-            will be as well.
-
-        Notes
-        -----
-        Comparison with missing values is often tricky.  Most NA values are not
-        equal to themselves, so some other algorithm must be used to test for
-        them.  This method allows users to define this logic on a per-type
-        basis.
-
-        If you override this method, you should always call its base equivalent
-        via ``super().is_na()`` before returning a custom result.
-        """
-        return pd.isna(val)
 
     def contains(
         self,

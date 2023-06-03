@@ -144,8 +144,8 @@ class SparseType(DecoratorType, priority=10):
 
         # check for unequal fill values
         if self.kwargs["fill_value"] is not None:
-            na_1 = self.is_na(self.fill_value)
-            na_2 = other.is_na(other.fill_value)
+            na_1 = pd.isna(self.fill_value)
+            na_2 = pd.isna(other.fill_value)
             if (
                 na_1 ^ na_2 or
                 na_1 == na_2 == False and self.fill_value != other.fill_value
