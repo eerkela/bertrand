@@ -73,7 +73,7 @@ class NumpyDatetime64Type(ScalarType):
 
     # NOTE: dtype is set to object due to pandas and its penchant for
     # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
-    # a custom ExtensionDtype/AbstractDtype or the raw numpy dtypes here.
+    # a custom ExtensionDtype/ObjectDtype or the raw numpy dtypes here.
 
     _cache_size = 64
     aliases = {

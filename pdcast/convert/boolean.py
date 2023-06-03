@@ -15,7 +15,7 @@ def boolean_to_decimal(
 ) -> pd.Series:
     """Convert boolean data to a decimal data type."""
     target = dtype.dtype
-    if isinstance(target, types.AbstractDtype):
+    if isinstance(target, types.ObjectDtype):
         series = series + dtype.type_def(0)  # ~2x faster than loop
     return series.astype(target)
 

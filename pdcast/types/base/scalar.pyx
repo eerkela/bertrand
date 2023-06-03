@@ -23,7 +23,7 @@ from .vector cimport (
     InstanceFactory, FlyweightFactory
 )
 from .composite cimport CompositeType
-from ..array import abstract
+from ..array import construct_object_dtype
 
 
 # TODO: add examples/raises for each method
@@ -276,7 +276,7 @@ cdef class ScalarType(VectorType):
         instead.
         """
         if self._dtype is None:
-            return abstract.construct_extension_dtype(
+            return construct_object_dtype(
                 self,
                 is_boolean=self.is_subtype("bool"),
                 is_numeric=self.is_numeric,
@@ -308,7 +308,7 @@ cdef class ScalarType(VectorType):
 
     @property
     def is_numeric(self) -> bool:
-        """Used to auto-generate :class:`AbstractDtypes <pdcast.AbstractDtype>`
+        """Used to auto-generate :class:`ObjectDtypes <pdcast.ObjectDtype>`
         from this type.
         """
         if self._is_numeric is None:
@@ -561,12 +561,18 @@ cdef class ScalarType(VectorType):
         """A mapping of all the implementations that are registered to this
         type, if it is marked as :func:`@generic <pdcast.generic>`.
 
+        Returns
+        -------
+        MappingProxyType
+            A read-only dictionary listing the concrete implementations that
+            have been registered to this type, with their backend specifiers
+            as keys.
+
         Raises
         ------
         TypeError
             If this type is not decorated with
             :func:`@generic <pdcast.generic>`.
-
         """
         return MappingProxyType({None: self})
 

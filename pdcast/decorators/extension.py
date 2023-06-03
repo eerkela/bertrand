@@ -9,7 +9,7 @@ import threading
 from types import MappingProxyType
 from typing import Any, Callable
 
-from .base import BaseDecorator, no_default
+from .base import FunctionDecorator, no_default
 
 
 ######################
@@ -82,7 +82,7 @@ def extension_func(func: Callable) -> Callable:
 #######################
 
 
-class ExtensionFunc(BaseDecorator, threading.local):
+class ExtensionFunc(FunctionDecorator, threading.local):
     """A wrapper for the decorated callable that can be dynamically extended
     with custom arguments.
 
@@ -111,7 +111,7 @@ class ExtensionFunc(BaseDecorator, threading.local):
     """
 
     _reserved = (
-        BaseDecorator._reserved |
+        FunctionDecorator._reserved |
         {"_signature", "_vals", "_defaults", "_validators"}
     )
 

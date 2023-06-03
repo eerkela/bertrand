@@ -4,21 +4,21 @@
 
 Classes
 -------
-AbstractDtype
+ObjectDtype
     A pandas ``ExtensionDtype`` that delegates certain functionality to its
     associated ``ScalarType`` and comes with its own ``ExtensionArray``.
 
-AbstractArray
+ObjectArray
     A pandas ``ExtensionArray`` that stores arbitrary objects in an
     explicitly-labeled ``dtype: object`` array.
 
 Functions
 ---------
-construct_extension_dtype()
-    A factory for ``AbstractDtype`` definitions.
+construct_object_dtype()
+    A factory for ``ObjectDtype`` definitions.
 
 construct_array_type()
-    A factory for ``AbstractArray`` definitions.
+    A factory for ``ObjectArray`` definitions.
 """
 from collections import Counter
 import numbers
@@ -43,7 +43,7 @@ from pdcast.util.type_hints import type_specifier
 ######################
 
 
-def construct_extension_dtype(
+def construct_object_dtype(
     atomic_type,
     is_boolean: bool,
     is_numeric: bool,
@@ -66,7 +66,7 @@ def construct_extension_dtype(
     )
 
     @register_extension_dtype
-    class _AbstractDtype(AbstractDtype):
+    class _ObjectDtype(ObjectDtype):
 
         _atomic_type = atomic_type
         name = str(atomic_type)
@@ -90,8 +90,8 @@ def construct_extension_dtype(
                 return self
             return common_dtype
 
-    _AbstractDtype.__doc__ = class_doc
-    return _AbstractDtype()
+    _ObjectDtype.__doc__ = class_doc
+    return _ObjectDtype()
 
 
 def construct_array_type(
@@ -107,7 +107,7 @@ def construct_array_type(
         f"{str(atomic_type)} objects."
     )
 
-    class _AbstractArray(AbstractArray):
+    class _ObjectArray(ObjectArray):
         
         def __init__(self, *args, **kwargs):
             self._atomic_type = atomic_type
@@ -115,13 +115,13 @@ def construct_array_type(
 
     # add scalar operations from ExtensionScalarOpsMixin
     if add_arithmetic_ops:
-        _AbstractArray._add_arithmetic_ops()
+        _ObjectArray._add_arithmetic_ops()
     if add_comparison_ops:
-        _AbstractArray._add_comparison_ops()
+        _ObjectArray._add_comparison_ops()
 
     # replace docstring
-    _AbstractArray.__doc__ = class_doc
-    return _AbstractArray
+    _ObjectArray.__doc__ = class_doc
+    return _ObjectArray
 
 
 #######################
@@ -129,7 +129,7 @@ def construct_array_type(
 #######################
 
 
-class AbstractDtype(ExtensionDtype):
+class ObjectDtype(ExtensionDtype):
     """Base class for automatically-generated ExtensionDtype definitions.
 
     This class allows :class:`ScalarType` definitions that do not define an
@@ -141,10 +141,10 @@ class AbstractDtype(ExtensionDtype):
     """
 
     def __init__(self):
-        # require use of construct_extension_dtype() factory
+        # require use of construct_object_dtype() factory
         if not hasattr(self, "_atomic_type"):
             raise NotImplementedError(
-                f"AbstractDtype must have an associated ScalarType"
+                f"ObjectDtype must have an associated ScalarType"
             )
 
     @classmethod
@@ -195,7 +195,7 @@ class AbstractDtype(ExtensionDtype):
         raise TypeError(f"Cannot construct a '{cls.__name__}' from '{string}'")
 
     def __dir__(self) -> list:
-        # direct AbstractDtype attributes
+        # direct ObjectDtype attributes
         result = dir(type(self))
         result += list(self.__dict__.keys())
 
@@ -217,7 +217,7 @@ class AbstractDtype(ExtensionDtype):
         return f"{type(self).__name__}({str(self._atomic_type)})"
 
 
-class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
+class ObjectArray(ExtensionArray, ExtensionScalarOpsMixin):
     """Base class for automatically-generated ExtensionArray definitions.
 
     This class allows :class:`ScalarType` definitions that do not define an
@@ -240,7 +240,7 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
         # require use of construct_array_type() factory
         if not hasattr(self, "_atomic_type"):
             raise NotImplementedError(
-                f"AbstractArray must have an associated ScalarType"
+                f"ObjectArray must have an associated ScalarType"
             )
 
     @classmethod
@@ -628,7 +628,7 @@ class AbstractArray(ExtensionArray, ExtensionScalarOpsMixin):
         return op(axis=0)
 
     def __array_ufunc__(self, ufunc: np.ufunc, method: str, *inputs, **kwargs):
-        """Allows AbstractArrays to utilize numpy ufuncs natively, without
+        """Allows ObjectArrays to utilize numpy ufuncs natively, without
         being coerced to ``dtype: object``.
 
         This implementation is adapted from the

@@ -132,7 +132,7 @@ def integer_to_decimal(
 ) -> pd.Series:
     """Convert integer data to a decimal data type."""
     target = dtype.dtype
-    if isinstance(target, types.AbstractDtype):
+    if isinstance(target, types.ObjectDtype):
         series = series + dtype.type_def(0)  # ~2x faster than apply loop
     return series.astype(target)
 
@@ -329,7 +329,7 @@ def integer_to_pandas_timedelta(
 
     series, dtype = boundscheck(series, dtype, errors=errors)
 
-    # NOTE: pandas.to_timedelta complains when given an AbstractArray as input,
+    # NOTE: pandas.to_timedelta complains when given an ObjectArray as input,
     # so we convert to dtype: object instead.
 
     return pd.to_timedelta(series.astype(object), unit="ns")

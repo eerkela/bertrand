@@ -544,7 +544,7 @@ class M8Array(ExtensionArray, ExtensionScalarOpsMixin):
         return op(axis=0)
 
     def __array_ufunc__(self, ufunc: np.ufunc, method: str, *inputs, **kwargs):
-        """Allows AbstractArrays to utilize numpy ufuncs natively, without
+        """Allows ObjectArrays to utilize numpy ufuncs natively, without
         being coerced to dtype: object.
 
         This implementation is adapted from the

@@ -6,7 +6,7 @@ from functools import update_wrapper, WRAPPER_ASSIGNMENTS
 from typing import Any, Callable
 
 
-class BaseDecorator:
+class FunctionDecorator:
     """Base class for cooperative decorators.
 
     These decorators implement the Gang of Four's `Decorator pattern

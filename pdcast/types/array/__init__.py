@@ -6,7 +6,7 @@ Modules
 abstract
     Automatic generation of object-backed ``ExtensionDtype`` definitions.
 """
-from .abstract import (
-    AbstractArray, AbstractDtype, construct_array_type,
-    construct_extension_dtype
+from .object import (
+    ObjectArray, ObjectDtype, construct_array_type,
+    construct_object_dtype
 )

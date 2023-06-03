@@ -33,7 +33,7 @@ generic
     Transform a subclass of ``ScalarType`` into a generic type, which can
     reference other types as backends.
 """
-from .array import AbstractArray, AbstractDtype
+from .array import ObjectArray, ObjectDtype
 from .base import (
     TypeRegistry, Type, CompositeType, VectorType, DecoratorType, ScalarType,
     AbstractType, register
@@ -61,9 +61,9 @@ from .complex import (
     NumpyComplex64Type, NumpyComplex128Type, PythonComplexType
 )
 from .decimal import DecimalType, PythonDecimalType
-from .datetime import (
-    DatetimeType, NumpyDatetime64Type, PandasTimestampType, PythonDatetimeType
-)
+# from .datetime import (
+#     DatetimeType, NumpyDatetime64Type, PandasTimestampType, PythonDatetimeType
+# )
 # from .timedelta import (
 #     TimedeltaType, NumpyTimedelta64Type, PandasTimedeltaType,
 #     PythonTimedeltaType

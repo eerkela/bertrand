@@ -84,7 +84,7 @@ class NumpyTimedelta64Type(ScalarType, cache_size=64):
 
     # NOTE: dtype is set to object due to pandas and its penchant for
     # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
-    # an AbstractDtype or the raw numpy dtypes here.
+    # an ObjectDtype or the raw numpy dtypes here.
 
     aliases = {
         np.timedelta64,

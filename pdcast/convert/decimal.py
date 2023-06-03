@@ -164,7 +164,7 @@ def decimal_to_decimal(
         return series
 
     target = dtype.dtype
-    if isinstance(dtype.dtype, types.AbstractDtype):
+    if isinstance(dtype.dtype, types.ObjectDtype):
         series = apply_with_errors(series, dtype.type_def, errors=errors)
     return series.astype(target)
 

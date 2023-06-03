@@ -13,6 +13,9 @@ from .base cimport ScalarType, AbstractType, Type
 from .base import register
 
 
+# TODO: check to see if StringType.from_dtype works correctly in all cases
+
+
 #########################
 ####    CONSTANTS    ####
 #########################

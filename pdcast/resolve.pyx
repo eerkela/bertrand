@@ -19,7 +19,7 @@ import pandas as pd
 
 import pdcast.types as types
 cimport pdcast.types as types
-import pdcast.types.array.abstract as abstract
+from pdcast.types.array import ObjectDtype
 
 from pdcast.util.type_hints import type_specifier
 
@@ -74,7 +74,7 @@ def resolve_type(typespec: type_specifier) -> types.Type:
         factory = StringResolver(typespec)
 
     elif isinstance(typespec, (np.dtype, pd.api.extensions.ExtensionDtype)):
-        if isinstance(typespec, abstract.AbstractDtype):
+        if isinstance(typespec, ObjectDtype):
             return typespec._atomic_type
 
         factory = DtypeResolver(typespec)

@@ -22,7 +22,7 @@ from pdcast import types
 from pdcast.util.structs import LRUDict
 from pdcast.util.type_hints import type_specifier
 
-from .base import BaseDecorator, no_default
+from .base import FunctionDecorator, no_default
 
 
 # TODO: emit a warning whenever an implementation is replaced.
@@ -246,7 +246,7 @@ class DispatchDict(OrderedDict):
             return False
 
 
-class DispatchFunc(BaseDecorator):
+class DispatchFunc(FunctionDecorator):
     """A wrapper for the decorated callable that manages its dispatched
     implementations.
 
@@ -261,7 +261,7 @@ class DispatchFunc(BaseDecorator):
     """
 
     _reserved = (
-        BaseDecorator._reserved |
+        FunctionDecorator._reserved |
         {"_args", "_dispatched", "_drop_na", "_flags", "_signature"}
     )
 

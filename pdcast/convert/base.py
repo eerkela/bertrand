@@ -9,7 +9,7 @@ import pandas as pd
 
 from pdcast import types
 from pdcast.decorators.attachable import attachable
-from pdcast.decorators.base import BaseDecorator
+from pdcast.decorators.base import FunctionDecorator
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
 from pdcast.detect import detect_type
@@ -52,7 +52,7 @@ from . import arguments
 IGNORE_FRAME_OBJECTS = True
 
 
-class columnwise(BaseDecorator):
+class columnwise(FunctionDecorator):
     """A basic decorator that breaks up DataFrame inputs into individual
     columns before continuing with a conversion.
 
@@ -100,7 +100,7 @@ class columnwise(BaseDecorator):
         return self.__wrapped__(data, dtype, *args, **kwargs)
 
 
-class catch_ignore(BaseDecorator):
+class catch_ignore(FunctionDecorator):
     """A basic decorator that enforces the ``errors="ignore"`` rule during
     conversions.
 
@@ -306,7 +306,7 @@ def generic_to_boolean(
     # NOTE: pandas complains about converting arbitrary objects to nullable
     # boolean.  Luckily, NAs are dropped, so we can do a two-step conversion.
 
-    if isinstance(target, types.AbstractDtype):
+    if isinstance(target, types.ObjectDtype):
         series = apply_with_errors(series, dtype.type_def, errors=errors)
     elif target == pd.BooleanDtype():
         series = series.astype(target.numpy_dtype, copy=False)
@@ -329,7 +329,7 @@ def generic_to_integer(
         # NOTE: pandas complains about converting arbitrary objects to nullable
         # int. Luckily, NAs are dropped, so we can do a two-step conversion.
 
-        if isinstance(target, types.AbstractDtype):
+        if isinstance(target, types.ObjectDtype):
             series = apply_with_errors(series, dtype.type_def, errors=errors)
         elif target in pandas_integer_dtypes:
             series = series.astype(target.numpy_dtype, copy=False)
@@ -353,7 +353,7 @@ def generic_to_float(
     """Convert arbitrary data to float representation."""
     if detect_type(series) != dtype:  # ignore trivial
         target = dtype.dtype
-        if isinstance(target, types.AbstractDtype):
+        if isinstance(target, types.ObjectDtype):
             series = apply_with_errors(series, dtype.type_def, errors=errors)
         series = series.astype(target)
 
@@ -374,7 +374,7 @@ def generic_to_complex(
     """Convert arbitrary data to complex representation."""
     if detect_type(series) != dtype:  # ignore trivial
         target = dtype.dtype
-        if isinstance(target, types.AbstractDtype):
+        if isinstance(target, types.ObjectDtype):
             series = apply_with_errors(series, dtype.type_def, errors=errors)
         series = series.astype(target)
 
@@ -396,7 +396,7 @@ def generic_to_decimal(
         return series
 
     target = dtype.dtype
-    if isinstance(target, types.AbstractDtype):
+    if isinstance(target, types.ObjectDtype):
         series = apply_with_errors(series, dtype.type_def, errors=errors)
     return series.astype(target)
 
@@ -442,7 +442,7 @@ def generic_to_string(
         series = apply_with_errors(series, call, errors=errors)
 
     target = dtype.dtype
-    if isinstance(target, types.AbstractDtype):
+    if isinstance(target, types.ObjectDtype):
         series = apply_with_errors(series, dtype.type_def, errors=errors)
     return series.astype(target, copy=False)
 

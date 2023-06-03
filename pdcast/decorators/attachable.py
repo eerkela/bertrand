@@ -35,7 +35,7 @@ import weakref
 
 from pdcast.util.type_hints import Descriptor
 
-from .base import BaseDecorator
+from .base import FunctionDecorator
 
 
 ######################
@@ -72,7 +72,7 @@ def attachable(func: Callable) -> Callable:
 #######################
 
 
-class Attachable(BaseDecorator):
+class Attachable(FunctionDecorator):
     """A wrapper for the decorated callable that manages its attached
     endpoints.
 
@@ -97,7 +97,7 @@ class Attachable(BaseDecorator):
         1
     """
 
-    _reserved = BaseDecorator._reserved | {"_attached"}
+    _reserved = FunctionDecorator._reserved | {"_attached"}
 
     def __init__(self, func: Callable):
         super().__init__(func=func)
@@ -297,7 +297,7 @@ class Attachable(BaseDecorator):
         self._attached[class_] = weakref.ref(descriptor)
 
 
-class VirtualAttribute(BaseDecorator):
+class VirtualAttribute(FunctionDecorator):
     """Base class for all :ref:`virtual attributes <attachable.attributes>`.
 
     These are produced by
@@ -337,7 +337,7 @@ class VirtualAttribute(BaseDecorator):
     attributes and their uses.
     """
 
-    _reserved = BaseDecorator._reserved | {
+    _reserved = FunctionDecorator._reserved | {
         "_parent", "_original", "__name__", "__qualname__", "__self__"
     }
 
