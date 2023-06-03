@@ -8,7 +8,7 @@ from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
 from .vector cimport VectorType
-from .atomic cimport ScalarType
+from .scalar cimport ScalarType
 from .registry cimport AliasManager, Type
 
 

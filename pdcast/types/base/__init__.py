@@ -3,6 +3,6 @@ of the ``pdcast`` type system.
 """
 from .registry import *
 from .vector import *
-from .atomic import *
-from .adapter import *
+from .scalar import *
+from .decorator import *
 from .composite import *

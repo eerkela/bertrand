@@ -1,6 +1,6 @@
 cimport numpy as np
 from .registry cimport Type
-from .atomic cimport ScalarType
+from .scalar cimport ScalarType
 
 
 cdef class CompositeType(Type):

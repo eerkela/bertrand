@@ -9,7 +9,7 @@ from typing import Any
 from pdcast.util.type_hints import type_specifier, dtype_like
 
 from .vector cimport VectorType
-from .atomic cimport ScalarType, AbstractType
+from .scalar cimport ScalarType, AbstractType
 
 
 ######################

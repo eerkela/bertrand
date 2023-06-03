@@ -12,7 +12,7 @@ from pdcast import resolve
 from pdcast.util.type_hints import type_specifier
 
 from .registry cimport AliasManager
-from .atomic cimport ScalarType
+from .scalar cimport ScalarType
 from .vector cimport VectorType, ArgumentEncoder, InstanceFactory
 from .composite cimport CompositeType
 

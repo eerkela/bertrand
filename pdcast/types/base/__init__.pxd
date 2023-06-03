@@ -1,5 +1,5 @@
 from .registry cimport *
 from .vector cimport *
-from .atomic cimport *
-from .adapter cimport *
+from .scalar cimport *
+from .decorator cimport *
 from .composite cimport *
