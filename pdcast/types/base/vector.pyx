@@ -341,13 +341,12 @@ cdef class ArgumentEncoder:
     @cython.wraparound(False)
     def __call__(self, tuple args, dict kwargs) -> str:
         """Construct a string representation with the given *args, **kwargs."""
-        cdef unsigned short arg_length = len(args)
-        cdef unsigned short kwarg_length = len(kwargs)
-        cdef dict ordered
-        cdef unsigned short i
+        cdef unsigned int arg_length = len(args)
+        cdef unsigned int kwarg_length = len(kwargs)
+        cdef dict ordered = self.defaults.copy()
+        cdef unsigned int i
         cdef str param
 
-        ordered = self.defaults.copy()
         for i in range(arg_length + kwarg_length):
             param = self.parameters[i]
             if i < arg_length:
@@ -371,13 +370,12 @@ cdef class BackendEncoder:
     @cython.wraparound(False)
     def __call__(self, tuple args, dict kwargs) -> str:
         """Construct a string representation with the given *args, **kwargs."""
-        cdef unsigned short arg_length = len(args)
-        cdef unsigned short kwarg_length = len(kwargs)
-        cdef dict ordered
-        cdef unsigned short i
+        cdef unsigned int arg_length = len(args)
+        cdef unsigned int kwarg_length = len(kwargs)
+        cdef dict ordered = self.defaults.copy()
+        cdef unsigned int i
         cdef str param
 
-        ordered = self.defaults.copy()
         for i in range(arg_length + kwarg_length):
             param = self.parameters[i]
             if i < arg_length:

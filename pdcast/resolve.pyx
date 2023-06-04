@@ -57,9 +57,9 @@ def resolve_type(typespec: type_specifier) -> types.Type:
     --------
     ScalarType.from_dtype : customizable resolution of numpy/pandas data types.
     DecoratorType.from_dtype : customizable resolution of numpy/pandas data types.
-    ScalarType.resolve : customizable semantics for the
+    ScalarType.from_string : customizable semantics for the
         :ref:`type specification mini-language <resolve_type.mini_language>`.
-    DecoratorType.resolve : customizable semantics for the
+    DecoratorType.from_string : customizable semantics for the
         :ref:`type specification mini-language <resolve_type.mini_language>`.
     """
     # trivial case
@@ -218,7 +218,7 @@ cdef class StringResolver(Resolver):
         else:
             instance = self.aliases[match_dict["type"]]
 
-        if hasattr(instance, "resolve"):
+        if hasattr(instance, "from_string"):
             args = match_dict["args"]
             tokens = [] if not args else tokenize(args)
             instance = instance.from_string(*tokens)
@@ -226,6 +226,7 @@ cdef class StringResolver(Resolver):
         return instance
 
     def __call__(self) -> types.Type:
+        """Process all matches in the input string."""
         cdef list matches
         cdef types.CompositeType composite
 

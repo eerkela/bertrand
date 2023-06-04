@@ -186,7 +186,7 @@ cdef class ScalarType(VectorType):
         passed to this method.
         """
         # NOTE: any special dtype parsing logic goes here.
-        return self()
+        return self
 
     def from_scalar(self, example: Any) -> ScalarType:
         """Construct a new :class:`ScalarType` from scalar example data.
@@ -222,7 +222,7 @@ cdef class ScalarType(VectorType):
         will be called at each index.
         """
         # NOTE: any special scalar parsing logic goes here
-        return self()
+        return self
 
     #############################
     ####    CONFIGURATION    ####

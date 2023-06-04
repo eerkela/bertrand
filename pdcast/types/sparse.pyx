@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from pdcast import resolve
-from pdcast.util.type_hints import type_specifier
+from pdcast.util.type_hints import dtype_like, type_specifier
 
 from .base cimport DecoratorType, CompositeType, VectorType
 from .base import register
@@ -28,7 +28,7 @@ from .base import register
 
 
 @register
-class SparseType(DecoratorType, priority=10):
+class SparseType(DecoratorType):
 
     name = "sparse"
     aliases = {pd.SparseDtype, "sparse", "Sparse"}
@@ -41,75 +41,44 @@ class SparseType(DecoratorType, priority=10):
         """The value to mask from the array."""
         val = self.kwargs["fill_value"]
         if val is None:
-            return getattr(self.wrapped, "na_value", None)
+            val = getattr(self.wrapped, "na_value", None)
         return val
 
     ############################
     ####    CONSTRUCTORS    ####
     ############################
 
-    @classmethod
-    def from_dtype(
-        cls,
-        dtype: pd.api.extensions.ExtensionDtype
-    ) -> DecoratorType:
-        """Convert a pandas SparseDtype into a
-        :class:`SparseType <pdcast.SparseType>` object.
-        """
-        return cls(
-            wrapped=resolve.resolve_type(dtype.subtype),
-            fill_value=dtype.fill_value
-        )
-
-    @classmethod
     def from_string(
-        cls,
+        self,
         wrapped: str = None,
         fill_value: str = None
     ) -> DecoratorType:
         """Resolve a sparse specifier in the
         :ref:`type specification mini langauge <resolve_type.mini_language>`.
         """
-        from pdcast.convert import cast
-
         if wrapped is None:
-            return cls()
+            return self
 
         cdef VectorType instance = resolve.resolve_type(wrapped)
         cdef object parsed = None
 
-        # resolve fill_value
         if fill_value is not None:
             if fill_value in resolve.na_strings:
                 parsed = resolve.na_strings[fill_value]
             else:
+                from pdcast.convert import cast  # TODO: borked 
                 parsed = cast(fill_value, instance)[0]
 
-        # insert into sorted adapter stack according to priority
-        for x in instance.decorators:
-            if x._priority <= cls._priority:  # initial
-                break
-            if getattr(x.wrapped, "_priority", -np.inf) <= cls._priority:
-                x.wrapped = cls(x.wrapped, fill_value=parsed)
-                return instance
+        return self(instance, fill_value=parsed)
 
-        # add to front of stack
-        return cls(instance, fill_value=parsed)
-
-    @classmethod
-    def slugify(
-        cls,
-        wrapped: VectorType = None,
-        fill_value: Any = None
-    ) -> str:
-        """Create a unique string representation of a
-        :class:`SparseType <pdcast.SparseType>`
+    def from_dtype(self, dtype: dtype_like) -> DecoratorType:
+        """Convert a pandas SparseDtype into a
+        :class:`SparseType <pdcast.SparseType>` object.
         """
-        if wrapped is None:
-            return cls.name
-        if fill_value is None:
-            return f"{cls.name}[{str(wrapped)}]"
-        return f"{cls.name}[{str(wrapped)}, {fill_value}]"
+        return self(
+            wrapped=resolve.resolve_type(dtype.subtype),
+            fill_value=dtype.fill_value
+        )
 
     ############################
     ####    TYPE METHODS    ####

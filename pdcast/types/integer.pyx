@@ -300,7 +300,7 @@ class NumpyInt32Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
 @PandasSignedIntegerType.subtype
 @Int32Type.implementation("pandas")
 class PandasInt32Type(IntegerMixin, ScalarType):
-    """32-bit numpy integer subtype."""
+    """32-bit pandas integer subtype."""
 
     aliases = {pd.Int32Dtype, "Int32"}
     dtype = pd.Int32Dtype()

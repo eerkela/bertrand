@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from pdcast import resolve  # importing directly causes an ImportError
-from pdcast.util.type_hints import type_specifier
+from pdcast.util.type_hints import dtype_like, type_specifier
 
 from .registry cimport AliasManager
 from .scalar cimport ScalarType
@@ -121,50 +121,14 @@ cdef class DecoratorType(VectorType):
     :class:`ScalarType`.
     """
 
-    priority = 0
-
-    def __init__(self, wrapped: VectorType, **kwargs):
-        # generate PrioritySorter and insert into wrapped
-
-        # -> get _insort from class priority
-        if isinstance(wrapped, DecoratorType):
-            wrapped, kwargs = self._insort(self, wrapped, kwargs)
-
-        self._wrapped = wrapped
-        self._slug = self.encode((), self._kwargs)
-        kwargs = {"wrapped": wrapped} | kwargs
-        super().__init__(**kwargs)
-
-    cdef void init_base(self):
-        subclass = type(self)
-
-        # TODO: might do validation at this level rather than in registry.add
-
-        # parse subclass fields
-        self.encode = ArgumentEncoder(subclass.name, tuple(self._kwargs))
-        self.instances = InstanceFactory(subclass)
-        self.insort = PrioritySorter(subclass, priority=subclass.priority)
-        for alias in subclass.aliases | {subclass}:
-            self._aliases.add(alias)
-
-        # clean up subclass fields
-        del subclass.aliases  # pass to ScalarType.aliases
-
-        subclass._base_instance = self
-
-    cdef void init_parametrized(self):
-        base = type(self)._base_instance
-
-        self.encode = base.encode
-        self.instances = base.instances
-        self.insort = base.insort
+    def __init__(self, wrapped: VectorType = None, **kwargs):
+        super().__init__(wrapped=wrapped, **kwargs)
 
     ############################
     ####    CONSTRUCTORS    ####
     ############################
 
-    @classmethod
-    def from_string(cls, wrapped: str = None, *args: str) -> DecoratorType:
+    def from_string(self, wrapped: str = None, *args: str) -> DecoratorType:
         """Construct a new :class:`DecoratorType` in the :ref:`type specification
         mini-language <resolve_type.mini_language>`.
 
@@ -207,23 +171,13 @@ cdef class DecoratorType(VectorType):
         <DecoratorType>` by providing a naked example of that type.
         """
         if wrapped is None:
-            return cls()
+            return self
 
         cdef VectorType instance = resolve.resolve_type(wrapped)
 
-        # insert into sorted adapter stack according to priority
-        for x in instance.decorators:
-            if x._priority <= cls._priority:  # initial
-                break
-            if getattr(x.wrapped, "_priority", -np.inf) <= cls._priority:
-                x.wrapped = cls(x.wrapped, *args)
-                return instance
+        return self(instance, *args)
 
-        # add to front of stack
-        return cls(instance, *args)
-
-    @classmethod
-    def from_dtype(cls, dtype: pd.api.extension.ExtensionDtype) -> DecoratorType:
+    def from_dtype(self, dtype: dtype_like) -> DecoratorType:
         """Construct an :class:`DecoratorType` from a corresponding pandas
         ``ExtensionDtype``.
 
@@ -259,30 +213,73 @@ cdef class DecoratorType(VectorType):
         <dispatch>` methods can be attached to :class:`DecoratorTypes
         <DecoratorType>` by providing a naked example of that type.
         """
-        return cls()  # NOTE: By default, types ignore extension metadata
+        return self  # NOTE: By default, types ignore extension metadata
 
     def replace(self, **kwargs) -> DecoratorType:
-        # extract kwargs pertaining to DecoratorType
-        adapter_kwargs = {}
-        atomic_kwargs = {}
+        """Return an immutable copy of this type with the specified attributes.
+
+        This can be used to modify a type without mutating it.
+        """
+        # filter kwargs pertaining to this decorator
+        extracted = {}
+        delegated = {}
         for k, v in kwargs.items():
             if k in self.kwargs:
-                adapter_kwargs[k] = v
+                extracted[k] = v
             else:
-                atomic_kwargs[k] = v
+                delegated[k] = v
 
-        # merge adapter_kwargs with self.kwargs and get wrapped type
-        adapter_kwargs = {**self.kwargs, **adapter_kwargs}
-        wrapped = adapter_kwargs.pop("wrapped")
+        # merge with self.kwargs
+        extracted = {**self.kwargs, **extracted}
 
-        # pass non-adapter kwargs down to wrapped.replace()
-        wrapped = wrapped.replace(**atomic_kwargs)
+        # pass delegated kwargs down the stack
+        wrapped = extracted.pop("wrapped")
+        if wrapped is None:
+            if delegated:
+                raise TypeError(f"unrecognized arguments: {delegated}")
+        else:
+            wrapped = wrapped.replace(**delegated)
 
-        # construct new DecoratorType
-        return type(self)(wrapped=wrapped, **adapter_kwargs)
+        return type(self)(wrapped=wrapped, **extracted)
+
+
+    ##################################
+    ####    DECORATOR-SPECIFIC    ####
+    ##################################
+
+    @property
+    def wrapped(self) -> VectorType:
+        """Access the type object that this DecoratorType modifies."""
+        return self.kwargs["wrapped"]
+
+    def transform(self, series: pd.Series) -> pd.Series:
+        """Given an unwrapped conversion result, apply all the necessary logic
+        to bring it into alignment with this DecoratorType and all its children.
+
+        This is a recursive method that traverses the `adapters` linked list
+        in reverse order (from the inside out).  At the first level, the
+        unwrapped series is passed as input to that adapter's
+        `transform()` method, which may be overridden as needed.  That
+        method must return a properly-wrapped copy of the original, which is
+        passed to the next adapter and so on.  Thus, if an DecoratorType seeks to
+        change any aspect of the series it adapts (as is the case with
+        sparse/categorical types), then it must override this method and invoke
+        it *before* applying its own logic, like so:
+
+        ```
+        series = super().apply_adapters(series)
+        ```
+
+        This pattern maintains the inside-out resolution order of this method.
+        """
+        return series
+
+    def inverse_transform(self, series: pd.Series) -> pd.Series:
+        """Remove an adapter from an example series."""
+        return series.astype(self.wrapped.dtype, copy=False)
 
     ##########################
-    ####    PROPERTIES    ####
+    ####    OVERRIDDEN    ####
     ##########################
 
     @property
@@ -290,27 +287,10 @@ cdef class DecoratorType(VectorType):
         """Iterate through every DecoratorType that is attached to the wrapped
         ScalarType.
         """
-        frame = self
-        while isinstance(frame, DecoratorType):
-            yield frame
-            frame = frame.wrapped
-
-    @property
-    def atomic_type(self) -> ScalarType:
-        """Access the underlying ScalarType instance with every adapter removed
-        from it.
-        """
-        result = self.wrapped
-        while isinstance(result, DecoratorType):
-            result = result.wrapped
-        return result
-
-    @atomic_type.setter
-    def atomic_type(self, val: VectorType) -> None:
-        lowest = self
-        while isinstance(lowest.wrapped, DecoratorType):
-            lowest = lowest.wrapped
-        lowest.wrapped = val
+        curr = self
+        while isinstance(curr, DecoratorType):
+            yield curr
+            curr = curr.wrapped
 
     @property
     def backends(self) -> MappingProxyType:
@@ -318,23 +298,6 @@ cdef class DecoratorType(VectorType):
             k: self.replace(wrapped=v)
             for k, v in self.wrapped.backends.items()
         }
-
-    @property
-    def wrapped(self) -> VectorType:
-        """Access the type object that this DecoratorType modifies."""
-        return self._wrapped
-
-    @wrapped.setter
-    def wrapped(self, val: VectorType) -> None:
-        """Change the type object that this DecoratorType modifies."""
-        self._wrapped = val
-        self.kwargs = self.kwargs | {"wrapped": val}
-        self._slug = self.encode((), self.kwargs)
-        self._hash = hash(self._slug)
-
-    #######################
-    ####    METHODS    ####
-    #######################
 
     def contains(
         self,
@@ -362,52 +325,62 @@ cdef class DecoratorType(VectorType):
             )
         )
 
-    def inverse_transform(self, series: pd.Series) -> pd.Series:
-        """Remove an adapter from an example series."""
-        return series.astype(self.wrapped.dtype, copy=False)
-
-    def transform(self, series: pd.Series) -> pd.Series:
-        """Given an unwrapped conversion result, apply all the necessary logic
-        to bring it into alignment with this DecoratorType and all its children.
-
-        This is a recursive method that traverses the `adapters` linked list
-        in reverse order (from the inside out).  At the first level, the
-        unwrapped series is passed as input to that adapter's
-        `transform()` method, which may be overridden as needed.  That
-        method must return a properly-wrapped copy of the original, which is
-        passed to the next adapter and so on.  Thus, if an DecoratorType seeks to
-        change any aspect of the series it adapts (as is the case with
-        sparse/categorical types), then it must override this method and invoke
-        it *before* applying its own logic, like so:
-
-        ```
-        series = super().apply_adapters(series)
-        ```
-
-        This pattern maintains the inside-out resolution order of this method.
-        """
-        return series
-
     def unwrap(self) -> ScalarType:
         """Strip any DecoratorTypes that have been attached to this ScalarType.
         """
-        return self.atomic_type
+        for curr in self.decorators:
+            pass  # exhaust the iterator
+        return curr.wrapped
 
     #############################
     ####    MAGIC METHODS    ####
     #############################
 
     def __dir__(self) -> list:
+        """Merge dir() fields with those of the decorated type."""
         result = dir(type(self))
         result += list(self.__dict__.keys())
         result += [x for x in dir(self.wrapped) if x not in result]
         return result
 
+    def __call__(self, wrapped: VectorType, *args, **kwargs) -> DecoratorType:
+        """Create a parametrized decorator for the given type."""
+        if isinstance(wrapped, DecoratorType):
+            # trivial case: wrapping an instance of self
+            if isinstance(wrapped, type(self)):
+                return type(self)(wrapped.wrapped, *args, **kwargs)
+
+            # insert into nested stack (sorted)
+            priority = self.registry.decorators
+            threshold = priority.index(type(self))
+            encountered = []
+            for curr in wrapped.decorators:
+                encountered.append(curr)
+                duplicate = isinstance(curr.wrapped, type(self))
+                insort = priority.index(type(curr)) > threshold
+                if duplicate or insort:
+                    if duplicate:
+                        curr = curr.wrapped.wrapped
+                    result = type(self)(curr, *args, **kwargs)
+                    for prev in reversed(encountered):
+                        result = prev.replace(wrapped=result)
+                    return result
+
+        return type(self)(wrapped, *args, **kwargs)
+
     def __getattr__(self, name: str) -> Any:
+        """Delegate attribute lookups to the wrapped type.
+
+        This is a sticky wrapper, meaning that if the returned value is a
+        compatible type object, it will be automatically re-wrapped with this
+        decorator.
+        """
         try:
             return self.kwargs[name]
         except KeyError as err:
             val = getattr(self.wrapped, name)
+
+        # TODO: this fails because types are callable
 
         # decorate callables to return DecoratorTypes
         if callable(val):
@@ -430,74 +403,3 @@ cdef class DecoratorType(VectorType):
             val = CompositeType({self.replace(wrapped=t) for t in val})
 
         return val
-
-    def __getitem__(self, key: Any) -> DecoratorType:
-        if isinstance(key, tuple):
-            wrapped = resolve.resolve_type(key[0])
-            return self(wrapped, *key[1:])
-
-        return self(resolve.resolve_type(key))
-
-
-#######################
-####    PRIVATE    ####
-#######################
-
-
-cdef class DecoratorSorter:
-    """Interface for controlling the insertion and sorting of nested
-    DecoratorTypes.
-    """
-
-    def __init__(self, type base_class):
-        self.base_class = base_class
-
-    cdef dict copy_parameters(self, DecoratorType wrapper, dict kwargs):
-        """Copy the parameters from one type to another"""
-        return {
-            param: getattr(wrapper, param) for param, value in kwargs.items()
-            if value is None
-        }
-
-    def __call__(
-        self,
-        DecoratorType instance,
-        DecoratorType stack,
-        dict kwargs
-    ) -> tuple:
-        """Search the stack for """
-        raise NotImplementedError(f"{type(self)} does not implement insort()")
-
-
-# TODO: SparseType.resolve still uses _priority.
-# -> some of this can be offloaded to parent
-
-
-cdef class PrioritySorter(DecoratorSorter):
-    """A DecoratorSorter that sorts nested decorators based on a given
-    priority level.
-    """
-
-    def __init__(self, type base_class, int priority):
-        super().__init__(base_class)
-        self.priority = priority
-
-    def __call__(
-        self,
-        DecoratorType instance,
-        DecoratorType stack,
-        dict kwargs
-    ) -> tuple:
-        # 1st order duplicate
-        if isinstance(stack, self.base_class):
-            return stack.wrapped, self.copy_parameters(stack, kwargs)
-
-        # 2nd order duplicate
-        for decorator in stack.decorators:
-            next_ = decorator.wrapped
-            if isinstance(next_, self.base_class):
-                decorator.wrapped = instance
-                return next_.wrapped, self.copy_parameters(next_, kwargs)
-
-        # unique
-        return stack, kwargs

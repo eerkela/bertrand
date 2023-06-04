@@ -70,7 +70,7 @@ from .decimal import DecimalType, PythonDecimalType
 # )
 from .string import StringType, PythonStringType
 from .object import ObjectType
-# from .sparse import SparseType
+from .sparse import SparseType
 # from .categorical import CategoricalType
 
 
