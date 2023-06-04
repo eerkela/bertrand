@@ -4,16 +4,14 @@ to create a dynamic wrapper around an ``ScalarType``.
 from types import MappingProxyType
 from typing import Any, Iterator
 
-cimport numpy as np
-import numpy as np
 import pandas as pd
 
 from pdcast import resolve  # importing directly causes an ImportError
 from pdcast.util.type_hints import dtype_like, type_specifier
 
-from .registry cimport AliasManager
+from .registry cimport Type
 from .scalar cimport ScalarType
-from .vector cimport VectorType, ArgumentEncoder, InstanceFactory
+from .vector cimport VectorType
 from .composite cimport CompositeType
 
 
@@ -213,7 +211,8 @@ cdef class DecoratorType(VectorType):
         <dispatch>` methods can be attached to :class:`DecoratorTypes
         <DecoratorType>` by providing a naked example of that type.
         """
-        return self  # NOTE: By default, types ignore extension metadata
+        # NOTE: any special dtype parsing logic goes here
+        return self
 
     def replace(self, **kwargs) -> DecoratorType:
         """Return an immutable copy of this type with the specified attributes.
@@ -313,8 +312,8 @@ cdef class DecoratorType(VectorType):
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
             return all(
-                self.contains(o, include_subtypes=include_subtypes)
-                for o in other
+                self.contains(typ, include_subtypes=include_subtypes)
+                for typ in other
             )
 
         return (
@@ -380,26 +379,31 @@ cdef class DecoratorType(VectorType):
         except KeyError as err:
             val = getattr(self.wrapped, name)
 
-        # TODO: this fails because types are callable
+        # wrap data attributes as decorators
+        if isinstance(val, Type):
+            return wrap_result(self, val)
 
-        # decorate callables to return DecoratorTypes
+        # wrap callables to return decorators
         if callable(val):
             def sticky_wrapper(*args, **kwargs):
                 result = val(*args, **kwargs)
-                if isinstance(result, VectorType):
-                    result = self.replace(wrapped=result)
-                elif isinstance(result, CompositeType):
-                    result = CompositeType(
-                        {self.replace(wrapped=t) for t in result}
-                    )
+                if isinstance(result, Type):
+                    return wrap_result(self, result)
                 return result
 
             return sticky_wrapper
 
-        # wrap properties as DecoratorTypes
-        if isinstance(val, VectorType):
-            val = self.replace(wrapped=val)
-        elif isinstance(val, CompositeType):
-            val = CompositeType({self.replace(wrapped=t) for t in val})
-
         return val
+
+
+#######################
+####    PRIVATE    ####
+#######################
+
+
+cdef Type wrap_result(DecoratorType decorator, Type result):
+    """Replace a decorator on the result of a wrapped computation."""
+    if isinstance(result, CompositeType):
+        return CompositeType(decorator.replace(wrapped=typ) for typ in result)
+    return decorator.replace(wrapped=result)
+

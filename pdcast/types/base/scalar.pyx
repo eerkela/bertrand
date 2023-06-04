@@ -185,7 +185,7 @@ cdef class ScalarType(VectorType):
         asymmetry allows pandas dtypes to be arbitrarily parameterized when
         passed to this method.
         """
-        # NOTE: any special dtype parsing logic goes here.
+        # NOTE: any special dtype parsing logic goes here
         return self
 
     def from_scalar(self, example: Any) -> ScalarType:
