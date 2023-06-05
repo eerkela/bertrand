@@ -1,7 +1,7 @@
 
 cdef class TypeRegistry:
     cdef:
-        list pinned_aliases
+        tuple pinned_aliases
         long long _hash
         CacheValue _aliases
         CacheValue _regex
@@ -14,6 +14,7 @@ cdef class TypeRegistry:
         dict generics
         dict implementations
         dict defaults
+        PriorityList decorator_priority
 
     cdef void update_hash(self)
     cdef void pin(self, Type instance, AliasManager aliases)
@@ -43,6 +44,19 @@ cdef class CacheValue:
         long long hash
 
 
-cdef class TypeMap:
+cdef class PriorityList:
     cdef:
-        list map
+        PriorityNode head
+        PriorityNode tail
+        dict items
+
+    cdef void append(self, object item)
+    cdef void remove(self, object item)
+    cdef int normalize_index(self, int index)
+
+
+cdef class PriorityNode:
+    cdef public:
+        object item
+        PriorityNode next
+        PriorityNode prev

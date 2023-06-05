@@ -15,6 +15,12 @@ from .vector cimport VectorType
 from .composite cimport CompositeType
 
 
+# TODO: test __call__ with nested decorators and proper sorting w/
+# CategoricalType.
+# -> implement a registry.decorators priority list that is filled out by
+# @register
+
+
 cdef class DecoratorType(VectorType):
     """Abstract base class for all `Decorator pattern
     <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_ type

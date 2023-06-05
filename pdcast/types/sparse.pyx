@@ -36,14 +36,6 @@ class SparseType(DecoratorType):
     def __init__(self, wrapped: VectorType = None, fill_value: Any = None):
         super(type(self), self).__init__(wrapped, fill_value=fill_value)
 
-    @property
-    def fill_value(self) -> Any:
-        """The value to mask from the array."""
-        val = self.kwargs["fill_value"]
-        if val is None:
-            val = getattr(self.wrapped, "na_value", None)
-        return val
-
     ############################
     ####    CONSTRUCTORS    ####
     ############################
@@ -80,9 +72,42 @@ class SparseType(DecoratorType):
             fill_value=dtype.fill_value
         )
 
-    ############################
-    ####    TYPE METHODS    ####
-    ############################
+    ##################################
+    ####    DECORATOR-SPECIFIC    ####
+    ##################################
+
+    def transform(self, series: pd.Series) -> pd.Series:
+        """Convert a series into a sparse format with the given fill_value."""
+        # apply custom logic for each ScalarType
+        return self.atomic_type.make_sparse(
+            series,
+            fill_value=self.fill_value
+        )
+
+    def inverse_transform(self, series: pd.Series) -> pd.Series:
+        """Convert a sparse series into a dense format"""
+        # NOTE: this is a pending deprecation shim.  In a future version of
+        # pandas, astype() from a sparse to non-sparse dtype will return a
+        # non-sparse series.  Currently, it returns a sparse equivalent. When
+        # this behavior changes, this method can be deleted.
+        return series.sparse.to_dense()
+
+    ##########################
+    ####    OVERRIDDEN    ####
+    ##########################
+
+    @property
+    def fill_value(self) -> Any:
+        """The value to mask from the array."""
+        val = self.kwargs["fill_value"]
+        if val is None:
+            val = getattr(self.wrapped, "na_value", None)
+        return val
+
+    @property
+    def dtype(self) -> pd.SparseDtype:
+        """An equivalent SparseDtype to use for arrays of this type."""
+        return pd.SparseDtype(self.wrapped.dtype, fill_value=self.fill_value)
 
     def contains(
         self,
@@ -125,29 +150,4 @@ class SparseType(DecoratorType):
         return self.wrapped.contains(
             other.wrapped,
             include_subtypes=include_subtypes
-        )
-
-    @property
-    def dtype(self) -> pd.SparseDtype:
-        """An equivalent SparseDtype to use for arrays of this type."""
-        return pd.SparseDtype(self.wrapped.dtype, fill_value=self.fill_value)
-
-    ##############################
-    ####    SERIES METHODS    ####
-    ##############################
-
-    def inverse_transform(self, series: pd.Series) -> pd.Series:
-        """Convert a sparse series into a dense format"""
-        # NOTE: this is a pending deprecation shim.  In a future version of
-        # pandas, astype() from a sparse to non-sparse dtype will return a
-        # non-sparse series.  Currently, it returns a sparse equivalent. When
-        # this behavior changes, this method can be deleted.
-        return series.sparse.to_dense()
-
-    def transform(self, series: pd.Series) -> pd.Series:
-        """Convert a series into a sparse format with the given fill_value."""
-        # apply custom logic for each ScalarType
-        return self.atomic_type.make_sparse(
-            series,
-            fill_value=self.fill_value
         )

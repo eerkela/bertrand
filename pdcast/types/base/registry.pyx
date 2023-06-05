@@ -4,12 +4,20 @@ types and the relationships between them.
 import inspect
 import regex as re  # using alternate regex
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Iterable
 
 from pdcast.util.type_hints import type_specifier, dtype_like
 
 from .vector cimport VectorType
+from .decorator cimport DecoratorType
 from .scalar cimport ScalarType, AbstractType
+
+
+# TODO: should make registry maps read-only MappingProxyTypes.
+
+
+# TODO: the only way to change the state of the registry is to call
+# add()/remove()
 
 
 ######################
@@ -55,15 +63,17 @@ def register(class_: type = None, *, cond: bool = True):
     Examples
     --------
     TODO: take from tutorial
-
     """
     def register_decorator(cls: type) -> type | VectorType:
         """Add the type to the registry and instantiate it."""
         if not issubclass(cls, VectorType):
             raise TypeError(
-                "`@register` can only be applied to ScalarType and "
-                "DecoratorType subclasses"
+                f"@register can only be applied to VectorType subclasses, not "
+                f"{cls}"
             )
+
+        if issubclass(cls, DecoratorType):
+            add_to_decorator_priority(cls)
 
         # short-circuit for conditional types
         if not cond:
@@ -119,7 +129,8 @@ cdef class TypeRegistry:
         self.generics = {}
         self.implementations = {}
         self.defaults = {}
-        self.pinned_aliases = []
+        self.pinned_aliases = ()
+        self.decorator_priority = PriorityList()
         self.update_hash()
 
     #####################
@@ -430,14 +441,14 @@ cdef class TypeRegistry:
             if manager.instance is instance:
                 break
         else:
-            self.pinned_aliases.append(aliases)
+            self.pinned_aliases += (aliases,)
 
     cdef void unpin(self, Type instance):
         """Unpin a type from the global alias namespace."""
-        self.pinned_aliases = [
+        self.pinned_aliases = tuple(
             manager for manager in self.pinned_aliases
             if manager.instance is not instance
-        ]
+        )
 
     ###############################
     ####    SPECIAL METHODS    ####
@@ -636,11 +647,11 @@ cdef class AliasManager:
     def __iter__(self):
         return iter(self.aliases)
 
-    def __repr__(self):
-        return repr(self.aliases)
-
     def __str__(self):
         return str(self.aliases)
+
+    def __repr__(self):
+        return f"{type(self).__name__}({self.aliases})"
 
 
 cdef class Type:
@@ -716,3 +727,212 @@ cdef class CacheValue:
     def __bool__(self) -> bool:
         """Indicates whether a cached registry value is out of date."""
         return self.hash == Type.registry.hash
+
+
+
+
+cdef class PriorityList:
+    """A doubly-linked list whose elements can be rearranged to represent a
+    a precedence order during sort operations.
+
+    The list is read-only from Python.
+    """
+
+    def __init__(self, items: Iterable = None):
+        self.head = None
+        self.tail = None
+        self.items = {}
+        if items is not None:
+            for item in items:
+                self.append(item)
+
+    cdef void append(self, object item):
+        """Add an item to the list.
+
+        This method is inaccessible from Python.
+        """
+        node = PriorityNode(item)
+        self.items[item] = node
+        if self.head is None:
+            self.head = node
+            self.tail = node
+        else:
+            self.tail.next = node
+            node.prev = self.tail
+            self.tail = node
+
+    cdef void remove(self, object item):
+        """Remove an item from the list.
+
+        This method is inaccessible from Python.
+        """
+        node = self.items[item]
+
+        if node.prev is None:
+            self.head = node.next
+        else:
+            node.prev.next = node.prev
+
+        if node.next is None:
+            self.tail = node.prev
+        else:
+            node.next.prev = node.next
+
+        del self.items[item]
+
+    cdef int normalize_index(self, int index):
+        """Allow negative indexing and enforcing boundschecking."""
+        if index < 0:
+            index = index + len(self)
+
+        if not 0 <= index < len(self):
+            raise IndexError("list index out of range")
+
+        return index
+
+    def index(self, item: type | VectorType) -> int:
+        """Get the index of an item within the list."""
+        if isinstance(item, VectorType):
+            item = type(item)
+
+        for idx, typ in enumerate(self):
+            if item == typ:
+                return idx
+
+        raise ValueError(f"{repr(item)} is not contained in the list")
+
+    def move_up(self, item: type | VectorType) -> None:
+        """Move an item up in priority."""
+        if isinstance(item, VectorType):
+            item = type(item)
+
+        node = self.items[item]
+        prev = node.prev
+        if prev is not None:
+            node.prev = prev.prev
+
+            if node.prev is None:
+                self.head = node
+            else:
+                node.prev.next = node
+
+            if node.next is None:
+                self.tail = prev
+            else:
+                node.next.prev = prev
+
+            prev.next = node.next
+            node.next = prev
+            prev.prev = node
+
+    def move_down(self, item: type | VectorType) -> None:
+        """Move an item down in priority."""
+        if isinstance(item, VectorType):
+            item = type(item)
+
+        node = self.items[item]
+        next = node.next
+        if next is not None:
+            node.next = next.next
+
+            if node.next is None:
+                self.tail = node
+            else:
+                node.next.prev = node
+
+            if node.prev is None:
+                self.head = next
+            else:
+                node.prev.next = next
+
+            next.prev = node.prev
+            node.prev = next
+            next.next = node
+
+    def move(self, item: type | VectorType, index: int) -> None:
+        """Move an item to the specified index."""
+        if isinstance(item, VectorType):
+            item = type(item)
+
+        curr_index = self.index(item)
+        index = self.normalize_index(index)
+
+        node = self.items[item]
+        if index < curr_index:
+            for _ in range(curr_index - index):
+                self.move_up(item)
+        else:
+            for _ in range(index - curr_index):
+                self.move_down(item)
+
+    def __len__(self) -> int:
+        """Get the total number of items in the list."""
+        return len(self.items)
+
+    def __iter__(self):
+        """Iterate through the list items in order."""
+        node = self.head
+        while node is not None:
+            yield node.item
+            node = node.next
+
+    def __reversed__(self):
+        """Iterate through the list in reverse order."""
+        node = self.tail
+        while node is not None:
+            yield node.item
+            node = node.prev
+
+    def __bool__(self) -> bool:
+        """Treat empty lists as boolean False."""
+        return bool(self.items)
+
+    def __contains__(self, item: type | VectorType) -> bool:
+        """Check if the item is contained in the list."""
+        if isinstance(item, VectorType):
+            item = type(item)
+
+        return item in self.items
+
+    def __getitem__(self, key):
+        """Index into the list using standard syntax."""
+        # support slicing
+        if isinstance(key, slice):
+            start, stop, step = key.indices(len(self))
+            return PriorityList(self[i] for i in range(start, stop, step))
+
+        key = self.normalize_index(key)
+
+        # count from nearest end
+        if key < len(self) // 2:
+            node = self.head
+            for _ in range(key):
+                node = node.next
+        else:
+            node = self.tail
+            for _ in range(len(self) - key - 1):
+                node = node.prev
+
+        return node.item
+
+    def __str__(self):
+        return str(list(self))
+
+    def __repr__(self):
+        return f"{type(self).__name__}({list(self)})"
+
+
+cdef class PriorityNode:
+    """A node containing an individual element of a PriorityList."""
+
+    def __init__(self, object item):
+        self.item = item
+        self.next = None
+        self.prev = None
+
+
+cdef void add_to_decorator_priority(type typ):
+    """C-level helper function to add a decorator type to the priority list."""
+    cdef PriorityList prio = Type.registry.decorator_priority
+
+    prio.append(typ)  # this can't be done from normal Python
