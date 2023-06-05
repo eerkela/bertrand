@@ -5,6 +5,10 @@ pdcast.TypeRegistry
 
 .. autoclass:: TypeRegistry
 
+.. raw:: html
+    :file: ../../images/types/Types_UML.html
+
+
 Regular Expressions
 -------------------
 
@@ -34,8 +38,3 @@ Synchronization
     TypeRegistry.remember
     TypeRegistry.needs_updating
     TypeRegistry.flush
-
-Class Diagram
--------------
-
-.. image:: /images/types/Types_UML.svg

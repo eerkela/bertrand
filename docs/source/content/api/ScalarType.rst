@@ -7,6 +7,9 @@ pdcast.ScalarType
 
 .. autoclass:: ScalarType
 
+.. raw:: html
+    :file: ../../images/types/Types_UML.html
+
 .. _ScalarType.inheritance:
 
 Inheritance
@@ -219,8 +222,3 @@ Special Methods
     ScalarType.__hash__
     ScalarType.__str__
     ScalarType.__repr__
-
-Class Diagram
--------------
-
-.. image:: /images/types/Types_UML.svg

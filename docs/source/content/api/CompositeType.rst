@@ -7,6 +7,9 @@ pdcast.CompositeType
 
 .. autoclass:: CompositeType
 
+.. raw:: html
+    :file: ../../images/types/Types_UML.html
+
 Add/Remove
 ----------
 
@@ -139,8 +142,3 @@ data.
 
 This can be used during ``pd.Series.groupby()`` operations to apply functions
 by type, rather than all at once.
-
-Class Diagram
--------------
-
-.. image:: /images/types/Types_UML.svg

@@ -14,7 +14,11 @@ The following data structures define the standard interface for the ``pdcast``
 
 .. list-table::
 
+    * - :class:`Type`
+      - TODO
     * - :class:`ScalarType`
+      - TODO
+    * - :class:`AbstractType`
       - TODO
     * - :class:`DecoratorType`
       - TODO
@@ -23,10 +27,6 @@ The following data structures define the standard interface for the ``pdcast``
     * - :class:`TypeRegistry`
       - TODO
     * - :func:`@register <register>`
-      - TODO
-    * - :func:`@subtype <subtype>`
-      - TODO
-    * - :func:`@generic <generic>`
       - TODO
 
 .. raw:: html
@@ -62,11 +62,11 @@ another.
 
 .. list-table::
 
-    * - :func:`@attachable <attachable>`
-      - TODO
     * - :func:`@dispatch <dispatch>`
       - TODO
     * - :func:`@extension_func <extension_func>`
+      - TODO
+    * - :func:`@attachable <attachable>`
       - TODO
 
 .. raw:: html
@@ -117,8 +117,8 @@ structures when :func:`attach` is invoked.
     pdcast.detect_type <detect_type>
     pdcast.typecheck <typecheck>
     pdcast.cast <cast>
-    pdcast.attachable <attachable>
     pdcast.dispatch <dispatch>
     pdcast.extension_func <extension_func>
+    pdcast.attachable <attachable>
     pdcast.attach <attach>
     pdcast.detach <detach>

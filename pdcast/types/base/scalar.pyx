@@ -37,11 +37,14 @@ from ..array import construct_object_dtype
 # sort by family though.
 
 
-# Type System
-# Detection, resolution & type checks
-# Multiple dispatch
-# Extension functions
-# Conversions
+# TODO: list(pdcast.resolve_type("float").larger)
+# -> raises decimal.InvalidOperation
+
+
+# TODO: maybe the strategy for .larger/.smaller is just to use comparison
+# operators.  These can be overridden in subtypes without overriding the whole
+# .larger, .smaller attribute.
+# -> implementing these somehow makes the type unhashable
 
 
 ######################
@@ -233,7 +236,8 @@ cdef class ScalarType(VectorType):
     # while values > 0 specify a Least Recently Used (LRU) caching strategy.  0
     # disables the flyweight pattern entirely, though this is not recommended.
 
-    _cache_size = -1
+    _cache_size: int = -1
+    backend: str | None = None  # marker for @AbstractType.implementation
 
     @property
     def type_def(self) -> type | None:
@@ -590,16 +594,13 @@ cdef class ScalarType(VectorType):
             typ for typ in leaves if typ.max > self.max or typ.min < self.min
         ]
 
-        # TODO: have a problem with ordering of numpy/pandas types.  Preference
-        # should be given to types that are within the same family.
-        # -> Find a way to compare roots.  Have to unwrap AbstractTypes first.
-
         # sort by range, preferring like types centered near zero
         coverage = lambda typ: typ.max - typ.min
         bias = lambda typ: abs(typ.max + typ.min)
         itemsize = lambda typ: typ.itemsize or np.inf
-        key = lambda typ: (coverage(typ), bias(typ), itemsize(typ))
+        family = lambda typ: typ.backend or ""
 
+        key = lambda typ: (coverage(typ), bias(typ), itemsize(typ), family(typ))
         yield from sorted(candidates, key=key)
 
     @property
@@ -625,10 +626,10 @@ cdef class ScalarType(VectorType):
         # sort by itemsize + range, preferring like types centered near zero
         coverage = lambda typ: typ.max - typ.min
         bias = lambda typ: abs(typ.max + typ.min)
-        key = lambda typ: (itemsize(typ), coverage(typ), bias(typ))
+        family = lambda typ: typ.backend or ""
 
+        key = lambda typ: (itemsize(typ), coverage(typ), bias(typ), family(typ))
         yield from sorted(candidates, key=key)
-
 
     ########################
     ####    ADAPTERS    ####
@@ -781,6 +782,15 @@ cdef class AbstractType(ScalarType):
 
             if validate:
                 validate_interface(cls, implementation)
+
+            # mark family on type
+            if implementation.backend and implementation.backend != backend:
+                raise TypeError(
+                    f"'{implementation.__qualname__}' backend must be "
+                    f"self-consistent: '{backend}' != "
+                    f"'{implementation.backend}'"
+                )
+            implementation.backend = backend
 
             # allow name collisions with special encoding
             update_implementation_registry(cls, implementation, backend)
