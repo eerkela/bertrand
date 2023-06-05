@@ -14,6 +14,9 @@ from .base import register
 import pdcast.types.complex as complex_types
 
 
+# pdcast.Float32Type < pdcast.Float64Type -> decimal.InvalidOperation
+
+
 ##################################
 ####    MIXINS & CONSTANTS    ####
 ##################################
@@ -40,24 +43,6 @@ class FloatMixin:
             if type(x).__name__ == self._equiv_complex:
                 return x
         raise TypeError(f"{repr(self)} has no equivalent complex type")
-
-    @property
-    def smaller(self) -> list:
-        # get candidates
-        root = self.root
-        result = [x for x in root.subtypes if x not in root.backends.values()]
-
-        # filter off any that are larger than self
-        if not self.is_root:
-            result = [
-                x for x in result if (
-                    (x.itemsize or np.inf) < (self.itemsize or np.inf)
-                )
-            ]
-
-        # sort by itemsize
-        result.sort(key=lambda x: x.itemsize)
-        return result
 
 
 ##########################
@@ -133,6 +118,12 @@ class Float32Type(AbstractType):
 class NumpyFloat32Type(FloatMixin, ScalarType):
 
     aliases = {np.float32, np.dtype(np.float32)}
+    dtype = np.dtype(np.float32)
+    itemsize = 4
+    na_value = np.nan
+    type_def = np.float32
+    max = 2**24
+    min = -2**24
     _equiv_complex = "NumpyComplex64Type"
 
 

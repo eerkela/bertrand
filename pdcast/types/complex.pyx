@@ -40,24 +40,6 @@ class ComplexMixin:
                 return x
         raise TypeError(f"{repr(self)} has no equivalent float type")
 
-    @property
-    def smaller(self) -> list:
-        # get candidates
-        root = self.root
-        result = [x for x in root.subtypes if x not in root.backends.values()]
-
-        # filter off any that are larger than self
-        if not self.is_root:
-            result = [
-                x for x in result if (
-                    (x.itemsize or np.inf) < (self.itemsize or np.inf)
-                )
-            ]
-
-        # sort by itemsize
-        result.sort(key=lambda x: x.itemsize)
-        return result
-
 
 ############################
 ####    ROOT COMPLEX    ####

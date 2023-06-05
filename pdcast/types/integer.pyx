@@ -239,7 +239,7 @@ class Int32Type(AbstractType):
 @Int32Type.default
 @Int32Type.implementation("numpy")
 class NumpyInt32Type(ScalarType):
-    """32-bit numpy integer subtype."""
+    """32-bit numpy integer."""
 
     aliases = {np.int32, np.dtype(np.int32)}
     dtype = np.dtype(np.int32)
@@ -259,7 +259,7 @@ class NumpyInt32Type(ScalarType):
 @PandasSignedIntegerType.subtype
 @Int32Type.implementation("pandas")
 class PandasInt32Type(ScalarType):
-    """32-bit pandas integer subtype."""
+    """32-bit pandas integer."""
 
     aliases = {pd.Int32Dtype, "Int32"}
     dtype = pd.Int32Dtype()

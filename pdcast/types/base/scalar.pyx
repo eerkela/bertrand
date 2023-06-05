@@ -30,23 +30,12 @@ from ..array import construct_object_dtype
 
 # TODO: .max/.min are currently stored as arbitrary objects.
 
-# TODO: inject separate strategies for @parent .larger/.smaller?
-# -> too complex, just do the extra filtering in the caller.  Should still
-# sort by family though.
-
-
 # TODO: list(pdcast.resolve_type("float").larger)
 # -> raises decimal.InvalidOperation
 
 
-# TODO: maybe the strategy for .larger/.smaller is just to use comparison
-# operators.  These can be overridden in subtypes without overriding the whole
-# .larger, .smaller attribute.
-# -> implementing these somehow makes the type unhashable
-
-
 ######################
-####    ATOMIC    ####
+####    SCALAR    ####
 ######################
 
 
@@ -592,14 +581,8 @@ cdef class ScalarType(VectorType):
             typ for typ in leaves if typ.max > self.max or typ.min < self.min
         ]
 
-        # sort by range, preferring like types centered near zero
-        coverage = lambda typ: typ.max - typ.min
-        bias = lambda typ: abs(typ.max + typ.min)
-        itemsize = lambda typ: typ.itemsize or np.inf
-        family = lambda typ: typ.backend or ""
-
-        key = lambda typ: (coverage(typ), bias(typ), itemsize(typ), family(typ))
-        yield from sorted(candidates, key=key)
+        # sort according to comparison operators
+        yield from sorted(candidates)
 
     @property
     def smaller(self) -> Iterator[ScalarType]:
@@ -621,13 +604,8 @@ cdef class ScalarType(VectorType):
         itemsize = lambda typ: typ.itemsize or np.inf
         candidates = [typ for typ in leaves if itemsize(typ) < itemsize(self)]
 
-        # sort by itemsize + range, preferring like types centered near zero
-        coverage = lambda typ: typ.max - typ.min
-        bias = lambda typ: abs(typ.max + typ.min)
-        family = lambda typ: typ.backend or ""
-
-        key = lambda typ: (itemsize(typ), coverage(typ), bias(typ), family(typ))
-        yield from sorted(candidates, key=key)
+        # sort according to comparison operators
+        yield from sorted(candidates)
 
     ########################
     ####    ADAPTERS    ####
@@ -708,10 +686,49 @@ cdef class ScalarType(VectorType):
         sparse_type = pd.SparseDtype(series.dtype, fill_value)
         return series.astype(sparse_type)
 
+    ###############################
+    ####    SPECIAL METHODS    ####
+    ###############################
 
-############################
-####    HIERARCHICAL    ####
-############################
+    def __lt__(self, other: ScalarType) -> bool:
+        """Sort types by their size in memory and representable range."""
+        itemsize = lambda typ: typ.itemsize or np.inf
+        coverage = lambda typ: typ.max - typ.min
+        bias = lambda typ: abs(typ.max + typ.min)
+        family = lambda typ: typ.backend or ""
+
+        return (
+            itemsize(self) < itemsize(other) or
+            coverage(self) < coverage(other) or
+            bias(self) < bias(other) or
+            family(self) < family(other)
+        )
+
+    def __hash__(self) -> int:
+        """Manually pass hash() calls to super().
+
+        hash() mysteriously fails for some reason without this.
+        """
+        return hash(super())
+
+    def __gt__(self, other: ScalarType) -> bool:
+        """Sort types by their size in memory and representable range."""
+        itemsize = lambda typ: typ.itemsize or np.inf
+        coverage = lambda typ: typ.max - typ.min
+        bias = lambda typ: abs(typ.max + typ.min)
+        family = lambda typ: typ.backend or ""
+
+        return (
+            itemsize(self) > itemsize(other) or
+            coverage(self) > coverage(other) or
+            bias(self) > bias(other) or
+            family(self) > family(other)
+        )
+
+
+########################
+####    ABSTRACT    ####
+########################
 
 
 cdef class AbstractType(ScalarType):
