@@ -13,13 +13,6 @@ from .decorator cimport DecoratorType
 from .scalar cimport ScalarType, AbstractType
 
 
-# TODO: should make registry maps read-only MappingProxyTypes.
-
-
-# TODO: the only way to change the state of the registry is to call
-# add()/remove()
-
-
 ######################
 ####    PUBLIC    ####
 ######################
@@ -124,13 +117,15 @@ cdef class TypeRegistry:
 
     def __init__(self):
         self.instances = {}
+        self.pinned_aliases = []
+        self.decorator_priority = PriorityList()
+
+        self.defaults = {}
         self.supertypes = {}
         self.subtypes = {}
         self.generics = {}
         self.implementations = {}
-        self.defaults = {}
-        self.pinned_aliases = ()
-        self.decorator_priority = PriorityList()
+
         self.update_hash()
 
     #####################
@@ -441,14 +436,14 @@ cdef class TypeRegistry:
             if manager.instance is instance:
                 break
         else:
-            self.pinned_aliases += (aliases,)
+            self.pinned_aliases.append(aliases)
 
     cdef void unpin(self, Type instance):
         """Unpin a type from the global alias namespace."""
-        self.pinned_aliases = tuple(
+        self.pinned_aliases = [
             manager for manager in self.pinned_aliases
             if manager.instance is not instance
-        )
+        ]
 
     ###############################
     ####    SPECIAL METHODS    ####

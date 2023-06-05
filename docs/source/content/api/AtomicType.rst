@@ -219,3 +219,8 @@ Special Methods
     ScalarType.__hash__
     ScalarType.__str__
     ScalarType.__repr__
+
+Class Diagram
+-------------
+
+.. image:: /images/types/Types_UML.svg

@@ -34,3 +34,8 @@ Synchronization
     TypeRegistry.remember
     TypeRegistry.needs_updating
     TypeRegistry.flush
+
+Class Diagram
+-------------
+
+.. image:: /images/types/Types_UML.svg

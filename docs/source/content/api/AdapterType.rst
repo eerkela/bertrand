@@ -139,3 +139,8 @@ categorical type.
     These conversions use the **default** values for ``cast()`` operations.  If
     you'd like to change how these are interpreted, modify the defaults using
     ``cast.defaults``.
+
+Class Diagram
+-------------
+
+.. image:: /images/types/Types_UML.svg

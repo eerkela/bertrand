@@ -1,19 +1,19 @@
 
 cdef class TypeRegistry:
     cdef:
-        tuple pinned_aliases
+        dict instances
+        list pinned_aliases
+        dict defaults
+        dict supertypes
+        dict subtypes
+        dict generics
+        dict implementations
         long long _hash
         CacheValue _aliases
         CacheValue _regex
         CacheValue _resolvable
 
     cdef readonly:
-        dict instances
-        dict supertypes
-        dict subtypes
-        dict generics
-        dict implementations
-        dict defaults
         PriorityList decorator_priority
 
     cdef void update_hash(self)

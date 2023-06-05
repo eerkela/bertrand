@@ -17,8 +17,6 @@ from .composite cimport CompositeType
 
 # TODO: test __call__ with nested decorators and proper sorting w/
 # CategoricalType.
-# -> implement a registry.decorators priority list that is filled out by
-# @register
 
 
 cdef class DecoratorType(VectorType):
@@ -356,13 +354,13 @@ cdef class DecoratorType(VectorType):
                 return type(self)(wrapped.wrapped, *args, **kwargs)
 
             # insert into nested stack (sorted)
-            priority = self.registry.decorators
-            threshold = priority.index(type(self))
+            priority = self.registry.decorator_priority
+            threshold = priority.index(self)
             encountered = []
             for curr in wrapped.decorators:
                 encountered.append(curr)
                 duplicate = isinstance(curr.wrapped, type(self))
-                insort = priority.index(type(curr)) > threshold
+                insort = priority.index(curr) > threshold
                 if duplicate or insort:
                     if duplicate:
                         curr = curr.wrapped.wrapped

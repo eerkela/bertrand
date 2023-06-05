@@ -140,3 +140,7 @@ data.
 This can be used during ``pd.Series.groupby()`` operations to apply functions
 by type, rather than all at once.
 
+Class Diagram
+-------------
+
+.. image:: /images/types/Types_UML.svg

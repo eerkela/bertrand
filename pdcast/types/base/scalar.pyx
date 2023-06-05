@@ -742,24 +742,7 @@ cdef class AbstractType(ScalarType):
             if not issubclass(_concrete, ScalarType):
                 raise abstract_decorator_error(_concrete)
 
-            # ensure that the decorated concretion is a subtype or implementation
-            registry = cls.registry
-            candidates = registry.subtypes.get(cls, set()).copy()
-            candidates |= set(registry.implementations.get(cls, {}).values())
-            if _concrete not in candidates:
-                raise TypeError(
-                    f"@default must be a member of the '{cls.__qualname__}' "
-                    f"hierarchy: '{_concrete.__qualname__}'"
-                )
-
-            if warn and cls in registry.defaults:
-                warn_msg = (
-                    f"overwriting default for {repr(cls)} (use `warn=False` "
-                    f"to silence this message)"
-                )
-                warnings.warn(warn_msg, UserWarning)
-
-            registry.defaults[cls] = _concrete
+            update_default_registry(cls, _concrete, warn)
             return _concrete
 
         if concretion is not None:
@@ -799,21 +782,9 @@ cdef class AbstractType(ScalarType):
             if validate:
                 validate_interface(cls, implementation)
 
-            # ensure backend is unique
-            registry = cls.registry
-            candidates = registry.implementations.setdefault(cls, {})
-            if backend in candidates:
-                raise TypeError(
-                    f"backend specifier must be unique: {repr(backend)} is "
-                    f"reserved for {repr(candidates[backend])}"
-                )
-
             # allow name collisions with special encoding
+            update_implementation_registry(cls, implementation, backend)
             inherit_name(cls, implementation, backend)
-
-            # link parent -> implementation, implementation -> parent
-            candidates[backend] = implementation
-            registry.generics[implementation] = cls
             return implementation
 
         return decorator
@@ -849,21 +820,7 @@ cdef class AbstractType(ScalarType):
             if validate:
                 validate_interface(cls, _subtype)
 
-            registry = cls.registry
-
-            # ensure hierarchy does not contain cycles
-            typ = _subtype
-            while typ is not None:
-                if typ is cls:
-                    raise TypeError(
-                        f"type hierarchy cannot contain circular references: "
-                        f"{repr(cls)}"
-                    )
-                typ = registry.supertypes.get(typ, None)
-
-            # link parent -> subtype, subtype -> parent
-            registry.subtypes.setdefault(cls, set()).add(_subtype)
-            registry.supertypes[_subtype] = cls
+            update_subtype_registry(cls, _subtype)
             return _subtype
 
         if subtype is not None:
@@ -1091,6 +1048,79 @@ cdef void compare_properties(
         raise TypeError(
             f"'{child.__qualname__}.{prop_name}' must not be callable"
         )
+
+
+cdef void update_default_registry(type parent, type child, bint warn):
+    """Update the shared registry's private attributes to reflect the addition
+    of a new default concretion.
+
+    This can only be done at the C level.
+    """
+    cdef TypeRegistry registry = parent.registry
+    cdef set candidates
+    cdef str warn_msg
+
+    # ensure that the decorated concretion is a subtype or implementation
+    candidates = registry.subtypes.get(parent, set()).copy()
+    candidates |= set(registry.implementations.get(parent, {}).values())
+    if child not in candidates:
+        raise TypeError(
+            f"@default must be a member of the '{parent.__qualname__}' "
+            f"hierarchy: '{child.__qualname__}'"
+        )
+
+    if warn and parent in registry.defaults:
+        warn_msg = (
+            f"overwriting default for {repr(parent)} (use `warn=False` "
+            f"to silence this message)"
+        )
+        warnings.warn(warn_msg, UserWarning)
+
+    registry.defaults[parent] = child
+
+
+cdef void update_subtype_registry(type parent, type child):
+    """Update the shared registry's private attributes to reflect the addition
+    of a new subtype.
+
+    This can only be done at the C level.
+    """
+    cdef TypeRegistry registry = parent.registry
+    cdef type typ
+
+    # ensure hierarchy does not contain cycles
+    typ = child
+    while typ is not None:
+        if typ is parent:
+            raise TypeError(
+                f"type hierarchy cannot contain circular references: "
+                f"{repr(parent)}"
+            )
+        typ = registry.supertypes.get(typ, None)
+
+    registry.subtypes.setdefault(parent, set()).add(child)  # parent -> child
+    registry.supertypes[child] = parent  # child -> parent
+
+
+cdef void update_implementation_registry(type parent, type child, str backend):
+    """Update the shared registry's private attributes to reflect the addition
+    of a new implementation.
+
+    This can only be done at the C level.
+    """
+    cdef TypeRegistry registry = parent.registry
+    cdef dict candidates
+
+    # ensure backend is unique
+    candidates = registry.implementations.setdefault(parent, {})
+    if backend in candidates:
+        raise TypeError(
+            f"backend specifier must be unique: {repr(backend)} is "
+            f"reserved for {repr(candidates[backend])}"
+        )
+
+    candidates[backend] = child  # parent -> child
+    registry.generics[child] = parent  # child -> parent
 
 
 cdef void inherit_name(type parent, type child, str backend):
