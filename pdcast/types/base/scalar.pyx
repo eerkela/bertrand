@@ -28,8 +28,6 @@ from ..array import construct_object_dtype
 
 # TODO: add examples/raises for each method
 
-# TODO: convert make_nullable into a .nullable property.
-
 # TODO: .max/.min are currently stored as arbitrary objects.
 
 # TODO: inject separate strategies for @parent .larger/.smaller?
@@ -958,6 +956,10 @@ cdef class AbstractType(ScalarType):
     def na_value(self) -> Any:
         """Delegate `na_value` to default."""
         return self.registry.get_default(self).na_value
+
+    def make_nullable(self) -> ScalarType:
+        """Delegate `make_nullable()` to default."""
+        return self.registry.get_default(self).make_nullable()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.registry.get_default(self), name)

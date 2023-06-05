@@ -53,12 +53,14 @@ from .integer import (
     PythonIntegerType
 )
 from .float import (
-    FloatType, Float16Type, Float32Type, Float64Type, NumpyFloatType,
-    NumpyFloat16Type, NumpyFloat32Type, NumpyFloat64Type, PythonFloatType
+    FloatType, Float16Type, Float32Type, Float64Type, Float80Type,
+    NumpyFloatType, NumpyFloat16Type, NumpyFloat32Type, NumpyFloat64Type,
+    NumpyFloat80Type, PythonFloatType
 )
 from .complex import (
-    ComplexType, Complex64Type, Complex128Type, NumpyComplexType,
-    NumpyComplex64Type, NumpyComplex128Type, PythonComplexType
+    ComplexType, Complex64Type, Complex128Type, Complex160Type,
+    NumpyComplexType, NumpyComplex64Type, NumpyComplex128Type,
+    NumpyComplex160Type, PythonComplexType
 )
 from .decimal import DecimalType, PythonDecimalType
 # from .datetime import (
@@ -74,15 +76,7 @@ from .sparse import SparseType
 # from .categorical import CategoricalType
 
 
-# # conditional imports
-# try:
-#     from .float import Float80Type, NumpyFloat80Type
-# except ImportError:
-#     pass
-# try:
-#     from .complex import Complex160Type, NumpyComplex160Type
-# except ImportError:
-#     pass
+# conditional imports
 try:
     from .string import PyArrowStringType
 except ImportError:
@@ -90,4 +84,4 @@ except ImportError:
 
 
 # global objects
-registry = ScalarType.registry
+registry = Type.registry

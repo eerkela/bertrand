@@ -14,8 +14,6 @@ The following data structures define the standard interface for the ``pdcast``
 
 .. list-table::
 
-    * - :class:`Type`
-      - TODO
     * - :class:`ScalarType`
       - TODO
     * - :class:`AbstractType`

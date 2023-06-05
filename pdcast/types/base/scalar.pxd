@@ -7,11 +7,11 @@ cdef class ScalarType(VectorType):
     cdef:
         type _type_def
         object _dtype
-        long long _itemsize
-        bint _is_numeric
+        object _itemsize
+        object _is_numeric
         object _max
         object _min
-        bint _is_nullable
+        object _is_nullable
         object _na_value
 
 

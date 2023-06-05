@@ -9,11 +9,11 @@ decorator-focused design.
 
 Features
 --------
-``pdcast`` implements an abstract `type system
+``pdcast`` implements its own `type system
 <https://en.wikipedia.org/wiki/Type_system>`_ for numpy/pandas ``dtype``
 objects, with support for:
 
-*  **Concrete hierarchies** representing different subtypes and
+*  **Abstract hierarchies** representing different subtypes and
    implementations.  These are lightweight, efficient, and highly extensible,
    with new types added in as little as :ref:`10 lines of code <tutorial>`.
    They can use existing ``dtype``\ /\ ``ExtensionDtype`` definitions or

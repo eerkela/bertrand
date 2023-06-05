@@ -11,68 +11,6 @@ from .base cimport ScalarType, AbstractType, CompositeType
 from .base import register
 
 
-# TODO: str(pdcast.resolve_type("int[numpy]")) == "int64[numpy]"
-# TODO: str(pdcast.resolve_type("unsigned[numpy]")) == "uint64[numpy]"
-
-# pdcast.resolve_type("int[numpy]").name   <-   wrong
-
-# pdcast.NumpyIntegerType.name
-# NotImplementedError: '_SuperType' is missing a `name` field.
-
-
-######################
-####    MIXINS    ####
-######################
-
-
-# TODO: make_nullable doesn't work without .instance()
-
-
-class IntegerMixin:
-
-    is_numeric = True
-
-    @property
-    def larger(self) -> list:
-        """Get a list of types that this type can be upcasted to."""
-        # get all subtypes with range wider than self
-        result = []
-        for back in self.backends.values():
-            for x in back.subtypes:
-                if x.min < self.min or x.max > self.max:
-                    result.append(x)
-
-        # collapse types that are not unique
-        result = [
-            x for x in result if not any(x != y and x in y for y in result)
-        ]
-
-        return sorted(result, key=lambda x: x.max - x.min)
-
-    @property
-    def smaller(self) -> list:
-        """Get a list of types that this type can be downcasted to."""
-        is_signed = lambda x: not x.is_subtype(UnsignedIntegerType)
-        result = [
-            x for x in self.root.subtypes if (
-                (x.itemsize or np.inf) < (self.itemsize or np.inf) and
-                is_signed(x) == is_signed(self)
-            )
-        ]
-        return sorted(result, key=lambda x: x.itemsize)
-
-
-class NumpyIntegerMixin:
-    """A mixin class that allows numpy integers to automatically switch to
-    their pandas equivalents when missing values are detected.
-    """
-
-    is_nullable = False
-
-    def make_nullable(self) -> ScalarType:
-        return self.generic.instance(backend="pandas", **self.kwargs)
-
-
 ############################
 ####    ROOT INTEGER    ####
 ############################
@@ -140,11 +78,12 @@ class PandasSignedIntegerType(AbstractType):
 @register
 @SignedIntegerType.implementation("python")
 @IntegerType.implementation("python")
-class PythonIntegerType(IntegerMixin, ScalarType):
+class PythonIntegerType(ScalarType):
     """Python integer supertype."""
 
     aliases = {int}
     type_def = int
+    is_numeric = True
     max = np.inf
     min = -np.inf
 
@@ -199,27 +138,34 @@ class Int8Type(AbstractType):
 @NumpySignedIntegerType.subtype
 @Int8Type.default
 @Int8Type.implementation("numpy")
-class NumpyInt8Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
+class NumpyInt8Type(ScalarType):
     """8-bit numpy integer subtype."""
 
     aliases = {np.int8, np.dtype(np.int8)}
     dtype = np.dtype(np.int8)
     itemsize = 1
     type_def = np.int8
+    is_numeric = True
     max = 2**7 - 1
     min = -2**7
+    is_nullable = False
+
+    def make_nullable(self) -> ScalarType:
+        """Convert this type to a nullable equivalent."""
+        return self.registry[PandasInt8Type]
 
 
 @register
 @PandasSignedIntegerType.subtype
 @Int8Type.implementation("pandas")
-class PandasInt8Type(IntegerMixin, ScalarType):
+class PandasInt8Type(ScalarType):
     """8-bit numpy integer subtype."""
 
     aliases = {pd.Int8Dtype, "Int8"}
     dtype = pd.Int8Dtype()
     itemsize = 1
     type_def = np.int8
+    is_numeric = True
     max = 2**7 - 1
     min = -2**7
 
@@ -242,27 +188,34 @@ class Int16Type(AbstractType):
 @NumpySignedIntegerType.subtype
 @Int16Type.default
 @Int16Type.implementation("numpy")
-class NumpyInt16Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
+class NumpyInt16Type(ScalarType):
     """16-bit numpy integer subtype."""
 
     aliases = {np.int16, np.dtype(np.int16)}
     dtype = np.dtype(np.int16)
     itemsize = 2
     type_def = np.int16
+    is_numeric = True
     max = 2**15 - 1
     min = -2**15
+    is_nullable = False
+
+    def make_nullable(self) -> ScalarType:
+        """Convert this type to a nullable equivalent."""
+        return self.registry[PandasInt16Type]
 
 
 @register
 @PandasSignedIntegerType.subtype
 @Int16Type.implementation("pandas")
-class PandasInt16Type(IntegerMixin, ScalarType):
+class PandasInt16Type(ScalarType):
     """16-bit numpy integer subtype."""
 
     aliases = {pd.Int16Dtype, "Int16"}
     dtype = pd.Int16Dtype()
     itemsize = 2
     type_def = np.int16
+    is_numeric = True
     max = 2**15 - 1
     min = -2**15
 
@@ -285,27 +238,34 @@ class Int32Type(AbstractType):
 @NumpySignedIntegerType.subtype
 @Int32Type.default
 @Int32Type.implementation("numpy")
-class NumpyInt32Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
+class NumpyInt32Type(ScalarType):
     """32-bit numpy integer subtype."""
 
     aliases = {np.int32, np.dtype(np.int32)}
     dtype = np.dtype(np.int32)
     itemsize = 4
     type_def = np.int32
+    is_numeric = True
     max = 2**31 - 1
     min = -2**31
+    is_nullable = False
+
+    def make_nullable(self) -> ScalarType:
+        """Convert this type to a nullable equivalent."""
+        return self.registry[PandasInt32Type]
 
 
 @register
 @PandasSignedIntegerType.subtype
 @Int32Type.implementation("pandas")
-class PandasInt32Type(IntegerMixin, ScalarType):
+class PandasInt32Type(ScalarType):
     """32-bit pandas integer subtype."""
 
     aliases = {pd.Int32Dtype, "Int32"}
     dtype = pd.Int32Dtype()
     itemsize = 4
     type_def = np.int32
+    is_numeric = True
     max = 2**31 - 1
     min = -2**31
 
@@ -330,28 +290,35 @@ class Int64Type(AbstractType):
 @NumpySignedIntegerType.subtype
 @Int64Type.default
 @Int64Type.implementation("numpy")
-class NumpyInt64Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
+class NumpyInt64Type(ScalarType):
     """64-bit numpy integer subtype."""
 
     aliases = {np.int64, np.dtype(np.int64)}
     dtype = np.dtype(np.int64)
     itemsize = 8
     type_def = np.int64
+    is_numeric = True
     max = 2**63 - 1
     min = -2**63
+    is_nullable = False
+
+    def make_nullable(self) -> ScalarType:
+        """Convert this type to a nullable equivalent."""
+        return self.registry[PandasInt64Type]
 
 
 @register
 @PandasSignedIntegerType.default
 @PandasSignedIntegerType.subtype
 @Int64Type.implementation("pandas")
-class PandasInt64Type(IntegerMixin, ScalarType):
+class PandasInt64Type(ScalarType):
     """64-bit numpy integer subtype."""
 
     aliases = {pd.Int64Dtype, "Int64"}
     dtype = pd.Int64Dtype()
     itemsize = 8
     type_def = np.int64
+    is_numeric = True
     max = 2**63 - 1
     min = -2**63
 
@@ -374,27 +341,34 @@ class UInt8Type(AbstractType):
 @NumpyUnsignedIntegerType.subtype
 @UInt8Type.default
 @UInt8Type.implementation("numpy")
-class NumpyUInt8Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
+class NumpyUInt8Type(ScalarType):
     """8-bit numpy unsigned integer subtype."""
 
     aliases = {np.uint8, np.dtype(np.uint8)}
     dtype = np.dtype(np.uint8)
     itemsize = 1
     type_def = np.uint8
+    is_numeric = True
     max = 2**8 - 1
     min = 0
+    is_nullable = False
+
+    def make_nullable(self) -> ScalarType:
+        """Convert this type to a nullable equivalent."""
+        return self.registry[PandasUInt8Type]
 
 
 @register
 @PandasUnsignedIntegerType.subtype
 @UInt8Type.implementation("pandas")
-class PandasUInt8Type(IntegerMixin, ScalarType):
+class PandasUInt8Type(ScalarType):
     """8-bit numpy integer subtype."""
 
     aliases = {pd.UInt8Dtype, "UInt8"}
     dtype = pd.UInt8Dtype()
     itemsize = 1
     type_def = np.uint8
+    is_numeric = True
     max = 2**8 - 1
     min = 0
 
@@ -417,27 +391,33 @@ class UInt16Type(AbstractType):
 @NumpyUnsignedIntegerType.subtype
 @UInt16Type.default
 @UInt16Type.implementation("numpy")
-class NumpyUInt16Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
+class NumpyUInt16Type(ScalarType):
     """16-bit numpy unsigned integer subtype."""
 
     aliases = {np.uint16, np.dtype(np.uint16)}
     dtype = np.dtype(np.uint16)
     itemsize = 2
     type_def = np.uint16
+    is_numeric = True
     max = 2**16 - 1
     min = 0
+    is_nullable = False
 
+    def make_nullable(self) -> ScalarType:
+        """Convert this type to a nullable equivalent."""
+        return self.registry[PandasUInt16Type]
 
 @register
 @PandasUnsignedIntegerType.subtype
 @UInt16Type.implementation("pandas")
-class PandasUInt16Type(IntegerMixin, ScalarType):
+class PandasUInt16Type(ScalarType):
     """16-bit numpy integer subtype."""
 
     aliases = {pd.UInt16Dtype, "UInt16"}
     dtype = pd.UInt16Dtype()
     itemsize = 2
     type_def = np.uint16
+    is_numeric = True
     max = 2**16 - 1
     min = 0
 
@@ -460,27 +440,33 @@ class UInt32Type(AbstractType):
 @NumpyUnsignedIntegerType.subtype
 @UInt32Type.default
 @UInt32Type.implementation("numpy")
-class NumpyUInt32Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
+class NumpyUInt32Type(ScalarType):
     """32-bit numpy unsigned integer subtype."""
 
     aliases = {np.uint32, np.dtype(np.uint32)}
     dtype = np.dtype(np.uint32)
     itemsize = 4
     type_def = np.uint32
+    is_numeric = True
     max = 2**32 - 1
     min = 0
+    is_nullable = False
 
+    def make_nullable(self) -> ScalarType:
+        """Convert this type to a nullable equivalent."""
+        return self.registry[PandasUInt32Type]
 
 @register
 @PandasUnsignedIntegerType.subtype
 @UInt32Type.implementation("pandas")
-class PandasUInt32Type(IntegerMixin, ScalarType):
+class PandasUInt32Type(ScalarType):
     """32-bit numpy integer subtype."""
 
     aliases = {pd.UInt32Dtype, "UInt32"}
     dtype = pd.UInt32Dtype()
     itemsize = 4
     type_def = np.uint32
+    is_numeric = True
     max = 2**32 - 1
     min = 0
 
@@ -505,28 +491,34 @@ class UInt64Type(AbstractType):
 @NumpyUnsignedIntegerType.subtype
 @UInt64Type.default
 @UInt64Type.implementation("numpy")
-class NumpyUInt64Type(IntegerMixin, NumpyIntegerMixin, ScalarType):
+class NumpyUInt64Type(ScalarType):
     """64-bit numpy unsigned integer subtype."""
 
     aliases = {np.uint64, np.dtype(np.uint64)}
     dtype = np.dtype(np.uint64)
     itemsize = 8
     type_def = np.uint64
+    is_numeric = True
     max = 2**64 - 1
     min = 0
+    is_nullable = False
 
+    def make_nullable(self) -> ScalarType:
+        """Convert this type to a nullable equivalent."""
+        return self.registry[PandasUInt64Type]
 
 @register
 @PandasUnsignedIntegerType.default
 @PandasUnsignedIntegerType.subtype
 @UInt64Type.implementation("pandas")
-class PandasUInt64Type(IntegerMixin, ScalarType):
+class PandasUInt64Type(ScalarType):
     """64-bit numpy integer subtype."""
 
     aliases = {pd.UInt64Dtype, "UInt64"}
     dtype = pd.UInt64Dtype()
     itemsize = 8
     type_def = np.uint64
+    is_numeric = True
     max = 2**64 - 1
     min = 0
 

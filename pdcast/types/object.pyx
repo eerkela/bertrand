@@ -14,18 +14,16 @@ from .base cimport ScalarType, CompositeType
 from .base import register
 
 
-#######################
-####    GENERIC    ####
-#######################
-
-
 @register
 class ObjectType(ScalarType):
+    """Generic object type for arbitrary python values.
+    """
 
     _cache_size = 64
     name = "object"
     aliases = {
-        "object", "obj", "O", "pyobject", "object_", "object0", np.dtype("O")
+        "object", "obj", "O", "pyobject", "object_", "object0",
+        np.dtype(object)
     }
 
     def __init__(self, type_def: type = object):
@@ -33,12 +31,17 @@ class ObjectType(ScalarType):
 
     @property
     def dtype(self) -> dtype_like:
+        """Get a dtype for objects of this type."""
+        # root object -> use numpy
         if self.type_def is object:
             return np.dtype("O")
+
+        # auto-generate
         return super(ScalarType, self).dtype
 
     @property
     def type_def(self) -> type:
+        """Forward `type_def` lookups to parametrized kwargs"""
         return self.kwargs["type_def"]
 
     ############################
@@ -50,9 +53,7 @@ class ObjectType(ScalarType):
         other: type_specifier,
         include_subtypes: bool = True
     ) -> bool:
-        """Test whether a type is contained within this type's subtype
-        hierarchy.
-        """
+        """Treat root object type as wildcard."""
         other = resolve_type(other)
         if isinstance(other, CompositeType):
             return all(
@@ -60,15 +61,26 @@ class ObjectType(ScalarType):
                 for o in other
             )
 
-        # treat `object` type_def as wildcard
         if self.type_def is object:
             return isinstance(other, type(self))
+
         return super().contains(other, include_subtypes=include_subtypes)
 
     def from_string(self, type_def: str = None) -> ScalarType:
+        """Resolve a string in the type specification mini-language.
+
+        Notes
+        -----
+        This method can resolve type definitions (and even dotted variables!)
+        from the calling context by inspecting the stack frame.
+
+        >>> pdcast.resolve_type("object[int]")
+        ObjectType(type_def=<class 'int'>)
+
+        """
         if type_def is None:
             return self()
-        return self(type_def=from_caller(type_def))
+        return self(from_caller(type_def))
 
 
 #######################
@@ -77,7 +89,7 @@ class ObjectType(ScalarType):
 
 
 cdef object from_caller(str name, int stack_index = 0):
-    """Get an arbitrary object from a parent calling context by name."""
+    """Get an object by name from the calling context at the given index."""
     # NOTE: cython does not yield proper inspect.frame objects. In normal
     # python, a stack_index of 0 would reference the `from_caller` frame
     # itself, but in cython (as implemented), it refers to the first python

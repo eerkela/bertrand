@@ -241,6 +241,16 @@ cdef class TypeRegistry:
     ####    LINKS    ####
     #####################
 
+    def get_default(self, AbstractType typ) -> ScalarType:
+        """Get the default implementation for a hierarchical type."""
+        default = self.defaults.get(type(typ), None)
+        default = self.instances.get(default, None)
+        if default is None:
+            raise NotImplementedError(
+                f"{repr(typ)} has no default implementation"
+            )
+        return default
+
     def get_supertype(self, ScalarType typ) -> AbstractType:
         """Get a type's supertype if it is registered."""
         result = self.supertypes.get(type(typ), None)
@@ -277,16 +287,6 @@ cdef class TypeRegistry:
             result[backend] = instance
 
         return result
-
-    def get_default(self, AbstractType typ) -> ScalarType:
-        """Get the default implementation for a hierarchical type."""
-        default = self.defaults.get(type(typ), None)
-        default = self.instances.get(default, None)
-        if default is None:
-            raise NotImplementedError(
-                f"{repr(typ)} has no default implementation"
-            )
-        return default
 
     #####################
     ####    REGEX    ####
@@ -449,19 +449,25 @@ cdef class TypeRegistry:
     ####    SPECIAL METHODS    ####
     ###############################
 
+    def __iter__(self):
+        """Iterate through the registered types."""
+        return iter(self.instances.values())
+
+    def __len__(self) -> int:
+        """Get the total number of registered types."""
+        return len(self.instances)
+
     def __contains__(self, val) -> bool:
+        """Check if a type is in the registry."""
         if not isinstance(val, type):
             val = type(val)
         return val in self.instances
 
-    def __hash__(self) -> int:
-        return self.hash
-
-    def __iter__(self):
-        return iter(self.instances.values())
-
-    def __len__(self) -> int:
-        return len(self.instances)
+    def __getitem__(self, val) -> VectorType:
+        """Get the base instance for a given type if it is registered."""
+        if not isinstance(val, type):
+            val = type(val)
+        return self.instances[val]
 
     def __str__(self) -> str:
         return str(set(self.instances.values()))

@@ -11,41 +11,6 @@ from .base cimport ScalarType, AbstractType
 from .base import register
 
 
-######################
-####    MIXINS    ####
-######################
-
-
-# TODO: make_nullable doesn't work without .instance()
-
-
-class BooleanMixin:
-    """A mixin class that packages together the essential basic functionality
-    for boolean types.
-    """
-
-    is_numeric = True
-    max = 1
-    min = 0
-
-
-class NumpyBooleanMixin:
-    """A mixin class that allows numpy booleans to automatically switch to
-    their pandas equivalents when missing values are detected.
-    """
-
-    ##############################
-    ####    MISSING VALUES    ####
-    ##############################
-
-    @property
-    def is_nullable(self) -> bool:
-        return False
-
-    def make_nullable(self) -> ScalarType:
-        return self.generic("pandas", **self.kwargs)
-
-
 #######################
 ####    GENERIC    ####
 #######################
@@ -99,7 +64,7 @@ class BooleanType(AbstractType):
 @register
 @BooleanType.default
 @BooleanType.implementation("numpy")
-class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, ScalarType):
+class NumpyBooleanType(ScalarType):
     """Numpy boolean type.
 
     *   **aliases:** :class:`numpy.bool_`, ``numpy.dtype(bool)``
@@ -129,7 +94,14 @@ class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, ScalarType):
     dtype = np.dtype(np.bool_)
     itemsize = 1
     type_def = np.bool_
+    is_numeric = True
+    max = 1
+    min = 0
     is_nullable = False
+
+    def make_nullable(self) -> ScalarType:
+        """Convert this type to a nullable equivalent."""
+        return self.registry[PandasBooleanType]
 
 
 ######################
@@ -139,7 +111,7 @@ class NumpyBooleanType(BooleanMixin, NumpyBooleanMixin, ScalarType):
 
 @register
 @BooleanType.implementation("pandas")
-class PandasBooleanType(BooleanMixin, ScalarType):
+class PandasBooleanType(ScalarType):
     """Pandas boolean type.
 
     *   **aliases:** ``"Boolean"``, :class:`pandas.BooleanDtype`
@@ -171,6 +143,9 @@ class PandasBooleanType(BooleanMixin, ScalarType):
     dtype = pd.BooleanDtype()
     itemsize = 1
     type_def = np.bool_
+    is_numeric = True
+    max = 1
+    min = 0
 
 
 ######################
@@ -180,7 +155,7 @@ class PandasBooleanType(BooleanMixin, ScalarType):
 
 @register
 @BooleanType.implementation("python")
-class PythonBooleanType(BooleanMixin, ScalarType):
+class PythonBooleanType(ScalarType):
     """Python boolean type.
 
     *   **aliases:** :class:`bool <python:bool>`
@@ -206,3 +181,6 @@ class PythonBooleanType(BooleanMixin, ScalarType):
     aliases = {bool}
     itemsize = sys.getsizeof(True)
     type_def = bool
+    is_numeric = True
+    max = 1
+    min = 0

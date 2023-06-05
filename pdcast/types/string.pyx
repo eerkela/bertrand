@@ -13,9 +13,6 @@ from .base cimport ScalarType, AbstractType, Type
 from .base import register
 
 
-# TODO: check to see if StringType.from_dtype works correctly in all cases
-
-
 #########################
 ####    CONSTANTS    ####
 #########################
@@ -35,9 +32,9 @@ except ImportError:
     pyarrow_installed = False
 
 
-#######################
-####    GENERIC    ####
-#######################
+####################
+####    ROOT    ####
+####################
 
 
 @register
@@ -60,6 +57,9 @@ class StringType(AbstractType):
     }
 
     def from_dtype(self, dtype: dtype_like) -> ScalarType:
+        """Parse a `pandas.StringDtype` object and return the appropriate
+        concretion.
+        """
         # string extension type special case
         if isinstance(dtype, pd.StringDtype):
             if dtype.storage == "pyarrow":
@@ -98,7 +98,7 @@ class PythonStringType(ScalarType):
 
 # NOTE: invoking pd.StringDtype("pyarrow") when pyarrow is not installed causes
 # an ImportError.  Since pyarrow support is optional, we have to guard this
-# type with an if statement rather than using the cond= argument of @register.
+# type rather than using the @register `cond` argument.
 
 
 if pyarrow_installed:
@@ -112,4 +112,3 @@ if pyarrow_installed:
         aliases = set()
         dtype = pd.StringDtype("pyarrow")
         type_def = str
-
