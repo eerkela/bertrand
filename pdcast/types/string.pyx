@@ -4,7 +4,6 @@ type system.
 import re  # normal python regex for compatibility with pd.Series.str.extract
 
 import numpy as np
-cimport numpy as np
 import pandas as pd
 
 from pdcast.util.type_hints import dtype_like

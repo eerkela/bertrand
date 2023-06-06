@@ -5,7 +5,6 @@ import decimal
 import sys
 
 import numpy as np
-cimport numpy as np
 
 from pdcast.util.type_hints import numeric
 

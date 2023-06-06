@@ -5,7 +5,6 @@ import datetime
 import re
 
 import numpy as np
-cimport numpy as np
 import pandas as pd
 
 from pdcast.resolve import resolve_type
@@ -325,8 +324,8 @@ class NumpyDatetime64Type(ScalarType):
         )
 
     def __lt__(self, other: ScalarType) -> bool:
-        """Prioritize python datetimes over numpy."""
-        if isinstance(other, PythonDatetimeType):
+        """Prioritize numpy datetimes last."""
+        if not isinstance(other, type(self)):
             return False
 
         return super(type(self), self).__lt__(other)

@@ -4,7 +4,6 @@ represent arbitrary Python data.
 import inspect
 
 import numpy as np
-cimport numpy as np
 import pandas as pd
 
 from pdcast.resolve import resolve_type

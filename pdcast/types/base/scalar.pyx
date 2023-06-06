@@ -30,12 +30,12 @@ from ..array import construct_object_dtype
 
 # TODO: .max/.min are currently stored as arbitrary objects.
 
-# TODO: list(pdcast.resolve_type("float").larger)
-# -> raises decimal.InvalidOperation
 
-
-# TODO: .larger sorts are unstable across sessions.  Probably related to
-# random set order.
+# TODO: .larger sorts are unstable if __lt__ is only overridden on one class.
+# This leads to ties.
+# -> Break ties by looking for overloaded < operator.  If this is found, we
+# always put this type first.  There doesn't appear to be a reliable way of
+# doing this.
 
 
 ######################

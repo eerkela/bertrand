@@ -6,7 +6,6 @@ import re
 from typing import Iterator
 
 import numpy as np
-cimport numpy as np
 import pandas as pd
 
 from pdcast.resolve import resolve_type
@@ -214,8 +213,8 @@ class NumpyTimedelta64Type(ScalarType):
         )
 
     def __lt__(self, other: ScalarType) -> bool:
-        """Prioritize python datetimes over numpy."""
-        if isinstance(other, PythonTimedeltaType):
+        """Prioritize numpy timedeltas last."""
+        if not isinstance(other, type(self)):
             return False
 
         return super(type(self), self).__lt__(other)
