@@ -556,7 +556,7 @@ cdef class ScalarType(VectorType):
         """A :class:`CompositeType <pdcast.CompositeType>` containing all the
         leaf nodes associated with this type's subtypes.
         """
-        candidates = CompositeType(self).expand()
+        candidates = set(CompositeType(self).expand()) - {self}
         return CompositeType(typ for typ in candidates if typ.is_leaf)
 
     @property
@@ -572,17 +572,16 @@ cdef class ScalarType(VectorType):
         -----
         Candidate types will always be tested in order.
         """
-        leaves = CompositeType()
-        for implementation in self.backends.values():
-            leaves |= implementation.leaves
+        candidates = self.leaves
+        candidates |= {
+            typ for candidate in candidates for typ in candidate.larger
+        }
 
         # filter off any leaves with range less than self
-        candidates = [
-            typ for typ in leaves if typ.max > self.max or typ.min < self.min
-        ]
+        wider = lambda typ: typ.max > self.max or typ.min < self.min
 
         # sort according to comparison operators
-        yield from sorted(candidates)
+        yield from sorted(typ for typ in candidates if wider(typ))
 
     @property
     def smaller(self) -> Iterator[ScalarType]:
@@ -596,16 +595,17 @@ cdef class ScalarType(VectorType):
         -----
         Candidate types will always be tested in order.
         """
-        leaves = CompositeType()
-        for implementation in self.backends.values():
-            leaves |= implementation.leaves
+        candidates = self.leaves
+        candidates |= {
+            typ for candidate in candidates for typ in candidate.smaller
+        }
 
         # filter off any leaves with itemsize greater than self
         itemsize = lambda typ: typ.itemsize or np.inf
-        candidates = [typ for typ in leaves if itemsize(typ) < itemsize(self)]
+        narrower = lambda typ: itemsize(typ) < itemsize(self)
 
         # sort according to comparison operators
-        yield from sorted(candidates)
+        yield from sorted([typ for typ in candidates if narrower(typ)])
 
     ########################
     ####    ADAPTERS    ####
@@ -691,39 +691,51 @@ cdef class ScalarType(VectorType):
     ###############################
 
     def __lt__(self, other: ScalarType) -> bool:
-        """Sort types by their size in memory and representable range."""
+        """Sort types by their size in memory and representable range.
+
+        This method is automatically called by the built-in ``sorted()``
+        function and thus dictates the ordering of types in the
+        :attr:`larger <pdcast.ScalarType.larger>`\ /
+        :attr:`smaller <pdcast.ScalarType.smaller>` generators.
+        """
         itemsize = lambda typ: typ.itemsize or np.inf
         coverage = lambda typ: typ.max - typ.min
         bias = lambda typ: abs(typ.max + typ.min)
         family = lambda typ: typ.backend or ""
 
-        return (
-            itemsize(self) < itemsize(other) or
-            coverage(self) < coverage(other) or
-            bias(self) < bias(other) or
-            family(self) < family(other)
+        # lexical sort, same as `key` argument of sorted()
+        features = lambda typ: (
+            coverage(typ), itemsize(typ), bias(typ), family(typ)
         )
+
+        return features(self) < features(other)
 
     def __hash__(self) -> int:
-        """Manually pass hash() calls to super().
+        """Reimplement hash() for ScalarTypes.
 
-        hash() mysteriously fails for some reason without this.
+        Adding the ``<`` and ``>`` operators mysteriously breaks an inherited
+        ``__hash__()`` method for some reason.  This appears to be a problem
+        with cython extension class inheritance, and isn't observed in normal
+        python subclasses.
         """
-        return hash(super())
+        return self._hash
 
     def __gt__(self, other: ScalarType) -> bool:
-        """Sort types by their size in memory and representable range."""
+        """Sort types by their size in memory and representable range.
+
+        This method is provided for completeness with respect to ``__lt__()``.
+        """
         itemsize = lambda typ: typ.itemsize or np.inf
         coverage = lambda typ: typ.max - typ.min
         bias = lambda typ: abs(typ.max + typ.min)
         family = lambda typ: typ.backend or ""
 
-        return (
-            itemsize(self) > itemsize(other) or
-            coverage(self) > coverage(other) or
-            bias(self) > bias(other) or
-            family(self) > family(other)
+        # lexical sort
+        features = lambda typ: (
+            coverage(typ), itemsize(typ), bias(typ), family(typ)
         )
+
+        return features(self) > features(other)
 
 
 ########################

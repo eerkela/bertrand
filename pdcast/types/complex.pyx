@@ -10,35 +10,6 @@ from pdcast.util.type_hints import numeric
 
 from .base cimport ScalarType, AbstractType, CompositeType
 from .base import register
-import pdcast.types.float as float_types
-
-
-##################################
-####    MIXINS & CONSTANTS    ####
-##################################
-
-
-# NOTE: x86 extended precision float type (long double) is platform-specific
-# and may not be exposed depending on hardware configuration.
-cdef bint has_clongdouble = (np.dtype(np.clongdouble).itemsize > 16)
-
-
-class ComplexMixin:
-
-    is_numeric = True
-
-    ############################
-    ####    TYPE METHODS    ####
-    ############################
-
-    @property
-    def equiv_float(self) -> ScalarType:
-        f_root = float_types.FloatType()
-        candidates = [x for y in f_root.backends.values() for x in y.subtypes]
-        for x in candidates:
-            if type(x).__name__ == self._equiv_float:
-                return x
-        raise TypeError(f"{repr(self)} has no equivalent float type")
 
 
 ############################
@@ -53,7 +24,13 @@ class ComplexType(AbstractType):
     aliases = {
         "complex", "cfloat", "complex float", "complex floating", "c"
     }
-    _equiv_float = "FloatType"
+
+    @property
+    def equiv_float(self) -> ScalarType:
+        """An equivalent floating point type."""
+        from .float import FloatType
+
+        return self.registry[FloatType]
 
 
 @register
@@ -61,7 +38,13 @@ class ComplexType(AbstractType):
 class NumpyComplexType(AbstractType):
 
     aliases = {np.complexfloating}
-    _equiv_float = "NumpyFloatType"
+
+    @property
+    def equiv_float(self) -> ScalarType:
+        """An equivalent floating point type."""
+        from .float import NumpyFloatType
+
+        return self.registry[NumpyFloatType]
 
 
 #########################
@@ -77,23 +60,36 @@ class Complex64Type(AbstractType):
     aliases = {
         "complex64", "csingle", "complex single", "singlecomplex", "c8", "F"
     }
-    _equiv_float = "Float32Type"
+
+    @property
+    def equiv_float(self) -> ScalarType:
+        """An equivalent floating point type."""
+        from .float import Float32Type
+
+        return self.registry[Float32Type]
 
 
 @register
 @NumpyComplexType.subtype
 @Complex64Type.default
 @Complex64Type.implementation("numpy")
-class NumpyComplex64Type(ComplexMixin, ScalarType):
+class NumpyComplex64Type(ScalarType):
 
     aliases = {np.complex64, np.dtype(np.complex64)}
     dtype = np.dtype(np.complex64)
     itemsize = 8
     na_value = np.complex64("nan+nanj")
     type_def = np.complex64
+    is_numeric = True
     max = 2**24
     min = -2**24
-    _equiv_float = "NumpyFloat32Type"
+
+    @property
+    def equiv_float(self) -> ScalarType:
+        """An equivalent floating point type."""
+        from .float import NumpyFloat32Type
+
+        return self.registry[NumpyFloat32Type]
 
 
 ##########################
@@ -110,7 +106,13 @@ class Complex128Type(AbstractType):
     aliases = {
         "complex128", "cdouble", "complex double", "complex_", "c16", "D"
     }
-    _equiv_float = "Float64Type"
+
+    @property
+    def equiv_float(self) -> ScalarType:
+        """An equivalent floating point type."""
+        from .float import Float64Type
+
+        return self.registry[Float64Type]
 
 
 @register
@@ -118,35 +120,54 @@ class Complex128Type(AbstractType):
 @NumpyComplexType.subtype
 @Complex128Type.default
 @Complex128Type.implementation("numpy")
-class NumpyComplex128Type(ComplexMixin, ScalarType):
+class NumpyComplex128Type(ScalarType):
 
     aliases = {np.complex128, np.dtype(np.complex128)}
     dtype = np.dtype(np.complex128)
     itemsize = 16
     na_value = np.complex128("nan+nanj")
     type_def = np.complex128
+    is_numeric = True
     max = 2**53
     min = -2**53
-    _equiv_float = "NumpyFloat64Type"
+
+    @property
+    def equiv_float(self) -> ScalarType:
+        """An equivalent floating point type."""
+        from .float import NumpyFloat64Type
+
+        return self.registry[NumpyFloat64Type]
 
 
 @register
 @ComplexType.implementation("python")
 @Complex128Type.implementation("python")
-class PythonComplexType(ComplexMixin, ScalarType):
+class PythonComplexType(ScalarType):
 
     aliases = {complex}
     itemsize = sys.getsizeof(0+0j)
     na_value = complex("nan+nanj")
     type_def = complex
+    is_numeric = True
     max = 2**53
     min = -2**53
-    _equiv_float = "PythonFloatType"
+
+    @property
+    def equiv_float(self) -> ScalarType:
+        """An equivalent floating point type."""
+        from .float import PythonFloatType
+
+        return self.registry[PythonFloatType]
 
 
 #########################################
 ####    COMPLEX LONG DOUBLE (x86)    ####
 #########################################
+
+
+# NOTE: long doubles are platform-specific and may not be valid depending on
+# hardware configuration.
+cdef bint has_clongdouble = (np.dtype(np.clongdouble).itemsize > 16)
 
 
 @register(cond=has_clongdouble)
@@ -159,20 +180,33 @@ class Complex160Type(AbstractType):
         "complex longfloat", "complex long double", "complex long float",
         "longcomplex", "long complex", "c20", "G"
     }
-    _equiv_float = "Float80Type"
+
+    @property
+    def equiv_float(self) -> ScalarType:
+        """An equivalent floating point type."""
+        from .float import Float80Type
+
+        return self.registry[Float80Type]
 
 
 @register(cond=has_clongdouble)
 @NumpyComplexType.subtype
 @Complex160Type.default
 @Complex160Type.implementation("numpy")
-class NumpyComplex160Type(ComplexMixin, ScalarType):
+class NumpyComplex160Type(ScalarType):
 
     aliases = {np.clongdouble, np.dtype(np.clongdouble)}
     dtype = np.dtype(np.clongdouble)
     itemsize = np.dtype(np.clongdouble).itemsize
     na_value = np.clongdouble("nan+nanj")
     type_def = np.clongdouble
+    is_numeric = True
     max = 2**64
     min = -2**64
-    _equiv_float = "NumpyFloat80Type"
+
+    @property
+    def equiv_float(self) -> ScalarType:
+        """An equivalent floating point type."""
+        from .float import NumpyFloat80Type
+
+        return self.registry[NumpyFloat80Type]

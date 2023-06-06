@@ -63,13 +63,13 @@ from .complex import (
     NumpyComplex160Type, PythonComplexType
 )
 from .decimal import DecimalType, PythonDecimalType
-# from .datetime import (
-#     DatetimeType, NumpyDatetime64Type, PandasTimestampType, PythonDatetimeType
-# )
-# from .timedelta import (
-#     TimedeltaType, NumpyTimedelta64Type, PandasTimedeltaType,
-#     PythonTimedeltaType
-# )
+from .datetime import (
+    DatetimeType, NumpyDatetime64Type, PandasTimestampType, PythonDatetimeType
+)
+from .timedelta import (
+    TimedeltaType, NumpyTimedelta64Type, PandasTimedeltaType,
+    PythonTimedeltaType
+)
 from .string import StringType, PythonStringType
 from .object import ObjectType
 from .sparse import SparseType

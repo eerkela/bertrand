@@ -3,6 +3,7 @@ type system.
 """
 import datetime
 import re
+from typing import Iterator
 
 import numpy as np
 cimport numpy as np
@@ -12,8 +13,8 @@ from pdcast.resolve import resolve_type
 from pdcast.util import time
 from pdcast.util.type_hints import type_specifier
 
-from .base cimport ScalarType, CompositeType
-from .base import generic, register
+from .base cimport ScalarType, AbstractType, CompositeType
+from .base import register
 
 
 # TODO: timedelta -> float does not retain longdouble precision.  This is due
@@ -27,50 +28,45 @@ from .base import generic, register
 
 
 @register
-@generic
-class TimedeltaType(ScalarType):
+class TimedeltaType(AbstractType):
 
     name = "timedelta"
     aliases = {"timedelta"}
-    dtype = None
+
+
+######################
+####    PANDAS    ####
+######################
+
+
+@register
+@TimedeltaType.default
+@TimedeltaType.implementation("pandas")
+class PandasTimedeltaType(ScalarType):
+
+    aliases = {pd.Timedelta, "Timedelta", "pandas.Timedelta", "pd.Timedelta"}
+    dtype = np.dtype("m8[ns]")
+    itemsize = 8
     na_value = pd.NaT
-    max = 0
-    min = 1  # these values always trip overflow/upcast check
+    type_def = pd.Timedelta
+    max = pd.Timedelta.max.value
+    min = pd.Timedelta.min.value
 
-    ############################
-    ####    TYPE METHODS    ####
-    ############################
 
-    @property
-    def larger(self) -> list:
-        """Get a list of types that this type can be upcasted to."""
-        # get candidates
-        candidates = {
-            x for y in self.backends.values() for x in y.subtypes if x != self
-        }
+######################
+####    PYTHON    ####
+######################
 
-        # filter off any that are upcast-only or larger than self
-        result = [
-            x for x in candidates if (
-                x.min <= x.max and (x.min < self.min or x.max > self.max)
-            )
-        ]
 
-        # sort by range
-        result.sort(key=lambda x: x.max - x.min)
+@register
+@TimedeltaType.implementation("python")
+class PythonTimedeltaType(ScalarType):
 
-        # add subtypes that are themselves upcast-only
-        others = [x for x in candidates if x.min > x.max]
-        result.extend(sorted(others, key=lambda x: x.min - x.max))
-        return result
-
-    ##############################
-    ####    SERIES METHODS    ####
-    ##############################
-
-    # NOTE: because this type has no associated scalars, it will never be given
-    # as the result of a detect_type() operation.  It can only be specified
-    # manually, as the target of a resolve_type() call.
+    aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
+    na_value = pd.NaT
+    type_def = datetime.timedelta
+    max = time.pytimedelta_to_ns(datetime.timedelta.max)
+    min = time.pytimedelta_to_ns(datetime.timedelta.min)
 
 
 #####################
@@ -80,12 +76,13 @@ class TimedeltaType(ScalarType):
 
 @register
 @TimedeltaType.implementation("numpy")
-class NumpyTimedelta64Type(ScalarType, cache_size=64):
+class NumpyTimedelta64Type(ScalarType):
 
     # NOTE: dtype is set to object due to pandas and its penchant for
     # automatically converting datetimes to pd.Timestamp.  Otherwise, we'd use
     # an ObjectDtype or the raw numpy dtypes here.
 
+    _cache_size = 64
     aliases = {
         np.timedelta64,
         np.dtype("m8"),
@@ -121,19 +118,46 @@ class NumpyTimedelta64Type(ScalarType, cache_size=64):
                 since=time.Epoch(np.datetime64("2000-02-01"))
             )
 
-        super().__init__(unit=unit, step_size=step_size)
+        super(type(self), self).__init__(unit=unit, step_size=step_size)
+
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
+
+    def from_string(self, context: str = None) -> ScalarType:
+        """Parse an m8 string in the type specification mini-language."""
+        if context is None:
+            return self
+
+        match = m8_pattern.match(context)
+        if not match:
+            raise ValueError(f"invalid unit: {repr(context)}")
+
+        unit = match.group("unit")
+        step_size = int(match.group("step_size") or 1)
+        return self(unit=unit, step_size=step_size)
+
+    def from_dtype(
+        self,
+        dtype: np.dtype | pd.api.extensions.ExtensionDtype
+    ) -> ScalarType:
+        """Convert a numpy m8 dtype into the pdcast type system."""
+        unit, step_size = np.datetime_data(dtype)
+
+        return self(
+            unit=None if unit == "generic" else unit,
+            step_size=step_size
+        )
+
+    def from_scalar(self, example: np.timedelta64) -> ScalarType:
+        """Parse a scalar m8 value into the pdcast type system."""
+        unit, step_size = np.datetime_data(example)
+
+        return self(unit=unit, step_size=step_size)
 
     ############################
     ####    TYPE METHODS    ####
     ############################
-
-    @classmethod
-    def slugify(cls, unit: str = None, step_size: int = 1) -> str:
-        if unit is None:
-            return f"{cls.name}[{cls._backend}]"
-        if step_size == 1:
-            return f"{cls.name}[{cls._backend}, {unit}]"
-        return f"{cls.name}[{cls._backend}, {step_size}{unit}]"
 
     def contains(
         self,
@@ -152,73 +176,13 @@ class NumpyTimedelta64Type(ScalarType, cache_size=64):
             return isinstance(other, type(self))
         return super().contains(other, include_subtypes=include_subtypes)
 
-    @classmethod
-    def from_scalar(cls, example: np.datetime64, **defaults) -> ScalarType:
-        unit, step_size = np.datetime_data(example)
-        return cls.instance(unit=unit, step_size=step_size, **defaults)
-
-    @classmethod
-    def from_dtype(
-        cls,
-        dtype: np.dtype | pd.api.extensions.ExtensionDtype
-    ) -> ScalarType:
-        unit, step_size = np.datetime_data(dtype)
-        return cls.instance(
-            unit=None if unit == "generic" else unit,
-            step_size=step_size
-        )
-
     @property
-    def larger(self) -> list:
+    def larger(self) -> Iterator:
         """Get a list of types that this type can be upcasted to."""
         if self.unit is None:
-            return [self.instance(unit=u) for u in time.valid_units]
-        return []
-
-    @classmethod
-    def from_string(cls, context: str = None) -> ScalarType:
-        if context is not None:
-            match = m8_pattern.match(context)
-            if not match:
-                raise ValueError(f"invalid unit: {repr(context)}")
-            unit = match.group("unit")
-            step_size = int(match.group("step_size") or 1)
-            return cls.instance(unit=unit, step_size=step_size)
-        return cls.instance()
-
-
-######################
-####    PANDAS    ####
-######################
-
-
-@register
-@TimedeltaType.implementation("pandas")
-class PandasTimedeltaType(ScalarType):
-
-    aliases = {pd.Timedelta, "Timedelta", "pandas.Timedelta", "pd.Timedelta"}
-    dtype = np.dtype("m8[ns]")
-    itemsize = 8
-    na_value = pd.NaT
-    type_def = pd.Timedelta
-    max = pd.Timedelta.max.value
-    min = pd.Timedelta.min.value
-
-
-######################
-####    PYTHON    ####
-######################
-
-
-@register
-@TimedeltaType.implementation("python")
-class PythonTimedeltaType(ScalarType):
-
-    aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
-    na_value = pd.NaT
-    type_def = datetime.timedelta
-    max = time.pytimedelta_to_ns(datetime.timedelta.max)
-    min = time.pytimedelta_to_ns(datetime.timedelta.min)
+            yield from (self(unit=u) for u in time.valid_units)
+        else:
+            yield from ()
 
 
 #######################
