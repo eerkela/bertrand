@@ -47,7 +47,7 @@ class CategoricalType(DecoratorType):
                     break
 
         # call DecoratorType.__init__()
-        super().__init__(wrapped=wrapped, levels=levels)
+        super(type(self), self).__init__(wrapped=wrapped, levels=levels)
 
     ############################
     ####    CONSTRUCTORS    ####

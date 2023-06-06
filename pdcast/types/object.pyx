@@ -64,7 +64,10 @@ class ObjectType(ScalarType):
         if self.type_def is object:
             return isinstance(other, type(self))
 
-        return super().contains(other, include_subtypes=include_subtypes)
+        return super(type(self), self).contains(
+            other,
+            include_subtypes=include_subtypes
+        )
 
     def from_string(self, type_def: str = None) -> ScalarType:
         """Resolve a string in the type specification mini-language.

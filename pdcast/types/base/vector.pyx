@@ -255,6 +255,28 @@ cdef class VectorType(Type):
     ####    SPECIAL METHODS    ####
     ###############################
 
+    def __instancecheck__(self, instance: Any) -> bool:
+        """Implement isinstance() for non-parametrized types.
+
+        This allows base instances to be used interchangeably with their class
+        objects.
+        """
+        if self is self.base_instance:
+            return isinstance(instance, type(self))
+
+        return isinstance(instance, None)  # raises TypeError
+
+    def __subclasscheck__(self, subclass: type) -> bool:
+        """Implement issubclass() for non-parametrized types.
+
+        This allows base instances to be used interchangeably with their class
+        objects.
+        """
+        if self is self.base_instance:
+            return issubclass(subclass, type(self))
+
+        return issubclass(subclass, None)  # raises TypeError
+
     def __getattr__(self, name: str) -> Any:
         """Pass attribute lookups to :attr:`kwargs <pdcast.VectorType.kwargs>`.
         """

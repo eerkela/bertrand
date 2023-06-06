@@ -161,7 +161,11 @@ class NumpyDatetime64Type(ScalarType):
         # treat unit=None as wildcard
         if self.unit is None:
             return isinstance(other, type(self))
-        return super().contains(other, include_subtypes=include_subtypes)
+
+        return super(type(self), self).contains(
+            other,
+            include_subtypes=include_subtypes
+        )
 
 
 ######################
@@ -223,7 +227,11 @@ class PandasTimestampType(ScalarType):
         # treat tz=None as wildcard
         if self.tz is None:
             return isinstance(other, type(self))
-        return super().contains(other, include_subtypes=include_subtypes)
+
+        return super(type(self), self).contains(
+            other,
+            include_subtypes=include_subtypes
+        )
 
     def from_scalar(self, example: pd.Timestamp, **defaults) -> ScalarType:
         return self(tz=example.tzinfo, **defaults)
@@ -279,7 +287,11 @@ class PythonDatetimeType(ScalarType):
         # treat tz=None as wildcard
         if self.tz is None:
             return isinstance(other, type(self))
-        return super().contains(other, include_subtypes=include_subtypes)
+
+        return super(type(self), self).contains(
+            other,
+            include_subtypes=include_subtypes
+        )
 
     def from_scalar(self, example: datetime.datetime, **defaults) -> ScalarType:
         return self(tz=example.tzinfo, **defaults)

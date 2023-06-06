@@ -16,6 +16,11 @@ from pdcast.util.vector import apply_with_errors
 from .base import cast, generic_to_integer
 
 
+# TODO: timedelta -> float does not retain longdouble precision.  This is due
+# to the / operator in convert_unit() defaulting to float64 precision, which is
+# probably unfixable.
+
+
 @cast.overload("timedelta", "bool")
 def timedelta_to_boolean(
     series: pd.Series,

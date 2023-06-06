@@ -17,11 +17,6 @@ from .base cimport ScalarType, AbstractType, CompositeType
 from .base import register
 
 
-# TODO: timedelta -> float does not retain longdouble precision.  This is due
-# to the / operator in convert_unit() defaulting to float64 precision, which is
-# probably unfixable.
-
-
 #######################
 ####    GENERIC    ####
 #######################
@@ -45,12 +40,16 @@ class TimedeltaType(AbstractType):
 class PandasTimedeltaType(ScalarType):
 
     aliases = {pd.Timedelta, "Timedelta", "pandas.Timedelta", "pd.Timedelta"}
+    type_def = pd.Timedelta
     dtype = np.dtype("m8[ns]")
     itemsize = 8
     na_value = pd.NaT
-    type_def = pd.Timedelta
     max = pd.Timedelta.max.value
     min = pd.Timedelta.min.value
+
+    def __lt__(self, other: ScalarType) -> bool:
+        """Always prioritize native pandas types."""
+        return True
 
 
 ######################
@@ -63,10 +62,17 @@ class PandasTimedeltaType(ScalarType):
 class PythonTimedeltaType(ScalarType):
 
     aliases = {datetime.timedelta, "pytimedelta", "datetime.timedelta"}
-    na_value = pd.NaT
     type_def = datetime.timedelta
+    na_value = pd.NaT
     max = time.pytimedelta_to_ns(datetime.timedelta.max)
     min = time.pytimedelta_to_ns(datetime.timedelta.min)
+
+    def __lt__(self, other: ScalarType) -> bool:
+        """Prioritize python timedeltas over numpy."""
+        if isinstance(other, NumpyTimedelta64Type):
+            return True
+
+        return super(type(self), self).__lt__(other)
 
 
 #####################
@@ -98,8 +104,7 @@ class NumpyTimedelta64Type(ScalarType):
 
     def __init__(self, unit: str = None, step_size: int = 1):
         if unit is None:
-            # NOTE: these min/max values always trigger upcast check.
-            self.min = 1  # increase this to take precedence when upcasting
+            self.min = 1  # NOTE: these values always trigger upcast mechanism
             self.max = 0
         else:
             # NOTE: these epochs are chosen to minimize range in the event of
@@ -124,18 +129,37 @@ class NumpyTimedelta64Type(ScalarType):
     ####    CONSTRUCTORS    ####
     ############################
 
-    def from_string(self, context: str = None) -> ScalarType:
-        """Parse an m8 string in the type specification mini-language."""
-        if context is None:
+    def from_string(
+        self,
+        unit: str = None,
+        step_size: str = None
+    ) -> ScalarType:
+        """Parse an m8 string in the type specification mini-language.
+
+        Numpy timedeltas support two different parametrized syntaxes:
+        
+            1.  Numpy format, which concatenates step size and unit into a
+                single field (e.g. 'm8[5ns]').
+            2.  pdcast format, which lists each field individually (e.g.
+                'datetime[numpy, ns, 5]').  This matches the output of the
+                str() function for these types.
+        """
+        if unit is None:
             return self
 
-        match = m8_pattern.match(context)
-        if not match:
-            raise ValueError(f"invalid unit: {repr(context)}")
+        m8 = m8_pattern.match(unit)
+        parsed_unit = m8.group("unit")
+        if step_size is not None:
+            if m8.group("step_size"):
+                raise ValueError(
+                    f"conflicting units: '{unit}' vs '{parsed_unit}, "
+                    f"{step_size}'"
+                )
+            parsed_step_size = int(step_size)
+        else:
+            parsed_step_size = int(m8.group("step_size") or 1)
 
-        unit = match.group("unit")
-        step_size = int(match.group("step_size") or 1)
-        return self(unit=unit, step_size=step_size)
+        return self(unit=parsed_unit, step_size=parsed_step_size)
 
     def from_dtype(
         self,
@@ -164,17 +188,22 @@ class NumpyTimedelta64Type(ScalarType):
         other: type_specifier,
         include_subtypes: bool = True
     ) -> bool:
+        """Treat unit=None as wildcard."""
         other = resolve_type(other)
         if isinstance(other, CompositeType):
             return all(
-                self.contains(o, include_subtypes=include_subtypes)
-                for o in other
+                self.contains(typ, include_subtypes=include_subtypes)
+                for typ in other
             )
 
         # treat unit=None as wildcard
         if self.unit is None:
             return isinstance(other, type(self))
-        return super().contains(other, include_subtypes=include_subtypes)
+
+        return super(type(self), self).contains(
+            other,
+            include_subtypes=include_subtypes
+        )
 
     @property
     def larger(self) -> Iterator:
