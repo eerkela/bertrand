@@ -24,6 +24,9 @@ from .base import cast, generic_to_integer
 # -> have to pass in ambiguous_tz, nonexistent_tz arguments to cast()
 
 
+# TODO: string_to_datetime cannot convert quarterly dates
+
+
 @cast.overload("datetime", "bool")
 def datetime_to_boolean(
     series: pd.Series,

@@ -141,7 +141,7 @@ class NumpyTimedelta64Type(ScalarType):
             1.  Numpy format, which concatenates step size and unit into a
                 single field (e.g. 'm8[5ns]').
             2.  pdcast format, which lists each field individually (e.g.
-                'datetime[numpy, ns, 5]').  This matches the output of the
+                'timedelta[numpy, ns, 5]').  This matches the output of the
                 str() function for these types.
         """
         if unit is None:
@@ -165,7 +165,7 @@ class NumpyTimedelta64Type(ScalarType):
         self,
         dtype: np.dtype | pd.api.extensions.ExtensionDtype
     ) -> ScalarType:
-        """Convert a numpy m8 dtype into the pdcast type system."""
+        """Translate a numpy m8 dtype into the pdcast type system."""
         unit, step_size = np.datetime_data(dtype)
 
         return self(
@@ -174,21 +174,29 @@ class NumpyTimedelta64Type(ScalarType):
         )
 
     def from_scalar(self, example: np.timedelta64) -> ScalarType:
-        """Parse a scalar m8 value into the pdcast type system."""
+        """Parse a scalar m8 value according to unit, step size."""
         unit, step_size = np.datetime_data(example)
 
         return self(unit=unit, step_size=step_size)
 
-    ############################
-    ####    TYPE METHODS    ####
-    ############################
+    #############################
+    ####    CONFIGURATION    ####
+    #############################
+
+    @property
+    def larger(self) -> Iterator:
+        """If no original unit is given, iterate through each one in order."""
+        if self.unit is None:
+            yield from (self(unit=unit) for unit in time.valid_units)
+        else:
+            yield from ()
 
     def contains(
         self,
         other: type_specifier,
         include_subtypes: bool = True
     ) -> bool:
-        """Treat unit=None as wildcard."""
+        """Treat unit=None as a wildcard."""
         other = resolve_type(other)
         if isinstance(other, CompositeType):
             return all(
@@ -205,13 +213,12 @@ class NumpyTimedelta64Type(ScalarType):
             include_subtypes=include_subtypes
         )
 
-    @property
-    def larger(self) -> Iterator:
-        """Get a list of types that this type can be upcasted to."""
-        if self.unit is None:
-            yield from (self(unit=u) for u in time.valid_units)
-        else:
-            yield from ()
+    def __lt__(self, other: ScalarType) -> bool:
+        """Prioritize python datetimes over numpy."""
+        if isinstance(other, PythonTimedeltaType):
+            return False
+
+        return super(type(self), self).__lt__(other)
 
 
 #######################

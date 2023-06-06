@@ -34,6 +34,10 @@ from ..array import construct_object_dtype
 # -> raises decimal.InvalidOperation
 
 
+# TODO: .larger sorts are unstable across sessions.  Probably related to
+# random set order.
+
+
 ######################
 ####    SCALAR    ####
 ######################
