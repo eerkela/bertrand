@@ -15,10 +15,6 @@ from .vector cimport VectorType
 from .composite cimport CompositeType
 
 
-# TODO: test __call__ with nested decorators and proper sorting w/
-# CategoricalType.
-
-
 cdef class DecoratorType(VectorType):
     """Abstract base class for all `Decorator pattern
     <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_ type
@@ -347,27 +343,69 @@ cdef class DecoratorType(VectorType):
         return result
 
     def __call__(self, wrapped: VectorType, *args, **kwargs) -> DecoratorType:
-        """Create a parametrized decorator for the given type."""
-        if isinstance(wrapped, DecoratorType):
-            # trivial case: wrapping an instance of self
-            if isinstance(wrapped, type(self)):
-                return type(self)(wrapped.wrapped, *args, **kwargs)
+        """Create a parametrized decorator for a given type.
 
-            # insert into nested stack (sorted)
-            priority = self.registry.decorator_priority
-            threshold = priority.index(self)
-            encountered = []
-            for curr in wrapped.decorators:
-                encountered.append(curr)
-                duplicate = isinstance(curr.wrapped, type(self))
-                insort = priority.index(curr) > threshold
-                if duplicate or insort:
-                    if duplicate:
-                        curr = curr.wrapped.wrapped
-                    result = type(self)(curr, *args, **kwargs)
-                    for prev in reversed(encountered):
-                        result = prev.replace(wrapped=result)
-                    return result
+        Parameters
+        ----------
+        wrapped : VectorType
+            A type to wrap.  This can be an instance of 
+            :class:`ScalarType <pdcast.ScalarType>` or another
+            :class:`DecoratorType <pdcast.DecoratorType>`, in which case they
+            are nested to form a singly-linked list.
+        *args, **kwargs
+            Additional parameters to be supplied to this type's
+            :meth:`__init__ <python:object.__init__>` method.
+
+        Returns
+        -------
+        DecoratorType
+            A wrapper for the type that modifies its behavior.
+
+        Notes
+        -----
+        This a factory method that works just like the
+        :meth:`__new__() <python:object.__new__>` method of a normal class
+        object.  :func:`@register <pdcast.register>` allows us to reduce it to
+        the instance level, but it works identically in every other way.
+
+        Examples
+        --------
+        Decorators can be nested to form a singly-linked list on top of a base
+        :class:`ScalarType <pdcast.ScalarType>` object.
+
+        .. doctest::
+
+            >>> pdcast.SparseType(pdcast.CategoricalType(pdcast.BooleanType))
+            SparseType(wrapped=CategoricalType(wrapped=BooleanType(), levels=None), fill_value=None)
+
+        The order of these decorators is determined by
+        :attr:`TypeRegistry.decorator_priority <pdcast.TypeRegistry.decorator_priority>`,
+        which can be customized at run time.
+
+        .. doctest::
+
+            >>> pdcast.registry.decorator_priority
+            PriorityList([<class 'pdcast.types.sparse.SparseType'>, <class 'pdcast.types.categorical.CategoricalType'>])
+            >>> pdcast.registry.decorator_priority.move(pdcast.CategoricalType, 0)
+            >>> pdcast.resolve_type("sparse[categorical[bool]]")
+            CategoricalType(wrapped=SparseType(wrapped=BooleanType(), fill_value=None), levels=None)
+
+        .. note::
+
+            Note that the output order does not always match the input order.
+
+        If a decorator of this type already exists in the linked list, then
+        this method will modify it rather than creating a duplicate.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse[categorical[sparse[bool]], True]")
+            CategoricalType(wrapped=SparseType(wrapped=BooleanType(), fill_value=True), levels=None)
+            >>> str(_)
+            categorical[sparse[bool, True], None]
+        """
+        if isinstance(wrapped, DecoratorType):
+            return insort(self, wrapped, args, kwargs)
 
         return type(self)(wrapped, *args, **kwargs)
 
@@ -411,3 +449,36 @@ cdef Type wrap_result(DecoratorType decorator, Type result):
         return CompositeType(decorator.replace(wrapped=typ) for typ in result)
     return decorator.replace(wrapped=result)
 
+
+cdef DecoratorType insort(
+    DecoratorType self,
+    DecoratorType wrapped,
+    tuple args,
+    dict kwargs
+):
+    """Insert a decorator into a singly-linked list in sorted order."""
+    priority = self.registry.decorator_priority
+    threshold = priority.index(self)
+
+    # iterate through list
+    encountered = []
+    for curr in wrapped.decorators:
+        # curr is higher priority than self
+        if priority.index(curr) < threshold:
+            encountered.append(curr)
+            continue
+
+        # curr is a duplicate of self
+        if isinstance(curr, type(self)):
+            curr = curr.wrapped
+
+        # curr is lower priority than self
+        result = type(self)(curr, *args, **kwargs)
+        break
+    else:
+        # all decorators are higher priority - insert at base
+        result = type(self)(curr.wrapped, *args, **kwargs)
+
+    for prev in reversed(encountered):
+        result = prev.replace(wrapped=result)
+    return result

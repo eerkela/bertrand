@@ -238,56 +238,63 @@ cdef class TypeRegistry:
 
         self.update_hash()
 
-    #####################
-    ####    LINKS    ####
-    #####################
+    #########################
+    ####    ACCESSORS    ####
+    #########################
 
-    def get_default(self, AbstractType typ) -> ScalarType:
-        """Get the default implementation for a hierarchical type."""
-        default = self.defaults.get(type(typ), None)
-        default = self.instances.get(default, None)
-        if default is None:
-            raise NotImplementedError(
-                f"{repr(typ)} has no default implementation"
-            )
-        return default
+    @property
+    def roots(self) -> CompositeType:
+        """A :class:`CompositeType <pdcast.CompositeType>` containing the root
+        nodes for every registered hierarchy.
+        """
+        is_root = lambda typ: getattr(typ, "is_root", False)
+        generic = lambda typ: getattr(typ, "backend", NotImplemented) is None
 
-    def get_supertype(self, ScalarType typ) -> AbstractType:
-        """Get a type's supertype if it is registered."""
-        result = self.supertypes.get(type(typ), None)
-        return self.instances.get(result, None)
+        return CompositeType(
+            typ for typ in self if is_root(typ) and generic(typ)
+        )
 
-    def get_subtypes(self, AbstractType typ) -> set:
-        """Get all the registered subtypes associated with a type."""
-        result = set()
-        
-        candidates = self.subtypes.get(type(typ), set())
-        for subtype in candidates:
-            instance = self.instances.get(subtype, None)
-            if instance is None:
-                continue
-            result.add(instance)
+    @property
+    def leaves(self) -> CompositeType:
+        """A :class:`CompositeType <pdcast.CompositeType>` containing all the
+        leaf nodes for every registered hierarchy.
+        """
+        is_leaf = lambda typ: getattr(typ, "is_leaf", False)
 
-        return result
+        return CompositeType(typ for typ in self if is_leaf(typ))
 
-    def get_generic(self, ScalarType typ) -> AbstractType:
-        """Get a type's generic implementation if it is registered."""
-        result = self.generics.get(type(typ), None)
-        if result is not None:
-            result = self.instances.get(result, None)
-        return result
-
-    def get_implementations(self, AbstractType typ) -> dict:
-        """Get all the registered implementations associated with a type."""
+    @property
+    def families(self) -> MappingProxyType:
+        """A read-only dictionary mapping backend specifiers to all their
+        concrete implementations.
+        """
         result = {}
-        candidates = self.implementations.get(type(typ), {})
-        for backend, implementation in candidates.items():
-            instance = self.instances.get(implementation, None)
-            if instance is None:
+        for typ in self:
+            if not hasattr(typ, "backend"):
                 continue
-            result[backend] = instance
+            result.setdefault(typ.backend, CompositeType()).add(typ)
 
-        return result
+        return MappingProxyType(result)
+
+    @property
+    def decorators(self) -> CompositeType:
+        """A :class:`CompositeType` containing all the
+        :class:`DecoratorTypes <pdcast.DecoratorType>` that are currently
+        registered.
+        """
+        return CompositeType(
+            typ for typ in self if isinstance(typ, DecoratorType)
+        )
+
+    @property
+    def abstract(self) -> CompositeType:
+        """A :class:`CompositeType` containing all the
+        :class:`AbstractTypes <pdcast.AbstractType>` that are currently
+        registered.
+        """
+        return CompositeType(
+            typ for typ in self if isinstance(typ, AbstractType)
+        )
 
     #####################
     ####    REGEX    ####
@@ -421,63 +428,56 @@ cdef class TypeRegistry:
 
         return cached.value
 
-    #########################
-    ####    ACCESSORS    ####
-    #########################
+    #####################
+    ####    LINKS    ####
+    #####################
 
-    @property
-    def roots(self) -> CompositeType:
-        """A :class:`CompositeType <pdcast.CompositeType>` containing the root
-        nodes for every registered hierarchy.
-        """
-        is_root = lambda typ: getattr(typ, "is_root", False)
-        generic = lambda typ: getattr(typ, "backend", NotImplemented) is None
+    def get_default(self, AbstractType typ) -> ScalarType:
+        """Get the default implementation for a hierarchical type."""
+        default = self.defaults.get(type(typ), None)
+        default = self.instances.get(default, None)
+        if default is None:
+            raise NotImplementedError(
+                f"{repr(typ)} has no default implementation"
+            )
+        return default
 
-        return CompositeType(
-            typ for typ in self if is_root(typ) and generic(typ)
-        )
+    def get_supertype(self, ScalarType typ) -> AbstractType:
+        """Get a type's supertype if it is registered."""
+        result = self.supertypes.get(type(typ), None)
+        return self.instances.get(result, None)
 
-    @property
-    def leaves(self) -> CompositeType:
-        """A :class:`CompositeType <pdcast.CompositeType>` containing all the
-        leaf nodes for every registered hierarchy.
-        """
-        is_leaf = lambda typ: getattr(typ, "is_leaf", False)
-
-        return CompositeType(typ for typ in self if is_leaf(typ))
-
-    @property
-    def families(self) -> MappingProxyType:
-        """A read-only dictionary mapping backend specifiers to all their
-        concrete implementations.
-        """
-        result = {}
-        for typ in self:
-            if not hasattr(typ, "backend"):
+    def get_subtypes(self, AbstractType typ) -> set:
+        """Get all the registered subtypes associated with a type."""
+        result = set()
+        
+        candidates = self.subtypes.get(type(typ), set())
+        for subtype in candidates:
+            instance = self.instances.get(subtype, None)
+            if instance is None:
                 continue
-            result.setdefault(typ.backend, CompositeType()).add(typ)
+            result.add(instance)
 
-        return MappingProxyType(result)
+        return result
 
-    @property
-    def decorators(self) -> CompositeType:
-        """A :class:`CompositeType` containing all the
-        :class:`DecoratorTypes <pdcast.DecoratorType>` that are currently
-        registered.
-        """
-        return CompositeType(
-            typ for typ in self if isinstance(typ, DecoratorType)
-        )
+    def get_generic(self, ScalarType typ) -> AbstractType:
+        """Get a type's generic implementation if it is registered."""
+        result = self.generics.get(type(typ), None)
+        if result is not None:
+            result = self.instances.get(result, None)
+        return result
 
-    @property
-    def abstract(self) -> CompositeType:
-        """A :class:`CompositeType` containing all the
-        :class:`AbstractTypes <pdcast.AbstractType>` that are currently
-        registered.
-        """
-        return CompositeType(
-            typ for typ in self if isinstance(typ, AbstractType)
-        )
+    def get_implementations(self, AbstractType typ) -> dict:
+        """Get all the registered implementations associated with a type."""
+        result = {}
+        candidates = self.implementations.get(type(typ), {})
+        for backend, implementation in candidates.items():
+            instance = self.instances.get(implementation, None)
+            if instance is None:
+                continue
+            result[backend] = instance
+
+        return result
 
     #######################
     ####    PRIVATE    ####
