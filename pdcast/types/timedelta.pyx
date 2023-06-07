@@ -190,28 +190,6 @@ class NumpyTimedelta64Type(ScalarType):
         else:
             yield from ()
 
-    def contains(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
-        """Treat unit=None as a wildcard."""
-        other = resolve_type(other)
-        if isinstance(other, CompositeType):
-            return all(
-                self.contains(typ, include_subtypes=include_subtypes)
-                for typ in other
-            )
-
-        # treat unit=None as wildcard
-        if self.unit is None:
-            return isinstance(other, type(self))
-
-        return super(type(self), self).contains(
-            other,
-            include_subtypes=include_subtypes
-        )
-
     def __lt__(self, other: ScalarType) -> bool:
         """Prioritize numpy timedeltas last."""
         if not isinstance(other, type(self)):

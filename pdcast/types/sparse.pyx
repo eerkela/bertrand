@@ -6,7 +6,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from pdcast import resolve
+from pdcast.resolve cimport na_strings
+from pdcast.resolve import resolve_type
 from pdcast.util.type_hints import dtype_like, type_specifier
 
 from .base cimport DecoratorType, CompositeType, VectorType
@@ -45,18 +46,17 @@ class SparseType(DecoratorType):
         wrapped: str = None,
         fill_value: str = None
     ) -> DecoratorType:
-        """Resolve a sparse specifier in the
-        :ref:`type specification mini langauge <resolve_type.mini_language>`.
+        """Resolve a sparse specifier in the type specification mini-langauge.
         """
         if wrapped is None:
             return self
 
-        cdef VectorType instance = resolve.resolve_type(wrapped)
+        cdef VectorType instance = resolve_type(wrapped)
         cdef object parsed = None
 
         if fill_value is not None:
-            if fill_value in resolve.na_strings:
-                parsed = resolve.na_strings[fill_value]
+            if fill_value in na_strings:
+                parsed = na_strings[fill_value]
             else:
                 from pdcast.convert import cast  # TODO: borked 
                 parsed = cast(fill_value, instance)[0]
@@ -68,7 +68,7 @@ class SparseType(DecoratorType):
         :class:`SparseType <pdcast.SparseType>` object.
         """
         return self(
-            wrapped=resolve.resolve_type(dtype.subtype),
+            wrapped=resolve_type(dtype.subtype),
             fill_value=dtype.fill_value
         )
 
@@ -117,7 +117,7 @@ class SparseType(DecoratorType):
         """Check whether the given type is contained within this type's
         subtype hierarchy.
         """
-        other = resolve.resolve_type(other)
+        other = resolve_type(other)
 
         # if target is composite, test each element individually
         if isinstance(other, CompositeType):

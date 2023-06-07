@@ -41,7 +41,11 @@ from .unit import convert_unit, round_months_to_ns, round_years_to_ns
 
 cpdef inline object pandas_timedelta_to_ns(object delta):
     """Convert a pandas Timedelta into an integer number of nanoseconds."""
-    return delta.value
+    # NOTE: as of pandas 2.0, Timedeltas can hold non-ns units
+
+    if delta.unit == "ns":
+        return delta.value
+    return int(delta.asm8.view("i8")) * as_ns[delta.unit]
 
 
 ###############################

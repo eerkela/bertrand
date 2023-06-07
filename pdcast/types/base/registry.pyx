@@ -8,6 +8,7 @@ from typing import Any, Iterable
 
 from pdcast.util.type_hints import type_specifier, dtype_like
 
+from .composite cimport CompositeType
 from .vector cimport VectorType
 from .decorator cimport DecoratorType
 from .scalar cimport ScalarType, AbstractType
@@ -419,6 +420,64 @@ cdef class TypeRegistry:
             self._resolvable = cached
 
         return cached.value
+
+    #########################
+    ####    ACCESSORS    ####
+    #########################
+
+    @property
+    def roots(self) -> CompositeType:
+        """A :class:`CompositeType <pdcast.CompositeType>` containing the root
+        nodes for every registered hierarchy.
+        """
+        is_root = lambda typ: getattr(typ, "is_root", False)
+        generic = lambda typ: getattr(typ, "backend", NotImplemented) is None
+
+        return CompositeType(
+            typ for typ in self if is_root(typ) and generic(typ)
+        )
+
+    @property
+    def leaves(self) -> CompositeType:
+        """A :class:`CompositeType <pdcast.CompositeType>` containing all the
+        leaf nodes for every registered hierarchy.
+        """
+        is_leaf = lambda typ: getattr(typ, "is_leaf", False)
+
+        return CompositeType(typ for typ in self if is_leaf(typ))
+
+    @property
+    def families(self) -> MappingProxyType:
+        """A read-only dictionary mapping backend specifiers to all their
+        concrete implementations.
+        """
+        result = {}
+        for typ in self:
+            if not hasattr(typ, "backend"):
+                continue
+            result.setdefault(typ.backend, CompositeType()).add(typ)
+
+        return MappingProxyType(result)
+
+    @property
+    def decorators(self) -> CompositeType:
+        """A :class:`CompositeType` containing all the
+        :class:`DecoratorTypes <pdcast.DecoratorType>` that are currently
+        registered.
+        """
+        return CompositeType(
+            typ for typ in self if isinstance(typ, DecoratorType)
+        )
+
+    @property
+    def abstract(self) -> CompositeType:
+        """A :class:`CompositeType` containing all the
+        :class:`AbstractTypes <pdcast.AbstractType>` that are currently
+        registered.
+        """
+        return CompositeType(
+            typ for typ in self if isinstance(typ, AbstractType)
+        )
 
     #######################
     ####    PRIVATE    ####

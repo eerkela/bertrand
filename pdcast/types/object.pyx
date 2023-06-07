@@ -26,47 +26,11 @@ class ObjectType(ScalarType):
     }
 
     def __init__(self, type_def: type = object):
-        super(ScalarType, self).__init__(type_def=type_def)
-
-    @property
-    def dtype(self) -> dtype_like:
-        """Get a dtype for objects of this type."""
-        # root object -> use numpy
-        if self.type_def is object:
-            return np.dtype("O")
-
-        # auto-generate
-        return super(ScalarType, self).dtype
-
-    @property
-    def type_def(self) -> type:
-        """Forward `type_def` lookups to parametrized kwargs"""
-        return self.kwargs["type_def"]
+        super(type(self), self).__init__(type_def=type_def)
 
     ############################
-    ####    TYPE METHODS    ####
+    ####    CONSTRUCTORS    ####
     ############################
-
-    def contains(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
-        """Treat root object type as wildcard."""
-        other = resolve_type(other)
-        if isinstance(other, CompositeType):
-            return all(
-                self.contains(o, include_subtypes=include_subtypes)
-                for o in other
-            )
-
-        if self.type_def is object:
-            return isinstance(other, type(self))
-
-        return super(type(self), self).contains(
-            other,
-            include_subtypes=include_subtypes
-        )
 
     def from_string(self, type_def: str = None) -> ScalarType:
         """Resolve a string in the type specification mini-language.
@@ -83,6 +47,30 @@ class ObjectType(ScalarType):
         if type_def is None:
             return self()
         return self(from_caller(type_def))
+
+    #############################
+    ####    CONFIGURATION    ####
+    #############################
+
+    @property
+    def dtype(self) -> dtype_like:
+        """Get a dtype for objects of this type."""
+        # root object -> use numpy
+        if self.type_def is object:
+            return np.dtype("O")
+
+        # auto-generate
+        return super(type(self), self).dtype
+
+    @property
+    def type_def(self) -> type:
+        """Forward `type_def` lookups to parametrized kwargs"""
+        return self.kwargs["type_def"]
+
+    @property
+    def is_generic(self) -> bool:
+        """Treat `type_def=object` as generic."""
+        return self.type_def is object
 
 
 #######################

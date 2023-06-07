@@ -280,13 +280,10 @@ def to_string(
 
 
 # NOTE: the following are base conversions for each of the major data types.
-# They are used if no specific implementation is explicitly given for the
-# observed data
+# They are used if no specific implementation is given for the observed data.
 
 
-wildcard = (
-    "bool, int, float, complex, decimal, datetime, timedelta, string, object"
-)
+wildcard = types.registry.roots
 
 
 @cast.overload(wildcard, "bool")

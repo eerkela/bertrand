@@ -57,7 +57,12 @@ cpdef inline object pandas_timestamp_to_ns(object date, object tz = None):
     """Convert a pandas Timestamp into a nanosecond offset from UTC."""
     if tz and not date.tzinfo:
         date = date.tz_localize(tz)
-    return date.value
+
+    # NOTE: as of pandas 2.0, Timestamps can hold non-ns units
+
+    if date.unit == "ns":
+        return date.value
+    return int(date.asm8.view("i8")) * as_ns[date.unit]
 
 
 ###############################

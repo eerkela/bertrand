@@ -34,8 +34,8 @@ from ..array import construct_object_dtype
 # TODO: .larger sorts are unstable if __lt__ is only overridden on one class.
 # This leads to ties.
 # -> Break ties by looking for overloaded < operator.  If this is found, we
-# always put this type first.  There doesn't appear to be a reliable way of
-# doing this.
+# always put this type first.
+# -> There doesn't appear to be a reliable way of doing this in cython.
 
 
 ######################
@@ -410,6 +410,10 @@ cdef class ScalarType(VectorType):
                 self.contains(o, include_subtypes=include_subtypes)
                 for o in other
             )
+
+        # treat base instances as wildcards
+        if self == self.base_instance:
+            return isinstance(other, type(self))
 
         return self == other
 

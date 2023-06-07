@@ -66,15 +66,6 @@ class PandasTimestampType(ScalarType):
 
         super(type(self), self).__init__(tz=tz)
 
-    @property
-    def dtype(self) -> dtype_like:
-        """Use a numpy dtype if no timezone is given, otherwise use the
-        associated pandas extension type.
-        """
-        if self.tz is None:
-            return np.dtype("M8[ns]")
-        return pd.DatetimeTZDtype(tz=self.tz)
-
     ############################
     ####    CONSTRUCTORS    ####
     ############################
@@ -98,27 +89,14 @@ class PandasTimestampType(ScalarType):
     ####    CONFIGURATION    ####
     #############################
 
-    def contains(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
-        """Treat tz=None as a wildcard."""
-        other = resolve_type(other)
-        if isinstance(other, CompositeType):
-            return all(
-                self.contains(o, include_subtypes=include_subtypes)
-                for o in other
-            )
-
-        # treat tz=None as wildcard
+    @property
+    def dtype(self) -> dtype_like:
+        """Use a numpy dtype if no timezone is given, otherwise use the
+        associated pandas extension type.
+        """
         if self.tz is None:
-            return isinstance(other, type(self))
-
-        return super(type(self), self).contains(
-            other,
-            include_subtypes=include_subtypes
-        )
+            return np.dtype("M8[ns]")
+        return pd.DatetimeTZDtype(tz=self.tz)
 
 
 ######################
@@ -159,27 +137,6 @@ class PythonDatetimeType(ScalarType):
     #############################
     ####    CONFIGURATION    ####
     #############################
-
-    def contains(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
-        """Treat tz=None as a wildcard."""
-        other = resolve_type(other)
-        if isinstance(other, CompositeType):
-            return all(
-                self.contains(o, include_subtypes=include_subtypes)
-                for o in other
-            )
-
-        if self.tz is None:
-            return isinstance(other, type(self))
-
-        return super(type(self), self).contains(
-            other,
-            include_subtypes=include_subtypes
-        )
 
     def __lt__(self, other: ScalarType) -> bool:
         """Prioritize python datetimes over numpy."""
@@ -301,27 +258,6 @@ class NumpyDatetime64Type(ScalarType):
             yield from (self(unit=unit) for unit in time.valid_units)
         else:
             yield from ()
-
-    def contains(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
-        """Treat unit=None as a wildcard."""
-        other = resolve_type(other)
-        if isinstance(other, CompositeType):
-            return all(
-                self.contains(o, include_subtypes=include_subtypes)
-                for o in other
-            )
-
-        if self.unit is None:
-            return isinstance(other, type(self))
-
-        return super(type(self), self).contains(
-            other,
-            include_subtypes=include_subtypes
-        )
 
     def __lt__(self, other: ScalarType) -> bool:
         """Prioritize numpy datetimes last."""
