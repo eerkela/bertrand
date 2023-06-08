@@ -111,6 +111,17 @@ cdef class VectorType(Type):
             )
             self.instances._add(self._slug, self)
 
+        # collect aliases associated with type
+        aliases = {type(self)}
+        try:
+            aliases |= object.__getattribute__(type(self), "aliases")
+            del type(self).aliases
+        except AttributeError:
+            pass
+
+        for alias in aliases:
+            self.aliases.add(alias)  # registers with resolve_type()
+
     cdef void init_parametrized(self):
         """Initialize a parametrized instance of this type with attributes
         from the base instance.

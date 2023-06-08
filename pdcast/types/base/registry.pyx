@@ -20,43 +20,38 @@ from .scalar cimport ScalarType, AbstractType
 
 
 def register(class_: type = None, *, cond: bool = True):
-    """Validate a scalar type definition and add it to the registry.
+    """Register a :class:`VectorType <pdcast.VectorType>` subclass, adding it
+    to the shared :class:`registry <pdcast.TypeRegistry>`.
 
     Parameters
     ----------
     class_ : type
-        The type definition to register.
+        The type definition to register.  This must be a subclass of
+        :class:`VectorType <pdcast.VectorType>`.
     cond : bool, default True
-        Used to create :ref:`conditional types <tutorial.conditional>`.  The
-        type will only be added to the registry if this evaluates ``True``.
+        Used to create :ref:`conditional types <register.conditional>`.  The
+        type will only be registered if this evaluates to ``True``.
 
     Returns
     -------
     VectorType
-        A base (unparametrized) instance of the decorated type.  This is always
-        equal to the direct output of ``class_.instance()``, without arguments.
+        A base (unparametrized) instance of the decorated type.  This can be
+        used interchangeably with its parent class in most cases.
 
-    See Also
-    --------
-    generic :
-        for creating :ref:`hierarchical types <tutorial.hierarchy>`, which can
-        contain other types.
+    Raises
+    ------
+    TypeError
+        If the type is invalid or its name conflicts with another registered
+        type.
+    ValueError
+        If any of the type's aliases are already registered to another type.
 
     Notes
     -----
-    The properties that this decorator validates are as follows:
-
-        *   :attr:`class_.name <ScalarType.name>`: this must be unique or
-            inherited from a :func:`generic() <pdcast.generic>` type.
-        *   :attr:`class_.aliases <ScalarType.aliases>`: these must contain
-            only valid type specifiers, each of which must be unique.
-        *   :meth:`class_.encode() <ScalarType.encode>`: this must be a
-            classmethod whose signature matches the decorated class's
-            ``__init__``.
-
-    Examples
-    --------
-    TODO: take from tutorial
+    This decorator must be listed at the top of a type definition for it to be
+    recognized by :func:`detect_type <pdcast.detect_type>` and
+    :func:`resolve_type <pdcast.resolve_type>`.  No other decorators should be
+    placed above it.
     """
     def register_decorator(cls: type) -> type | VectorType:
         """Add the type to the registry and instantiate it."""
@@ -76,18 +71,6 @@ def register(class_: type = None, *, cond: bool = True):
         # convert type into its base (non-parametrized) instance and register
         instance = cls()
         cls.registry.add(instance)
-
-        # collect aliases associated with type
-        aliases = {cls}
-        try:
-            aliases |= object.__getattribute__(cls, "aliases")
-            del cls.aliases
-        except AttributeError:
-            pass
-
-        for alias in aliases:
-            instance.aliases.add(alias)  # registers with resolve_type()
-
         return instance
 
     if class_ is None:
@@ -119,6 +102,7 @@ cdef class TypeRegistry:
     def __init__(self):
         self.instances = {}
         self.pinned_aliases = []
+        self.names = {}
         self.decorator_priority = PriorityList()
 
         self.defaults = {}
@@ -180,7 +164,6 @@ cdef class TypeRegistry:
         --------
         register : automatically call this method as a class decorator.
         TypeRegistry.remove : remove a type from the registry.
-        TypeRegistry.clear : remove all types from the registry.
         """
         # validate instance is not parametrized
         if instance != instance.base_instance:
@@ -193,15 +176,17 @@ cdef class TypeRegistry:
                 f"{type(instance)} is already registered to {repr(previous)}"
             )
 
-        # validate identifier is unique
-        slug = str(instance)
-        observed = {str(typ): typ for typ in self.instances.values()}
-        if slug in observed:
-            existing = observed[slug]
-            raise TypeError(
-                f"{repr(instance)} slug must be unique: '{slug}' is currently "
-                f"registered to {repr(existing)}"
-            )
+        # validate name is unique
+        existing = self.names.get(instance.name, None)
+        if existing is None:
+            self.names[instance.name] = instance
+        else:
+            implementations = self.implementations.get(type(existing), {})
+            if type(instance) not in implementations.values():
+                raise TypeError(
+                    f"{repr(instance)} name must be unique: '{instance.name}' "
+                    f"is currently registered to {repr(existing)}"
+                )
 
         self.instances[type(instance)] = instance
         self.update_hash()
@@ -225,16 +210,20 @@ cdef class TypeRegistry:
         TypeRegistry.add : add a type to the registry.
         TypeRegistry.clear : remove all types from the registry.
         """
-        del self.instances[type(instance)]
+        if instance not in self:
+            raise ValueError(f"{repr(instance)} is not registered")
 
-        # remove all aliases
+        del self.instances[type(instance)]
         instance.aliases.clear()
+        if instance in self.names.values():
+            del self.names[instance.name]
 
         # recur for each of the instance's children
         for typ in instance.subtypes:
             self.remove(typ)
-        for typ in getattr(instance, "backends", {}).values():
-            self.remove(typ)
+        for backend, typ in getattr(instance, "backends", {}).items():
+            if backend is not None:
+                self.remove(typ)
 
         self.update_hash()
 
@@ -532,7 +521,7 @@ cdef class TypeRegistry:
         return str(set(self.instances.values()))
 
     def __repr__(self) -> str:
-        return repr(set(self.instances.values()))
+        return f"{type(self).__name__}{set(self.instances.values())}"
 
 
 cdef class AliasManager:

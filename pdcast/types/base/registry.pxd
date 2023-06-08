@@ -3,6 +3,7 @@ cdef class TypeRegistry:
     cdef:
         dict instances
         list pinned_aliases
+        dict names
         dict defaults
         dict supertypes
         dict subtypes

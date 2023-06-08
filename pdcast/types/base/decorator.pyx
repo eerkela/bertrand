@@ -293,6 +293,13 @@ cdef class DecoratorType(VectorType):
 
     @property
     def backends(self) -> MappingProxyType:
+        """Modify the wrapped type's
+        :attr:`backends <pdcast.ScalarType.backends>` dictionary, adding the
+        wrapper to each of its values.
+        """
+        if self.wrapped is None:
+            return {}
+
         return {
             k: self.replace(wrapped=v)
             for k, v in self.wrapped.backends.items()

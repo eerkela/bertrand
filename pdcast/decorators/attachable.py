@@ -1,11 +1,11 @@
 """This module describes a mechanism for binding naked Python functions to
-existing classes using virtual descriptors.
+external classes using virtual descriptors.
 
 Classes
 -------
 Attachable
     A cooperative decorator that allows the wrapped function to be dynamically
-    attached to existing Python classes.
+    attached to external Python classes.
 
 VirtualAttribute
     Base class for all virtual attributes (other than Namespaces).
@@ -313,7 +313,7 @@ class VirtualAttribute(FunctionDecorator):
         The type or :class:`Namespace <pdcast.Namespace>` that this attribute
         is assigned to.
     name : str
-        The name of the attribute during lookups.
+        The name of the attribute during dotted lookups.
     original_descriptor : Descriptor | Any | None
         The original implementation that this attribute is masking, if one
         exists.  This must be unbound and might implement the descriptor
@@ -326,8 +326,8 @@ class VirtualAttribute(FunctionDecorator):
 
     Notes
     -----
-    See the :ref:`descriptor tutorial <python:descriptorhowto>` for more
-    information on how these work behind the scenes.  The actual
+    See Python's :ref:`descriptor tutorial <python:descriptorhowto>` for more
+    information on how these work.  The actual
     :meth:`__get__() <python:object.__get__>` implementations are defined in
     subclasses.
 
@@ -368,7 +368,7 @@ class VirtualAttribute(FunctionDecorator):
 
         Raises
         ------
-        RuntimeError
+        NotImplementedError
             If no original implementation could be found.
 
         Examples
@@ -426,7 +426,7 @@ class VirtualAttribute(FunctionDecorator):
         parent = self._parent
         original = self._original
         if original is None:
-            raise RuntimeError(
+            raise NotImplementedError(
                 f"'{parent.__qualname__}' has no attribute '{self.__name__}'"
             )
 
@@ -456,7 +456,7 @@ class VirtualAttribute(FunctionDecorator):
         --------
         This method resets the attribute back to its original state, as it was
         before :meth:`Attachable.attach_to() <pdcast.Attachable.attach_to>`
-        created it.
+        was called.
 
         .. doctest::
 
@@ -534,6 +534,7 @@ class VirtualAttribute(FunctionDecorator):
         """Call the attribute, passing in the bound object if one exists."""
         if self.__self__ is None:
             return self.__wrapped__(*args, **kwargs)  # static
+
         return self.__wrapped__(self.__self__, *args, **kwargs)  # bound
 
     def __get__(
@@ -556,7 +557,7 @@ def generate_namespace(
     name: str,
     namespace: str
 ) -> tuple:
-    """Get an existing namespace or generate a new one."""
+    """Get an existing namespace or generate a new one with."""
     masked = get_descriptor(class_, namespace, None)
 
     if isinstance(masked, Namespace):
