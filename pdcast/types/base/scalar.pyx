@@ -128,7 +128,7 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        DecoratorType.resolve : the adapter equivalent of this method.
+        DecoratorType.resolve : the decorator equivalent of this method.
 
         Returns
         -------
@@ -165,7 +165,7 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        DecoratorType.from_dtype : the adapter equivalent of this method.
+        DecoratorType.from_dtype : the decorator equivalent of this method.
 
         Notes
         -----

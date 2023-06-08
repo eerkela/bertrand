@@ -19,9 +19,9 @@ from .base import register
 
 @register
 class CategoricalType(DecoratorType):
-    """Categorical adapter for :class:`ScalarType` objects.
+    """Categorical decorator for :class:`ScalarType` objects.
 
-    This adapter keeps track of categorical levels for series objects of the
+    This decorator keeps track of categorical levels for series objects of the
     wrapped type.
     """
 
@@ -83,7 +83,7 @@ class CategoricalType(DecoratorType):
         series: pd.Series
     ) -> pd.Series:
         """Convert an unwrapped series into a categorical representation."""
-        return self.atomic_type.make_categorical(series, levels=self.levels)
+        return self.unwrap().make_categorical(series, levels=self.levels)
 
     #############################
     ####    CONFIGURATION    ####

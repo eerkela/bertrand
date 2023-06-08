@@ -137,6 +137,10 @@ def integer_to_decimal(
     return series.astype(target)
 
 
+# TODO: this is broken because boundscheck no longer implicitly upcasts these
+# abstract types.
+
+
 @cast.overload("int", "datetime")
 def integer_to_datetime(
     series: pd.Series,

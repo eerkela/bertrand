@@ -132,6 +132,11 @@ class catch_ignore(FunctionDecorator):
             raise err
 
 
+# TODO: cast() should just catch OverflowErrors and automatically retry with
+# .larger.  boundscheck then only raises errors and never upcasts.  Where
+# necessary, we just wrap it in a try/except block.
+
+
 ######################
 ####    PUBLIC    ####
 ######################
@@ -175,17 +180,17 @@ def cast(
     """
     series_type = detect_type(series)
 
-    # recursively unwrap adapters and retry
-    # NOTE: These operate like recursive stacks.  If adapters are detected,
+    # recursively unwrap decorators and retry
+    # NOTE: These operate like recursive stacks.  If decorators are detected,
     # they are popped off the stack in FIFO order before recurring.  We do this
     # first to the data, and then to the target data type, allowing conversions
-    # to safely ignore adapters in all their implementations.
+    # to safely ignore decorators in all their implementations.
 
-    for before in getattr(series_type, "adapters", ()):
+    for before in getattr(series_type, "decorators", ()):
         series = before.inverse_transform(series)
         return cast(series, dtype, **kwargs)
 
-    for before in getattr(dtype, "adapters", ()):
+    for before in getattr(dtype, "decorators", ()):
         series = cast(series, dtype.wrapped, **kwargs)
         return before.transform(series)
 

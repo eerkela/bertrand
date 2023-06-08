@@ -79,7 +79,7 @@ class SparseType(DecoratorType):
     def transform(self, series: pd.Series) -> pd.Series:
         """Convert a series into a sparse format with the given fill_value."""
         # apply custom logic for each ScalarType
-        return self.atomic_type.make_sparse(
+        return self.unwrap().make_sparse(
             series,
             fill_value=self.fill_value
         )

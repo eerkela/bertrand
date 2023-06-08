@@ -16,6 +16,9 @@ from pdcast.util.round cimport Tolerance
 # TODO: downcast_integer should use its tol argument for bounds checks
 
 
+# TODO: boundscheck never upcasts, always raises OverflowError
+
+
 ######################
 ####    PUBLIC    ####
 ######################

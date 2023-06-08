@@ -17,7 +17,7 @@ def typecheck(
     data: Any,
     dtype: type_specifier ,
     include_subtypes: bool = True,
-    ignore_adapters: bool = False
+    ignore_decorators: bool = False
 ) -> bool:
     """Check whether example data contains elements of a specified type.
 
@@ -32,11 +32,11 @@ def typecheck(
     include_subtypes : bool, default True
         Specifies whether to include :func:`subtypes <subtype>` in comparisons
         (True), or only check for backend matches (False).
-    ignore_adapters : bool, default False
-        Specifies whether to ignore :class:`adapters <DecoratorType>` that are
-        detected in example data.  By default, the comparison type must match
-        these exactly.  Setting this ``True`` eliminates that requirement,
-        allowing specifiers like ``"int"`` to also match decorated
+    ignore_decorators : bool, default False
+        Specifies whether to ignore :class:`decorators <DecoratorType>` that
+        are detected in example data.  By default, the comparison type must
+        match these exactly.  Setting this ``True`` eliminates that
+        requirement, allowing specifiers like ``"int"`` to also match decorated
         alternatives, like :class:`sparse <SparseType>` and
         :class:`categorical <CategoricalType>` equivalents.
 
@@ -71,7 +71,7 @@ def typecheck(
                 data[col],
                 typespec,
                 include_subtypes=include_subtypes,
-                ignore_adapters=ignore_adapters
+                ignore_decorators=ignore_decorators
             )
             for col, typespec in dtype.items()
         )
@@ -79,8 +79,8 @@ def typecheck(
     cdef CompositeType data_type = CompositeType(detect_type(data))
     cdef CompositeType target_type = resolve_type([dtype])
 
-    # strip adapters if directed
-    if ignore_adapters:
+    # strip decrators if directed
+    if ignore_decorators:
         target_type = CompositeType(x.unwrap() for x in target_type)
         data_type = CompositeType(x.unwrap() for x in data_type)
 

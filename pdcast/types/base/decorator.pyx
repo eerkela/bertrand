@@ -23,10 +23,10 @@ cdef class DecoratorType(VectorType):
     These are used to dynamically modify the behavior of other types, for
     instance by marking them as sparse or categorical.  They can be nested to
     form a singly-linked list that can be iteratively unwrapped using a type's
-    :attr:`.decorators <DecoratorType.decorators>` attribute.  Conversions and other
-    type-related functionality will automatically take these adapters into
-    account, unwrapping them to the appropriate level before re-packaging the
-    result.
+    :attr:`.decorators <DecoratorType.decorators>` attribute.  Conversions and
+    other type-related functionality will automatically take these decorators
+    into account, unwrapping them to the appropriate level before re-packaging
+    the result.
 
     .. note::
 
@@ -255,13 +255,13 @@ cdef class DecoratorType(VectorType):
         """Given an unwrapped conversion result, apply all the necessary logic
         to bring it into alignment with this DecoratorType and all its children.
 
-        This is a recursive method that traverses the `adapters` linked list
+        This is a recursive method that traverses the `decorators` linked list
         in reverse order (from the inside out).  At the first level, the
-        unwrapped series is passed as input to that adapter's
+        unwrapped series is passed as input to that decorators's
         `transform()` method, which may be overridden as needed.  That
         method must return a properly-wrapped copy of the original, which is
-        passed to the next adapter and so on.  Thus, if an DecoratorType seeks to
-        change any aspect of the series it adapts (as is the case with
+        passed to the next decorator and so on.  Thus, if an DecoratorType
+        seeks to change any aspect of the series it adapts (as is the case with
         sparse/categorical types), then it must override this method and invoke
         it *before* applying its own logic, like so:
 
@@ -274,7 +274,7 @@ cdef class DecoratorType(VectorType):
         return series
 
     def inverse_transform(self, series: pd.Series) -> pd.Series:
-        """Remove an adapter from an example series."""
+        """Remove a decorator from an example series."""
         return series.astype(self.wrapped.dtype, copy=False)
 
     ##########################
@@ -470,6 +470,8 @@ cdef DecoratorType insort(
 
         # curr is a duplicate of self
         if isinstance(curr, type(self)):
+            if self == self.base_instance:
+                return wrapped
             curr = curr.wrapped
 
         # curr is lower priority than self

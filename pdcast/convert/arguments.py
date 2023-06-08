@@ -113,6 +113,7 @@ def dtype(
     """Resolve a type specifier and reject it if it is composite or not a
     subtype of the given supertype.
     """
+    # no dtype given
     if val is None:
         if "series" in state:
             series = state["series"]
@@ -122,14 +123,22 @@ def dtype(
                     "cannot interpret empty series without an explicit "
                     "`dtype` argument"
                 )
+
     else:
         val = resolve_type(val)
+
+        # dtype is naked decorator
         if val.unwrap() is None:
             if "series" not in state:
                 raise ValueError(
                     "cannot perform anonymous conversion without data"
                 )
-            val.atomic_type = detect_type(state["series"])
+            encountered = list(val.decorators)
+            val = encountered.pop(-1).replace(
+                wrapped=detect_type(state["series"])
+            )
+            for decorator in reversed(encountered):
+                val = decorator.replace(wrapped=val)
 
     # reject composite
     if isinstance(val, types.CompositeType):

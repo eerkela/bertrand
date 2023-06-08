@@ -13,6 +13,9 @@ from .base import cast
 # -> same with timedelta.  Appears to be related to new abstract interface.
 
 # TODO: bool -> object does not return a dtype: object array
+# -> pdcast.cast([True, False], "object")  returns object
+# -> pdcast.cast([True, False, None], "object")  returns bool[python]
+
 
 
 @cast.overload("bool", "decimal")
