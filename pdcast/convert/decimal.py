@@ -41,7 +41,7 @@ def decimal_to_boolean(
         rule=rounding,
         errors=errors
     )
-    series, dtype = boundscheck(series, dtype, errors=errors)
+    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
     return generic_to_boolean(series, dtype, errors=errors)
 
 
@@ -62,7 +62,7 @@ def decimal_to_integer(
         rule=rounding,
         errors=errors
     )
-    series, dtype = boundscheck(series, dtype, errors=errors)
+    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
     return generic_to_integer(
         series,
         dtype,
@@ -177,6 +177,7 @@ def decimal_to_datetime(
     step_size: int,
     since: time.Epoch,
     tz: datetime.tzinfo,
+    tol: Tolerance,
     errors: str,
     **unused
 ) -> pd.Series:
@@ -189,7 +190,7 @@ def decimal_to_datetime(
         series += since.offset
 
     # check for overflow and upcast if applicable
-    series, dtype = boundscheck(series, dtype, errors=errors)
+    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
 
     # convert to final representation
     return cast(
@@ -211,6 +212,7 @@ def decimal_to_timedelta(
     unit: str,
     step_size: int,
     since: time.Epoch,
+    tol: Tolerance,
     errors: str,
     **unused
 ) -> pd.Series:
@@ -219,7 +221,7 @@ def decimal_to_timedelta(
     series = to_ns(series, unit=unit, step_size=step_size, since=since)
 
     # check for overflow and upcast if necessary
-    series, dtype = boundscheck(series, dtype, errors=errors)
+    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
 
     # convert to final representation
     return cast(

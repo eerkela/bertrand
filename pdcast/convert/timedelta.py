@@ -92,7 +92,7 @@ def pandas_timedelta_to_integer(
         )
 
     # check for overflow
-    series, dtype = boundscheck(series, dtype, errors=errors)
+    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
 
     # delegate to generic conversion
     return generic_to_integer(
@@ -139,7 +139,7 @@ def python_timedelta_to_integer(
         )
 
     # check for overflow
-    series, dtype = boundscheck(series, dtype, errors=errors)
+    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
 
     # delegate to generic conversion
     return generic_to_integer(
@@ -182,8 +182,8 @@ def numpy_timedelta64_to_integer(
     if step_size != 1:
         arr = round_div(arr, step_size, rule=rounding or "down")
 
-    pd.Series(arr, index=series.index, dtype=resolve_type(int).dtype)
-    series, dtype = boundscheck(series, dtype, errors=errors)
+    series = pd.Series(arr, index=series.index, dtype=resolve_type(int).dtype)
+    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
     return generic_to_integer(
         series,
         dtype,

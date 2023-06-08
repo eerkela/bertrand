@@ -24,10 +24,20 @@ from pdcast.util.vector import apply_with_errors
 from . import arguments
 
 
+# TODO: handling OverflowErrors in catch_errors works, but can kill performance
+# if multiple retries are made.  A better solution would involve a context
+# manager that allows users to override arguments locally within conversions.
+# If an OverflowError occurs within the block, then the conversion will be
+# retried with the overridden arguments.  This avoids repeating previous work.
+
+# with retry_overflow(series=series, unit="ns", step_size=1, since="utc"):
+#     series = boundscheck(series, dtype, tol.real, errors)
+
+
 # conversions
-# +------------------------------------------------
+# +===========+===+===+===+===+===+===+===+===+===+
 # |           | b | i | f | c | d | d | t | s | o |
-# +-----------+------------------------------------
+# +===========+===+===+===+===+===+===+===+===+===+
 # | bool      | x | x | x | x | x | x | x | x | x |
 # +-----------+---+---+---+---+---+---+---+---+---+
 # | int       | x | x | x | x | x | x | x | x | x |
@@ -100,7 +110,7 @@ class columnwise(FunctionDecorator):
         return self.__wrapped__(data, dtype, *args, **kwargs)
 
 
-class catch_ignore(FunctionDecorator):
+class catch_errors(FunctionDecorator):
     """A basic decorator that enforces the ``errors="ignore"`` rule during
     conversions.
 
@@ -112,29 +122,51 @@ class catch_ignore(FunctionDecorator):
     def __call__(
         self,
         data: Any,
+        dtype: types.VectorType,
         *args,
         errors: str = NotImplemented,
         **kwargs
     ):
         """Call the wrapped function in a try/except block."""
         if errors is NotImplemented:
-            errors = self.__wrapped__.errors
+            errors = self.__wrapped__.errors  # from @extension_func
 
         try:
-            return self.__wrapped__(data, *args, errors=errors, **kwargs)
+            return self.__wrapped__(
+                data,
+                dtype,
+                *args,
+                errors=errors,
+                **kwargs
+            )
 
-        # parse errors
+        # never ignore these errors
         except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
-            raise  # never ignore these errors
+            raise
+
+        # retry overflow errors using dtype.larger
+        except OverflowError as err:
+            last_err = err
+            for candidate in dtype.larger:
+                try:
+                    return self(
+                        data,
+                        candidate,
+                        *args,
+                        errors=errors,
+                        **kwargs
+                    )
+                except OverflowError as next_err:
+                    last_err = next_err
+
+            # no valid conversion was found
+            raise last_err
+
+        # process according to `errors` arg
         except Exception as err:
             if errors == "ignore":
                 return data
             raise err
-
-
-# TODO: cast() should just catch OverflowErrors and automatically retry with
-# .larger.  boundscheck then only raises errors and never upcasts.  Where
-# necessary, we just wrap it in a try/except block.
 
 
 ######################
@@ -145,7 +177,7 @@ class catch_ignore(FunctionDecorator):
 @attachable
 @columnwise
 @extension_func
-@catch_ignore
+@catch_errors
 @dispatch("series", "dtype", cache_size=128, convert_mixed=True)
 def cast(
     series: Any,

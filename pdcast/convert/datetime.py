@@ -107,7 +107,7 @@ def pandas_timestamp_to_integer(
         )
 
     # check for overflow
-    series, dtype = boundscheck(series, dtype, errors=errors)
+    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
 
     # delegate to generic conversion
     return generic_to_integer(
@@ -168,7 +168,7 @@ def python_datetime_to_integer(
         )
 
     # check for overflow
-    series, dtype = boundscheck(series, dtype, errors=errors)
+    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
 
     # delegate to generic conversion
     return generic_to_integer(
@@ -236,7 +236,7 @@ def numpy_datetime64_to_integer(
     series = pd.Series(arr, index=series.index)
 
     # check for overflow
-    series, dtype = boundscheck(series, dtype, errors=errors)
+    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
 
     # delegate to generic conversion
     return generic_to_integer(

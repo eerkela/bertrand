@@ -24,10 +24,11 @@ from pdcast.util.round cimport Tolerance
 ######################
 
 
-cpdef tuple boundscheck(
+cpdef object boundscheck(
     object series,
     types.ScalarType dtype,
-    str errors = "raise"
+    object tol,
+    str errors
 ):
     """Ensure that a series fits within the allowable range of a given data
     type.
@@ -65,7 +66,7 @@ cpdef tuple boundscheck(
 
     # trivial case for empty series
     if series_type is None:
-        return series, dtype
+        return series
 
     # get min/max values as python ints (prevents inconsistent comparison)
     cdef object min_val = series.min()
@@ -77,17 +78,9 @@ cpdef tuple boundscheck(
 
     # check for overflow
     if min_val < dtype.min or max_val > dtype.max:
-        # attempt to upcast dtype to fit series
-        for candidate in dtype.larger:
-            if min_val < candidate.min or max_val > candidate.max:
-                continue
-            return series, candidate
-
-        # TODO: clip to within tolerance?
-        # if min_val > dtype.min - tol and max_val < dtype.max + tol:
-        #     series.clip(dtype.min, dtype.max)
-        # else:
-        #     see below
+        # clip to within tolerance
+        if min_val >= dtype.min - tol and max_val <= dtype.max + tol:
+            return series.clip(dtype.min, dtype.max)
 
         # continue with OverflowError
         index = (series < dtype.min) | (series > dtype.max)
@@ -99,7 +92,7 @@ cpdef tuple boundscheck(
                 f"{shorten_list(series[index].index.values)}"
             )
 
-    return series, dtype
+    return series
 
 
 cpdef object downcast_integer(

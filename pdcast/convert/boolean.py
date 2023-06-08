@@ -7,15 +7,9 @@ from pdcast import types
 from .base import cast
 
 
-# TODO: boolean -> datetime gives infinite recursion
-# pdcast.cast([True, False, pd.NA], "datetime")
-
-# -> same with timedelta.  Appears to be related to new abstract interface.
-
 # TODO: bool -> object does not return a dtype: object array
 # -> pdcast.cast([True, False], "object")  returns object
 # -> pdcast.cast([True, False, None], "object")  returns bool[python]
-
 
 
 @cast.overload("bool", "decimal")

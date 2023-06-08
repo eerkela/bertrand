@@ -5,10 +5,11 @@ from pdcast.util.round cimport Tolerance
 
 
 # functions
-cpdef tuple boundscheck(
+cpdef object boundscheck(
     object series,
     types.ScalarType dtype,
-    str errors = *
+    object tol,
+    str errors
 )
 cpdef object downcast_integer(
     object series,

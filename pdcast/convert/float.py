@@ -33,7 +33,7 @@ def float_to_boolean(
         rule=rounding,
         errors=errors
     )
-    series, dtype = boundscheck(series, dtype, errors=errors)
+    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
     return generic_to_boolean(series, dtype, errors=errors)
 
 
@@ -54,7 +54,7 @@ def float_to_integer(
         rule=rounding,
         errors=errors
     )
-    series, dtype = boundscheck(series, dtype, errors=errors)
+    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
     return generic_to_integer(
         series,
         dtype,
