@@ -62,6 +62,63 @@ cdef class CompositeType(Type):
 
         self._index = index
 
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
+
+    def from_string(self, *args: str) -> CompositeType:
+        """Construct a :class:`CompositeType <pdcast.CompositeType>` from a
+        string in the
+        :ref:`type specification mini-language <resolve_type.mini_language>`.
+
+        Parameters
+        ----------
+        *args : str
+            Positional arguments supplied to this type.  These must be empty.
+
+        Returns
+        -------
+        Type
+            A named :class:`CompositeType <pdcast.CompositeType>`.
+
+        Raises
+        ------
+        TypeError
+            If any parametrized arguments are given.
+
+        See Also
+        --------
+        Type.from_string :
+            For high-level discussion on how this method is called.
+
+        Examples
+        --------
+        :class:`CompositeTypes <pdcast.CompositeType>` support the addition of
+        dynamic aliases at runtime.  These can be used to 'pin' specific
+        composites, allowing users to refer to them directly by name.
+
+        .. doctest::
+
+            >>> numeric = pdcast.resolve_type(["bool", "int", "float", "complex"])
+            >>> numeric.aliases.add("numeric")
+            >>> pdcast.resolve_type("numeric")   # doctest: +SKIP
+            CompositeType({bool, int, float, complex})
+
+        If the alias is removed, then the composite will be inaccessible.
+
+        .. doctest::
+
+            >>> numeric.aliases.remove("numeric")
+            >>> pdcast.resolve_type("numeric")
+            Traceback (most recent call last):
+                ...
+            ValueError: invalid specifier: 'numeric'
+        """
+        if args:
+            raise TypeError("CompositeTypes cannot be parametrized")
+
+        return self
+
     ###############################
     ####    UTILITY METHODS    ####
     ###############################

@@ -116,7 +116,7 @@ These should always be preferred over direct instantiation to allow for the
 `flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_ pattern.
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     ScalarType.instance
     ScalarType.resolve
@@ -126,19 +126,6 @@ These should always be preferred over direct instantiation to allow for the
     ScalarType.slugify
     ScalarType.kwargs
 
-.. _ScalarType.aliases:
-
-Aliases
--------
-See :attr:`ScalarType.aliases` for more information on how aliases are used.
-
-.. autosummary::
-    :toctree: ../../generated/
-
-    ScalarType.register_alias <VectorType.register_alias>
-    ScalarType.remove_alias <VectorType.remove_alias>
-    ScalarType.clear_aliases <VectorType.clear_aliases>
-
 .. _ScalarType.subtypes:
 
 Subtypes/Supertypes
@@ -147,7 +134,7 @@ See the :func:`@subtype <subtype>` decorator for more information on how to
 define subtypes.
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     ScalarType.is_root
     ScalarType.root
@@ -164,7 +151,7 @@ See the :func:`@generic <generic>` decorator for more information on how to
 leverage generic types and register individual backends.
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     ScalarType.is_generic
     ScalarType.backend
@@ -180,7 +167,7 @@ See :class:`DecoratorType` for more information on how to wrap
 :class:`ScalarTypes <ScalarType>` with adapters.
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     ScalarType.decorators
     ScalarType.unwrap
@@ -193,7 +180,7 @@ Upcast/Downcast
 ---------------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     ScalarType.larger
     ScalarType.smaller
@@ -204,7 +191,7 @@ Missing Values
 --------------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     ScalarType.is_nullable
     ScalarType.make_nullable
@@ -215,7 +202,7 @@ Special Methods
 ---------------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     ScalarType.__contains__
     ScalarType.__eq__

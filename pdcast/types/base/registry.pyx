@@ -14,7 +14,7 @@ from .decorator cimport DecoratorType
 from .scalar cimport ScalarType, AbstractType
 
 
-# TODO: adding aliases during init automatically appends them to
+# TODO: adding aliases during init_base automatically appends them to
 # pinned_aliases and makes them available from registry.aliases.  This may not
 # be desirable.
 
@@ -804,7 +804,7 @@ cdef class TypeRegistry:
         .. currentmodule:: pdcast
 
         .. autosummary::
-            :toctree: /generated/
+            :toctree: ../generated/
 
             PriorityList
             PriorityList.index
@@ -932,7 +932,14 @@ cdef class TypeRegistry:
 
 
 cdef class AliasManager:
-    """Interface for dynamically managing a type's aliases."""
+    """A set-like interface that holds :attr:`aliases <pdcast.Type.aliases>`
+    for a given :class:`Type <pdcast.Type>`.
+
+    These objects are attached to every :class:`Type <pdcast.Type>` that
+    ``pdcast`` generates, enabling users to modify the behavior of
+    :func:`detect_type() <pdcast.detect_type>` and
+    :func:`resolve_type() <pdcast.resolve_type>` at runtime.
+    """
 
     def __init__(self, Type instance):
         self.instance = instance
@@ -943,20 +950,38 @@ cdef class AliasManager:
     #############################
 
     def add(self, alias: type_specifier, overwrite: bool = False) -> None:
-        """Alias a type specifier to the managed type.
+        """Register a type specifier as an alias of the managed
+        :class:`Type <pdcast.Type>`.
 
         Parameters
         ----------
         alias : type_specifier
-            A valid type specifier to register as an alias of the managed type.
+            A valid type specifier to register.
         overwrite : bool, default False
             Indicates whether to overwrite existing aliases (``True``) or
             raise an error (``False``) in the event of a conflict.
 
+        Raises
+        ------
+        TypeError
+            If the alias is not of a recognizable type.
+        ValueError
+            If ``overwrite=False`` and the alias conflicts with another type.
+
         Notes
         -----
-        See the docs on the :ref:`type specification mini language
-        <resolve_type.mini_language>` for more information on how aliases work.
+        See the :ref:`API docs <Type.aliases>` for more information on how
+        aliases work.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.BooleanType.aliases.add("foo")
+            >>> pdcast.resolve_type("foo")
+            BooleanType()
         """
         alias = self.normalize_specifier(alias)
 
@@ -971,8 +996,10 @@ cdef class AliasManager:
                     f"{repr(other)}"
                 )
 
+        # register aliases with global registry
         if not self:
             self.pin()
+
         self.aliases.add(alias)
         registry.flush()  # rebuild regex patterns
 
@@ -982,18 +1009,41 @@ cdef class AliasManager:
         Parameters
         ----------
         alias : type_specifier
-            A valid type specifier to remove from the managed type's aliases.
+            A valid type specifier to remove.
+
+        Raises
+        ------
+        TypeError
+            If the alias is not of a recognizable type.
+        KeyError
+            If the alias is not a member of the set.
 
         Notes
         -----
-        See the docs on the :ref:`type specification mini language
-        <resolve_type.mini_language>` for more information on how aliases work.
+        See the :ref:`API docs <Type.aliases>` for more information on how
+        aliases work.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.resolve_type("boolean")
+            BooleanType()
+            >>> pdcast.BooleanType.aliases.remove("boolean")
+            >>> pdcast.resolve_type("boolean")
+            Traceback (most recent call last):
+                ...
+            ValueError: invalid specifier: 'boolean'
         """
         alias = self.normalize_specifier(alias)
-
         self.aliases.remove(alias)
+
+        # remove aliases from global registry
         if not self:
             self.unpin()
+
         Type.registry.flush()  # rebuild regex patterns
 
     def discard(self, alias: type_specifier) -> None:
@@ -1002,12 +1052,30 @@ cdef class AliasManager:
         Parameters
         ----------
         alias : type_specifier
-            A valid type specifier to remove from the managed type's aliases.
+            A valid type specifier to remove.
+
+        Raises
+        ------
+        TypeError
+            If the alias is not of a recognizable type.
 
         Notes
         -----
-        See the docs on the :ref:`type specification mini language
-        <resolve_type.mini_language>` for more information on how aliases work.
+        See the :ref:`API docs <Type.aliases>` for more information on how
+        aliases work.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.BooleanType.aliases.discard("boolean")
+            >>> pdcast.BooleanType.aliases    # doctest: +SKIP
+            AliasManager({'bool', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.BooleanType.aliases.discard("foo")
+            >>> pdcast.BooleanType.aliases    # doctest: +SKIP
+            AliasManager({'bool', 'bool_', 'bool8', 'b1', '?'})
         """
         try:
             self.remove(alias)
@@ -1015,29 +1083,65 @@ cdef class AliasManager:
             pass
 
     def pop(self) -> type_specifier:
-        """Pop an alias from the managed type.
+        """Pop an alias from the set.
+
+        Returns
+        -------
+        type_specifier
+            A random alias from the set.
+
+        Raises
+        ------
+        KeyError
+            If the set is empty.
 
         Notes
         -----
-        See the docs on the :ref:`type specification mini language
-        <resolve_type.mini_language>` for more information on how aliases work.
+        See the :ref:`API docs <Type.aliases>` for more information on how
+        aliases work.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.BooleanType.aliases.pop()   # doctest: +SKIP
+            "bool"
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'boolean', 'bool_', 'bool8', 'b1', '?'})
         """
         value = self.aliases.pop()
+
+        # remove aliases from global registry
         if not self:
             self.unpin()
-        Type.registry.flush()
+
+        Type.registry.flush()  # rebuild regex patterns
         return value
 
     def clear(self) -> None:
-        """Remove every alias that is registered to the managed type.
+        """Remove every alias from the managed type.
 
         Notes
         -----
-        See the docs on the :ref:`type specification mini language
-        <resolve_type.mini_language>` for more information on how aliases work.
+        See the :ref:`API docs <Type.aliases>` for more information on how
+        aliases work.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.BooleanType.aliases.clear()
+            >>> pdcast.BooleanType.aliases
+            AliasManager(set())
         """
+        # remove aliases from global registry
         if self:
             self.unpin()
+
         self.aliases.clear()
         Type.registry.flush()  # rebuild regex patterns
 
@@ -1045,17 +1149,21 @@ cdef class AliasManager:
     ####    SET OPERATIONS    ####
     ##############################
 
-    def __or__(self, aliases: set) -> set:
-        return self.aliases | aliases
+    def __or__(self, other: set) -> set:
+        """Set-like union operator."""
+        return self.aliases | other
 
-    def __and__(self, aliases: set) -> set:
-        return self.aliases & aliases
+    def __and__(self, other: set) -> set:
+        """Set-like intersection operator."""
+        return self.aliases & other
 
-    def __sub__(self, aliases: set) -> set:
-        return self.aliases - aliases
+    def __sub__(self, other: set) -> set:
+        """Set-like difference operator."""
+        return self.aliases - other
 
-    def __xor__(self, aliases: set) -> set:
-        return self.aliases ^ aliases
+    def __xor__(self, other: set) -> set:
+        """Set-like symmetric difference operator."""
+        return self.aliases ^ other
 
     #######################
     ####    PRIVATE    ####
@@ -1111,10 +1219,15 @@ cdef class AliasManager:
 
 
 cdef class Type:
-    """Base type for all type objects.
+    """Base class for all type objects.
 
-    This has no interface of its own.  It simply serves to anchor inheritance
-    and distribute the shared type registry to all ``pdcast`` types.
+    This does relatively little on its own, mainly serving to anchor
+    inheritance and distribute the shared
+    :class:`TypeRegistry <pdcast.TypeRegistry>` to all ``pdcast`` type objects.
+    It also provides a unified interface for managing their
+    :ref:`aliases <pdcast.Type.aliases>` and customizing their creation via
+    the :func:`detect_type() <pdcast.detect_type>` and
+    :func:`resolve_type <pdcast.resolve_type>` constructors.
     """
 
     registry: TypeRegistry = TypeRegistry()
@@ -1123,47 +1236,256 @@ cdef class Type:
         self._aliases = AliasManager(self)
 
     @property
-    def aliases(self) -> AliasManager:
+    def aliases(self):
         """A set of unique aliases for this type.
     
-        These must be defined at the **class level**, and are used by
-        :func:`detect_type` and :func:`resolve_type` to map aliases onto their
-        corresponding types.
+        Aliases are used by :func:`detect_type` and :func:`resolve_type` to map
+        specifiers to their corresponding types.
 
         Returns
         -------
-        set[str | type | numpy.dtype]
-            A set containing all the aliases that are associated with this
-            type.
+        AliasManager
+            A set-like container holding all the aliases that are associated
+            with this type.
 
         Notes
         -----
-        Special significance is given to the type of each alias:
+        :class:`AliasManagers <pdcast.AliasManager>` behave like
+        :class:`sets <python:set>` with the following interface:
 
-            *   Strings are used by the :ref:`type specification mini-language
-                <resolve_type.mini_language>` to trigger :meth:`resolution
-                <ScalarType.resolve>` of the associated type.
-            *   Numpy/pandas :class:`dtype <numpy.dtype>`\ /\
+        .. autosummary::
+            :toctree: ../generated/
+
+            AliasManager
+            AliasManager.add
+            AliasManager.remove
+            AliasManager.discard
+            AliasManager.pop
+            AliasManager.clear
+
+        They can accept specifiers of a variety of kinds, including:
+
+            *   Strings, which are interpreted according to the
+                :ref:`type specification mini-language <resolve_type.mini_language>`.
+            *   Numpy/pandas :class:`dtype <numpy.dtype>`\ /
                 :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
-                objects are used by :func:`detect_type` for *O(1)* type
-                inference.  In both cases, parametrized dtypes can be handled
-                by adding a root dtype to :attr:`aliases <ScalarType.aliases>`.
-                For numpy :class:`dtypes <numpy.dtype>`, this will be the
-                root of their :func:`numpy.issubdtype` hierarchy.  For pandas
-                :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`,
-                it is its :class:`type() <python:type>` directly.  When either
-                of these are encountered, they will invoke the type's
-                :meth:`from_dtype() <ScalarType.from_dtype>` constructor.
-            *   Raw Python types are used by :func:`detect_type` for scalar or
-                unlabeled vector inference.  If the type of a scalar element
-                appears in :attr:`aliases <ScalarType.aliases>`, then the
-                associated type's :meth:`from_scalar() <ScalarType.from_scalar>` method
-                will be called on it.
+                objects, which are translated directly into the ``pdcast`` type
+                system.
+            *   Python class objects, which are used for vectorized inference.
 
-        All aliases are recognized by :func:`resolve_type` and the set always
-        includes the :class:`ScalarType` itself.
+        For more information on how these are used, see the
+        :ref:`API docs <Type.constructors>`.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.resolve_type("?")
+            BooleanType()
+            >>> pdcast.BooleanType.aliases.add("foo")
+            >>> pdcast.resolve_type("foo")
+            BooleanType()
         """
         return self._aliases
+
+    def from_string(self, *args: str) -> Type:
+        """Construct a :class:`Type <pdcast.Type>` from a string in the
+        :ref:`type specification mini-language <resolve_type.mini_language>`.
+
+        Parameters
+        ----------
+        *args : str
+            Positional arguments supplied to this type.  These will always be
+            passed as strings, exactly as they appear in the
+            :ref:`type specification mini-language <resolve_type.mini_language>`.
+
+        Returns
+        -------
+        Type
+            An instance of the associated type.
+    
+        See Also
+        --------
+        Type.from_dtype :
+            Resolve a :class:`Type <pdcast.Type>` from a numpy/pandas
+            :class:`dtype <numpy.dtype>`\ /
+            :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
+            object.
+        Type.from_scalar :
+            Detect a :class:`Type <pdcast.Type>` from a scalar example object.
+
+        Examples
+        --------
+        This method is automatically called by
+        :func:`resolve_type() <pdcast.resolve_type>` whenever it encounters a
+        string specifier.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("float")
+            FloatType()
+            >>> pdcast.resolve_type("datetime[pandas, US/Pacific]")
+
+        This directly translates to:
+
+        .. doctest::
+
+            >>> pdcast.FloatType.from_string()
+            FloatType()
+            >>> pdcast.DatetimeType.from_string("pandas", "US/Pacific")
+            PandasTimestampType(tz=zoneinfo.ZoneInfo(key='US/Pacific'))
+        """
+        return NotImplementedError(
+            f"{type(self).__qualname__} cannot be constructed from a string"
+        )
+
+    def from_dtype(self, dtype: dtype_like) -> Type:
+        """Construct a :class:`Type` from a numpy/pandas
+        :class:`dtype <numpy.dtype>`\ /\
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
+
+        Parameters
+        ----------
+        dtype : np.dtype | ExtensionDtype
+            A numpy :class:`dtype <numpy.dtype>` or pandas
+            :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
+            parse.
+
+        Returns
+        -------
+        Type
+            An instance of the associated type.
+
+        See Also
+        --------
+        Type.from_string :
+            Resolve a :class:`Type <pdcast.Type>` from a string in the
+            :ref:`type specification mini-language <resolve_type.mini_language>`.
+        Type.from_scalar :
+            Detect a :class:`Type <pdcast.Type>` from a scalar example object.
+
+        Examples
+        --------
+        This method is automatically called by
+        :func:`resolve_type() <pdcast.resolve_type>` whenever it encounteres
+        a numpy/pandas dtype specifier.
+
+        .. doctest::
+
+            >>> import numpy as np
+            >>> import pandas as pd
+
+            >>> pdcast.resolve_type(np.dtype("bool"))
+            NumpyBooleanType()
+            >>> pdcast.resolve_type(pd.Int64Dtype())
+            PandasInt64Type()
+
+        This directly translates to:
+
+        .. doctest::
+
+            >>> pdcast.NumpyBooleanType.from_dtype(np.dtype("bool"))
+            NumpyBooleanType()
+            >>> pdcast.PandasInt64Type.from_dtype(pd.Int64Dtype())
+            PandasInt64Type()
+
+        This method is also called whenever
+        :func:`detect_type() <pdcast.detect_type>` encounters data that has a
+        corresponding ``.dtype`` field.
+
+        .. doctest::
+
+            >>> pdcast.detect_type(np.array([True, False, True]))
+            NumpyBooleanType()
+            >>> pdcast.detect_type(pd.Series([1, 2, 3], dtype=pd.Int64Dtype()))
+            PandasInt64Type()
+
+        Which follows the same pattern as above.  This allows
+        :func:`detect_type() <pdcast.detect_type>` to do *O(1)* inference on
+        properly-labeled, numpy-compatible data.
+        """
+        return NotImplementedError(
+            f"{type(self).__qualname__} cannot be constructed from a "
+            f"numpy/pandas dtype object"
+        )
+
+    def from_scalar(self, example: Any) -> Type:
+        """Construct a :class:`Type` from scalar example data.
+
+        Parameters
+        ----------
+        example : Any
+            A scalar example of this type (e.g. ``1``, ``42.0``, ``"foo"``,
+            etc.).
+
+        Returns
+        -------
+        Type
+            An instance of the associated type.
+
+        See Also
+        --------
+        Type.from_string :
+            Resolve a :class:`Type <pdcast.Type>` from a string in the
+            :ref:`type specification mini-language <resolve_type.mini_language>`.
+        Type.from_dtype :
+            Resolve a :class:`Type <pdcast.Type>` from a numpy/pandas
+            :class:`dtype <numpy.dtype>`\ /
+            :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
+            object.
+
+        Notes
+        -----
+        In order for this method to be called, the output of
+        :class:`type() <python:type>` on the example must be registered as one
+        of this type's :attr:`aliases <Type.aliases>`.
+
+        Examples
+        --------
+        This method is automatically called by
+        :func:`detect_type() <pdcast.detect_type>` whenever it encounters data
+        that lacks a proper ``.dtype`` field.  In this case, we iterate
+        over the input data, calling this method at every index.
+
+        .. doctest::
+
+            >>> pdcast.detect_type([True, False, True])
+            PythonBooleanType()
+            >>> pdcast.detect_type(pd.Series([1, 2, 3], dtype=object))
+            PythonIntegerType()
+
+        At a high level, this translates to:
+
+        .. doctest::
+
+            >>> {pdcast.PythonBooleanType.from_scalar(x) for x in [True, False, True]}.pop()
+            PythonBooleanType()
+            >>> {pdcast.PythonIntegerType.from_scalar(x) for x in [1, 2, 3]}.pop()
+            PythonIntegerType()
+
+        This can be naturally extended to support data of mixed type, yielding
+        a :class:`composite <pdcast.CompositeType>` result.
+
+        .. doctest::
+
+            >>> mixed = pdcast.detect_type([False, 1, 2.0])   # doctest: +SKIP
+            >>> mixed
+            CompositeType({bool[python], int[python], float64[python]})
+
+        The result records the observed type at every index:
+
+        .. doctest::
+
+            >>> mixed.index
+            array([PythonBooleanType(), PythonIntegerType(), PythonFloatType()],
+                   dtype=object)
+        """
+        raise NotImplementedError(
+            f"{type(self).__qualname__} cannot be constructed from example "
+            f"data"
+        )
 
 
 #######################
@@ -1296,8 +1618,17 @@ cdef class PriorityList:
 
         return index
 
-    def index(self, item: type | VectorType) -> int:
-        """Get the index of an item within the list."""
+    def index(self, item: Any) -> int:
+        """Get the index of an item within the list.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> foo = pdcast.PriorityList([1, 2, 3])
+            >>> foo.index(2)
+            1
+        """
         if isinstance(item, VectorType):
             item = type(item)
 
@@ -1307,8 +1638,18 @@ cdef class PriorityList:
 
         raise ValueError(f"{repr(item)} is not contained in the list")
 
-    def move_up(self, item: type | VectorType) -> None:
-        """Move an item up one level in priority."""
+    def move_up(self, item: Any) -> None:
+        """Move an item up one level in priority.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> foo = pdcast.PriorityList([1, 2, 3])
+            >>> foo.move_up(2)
+            >>> foo
+            PriorityList([2, 1, 3])
+        """
         if isinstance(item, VectorType):
             item = type(item)
 
@@ -1331,8 +1672,18 @@ cdef class PriorityList:
             node.next = prev
             prev.prev = node
 
-    def move_down(self, item: type | VectorType) -> None:
-        """Move an item down one level in priority."""
+    def move_down(self, item: Any) -> None:
+        """Move an item down one level in priority.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> foo = pdcast.PriorityList([1, 2, 3])
+            >>> foo.move_down(2)
+            >>> foo
+            PriorityList([1, 3, 2])
+        """
         if isinstance(item, VectorType):
             item = type(item)
 
@@ -1355,8 +1706,22 @@ cdef class PriorityList:
             node.prev = next
             next.next = node
 
-    def move(self, item: type | VectorType, index: int) -> None:
-        """Move an item to the specified index."""
+    def move(self, item: Any, index: int) -> None:
+        """Move an item to the specified index.
+
+        Notes
+        -----
+        This method can accept negative indices.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> foo = pdcast.PriorityList([1, 2, 3])
+            >>> foo.move(2, -1)
+            >>> foo
+            PriorityList([1, 3, 2])
+        """
         if isinstance(item, VectorType):
             item = type(item)
 

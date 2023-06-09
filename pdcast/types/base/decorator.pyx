@@ -66,7 +66,7 @@ cdef class DecoratorType(VectorType):
 
         .. note::
 
-            These work slightly differently from :attr:`ScalarType.aliases` in
+            These work slightly differently from :attr:`Type.aliases` in
             that they do not support ``type`` or ``np.dtype`` objects.  This is
             because :class:`DecoratorTypes <DecoratorType>` cannot describe scalar
             (non-vectorized) data, and there is no direct equivalent within

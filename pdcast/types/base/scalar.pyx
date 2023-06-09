@@ -170,12 +170,12 @@ cdef class ScalarType(VectorType):
         Notes
         -----
         For numpy :class:`dtypes <numpy.dtype>`, the input to this function
-        must be a member of the type's :attr:`aliases <ScalarType.aliases>`
+        must be a member of the type's :attr:`aliases <Type.aliases>`
         attribute.
 
         For pandas :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`,
         the input's **type** must be a member of
-        :attr:`aliases <ScalarType.aliases>`, not the dtype itself.  This
+        :attr:`aliases <Type.aliases>`, not the dtype itself.  This
         asymmetry allows pandas dtypes to be arbitrarily parameterized when
         passed to this method.
         """
@@ -210,7 +210,7 @@ cdef class ScalarType(VectorType):
 
         In order for this method to be called, the output of
         :class:`type() <python:type>` on the example must be registered as one
-        of this type's :attr:`aliases <ScalarType.aliases>`.
+        of this type's :attr:`aliases <Type.aliases>`.
 
         If the input to :func:`detect_type` is vectorized, then this method
         will be called at each index.

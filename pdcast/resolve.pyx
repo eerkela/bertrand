@@ -185,9 +185,7 @@ cdef class DtypeResolver(Resolver):
         cdef types.Type instance
 
         instance = self.aliases[type(self.specifier)]
-        if hasattr(instance, "from_dtype"):
-            return instance.from_dtype(self.specifier)
-        return instance
+        return instance.from_dtype(self.specifier)
 
 
 cdef class StringResolver(Resolver):
@@ -223,10 +221,9 @@ cdef class StringResolver(Resolver):
         else:
             instance = self.aliases[match_dict["type"]]
 
-        if hasattr(instance, "from_string"):
-            args = match_dict["args"]
-            tokens = [] if not args else tokenize(args)
-            instance = instance.from_string(*tokens)
+        args = match_dict["args"]
+        tokens = [] if not args else tokenize(args)
+        instance = instance.from_string(*tokens)
 
         return instance
 

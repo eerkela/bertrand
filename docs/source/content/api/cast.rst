@@ -170,7 +170,7 @@ within its expanded :doc:`type system <../types/types>`.  They inherit the same
 :ref:`arguments <cast.arguments>` as above.
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     to_boolean
     to_integer

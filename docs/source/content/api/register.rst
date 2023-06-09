@@ -83,7 +83,7 @@ A type cannot be initialized unless the following conditions are met:
     *   The class's :attr:`name <ScalarType.name>` must be unique or
         inherited from an abstract type (via
         :meth:`AbstractType.implementation <pdcast.AbstractType.implementation>`).
-    *   If given, The class's :attr:`aliases <ScalarType.aliases>` must
+    *   If given, The class's :attr:`aliases <Type.aliases>` must
         contain unique specifiers of a recognizable type.
 
 If either of these conditions are broken, then an error will be raised

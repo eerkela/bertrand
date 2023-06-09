@@ -14,7 +14,7 @@ Add/Remove
 ----------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     CompositeType.add
     CompositeType.remove
@@ -26,7 +26,7 @@ Subtypes/Supertypes
 -------------------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     CompositeType.expand
     CompositeType.collapse
@@ -36,7 +36,7 @@ Comparisons
 -----------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     CompositeType.union
     CompositeType.intersection
@@ -47,7 +47,7 @@ Membership
 ----------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     CompositeType.contains
     CompositeType.issubset
@@ -58,7 +58,7 @@ In-place Updates
 ----------------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     CompositeType.update
     CompositeType.intersection_update
@@ -69,7 +69,7 @@ Special Methods
 ---------------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     CompositeType.__and__
     CompositeType.__contains__

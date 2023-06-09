@@ -17,7 +17,7 @@ Constructors
 These are used by 
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     DecoratorType.resolve
     DecoratorType.from_dtype
@@ -30,7 +30,7 @@ Aliases
 -------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     DecoratorType.clear_aliases <VectorType.clear_aliases>
     DecoratorType.register_alias <VectorType.register_alias>
@@ -42,7 +42,7 @@ Subtypes/Supertypes
 -------------------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     DecoratorType.contains
 
@@ -52,7 +52,7 @@ Adapters
 --------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     DecoratorType.wrapped
     DecoratorType.atomic_type
@@ -67,7 +67,7 @@ Special Methods
 ---------------
 
 .. autosummary::
-    :toctree: ../../generated/
+    :toctree: ../../generated
 
     ScalarType.__contains__
     ScalarType.__eq__
