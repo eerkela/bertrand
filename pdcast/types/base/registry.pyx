@@ -14,6 +14,10 @@ from .decorator cimport DecoratorType
 from .scalar cimport ScalarType, AbstractType
 
 
+# TODO: aliases should implicitly include the class, and it should not be
+# removed during .remove()
+
+
 ######################
 ####    PUBLIC    ####
 ######################
@@ -138,22 +142,23 @@ cdef class TypeRegistry:
         """
         self._hash += 1
 
-    def add(self, instance: VectorType) -> None:
+    def add(self, typ: type | VectorType) -> None:
         """Validate a base type and add it to the registry.
 
         Parameters
         ----------
-        instance : VectorType
-            An instance of a :class:`VectorType <pdcast.VectorType>` to add to
-            the registry.  This instance must not be parametrized, and it must
-            implement at least the :attr:`name <pdcast.VectorType.name>` and
+        typ : VectorType
+            An subclass or instance of :class:`VectorType <pdcast.VectorType>`
+            to add to the registry.  If an instance is given, it must not be
+            parametrized, and it must implement at least the
+            :attr:`name <pdcast.VectorType.name>` and
             :attr:`aliases <pdcast.VectorType.aliases>` attributes  to be
             considered valid.
 
         Raises
         ------
         TypeError
-            If the instance is malformed in some way.  This can happen if the
+            If the type is malformed in some way.  This can happen if the
             type is parametrized, does not have an appropriate
             :attr:`name <pdcast.VectorType.name>` or
             :attr:`aliases <pdcast.VectorType.aliases>`, or if the signature of
@@ -165,63 +170,75 @@ cdef class TypeRegistry:
         register : automatically call this method as a class decorator.
         TypeRegistry.remove : remove a type from the registry.
         """
+        # validate type is a subclass of VectorType
+        if isinstance(typ, type):
+            if not issubclass(typ, VectorType):
+                raise TypeError(f"type must be a subclass of VectorType: {typ}")
+            typ = typ() if not typ.base_instance else typ.base_instance
+
+        elif not isinstance(typ, VectorType):
+            raise TypeError(f"type must be an instance of VectorType: {typ}")
+
         # validate instance is not parametrized
-        if instance != instance.base_instance:
-            raise TypeError(f"{repr(instance)} must not be parametrized")
+        if typ != typ.base_instance:
+            raise TypeError(f"{repr(typ)} must not be parametrized")
 
         # validate type is not already registered
-        if type(instance) in self.instances:
-            previous = self.instances[type(instance)]
+        if type(typ) in self.instances:
+            previous = self.instances[type(typ)]
             raise RuntimeError(
-                f"{type(instance)} is already registered to {repr(previous)}"
+                f"{type(typ)} is already registered to {repr(previous)}"
             )
 
         # validate name is unique
-        existing = self.names.get(instance.name, None)
+        existing = self.names.get(typ.name, None)
         if existing is None:
-            self.names[instance.name] = instance
+            self.names[typ.name] = typ
         else:
             implementations = self.implementations.get(type(existing), {})
-            if type(instance) not in implementations.values():
+            if type(typ) not in implementations.values():
                 raise TypeError(
-                    f"{repr(instance)} name must be unique: '{instance.name}' "
-                    f"is currently registered to {repr(existing)}"
+                    f"{repr(typ)} name must be unique: '{typ.name}' is "
+                    f"currently registered to {repr(existing)}"
                 )
 
-        self.instances[type(instance)] = instance
+        self.instances[type(typ)] = typ
         self.update_hash()
 
-    def remove(self, instance: VectorType) -> None:
+    def remove(self, typ: type_specifier) -> None:
         """Remove a base type from the registry.
 
         Parameters
         ----------
-        instance : VectorType
+        typ : type_specifier
             The type to remove.
 
         Raises
         ------
         KeyError
-            If the instance is not in the registry.  This will also be raised
-            if the instance is parametrized.
+            If the type is not in the registry.  This will also be raised if it
+            is parametrized.
 
         See Also
         --------
         TypeRegistry.add : add a type to the registry.
         TypeRegistry.clear : remove all types from the registry.
         """
-        if instance not in self:
-            raise ValueError(f"{repr(instance)} is not registered")
+        from pdcast.resolve import resolve_type
 
-        del self.instances[type(instance)]
-        instance.aliases.clear()
-        if instance in self.names.values():
-            del self.names[instance.name]
+        typ = resolve_type(typ)
+        if isinstance(typ, CompositeType):
+            raise TypeError(f"type must not be composite: {typ}")
+
+        del self.instances[type(typ)]
+        typ.aliases.clear()
+        if typ in self.names.values():
+            del self.names[typ.name]
 
         # recur for each of the instance's children
-        for typ in instance.subtypes:
+        for typ in typ.subtypes:
             self.remove(typ)
-        for backend, typ in getattr(instance, "backends", {}).items():
+        for backend, typ in getattr(typ, "backends", {}).items():
             if backend is not None:
                 self.remove(typ)
 

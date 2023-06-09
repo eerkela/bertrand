@@ -60,10 +60,10 @@ automatically, ensuring memory efficiency.
     >>> CustomType("baz") is CustomType("baz")
     True
 
-Additionally, any aliases that are defined on the parent class will be
-automatically transfered to the base instance, making them accessible from
-:func:`detect_type <pdcast.detect_type>` and
-:func:`resolve_type <pdcast.resolve_type>`.
+Additionally, any aliases that are defined on the parent class will
+automatically be transfered to the base instance, making them accessible from
+:func:`detect_type() <pdcast.detect_type>` and
+:func:`resolve_type() <pdcast.resolve_type>`.
 
 .. doctest::
 
@@ -97,7 +97,7 @@ explaining the conflict.
 
     >>> @pdcast.register
     ... class CustomType(pdcast.ScalarType):
-    ...     """A user-defined type extension."""
+    ...     """A user-defined extension type."""
     ... 
     ...     name = "int"   # reserved for IntegerType
     ...     aliases = {"bar"}
@@ -129,9 +129,9 @@ Conditional types can be declared using the ``cond`` argument of
     ...         super().__init__(x=x)
 
 Unless the condition evaluates to ``True``, these types will not be added to
-the registry, and will thus not be accessible from
-:func:`detect_type <pdcast.detect_type>` or
-:func:`resolve_type <pdcast.resolve_type>`.
+the registry, and will therefore not be accessible from
+:func:`detect_type() <pdcast.detect_type>` or
+:func:`resolve_type() <pdcast.resolve_type>`.
 
 .. doctest::
 
@@ -140,7 +140,7 @@ the registry, and will thus not be accessible from
         ...
     ValueError: invalid specifier: 'bar'
 
-They also will not be instantiated or validated, preserving them as explicit
+They will also not be instantiated or validated, preserving them as explicit
 class objects.
 
 .. doctest::
@@ -150,17 +150,18 @@ class objects.
 
 In general, conditionals like these are useful for modeling types that are
 platform-specific or rely on an external dependency for some or all of their
-behavior.  By using a conditional syntax, we can include these types without
-resorting to conditional imports, making importing and manipulating them more
+behavior.  By using the conditional syntax, we can include these types without
+resorting to import hacks, making importing and manipulating them more
 straightforward.
 
 .. note::
 
     Unregistered types can always be instantiated and
-    :meth:`added <pdcast.TypeRegistry.add>` to the registry manually if needed.
+    :meth:`added <pdcast.TypeRegistry.add>` to the registry manually if
+    necessary.
 
     .. doctest::
 
-        >>> pdcast.registry.add(CustomType())
+        >>> pdcast.registry.add(CustomType)
         >>> pdcast.resolve_type("bar")
         CustomType(x=None)

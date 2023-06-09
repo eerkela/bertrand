@@ -68,6 +68,11 @@ def resolve_type(typespec: type_specifier) -> types.Type:
 
     # build factory
     if isinstance(typespec, type):
+        if issubclass(typespec, types.VectorType):
+            if typespec not in types.registry:
+                raise invalid_specifier(typespec)
+            return types.registry[typespec]
+
         factory = ClassResolver(typespec)
 
     elif isinstance(typespec, str):
