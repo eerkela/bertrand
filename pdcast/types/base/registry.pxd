@@ -10,12 +10,15 @@ cdef class TypeRegistry:
         dict generics
         dict implementations
         long long _hash
+        CacheValue _roots
+        CacheValue _leaves
+        CacheValue _families
+        CacheValue _decorators
+        CacheValue _abstract
         CacheValue _aliases
         CacheValue _regex
         CacheValue _resolvable
-
-    cdef readonly:
-        PriorityList decorator_priority
+        PriorityList _decorator_priority
 
     cdef void update_hash(self)
     cdef void pin(self, Type instance, AliasManager aliases)

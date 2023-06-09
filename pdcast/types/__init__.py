@@ -35,8 +35,8 @@ generic
 """
 from .array import ObjectArray, ObjectDtype
 from .base import (
-    TypeRegistry, Type, CompositeType, VectorType, DecoratorType, ScalarType,
-    AbstractType, register
+    AbstractType, AliasManager, CacheValue, CompositeType, DecoratorType,
+    PriorityList, ScalarType, Type, TypeRegistry, VectorType, register
 )
 from .boolean import (
     BooleanType, NumpyBooleanType, PandasBooleanType, PythonBooleanType

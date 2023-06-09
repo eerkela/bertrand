@@ -886,30 +886,26 @@ cdef class AbstractType(ScalarType):
         """A mapping of all backend specifiers to their corresponding
         concretions.
         """
-        cached = self._backends
-        if not cached:
+        if not self._backends:
             try:
                 result = {None: self.registry.get_default(self)}
             except NotImplementedError:
                 result = {}
             result |= self.registry.get_implementations(self)
-            cached = CacheValue(MappingProxyType(result))
-            self._backends = cached
+            self._backends = CacheValue(result)
 
-        return cached.value
+        return self._backends.value
 
     @property
     def subtypes(self) -> CompositeType:
         """A :class:`CompositeType` containing every subtype that is
         currently registered to this :class:`AbstractType`.
         """
-        cached = self._subtypes
-        if not cached:
+        if not self._subtypes:
             result = self.registry.get_subtypes(self)
-            cached = CacheValue(CompositeType(result))
-            self._subtypes = cached
+            self._subtypes = CacheValue(result)
 
-        return cached.value
+        return self._subtypes.value
 
     @property
     def is_leaf(self) -> bool:

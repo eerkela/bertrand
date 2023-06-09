@@ -14,8 +14,9 @@ from .decorator cimport DecoratorType
 from .scalar cimport ScalarType, AbstractType
 
 
-# TODO: aliases should implicitly include the class, and it should not be
-# removed during .remove()
+# TODO: adding aliases during init automatically appends them to
+# pinned_aliases and makes them available from registry.aliases.  This may not
+# be desirable.
 
 
 ######################
@@ -83,31 +84,25 @@ def register(class_: type = None, *, cond: bool = True):
 
 
 cdef class TypeRegistry:
-    """A registry containing the current state of the ``pdcast`` type system.
+    """A global registry containing the current state of the ``pdcast`` type
+    system.
+
+    This object encodes all the types that are currently
+    :func:`registered <pdcast.register>` with the ``pdcast`` type system.  It
+    is responsible for caching base (unparametrized) instances for each type,
+    as well as maintaining the links between them and controlling their
+    creation through the :func:`detect_type() <pdcast.detect_type>` and
+    :func:`resolve_type() <pdcast.resolve_type>` constructors.
 
     See Also
     --------
-    register : add a type to this registry.
-
-    Notes
-    -----
-    This is a global object attached to every type that ``pdcast`` generates.
-    It is responsible for caching base (unparametrized) instances for every
-    type that can be returned by the :func:`detect_type() <pdcast.detect_type>`
-    and :func:`resolve_type() <pdcast.resolve_type>` constructors.
-    
-    It also provides individual types a way of tying cached values to the
-    global state of the type system more generally.  We can use this to compute
-    properties only once, and automatically update them whenever a new type is
-    added to the system.  This mechanism is used to synchronize aliases,
-    subtypes, larger/smaller implementations, etc.
+    register : Add a type to this registry as a class decorator.
     """
 
     def __init__(self):
         self.instances = {}
         self.pinned_aliases = []
         self.names = {}
-        self.decorator_priority = PriorityList()
 
         self.defaults = {}
         self.supertypes = {}
@@ -115,60 +110,55 @@ cdef class TypeRegistry:
         self.generics = {}
         self.implementations = {}
 
+        self._decorator_priority = PriorityList()
         self.update_hash()
 
-    #####################
-    ####    STATE    ####
-    #####################
-
-    @property
-    def hash(self) -> int:
-        """A hash representing the current state of the ``pdcast`` type system.
-
-        Notes
-        -----
-        This is updated whenever a new type is
-        :meth:`added <pdcast.TypeRegistry.add>` or
-        :meth:`removed <pdcast.TypeRegistry.remove>` from the registry.  It is
-        also updated whenever a registered type
-        :meth:`gains <pdcast.VectorType.register_alias>` or
-        :meth:`loses <pdcast.VectorType.remove_alias>` an alias.
-        """
-        return self._hash
-
-    def flush(self):
-        """Reset the registry's internal state, forcing every property to be
-        recomputed.
-        """
-        self._hash += 1
+    ############################
+    ####    REGISTRATION    ####
+    ############################
 
     def add(self, typ: type | VectorType) -> None:
-        """Validate a base type and add it to the registry.
+        """Validate a type and add it to the registry.
 
         Parameters
         ----------
-        typ : VectorType
-            An subclass or instance of :class:`VectorType <pdcast.VectorType>`
+        typ : type | VectorType
+            A subclass or instance of :class:`VectorType <pdcast.VectorType>`
             to add to the registry.  If an instance is given, it must not be
-            parametrized, and it must implement at least the
-            :attr:`name <pdcast.VectorType.name>` and
-            :attr:`aliases <pdcast.VectorType.aliases>` attributes  to be
-            considered valid.
+            parametrized.
 
         Raises
         ------
         TypeError
-            If the type is malformed in some way.  This can happen if the
-            type is parametrized, does not have an appropriate
-            :attr:`name <pdcast.VectorType.name>` or
-            :attr:`aliases <pdcast.VectorType.aliases>`, or if the signature of
-            its :meth:`encode <pdcast.VectorType.encode>` method does not
-            match its constructor.
+            If the type is not a subclass or instance of
+            :class:`VectorType <pdcast.VectorType>`, or if it is parametrized
+            in some way.
+        NotImplementedError
+            If the type does not implement an appropriate
+            :attr:`name <pdcast.VectorType.name>` attribute.
+        ValueError
+            If the type has an :attr:`aliases <pdcast.VectorType.aliases>`
+            attribute and any of its aliases conflict with those of another
+            registered type.
 
         See Also
         --------
         register : automatically call this method as a class decorator.
         TypeRegistry.remove : remove a type from the registry.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> class CustomType(pdcast.ScalarType):
+            ...     name = "foo"
+            ...     aliases = {"bar"}
+
+            >>> pdcast.registry.add(CustomType)
+            >>> CustomType in pdcast.registry
+            True
+            >>> pdcast.resolve_type("bar")
+            CustomType()
         """
         # validate type is a subclass of VectorType
         if isinstance(typ, type):
@@ -206,23 +196,51 @@ cdef class TypeRegistry:
         self.update_hash()
 
     def remove(self, typ: type_specifier) -> None:
-        """Remove a base type from the registry.
+        """Remove a type from the registry.
 
         Parameters
         ----------
         typ : type_specifier
-            The type to remove.
+            A type to remove.  This can be in any format recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`.
 
         Raises
         ------
+        TypeError
+            If the type is composite.
         KeyError
-            If the type is not in the registry.  This will also be raised if it
-            is parametrized.
+            If the type is not in the registry.
 
         See Also
         --------
-        TypeRegistry.add : add a type to the registry.
-        TypeRegistry.clear : remove all types from the registry.
+        TypeRegistry.add : Add a type to the registry.
+
+        Notes
+        -----
+        This method also removes all aliases associated with the removed type
+        and automatically excludes it from any subtypes/implementations it
+        may be linked to.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> class CustomType(pdcast.ScalarType):
+            ...     name = "foo"
+            ...     aliases = {"bar"}
+
+            >>> pdcast.registry.add(CustomType)
+            >>> CustomType in pdcast.registry
+            True
+            >>> pdcast.resolve_type("bar")
+            CustomType()
+            >>> pdcast.registry.remove(CustomType)
+            >>> CustomType in pdcast.registry
+            False
+            >>> pdcast.resolve_type("bar")
+            Traceback (most recent call last):
+                ...
+            ValueError: invalid specifier: 'bar'
         """
         from pdcast.resolve import resolve_type
 
@@ -244,75 +262,139 @@ cdef class TypeRegistry:
 
         self.update_hash()
 
+    #####################
+    ####    STATE    ####
+    #####################
+
+    @property
+    def hash(self):
+        """A hash representing the current state of the ``pdcast`` type system.
+
+        Examples
+        --------
+        This is updated whenever a new type is
+        :meth:`added <pdcast.TypeRegistry.add>` or
+        :meth:`removed <pdcast.TypeRegistry.remove>` from the registry, as well
+        as whenever a registered type :meth:`gains <pdcast.AliasManager.add>`
+        or :meth:`loses <pdcast.AliasManager.remove>` an alias.
+
+        .. doctest::
+
+            >>> hash = pdcast.registry.hash
+            >>> pdcast.IntegerType.aliases.add("foo")
+            >>> hash == pdcast.registry.hash
+            False
+        """
+        return self._hash
+
+    def flush(self):
+        """Reset the registry's current hash, invalidating every
+        :class:`CacheValue <pdcast.CacheValue>`.
+
+        Examples
+        --------
+        This will force every property that depends on a
+        :class:`CacheValue <pdcast.CacheValue>` to be recomputed the next time
+        it is requested.
+
+        .. doctest::
+
+            >>> aliases = pdcast.registry.aliases
+            >>> pdcast.registry.flush()
+            >>> aliases is pdcast.registry.aliases
+            False
+        """
+        self._hash += 1
+
     #########################
     ####    ACCESSORS    ####
     #########################
 
     @property
-    def roots(self) -> CompositeType:
+    def roots(self):
         """A :class:`CompositeType <pdcast.CompositeType>` containing the root
         nodes for every registered hierarchy.
         """
-        is_root = lambda typ: getattr(typ, "is_root", False)
-        generic = lambda typ: getattr(typ, "backend", NotImplemented) is None
+        if not self._roots:
+            is_root = lambda typ: getattr(typ, "is_root", False)
+            generic = lambda typ: getattr(typ, "backend", NotImplemented) is None
+            result = CompositeType(
+                typ for typ in self if is_root(typ) and generic(typ)
+            )
+            self._roots = CacheValue(result)
 
-        return CompositeType(
-            typ for typ in self if is_root(typ) and generic(typ)
-        )
+        return self._roots.value
 
     @property
-    def leaves(self) -> CompositeType:
+    def leaves(self):
         """A :class:`CompositeType <pdcast.CompositeType>` containing all the
         leaf nodes for every registered hierarchy.
         """
-        is_leaf = lambda typ: getattr(typ, "is_leaf", False)
+        if not self._leaves:
+            is_leaf = lambda typ: getattr(typ, "is_leaf", False)
+            result = CompositeType(typ for typ in self if is_leaf(typ))
+            self._leaves = CacheValue(result)
 
-        return CompositeType(typ for typ in self if is_leaf(typ))
+        return self._leaves.value
 
     @property
-    def families(self) -> MappingProxyType:
+    def families(self):
         """A read-only dictionary mapping backend specifiers to all their
         concrete implementations.
         """
-        result = {}
-        for typ in self:
-            if not hasattr(typ, "backend"):
-                continue
-            result.setdefault(typ.backend, CompositeType()).add(typ)
+        if not self._families:
+            result = {}
+            for typ in self:
+                if not hasattr(typ, "backend"):
+                    continue
+                result.setdefault(typ.backend, CompositeType()).add(typ)
 
-        return MappingProxyType(result)
+            self._families = CacheValue(MappingProxyType(result))
 
-    @property
-    def decorators(self) -> CompositeType:
-        """A :class:`CompositeType` containing all the
-        :class:`DecoratorTypes <pdcast.DecoratorType>` that are currently
-        registered.
-        """
-        return CompositeType(
-            typ for typ in self if isinstance(typ, DecoratorType)
-        )
+        return self._families.value
 
     @property
-    def abstract(self) -> CompositeType:
-        """A :class:`CompositeType` containing all the
-        :class:`AbstractTypes <pdcast.AbstractType>` that are currently
-        registered.
+    def decorators(self):
+        """A :class:`CompositeType` containing all the currently-registered
+        :class:`DecoratorTypes <pdcast.DecoratorType>`.
         """
-        return CompositeType(
-            typ for typ in self if isinstance(typ, AbstractType)
-        )
+        if not self._decorators:
+            result = CompositeType(
+                typ for typ in self if isinstance(typ, DecoratorType)
+            )
+            self._decorators = CacheValue(result)
+
+        return self._decorators.value
+
+    @property
+    def abstract(self):
+        """A :class:`CompositeType` containing all the currently-registered
+        :class:`AbstractTypes <pdcast.AbstractType>`.
+        """
+        if not self._abstract:
+            result = CompositeType(
+                typ for typ in self if isinstance(typ, AbstractType)
+            )
+            self._abstract = CacheValue(result)
+
+        return self._abstract.value
 
     #####################
     ####    REGEX    ####
     #####################
 
     @property
-    def aliases(self) -> MappingProxyType:
+    def aliases(self):
         """An up-to-date mapping of every alias to its corresponding type.
 
-        This encodes every specifier recognized by both the
-        :func:`detect_type() <pdcast.detect_type>` and
-        :func:`resolve_type() <pdcast.resolve_type>` constructors.
+        Returns
+        -------
+        MappingProxyType
+            A read-only dictionary with aliases as keys and registered type
+            instances as values.  These are used directly by
+            :func:`detect_type() <pdcast.detect_type>` and
+            :func:`resolve_type() <pdcast.resolve_type>` to map specifiers to
+            their respective instances.
 
         See Also
         --------
@@ -323,14 +405,15 @@ cdef class TypeRegistry:
             A regular expression that matches any number of individual type
             specifiers.
 
-        Notes
-        -----
-        This is a cached property tied to the current state of the registry.
-        Whenever a new type is :meth:`added <pdcast.TypeRegistry.add>`,
-        :meth:`removed <pdcast.TypeRegistry.remove>`, or
-        :meth:`gains <pdcast.VectorType.register_alias>`\ /
-        :meth:`loses <pdcast.VectorType.remove_alias>` an alias, it will be
-        regenerated to reflect that change.
+        Examples
+        --------
+        .. doctest::
+
+            >>> aliases = pdcast.registry.aliases
+            >>> aliases[int]
+            PythonIntegerType()
+            >>> aliases["bool"]
+            BooleanType()
         """
         cached = self._aliases
         if not cached:
@@ -344,9 +427,15 @@ cdef class TypeRegistry:
         return cached.value
 
     @property
-    def regex(self) -> re.Pattern:
-        """A compiled regular expression that matches strings in the
+    def regex(self):
+        """A compiled regular expression that matches a single specifier in the
         :ref:`type specification mini-language <resolve_type.mini_language>`.
+
+        Returns
+        -------
+        re.Pattern
+            A compiled regular expression from the alternate Python
+            `regex <https://pypi.org/project/regex/>`_ engine.
 
         See Also
         --------
@@ -357,12 +446,19 @@ cdef class TypeRegistry:
 
         Notes
         -----
-        This expression uses `recursive regular expressions
+        This expression uses PERL-style `recursive regular expressions
         <https://perldoc.perl.org/perlre#(?PARNO)-(?-PARNO)-(?+PARNO)-(?R)-(?0)>`_
         to match nested type specifiers.  This is enabled by the alternate
         Python `regex <https://pypi.org/project/regex/>`_ engine, which is
         PERL-compatible.  It is otherwise equivalent to the base Python
         :mod:`re <python:re>` package.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.registry.resolvable.match("datetime[pandas, US/Pacific]")
+            <regex.Match object; span=(0, 28), match='datetime[pandas, US/Pacific]'>
         """
         cached = self._regex
         if not cached:
@@ -392,10 +488,16 @@ cdef class TypeRegistry:
         return cached.value
 
     @property
-    def resolvable(self) -> re.Pattern:
+    def resolvable(self):
         """A compiled regular expression that matches any number of specifiers
         in the
         :ref:`type specification mini-language <resolve_type.mini_language>`.
+
+        Returns
+        -------
+        re.Pattern
+            A compiled regular expression from the alternate Python
+            `regex <https://pypi.org/project/regex/>`_ engine.
 
         See Also
         --------
@@ -406,12 +508,19 @@ cdef class TypeRegistry:
 
         Notes
         -----
-        This expression uses `recursive regular expressions
+        This expression uses PERL-style `recursive regular expressions
         <https://perldoc.perl.org/perlre#(?PARNO)-(?-PARNO)-(?+PARNO)-(?R)-(?0)>`_
         to match nested type specifiers.  This is enabled by the alternate
         Python `regex <https://pypi.org/project/regex/>`_ engine, which is
         PERL-compatible.  It is otherwise equivalent to the base Python
         :mod:`re <python:re>` package.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.registry.resolvable.match("int, float, complex")
+            <regex.Match object; span=(0, 19), match='int, float, complex'>
         """
         cached = self._resolvable
         if not cached:
@@ -434,12 +543,53 @@ cdef class TypeRegistry:
 
         return cached.value
 
-    #####################
-    ####    LINKS    ####
-    #####################
+    #############################
+    ####    RELATIONSHIPS    ####
+    #############################
 
-    def get_default(self, AbstractType typ) -> ScalarType:
-        """Get the default implementation for a hierarchical type."""
+    def get_default(self, typ: AbstractType) -> ScalarType:
+        """Get the default concretion for an
+        :class:`AbstractType <pdcast.AbstractType>`.
+
+        Parameters
+        ----------
+        typ : AbstractType
+            An abstract, hierarchical type to check for.
+
+        Returns
+        -------
+        ScalarType
+            A concrete type that ``typ`` defaults to.
+
+        Raises
+        ------
+        TypeError
+            If the type is not an instance of
+            :class:`AbstractType <pdcast.AbstractType>`.
+        NotImplementedError
+            If the type has no default implementation.
+
+        See Also
+        --------
+        TypeRegistry.get_subtypes :
+            Get a set of subtypes that the type can be delegated to.
+        TypeRegistry.get_implementations :
+            Get a map of implementations that the type can be delegated to.
+
+        Notes
+        -----
+        This method is called to delegate the behavior of an
+        :class:`AbstractType <pdcast.AbstractType>` to a particular subtype or
+        implementation.  This allows the type to be used interchangeably with
+        its default.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.registry.get_default(pdcast.BooleanType)
+            NumpyBooleanType()
+        """
         default = self.defaults.get(type(typ), None)
         default = self.instances.get(default, None)
         if default is None:
@@ -448,13 +598,86 @@ cdef class TypeRegistry:
             )
         return default
 
-    def get_supertype(self, ScalarType typ) -> AbstractType:
-        """Get a type's supertype if it is registered."""
+    def get_supertype(self, typ: ScalarType) -> AbstractType:
+        """Get a type's :attr:`supertype <pdcast.ScalarType.supertype>` if it
+        is registered.
+
+        Parameters
+        ----------
+        typ : ScalarType
+            A concrete :class:`ScalarType <pdcast.ScalarType>` to check for.
+
+        Returns
+        -------
+        AbstractType | None
+            An abstract supertype that the
+            :class:`ScalarType <pdcast.ScalarType>` is registered to, or
+            :data:`None <python:None>` if none exists.
+
+        Raises
+        ------
+        TypeError
+            If the type is not an instance of
+            :class:`ScalarType <pdcast.ScalarType>`.
+
+        See Also
+        --------
+        TypeRegistry.get_subtypes :
+            Get the set of subtypes that are registered to a supertype.
+
+        Notes
+        -----
+        This method is called to implement
+        :class:`ScalarType.supertype <pdcast.ScalarType.supertype>`.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.registry.get_supertype(pdcast.Float32Type)
+            FloatType()
+        """
         result = self.supertypes.get(type(typ), None)
         return self.instances.get(result, None)
 
-    def get_subtypes(self, AbstractType typ) -> set:
-        """Get all the registered subtypes associated with a type."""
+    def get_subtypes(self, typ: AbstractType) -> CompositeType:
+        """Get all the registered :attr:`subtypes <pdcast.ScalarType.subtypes>`
+        associated with an :class:`AbstractType <pdcast.AbstractType>`.
+
+        Parameters
+        ----------
+        typ : AbstractType
+            An abstract, hierarchical type to check for.
+
+        Returns
+        -------
+        CompositeType
+            A :class:`CompositeType <pdcast.CompositeType>` containing all the
+            subtypes that the type is registered to.
+
+        Raises
+        ------
+        TypeError
+            If the type is not an instance of
+            :class:`AbstractType <pdcast.AbstractType>`.
+
+        See Also
+        --------
+        TypeRegistry.get_supertype :
+            Get the supertype associated with a subtype.
+
+        Notes
+        -----
+        This method is called to implement
+        :class:`ScalarType.subtypes <pdcast.ScalarType.subtypes>`.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.registry.get_subtypes(pdcast.FloatType)   # doctest: +SKIP
+            CompositeType({float16, float32, float64, float80})
+        """
         result = set()
         
         candidates = self.subtypes.get(type(typ), set())
@@ -464,17 +687,90 @@ cdef class TypeRegistry:
                 continue
             result.add(instance)
 
-        return result
+        return CompositeType(result)
 
-    def get_generic(self, ScalarType typ) -> AbstractType:
-        """Get a type's generic implementation if it is registered."""
+    def get_generic(self, typ: ScalarType) -> AbstractType:
+        """Get a type's :attr:`generic <pdcast.ScalarType.generic>` if it is
+        registered.
+
+        Parameters
+        ----------
+        typ : ScalarType
+            A concrete :class:`ScalarType <pdcast.ScalarType>` to check for.
+
+        Returns
+        -------
+        AbstractType | None
+            An abstract generic type that the
+            :class:`ScalarType <pdcast.ScalarType>` is registered to, or
+            :data:`None <python:None>` if none exists.
+
+        Raises
+        ------
+        TypeError
+            If the type is not an instance of
+            :class:`ScalarType <pdcast.ScalarType>`.
+
+        See Also
+        --------
+        TypeRegistry.get_implementations :
+            Get a map of implementations that are registered to a generic.
+
+        Notes
+        -----
+        This method is called to implement
+        :class:`ScalarType.generic <pdcast.ScalarType.generic>`.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.registry.get_generic(pdcast.NumpyFloat32Type)
+            Float32Type()
+        """
         result = self.generics.get(type(typ), None)
         if result is not None:
             result = self.instances.get(result, None)
         return result
 
-    def get_implementations(self, AbstractType typ) -> dict:
-        """Get all the registered implementations associated with a type."""
+    def get_implementations(self, typ: AbstractType) -> MappingProxyType:
+        """Get a map of backend specifiers to the registered implementations
+        associated for an :class:`AbstractType <pdcast.AbstractType>`.
+
+        Parameters
+        ----------
+        typ : AbstractType
+            An abstract, hierarchical type to check for.
+
+        Returns
+        -------
+        MappingProxyType
+            A read-only mapping backend strings to the registered
+            implementations for the given type.
+
+        Raises
+        ------
+        TypeError
+            If the type is not an instance of
+            :class:`AbstractType <pdcast.AbstractType>`.
+
+        See Also
+        --------
+        TypeRegistry.get_generic :
+            Get the generic type that an implementation is registered.
+
+        Notes
+        -----
+        This method is called to implement
+        :class:`ScalarType.backends <pdcast.ScalarType.backends>`.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.registry.get_implementations(pdcast.Float32Type)
+            mappingproxy({'numpy': NumpyFloat32Type()})
+        """
         result = {}
         candidates = self.implementations.get(type(typ), {})
         for backend, implementation in candidates.items():
@@ -483,7 +779,69 @@ cdef class TypeRegistry:
                 continue
             result[backend] = instance
 
-        return result
+        return MappingProxyType(result)
+
+    #############################
+    ####    CONFIGURATION    ####
+    #############################
+
+    @property
+    def decorator_priority(self):
+        """A list describing the order of nested
+        :class:`DecoratorTypes <pdcast.DecoratorType>`.
+
+        Returns
+        -------
+        PriorityList
+            A read-only list whose elements can be rearranged to change the
+            desired order of nested decorators.
+
+        Notes
+        -----
+        :class:`PriorityLists <pdcast.PriorityList>` behave like immutable
+        sequences that cannot be appended to or removed from once created.
+
+        .. currentmodule:: pdcast
+
+        .. autosummary::
+            :toctree: /generated/
+
+            PriorityList
+            PriorityList.index
+            PriorityList.move_up
+            PriorityList.move_down
+            PriorityList.move
+
+        Examples
+        --------
+        This list dictates the order of nested decorators when constructed
+        manually (through
+        :meth:`DecoratorType.__call__ <pdcast.DecoratorType.__call__>`) or as
+        supplied to :func:`resolve_type() <pdcast.resolve_type>`.
+
+        .. doctest::
+
+            >>> pdcast.registry.decorator_priority
+            PriorityList([<class 'pdcast.types.sparse.SparseType'>, <class 'pdcast.types.categorical.CategoricalType'>])
+            >>> pdcast.resolve_type("sparse[categorical]")
+            SparseType(wrapped=CategoricalType(wrapped=None, levels=None), fill_value=None)
+            >>> pdcast.resolve_type("categorical[sparse]")
+            SparseType(wrapped=CategoricalType(wrapped=None, levels=None), fill_value=None)
+
+        Rearranging its elements changes this order for any newly-constructed
+        type.
+
+        .. doctest::
+
+            >>> pdcast.registry.decorator_priority.move(pdcast.SparseType, -1)
+            >>> pdcast.registry.decorator_priority
+            PriorityList([<class 'pdcast.types.categorical.CategoricalType'>, <class 'pdcast.types.sparse.SparseType'>])
+            >>> pdcast.resolve_type("sparse[categorical]")
+            CategoricalType(wrapped=SparseType(wrapped=None, fill_value=None), levels=None)
+            >>> pdcast.resolve_type("categorical[sparse]")
+            CategoricalType(wrapped=SparseType(wrapped=None, fill_value=None), levels=None)
+        """
+        return self._decorator_priority
 
     #######################
     ####    PRIVATE    ####
@@ -515,21 +873,53 @@ cdef class TypeRegistry:
     ###############################
 
     def __iter__(self):
-        """Iterate through the registered types."""
+        """Iterate through the registered types.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> len([typ for typ in pdcast.registry])
+            74
+        """
         return iter(self.instances.values())
 
     def __len__(self) -> int:
-        """Get the total number of registered types."""
+        """Get the total number of registered types.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> len(pdcast.registry)
+            74
+        """
         return len(self.instances)
 
     def __contains__(self, val) -> bool:
-        """Check if a type is in the registry."""
+        """Check if a type is in the registry.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.BooleanType in pdcast.registry
+            True
+        """
         if not isinstance(val, type):
             val = type(val)
         return val in self.instances
 
     def __getitem__(self, val) -> VectorType:
-        """Get the base instance for a given type if it is registered."""
+        """Get the base instance for a given type if it is registered.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.registry[pdcast.BooleanType]
+            BooleanType()
+        """
         if not isinstance(val, type):
             val = type(val)
         return self.instances[val]
@@ -782,11 +1172,44 @@ cdef class Type:
 
 
 cdef class CacheValue:
-    """A simple struct to hold cached values tied to the global state of the
-    registry.
+    """A simple struct to hold values that are tied to the current state of the
+    ``pdcast`` type system.
+
+    Attributes
+    ----------
+    value : Any
+        The cached value.
+    hash : int
+        The observed :class:`TypeRegistry <pdcast.TypeRegistry>` hash at the
+        time this value was created.
+
+    Methods
+    -------
+    __bool__()
+        Check whether :attr:`hash <pdcast.CacheValue.hash>` matches the current
+        registry hash.
+
+    Examples
+    --------
+
+    .. doctest::
+
+        >>> foo = pdcast.CacheValue(1)
+
+        >>> def compute():
+        ...     if foo:
+        ...         print("foo is valid")
+        ...     else:
+        ...         print("foo is invalid")
+
+        >>> compute()
+        foo is valid
+        >>> pdcast.registry.flush()
+        >>> compute()
+        foo is invalid
     """
 
-    def __init__(self, object value):
+    def __init__(self, value: Any):
         self.value = value
         self.hash = Type.registry.hash
 
@@ -795,13 +1218,30 @@ cdef class CacheValue:
         return self.hash == Type.registry.hash
 
 
-
-
 cdef class PriorityList:
     """A doubly-linked list whose elements can be rearranged to represent a
     a precedence order during sort operations.
 
-    The list is read-only from Python.
+    The list is read-only when accessed from Python.
+
+    Examples
+    --------
+    .. doctest::
+
+        >>> foo = pdcast.PriorityList([1, 2, 3])
+        >>> foo
+        PriorityList([1, 2, 3])
+        >>> foo.index(2)
+        1
+        >>> foo.move_up(2)
+        >>> foo
+        PriorityList([2, 1, 3])
+        >>> foo.move_down(2)
+        >>> foo
+        PriorityList([1, 2, 3])
+        >>> foo.move(2, -1)
+        >>> foo
+        PriorityList([1, 3, 2])
     """
 
     def __init__(self, items: Iterable = None):
@@ -868,7 +1308,7 @@ cdef class PriorityList:
         raise ValueError(f"{repr(item)} is not contained in the list")
 
     def move_up(self, item: type | VectorType) -> None:
-        """Move an item up in priority."""
+        """Move an item up one level in priority."""
         if isinstance(item, VectorType):
             item = type(item)
 
@@ -892,7 +1332,7 @@ cdef class PriorityList:
             prev.prev = node
 
     def move_down(self, item: type | VectorType) -> None:
-        """Move an item down in priority."""
+        """Move an item down one level in priority."""
         if isinstance(item, VectorType):
             item = type(item)
 

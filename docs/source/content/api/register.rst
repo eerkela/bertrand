@@ -20,7 +20,7 @@ instance that serves as a factory for other instances of the same type.
 
     >>> @pdcast.register
     ... class CustomType(pdcast.ScalarType):
-    ...     """A user-defined type extension."""
+    ...     """A user-defined extension type."""
     ... 
     ...     name = "foo"
     ...     aliases = {"bar"}
@@ -120,7 +120,7 @@ Conditional types can be declared using the ``cond`` argument of
 
     >>> @pdcast.register(cond=False)
     ... class CustomType(pdcast.ScalarType):
-    ...     """A user-defined type extension."""
+    ...     """A user-defined extension type."""
     ... 
     ...     name = "foo"
     ...     aliases = {"bar"}
