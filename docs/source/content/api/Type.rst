@@ -59,3 +59,15 @@ will be invoked:
     Type.from_scalar
 
 Individual types can override these methods to customize their behavior.
+
+Membership
+----------
+Types can be arranged into trees to represent
+:ref:`hierarchical <AbstractType.hierarchy>` relationships.  The following
+methods allow membership tests to be performed on these trees.
+
+.. autosummary::
+    :toctree: ../../generated
+
+    Type.contains
+    Type.__contains__

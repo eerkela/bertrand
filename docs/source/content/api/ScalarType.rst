@@ -1,5 +1,9 @@
 .. currentmodule:: pdcast
 
+.. testsetup::
+
+    import pdcast
+
 .. _ScalarType:
 
 pdcast.ScalarType
@@ -10,62 +14,18 @@ pdcast.ScalarType
 .. raw:: html
     :file: ../../images/types/Types_UML.html
 
-.. _ScalarType.inheritance:
-
-Inheritance
------------
-:class:`ScalarTypes <ScalarType>` are `metaclasses
-<https://peps.python.org/pep-0487/>`_ that are limited to **first-order
-inheritance**.  This means that they must inherit from :class:`ScalarType`
-*directly*, and cannot have any children of their own.  For example:
-
-.. code:: python
-
-    class Type1(pdcast.ScalarType):   # valid
-        ...
-
-    class Type2(Type1):   # invalid
-        ...
-
-If you'd like to share functionality between types, this can be done using
-`Mixin classes <https://dev.to/bikramjeetsingh/write-composable-reusable-python-classes-using-mixins-6lj>`_,
-like so:
-
-.. code:: python
-
-    class Mixin:
-        # shared attributes/methods go here
-        ...
-
-    class Type1(Mixin, pdcast.ScalarType):
-        ...
-
-    class Type2(Mixin, pdcast.ScalarType):
-        ...
-
-.. note::
-
-    Note that ``Mixin`` comes **before** :class:`ScalarType` in each
-    inheritance signature.  This ensures correct `Method Resolution Order (MRO)
-    <https://en.wikipedia.org/wiki/C3_linearization>`_.
-
-.. _ScalarType.allocation:
+.. _ScalarType.flyweight:
 
 Memory Allocation
 -----------------
-Additionally, :class:`ScalarType` instances are `flyweights
-<https://python-patterns.guide/gang-of-four/flyweight/>`_ that are identified
-by their :meth:`slug <ScalarType.slugify>` attribute.  This allows them to be
-extremely memory-efficient (especially when stored in arrays) but also requires
-each one to be completely immutable.  As a result, all
-:class:`ScalarTypes <ScalarType>` are strictly **read-only** after they are
-constructed.
+:class:`ScalarType` instances are `flyweights
+<https://en.wikipedia.org/wiki/Flyweight_pattern>`_ that are only allocated
+once.  This allows them to be extremely memory-efficient (especially when
+stored in arrays) but also requires each to be completely immutable.  As a
+result, all :class:`ScalarTypes <ScalarType>` are strictly **read-only** after
+initialization.
 
-.. testsetup:: allocation
-
-    import pdcast
-
-.. doctest:: allocation
+.. doctest::
 
     >>> pdcast.resolve_type("int") is pdcast.resolve_type("int")
     True
@@ -75,28 +35,49 @@ constructed.
     AttributeError: ScalarType objects are read-only
 
 Some types might be parameterized with continuous or unpredictable inputs,
-which could cause `memory leaks <https://en.wikipedia.org/wiki/Memory_leak>`_.
-In these cases, users can specify a `Least Recently Used (LRU)
-<https://en.wikipedia.org/wiki/Cache_replacement_policies#Least_recently_used_(LRU)>`_
-caching strategy by passing an appropriate ``cache_size`` parameter in the
-type's inheritance signature, like so:
+which could cause `memory leaks <https://en.wikipedia.org/wiki/Memory_leak>`_
+if not addressed.  In these cases, users can specify a `Least Recently Used
+(LRU) <https://en.wikipedia.org/wiki/Cache_replacement_policies#Least_recently_used_(LRU)>`_
+caching strategy by defining an appropriate :attr:`_cache_size` in a type's
+definition.
 
 .. code:: python
 
-    class CustomType(pdcast.ScalarType, cache_size=128):
+    class CustomType(pdcast.ScalarType):
+
+        _cache_size = 128
         ...
 
 .. note::
 
-    Setting ``cache_size`` to 0 effectively eliminates flyweight caching for
-    the type in question, though this is not recommended.
+    Setting ``_cache_size = 0`` effectively disables the flyweight protocol,
+    though this is not recommended.
 
-.. _ScalarType.required:
+.. _ScalarType.constructors:
 
-Required Attributes
--------------------
-:class:`ScalarTypes <ScalarType>` must implement the following attributes to
-be considered valid.
+Constructors
+------------
+These are automatically called by :func:`detect_type() <pdcast.detect_type>`
+and :func:`resolve_type() <pdcast.resolve_type>` to create instances of the
+associated type.  They are responsible for implementing the
+`Flyweight pattern <https://en.wikipedia.org/wiki/Flyweight_pattern>`_.
+
+.. autosummary::
+    :toctree: ../../generated
+
+    ScalarType.from_string
+    ScalarType.from_dtype
+    ScalarType.from_scalar
+    ScalarType.kwargs
+    ScalarType.replace
+    ScalarType.__call__
+
+.. _ScalarType.config:
+
+Configuration
+-------------
+:class:`ScalarTypes <ScalarType>` can implement the following attributes to
+customize their behavior.
 
 .. autosummary::
     :toctree: ../../generated
@@ -106,32 +87,20 @@ be considered valid.
     ScalarType.type_def
     ScalarType.dtype
     ScalarType.itemsize
+    ScalarType.is_numeric
+    ScalarType.max
+    ScalarType.min
+    ScalarType.is_nullable
     ScalarType.na_value
+    ScalarType.make_nullable
 
-.. _ScalarType.constructors:
+.. _ScalarType.traversal:
 
-Constructors
-------------
-These should always be preferred over direct instantiation to allow for the
-`flyweight <https://python-patterns.guide/gang-of-four/flyweight/>`_ pattern.
-
-.. autosummary::
-    :toctree: ../../generated
-
-    ScalarType.instance
-    ScalarType.resolve
-    ScalarType.detect
-    ScalarType.from_dtype
-    ScalarType.replace
-    ScalarType.slugify
-    ScalarType.kwargs
-
-.. _ScalarType.subtypes:
-
-Subtypes/Supertypes
--------------------
-See the :func:`@subtype <subtype>` decorator for more information on how to
-define subtypes.
+Traversal
+---------
+:class:`Scalartypes` can be embedded into
+:ref:`abstract hierarchies <AbstractType.hierarchy>` that can be traversed with
+the following properties.
 
 .. autosummary::
     :toctree: ../../generated
@@ -139,32 +108,47 @@ define subtypes.
     ScalarType.is_root
     ScalarType.root
     ScalarType.supertype
+    ScalarType.is_generic
+    ScalarType.generic
+    ScalarType.backend
+    ScalarType.backends
     ScalarType.subtypes
-    ScalarType.contains
-    ScalarType.is_subtype
+    ScalarType.is_leaf
+    ScalarType.leaves
 
-.. _ScalarType.generic:
+.. _ScalarType.membership:
 
-Generic Backends
-----------------
-See the :func:`@generic <generic>` decorator for more information on how to
-leverage generic types and register individual backends.
+Membership
+----------
+Additionally, every node in a type hierarchy supports membership checks for all
+of its descendants.
 
 .. autosummary::
     :toctree: ../../generated
 
-    ScalarType.is_generic
-    ScalarType.backend
-    ScalarType.generic
-    ScalarType.backends
-    ScalarType.register_backend
+    ScalarType.contains
+    ScalarType.__contains__
+
+.. _ScalarType.downcast:
+
+Upcast/Downcast
+---------------
+They can also be dynamically resized based on example data.
+
+.. autosummary::
+    :toctree: ../../generated
+
+    ScalarType.larger
+    ScalarType.smaller
+    ScalarType.__lt__
+    ScalarType.__gt__
 
 .. _ScalarType.decorators:
 
-Adapters
---------
-See :class:`DecoratorType` for more information on how to wrap
-:class:`ScalarTypes <ScalarType>` with adapters.
+Decorators
+----------
+Lastly, :class:`ScalarTypes <pdcast.ScalarType>` can be wrapped with
+:class:`DecoratorTypes` to adjust their behavior.
 
 .. autosummary::
     :toctree: ../../generated
@@ -174,38 +158,15 @@ See :class:`DecoratorType` for more information on how to wrap
     ScalarType.make_sparse
     ScalarType.make_categorical
 
-.. _ScalarType.downcast:
-
-Upcast/Downcast
----------------
-
-.. autosummary::
-    :toctree: ../../generated
-
-    ScalarType.larger
-    ScalarType.smaller
-
-.. _ScalarType.missing:
-
-Missing Values
---------------
-
-.. autosummary::
-    :toctree: ../../generated
-
-    ScalarType.is_nullable
-    ScalarType.make_nullable
-
 .. _ScalarType.special:
 
 Special Methods
 ---------------
+These methods are used for syntactic sugar related to type manipulations.
 
 .. autosummary::
     :toctree: ../../generated
 
+    ScalarType.__hash__
     ScalarType.__contains__
     ScalarType.__eq__
-    ScalarType.__hash__
-    ScalarType.__str__
-    ScalarType.__repr__

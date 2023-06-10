@@ -149,7 +149,7 @@ def dtype(
     # reject improper subtype
     if supertype is not None and val.unwrap() is not None:
         supertype = resolve_type(supertype)
-        if not val.unwrap().is_subtype(supertype):
+        if not supertype.contains(val.unwrap()):
             raise ValueError(
                 f"`dtype` must be {supertype}-like, not {val}"
             )

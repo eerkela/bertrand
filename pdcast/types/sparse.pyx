@@ -112,7 +112,6 @@ class SparseType(DecoratorType):
     def contains(
         self,
         other: type_specifier,
-        include_subtypes: bool = True
     ) -> bool:
         """Check whether the given type is contained within this type's
         subtype hierarchy.
@@ -121,10 +120,7 @@ class SparseType(DecoratorType):
 
         # if target is composite, test each element individually
         if isinstance(other, CompositeType):
-            return all(
-                self.contains(o, include_subtypes=include_subtypes)
-                for o in other
-            )
+            return all(self.contains(o) for o in other)
 
         # assert other is sparse
         if not isinstance(other, type(self)):
@@ -147,7 +143,4 @@ class SparseType(DecoratorType):
                 return False
 
         # delegate to wrapped
-        return self.wrapped.contains(
-            other.wrapped,
-            include_subtypes=include_subtypes
-        )
+        return self.wrapped.contains(other.wrapped)

@@ -104,11 +104,7 @@ class CategoricalType(DecoratorType):
             )
         )
 
-    def contains(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
+    def contains(self, other: type_specifier) -> bool:
         """Check whether the given type is contained within the wrapped type's
         hierarchy.
         """
@@ -133,7 +129,4 @@ class CategoricalType(DecoratorType):
             return False
 
         # delegate to wrapped
-        return self.wrapped.contains(
-            other.wrapped,
-            include_subtypes=include_subtypes
-        )
+        return self.wrapped.contains(other.wrapped)

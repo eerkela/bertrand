@@ -305,11 +305,7 @@ cdef class DecoratorType(VectorType):
             for k, v in self.wrapped.backends.items()
         }
 
-    def contains(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
+    def contains(self, other: type_specifier) -> bool:
         """Test whether `other` is a subtype of the given ScalarType.
         This is functionally equivalent to `other in self`, except that it
         applies automatic type resolution to `other`.
@@ -318,17 +314,11 @@ cdef class DecoratorType(VectorType):
         """
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(
-                self.contains(typ, include_subtypes=include_subtypes)
-                for typ in other
-            )
+            return all(self.contains(typ) for typ in other)
 
         return (
             isinstance(other, type(self)) and
-            self.wrapped.contains(
-                other.wrapped,
-                include_subtypes=include_subtypes
-            )
+            self.wrapped.contains(other.wrapped)
         )
 
     def unwrap(self) -> ScalarType:

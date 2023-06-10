@@ -163,37 +163,15 @@ cdef class CompositeType(Type):
             if not any(a != b and a in b for b in self.types)
         )
 
-    def contains(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
+    def contains(self, other: type_specifier) -> bool:
         """Do a collective membership test involving the whole composite,
         rather than its individual components.
         """
         other = resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(
-                self.contains(other_typ, include_subtypes=include_subtypes)
-                for other_typ in other
-            )
+            return all(self.contains(other_typ) for other_typ in other)
 
-        return any(
-            typ.contains(other, include_subtypes=include_subtypes)
-            for typ in self
-        )
-
-    def is_subtype(
-        self,
-        other: type_specifier,
-        *args,
-        **kwargs
-    ) -> bool:
-        """Do a collective membership test involving the whole composite,
-        rather than its individual components.
-        """
-        other = resolve_type(other)
-        return other.contains(self, *args, **kwargs)
+        return any(typ.contains(other) for typ in self)
 
     #############################
     ####    SET INTERFACE    ####

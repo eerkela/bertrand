@@ -830,7 +830,7 @@ class CompositeDispatch(DispatchStrategy):
         # if results are composite but in same family, attempt to standardize
         if self.convert_mixed and len(unique) > 1:
             roots = {typ.generic.root for typ in unique}
-            if any(all(t1.is_subtype(t2) for t1 in unique) for t2 in roots):
+            if any(all(t2.contains(t1) for t1 in unique) for t2 in roots):
                 computed, unique = self._standardize_same_family(
                     computed,
                     unique

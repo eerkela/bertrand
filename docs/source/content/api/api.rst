@@ -6,7 +6,7 @@ API Reference
 
 .. raw:: html
 
-    <h2>Type objects</h2>
+    <h2>Type system</h2>
 
 The following data structures define the standard interface for the ``pdcast``
 :doc:`type system <../types/types>` and allow users to easily
@@ -49,7 +49,7 @@ another.
 
 .. raw:: html
 
-  <h2>Conversions</h2>
+  <h2>Universal conversions</h2>
 
 .. list-table::
 

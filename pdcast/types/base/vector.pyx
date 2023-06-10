@@ -15,7 +15,7 @@ from pdcast.util.type_hints import type_specifier
 from .registry cimport Type, AliasManager
 
 
-# TODO: remove non top-level imports in __eq__, is_subtype
+# TODO: remove non top-level imports in __eq__
 
 
 ######################
@@ -29,9 +29,22 @@ cdef Exception READ_ONLY_ERROR = (
 
 
 cdef class VectorType(Type):
-    """Base type for :class:`ScalarType` and :class:`DecoratorType` objects.
+    """Base class for :class:`ScalarType <pdcast.ScalarType>` and
+    :class:`DecoratorType <pdcast.DecoratorType>` objects.
 
-    This allows inherited types to manage aliases and update them at runtime.
+    Notes
+    -----
+    This class describes a shared initialization mechanism, which makes use of
+    :class:`ArgumentEncoders <pdcast.types.base.ArgumentEncoder>` and
+    :class:`InstanceFactories <pdcast.types.base.InstanceFactory>` to implement
+    the `flyweight pattern <https://en.wikipedia.org/wiki/Flyweight_pattern>`_.
+    It also exposes a few properties that are not meant to be overridden in
+    subclasses.
+
+    In general, these types should not be initialized by any means other than
+    the :func:`@register <pdcast.register>` decorator or
+    :meth:`TypeRegistry.add() <pdcast.TypeRegistry.add>` method.  Special logic
+    is invoked the first time they are instantiated.
     """
 
     _encoder: ArgumentEncoder = None
@@ -49,6 +62,10 @@ cdef class VectorType(Type):
 
         self._hash = hash(self._slug)
         self._read_only = True
+
+    ##############################
+    ####    INITIALIZATION    ####
+    ##############################
 
     @classmethod
     def set_encoder(cls, ArgumentEncoder encoder) -> None:
@@ -145,59 +162,135 @@ cdef class VectorType(Type):
     ##########################
 
     @property
-    def name(self) -> str:
+    def name(self):
         """A unique name for each type.
-
-        This must be defined at the **class level**.  It is used in conjunction
-        with :meth:`encode() <ScalarType.encode>` to generate string
-        representations of the associated type, which use this as their base.
 
         Returns
         -------
         str
-            A unique string identifying each type.
+            A short string identifying each type.
+
+        Raises
+        ------
+        NotImplementedError
+            If a type does not implement this attribute.
 
         Notes
         -----
-        Names can also be inherited from :func:`generic <generic>` types via
-        :meth:`@ScalarType.register_backend <ScalarType.register_backend>`.
+        Names can also be inherited from an
+        :class:`AbstractType <pdcast.AbstractType>` via the
+        :meth:`@AbstractType.implementation <pdcast.AbstractType.implementation>`
+        decorator.  These types will automatically insert their
+        :attr:`backend <pdcast.ScalarType.backend>` specifier to avoid
+        conflicts.
+
+        Examples
+        --------
+        This attribute is used to generate string representations of the
+        associated type, which are used to hash types and identify
+        `flyweights <https://en.wikipedia.org/wiki/Flyweight_pattern>`_.
+
+        .. doctest::
+
+            >>> pdcast.PythonDecimalType.name
+            'decimal'
+            >>> str(pdcast.PythonDecimalType)
+            'decimal[python]'
+
+        It should be defined at the class level and should not change over the
+        lifetime of a type.
         """
         raise NotImplementedError(
             f"'{type(self).__name__}' is missing a `name` field."
         )
 
     @property
-    def kwargs(self) -> MappingProxyType:
-        """For parametrized types, the value of each parameter.
+    def kwargs(self):
+        """A map containing the parametrized arguments for a type.
 
         Returns
         -------
         MappingProxyType
-            A read-only view on the parameter values for this
-            :class:`VectorType`.
+            A read-only dictionary mapping parameter names to their specific
+            values for this instance.
 
         Notes
         -----
         This is conceptually similar to the ``_metadata`` field of numpy/pandas
         :class:`dtype <numpy.dtype>`\ /
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` objects.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("M8[5ns]").kwargs
+            mappingproxy({'unit': 'ns', 'step_size': 5})
+            >>> pdcast.resolve_type("sparse[bool, True]").kwargs
+            mappingproxy({'wrapped': BooleanType(), 'fill_value': True})
         """
         return MappingProxyType({} if self._kwargs is None else self._kwargs)
 
     @property
-    def decorators(self) -> Iterator:
-        """An iterator that yields each :class:`DecoratorType` that is attached
-        to this :class:`VectorType <pdcast.VectorType>`.
+    def decorators(self):
+        """A generator that iterates over every
+        :class:`DecoratorType <pdcast.DecoratorType>` that is attached to a
+        type.
+
+        Returns
+        -------
+        Iterator
+            A generator expression that yields each decorator in order.
+
+        See Also
+        --------
+        VectorType.unwrap() :
+            Get the base :class:`ScalarType <pdcast.ScalarType>` associated
+            with a type.
+
+        Examples
+        --------
+        Decorators can be nested to form a singly-linked list on top of a base
+        :class:`ScalarType <pdcast.ScalarType>` object.  This attribute allows
+        users to iterate through the decorators in order, progressively
+        unwrapping them.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse[categorical[str]]")
+            SparseType(wrapped=CategoricalType(wrapped=StringType(), levels=None), fill_value=None)
+            >>> [str(x) for x in _.decorators]
+            ['sparse[categorical[string, None], None]', 'categorical[string, None]']
         """
         yield from ()
 
-    #######################
-    ####    METHODS    ####
-    #######################
+    ############################
+    ####    BASE METHODS    ####
+    ############################
 
-    def unwrap(self) -> VectorType:
-        """Remove all :class:`DecoratorTypes <pdcast.DecoratorType>` from this
-        :class:`VectorType <pdcast.VectorType>`.
+    def unwrap(self) -> ScalarType:
+        """Strip all the :class:`DecoratorTypes <pdcast.DecoratorType>` that
+        are attached to this type.
+
+        Returns
+        -------
+        ScalarType
+            The base :class:`ScalarType <pdcast.ScalarType>` associated with
+            this type.
+
+        See Also
+        --------
+        VectorType.decorators :
+            A generator that iterates through decorators layer by layer.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("categorical[str]")
+            CategoricalType(wrapped=StringType(), levels=None)
+            >>> _.unwrap()
+            StringType()
         """
         return self
 
@@ -208,58 +301,28 @@ cdef class VectorType(Type):
         Parameters
         ----------
         **kwargs : dict
-            keyword arguments corresponding to attributes of this type.  Any
-            arguments that are not specified will be replaced with the current
-            values for this type.
+            Keyword arguments corresponding to parametrized attributes of this
+            type.  Any parameters that are not listed explicitly will use the
+            current values for this instance.
 
         Returns
         -------
         ScalarType
-            A flyweight for the specified type.  If this method is given the
-            same input again in the future, then this will be a simple
-            reference to the previous instance.
+            A new instance of this type with the specified values.
 
-        Notes
-        -----
-        This method respects the immutability of :class:`ScalarType` objects.
-        It always returns a flyweight with the new values.
+        Examples
+        --------
+        This method is used to modify a type without mutating it.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("m8[5ns]")
+            NumpyTimedelta64Type(unit='ns', step_size=5)
+            >>> _.replace(unit="s")
+            NumpyTimedelta64Type(unit='s', step_size=5)
         """
         cdef dict merged = {**self.kwargs, **kwargs}
         return self(**merged)
-
-    def is_subtype(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
-        """Reverse of :meth:`ScalarType.contains`.
-
-        Parameters
-        ----------
-        other : type specifier
-            The type to check for membership.  This can be in any
-            representation recognized by :func:`resolve_type`.
-        include_subtypes : bool, default True
-            Controls whether to include subtypes for this comparison.  If this
-            is set to ``False``, then subtypes will be excluded.  Backends will
-            still be considered, but only at the top level.
-
-        Returns
-        -------
-        bool
-            ``True`` if ``self`` is a member of ``other``\'s hierarchy.
-            ``False`` otherwise.
-
-        Notes
-        -----
-        This method performs the same check as :meth:`ScalarType.contains`,
-        except in reverse.  It is functionally equivalent to
-        ``other.contains(self)``.
-        """
-        from pdcast.resolve import resolve_type
-
-        other = resolve_type(other)
-        return other.contains(self, include_subtypes=include_subtypes)
 
     ###############################
     ####    SPECIAL METHODS    ####
@@ -320,12 +383,9 @@ cdef class VectorType(Type):
         """Constructor for parametrized types."""
         return self.instances(args, kwargs)
 
-    def __contains__(self, other: type_specifier) -> bool:
-        """Implement the ``in`` keyword for membership checks.
-
-        This is equivalent to calling ``self.contains(other)``.
-        """
-        return self.contains(other)
+    def __hash__(self) -> int:
+        """Return the hash of this type's string identifier."""
+        return self._hash
 
     def __eq__(self, other: type_specifier) -> bool:
         """Compare two types for equality."""
@@ -333,10 +393,6 @@ cdef class VectorType(Type):
 
         other = resolve_type(other)
         return isinstance(other, VectorType) and hash(self) == hash(other)
-
-    def __hash__(self) -> int:
-        """Return the hash of this type's string identifier."""
-        return self._hash
 
     def __str__(self) -> str:
         """Return this type's string identifier."""

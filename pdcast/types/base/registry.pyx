@@ -17,6 +17,7 @@ from .scalar cimport ScalarType, AbstractType
 # TODO: adding aliases during init_base automatically appends them to
 # pinned_aliases and makes them available from registry.aliases.  This may not
 # be desirable.
+# -> Handle aliases during TypeRegistry.add()
 
 
 ######################
@@ -1235,6 +1236,10 @@ cdef class Type:
     def __init__(self):
         self._aliases = AliasManager(self)
 
+    #######################
+    ####    ALIASES    ####
+    #######################
+
     @property
     def aliases(self):
         """A set of unique aliases for this type.
@@ -1289,6 +1294,10 @@ cdef class Type:
             BooleanType()
         """
         return self._aliases
+
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
 
     def from_string(self, *args: str) -> Type:
         """Construct a :class:`Type <pdcast.Type>` from a string in the
@@ -1391,9 +1400,8 @@ cdef class Type:
             >>> pdcast.PandasInt64Type.from_dtype(pd.Int64Dtype())
             PandasInt64Type()
 
-        This method is also called whenever
-        :func:`detect_type() <pdcast.detect_type>` encounters data that has a
-        corresponding ``.dtype`` field.
+        It is also called whenever :func:`detect_type() <pdcast.detect_type>`
+        encounters data with an appropriate ``.dtype`` field.
 
         .. doctest::
 
@@ -1486,6 +1494,80 @@ cdef class Type:
             f"{type(self).__qualname__} cannot be constructed from example "
             f"data"
         )
+
+    ##########################
+    ####    MEMBERSHIP    ####
+    ##########################
+
+    def contains(self, other: type_specifier) -> bool:
+        """Check whether ``other`` is a member of this type's hierarchy.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The type to check for.  This can be in any form recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``other`` is a member of this type's hierarchy.
+            ``False`` otherwise.
+
+        See Also
+        --------
+        typecheck :
+            :func:`isinstance() <python:isinstance>`-like hierarchical checks
+            within the ``pdcast`` type system.
+        dispatch :
+            Multiple dispatch based on argument membership.
+
+        Notes
+        -----
+        This method also controls the behavior of the ``in`` keyword on type
+        objects.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int").contains("int32")
+            True
+            >>> pdcast.resolve_type("datetime").contains("M8[5ns]")
+            True
+            >>> pdcast.resolve_type("sparse").contains("sparse[bool[numpy]]")
+            True
+            >>> pdcast.resolve_type("int, float, complex").contains("float16")
+            True
+            >>> pdcast.resolve_type("complex").contains(["complex64", "complex128"])
+            True
+
+        Using the ``in`` keyword reverses its behavior:
+
+        .. doctest::
+
+            >>> "int32" in pdcast.resolve_type("int")
+            True
+            >>> "M8[5ns]" in pdcast.resolve_type("datetime")
+            True
+            >>> "sparse[bool[numpy]]" in pdcast.resolve_type("sparse")
+            True
+            >>> "float16" in pdcast.resolve_type("int, float, complex")
+            True
+            >>> ["complex64", "complex128"] in pdcast.resolve_type("complex")
+            True
+        """
+        raise NotImplementedError(
+            f"{repr(self)} does not support hierarchical membership checks"
+        )
+
+    def __contains__(self, other: type_specifier) -> bool:
+        """Implement the ``in`` keyword for type objects.
+
+        This is semantically equivalent to calling
+        :meth:`self.contains(other) <pdcast.Type.contains>`.
+        """
+        return self.contains(other)
 
 
 #######################

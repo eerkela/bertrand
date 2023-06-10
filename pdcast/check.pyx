@@ -16,7 +16,6 @@ from pdcast.util.type_hints import type_specifier
 def typecheck(
     data: Any,
     dtype: type_specifier ,
-    include_subtypes: bool = True,
     ignore_decorators: bool = False
 ) -> bool:
     """Check whether example data contains elements of a specified type.
@@ -29,9 +28,6 @@ def typecheck(
     dtype : type specifier
         The type to compare against.  This can be in any format accepted by
         :func:`resolve_type`.
-    include_subtypes : bool, default True
-        Specifies whether to include :func:`subtypes <subtype>` in comparisons
-        (True), or only check for backend matches (False).
     ignore_decorators : bool, default False
         Specifies whether to ignore :class:`decorators <DecoratorType>` that
         are detected in example data.  By default, the comparison type must
@@ -52,8 +48,7 @@ def typecheck(
 
     See Also
     --------
-    ScalarType.contains : Customizable membership checks.
-    DecoratorType.contains : Customizable membership checks.
+    Type.contains : Customizable membership checks.
     """
     # DataFrame (columnwise) case
     if isinstance(data, pd.DataFrame):
@@ -70,7 +65,6 @@ def typecheck(
             typecheck(
                 data[col],
                 typespec,
-                include_subtypes=include_subtypes,
                 ignore_decorators=ignore_decorators
             )
             for col, typespec in dtype.items()
@@ -84,4 +78,4 @@ def typecheck(
         target_type = CompositeType(x.unwrap() for x in target_type)
         data_type = CompositeType(x.unwrap() for x in data_type)
 
-    return target_type.contains(data_type, include_subtypes=include_subtypes)
+    return target_type.contains(data_type)

@@ -34,7 +34,7 @@ def object_to_boolean(
         series = series.astype(resolve_type(bool).dtype)
     else:
         output_type = detect_type(series)
-        if not output_type.is_subtype("bool"):
+        if not types.BooleanType.contains(output_type):
             raise TypeError(
                 f"`call` must produce boolean output, not {str(output_type)}"
             )
@@ -64,7 +64,7 @@ def object_to_integer(
         series = series.astype(resolve_type(int).dtype)
     else:
         output_type = detect_type(series)
-        if not output_type.is_subtype("int"):
+        if not types.IntegerType.contains(output_type):
             raise TypeError(
                 f"`call` must produce integer output, not {str(output_type)}"
             )
@@ -94,7 +94,7 @@ def object_to_float(
         series = series.astype(resolve_type(float).dtype)
     else:
         output_type = detect_type(series)
-        if not output_type.is_subtype("float"):
+        if not types.FloatType.contains(output_type):
             raise TypeError(
                 f"`call` must produce float output, not {str(output_type)}"
             )
@@ -124,7 +124,7 @@ def object_to_complex(
         series = series.astype(resolve_type(complex).dtype)
     else:
         output_type = detect_type(series)
-        if not output_type.is_subtype("complex"):
+        if not types.ComplexType.contains(output_type):
             raise TypeError(
                 f"`call` must produce complex output, not {str(output_type)}"
             )

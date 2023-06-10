@@ -44,49 +44,20 @@ from ..array import construct_object_dtype
 
 
 cdef class ScalarType(VectorType):
-    """Abstract base class for all user-defined scalar types.
+    """Base class for all user-defined scalar types.
 
     :class:`ScalarTypes <pdcast.ScalarType>` are the most fundamental unit of
-    the ``pdcast`` type system.  They are used to describe scalar values of a
-    particular type (i.e. :class:`int <python:int>`, :class:`numpy.float32`,
-    etc.), and can be linked together into hierarchical tree structures.
+    the ``pdcast`` type system.  They form the leaves of a
+    :ref:`type hierarchy <AbstractType.hierarchy>`, describing concrete values
+    of a particular type (i.e. :class:`int <python:int>`,
+    :class:`numpy.float32`, etc.).
 
     Parameters
     ----------
     **kwargs : dict
-        Arbitrary keyword arguments describing metadata for this type.  If a
-        subclass accepts arguments in its ``__init__`` method, they should
-        always be passed here via ``super().__init__(**kwargs)``.  This is
-        conceptually equivalent to the ``_metadata`` field of pandas
+        Parametrized keyword arguments describing metadata for this type.  This
+        is conceptually equivalent to the ``_metadata`` field of pandas
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` objects.
-
-    Examples
-    --------
-    All in all, a typical :class:`ScalarType` definition could look something
-    like this:
-
-    .. code:: python
-
-        @pdcast.register
-        @GenericType.implementation("backend")  # inherits .name
-        class ImplementationType(pdcast.ScalarType):
-
-            _cache_size = 128
-            aliases = {"foo", "bar", "baz", np.dtype(np.int64), int, ...}
-            type_def = int
-            dtype = np.dtype(np.int64)
-            itemsize = 8
-            na_value = pd.NA
-
-            def __init__(self, x=None, y=None):
-                # custom arg parsing goes here, along with any new attributes
-                super().__init__(x=x, y=y)  # no new attributes after this point
-
-            # further customizations as necessary
-
-    Where ``GenericType`` references an abstract
-    :func:`@parent <pdcast.parent>` type that ``ImplementationType`` is linked
-    to.
     """
 
     # NOTE: this is a sample __init__ method for a parametrized type.
@@ -113,11 +84,8 @@ cdef class ScalarType(VectorType):
     ############################
 
     def from_string(self, *args: str) -> ScalarType:
-        """Construct a new :class:`ScalarType` in the :ref:`type specification
-        mini-language <resolve_type.mini_language>`.
-
-        Override this if a type implements custom parsing rules for any
-        arguments that are supplied to it.
+        """Construct a :class:`ScalarType <pdcast.ScalarType>` from a string in
+        the :ref:`type specification mini-language <resolve_type.mini_language>`.
 
         Parameters
         ----------
@@ -126,28 +94,42 @@ cdef class ScalarType(VectorType):
             passed as strings, exactly as they appear in the :ref:`type
             specification mini-language <resolve_type.mini_language>`.
 
-        See Also
-        --------
-        DecoratorType.resolve : the decorator equivalent of this method.
-
         Returns
         -------
         ScalarType
-            A flyweight for the specified type.  If this method is given the
-            same inputs again in the future, then this will be a simple
-            reference to the previous instance.
+            A `flyweight <https://en.wikipedia.org/wiki/Flyweight_pattern>`_
+            for the specified type.  If this method is given the same inputs
+            again, it will return a reference to the original instance.
+
+        See Also
+        --------
+        Type.from_string :
+            For more information on how this method is called.
+
+        Examples
+        --------
+        This method returns
+        `flyweights <https://en.wikipedia.org/wiki/Flyweight_pattern>`_ that
+        are only allocated once and then cached for the duration of the
+        program.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("int") is pdcast.resolve_type("int")
+            True
+
+        If a type defines a :attr:`_cache_size` attribute, then only a fixed
+        number of instances will be cached, implementing a Least Recently Used
+        (LRU) caching strategy.
         """
-        # NOTE: any special string conversion logic goes here
-        return self(*args)
+        # NOTE: string parsing goes here
+
+        return self(*args)  # calling self handles flyweight creation
 
     def from_dtype(self, dtype: np.dtype | ExtensionDtype) -> ScalarType:
-        """Construct an :class:`ScalarType` from a corresponding numpy/pandas
-        :class:`dtype <numpy.dtype>`\ /\
+        """Construct a :class:`ScalarType <pdcast.ScalarType>` from a
+        numpy/pandas :class:`dtype <numpy.dtype>`\ /\
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
-
-        Override this if a type must parse the attributes of an associated
-        :class:`dtype <numpy.dtype>` or
-        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`.
 
         Parameters
         ----------
@@ -159,34 +141,38 @@ cdef class ScalarType(VectorType):
         Returns
         -------
         ScalarType
-            A flyweight for the specified type.  If this method is given the
-            same input again in the future, then this will be a simple
-            reference to the previous instance.
+            A `flyweight <https://en.wikipedia.org/wiki/Flyweight_pattern>`_
+            for the specified type.  If this method is given the same inputs
+            again, it will return a reference to the original instance.
 
         See Also
         --------
-        DecoratorType.from_dtype : the decorator equivalent of this method.
+        Type.from_dtype :
+            For more information on how this method is called.
 
-        Notes
-        -----
-        For numpy :class:`dtypes <numpy.dtype>`, the input to this function
-        must be a member of the type's :attr:`aliases <Type.aliases>`
-        attribute.
+        Examples
+        --------
+        This method returns
+        `flyweights <https://en.wikipedia.org/wiki/Flyweight_pattern>`_ that
+        are only allocated once and then cached for the duration of the
+        program.
 
-        For pandas :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`,
-        the input's **type** must be a member of
-        :attr:`aliases <Type.aliases>`, not the dtype itself.  This
-        asymmetry allows pandas dtypes to be arbitrarily parameterized when
-        passed to this method.
+        .. doctest::
+
+            >>> import numpy as np
+            >>> pdcast.resolve_type(np.dtype(int)) is pdcast.resolve_type(np.dtype(int))
+            True
+
+        If a type defines a :attr:`_cache_size` attribute, then only a fixed
+        number of instances will be cached, implementing a Least Recently Used
+        (LRU) caching strategy.
         """
-        # NOTE: any special dtype parsing logic goes here
-        return self
+        # NOTE: dtype parsing goes here
+
+        return self   # if the type is parametrized, call self() directly
 
     def from_scalar(self, example: Any) -> ScalarType:
-        """Construct a new :class:`ScalarType` from scalar example data.
-
-        Override this if a type has attributes that depend on the value of a
-        corresponding scalar (e.g. datetime64 units, timezones, etc.)
+        """Construct a :class:`ScalarType` from scalar example data.
 
         Parameters
         ----------
@@ -197,26 +183,41 @@ cdef class ScalarType(VectorType):
         Returns
         -------
         ScalarType
-            A flyweight for the specified type.  If this method is given the
-            same input again in the future, then this will be a simple
-            reference to the previous instance.
+            A `flyweight <https://en.wikipedia.org/wiki/Flyweight_pattern>`_
+            for the specified type.  If this method is given the same inputs
+            again, it will return a reference to the original instance.
+
+        See Also
+        --------
+        Type.from_scalar :
+            For more information on how this method is called.
 
         Notes
         -----
-        This method is called during :func:`detect_type` operations when there
-        is no explicit ``.dtype`` field to interpret.  This might be the case
-        for objects that are stored in a base Python list or ``dtype: object``
-        array, for instance.
+        When an ambiguous sequence (without a parsable ``.dtype``) is given as
+        input to :func:`detect_type() <pdcast.detect_type>`, this method
+        will be called to resolve the ambiguity.  It should be fast, as it will
+        be called at every index of the input.
 
-        In order for this method to be called, the output of
-        :class:`type() <python:type>` on the example must be registered as one
-        of this type's :attr:`aliases <Type.aliases>`.
+        Examples
+        --------
+        This method returns
+        `flyweights <https://en.wikipedia.org/wiki/Flyweight_pattern>`_ that
+        are only allocated once and then cached for the duration of the
+        program.
 
-        If the input to :func:`detect_type` is vectorized, then this method
-        will be called at each index.
+        .. doctest::
+
+            >>> pdcast.detect_type(1) is pdcast.detect_type(2)
+            True
+
+        If a type defines a :attr:`_cache_size` attribute, then only a fixed
+        number of instances will be cached, implementing a Least Recently Used
+        (LRU) caching strategy.
         """
-        # NOTE: any special scalar parsing logic goes here
-        return self
+        # NOTE: scalar parsing goes here
+
+        return self  # if the type is parametrized, call self() directly
 
     #############################
     ####    CONFIGURATION    ####
@@ -269,10 +270,12 @@ cdef class ScalarType(VectorType):
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
         instead.
         """
+        from ..boolean import BooleanType
+
         if self._dtype is None:
             return construct_object_dtype(
                 self,
-                is_boolean=self.is_subtype("bool"),
+                is_boolean=BooleanType.contains(self),
                 is_numeric=self.is_numeric,
                 add_comparison_ops=True,
                 add_arithmetic_ops=True
@@ -373,11 +376,7 @@ cdef class ScalarType(VectorType):
             f"'{type(self).__name__}' objects have no nullable alternative."
         )
 
-    def contains(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
+    def contains(self, other: type_specifier) -> bool:
         """Test whether ``other`` is a member of this type's hierarchy tree.
 
         Override this to change the behavior of the `in` keyword and implement
@@ -388,10 +387,6 @@ cdef class ScalarType(VectorType):
         other : type_specifier
             The type to check for membership.  This can be in any
             representation recognized by :func:`resolve_type`.
-        include_subtypes : bool, default True
-            Controls whether to include subtypes for this comparison.  If this
-            is set to ``False``, then subtypes will be excluded.  Backends will
-            still be considered, but only at the top level.
 
         Returns
         -------
@@ -406,10 +401,7 @@ cdef class ScalarType(VectorType):
         """
         other = resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(
-                self.contains(o, include_subtypes=include_subtypes)
-                for o in other
-            )
+            return all(self.contains(typ) for typ in other)
 
         # treat base instances as wildcards
         if self == self.base_instance:
@@ -918,18 +910,11 @@ cdef class AbstractType(ScalarType):
             return self
         return self.backends[backend].from_string(*args)  
 
-    def contains(
-        self,
-        other: type_specifier,
-        include_subtypes: bool = True
-    ) -> bool:
+    def contains(self, other: type_specifier) -> bool:
         """Extend membership checks to this type's subtypes/implementations."""
         other = resolve_type(other)
         if isinstance(other, CompositeType):
-            return all(
-                self.contains(o, include_subtypes=include_subtypes)
-                for o in other
-            )
+            return all(self.contains(typ) for typ in other)
 
         if other == self:
             return True
