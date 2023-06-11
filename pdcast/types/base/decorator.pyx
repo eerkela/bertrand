@@ -21,107 +21,28 @@ from .composite cimport CompositeType
 
 
 cdef class DecoratorType(VectorType):
-    """Abstract base class for all `Decorator pattern
-    <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_ type
-    objects.
+    """Base class for all `Decorator pattern
+    <https://en.wikipedia.org/wiki/Decorator_pattern>`_ type objects.
 
-    These are used to dynamically modify the behavior of other types, for
-    instance by marking them as sparse or categorical.  They can be nested to
-    form a singly-linked list that can be iteratively unwrapped using a type's
+    These are used to dynamically modify the behavior of another type, for
+    instance marking it as sparse or categorical.  They can be nested to
+    form a `singly-linked list <https://en.wikipedia.org/wiki/Linked_list>`_
+    that can be iteratively unwrapped using a type's
     :attr:`.decorators <DecoratorType.decorators>` attribute.  Conversions and
     other type-related functionality will automatically take these decorators
     into account, unwrapping them to the appropriate level before re-packaging
     the result.
 
-    .. note::
-
-        These are examples of the `Gang of Four
-        <https://en.wikipedia.org/wiki/Design_Patterns>`_\'s `Decorator Pattern
-        <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_,
-        which is not to be confused with the built-in python ``@decorator``
-        syntax.  This pattern leverages `composition over inheritance
-        <https://en.wikipedia.org/wiki/Composition_over_inheritance>`_ to
-        prevent subclass explosions in the ``pdcast`` type system.
-
     Parameters
     ----------
-    wrapped : ScalarType | DecoratorType
-        The type object to wrap.  Any attributes that are not caught by the
-        :class:`DecoratorType` itself will be automatically delegated to this
-        object, in accordance with the `Decorator pattern
-        <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_.
+    wrapped : ScalarType | DecoratorType, optional
+        A type to wrap.  This may be another
+        :class:`DecoratorType <pdcast.DecoratorType>`, in which case they are
+        nested to form a singly-linked list.
     **kwargs : dict
-        Arbitrary keyword arguments describing metadata for this type.  If a
-        subclass accepts arguments in its ``__init__`` method, they should
-        always be passed here via ``super().__init__(**kwargs)``.  This is
-        conceptually equivalent to the ``_metadata`` field of pandas
-        :class:`ExtensionDtype <pandas.api.extension.ExtensionDtype>` objects.
-
-    Attributes
-    ----------
-    name : str
-        A unique name for each type, which must be defined at the class level.
-        This is used in conjunction with :meth:`encode()
-        <DecoratorType.encode>` to generate string representations of the
-        associated type.
-    aliases : set[str | ExtensionDtype]
-        A set of unique aliases for this type, which must be defined at the
-        class level.  These are used by :func:`detect_type` and
-        :func:`resolve_type` to map aliases onto their corresponding types.
-
-        .. note::
-
-            These work slightly differently from :attr:`Type.aliases` in
-            that they do not support ``type`` or ``np.dtype`` objects.  This is
-            because :class:`DecoratorTypes <DecoratorType>` cannot describe scalar
-            (non-vectorized) data, and there is no direct equivalent within
-            the numpy typing system.  Strings and ``ExtensionDtypes`` work
-            identically to their :class:`ScalarType` equivalents.
-
-    Notes
-    -----
-    .. _adapter_type.inheritance:
-
-    :class:`DecoratorTypes <DecoratorType>` are `metaclasses <https://peps.python.org/pep-0487/>`_
-    that are limited to **first-order inheritance**.  This means that they must
-    inherit from :class:`DecoratorType` *directly*, and cannot have any children
-    of their own.  For example:
-
-    .. code:: python
-
-        class Type1(pdcast.DecoratorType):   # valid
-            ...
-
-        class Type2(Type1):   # invalid
-            ...
-
-    If you'd like to share functionality between types, this can be done using
-    `Mixin classes <https://dev.to/bikramjeetsingh/write-composable-reusable-python-classes-using-mixins-6lj>`_,
-    like so:
-
-    .. code:: python
-
-        class Mixin:
-            # shared attributes/methods go here
-            ...
-
-        class Type1(Mixin, pdcast.DecoratorType):
-            ...
-
-        class Type2(Mixin, pdcast.DecoratorType):
-            ...
-
-    .. note::
-
-        Note that ``Mixin`` comes **before** :class:`DecoratorType` in each
-        inheritance signature.  This ensures correct `Method Resolution Order
-        (MRO) <https://en.wikipedia.org/wiki/C3_linearization>`_.
-
-    .. _adapter_type.allocation:
-
-    :class:`DecoratorTypes <DecoratorType>` are **not** cached as `flyweights
-    <https://python-patterns.guide/gang-of-four/flyweight/>`_, unlike
-    :class:`ScalarType`.
+        Parametrized keyword arguments describing metadata for this type.  This
+        is conceptually equivalent to the ``_metadata`` field of pandas
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` objects.
     """
 
     def __init__(self, wrapped: VectorType = None, **kwargs):

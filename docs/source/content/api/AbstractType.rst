@@ -28,3 +28,16 @@ associated type or one of its
     AbstractType.kwargs
     AbstractType.replace
     AbstractType.__call__
+
+.. _AbstractType.membership:
+
+Membership
+----------
+These are called by :func:`typecheck` and :func:`@dispatch <dispatch>` to
+perform membership tests.
+
+.. autosummary::
+    :toctree: ../../generated
+
+    AbstractType.contains
+    AbstractType.__contains__

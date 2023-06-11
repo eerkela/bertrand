@@ -14,50 +14,52 @@ pdcast.DecoratorType
 
 Constructors
 ------------
-These are used by 
+These are automatically called by :func:`detect_type() <pdcast.detect_type>`
+and :func:`resolve_type() <pdcast.resolve_type>` to create instances of the
+associated type.
 
 .. autosummary::
     :toctree: ../../generated
 
-    DecoratorType.resolve
+    DecoratorType.from_string
     DecoratorType.from_dtype
+    DecoratorType.kwargs
     DecoratorType.replace
-    DecoratorType.slugify
+    DecoratorType.__call__
 
-.. _DecoratorType.aliases:
+.. _DecoratorType.membership:
 
-Aliases
--------
-
-.. autosummary::
-    :toctree: ../../generated
-
-    DecoratorType.clear_aliases <VectorType.clear_aliases>
-    DecoratorType.register_alias <VectorType.register_alias>
-    DecoratorType.remove_alias <VectorType.remove_alias>
-
-.. _DecoratorType.hierarchy:
-
-Subtypes/Supertypes
--------------------
+Membership
+----------
+These are called by :func:`typecheck` and :func:`@dispatch <dispatch>` to
+perform membership tests.
 
 .. autosummary::
     :toctree: ../../generated
 
     DecoratorType.contains
+    DecoratorType.__contains__
 
 .. _DecoratorType.decorators:
 
-Adapters
---------
+Decorators
+----------
 
 .. autosummary::
     :toctree: ../../generated
 
     DecoratorType.wrapped
-    DecoratorType.atomic_type
     DecoratorType.unwrap
     DecoratorType.decorators
+
+.. _DecoratorType.transform:
+
+Data transformations
+--------------------
+
+.. autosummary::
+    :toctree: ../../generated
+
     DecoratorType.transform
     DecoratorType.inverse_transform
 

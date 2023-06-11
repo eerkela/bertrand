@@ -13,12 +13,17 @@ from .registry cimport AliasManager, Type
 
 
 cdef class CompositeType(Type):
-    """Set-like container for type objects.
+    """Set-like container for ``pdcast`` type objects.
 
-    Implements the same interface as the built-in set type, but is restricted
-    to contain only ScalarType and DecoratorType objects.  Also extends
-    subset/superset/membership checks to include subtypes for each of the
-    contained scalar types.
+    :class:`CompositeTypes <pdcast.CompositeType>` describe collections of
+    types.  They can be created by providing multiple type specifiers in a call
+    to :func:`resolve_type() <pdcast.resolve_type>` or a vector with mixed
+    elements in a call to :func:`detect_type() <pdcast.detect_type>`.
+
+    Parameters
+    ----------
+    types : Type | Iterable[Type]
+        A sequence of :class:`Types <pdcast.Type>` to use as elements.
     """
 
     def __init__(

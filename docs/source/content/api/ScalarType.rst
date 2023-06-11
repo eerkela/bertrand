@@ -57,10 +57,10 @@ definition.
 
 Constructors
 ------------
-These are automatically called by :func:`detect_type() <pdcast.detect_type>`
-and :func:`resolve_type() <pdcast.resolve_type>` to create instances of the
-associated type.  They are responsible for implementing the
-`Flyweight pattern <https://en.wikipedia.org/wiki/Flyweight_pattern>`_.
+These are automatically called by :func:`detect_type` and :func:`resolve_type`
+to create instances of the associated type.  They are responsible for
+implementing the `Flyweight pattern
+<https://en.wikipedia.org/wiki/Flyweight_pattern>`_.
 
 .. autosummary::
     :toctree: ../../generated
@@ -71,6 +71,19 @@ associated type.  They are responsible for implementing the
     ScalarType.kwargs
     ScalarType.replace
     ScalarType.__call__
+
+.. _ScalarType.membership:
+
+Membership
+----------
+These are called by :func:`typecheck` and :func:`@dispatch <dispatch>` to
+perform membership tests.
+
+.. autosummary::
+    :toctree: ../../generated
+
+    ScalarType.contains
+    ScalarType.__contains__
 
 .. _ScalarType.config:
 
@@ -115,19 +128,6 @@ the following properties.
     ScalarType.subtypes
     ScalarType.is_leaf
     ScalarType.leaves
-
-.. _ScalarType.membership:
-
-Membership
-----------
-Additionally, every node in a type hierarchy supports membership checks for all
-of its descendants.
-
-.. autosummary::
-    :toctree: ../../generated
-
-    ScalarType.contains
-    ScalarType.__contains__
 
 .. _ScalarType.downcast:
 

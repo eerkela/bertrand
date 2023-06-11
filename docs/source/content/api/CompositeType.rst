@@ -10,8 +10,48 @@ pdcast.CompositeType
 .. raw:: html
     :file: ../../images/types/Types_UML.html
 
-Add/Remove
+.. _CompositeType.constructors:
+
+Constructors
+------------
+:class:`CompositeTypes <CompositeType>` have their own construction semantics
+in :func:`detect_type` and :func:`resolve_type`.  However, they also support
+the addition of dynamic :attr:`aliases <Type.aliases>` at runtime, in which
+case the following method may be used.
+
+.. autosummary::
+    :toctree: ../../generated
+
+    CompositeType.from_string
+
+.. _CompositeType.membership:
+
+Membership
 ----------
+These are called by :func:`typecheck` and :func:`@dispatch <dispatch>` to
+perform membership tests.
+
+.. autosummary::
+    :toctree: ../../generated
+
+    CompositeType.contains
+    CompositeType.__contains__
+
+.. _CompositeType.expand:
+
+Hierarchies
+-----------
+
+.. autosummary::
+    :toctree: ../../generated
+
+    CompositeType.expand
+    CompositeType.collapse
+
+.. _CompositeType.set:
+
+Set Interface
+-------------
 
 .. autosummary::
     :toctree: ../../generated
@@ -22,18 +62,27 @@ Add/Remove
     CompositeType.pop
     CompositeType.discard
 
-Subtypes/Supertypes
--------------------
+.. _CompositeType.comparisons:
+
+Comparisons
+-----------
 
 .. autosummary::
     :toctree: ../../generated
 
-    CompositeType.expand
-    CompositeType.collapse
-    CompositeType.subtypes
+    CompositeType.issubset
+    CompositeType.issuperset
+    CompositeType.isdisjoint
+    CompositeType.__eq__
+    CompositeType.__ge__
+    CompositeType.__gt__
+    CompositeType.__le__
+    CompositeType.__lt__
 
-Comparisons
------------
+.. _CompositeType.operations:
+
+Operations
+----------
 
 .. autosummary::
     :toctree: ../../generated
@@ -42,20 +91,15 @@ Comparisons
     CompositeType.intersection
     CompositeType.difference
     CompositeType.symmetric_difference
+    CompositeType.__or__
+    CompositeType.__and__
+    CompositeType.__sub__
+    CompositeType.__xor__
 
-Membership
-----------
+.. _CompositeType.updates:
 
-.. autosummary::
-    :toctree: ../../generated
-
-    CompositeType.contains
-    CompositeType.issubset
-    CompositeType.issuperset
-    CompositeType.isdisjoint
-
-In-place Updates
-----------------
+Updates
+-------
 
 .. autosummary::
     :toctree: ../../generated
@@ -64,6 +108,12 @@ In-place Updates
     CompositeType.intersection_update
     CompositeType.difference_update
     CompositeType.symmetric_difference_update
+    CompositeType.__ior__
+    CompositeType.__iand__
+    CompositeType.__isub__
+    CompositeType.__ixor__
+
+.. _CompositeType.special:
 
 Special Methods
 ---------------
@@ -71,24 +121,10 @@ Special Methods
 .. autosummary::
     :toctree: ../../generated
 
-    CompositeType.__and__
-    CompositeType.__contains__
-    CompositeType.__eq__
-    CompositeType.__ge__
-    CompositeType.__gt__
-    CompositeType.__iand__
-    CompositeType.__ior__
-    CompositeType.__isub__
-    CompositeType.__iter__
-    CompositeType.__ixor__
-    CompositeType.__le__
-    CompositeType.__lt__
     CompositeType.__len__
-    CompositeType.__or__
-    CompositeType.__repr__
+    CompositeType.__iter__
     CompositeType.__str__
-    CompositeType.__sub__
-    CompositeType.__xor__
+    CompositeType.__repr__
 
 Notes
 -----
