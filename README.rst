@@ -31,6 +31,9 @@ objects, with support for:
       ...     type_def = bool
       ...     itemsize = 1
       ...     na_value = pd.NA
+      ... 
+      ...     def __init__(self, x=None):
+      ...         super().__init__(x=x)
 
 *  A configurable, **domain-specific mini-language** for resolving types.  This
    represents a superset of the existing numpy/pandas syntax, with support for
@@ -38,17 +41,17 @@ objects, with support for:
 
    .. doctest::
 
-      >>> resolve_type("foo").
-      CustomType()
+      >>> resolve_type("foo")
+      CustomType(x=None)
       >>> _.aliases.add("baz")
-      >>> resolve_type("baz")
-      CustomType()
+      >>> resolve_type("baz[x]")
+      CustomType(x="x")
 
 *  Vectorized **type detection** from example data in any format.  This works
    regardless of an example's ``.dtype`` attribute, allowing ``pdcast`` to
    infer the types of ambiguous sequences such as lists, tuples, generators,
    and ``dtype: object`` arrays.  In each case, inference is fast, reliable,
-   and even works when the examples are of mixed type.
+   and works even when the examples are of mixed type.
 
    .. doctest::
 
@@ -59,8 +62,9 @@ objects, with support for:
 
 *  Efficient **type checks** for vectorized data.  These combine the above
    tools to perform ``isinstance()``-like hierarchical checks for any node in
-   the ``pdcast`` type system.  If the data are properly labeled, this is done
-   in constant time, allowing users to add checks wherever they are needed.
+   the ``pdcast`` type system.  If the data are properly labeled, then this is
+   done in constant time, allowing users to add checks wherever they are
+   needed.
 
    .. doctest::
 
@@ -103,8 +107,8 @@ objects, with support for:
 *  **Attachable functions** with a variety of access patterns.  These can be
    used to programmatically extend a class's interface at runtime, attaching
    the decorated function as a virtual attribute.  These attributes can mask
-   existing behavior while maintaining access to the original implementation or
-   be hidden behind virtual namespaces to avoid conflicts altogether,
+   existing behavior while maintaining access to the original implementation,
+   or be hidden behind virtual namespaces to avoid conflicts altogether,
    similar to ``Series.str``, ``Series.dt``, etc.
 
    .. doctest::
@@ -116,7 +120,7 @@ objects, with support for:
       >>> series.typecheck("int") == typecheck(series, "int")
       True
 
-*  Extension functions with **Dynamic arguments**.  These can be used to
+*  Extension functions with **dynamic arguments**.  These can be used to
    actively manage the values that are supplied to a function by defining
    validators for one or more of its arguments, which can supply their own
    logic before passing the result into the body of the function itself.  These
@@ -146,17 +150,17 @@ Together, these enable a functional approach to extending pandas with small,
 fully encapsulated functions performing special operations based on the types
 of their arguments.  They can be combined to create powerful, dynamic patches
 for its rich feature set, which can be seamlessly deployed to existing pandas
-data structures.  Users are thus able to surgically overload
-virtually any aspect of the pandas interface, or add entirely new behavior
-specific to one or more of their own data types.
+data structures without changing the structure of an analysis.  Users are thus
+able to surgically overload virtually any aspect of the pandas interface, or
+add entirely new behavior specific to one or more of their own data types,
+all while maintaining the pandas tools they know and love.
 
 Usage
 -----
 With its advanced features, ``pdcast`` implements its own super-charged
 :func:`cast() <pdcast.cast>` function, which can perform universal, lossless
 data conversions within its expanded type system.  Here's a round-trip journey
-through each of the core families of the ``pdcast`` type system (Note: ``_``
-refers to the previous output):
+through each of the core families of the ``pdcast`` type system:
 
 .. doctest::
 
@@ -197,7 +201,7 @@ refers to the previous output):
    1   2000-01-01 12:00:00
    2                   NaT
    dtype: datetime64[ns]
-   >>> _.cast("timedelta[python]", since="Jan 1st, 2000 at 12:00 PM")  # to timedelta (days since j2000)
+   >>> _.cast("timedelta[python]", since="Jan 1st, 2000 at 12:00 PM")  # to timedelta (µs since j2000)
    0    366 days, 0:00:00
    1              0:00:00
    2                  NaT
@@ -261,7 +265,7 @@ specialized extensions for existing pandas behavior:
    2    4.0
    dtype: object
 
-Or create entirely new attributes and methods above and beyond what's pandas
+Or create entirely new attributes and methods above and beyond what pandas
 includes by default.
 
 .. doctest::
@@ -316,6 +320,11 @@ License
 -------
 ``pdcast`` is available under an
 `MIT license <https://github.com/eerkela/pdcast/blob/main/LICENSE>`_.
+
+Related Projects
+----------------
+*  `pdlearn <https://github.com/eerkela/pdlearn>`_ - Seamless AutoML
+   integration for pandas DataFrames leveraging the ``pdcast`` type system.
 
 Contributing
 ------------
