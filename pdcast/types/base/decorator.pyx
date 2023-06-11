@@ -15,6 +15,11 @@ from .vector cimport VectorType
 from .composite cimport CompositeType
 
 
+# TODO: DecoratorType.contains should absorb some of the logic of its
+# subtypes.
+# -> treat base instances as wildcards.
+
+
 cdef class DecoratorType(VectorType):
     """Abstract base class for all `Decorator pattern
     <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_ type
@@ -127,46 +132,69 @@ cdef class DecoratorType(VectorType):
     ############################
 
     def from_string(self, wrapped: str = None, *args: str) -> DecoratorType:
-        """Construct a new :class:`DecoratorType` in the :ref:`type specification
-        mini-language <resolve_type.mini_language>`.
-
-        Override this if a type implements custom parsing rules for any
-        arguments that are supplied to it.
+        """Construct a :class:`DecoratorType <pdcast.DecoratorType>` from a
+        string in the
+        :ref:`type specification mini-language <resolve_type.mini_language>`.
 
         Parameters
         ----------
         wrapped : str, optional
-            The type to be wrapped.  If given, this must be an
-            independently-resolvable type specifier in the :ref:`type
-            specification mini-language <resolve_type.mini_language>`.
+            The type to be wrapped.  If given, this must be another valid type
+            specifier in the
+            :ref:`type specification mini-language <resolve_type.mini_language>`.
         *args : str
             Positional arguments supplied to this type.  These will always be
-            passed as strings, exactly as they appear in the :ref:`type
-            specification mini-language <resolve_type.mini_language>`.
+            passed as strings, exactly as they appear in the
+            :ref:`type specification mini-language <resolve_type.mini_language>`.
 
         Returns
         -------
         DecoratorType
-            An :class:`DecoratorType` with the appropriate configuration based
-            on the arguments that were passed to this constructor.
+            An instance of the associated type.
 
         See Also
         --------
-        ScalarType.resolve : The scalar equivalent of this method.
+        Type.from_string :
+            For more information on how this method is called.
 
-        Notes
-        -----
-        If ``wrapped`` is not specified, then this method will return a *naked*
-        :class:`DecoratorType`, meaning that it is not backed by an associated
-        :class:`ScalarType` instance.  This technically breaks the `Decorator
-        Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_,
-        limiting the usefulness of these types.
+        Examples
+        --------
+        These types wrap other types as their first parameter.
 
-        Naked :class:`DecoratorTypes <DecoratorType>` act as wildcards when
-        provided to :doc:`conversion functions </content/api/cast>` or
-        :func:`typechecks <typecheck>`.  Additionally, new :func:`@dispatch
-        <dispatch>` methods can be attached to :class:`DecoratorTypes
-        <DecoratorType>` by providing a naked example of that type.
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64")
+            Int64Type()
+            >>> pdcast.resolve_type("sparse[int64]")
+            SparseType(wrapped=Int64Type(), fill_value=None)
+
+        If a wrapped type is not given, then this method will return a naked
+        :class:`DecoratorType <pdcast.DecoratorType>`, meaning that it is not
+        backed by an associated :class:`ScalarType <pdcast.ScalarType>`.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse")
+            SparseType(wrapped=None, fill_value=None)
+
+        These act as wildcards during :func:`cast() <pdcast.cast>` operations,
+        automatically acquiring the inferred type of the input data.
+
+        .. doctest::
+
+            >>> pdcast.cast([1, 2, 3], "sparse")
+            0    1
+            1    2
+            2    3
+            dtype: Sparse[int64, <NA>]
+
+        They also match any equivalently-decorated type during
+        :meth:`contains() <pdcast.DecoratorType.contains>` checks.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse").contains("sparse[int64]")
+            True
         """
         if wrapped is None:
             return self
@@ -176,40 +204,82 @@ cdef class DecoratorType(VectorType):
         return self(instance, *args)
 
     def from_dtype(self, dtype: dtype_like) -> DecoratorType:
-        """Construct an :class:`DecoratorType` from a corresponding pandas
-        ``ExtensionDtype``.
-
-        Override this if a type must parse the attributes of an associated
-        ``ExtensionDtype``.
+        """Construct a :class:`DecoratorType <pdcast.DecoratorType>` from a
+        numpy/pandas :class:`dtype <numpy.dtype>`\ /\
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
 
         Parameters
         ----------
-        dtype : ExtensionDtype
-            The pandas ``ExtensionDtype`` to parse.
+        dtype : np.dtype | ExtensionDtype
+            A numpy :class:`dtype <numpy.dtype>` or pandas
+            :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
+            parse.
 
         Returns
         -------
         DecoratorType
-            An :class:`DecoratorType` with the appropriate configuration based
-            on the ``ExtensionDtype`` that was passed to this constructor.
+            An instance of the associated type.
 
         See Also
         --------
-        ScalarType.from_dtype : The scalar equivalent of this method.
+        Type.from_dtype :
+            For more information on how this is called.
 
-        Notes
-        -----
-        If a raw ``ExtensionDtype`` class is provided to this function, then it
-        will return a *naked* :class:`DecoratorType`, meaning that it is not
-        backed by an associated :class:`ScalarType` instance.  This technically
-        breaks the `Decorator Pattern <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_,
-        limiting the usefulness of these types.
+        Examples
+        --------
+        Pandas implements its own
+        :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>` for
+        :class:`sparse <pandas.SparseDtype>` and
+        :class:`categorical <pandas.CategoricalDtype>` data.  This method can
+        translate these directly into the ``pdcast`` type system.
 
-        Naked :class:`DecoratorTypes <DecoratorType>` act as wildcards when
-        provided to :doc:`conversion functions </content/api/cast>` or
-        :func:`typechecks <typecheck>`.  Additionally, new :func:`@dispatch
-        <dispatch>` methods can be attached to :class:`DecoratorTypes
-        <DecoratorType>` by providing a naked example of that type.
+        .. doctest::
+
+            >>> import pandas as pd
+
+            >>> pdcast.resolve_type(pd.SparseDtype("int64"))
+            SparseType(wrapped=NumpyInt64Type(), fill_value=0)
+            >>> pdcast.resolve_type(pd.CategoricalDtype([1, 2, 3]))
+            CategoricalType(wrapped=NumpyInt64Type(), levels=[1, 2, 3])
+
+        If either of these objects are given as classes rather than instances,
+        then this method will return a naked
+        :class:`DecoratorType <pdcast.DecoratorType>`.  This means that it is
+        not backed by an associated :class:`ScalarType <pdcast.ScalarType>`.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type(pd.SparseDtype)
+            SparseType(wrapped=None, fill_value=None)
+            >>> pdcast.resolve_type(pd.CategoricalDtype)
+            CategoricalType(wrapped=None, levels=None)
+
+        These act as wildcards during :func:`cast() <pdcast.cast>` operations,
+        automatically acquiring the inferred type of the input data.
+
+        .. doctest::
+
+            >>> pdcast.cast([1, 2, 3], pd.SparseDtype)
+            0    1
+            1    2
+            2    3
+            dtype: Sparse[int64, <NA>]
+            >>> pdcast.cast([1, 2, 3], pd.CategoricalDtype)
+            0    1
+            1    2
+            2    3
+            dtype: category
+            Categories (3, int64): [1, 2, 3]
+
+        They also match any equivalently-decorated type during
+        :meth:`contains() <pdcast.DecoratorType.contains>` checks.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type(pd.SparseDtype).contains(pd.SparseDtype("int64"))
+            True
+            >>> pdcast.resolve_type(pd.CategoricalDtype).contains(pd.CategoricalDtype([1, 2, 3]))
+            True
         """
         # NOTE: any special dtype parsing logic goes here
         return self
@@ -306,11 +376,57 @@ cdef class DecoratorType(VectorType):
         }
 
     def contains(self, other: type_specifier) -> bool:
-        """Test whether `other` is a subtype of the given ScalarType.
-        This is functionally equivalent to `other in self`, except that it
-        applies automatic type resolution to `other`.
+        """Check whether ``other`` is a member of this type's hierarchy.
 
-        For DecoratorTypes, this merely delegates to ScalarType.contains().
+        Parameters
+        ----------
+        other : type_specifier
+            The type to check for.  This can be in any format recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``other`` is a member of this type's hierarchy.
+            ``False`` otherwise.
+
+        See Also
+        --------
+        Type.contains :
+            For more information on how this method is called.
+
+        Examples
+        --------
+        This method forces ``other`` to share the same decorators as ``self``.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse[int]").contains("sparse[int32]")
+            True
+            >>> pdcast.resolve_type("sparse[int]").contains("categorical[int32]")
+            False
+            >>> pdcast.resolve_type("sparse[int]").contains("int32")
+            False
+
+        The actual check is delegated down the stack to
+        :meth:`ScalarType.contains() <pdcast.ScalarType.contains>`.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse[int]").contains("sparse[int8[numpy]]")
+            True
+            >>> pdcast.resolve_type("sparse[int]").contains("sparse[float16[numpy]]")
+            False
+
+        If the decorator does not have a base
+        :class:`ScalarType <pdcast.ScalarType>`, then it acts as a wildcard.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse").contains("sparse[int8[numpy]]")
+            True
+            >>> pdcast.resolve_type("sparse").contains("sparse[float16[numpy]]")
+            True
         """
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):

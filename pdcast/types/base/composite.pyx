@@ -26,7 +26,7 @@ cdef class CompositeType(Type):
         object types = None,
         ScalarType[:] index = None
     ):
-        super().__init__()
+        super().__init__()  # init aliases
 
         if types is None:
             self.types = set()
@@ -89,13 +89,13 @@ cdef class CompositeType(Type):
         See Also
         --------
         Type.from_string :
-            For high-level discussion on how this method is called.
+            For more information on how this method is called.
 
         Examples
         --------
         :class:`CompositeTypes <pdcast.CompositeType>` support the addition of
         dynamic aliases at runtime.  These can be used to 'pin' specific
-        composites, allowing users to refer to them directly by name.
+        composites by name, allowing users to refer to them directly.
 
         .. doctest::
 
@@ -103,6 +103,8 @@ cdef class CompositeType(Type):
             >>> numeric.aliases.add("numeric")
             >>> pdcast.resolve_type("numeric")   # doctest: +SKIP
             CompositeType({bool, int, float, complex})
+            >>> pdcast.resolve_type("numeric") is numeric
+            True
 
         If the alias is removed, then the composite will be inaccessible.
 
@@ -164,8 +166,38 @@ cdef class CompositeType(Type):
         )
 
     def contains(self, other: type_specifier) -> bool:
-        """Do a collective membership test involving the whole composite,
-        rather than its individual components.
+        """Check whether ``other`` is a member of the composite or any of its
+        hierarchies.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The type to check for.  This can be in any format recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``other`` is a member of the composite hierarchy.
+            ``False`` otherwise.
+
+        See Also
+        --------
+        Type.contains :
+            For more information on how this method is called.
+
+        Examples
+        --------
+        This method extends membership tests to the whole composite, rather
+        than its individual components.  It returns ``True`` if the given type
+        forms a subset of the composite.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("int, float, complex").contains("complex64")
+            True
+            >>> pdcast.resolve_type("int, float, complex").contains("int64, complex64")
+            True
         """
         other = resolve_type(other)
         if isinstance(other, CompositeType):

@@ -134,7 +134,7 @@ cdef class ScalarType(VectorType):
         Parameters
         ----------
         dtype : np.dtype | ExtensionDtype
-            The numpy :class:`dtype <numpy.dtype>` or pandas
+            A numpy :class:`dtype <numpy.dtype>` or pandas
             :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
             parse.
 
@@ -172,7 +172,8 @@ cdef class ScalarType(VectorType):
         return self   # if the type is parametrized, call self() directly
 
     def from_scalar(self, example: Any) -> ScalarType:
-        """Construct a :class:`ScalarType` from scalar example data.
+        """Construct a :class:`ScalarType <pdcast.ScalarType>` from scalar
+        example data.
 
         Parameters
         ----------
@@ -377,16 +378,13 @@ cdef class ScalarType(VectorType):
         )
 
     def contains(self, other: type_specifier) -> bool:
-        """Test whether ``other`` is a member of this type's hierarchy tree.
-
-        Override this to change the behavior of the `in` keyword and implement
-        custom logic for membership tests for the given type.
+        """Check whether ``other`` is a member of this type's hierarchy.
 
         Parameters
         ----------
         other : type_specifier
-            The type to check for membership.  This can be in any
-            representation recognized by :func:`resolve_type`.
+            The type to check for.  This can be in any format recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`.
 
         Returns
         -------
@@ -394,10 +392,22 @@ cdef class ScalarType(VectorType):
             ``True`` if ``other`` is a member of this type's hierarchy.
             ``False`` otherwise.
 
-        Notes
-        -----
-        This method also controls the behavior of the ``in`` keyword for
-        :class:`ScalarTypes <ScalarType>`.
+        See Also
+        --------
+        Type.contains :
+            For more information on how this method is called.
+
+        Examples
+        --------
+        By default, this method treats unparametrized instances as wildcards,
+        which match all of their parametrized equivalents.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("M8").contains("M8[5ns]")
+            True
+            >>> pdcast.resolve_type("M8[5ns]").contains("M8")
+            False
         """
         other = resolve_type(other)
         if isinstance(other, CompositeType):
@@ -744,7 +754,18 @@ cdef class ScalarType(VectorType):
 
 
 cdef class AbstractType(ScalarType):
-    """A Composite Pattern type object that can contain other types.
+    """Base class for all user-defined hierarchical types.
+
+    :class:`AbstractTypes <pdcast.AbstractType>` represent nodes within the
+    ``pdcast`` type system.  They can contain references to other nodes as
+    particular :meth:`subtypes <pdcast.AbstractType.subtype>` and/or
+    :meth:`implementations <pdcast.AbstractType.implementation>`.
+
+    Parameters
+    ----------
+    **kwargs : dict
+        Parametrized keyword arguments describing metadata for this type.
+        These must be empty.
     """
 
     def __init__(self, **kwargs):
@@ -754,9 +775,145 @@ cdef class AbstractType(ScalarType):
             )
         super().__init__()
 
-    #################################
-    ####    COMPOSITE PATTERN    ####
-    #################################
+    ############################
+    ####    CONSTRUCTORS    ####
+    ############################
+
+    def from_string(self, backend: str | None = None, *args) -> ScalarType:
+        """Construct an :class:`AbstractType <pdcast.AbstractType>` from a
+        string in the
+        :ref:`type specification mini-language <resolve_type.mini_language>`.
+
+        Parameters
+        ----------
+        backend : str, optional
+            The :attr:`backend <pdcast.AbstractType.backends>` specifier to
+            delegate to.
+        *args : str
+            Positional arguments supplied to the delegated type.  These will
+            always be passed as strings, exactly as they appear in the
+            :ref:`type specification mini-language <resolve_type.mini_language>`.
+
+        Returns
+        -------
+        AbstractType | ScalarType
+            Either a reference to ``self`` or a concrete
+            :meth:`implementation <pdcast.AbstractType.implementation>` of this
+            type.
+
+        Raises
+        ------
+        KeyError
+            If a backend specifier is given and is not recognized.
+
+        See Also
+        --------
+        Type.from_string :
+            For more information on how this method is called.
+
+        Examples
+        --------
+        If no parameters are given, this method will return a reference to
+        ``self``.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("datetime")
+            DatetimeType()
+            >>> isinstance(_, pdcast.AbstractType)
+            True
+
+        Otherwise, the first parameter must refer to one of this type's
+        registered :meth:`implementations <pdcast.AbstractType.implementation>`.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("datetime[pandas]")
+            PandasTimestampType(tz=None)
+            >>> pdcast.resolve_type("datetime[foo]")
+            Traceback (most recent call last):
+                ...
+            KeyError: 'foo'
+
+        Any further arguments will be forwarded to the delegated type.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("datetime[pandas, US/Pacific]")
+            PandasTimestampType(tz=zoneinfo.ZoneInfo(key='US/Pacific'))
+        """
+        if backend is None:
+            return self
+
+        return self.backends[backend].from_string(*args)  
+
+    def from_dtype(self, dtype: dtype_like) -> ScalarType:
+        """Construct an :class:`AbstractType <pdcast.AbstractType>` from a
+        numpy/pandas :class:`dtype <numpy.dtype>`\ /\
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
+
+        Parameters
+        ----------
+        dtype : np.dtype | ExtensionDtype
+            A numpy :class:`dtype <numpy.dtype>` or pandas
+            :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
+            parse.
+
+        Returns
+        -------
+        ScalarType
+            A `flyweight <https://en.wikipedia.org/wiki/Flyweight_pattern>`_
+            for the specified type.  If this method is given the same inputs
+            again, it will return a reference to the original instance.
+
+        See Also
+        --------
+        Type.from_dtype :
+            For more information on how this method is called.
+
+        Notes
+        -----
+        This method delegates to this type's
+        :meth:`default <pdcast.AbstractType.default>` implementation.  It is
+        functionally equivalent to
+        :meth:`ScalarType.from_dtype() <pdcast.ScalarType.from_dtype>`.
+        """
+        return self.registry.get_default(self).from_dtype(dtype)
+
+    def from_scalar(self, example: Any) -> ScalarType:
+        """Construct an :class:`AbstractType <pdcast.AbstractType>` from scalar
+        example data.
+
+        Parameters
+        ----------
+        example : Any
+            A scalar example of this type (e.g. ``1``, ``42.0``, ``"foo"``,
+            etc.).
+
+        Returns
+        -------
+        ScalarType
+            A `flyweight <https://en.wikipedia.org/wiki/Flyweight_pattern>`_
+            for the specified type.  If this method is given the same inputs
+            again, it will return a reference to the original instance.
+
+        See Also
+        --------
+        Type.from_scalar :
+            For more information on how this method is called.
+
+        Notes
+        -----
+        This method delegates to this type's
+        :meth:`default <pdcast.AbstractType.default>` implementation.  It is
+        functionally equivalent to
+        :meth:`ScalarType.from_scalar() <pdcast.ScalarType.from_scalar>`.
+        """
+        return self.registry.get_default(self).from_scalar(example)
+
+    ##########################
+    ####    DECORATORS    ####
+    ##########################
 
     @classmethod
     def default(cls, concretion: type = None, *, warn: bool = True):
@@ -904,14 +1061,39 @@ cdef class AbstractType(ScalarType):
         """Indicates whether this type has subtypes."""
         return not self.subtypes and not self.is_generic
 
-    def from_string(self, backend: str | None = None, *args) -> ScalarType:
-        """Forward constructor arguments to the appropriate implementation."""
-        if backend is None:
-            return self
-        return self.backends[backend].from_string(*args)  
-
     def contains(self, other: type_specifier) -> bool:
-        """Extend membership checks to this type's subtypes/implementations."""
+        """Check whether ``other`` is a member of this type's hierarchy.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The type to check for.  This can be in any format recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``other`` is a member of this type's hierarchy.
+            ``False`` otherwise.
+
+        See Also
+        --------
+        Type.contains :
+            For more information on how this method is called.
+
+        Examples
+        --------
+        This method extends membership to all of this type's
+        :meth:`subtypes <pdcast.AbstractType.subtype>` and
+        :meth:`implementations <pdcast.AbstractType.implementation>`.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("signed").contains("int8, int16, int32, int64")
+            True
+            >>> pdcast.resolve_type("int64").contains("int64[numpy], int64[pandas]")
+            True
+        """
         other = resolve_type(other)
         if isinstance(other, CompositeType):
             return all(self.contains(typ) for typ in other)
@@ -926,14 +1108,6 @@ cdef class AbstractType(ScalarType):
     #########################
     ####    DELEGATED    ####
     #########################
-
-    def from_dtype(self, dtype: dtype_like) -> ScalarType:
-        """Forward dtype translation to the default implementation."""
-        return self.registry.get_default(self).from_dtype(dtype)
-
-    def from_scalar(self, example: Any) -> ScalarType:
-        """Forward scalar inference to the default implementation."""
-        return self.registry.get_default(self).from_scalar(example)
 
     @property
     def type_def(self) -> type | None:

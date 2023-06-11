@@ -1505,7 +1505,7 @@ cdef class Type:
         Parameters
         ----------
         other : type_specifier
-            The type to check for.  This can be in any form recognized by
+            The type to check for.  This can be in any format recognized by
             :func:`resolve_type() <pdcast.resolve_type>`.
 
         Returns
@@ -1555,6 +1555,25 @@ cdef class Type:
             >>> "float16" in pdcast.resolve_type("int, float, complex")
             True
             >>> ["complex64", "complex128"] in pdcast.resolve_type("complex")
+            True
+
+        :func:`typecheck() <pdcast.typecheck>` allows this method to be called
+        on example data.
+
+        .. doctest::
+
+            >>> pdcast.typecheck([1, 2, 3], "int")
+            True
+            >>> pdcast.typecheck([1, 2.0, 3+0j], "int, float, complex")
+            True
+
+        Which is semantically equivalent to:
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("int").contains(pdcast.detect_type([1, 2, 3]))
+            True
+            >>> pdcast.resolve_type("int, float, complex").contains(pdcast.detect_type([1, 2.0, 3+0j]))
             True
         """
         raise NotImplementedError(
