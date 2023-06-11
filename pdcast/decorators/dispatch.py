@@ -31,6 +31,9 @@ from .base import FunctionDecorator, no_default
 
 # TODO: result is None -> fill with NA?
 
+# TODO: appears to be an index mismatch in composite add() example from
+# README.features
+
 
 ######################
 ####    PUBLIC    ####

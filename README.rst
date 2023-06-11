@@ -3,8 +3,8 @@
 
 pdcast - flexible type extensions for pandas
 ============================================
-``pdcast`` expands and enhances the existing numpy/pandas typing
-infrastructure, allowing users to write powerful extensions with a minimal,
+``pdcast`` extends and enhances the numpy/pandas typing infrastructure,
+allowing users to write powerful extensions with an intuitive,
 decorator-focused design.
 
 Features
@@ -16,78 +16,147 @@ objects, with support for:
 *  **Abstract hierarchies** representing different subtypes and
    implementations.  These are lightweight, efficient, and highly extensible,
    with new types added in as little as :ref:`10 lines of code <tutorial>`.
-   They can use existing ``dtype``\ /\ ``ExtensionDtype`` definitions or
-   *automatically generate* their own via the `pandas extension API
-   <https://pandas.pydata.org/pandas-docs/stable/development/extending.html>`_.
-   This allows users to quickly integrate arbitrary data types into the pandas
-   ecosystem, with customizable behavior for each one.
+   They can even automatically generate their own ``ExtensionDtypes``, allowing
+   users to quickly integrate arbitrary data into the pandas ecosystem.
+
+   .. doctest::
+
+      >>> import pandas as pd
+
+      >>> @register
+      ... class CustomType(ScalarType):
+      ...     name = "custom"
+      ...     aliases = {"foo", "bar"}
+      ...     dtype = pd.BooleanDtype()
+      ...     type_def = bool
+      ...     itemsize = 1
+      ...     na_value = pd.NA
+
 *  A configurable, **domain-specific mini-language** for resolving types.  This
    represents a superset of the existing numpy/pandas syntax, with support for
-   arbitrary parametrization, composition, and semantics.
-*  Robust **type detection** for vectorized data in any format.  This works
+   customizable aliases, semantics, parametrization, and composition.
+
+   .. doctest::
+
+      >>> resolve_type("foo").
+      CustomType()
+      >>> _.aliases.add("baz")
+      >>> resolve_type("baz")
+      CustomType()
+
+*  Vectorized **type detection** from example data in any format.  This works
    regardless of an example's ``.dtype`` attribute, allowing ``pdcast`` to
    infer the types of ambiguous sequences such as lists, tuples, generators,
    and ``dtype: object`` arrays.  In each case, inference is fast, reliable,
-   and works even when the examples are of mixed type.
-*  Efficient **type checks** for vectorized data.  This combines the above
+   and even works when the examples are of mixed type.
+
+   .. doctest::
+
+      >>> detect_type([1, 2, 3])
+      PythonIntegerType()
+      >>> detect_type([1, 2.0, 3+0j])   # doctest: +SKIP
+      CompositeType({int[python], float64[python], complex128[python]})
+
+*  Efficient **type checks** for vectorized data.  These combine the above
    tools to perform ``isinstance()``-like hierarchical checks for any node in
-   the ``pdcast`` type system.  If the provided data are properly labeled, then
-   this is done in constant time, allowing users to add checks wherever they
-   are needed.
-*  **Multiple dispatch** with vectorized inputs.  This works like
-   ``@functools.singledispatch``, allowing a function to dispatch to a
-   collection of virtual implementations based the observed type of one or more
-   of its arguments.  With the ``pdcast`` type system, this can be extended to
-   cover vectorized data in any representation, including those containing
-   mixed elements using a split-apply-combine strategy.
-*  **Attachable functions** with a variety of access patterns.  These leverage
-   Python's `descriptor protocol <https://docs.python.org/3/reference/datamodel.html#descriptor-invocation>`_
-   to programmatically extend an external class's interface, using the
-   decorated function as a virtual attribute.  The resulting attributes can be
-   used to mask existing behavior while maintaining access to the original
-   implementation, or be hidden behind virtual namespaces to avoid conflicts,
-   like ``Series.str``, ``Series.dt``, etc.
-*  **Dynamic arguments** with custom preprocessing, default values, and
-   programmatic extensions.  These can be used to actively manage the values
-   that are supplied to a function by defining validators for one or more of
-   its arguments, which can perform their own logic before passing the result
-   into the body of the function itself.  Validators such as these can also be
-   used to add new arguments to a function at run time, passing them through to
-   any dispatched implementations that might request them.
+   the ``pdcast`` type system.  If the data are properly labeled, this is done
+   in constant time, allowing users to add checks wherever they are needed.
+
+   .. doctest::
+
+         >>> import timeit
+
+         >>> df = pd.DataFrame({"a": [1, 2], "b": [1., 2.], "c": ["a", "b"]})
+         >>> typecheck(df, {"a": "int", "b": "float", "c": "string"})
+         True
+         >>> typecheck(df["a"], "int")
+         True
+         >>> timeit.timeit(lambda: typecheck(df["a"], "int"), number=10**3)   # doctest +SKIP
+         0.036023307002324145
+
+*  **Multiple dispatch** based on the inferred type of one or more of a
+   function's arguments.  With the ``pdcast`` type system, this can be extended
+   to cover vectorized data in any representation, including those containing
+   mixed elements.
+
+   .. doctest::
+
+      >>> @dispatch("x", "y")
+      ... def add(x, y):
+      ...     return x + y
+
+      >>> @add.overload("int", "int")
+      ... def add_integer(x, y):
+      ...     return x - y
+
+      >>> add([1, 2, 3], 1)
+      0    0
+      1    1
+      2    2
+      dtype: int[python]
+      >>> add([1, 2, 3], [1, True, 1.0])
+      0      0
+      1      3
+      2    4.0
+      dtype: object
+
+*  **Attachable functions** with a variety of access patterns.  These can be
+   used to programmatically extend a class's interface at runtime, attaching
+   the decorated function as a virtual attribute.  These attributes can mask
+   existing behavior while maintaining access to the original implementation or
+   be hidden behind virtual namespaces to avoid conflicts altogether,
+   similar to ``Series.str``, ``Series.dt``, etc.
+
+   .. doctest::
+
+      >>> pdcast.attach()
+      >>> series = pd.Series([1, 2, 3])
+      >>> series.element_type == detect_type(series)
+      True
+      >>> series.typecheck("int") == typecheck(series, "int")
+      True
+
+*  Extension functions with **Dynamic arguments**.  These can be used to
+   actively manage the values that are supplied to a function by defining
+   validators for one or more of its arguments, which can supply their own
+   logic before passing the result into the body of the function itself.  These
+   can also be used to add new arguments to a function at runtime, making them
+   available to any dispatched implementations that might request them.
+
+   .. doctest::
+
+      >>> @extension_func
+      ... def multiply(x, y, z=1):
+      ...     return x * y * z
+
+      >>> @multiply.argument
+      ... def z(value, args: dict):
+      ...     return int(value)
+
+      >>> multiply(2, 3, z="2")
+      12
+      >>> multiply.z = 3
+      >>> multiply(2, 3)
+      18
+      >>> del multiply.z
+      >>> multiply(2, 3)
+      6
 
 Together, these enable a functional approach to extending pandas with small,
 fully encapsulated functions performing special operations based on the types
 of their arguments.  They can be combined to create powerful, dynamic patches
-for its rich feature set, which can be seamlessly deployed to pandas data
-structures on a global basis.  Users are thus able to surgically overload
+for its rich feature set, which can be seamlessly deployed to existing pandas
+data structures.  Users are thus able to surgically overload
 virtually any aspect of the pandas interface, or add entirely new behavior
-specific to one or more data types.
+specific to one or more of their own data types.
 
 Usage
 -----
-In its basic usage, ``pdcast`` can easily verify the types that are present
-within pandas data structures and other iterables:
-
-.. doctest::
-
-   >>> import pandas as pd
-   >>> import pdcast; pdcast.attach()
-
-   >>> df = pd.DataFrame({"a": [1, 2], "b": [1., 2.], "c": ["a", "b"]})
-   >>> df
-      a    b  c
-   0  1  1.0  a
-   1  2  2.0  b
-   >>> df.typecheck({"a": "int", "b": "float", "c": "string"})
-   True
-   >>> df["a"].typecheck("int")
-   True
-
-With its more advanced features, ``pdcast`` implements its own universal
-:func:`cast() <pdcast.cast>` function, which can perform arbitrary data
-conversions within its expanded type system.  Here's a short walk around some
-of the categories that are supported out of the box (Note: ``_`` refers to the
-previous output).
+With its advanced features, ``pdcast`` implements its own super-charged
+:func:`cast() <pdcast.cast>` function, which can perform universal, lossless
+data conversions within its expanded type system.  Here's a round-trip journey
+through each of the core families of the ``pdcast`` type system (Note: ``_``
+refers to the previous output):
 
 .. doctest::
 
@@ -98,53 +167,53 @@ previous output).
    ...     def __str__(self):  return f"CustomObj({self.x})"
    ...     def __repr__(self):  return str(self)
 
-   >>> pdcast.to_boolean([1+0j, "False", None])  # non-homogenous
+   >>> pdcast.to_boolean([1+0j, "False", None])  # non-homogenous to start
    0     True
    1    False
    2     <NA>
    dtype: boolean
-   >>> _.cast(np.dtype(np.int8))
+   >>> _.cast(np.dtype(np.int8))  # to integer
    0       1
    1       0
    2    <NA>
    dtype: Int8
-   >>> _.cast("double")
+   >>> _.cast("double")  # to float
    0    1.0
    1    0.0
    2    NaN
    dtype: float64
-   >>> _.cast(np.complex128, downcast=True)
+   >>> _.cast(np.complex128, downcast=True)  # to complex (minimizing memory usage)
    0    1.0+0.0j
    1    0.0+0.0j
    2   N000a000N
    dtype: complex64
-   >>> _.cast("sparse[decimal, 1]")
+   >>> _.cast("sparse[decimal, 1]")  # to decimal (sparse)
    0      1
    1      0
    2    NaN
    dtype: Sparse[object, Decimal('1')]
-   >>> _.cast("datetime", unit="Y", since="j2000")
+   >>> _.cast("datetime", unit="Y", since="j2000")  # to datetime (years since j2000 epoch)
    0   2001-01-01 12:00:00
    1   2000-01-01 12:00:00
    2                   NaT
    dtype: datetime64[ns]
-   >>> _.cast("timedelta[python]", since="Jan 1st, 2000 at 12:00 PM")
+   >>> _.cast("timedelta[python]", since="Jan 1st, 2000 at 12:00 PM")  # to timedelta (days since j2000)
    0    366 days, 0:00:00
    1              0:00:00
    2                  NaT
    dtype: timedelta[python]
-   >>> _.cast(CustomObj)
+   >>> _.cast(CustomObj)  # to custom Python object
    0    CustomObj(366 days, 0:00:00)
    1              CustomObj(0:00:00)
    2                            <NA>
    dtype: object[CustomObj]
-   >>> _.cast("categorical[str[pyarrow]]")
+   >>> _.cast("categorical[str[pyarrow]]")  # to string (categorical with PyArrow backend)
    0    CustomObj(366 days, 0:00:00)
    1              CustomObj(0:00:00)
    2                            <NA>
    dtype: category
    Categories (2, string): [CustomObj(0:00:00), CustomObj(366 days, 0:00:00)]
-   >>> _.cast("bool", true="*", false="CustomObj(0:00:00)")  # our original data
+   >>> _.cast("bool", true="*", false="CustomObj(0:00:00)")  # back to our original data
    0     True
    1    False
    2     <NA>
@@ -186,19 +255,14 @@ specialized extensions for existing pandas behavior:
    1    1
    2    2
    dtype: int64
-   >>> pd.Series([1, 2, 3]) + True
-   0    2
-   1    3
-   2    4
-   dtype: int64
    >>> pd.Series([1, 2, 3]) + [1, True, 1.0]
    0      0
    1      3
    2    4.0
    dtype: object
 
-Or create entirely new attributes and methods above and beyond what's included
-in pandas.
+Or create entirely new attributes and methods above and beyond what's pandas
+includes by default.
 
 .. doctest::
 
@@ -236,9 +300,9 @@ in pandas.
 
       (.venv) $ pip install pdcast
 
-   If a wheel is not available for your system, ``pdcast`` also provides an sdist
-   to allow pip to build from source, although doing so requires an additional
-   ``cython`` dependency.
+   If a wheel is not available for your system, ``pdcast`` also provides a
+   source distribution to allow pip to build locally, although doing so
+   requires an additional ``cython >= 3.0`` dependency.
 
 .. uncomment this when documentation goes live
 
@@ -252,6 +316,12 @@ License
 -------
 ``pdcast`` is available under an
 `MIT license <https://github.com/eerkela/pdcast/blob/main/LICENSE>`_.
+
+Contributing
+------------
+``pdcast`` is open-source and welcomes contributions.  For more information,
+please contact the package maintainer or submit a pull request on
+`GitHub <https://github.com/eerkela/pdcast>`_.
 
 Contact
 -------

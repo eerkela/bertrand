@@ -107,6 +107,16 @@ customize their behavior.
     ScalarType.na_value
     ScalarType.make_nullable
 
+..
+    HACK - commenting out an autosummary directive like this will still
+    generate stubs, which can then be linked inside decorator_priority.
+
+    .. autosummary::
+        :toctree: ../../generated
+
+        ObjectDtype
+        ObjectArray  
+
 .. _ScalarType.traversal:
 
 Traversal

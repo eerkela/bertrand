@@ -347,14 +347,21 @@ cdef class ScalarType(VectorType):
 
         Notes
         -----
-        By default, this will automatically create a new
-        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
-        encapsulate data of this type, storing them internally as a
-        ``dtype: object`` array.  This may not be the most efficient way to
-        store data of a particular type.  If a more compact representation is
-        available, users can :ref:`provide <pandas:extending>` their own
-        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
-        definitions instead.
+        If no explicit :attr:`dtype <pdcast.ScalarType.dtype>` is defined for
+        a given type, then a new :class:`ObjectDtype <pdcast.ObjectDtype>`
+        will be created to encapsulate the associated data.
+
+        .. autosummary::
+            :toctree: ../generated/
+        
+            ObjectDtype
+            ObjectArray
+
+        This may not be the most efficient way to store data of a particular
+        type.  If a more compact representation is available, users can
+        :ref:`write <pandas:extending>` their own
+        :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>`
+        instead.
 
         Examples
         --------
