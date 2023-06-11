@@ -38,6 +38,9 @@ from ..array import construct_object_dtype
 # -> There doesn't appear to be a reliable way of doing this in cython.
 
 
+# TODO: if type_def is not defined, raise a NotImplementedError
+
+
 ######################
 ####    SCALAR    ####
 ######################
@@ -220,162 +223,9 @@ cdef class ScalarType(VectorType):
 
         return self  # if the type is parametrized, call self() directly
 
-    #############################
-    ####    CONFIGURATION    ####
-    #############################
-
-    # NOTE: `_cache_size` dictates the number of flyweights to store in a
-    # type's instance factory.  Values < 0 indicate an unlimited cache size
-    # while values > 0 specify a Least Recently Used (LRU) caching strategy.  0
-    # disables the flyweight pattern entirely, though this is not recommended.
-
-    _cache_size: int = -1
-    backend: str | None = None  # marker for @AbstractType.implementation
-
-    @property
-    def type_def(self) -> type | None:
-        """The scalar class for objects of this type.
-
-        Returns
-        -------
-        type | None
-            A class object used to instantiate scalar examples of this type.
-        """
-        # TODO: raise NotImplementedError?
-        if self._type_def is None:
-            return None
-
-        return self._type_def
-
-    @property
-    def dtype(self) -> dtype_like:
-        """The numpy :class:`dtype <numpy.dtype>` or pandas
-        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to use
-        for arrays of this type.
-
-        Returns
-        -------
-        dtype_like
-            The dtype to use for arrays of this type.
-            :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>` are
-            free to define their own storage backends and behavior.
-
-        Notes
-        -----
-        By default, this will automatically create a new
-        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
-        encapsulate data of this type, storing them internally as a
-        ``dtype: object`` array, which may not be the most efficient.  If there
-        is a more compact representation for a particular data type, users can
-        :ref:`provide <pandas:extending>` their own
-        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
-        instead.
-        """
-        from ..boolean import BooleanType
-
-        if self._dtype is None:
-            return construct_object_dtype(
-                self,
-                is_boolean=BooleanType.contains(self),
-                is_numeric=self.is_numeric,
-                add_comparison_ops=True,
-                add_arithmetic_ops=True
-            )
-        return self._dtype
-
-    @property
-    def itemsize(self) -> int | None:
-        """The size (in bytes) for scalars of this type.
-
-        Returns
-        -------
-        int | None
-            If not :data:`None`, a positive integer describing the size of each
-            element in bytes.  If this would be hard to compute, use
-            :func:`sys.getsizeof() <python:sys.getsizeof>` or give an
-            approximate lower bound here.
-
-        Notes
-        -----
-        :data:`None` is interpreted as being resizable/unlimited.
-        """
-        if self._itemsize is None:
-            return None
-
-        return self._itemsize
-
-    @property
-    def is_numeric(self) -> bool:
-        """Used to auto-generate :class:`ObjectDtypes <pdcast.ObjectDtype>`
-        from this type.
-        """
-        if self._is_numeric is None:
-            return False
-
-        return self._is_numeric
-
-    @property
-    def max(self) -> decimal.Decimal:
-        """TODO"""
-        if self._max is None:
-            return decimal.Decimal("inf")
-
-        return self._max
-
-    @property
-    def min(self) -> decimal.Decimal:
-        """TODO"""
-        if self._min is None:
-            return decimal.Decimal("-inf")
-
-        return self._min
-
-    @property
-    def is_nullable(self) -> bool:
-        """Indicates whether a type supports missing values.
-
-        Set this ``False`` where necessary to invoke :meth:`make_nullable
-        <ScalarType.make_nullable>`.  This allows automatic conversion to a
-        nullable alternative when missing values are detected/coerced.
-        """
-        if self._is_nullable is None:
-            return True
-
-        return self._is_nullable
-
-    @property
-    def na_value(self) -> Any:
-        """The representation to use for missing values of this type.
-
-        Returns
-        -------
-        Any
-            An NA-like value for this data type.
-        """
-        if self._na_value is None:
-            return pd.NA
-
-        return self._na_value
-
-    def make_nullable(self) -> ScalarType:
-        """Convert a non-nullable :class:`ScalarType` into one that can accept
-        missing values.
-
-        Override this to control how this type is coerced when missing values
-        are detected during a :func:`cast` operation. 
-
-        Returns
-        -------
-        ScalarType
-            A nullable version of this data type to be used when missing or
-            coerced values are detected during a conversion.
-        """
-        if self.is_nullable:
-            return self
-
-        raise NotImplementedError(
-            f"'{type(self).__name__}' objects have no nullable alternative."
-        )
+    ##########################
+    ####    MEMBERSHIP    ####
+    ##########################
 
     def contains(self, other: type_specifier) -> bool:
         """Check whether ``other`` is a member of this type's hierarchy.
@@ -418,6 +268,417 @@ cdef class ScalarType(VectorType):
             return isinstance(other, type(self))
 
         return self == other
+
+    #############################
+    ####    CONFIGURATION    ####
+    #############################
+
+    # NOTE: `_cache_size` dictates the number of flyweights to store in a
+    # type's instance factory.  Values < 0 indicate an unlimited cache size
+    # while values > 0 specify a Least Recently Used (LRU) caching strategy.  0
+    # disables the flyweight pattern entirely, though this is not recommended.
+
+    _cache_size: int = -1
+    backend: str | None = None  # marker for @AbstractType.implementation
+
+    @property
+    def type_def(self):
+        """A scalar class for elements of this type.
+
+        Returns
+        -------
+        type | None
+            A class object used to instantiate scalar examples of this type.
+
+        See Also
+        --------
+        ScalarType.dtype :
+            A pandas array dtype associated with objects of this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").type_def
+            <class 'numpy.int64'>
+            >>> pdcast.resolve_type("datetime[python]").type_def
+            <class 'datetime.datetime'>
+
+        Whenever ``pdcast`` generates a type that lacks an explicit
+        :attr:`dtype <pdcast.ScalarType.dtype>`, it will fall back to this
+        attribute as during conversions.  Calling:
+
+        .. doctest::
+
+            >>> pdcast.cast(["1", "2", "3"], "int[python]")
+            0    1
+            1    2
+            2    3
+            dtype: int[python]
+
+        Is effectively equivalent to:
+
+        .. doctest::
+
+            >>> import pandas as pd
+
+            >>> target = pdcast.resolve_type("int[python]")
+            >>> values = [target.type_def(x) for x in ["1", "2", "3"]]
+            >>> pd.Series(values, dtype=target.dtype)
+            0    1
+            1    2
+            2    3
+            dtype: int[python]
+        """
+        if self._type_def is None:
+            return None
+
+        return self._type_def
+
+    @property
+    def dtype(self):
+        """A numpy :class:`dtype <numpy.dtype>` or pandas
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to use
+        for arrays of this type.
+
+        Returns
+        -------
+        dtype_like
+            A pandas-compatible dtype to use for arrays of this type.
+            :class:`ExtensionDtypes <pandas.api.extensions.ExtensionDtype>` are
+            free to define their own storage backends and behavior.
+
+        Notes
+        -----
+        By default, this will automatically create a new
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
+        encapsulate data of this type, storing them internally as a
+        ``dtype: object`` array.  This may not be the most efficient way to
+        store data of a particular type.  If a more compact representation is
+        available, users can :ref:`provide <pandas:extending>` their own
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
+        definitions instead.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int[numpy]").dtype
+            dtype('int64')
+            >>> pdcast.resolve_type("int[pandas]").dtype
+            Int64Dtype()
+            >>> pdcast.resolve_type("int[python]").dtype
+            _ObjectDtype(int[python])
+
+        Each of these are valid :class:`Series <pandas.Series>` dtypes.
+
+        .. doctest::
+
+            >>> import pandas as pd
+
+            >>> pd.Series([1, 2, 3], dtype=pdcast.resolve_type("int[numpy]").dtype)
+            0    1
+            1    2
+            2    3
+            dtype: int64
+            >>> pd.Series([1, 2, 3], dtype=pdcast.resolve_type("int[pandas]").dtype)
+            0    1
+            1    2
+            2    3
+            dtype: Int64
+            >>> pd.Series([1, 2, 3], dtype=pdcast.resolve_type("int[python]").dtype)
+            0    1
+            1    2
+            2    3
+            dtype: int[python]
+        """
+        from ..boolean import BooleanType
+
+        if self._dtype is None:
+            return construct_object_dtype(
+                self,
+                is_boolean=BooleanType.contains(self),
+                is_numeric=self.is_numeric,
+                add_comparison_ops=True,
+                add_arithmetic_ops=True
+            )
+        return self._dtype
+
+    @property
+    def itemsize(self):
+        """The size (in bytes) for scalars of this type.
+
+        Returns
+        -------
+        int | None
+            A positive integer describing the size of each element in bytes,
+            or :data:`None` if no fixed size can be given.
+
+        Notes
+        -----
+        If this would be hard to compute, use
+        :func:`sys.getsizeof() <python:sys.getsizeof>` or give an approximate
+        lower bound here.
+
+        .. note::
+
+            Measuring the size of a Python object is not always
+            straightforward.  The :func:`sys.getsizeof() <python:sys.getsizeof>`
+            function is a good place to start, but it may not always be
+            accurate.  For instance, it does not account for the size of
+            referenced objects, and it may not be consistent across different
+            Python implementations.  For more information, see the
+            :ref:`Python documentation <python:sys.getsizeof>`.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").itemsize
+            8
+            >>> pdcast.resolve_type("bool[python]").itemsize
+            28
+            >>> pdcast.resolve_type("decimal").itemsize
+            104
+        """
+        if self._itemsize is None:
+            return None
+
+        return self._itemsize
+
+    @property
+    def is_numeric(self):
+        """A flag indicating whether this type is numeric.
+
+        Returns
+        -------
+        bool
+            ``True`` if this type is numeric, ``False`` otherwise.
+
+        Notes
+        -----
+        This is used when generating automatic
+        :attr:`dtype <pdcast.ScalarType.dtype>` definitions.  If this is
+        set to ``True``, then the resulting
+        :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` will be
+        labeled numeric, and will support pandas arithmetic and comparison
+        operations.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[pandas]").is_numeric
+            True
+            >>> pdcast.resolve_type("float32[numpy]").is_numeric
+            True
+            >>> pdcast.resolve_type("string").is_numeric
+            False
+        """
+        if self._is_numeric is None:
+            return False
+
+        return self._is_numeric
+
+    @property
+    def max(self):
+        """The maximum representable value for this type.
+
+        Returns
+        -------
+        decimal.Decimal
+            A decimal value representing the maximum value for this type.
+
+        See Also
+        --------
+        ScalarType.min :
+            The minimum representable value for this type.
+
+        Notes
+        -----
+        These are used to check for overflow when coercing values to this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("bool[numpy]").max
+            Decimal('1')
+            >>> pdcast.resolve_type("int8[numpy]").max
+            Decimal('127')
+            >>> pdcast.resolve_type("int64[numpy]").max
+            Decimal('9223372036854775807')
+            >>> pdcast.resolve_type("datetime64[ns]").max
+            Decimal('9223372036854775807')
+            >>> pdcast.resolve_type("decimal").max
+            Decimal('Infinity')
+
+        Floating-point types have a maximum value, but rather than representing
+        a hard limit, it instead describes the largest value that can be
+        represented without losing integer precision.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("float32[numpy]").max
+            Decimal('16777216')
+            >>> pdcast.resolve_type("float64[numpy]").max
+            Decimal('9007199254740992')
+        """
+        if self._max is None:
+            return decimal.Decimal("inf")
+
+        return self._max
+
+    @property
+    def min(self):
+        """The minimum representable value for this type.
+
+        Returns
+        -------
+        decimal.Decimal
+            A decimal value representing the minimum value for this type.
+
+        See Also
+        --------
+        ScalarType.max :
+            The maximum representable value for this type.
+
+        Notes
+        -----
+        These are used to check for overflow when coercing values to this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("bool[numpy]").min
+            Decimal('0')
+            >>> pdcast.resolve_type("int8[numpy]").min
+            Decimal('-128')
+            >>> pdcast.resolve_type("int64[numpy]").min
+            Decimal('-9223372036854775808')
+            >>> pdcast.resolve_type("datetime64[ns]").min
+            Decimal('-9223372036854775807')
+            >>> pdcast.resolve_type("decimal").min
+            Decimal('-Infinity')
+
+        Floating-point types have a minimum value, but rather than representing
+        a hard limit, it instead describes the smallest value that can be
+        represented without losing integer precision.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("float32[numpy]").min
+            Decimal('-16777216')
+            >>> pdcast.resolve_type("float64[numpy]").min
+            Decimal('-9007199254740992')
+        """
+        if self._min is None:
+            return decimal.Decimal("-inf")
+
+        return self._min
+
+    @property
+    def is_nullable(self):
+        """A flag indicating whether this type supports missing values.
+
+        Returns
+        -------
+        bool
+            ``True`` if this type supports missing values, ``False`` otherwise.
+
+        Notes
+        -----
+        If this is set to ``False``, :func:`@dispatch <dispatch>` will
+        automatically invoke :meth:`make_nullable() <ScalarType.make_nullable>`
+        to convert this type into a nullable alternative when missing values
+        are detected in a function's output.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").is_nullable
+            False
+            >>> pdcast.resolve_type("int64[pandas]").is_nullable
+            True
+            >>> pdcast.resolve_type("string").is_nullable
+            True
+        """
+        if self._is_nullable is None:
+            return True
+
+        return self._is_nullable
+
+    @property
+    def na_value(self):
+        """The representation to use for missing values of this type.
+
+        Returns
+        -------
+        Any
+            An NA-like value for this data type.
+
+        Notes
+        -----
+        This will be used as the fill value when :func:`@dispatch <dispatch>`
+        detects missing values in a function's output.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[pandas]").na_value
+            <NA>
+            >>> pdcast.resolve_type("float32[numpy]").na_value
+            nan
+            >>> pdcast.resolve_type("complex128[numpy]").na_value
+            (nan+nanj)
+            >>> pdcast.resolve_type("decimal").na_value
+            Decimal('NaN')
+        """
+        if self._na_value is None:
+            return pd.NA
+
+        return self._na_value
+
+    def make_nullable(self):
+        """Convert a non-nullable :class:`ScalarType` into one that can accept
+        missing values.
+
+        Returns
+        -------
+        ScalarType
+            A nullable version of this data type to be used when missing values
+            are detected in the output of a :func:`@dispatch <dispatch>`
+            function.  If the type is already nullable, this will return a
+            reference to ``self``.
+
+        Raises
+        ------
+        NotImplementedError
+            If a type is not nullable and does not implement this method.
+
+        See Also
+        --------
+        ScalarType.is_nullable :
+            An indicator specifying whether a type supports missing values.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").make_nullable()
+            PandasInt64Type()
+            >>> pdcast.resolve_type("int64[pandas]").make_nullable()
+            PandasInt64Type()
+        """
+        if self.is_nullable:
+            return self
+
+        raise NotImplementedError(
+            f"'{type(self).__name__}' objects have no nullable alternative."
+        )
 
     # NOTE: additional attributes can be added as needed.  These are just the
     # ones that are necessary for minimal functionality.
@@ -483,94 +744,307 @@ cdef class ScalarType(VectorType):
     #########################
 
     @property
-    def is_root(self) -> bool:
+    def is_root(self):
         """Indicates whether this type is the root of its subtype hierarchy.
 
         Returns
         -------
         bool
-            ``True`` if this type has no :attr:`supertype
-            <ScalarType.supertype>`, ``False`` otherwise.
+            ``True`` if this type does not have an associated
+            :attr:`supertype <ScalarType.supertype>`, ``False`` otherwise.
+
+        See Also
+        --------
+        ScalarType.supertype :
+            The supertype that this type is registered to, if one exists.
+        ScalarType.root :
+            The root node of this type's subtype hierarchy.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int").is_root
+            True
+            >>> pdcast.resolve_type("int[numpy]").is_root
+            True
+            >>> pdcast.resolve_type("int64[numpy]").is_root
+            False
         """
         return self.supertype is None
 
     @property
-    def root(self) -> ScalarType:
-        """The root node of this type's subtype hierarchy."""
+    def root(self):
+        """The root node of this type's subtype hierarchy.
+
+        Returns
+        -------
+        ScalarType
+            The top-level :attr:`supertype <ScalarType.supertype>` for this
+            type.
+
+        See Also
+        --------
+        ScalarType.supertype :
+            The supertype that this type is registered to, if one exists.
+        ScalarType.is_root :
+            An indicator specifying whether this type is the root of its
+            subtype hierarchy.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").root
+            NumpyIntegerType()
+            >>> pdcast.resolve_type("float16")
+            FloatType()
+            >>> pdcast.resolve_type("bool").root
+            BooleanType()
+        """
         result = self
         while result.supertype:
             result = result.supertype
         return result
 
     @property
-    def supertype(self) -> AbstractType:
-        """An :class:`ScalarType` representing the supertype that this type is
-        registered to, if one exists.
+    def supertype(self):
+        """The :class:`AbstractType <pdcast.AbstractType>` this type is a
+        :meth:`subtype <pdcast.AbstractType.subtype>` of, if one exists.
 
-        Notes
-        -----
-        The result of this accessor is cached between :class:`TypeRegistry`
-        updates.
+        Returns
+        -------
+        AbstractType | None
+            The supertype that this type is registered to, if one exists.
+
+        See Also
+        --------
+        ScalarType.root :
+            The root node of this type's subtype hierarchy.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").supertype
+            NumpySignedIntegerType()
+            >>> pdcast.resolve_type("float16").supertype
+            FloatType()
+            >>> pdcast.resolve_type("bool").supertype is None
+            True
         """
         return self.registry.get_supertype(self)
 
     @property
-    def is_generic(self) -> bool:
-        """Indicates whether this type is managing any backends."""
+    def is_generic(self):
+        """A flag indicating whether this type is managing any implementations.
+
+        Returns
+        -------
+        bool
+            ``True`` if this type has one or more registered
+            :meth:`implementations <pdcast.AbstractType.implementation>`.
+
+        See Also
+        --------
+        ScalarType.generic :
+            The generic equivalent of this type, if one exists.
+
+        Notes
+        -----
+        For :class:`ScalarType <pdcast.ScalarType>` objects, this will always
+        be ``False``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").is_generic
+            False
+            >>> pdcast.resolve_type("float16").is_generic
+            True
+            >>> pdcast.resolve_type("bool").is_generic
+            True
+        """
         return False  # overridden in AbstractType
 
     @property
-    def generic(self) -> AbstractType:
-        """The generic equivalent of this type, if one exists."""
+    def generic(self):
+        """The :class:`AbstractType <pdcast.AbstractType>` that this type is an
+        :meth:`implementation <pdcast.AbstractType.implementation>` of, if one
+        exists.
+
+        Returns
+        -------
+        AbstractType
+            The generic type that this type is registered to, if one exists.
+
+        See Also
+        --------
+        ScalarType.is_generic :
+            A flag indicating whether this type is managing any backends.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").generic
+            Int64Type()
+            >>> pdcast.resolve_type("float16").generic is None
+            True
+            >>> pdcast.resolve_type("bool").generic is None
+            True
+        """
         return self.registry.get_generic(self)
 
     @property
-    def backends(self) -> MappingProxyType:
-        """A mapping of all the implementations that are registered to this
-        type, if it is marked as :func:`@generic <pdcast.generic>`.
+    def backends(self):
+        """A mapping of all the
+        :meth:`implementations <pdcast.AbstractType.implementation>` that are
+        registered to this type.
 
         Returns
         -------
         MappingProxyType
             A read-only dictionary listing the concrete implementations that
             have been registered to this type, with their backend specifiers
-            as keys.
+            as keys.  This always includes the type's default implementation
+            under the ``None`` key.
 
-        Raises
-        ------
-        TypeError
-            If this type is not decorated with
-            :func:`@generic <pdcast.generic>`.
+        See Also
+        --------
+        ScalarType.generic :
+            The generic equivalent of this type, if one exists.
+        AbstractType.implementation :
+            A class decorator used to mark types as concrete implementations of
+            an abstract type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").backends
+            mappingproxy({None: NumpyInt64Type()})
+            >>> pdcast.resolve_type("float16").backends
+            {None: NumpyFloat16Type(), 'numpy': NumpyFloat16Type()}
+            >>> pdcast.resolve_type("bool").backends
+            {None: NumpyBooleanType(), 'numpy': NumpyBooleanType(), 'pandas': PandasBooleanType(), 'python': PythonBooleanType()}
         """
         return MappingProxyType({None: self})
 
     @property
-    def subtypes(self) -> CompositeType:
-        """A :class:`CompositeType` containing every subtype that is
-        currently registered to this type.
+    def subtypes(self):
+        """A :class:`CompositeType <pdcast.CompositeType>` containing all the
+        :meth:`subtypes <pdcast.AbstractType.subtype>` that are currently
+        registered to this type.
+
+        Returns
+        -------
+        CompositeType
+            A collection of :class:`ScalarTypes <pdcast.ScalarType>`
+            representing the immediate children of this type.
+
+        See Also
+        --------
+        ScalarType.leaves :
+            A :class:`CompositeType <pdcast.CompositeType>` containing all the
+            leaf nodes associated with this type.
 
         Notes
         -----
-        The result of this accessor is cached between :class:`TypeRegistry`
-        updates.
+        For :class:`ScalarType <pdcast.ScalarType>` objects, this will always
+        be an empty :class:`CompositeType <pdcast.CompositeType>`.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").subtypes
+            CompositeType({})
+            >>> pdcast.resolve_type("float").subtypes   # doctest: +SKIP
+            CompositeType({float16, float32, float64, float80})
+            >>> pdcast.resolve_type("int").subtypes   # doctest: +SKIP
+            CompositeType({signed, unsigned})
         """
         return CompositeType()  # overridden in AbstractType
 
     @property
-    def is_leaf(self) -> bool:
-        """Indicates whether this type has subtypes."""
+    def is_leaf(self):
+        """A flag indicating whether this type is a leaf node within its
+        hierarchy.
+
+        Returns
+        -------
+        bool
+            ``True`` if this type has no registered
+            :meth:`subtypes <pdcast.AbstractType.subtype>` or
+            :meth:`implementations <pdcast.AbstractType.implementations>`.
+
+        See Also
+        --------
+        ScalarType.leaves :
+            A :class:`CompositeType <pdcast.CompositeType>` containing all the
+            leaf nodes associated with this type.
+
+        Notes
+        -----
+        For :class:`ScalarType <pdcast.ScalarType>` objects, this will always
+        be ``True``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").is_leaf
+            True
+            >>> pdcast.resolve_type("float16").is_leaf
+            False
+            >>> pdcast.resolve_type("bool").is_leaf
+            False
+        """
         return True  # overridden in AbstractType
 
     @property
-    def leaves(self) -> CompositeType:
+    def leaves(self):
         """A :class:`CompositeType <pdcast.CompositeType>` containing all the
-        leaf nodes associated with this type's subtypes.
+        leaf nodes associated with this type's hierarchy.
+
+        Returns
+        -------
+        CompositeType
+            A collection of :class:`ScalarTypes <pdcast.ScalarType>`
+            representing the leaf nodes for this type's hierarchy.
+
+        See Also
+        --------
+        ScalarType.subtypes :
+            A :class:`CompositeType <pdcast.CompositeType>` containing all the
+            :meth:`subtypes <pdcast.AbstractType.subtype>` of this type.
+        ScalarType.backends :
+            A mapping of all the
+            :meth:`implementations <pdcast.AbstractType.implementation>` of
+            this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").leaves
+            CompositeType({})
+            >>> pdcast.resolve_type("float16").leaves   # doctest: +SKIP
+            CompositeType({float16[numpy]})
+            >>> pdcast.resolve_type("bool").leaves   # doctest: +SKIP
+            CompositeType({bool[numpy], bool[pandas], bool[python]})
         """
         candidates = set(CompositeType(self).expand()) - {self}
         return CompositeType(typ for typ in candidates if typ.is_leaf)
 
+    ###############################
+    ####    UPCAST/DOWNCAST    ####
+    ###############################
+
     @property
-    def larger(self) -> Iterator[ScalarType]:
+    def larger(self):
         """A list of types that this type can be
         :meth:`upcasted <ScalarType.upcast>` to in the event of overflow.
 
@@ -594,7 +1068,7 @@ cdef class ScalarType(VectorType):
         yield from sorted(typ for typ in candidates if wider(typ))
 
     @property
-    def smaller(self) -> Iterator[ScalarType]:
+    def smaller(self):
         """A list of types that this type can be
         :meth:`downcasted <ScalarType.downcast>` to if directed.
 
@@ -616,6 +1090,43 @@ cdef class ScalarType(VectorType):
 
         # sort according to comparison operators
         yield from sorted([typ for typ in candidates if narrower(typ)])
+
+    def __lt__(self, other: ScalarType) -> bool:
+        """Sort types by their size in memory and representable range.
+
+        This method is automatically called by the built-in ``sorted()``
+        function and thus dictates the ordering of types in the
+        :attr:`larger <pdcast.ScalarType.larger>`\ /
+        :attr:`smaller <pdcast.ScalarType.smaller>` generators.
+        """
+        itemsize = lambda typ: typ.itemsize or np.inf
+        coverage = lambda typ: typ.max - typ.min
+        bias = lambda typ: abs(typ.max + typ.min)
+        family = lambda typ: typ.backend or ""
+
+        # lexical sort, same as `key` argument of sorted()
+        features = lambda typ: (
+            coverage(typ), itemsize(typ), bias(typ), family(typ)
+        )
+
+        return features(self) < features(other)
+
+    def __gt__(self, other: ScalarType) -> bool:
+        """Sort types by their size in memory and representable range.
+
+        This method is provided for completeness with respect to ``__lt__()``.
+        """
+        itemsize = lambda typ: typ.itemsize or np.inf
+        coverage = lambda typ: typ.max - typ.min
+        bias = lambda typ: abs(typ.max + typ.min)
+        family = lambda typ: typ.backend or ""
+
+        # lexical sort
+        features = lambda typ: (
+            coverage(typ), itemsize(typ), bias(typ), family(typ)
+        )
+
+        return features(self) > features(other)
 
     ########################
     ####    ADAPTERS    ####
@@ -700,26 +1211,6 @@ cdef class ScalarType(VectorType):
     ####    SPECIAL METHODS    ####
     ###############################
 
-    def __lt__(self, other: ScalarType) -> bool:
-        """Sort types by their size in memory and representable range.
-
-        This method is automatically called by the built-in ``sorted()``
-        function and thus dictates the ordering of types in the
-        :attr:`larger <pdcast.ScalarType.larger>`\ /
-        :attr:`smaller <pdcast.ScalarType.smaller>` generators.
-        """
-        itemsize = lambda typ: typ.itemsize or np.inf
-        coverage = lambda typ: typ.max - typ.min
-        bias = lambda typ: abs(typ.max + typ.min)
-        family = lambda typ: typ.backend or ""
-
-        # lexical sort, same as `key` argument of sorted()
-        features = lambda typ: (
-            coverage(typ), itemsize(typ), bias(typ), family(typ)
-        )
-
-        return features(self) < features(other)
-
     def __hash__(self) -> int:
         """Reimplement hash() for ScalarTypes.
 
@@ -729,24 +1220,6 @@ cdef class ScalarType(VectorType):
         python subclasses.
         """
         return self._hash
-
-    def __gt__(self, other: ScalarType) -> bool:
-        """Sort types by their size in memory and representable range.
-
-        This method is provided for completeness with respect to ``__lt__()``.
-        """
-        itemsize = lambda typ: typ.itemsize or np.inf
-        coverage = lambda typ: typ.max - typ.min
-        bias = lambda typ: abs(typ.max + typ.min)
-        family = lambda typ: typ.backend or ""
-
-        # lexical sort
-        features = lambda typ: (
-            coverage(typ), itemsize(typ), bias(typ), family(typ)
-        )
-
-        return features(self) > features(other)
-
 
 ########################
 ####    ABSTRACT    ####
