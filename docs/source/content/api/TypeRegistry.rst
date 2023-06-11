@@ -89,7 +89,7 @@ each type and traversing their respective hierarchies.
 
 These relationships are established by
 :class:`AbstractTypes <pdcast.AbstractType>` through their various
-:ref:`hierarchical decorators <AbstractType.hierarchies>`.
+:ref:`hierarchical decorators <AbstractType.hierarchy>`.
 
 Configuration
 -------------

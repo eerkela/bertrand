@@ -26,8 +26,6 @@ from .composite cimport CompositeType
 from ..array import construct_object_dtype
 
 
-# TODO: add examples/raises for each method
-
 # TODO: .max/.min are currently stored as arbitrary objects.
 
 
@@ -36,9 +34,6 @@ from ..array import construct_object_dtype
 # -> Break ties by looking for overloaded < operator.  If this is found, we
 # always put this type first.
 # -> There doesn't appear to be a reliable way of doing this in cython.
-
-
-# TODO: if type_def is not defined, raise a NotImplementedError
 
 
 ######################
@@ -331,7 +326,9 @@ cdef class ScalarType(VectorType):
             dtype: int[python]
         """
         if self._type_def is None:
-            return None
+            raise NotImplementedError(
+                f"{repr(self)} does not define a `type_def` attribute."
+            )
 
         return self._type_def
 
@@ -427,8 +424,7 @@ cdef class ScalarType(VectorType):
             function is a good place to start, but it may not always be
             accurate.  For instance, it does not account for the size of
             referenced objects, and it may not be consistent across different
-            Python implementations.  For more information, see the
-            :ref:`Python documentation <python:sys.getsizeof>`.
+            Python implementations.
 
         Examples
         --------

@@ -41,3 +41,17 @@ perform membership tests.
 
     AbstractType.contains
     AbstractType.__contains__
+
+.. _AbstractType.hierarchy:
+
+Hierarchies
+-----------
+:class:`AbstractTypes <AbstractType>` form the nodes of type hierarchies, which
+can be established using the following class decorators.
+
+.. autosummary::
+    :toctree: ../../generated
+
+    AbstractType.subtype
+    AbstractType.implementation
+    AbstractType.default
