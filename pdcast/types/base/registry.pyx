@@ -11,7 +11,7 @@ from pdcast.util.type_hints import type_specifier, dtype_like
 from .composite cimport CompositeType
 from .vector cimport VectorType
 from .decorator cimport DecoratorType
-from .scalar cimport ScalarType, AbstractType
+from .scalar cimport AbstractType, ScalarType
 
 
 # TODO: adding aliases during init_base automatically appends them to

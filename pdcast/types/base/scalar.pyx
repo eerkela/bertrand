@@ -10,18 +10,12 @@ import warnings
 cimport numpy as np
 import numpy as np
 import pandas as pd
-from pandas.api.extensions import ExtensionDtype
 
 from pdcast.resolve import resolve_type
-from pdcast.util.type_hints import (
-    array_like, dtype_like, numeric, type_specifier
-)
+from pdcast.util.type_hints import dtype_like, numeric, type_specifier
 
-from .registry cimport AliasManager, CacheValue, TypeRegistry
-from .vector cimport (
-    READ_ONLY_ERROR, VectorType, ArgumentEncoder, BackendEncoder,
-    InstanceFactory, FlyweightFactory
-)
+from .registry cimport CacheValue, TypeRegistry
+from .vector cimport READ_ONLY_ERROR, VectorType, BackendEncoder
 from .composite cimport CompositeType
 from ..array import construct_object_dtype
 
@@ -124,7 +118,7 @@ cdef class ScalarType(VectorType):
 
         return self(*args)  # calling self handles flyweight creation
 
-    def from_dtype(self, dtype: np.dtype | ExtensionDtype) -> ScalarType:
+    def from_dtype(self, dtype: dtype_like) -> ScalarType:
         """Construct a :class:`ScalarType <pdcast.ScalarType>` from a
         numpy/pandas :class:`dtype <numpy.dtype>`\ /\
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
@@ -1046,61 +1040,127 @@ cdef class ScalarType(VectorType):
     ####    UPCAST/DOWNCAST    ####
     ###############################
 
+    # TODO: the current larger/smaller implementations should be offloaded to
+    # AbstractType.  These methods should yield from an empty list, and talk
+    # about overloading them in subclasses.
+
     @property
     def larger(self):
-        """A list of types that this type can be
-        :meth:`upcasted <ScalarType.upcast>` to in the event of overflow.
+        """An ordered sequence of types that this type can be upcasted to in
+        the event of overflow.
 
-        Override this to change the behavior of a bounded type (with
-        appropriate `.min`/`.max` fields) when an ``OverflowError`` is
-        detected.
+        Returns
+        -------
+        Iterator
+            A generator object that yields
+            :class:`ScalarTypes <pdcast.ScalarType>` in order.
 
-        Notes
-        -----
-        Candidate types will always be tested in order.
+        See Also
+        --------
+        ScalarType.smaller :
+            An ordered sequence of types that this type can be downcasted to
+            for memory efficiency.
+
+        Examples
+        --------
+        :class:`ScalarTypes <pdcast.ScalarType>` can implement this attribute
+        to allow dynamic resizing based on observed data.  For instance, numpy
+        datetime64s support a variety of units, each with their own limits.
+        If we cast to a unit that is too small, we receive an
+        :data:`OverflowError <python:OverflowError>`.
+
+        .. doctest::
+
+            >>> pdcast.cast(2**65, "datetime[numpy, ns]", unit="ns")
+            Traceback (most recent call last):
+                ...
+            OverflowError: values exceed datetime[numpy, ns, 1] range at index [0]
+
+        If we don't specify a unit, we instead choose the smallest one that
+        fits the data.
+
+        .. doctest::
+
+            >>> pdcast.cast(2**65, "datetime[numpy]", unit="ns")
+            0    3139-02-09T23:09:07.419103
+            dtype: object
+
+        In this case, the result is measured in microseconds.
         """
-        candidates = self.leaves
-        candidates |= {
-            typ for candidate in candidates for typ in candidate.larger
-        }
-
-        # filter off any leaves with range less than self
-        wider = lambda typ: typ.max > self.max or typ.min < self.min
-
-        # sort according to comparison operators
-        yield from sorted(typ for typ in candidates if wider(typ))
+        yield from ()
 
     @property
     def smaller(self):
-        """A list of types that this type can be
-        :meth:`downcasted <ScalarType.downcast>` to if directed.
+        """An ordered sequence of types that this type can be downcasted to in
+        order to save memory.
 
-        Override this to change the behavior of a type when the ``downcast``
-        argument is supplied to a conversion function.
+        Returns
+        -------
+        Iterator
+            A generator that yields :class:`ScalarTypes <pdcast.ScalarType>` in
+            order.
+
+        See Also
+        --------
+        ScalarType.larger :
+            An ordered sequence of types that this type can be upcasted to in
+            the event of overflow.
+        AbstractType.smaller :
+            Abstract equivalent of this method.
 
         Notes
         -----
-        Candidate types will always be tested in order.
+        :class:`ScalarTypes <pdcast.ScalarType>` can implement this method to
+        allow :attr:`downcasting <pdcast.convert.arguments.downcast>` based on
+        observed data.
         """
-        candidates = self.leaves
-        candidates |= {
-            typ for candidate in candidates for typ in candidate.smaller
-        }
-
-        # filter off any leaves with itemsize greater than self
-        itemsize = lambda typ: typ.itemsize or np.inf
-        narrower = lambda typ: itemsize(typ) < itemsize(self)
-
-        # sort according to comparison operators
-        yield from sorted([typ for typ in candidates if narrower(typ)])
+        yield from ()
 
     def __lt__(self, other: ScalarType) -> bool:
         """Sort types by their size in memory and representable range.
 
-        This method is automatically called by the built-in ``sorted()``
-        function and thus dictates the ordering of types in the
-        :attr:`larger <pdcast.ScalarType.larger>`\ /
-        :attr:`smaller <pdcast.ScalarType.smaller>` generators.
+        Parameters
+        ----------
+        other : ScalarType
+            The type to compare against.
+
+        Returns
+        -------
+        bool
+            ``True`` if this type is smaller than ``other``.
+
+        See Also
+        --------
+        ScalarType.__gt__ :
+            The inverse of this method.
+
+        Notes
+        -----
+        This method is automatically called by the built-in
+        :func:`sorted() <python:sorted>` function to order type objects.
+
+        By default, types are sorted by the following criteria (in order):
+
+            #.  Their total representable range (:attr:`max <ScalarType.max>` -
+                :attr:`min <ScalarType.min>`).
+            #.  Their size in memory (:attr:`itemsize <ScalarType.itemsize>`).
+            #.  Their bias with respect to zero (:attr:`max <ScalarType.max>` +
+                :attr:`min <ScalarType.min>`).
+            #.  Alphabetically by their backend specifier ('numpy', 'pandas',
+                'python', etc.).
+
+        Examples
+        --------
+        This is used to sort types in
+        :attr:`AbstractType.larger <pdcast.AbstractType.larger>`\ /
+        :attr:`AbstractType.smaller <pdcast.AbstractType.smaller>`.
+
+        .. doctest::
+
+            >>> list(pdcast.resolve_type("int").larger)
+            [NumpyUInt64Type(), PandasUInt64Type(), PythonIntegerType()]
+            >>> pdcast.NumpyUInt64Type < pdcast.PythonIntegerType
+            True
         """
         itemsize = lambda typ: typ.itemsize or np.inf
         coverage = lambda typ: typ.max - typ.min
@@ -1117,7 +1177,25 @@ cdef class ScalarType(VectorType):
     def __gt__(self, other: ScalarType) -> bool:
         """Sort types by their size in memory and representable range.
 
-        This method is provided for completeness with respect to ``__lt__()``.
+        Parameters
+        ----------
+        other : ScalarType
+            The type to compare against.
+
+        Returns
+        -------
+        bool
+            ``True`` if this type is larger than ``other``.
+
+        See Also
+        --------
+        ScalarType.__lt__ :
+            The inverse of this method.
+
+        Notes
+        -----
+        This method is provided for completeness with respect to
+        :meth:`__lt__() <pdcast.ScalarType.__lt__>`.
         """
         itemsize = lambda typ: typ.itemsize or np.inf
         coverage = lambda typ: typ.max - typ.min
@@ -1217,10 +1295,12 @@ cdef class ScalarType(VectorType):
     def __hash__(self) -> int:
         """Reimplement hash() for ScalarTypes.
 
+        Notes
+        -----
         Adding the ``<`` and ``>`` operators mysteriously breaks an inherited
-        ``__hash__()`` method for some reason.  This appears to be a problem
-        with cython extension class inheritance, and isn't observed in normal
-        python subclasses.
+        cython ``__hash__()`` method for some reason.  This appears to be a
+        problem with cdef class inheritance in the current build, and isn't
+        required for normal python subclasses.
         """
         return self._hash
 
@@ -1497,9 +1577,61 @@ cdef class AbstractType(ScalarType):
             return decorator(subtype)
         return decorator
 
-    ##########################
-    ####    OVERLOADED    ####
-    ##########################
+    #############################
+    ####    CONFIGURATION    ####
+    #############################
+
+
+    @property
+    def type_def(self) -> type | None:
+        """Delegate `type_def` to default."""
+        return self.registry.get_default(self).type_def
+
+    @property
+    def dtype(self) -> dtype_like:
+        """Delegate `dtype` to default."""
+        return self.registry.get_default(self).dtype
+
+    @property
+    def itemsize(self) -> int | None:
+        """Delegate `itemsize` to default."""
+        return self.registry.get_default(self).itemsize
+
+    @property
+    def is_numeric(self) -> bool:
+        """Delegate `is_numeric` to default."""
+        return self.registry.get_default(self).is_numeric
+
+    @property
+    def max(self) -> decimal.Decimal:
+        """Delegate `max` to default."""
+        return self.registry.get_default(self).max
+
+    @property
+    def min(self) -> decimal.Decimal:
+        """Delegate `min` to default."""
+        return self.registry.get_default(self).min
+
+    @property
+    def is_nullable(self) -> bool:
+        """Delegate `is_nullable` to default."""
+        return self.registry.get_default(self).is_nullable
+
+    @property
+    def na_value(self) -> Any:
+        """Delegate `na_value` to default."""
+        return self.registry.get_default(self).na_value
+
+    def make_nullable(self) -> ScalarType:
+        """Delegate `make_nullable()` to default."""
+        return self.registry.get_default(self).make_nullable()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.registry.get_default(self), name)
+
+    #########################
+    ####    TRAVERSAL    ####
+    #########################
 
     @property
     def is_generic(self) -> bool:
@@ -1581,56 +1713,126 @@ cdef class AbstractType(ScalarType):
         children |= {typ for typ in self.subtypes}
         return any(typ.contains(other) for typ in children)
 
-    #########################
-    ####    DELEGATED    ####
-    #########################
+    ###############################
+    ####    UPCAST/DOWNCAST    ####
+    ###############################
 
     @property
-    def type_def(self) -> type | None:
-        """Delegate `type_def` to default."""
-        return self.registry.get_default(self).type_def
+    def larger(self):
+        """An ordered sequence of types that this type can be upcasted to in
+        the event of overflow.
+
+        Returns
+        -------
+        Iterator
+            A generator object that yields
+            :class:`ScalarTypes <pdcast.ScalarType>` in order.
+
+        See Also
+        --------
+        AbstractType.smaller :
+            An ordered sequence of types that this type can be downcasted to
+            for memory efficiency.
+        ScalarType.larger :
+            Scalar equivalent of this method.
+
+        Notes
+        -----
+        This method uses the :meth:`< <pdcast.ScalarType.__lt__>` operator to
+        determine the order of the resulting types.  Users can override that
+        method to change how candidates are sorted.
+
+        Examples
+        --------
+        This attribute automatically searches an
+        :class:`AbstractType <pdcast.AbstractType>`'s leaves for candidates.
+
+        .. doctest::
+
+            >>> list(pdcast.resolve_type("int").larger)
+            [NumpyUInt64Type(), PandasUInt64Type(), PythonIntegerType()]
+            >>> pdcast.cast(2**64 - 1, "int")
+            0    18446744073709551615
+            dtype: uint64
+            >>> pdcast.cast(2**65 - 1)
+            0    36893488147419103231
+            dtype: int[python]
+
+        If any of the candidates implement their own
+        :attr:`larger <pdcast.ScalarType.larger>` attribute, then they will be
+        recursively included.
+        """
+        candidates = self.leaves
+        candidates |= {
+            typ for candidate in candidates for typ in candidate.larger
+        }
+
+        # filter off any leaves with range less than self
+        wider = lambda typ: typ.max > self.max or typ.min < self.min
+
+        # sort according to comparison operators
+        yield from sorted(typ for typ in candidates if wider(typ))
 
     @property
-    def dtype(self) -> np.dtype | ExtensionDtype:
-        """Delegate `dtype` to default."""
-        return self.registry.get_default(self).dtype
+    def smaller(self):
+        """An ordered sequence of types that this type can be downcasted to in
+        order to save memory.
 
-    @property
-    def itemsize(self) -> int | None:
-        """Delegate `itemsize` to default."""
-        return self.registry.get_default(self).itemsize
+        Returns
+        -------
+        Iterator
+            A generator object that yields
+            :class:`ScalarTypes <pdcast.ScalarType>` in order.
 
-    @property
-    def is_numeric(self) -> bool:
-        """Delegate `is_numeric` to default."""
-        return self.registry.get_default(self).is_numeric
+        See Also
+        --------
+        AbstractType.larger :
+            An ordered sequence of types that this type can be upcasted to in
+            the event of overflow.
+        ScalarType.smaller :
+            Scalar equivalent of this method.
 
-    @property
-    def max(self) -> decimal.Decimal:
-        """Delegate `max` to default."""
-        return self.registry.get_default(self).max
+        Notes
+        -----
+        This method uses the :meth:`< <pdcast.ScalarType.__lt__>` operator to
+        determine the order of the resulting types.  Users can override that
+        method to change how candidates are sorted.
 
-    @property
-    def min(self) -> decimal.Decimal:
-        """Delegate `min` to default."""
-        return self.registry.get_default(self).min
+        Examples
+        --------
+        This attribute automatically searches an
+        :class:`AbstractType <pdcast.AbstractType>`'s leaves for candidates.
 
-    @property
-    def is_nullable(self) -> bool:
-        """Delegate `is_nullable` to default."""
-        return self.registry.get_default(self).is_nullable
+        .. doctest::
 
-    @property
-    def na_value(self) -> Any:
-        """Delegate `na_value` to default."""
-        return self.registry.get_default(self).na_value
+            >>> list(pdcast.resolve_type("signed").smaller)
+            [NumpyInt8Type(), PandasInt8Type(), NumpyInt16Type(), PandasInt16Type(), NumpyInt32Type(), PandasInt32Type()]
+            >>> pdcast.cast([1, 2, 3], "int", downcast=True)
+            0    1
+            1    2
+            2    3
+            dtype: int8
+            >>> pdcast.cast([1, 2, 2**15 - 1], "int", downcast=True)
+            0        1
+            1        2
+            2    32767
+            dtype: int16
 
-    def make_nullable(self) -> ScalarType:
-        """Delegate `make_nullable()` to default."""
-        return self.registry.get_default(self).make_nullable()
+        If any of the candidates implement their own
+        :attr:`smaller <pdcast.ScalarType.smaller>` attribute, then they will
+        be recursively included.
+        """
+        candidates = self.leaves
+        candidates |= {
+            typ for candidate in candidates for typ in candidate.smaller
+        }
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.registry.get_default(self), name)
+        # filter off any leaves with itemsize greater than self
+        itemsize = lambda typ: typ.itemsize or np.inf
+        narrower = lambda typ: itemsize(typ) < itemsize(self)
+
+        # sort according to comparison operators
+        yield from sorted([typ for typ in candidates if narrower(typ)])
 
 
 #######################

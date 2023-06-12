@@ -20,8 +20,8 @@ install:
 
 doc:
 #	remove documentation stubs
-	@rm -r docs/build
-	@rm -r docs/source/generated
+	@rm -rf docs/build
+	@rm -rf docs/source/generated
 
 # 	rebuild
 	@cd docs/ && $(MAKE) html

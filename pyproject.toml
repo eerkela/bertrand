@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "cython", "numpy"]
+requires = ["setuptools", "cython >= 3.0.0", "numpy"]
 build-backend = "setuptools.build_meta"
 
 
@@ -27,7 +27,7 @@ keywords = [
 ]
 dependencies = [
     "numpy",
-    "pandas",
+    "pandas >= 2.0.0",
     "python-dateutil",
     "pytz",
     "regex",
@@ -38,6 +38,7 @@ requires-python = ">=3.7"
 
 [project.optional-dependencies]
 dev = [
+    "cython >= 3.0.0",
     "cibuildwheel",
     "pytest",
     "sphinx",

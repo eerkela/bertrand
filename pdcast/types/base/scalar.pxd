@@ -1,6 +1,5 @@
 from .registry cimport CacheValue
 from .vector cimport VectorType
-from .composite cimport CompositeType
 
 
 cdef class ScalarType(VectorType):

@@ -109,7 +109,7 @@ customize their behavior.
 
 ..
     HACK - commenting out an autosummary directive like this will still
-    generate stubs, which can then be linked inside decorator_priority.
+    generate stubs, which can then be linked inside ScalarType.dtype.
 
     .. autosummary::
         :toctree: ../../generated
@@ -121,7 +121,7 @@ customize their behavior.
 
 Traversal
 ---------
-:class:`Scalartypes` can be embedded into
+:class:`Scalartypes <pdcast.ScalarType>` can be embedded into
 :ref:`abstract hierarchies <AbstractType.hierarchy>` that can be traversed with
 the following properties.
 
@@ -143,7 +143,8 @@ the following properties.
 
 Upcast/Downcast
 ---------------
-They can also be dynamically resized based on example data.
+They can also be dynamically resized based on example data, preventing
+overflow and minimizing memory usage.
 
 .. autosummary::
     :toctree: ../../generated
@@ -158,7 +159,7 @@ They can also be dynamically resized based on example data.
 Decorators
 ----------
 Lastly, :class:`ScalarTypes <pdcast.ScalarType>` can be wrapped with
-:class:`DecoratorTypes` to adjust their behavior.
+:class:`DecoratorTypes` to adjust their behavior on a case-by-case basis.
 
 .. autosummary::
     :toctree: ../../generated
@@ -172,11 +173,11 @@ Lastly, :class:`ScalarTypes <pdcast.ScalarType>` can be wrapped with
 
 Special Methods
 ---------------
-These methods are used for syntactic sugar related to type manipulations.
+:class:`ScalarTypes <pdcast.ScalarType>` are hashable, and can be used as
+dictionary keys and set elements.
 
 .. autosummary::
     :toctree: ../../generated
 
     ScalarType.__hash__
-    ScalarType.__contains__
     ScalarType.__eq__

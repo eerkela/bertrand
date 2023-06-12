@@ -228,7 +228,7 @@ with customization for both the source and destination types.
 
 .. doctest::
 
-   >>> @pdcast.cast.overload("bool[python]", "int[python]")
+   >>> @cast.overload("bool[python]", "int[python]")
    ... def my_custom_conversion(series, dtype, **unused):
    ...     print("calling my custom conversion...")
    ...     return series.apply(int, convert_dtype=False)
@@ -244,8 +244,8 @@ specialized extensions for existing pandas behavior:
 
 .. doctest::
 
-   >>> @pdcast.attachable
-   ... @pdcast.dispatch("self", "other")
+   >>> @attachable
+   ... @dispatch("self", "other")
    ... def __add__(self, other):
    ...     return getattr(self.__add__, "original", self.__add__)(other)
 
@@ -270,8 +270,8 @@ includes by default.
 
 .. doctest::
 
-   >>> @pdcast.attachable
-   ... @pdcast.dispatch("series")
+   >>> @attachable
+   ... @dispatch("series")
    ... def bar(series):
    ...     raise NotImplementedError("bar is only defined for floating point values")
 

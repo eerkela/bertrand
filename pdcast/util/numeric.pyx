@@ -16,7 +16,9 @@ from pdcast.util.round cimport Tolerance
 # TODO: downcast_integer should use its tol argument for bounds checks
 
 
-# TODO: boundscheck never upcasts, always raises OverflowError
+# TODO: downcast methods should use the target dtype rather than the series
+# type to get smaller types.  Right now, the observed series type will always
+# be empty.
 
 
 ######################
@@ -104,7 +106,7 @@ cpdef object downcast_integer(
     from pdcast import convert
 
     cdef types.VectorType series_type = detect_type(series)
-    cdef list smaller = series_type.smaller
+    cdef list smaller = list(series_type.smaller)
     cdef object min_val
     cdef object max_val
 
@@ -151,7 +153,7 @@ cpdef object downcast_float(
     from pdcast import convert
 
     cdef types.VectorType series_type = detect_type(series)
-    cdef list smaller = series_type.smaller
+    cdef list smaller = list(series_type.smaller)
 
     # filter based on `smallest`
     if smallest is not None:
