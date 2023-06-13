@@ -22,6 +22,7 @@ case the following method may be used.
 .. autosummary::
     :toctree: ../../generated
 
+    CompositeType.__init__
     CompositeType.from_string
 
 .. _CompositeType.membership:
@@ -124,7 +125,6 @@ Special Methods
     CompositeType.__len__
     CompositeType.__iter__
     CompositeType.__str__
-    CompositeType.__repr__
 
 Notes
 -----

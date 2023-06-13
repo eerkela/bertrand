@@ -55,3 +55,98 @@ can be established using the following class decorators.
     AbstractType.subtype
     AbstractType.implementation
     AbstractType.default
+
+See the :ref:`tutorial <tutorial>` for more information on creating types and
+establishing hierarchies.
+
+.. _AbstractType.config:
+
+Configuration
+-------------
+:class:`AbstractTypes <AbstractType>` inherit from :class:`ScalarType`.  They
+forward the following attributes to their
+:meth:`default <pdcast.AbstractType.default>` concretion if not implemented on
+the type itself.
+
+.. autosummary::
+    :toctree: ../../generated
+
+    AbstractType.name
+    AbstractType.aliases
+    AbstractType.type_def
+    AbstractType.dtype
+    AbstractType.itemsize
+    AbstractType.is_numeric
+    AbstractType.max
+    AbstractType.min
+    AbstractType.is_nullable
+    AbstractType.na_value
+    AbstractType.make_nullable
+
+.. _AbstractType.traversal:
+
+Traversal
+---------
+The :ref:`hierarchies <AbstractType.hierarchy>` that are created by these types
+can be traversed using these properties:
+
+.. autosummary::
+    :toctree: ../../generated
+
+    AbstractType.is_root
+    AbstractType.root
+    AbstractType.supertype
+    AbstractType.is_generic
+    AbstractType.generic
+    AbstractType.backend
+    AbstractType.backends
+    AbstractType.subtypes
+    AbstractType.is_leaf
+    AbstractType.leaves
+
+.. _AbstractType.downcast:
+
+Upcast/Downcast
+---------------
+Just like :class:`ScalarTypes <pdcast.ScalarType>`,
+:class:`AbstractTypes <pdcast.AbstractType>` can be dynamically resized based
+on example data.
+
+.. autosummary::
+    :toctree: ../../generated
+
+    AbstractType.larger
+    AbstractType.smaller
+    AbstractType.__lt__
+    AbstractType.__gt__
+
+.. _AbstractType.decorators:
+
+Decorators
+----------
+Lastly, :class:`AbstractTypes <pdcast.AbstractType>` can be wrapped with
+:class:`DecoratorTypes <pdcast.DecoratorType>` to adjust their behavior on a
+case-by-case basis.
+
+.. autosummary::
+    :toctree: ../../generated
+
+    AbstractType.decorators
+    AbstractType.unwrap
+    AbstractType.make_sparse
+    AbstractType.make_categorical
+
+.. _AbstractType.special:
+
+Special Methods
+---------------
+Similar to :class:`ScalarTypes <pdcast.ScalarType>`,
+:class:`AbstractTypes <pdcast.AbstractType>` are hashable, and can be used as
+dictionary keys and set elements.
+
+.. autosummary::
+    :toctree: ../../generated
+
+    AbstractType.__hash__
+    AbstractType.__eq__
+    AbstractType.__str__

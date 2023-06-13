@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "cython >= 3.0.0", "numpy"]
+requires = ["setuptools", "cython", "numpy"]
 build-backend = "setuptools.build_meta"
 
 
@@ -38,7 +38,7 @@ requires-python = ">=3.7"
 
 [project.optional-dependencies]
 dev = [
-    "cython >= 3.0.0",
+    "cython",
     "cibuildwheel",
     "pytest",
     "sphinx",

@@ -389,14 +389,21 @@ cdef class VectorType(Type):
         return self._hash
 
     def __eq__(self, other: type_specifier) -> bool:
-        """Compare two types for equality."""
+        """Compare two types for equality.
+
+        The comparison type can be in any format recognized by
+        :func:`resolve_type() <pdcast.resolve_type>`.
+        """
         from pdcast.resolve import resolve_type
 
         other = resolve_type(other)
         return isinstance(other, VectorType) and hash(self) == hash(other)
 
     def __str__(self) -> str:
-        """Return this type's string identifier."""
+        """Return this type's string identifier.
+
+        This is the same identifier that is used to identify flyweights.
+        """
         return self._slug
 
     def __repr__(self) -> str:

@@ -71,13 +71,9 @@ Special Methods
 .. autosummary::
     :toctree: ../../generated
 
-    ScalarType.__contains__
-    ScalarType.__eq__
     ScalarType.__hash__
-    ScalarType.__init_subclass__
+    ScalarType.__eq__
     ScalarType.__str__
-    ScalarType.__repr__
-
 
 
 

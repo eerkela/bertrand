@@ -13,7 +13,7 @@ from .registry cimport AliasManager, Type
 
 
 cdef class CompositeType(Type):
-    """Set-like container for ``pdcast`` type objects.
+    """:class:`set <python:set>`-like container for ``pdcast`` type objects.
 
     :class:`CompositeTypes <pdcast.CompositeType>` describe collections of
     types.  They can be created by providing multiple type specifiers in a call
@@ -31,6 +31,7 @@ cdef class CompositeType(Type):
         object types = None,
         ScalarType[:] index = None
     ):
+        """TODO"""
         super().__init__()  # init aliases
 
         if types is None:
@@ -385,6 +386,38 @@ cdef class CompositeType(Type):
         keeping types that are found in it or ``other``, but not both.
         """
         self ^= other
+
+    def __ior__(self, other: type_specifier) -> CompositeType:
+        """Merge the contents of another
+        :class:`CompositeType <pdcast.CompositeType>` into this one.
+        """
+        result = self | other
+        self.types = result.types
+        return self
+
+    def __iand__(self, other: type_specifier) -> CompositeType:
+        """Keep only types found in both this and another
+        :class:`CompositeType <pdcast.CompositeType>`.
+        """
+        result = self & other
+        self.types = result.types
+        return self
+
+    def __isub__(self, other: type_specifier) -> CompositeType:
+        """Remove types found in another
+        :class:`CompositeType <pdcast.CompositeType>` from this one.
+        """
+        result = self - other
+        self.types = result.types
+        return self
+
+    def __ixor__(self, other: type_specifier) -> CompositeType:
+        """Keep only types found in either this or another
+        :class:`CompositeType <pdcast.CompositeType>`, but not both.
+        """
+        result = self ^ other
+        self.types = result.types
+        return self
 
     ###########################
     ####    COMPARISONS    ####

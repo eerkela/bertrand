@@ -121,7 +121,7 @@ customize their behavior.
 
 Traversal
 ---------
-:class:`Scalartypes <pdcast.ScalarType>` can be embedded into
+:class:`ScalarTypes <pdcast.ScalarType>` can be embedded into
 :ref:`abstract hierarchies <AbstractType.hierarchy>` that can be traversed with
 the following properties.
 
@@ -159,7 +159,8 @@ overflow and minimizing memory usage.
 Decorators
 ----------
 Lastly, :class:`ScalarTypes <pdcast.ScalarType>` can be wrapped with
-:class:`DecoratorTypes` to adjust their behavior on a case-by-case basis.
+:class:`DecoratorTypes <pdcast.DecoratorType>` to adjust their behavior on a
+case-by-case basis.
 
 .. autosummary::
     :toctree: ../../generated
@@ -181,3 +182,4 @@ dictionary keys and set elements.
 
     ScalarType.__hash__
     ScalarType.__eq__
+    ScalarType.__str__

@@ -1322,6 +1322,16 @@ cdef class AbstractType(ScalarType):
     **kwargs : dict
         Parametrized keyword arguments describing metadata for this type.
         These must be empty.
+
+    Notes
+    -----
+    These make use of the `Composite pattern
+    <https://en.wikipedia.org/wiki/Composite_pattern>`_ to construct type
+    hierarchies.  They inherit the same interface as
+    :class:`ScalarType <pdcast.ScalarType>` objects, and forward some or all
+    of their attributes to their :meth:`default <pdcast.AbstractType.default>`
+    :meth:`subtype <pdcast.AbstractType.subtype>` or
+    :meth:`implementation <pdcast.AbstracType.implementation>`.
     """
 
     def __init__(self, **kwargs):
@@ -1468,15 +1478,119 @@ cdef class AbstractType(ScalarType):
         return self.registry.get_default(self).from_scalar(example)
 
     ##########################
+    ####    MEMBERSHIP    ####
+    ##########################
+
+    def contains(self, other: type_specifier) -> bool:
+        """Check whether ``other`` is a member of this type's hierarchy.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The type to check for.  This can be in any format recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``other`` is a member of this type's hierarchy.
+            ``False`` otherwise.
+
+        See Also
+        --------
+        Type.contains :
+            For more information on how this method is called.
+
+        Examples
+        --------
+        This method extends membership to all of this type's
+        :meth:`subtypes <pdcast.AbstractType.subtype>` and
+        :meth:`implementations <pdcast.AbstractType.implementation>`.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("signed").contains("int8, int16, int32, int64")
+            True
+            >>> pdcast.resolve_type("int64").contains("int64[numpy], int64[pandas]")
+            True
+        """
+        other = resolve_type(other)
+        if isinstance(other, CompositeType):
+            return all(self.contains(typ) for typ in other)
+
+        if other == self:
+            return True
+
+        children = {typ for typ in self.backends.values()}
+        children |= {typ for typ in self.subtypes}
+        return any(typ.contains(other) for typ in children)
+
+    ##########################
     ####    DECORATORS    ####
     ##########################
 
     @classmethod
     def default(cls, concretion: type = None, *, warn: bool = True):
-        """A class decorator that assigns a concretion of this type as its
-        default value.
+        """A class decorator that assigns a particular concretion of this type
+        as its default value.
 
         Attribute lookups for the parent type will be forwarded to its default.
+
+        Parameters
+        ----------
+        concretion : type
+            A :class:`ScalarType <pdcast.ScalarType>` subclass to assign as
+            this type's default.
+        warn : bool, default True
+            If ``True``, issue a warning if this type already has a default
+            value.
+
+        Returns
+        -------
+        type
+            The decorated type.  This is not modified in any way.
+
+        Raises
+        ------
+        TypeError
+            If ``concretion`` is not a subclass of
+            :class:`ScalarType <pdcast.ScalarType>`, or it is not a member of
+            this type's hierarchy.
+
+        See Also
+        --------
+        AbstractType.subtype :
+            Link a type as a subtype of this
+            :class:`AbstractType <pdcast.AbstractType>`.
+        AbstractType.implementation :
+            Link a type as an implementation of this
+            :class:`AbstractType <pdcast.AbstractType>`.
+
+        Notes
+        -----
+        The parent :class:`AbstractType <pdcast.AbstractType>` will delegate
+        most of its :ref:`configuration <AbstractType.config>` attributes to
+        the default concretion.  This can be updated dynamically as types are
+        added to the hierarchy, allowing users to change a parent node's
+        behavior simply by defining a new type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> @pdcast.register
+            ... class ParentType(pdcast.AbstractType):
+            ...     name = "parent"
+
+            >>> @pdcast.register
+            ... @ParentType.default
+            ... @ParentType.implementation("concrete")
+            ... class ChildType(pdcast.ScalarType):
+            ...     max = 10
+            ...     min = 0
+
+            >>> ParentType.max
+            10
         """
         def decorator(_concrete: type):
             """Link the decorated type as the default value of this parent."""
@@ -1493,7 +1607,7 @@ cdef class AbstractType(ScalarType):
     @classmethod
     def implementation(cls, backend: str, validate: bool = True):
         """A class decorator that registers a type definition as an
-        implementation of this :class:`AbstractType <pdcast.AbstractType>`.
+        implementation of this type.
 
         Parameters
         ----------
@@ -1501,14 +1615,61 @@ cdef class AbstractType(ScalarType):
             A unique string to identify the decorated type.  This type will be
             automatically parametrized to accept this specifier as its first
             argument during :func:`resolve_type <pdcast.resolve_type>` lookups.
-        default : bool
-            If ``True``, set the decorated type as the default implementation
-            for this type.
+        validate : bool, default True
+            If ``True``, validate that the decorated type implements the
+            parent's interface.
+
+        Returns
+        -------
+        type
+            The decorated type.  This is not modified in any way.
+
+        Raises
+        ------
+        TypeError
+            If ``backend`` is not a self-consistent string, or the decorated
+            type is malformed in some way.  This can happen if it is not a
+            subclass of :class:`ScalarType <pdcast.ScalarType>`, or if
+            ``validate=True`` and it does not implement the parent's interface.
+
+        See Also
+        --------
+        AbstractType.default :
+            Assign a type as the default concretion of this
+            :class:`AbstractType <pdcast.AbstractType>`.
+        AbstractType.subtype :
+            Link a type as a subtype of this
+            :class:`AbstractType <pdcast.AbstractType>`.
 
         Notes
         -----
-        Any additional arguments will be dynamically passed to the
-        implementation's :meth:`from_string()` constructor.
+        If ``validate=True``, any attributes that are defined on the parent
+        type beyond its standard interface must also be defined on the
+        decorated type.  This will be checked at import time, preventing users
+        from accidentally creating types that do not fully implement the
+        parent's interface.
+        
+        This allows :class:`AbstractTypes <pdcast.AbstractType>` to act in a
+        manner similar to the :class:`ABCMeta <python:abc.ABCMeta>` class in
+        normal Python, though it does not directly inherit from it.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> @pdcast.register
+            ... class ParentType(pdcast.AbstractType):
+            ...     name = "parent"
+
+            >>> @pdcast.register
+            ... @ParentType.implementation("concrete")
+            ... class ChildType(pdcast.ScalarType):
+            ...     pass
+
+            >>> ParentType.backends
+            mappingproxy({'concrete': ChildType()})
+            >>> ParentType.contains(ChildType)
+            True
         """
         if not isinstance(backend, str):
             raise TypeError(
@@ -1541,26 +1702,70 @@ cdef class AbstractType(ScalarType):
 
     @classmethod
     def subtype(cls, subtype: type = None, *, validate: bool = True):
-        """A class decorator that registers a child type to this parent.
+        """A class decorator that registers a type definition as a subtype of
+        this type.
 
         Parameters
         ----------
-        subtype : type | ScalarType
-            An :class:`ScalarType <pdcast.ScalarType>` or
+        subtype : type
+            A :class:`ScalarType <pdcast.ScalarType>` or
             :class:`AbstractType <pdcast.AbstractType>` subclass to register to
             this type.
-        default : bool, default False
-            Used to reassign the default value of the parent type to the child
-            type.
+        validate : bool, default True
+            If ``True``, validate that the decorated type implements the
+            parent's interface.
 
         Returns
         -------
-        type | ScalarType
-            The child type.
+        type
+            The decorated type.  This is not modified in any way.
+
+        Raises
+        ------
+        TypeError
+            If the decorated type is malformed in some way.  This can happen
+            if it is not a subclass of :class:`ScalarType <pdcast.ScalarType>`
+            or :class:`AbstractType <pdcast.AbstractType>`, or if
+            ``validate=True`` and it does not implement the parent's interface.
+
+        See Also
+        --------
+        AbstractType.default :
+            Assign a type as the default concretion of this
+            :class:`AbstractType <pdcast.AbstractType>`.
+        AbstractType.implementation :
+            Link a type as an implementation of this
+            :class:`AbstractType <pdcast.AbstractType>`.
 
         Notes
         -----
-        TODO
+        If ``validate=True``, any attributes that are defined on the parent
+        type beyond its standard interface must also be defined on the
+        decorated type.  This will be checked at import time, preventing users
+        from accidentally creating types that do not fully implement the
+        parent's interface.
+        
+        This allows :class:`AbstractTypes <pdcast.AbstractType>` to act in a
+        manner similar to the :class:`ABCMeta <python:abc.ABCMeta>` class in
+        normal Python, though it does not directly inherit from it.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> @pdcast.register
+            ... class ParentType(pdcast.AbstractType):
+            ...     name = "parent"
+
+            >>> @pdcast.register
+            ... @ParentType.subtype
+            ... class ChildType(pdcast.ScalarType):
+            ...     name = "child"
+
+            >>> ParentType.subtypes
+            CompositeType({child})
+            >>> ParentType.contains(ChildType)
+            True
         """
         def decorator(_subtype: type):
             """Link the decorated type as a subtype of this parent."""
@@ -1580,7 +1785,6 @@ cdef class AbstractType(ScalarType):
     #############################
     ####    CONFIGURATION    ####
     #############################
-
 
     @property
     def type_def(self) -> type | None:
@@ -1627,6 +1831,13 @@ cdef class AbstractType(ScalarType):
         return self.registry.get_default(self).make_nullable()
 
     def __getattr__(self, name: str) -> Any:
+        """Dynamically forward attribute access to this type's
+        :meth:`default <pdcast.AbstractType.default>` concretion.
+
+        This allows :class:`AbstractTypes <pdcast.AbstractType>` to
+        automatically inherit attributes from its default concretion if they
+        are not defined on the parent type itself.
+        """
         return getattr(self.registry.get_default(self), name)
 
     #########################
@@ -1634,12 +1845,12 @@ cdef class AbstractType(ScalarType):
     #########################
 
     @property
-    def is_generic(self) -> bool:
+    def is_generic(self):
         """Indicates whether this type is managing any backends."""
         return bool(self.registry.get_implementations(self))
 
     @property
-    def backends(self) -> MappingProxyType:
+    def backends(self):
         """A mapping of all backend specifiers to their corresponding
         concretions.
         """
@@ -1649,69 +1860,24 @@ cdef class AbstractType(ScalarType):
             except NotImplementedError:
                 result = {}
             result |= self.registry.get_implementations(self)
-            self._backends = CacheValue(result)
+            self._backends = CacheValue(MappingProxyType(result))
 
         return self._backends.value
 
     @property
-    def subtypes(self) -> CompositeType:
-        """A :class:`CompositeType` containing every subtype that is
-        currently registered to this :class:`AbstractType`.
+    def subtypes(self):
+        """A :class:`CompositeType <pdcast.CompositeType>` containing every
+        subtype that is currently registered to this :class:`AbstractType <pdcast.AbstractType>`.
         """
         if not self._subtypes:
-            result = self.registry.get_subtypes(self)
-            self._subtypes = CacheValue(result)
+            self._subtypes = CacheValue(self.registry.get_subtypes(self))
 
         return self._subtypes.value
 
     @property
-    def is_leaf(self) -> bool:
+    def is_leaf(self):
         """Indicates whether this type has subtypes."""
         return not self.subtypes and not self.is_generic
-
-    def contains(self, other: type_specifier) -> bool:
-        """Check whether ``other`` is a member of this type's hierarchy.
-
-        Parameters
-        ----------
-        other : type_specifier
-            The type to check for.  This can be in any format recognized by
-            :func:`resolve_type() <pdcast.resolve_type>`.
-
-        Returns
-        -------
-        bool
-            ``True`` if ``other`` is a member of this type's hierarchy.
-            ``False`` otherwise.
-
-        See Also
-        --------
-        Type.contains :
-            For more information on how this method is called.
-
-        Examples
-        --------
-        This method extends membership to all of this type's
-        :meth:`subtypes <pdcast.AbstractType.subtype>` and
-        :meth:`implementations <pdcast.AbstractType.implementation>`.
-
-        .. doctest::
-
-            >>> pdcast.resolve_type("signed").contains("int8, int16, int32, int64")
-            True
-            >>> pdcast.resolve_type("int64").contains("int64[numpy], int64[pandas]")
-            True
-        """
-        other = resolve_type(other)
-        if isinstance(other, CompositeType):
-            return all(self.contains(typ) for typ in other)
-
-        if other == self:
-            return True
-
-        children = {typ for typ in self.backends.values()}
-        children |= {typ for typ in self.subtypes}
-        return any(typ.contains(other) for typ in children)
 
     ###############################
     ####    UPCAST/DOWNCAST    ####
