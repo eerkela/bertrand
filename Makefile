@@ -33,9 +33,15 @@ clean:
 	@find pdcast/ -name "*.so" -type f -delete
 	@rm -rf build/
 
+#	remove egg-info
+	@find . -type d -name "*.egg-info" -exec rm -rf {} +
+
 #	clear __pycache__
 	@find . -type d -name "__pycache__" -exec rm -rf {} +
 	@find . -type f -name "*.py[co]" -delete
+
+#   clear .pytest_cache
+	@find . -type d -name ".pytest_cache" -exec rm -rf {} +
 
 #	remove documentation stubs
 	@rm -rf docs/build

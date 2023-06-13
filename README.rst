@@ -295,8 +295,9 @@ includes by default.
 
    Installation
    ------------
-   Wheels are built using `cibuildwheel <https://cibuildwheel.readthedocs.io/en/stable/>`_
-   and are available for most platforms via the Python Package Index (PyPI).
+   Wheels are built using `cibuildwheel
+   <https://cibuildwheel.readthedocs.io/en/stable/>`_ and are available for most
+   platforms via the Python Package Index (PyPI).
 
    .. TODO: add hyperlink to PyPI page when it goes live
 
@@ -311,8 +312,17 @@ includes by default.
    .. code:: console
 
       (.venv) $ git clone https://github.com/eerkela/pdcast
-      (.venv) $ cd pdcast
-      (.venv) $ pip install .
+      (.venv) $ pip install pdcast/
+
+   This should take around 5 minutes to build.  An editable install can be
+   created by running:
+
+   .. code:: console
+
+      (.venv) $ git clone https://github.com/eerkela/pdcast
+      (.venv) $ cd pdcast/
+      (.venv) $ pip install -e .
+      (.venv) $ make help
 
 .. uncomment this when documentation goes live
 
@@ -324,8 +334,8 @@ includes by default.
 
 License
 -------
-``pdcast`` is available under an
-`MIT license <https://github.com/eerkela/pdcast/blob/main/LICENSE>`_.
+``pdcast`` is available under an `MIT license
+<https://github.com/eerkela/pdcast/blob/main/LICENSE>`_.
 
 Related Projects
 ----------------

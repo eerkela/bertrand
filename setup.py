@@ -1,22 +1,25 @@
-from setuptools import setup
+from setuptools import setup, Extension
 from Cython.Build import cythonize
 import numpy
 
 
+extensions = [
+    Extension(
+        "*",
+        ["pdcast/**/*.pyx"],
+        define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
+    ),
+]
+
+
 setup(
     ext_modules=cythonize(
-        [
-            "pdcast/*.pyx",
-            "pdcast/types/array/*.pyx",
-            "pdcast/types/base/*.pyx",
-            "pdcast/types/*.pyx",
-            "pdcast/util/*.pyx",
-            "pdcast/util/round/*.pyx",
-            "pdcast/util/structs/*.pyx",
-            "pdcast/util/time/*.pyx",
-        ],
+        extensions,
         language_level="3",
-        compiler_directives={"embedsignature": True}
+        compiler_directives={
+            "embedsignature": True,
+            "embedsignature.format": "python"
+        },
     ),
     include_dirs=[numpy.get_include()],
     zip_safe=False,
