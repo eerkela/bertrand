@@ -14,53 +14,12 @@ pdcast.ScalarType
 .. raw:: html
     :file: ../../images/types/Types_UML.html
 
-.. _ScalarType.flyweight:
-
-Memory Allocation
------------------
-:class:`ScalarType` instances are `flyweights
-<https://en.wikipedia.org/wiki/Flyweight_pattern>`_ that are only allocated
-once.  This allows them to be extremely memory-efficient (especially when
-stored in arrays) but also requires each to be completely immutable.  As a
-result, all :class:`ScalarTypes <ScalarType>` are strictly **read-only** after
-initialization.
-
-.. doctest::
-
-    >>> pdcast.resolve_type("int") is pdcast.resolve_type("int")
-    True
-    >>> pdcast.resolve_type("int").new_attribute = 2
-    Traceback (most recent call last):
-        ...
-    AttributeError: ScalarType objects are read-only
-
-Some types might be parameterized with continuous or unpredictable inputs,
-which could cause `memory leaks <https://en.wikipedia.org/wiki/Memory_leak>`_
-if not addressed.  In these cases, users can specify a `Least Recently Used
-(LRU) <https://en.wikipedia.org/wiki/Cache_replacement_policies#Least_recently_used_(LRU)>`_
-caching strategy by defining an appropriate :attr:`_cache_size` in a type's
-definition.
-
-.. code:: python
-
-    class CustomType(pdcast.ScalarType):
-
-        _cache_size = 128
-        ...
-
-.. note::
-
-    Setting ``_cache_size = 0`` effectively disables the flyweight protocol,
-    though this is not recommended.
-
 .. _ScalarType.constructors:
 
 Constructors
 ------------
 These are automatically called by :func:`detect_type` and :func:`resolve_type`
-to create instances of the associated type.  They are responsible for
-implementing the `Flyweight pattern
-<https://en.wikipedia.org/wiki/Flyweight_pattern>`_.
+to create instances of the associated type.
 
 .. autosummary::
     :toctree: ../../generated
@@ -71,6 +30,38 @@ implementing the `Flyweight pattern
     ScalarType.kwargs
     ScalarType.replace
     ScalarType.__call__
+
+The resulting instances are immutable `flyweights
+<https://en.wikipedia.org/wiki/Flyweight_pattern>`_ that are allocated
+once and then cached for the duration of the program.
+
+.. doctest::
+
+    >>> pdcast.resolve_type("int") is pdcast.resolve_type("int")
+    True
+    >>> pdcast.resolve_type("int").new_attribute = 2
+    Traceback (most recent call last):
+        ...
+    AttributeError: ScalarType objects are read-only
+
+.. note::
+
+    Some types might be parameterized with continuous or unpredictable inputs,
+    which could cause `memory leaks <https://en.wikipedia.org/wiki/Memory_leak>`_
+    if not addressed.  In these cases, users can specify a `Least Recently Used
+    (LRU) <https://en.wikipedia.org/wiki/Cache_replacement_policies#Least_recently_used_(LRU)>`_
+    caching strategy by defining an appropriate :attr:`_cache_size` in a type's
+    definition.
+
+    .. code:: python
+
+        class CustomType(pdcast.ScalarType):
+
+            _cache_size = 128
+            ...
+
+    Setting ``_cache_size = 0`` effectively disables the flyweight protocol,
+    though this is not recommended.
 
 .. _ScalarType.membership:
 
@@ -106,6 +97,7 @@ customize their behavior.
     ScalarType.is_nullable
     ScalarType.na_value
     ScalarType.make_nullable
+    ScalarType.__getattr__
 
 ..
     HACK - commenting out an autosummary directive like this will still
@@ -174,8 +166,9 @@ case-by-case basis.
 
 Special Methods
 ---------------
-:class:`ScalarTypes <pdcast.ScalarType>` are hashable, and can be used as
-dictionary keys and set elements.
+:class:`ScalarTypes <pdcast.ScalarType>` are `hashable
+<https://en.wikipedia.org/wiki/Hash_function>`_, and can be contained as
+elements of :class:`sets <python:set>` or keys in a :class:`dict <python:dict>`.
 
 .. autosummary::
     :toctree: ../../generated

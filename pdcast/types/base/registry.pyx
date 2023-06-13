@@ -1220,10 +1220,12 @@ cdef class AliasManager:
 
 
 cdef class Type:
-    """Base class for all type objects.
+    """Base class for all ``pdcast`` type objects.
 
+    Notes
+    -----
     This does relatively little on its own, mainly serving to anchor
-    inheritance and distribute the shared
+    inheritance and distribute the global
     :class:`TypeRegistry <pdcast.TypeRegistry>` to all ``pdcast`` type objects.
     It also provides a unified interface for managing their
     :ref:`aliases <pdcast.Type.aliases>` and customizing their creation via

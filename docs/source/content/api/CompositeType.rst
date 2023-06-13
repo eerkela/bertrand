@@ -1,5 +1,9 @@
 .. currentmodule:: pdcast
 
+.. testsetup::
+
+    import pdcast
+
 .. _CompositeType:
 
 pdcast.CompositeType
@@ -14,15 +18,47 @@ pdcast.CompositeType
 
 Constructors
 ------------
-:class:`CompositeTypes <CompositeType>` have their own construction semantics
-in :func:`detect_type` and :func:`resolve_type`.  However, they also support
-the addition of dynamic :attr:`aliases <Type.aliases>` at runtime, in which
-case the following method may be used.
+:class:`CompositeTypes <CompositeType>` use specialized construction semantics
+in :func:`detect_type` and :func:`resolve_type`.  They can be created in one of
+3 ways:
+
+    #.  By providing an iterable of type specifiers to :func:`resolve_type`.
+    #.  By providing a comma-separated string in the
+        :ref:`type specificiation mini-language <resolve_type.mini_language>`.
+    #.  By providing an iterable of mixed type to :func:`detect_type`.
+
+.. doctest::
+
+    # (1)
+    >>> pdcast.resolve_type(["int[python]", float, pdcast.PythonComplexType])   # doctest: +SKIP
+    CompositeType({int[python], float[python], complex[python]})
+
+    # (2)
+    >>> pdcast.resolve_type("int[python], float[python], complex[python]")   # doctest: +SKIP
+    CompositeType({int[python], float[python], complex[python]})
+
+    # (3)
+    >>> pdcast.detect_type([1, 2.3, 4+5j])   # doctest: +SKIP
+    CompositeType({int[python], float[python], complex[python]})
+
+In the latter case, the result also includes a special
+:attr:`.index <CompositeType.index>` attribute, which keeps track of the
+inferred type at each index.
+
+.. doctest::
+
+    >>> _.index
+    array([PythonIntegerType(), PythonFloatType(), PythonComplexType()],
+           dtype=object)
+
+They also support the addition of dynamic :attr:`aliases <Type.aliases>` at
+runtime, in which case the :meth:`from_string <Type.from_string>` method may be
+used.
 
 .. autosummary::
     :toctree: ../../generated
 
-    CompositeType.__init__
+    CompositeType.index
     CompositeType.from_string
 
 .. _CompositeType.membership:
@@ -42,6 +78,9 @@ perform membership tests.
 
 Hierarchies
 -----------
+:class:`CompositeTypes <CompositeType>` implicitly include all the 
+:ref:`hierarchical <AbstractType.hierarchy>` children of each of their
+elements.  These can be expanded or collapsed using the following methods.
 
 .. autosummary::
     :toctree: ../../generated
@@ -53,6 +92,10 @@ Hierarchies
 
 Set Interface
 -------------
+All other attributes and methods are used to implement the standard
+:class:`set <python:set>` interface.  These work just like their built-in
+counterparts, but are implicitly extended to include the
+:ref:`hierarchical <AbstractType.hierarchy>` children of each element.
 
 .. autosummary::
     :toctree: ../../generated
@@ -62,11 +105,16 @@ Set Interface
     CompositeType.clear
     CompositeType.pop
     CompositeType.discard
+    CompositeType.__len__
+    CompositeType.__iter__
+    CompositeType.__str__
 
 .. _CompositeType.comparisons:
 
 Comparisons
 -----------
+:class:`CompositeTypes <CompositeType>` can be compared just like ordinary
+:class:`sets <python:set>`.
 
 .. autosummary::
     :toctree: ../../generated
@@ -84,6 +132,8 @@ Comparisons
 
 Operations
 ----------
+:class:`CompositeTypes <CompositeType>` support all the standard set
+operations.
 
 .. autosummary::
     :toctree: ../../generated
@@ -101,6 +151,8 @@ Operations
 
 Updates
 -------
+They can also be updated in place, just like built-in
+:class:`sets <python:set>`.
 
 .. autosummary::
     :toctree: ../../generated
@@ -113,68 +165,3 @@ Updates
     CompositeType.__iand__
     CompositeType.__isub__
     CompositeType.__ixor__
-
-.. _CompositeType.special:
-
-Special Methods
----------------
-
-.. autosummary::
-    :toctree: ../../generated
-
-    CompositeType.__len__
-    CompositeType.__iter__
-    CompositeType.__str__
-
-Notes
------
-``CompositeType``\s are set-like containers for ``ScalarType`` and
-``DecoratorType`` objects.  They implement a standard set interface, with all the
-same methods as the built in ``set`` type.  They can be constructed by
-providing multiple type specifiers to ``pdcast.resolve_type()``, either in
-comma-separated string form or by providing an iterable.
-
-.. doctest::
-
-    >>> import numpy as np
-    >>> import pdcast
-    >>> pdcast.resolve_type("bool, int, float")   # doctest: +SKIP
-    CompositeType({bool, int, float})
-    >>> pdcast.resolve_type([np.dtype("f2"), "sparse[datetime]", str])   # doctest: +SKIP
-    CompositeType({float16[numpy], sparse[datetime, NaT], string})
-
-``CompositeType`` objects implicitly include subtypes for each of their
-elements, and automatically resolve comparison targets.  This allows for easy
-membership tests that account for subtypes in the same way as
-``ScalarType.contains()``.
-
-.. doctest::
-
-    >>> import pdcast
-    >>> pdcast.resolve_type("int, float").contains("int8[pandas]")
-    True
-    >>> pdcast.resolve_type("int, float") - "float64"   # doctest: +SKIP
-    CompositeType({int, float16, float32, float80})
-
-They can also be constructed by providing non-homogenous example data to
-``pdcast.detect_type()``, as shown:
-
-.. doctest::
-
-    >>> import pdcast
-    >>> pdcast.detect_type([False, 1, 2.3, 4+5j])   # doctest: +SKIP
-    CompositeType({bool, float, complex, int})
-
-In this case, the resulting ``CompositeType`` also includes a special
-``.index`` attribute, which keeps track of the type's position in the original
-data.
-
-.. doctest::
-
-    >>> import pdcast
-    >>> pdcast.detect_type([False, 1, 2.3, 4+5j]).index
-    array([PythonBooleanType(), PythonIntegerType(), PythonFloatType(),
-           PythonComplexType()], dtype=object)
-
-This can be used during ``pd.Series.groupby()`` operations to apply functions
-by type, rather than all at once.

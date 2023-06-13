@@ -43,6 +43,11 @@ cdef class DecoratorType(VectorType):
         Parametrized keyword arguments describing metadata for this type.  This
         is conceptually equivalent to the ``_metadata`` field of pandas
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` objects.
+
+    See Also
+    --------
+    ScalarType :
+        Base class for all decoratable scalar types.
     """
 
     def __init__(self, wrapped: VectorType = None, **kwargs):

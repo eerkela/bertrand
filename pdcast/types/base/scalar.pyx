@@ -40,7 +40,7 @@ cdef class ScalarType(VectorType):
 
     :class:`ScalarTypes <pdcast.ScalarType>` are the most fundamental unit of
     the ``pdcast`` type system.  They form the leaves of a
-    :ref:`type hierarchy <AbstractType.hierarchy>`, describing concrete values
+    :ref:`type hierarchy <AbstractType.hierarchy>` and describe concrete values
     of a particular type (i.e. :class:`int <python:int>`,
     :class:`numpy.float32`, etc.).
 
@@ -50,6 +50,11 @@ cdef class ScalarType(VectorType):
         Parametrized keyword arguments describing metadata for this type.  This
         is conceptually equivalent to the ``_metadata`` field of pandas
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` objects.
+
+    See Also
+    --------
+    AbstractType :
+        Base class for parent nodes in an abstract hierarchy.
     """
 
     # NOTE: this is a sample __init__ method for a parametrized type.
@@ -1314,7 +1319,7 @@ cdef class AbstractType(ScalarType):
 
     :class:`AbstractTypes <pdcast.AbstractType>` represent nodes within the
     ``pdcast`` type system.  They can contain references to other nodes as
-    particular :meth:`subtypes <pdcast.AbstractType.subtype>` and/or
+    :meth:`subtypes <pdcast.AbstractType.subtype>` and/or
     :meth:`implementations <pdcast.AbstractType.implementation>`.
 
     Parameters
@@ -1322,6 +1327,11 @@ cdef class AbstractType(ScalarType):
     **kwargs : dict
         Parametrized keyword arguments describing metadata for this type.
         These must be empty.
+
+    See Also
+    --------
+    ScalarType :
+        Base class for leaf nodes in an abstract hierarchy.
 
     Notes
     -----
@@ -1331,7 +1341,7 @@ cdef class AbstractType(ScalarType):
     :class:`ScalarType <pdcast.ScalarType>` objects, and forward some or all
     of their attributes to their :meth:`default <pdcast.AbstractType.default>`
     :meth:`subtype <pdcast.AbstractType.subtype>` or
-    :meth:`implementation <pdcast.AbstracType.implementation>`.
+    :meth:`implementation <pdcast.AbstractType.implementation>`.
     """
 
     def __init__(self, **kwargs):

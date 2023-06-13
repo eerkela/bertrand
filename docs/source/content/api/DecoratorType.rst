@@ -44,13 +44,24 @@ perform membership tests.
 
 Decorators
 ----------
+:class:`DecoratorTypes <DecoratorType>` implement the `Decorator pattern
+<https://en.wikipedia.org/wiki/Decorator_pattern>`_, dynamically wrapping
+another type's behavior.  These attributes are used to access the wrapped type
+and traverse any decorators that have been applied to it.
 
 .. autosummary::
     :toctree: ../../generated
 
     DecoratorType.wrapped
-    DecoratorType.unwrap
     DecoratorType.decorators
+    DecoratorType.unwrap
+    DecoratorType.__getattr__
+
+.. note::
+
+    Any attributes not listed in this interface are automatically delegated to
+    the :attr:`wrapped <DecoratorType.wrapped>` type via
+    :meth:`__getattr__() <DecoratorType.__getattr__>`.
 
 .. _DecoratorType.transform:
 
@@ -71,9 +82,9 @@ Special Methods
 .. autosummary::
     :toctree: ../../generated
 
-    ScalarType.__hash__
-    ScalarType.__eq__
-    ScalarType.__str__
+    DecoratorType.__hash__
+    DecoratorType.__eq__
+    DecoratorType.__str__
 
 
 

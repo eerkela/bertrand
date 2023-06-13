@@ -308,6 +308,12 @@ includes by default.
    source distribution to allow pip to build locally, although doing so
    requires an additional ``cython >= 3.0`` dependency.
 
+   .. code:: console
+
+      (.venv) $ git clone https://github.com/eerkela/pdcast
+      (.venv) $ cd pdcast
+      (.venv) $ pip install .
+
 .. uncomment this when documentation goes live
 
    Documentation

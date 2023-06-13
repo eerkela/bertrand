@@ -16,8 +16,7 @@ Constructors
 ------------
 These are automatically called by :func:`detect_type() <pdcast.detect_type>`
 and :func:`resolve_type() <pdcast.resolve_type>` to create instances of the
-associated type or one of its
-:meth:`implementations <pdcast.AbstractType.implementation>`.
+associated type.
 
 .. autosummary::
     :toctree: ../../generated
@@ -82,6 +81,7 @@ the type itself.
     AbstractType.is_nullable
     AbstractType.na_value
     AbstractType.make_nullable
+    AbstractType.__getattr__
 
 .. _AbstractType.traversal:
 

@@ -23,7 +23,8 @@ cdef class CompositeType(Type):
     Parameters
     ----------
     types : Type | Iterable[Type]
-        A sequence of :class:`Types <pdcast.Type>` to use as elements.
+        A :class:`Type <pdcast.Type>` or sequence of
+        :class:`Types <pdcast.Type>` to use as elements.
     """
 
     def __init__(
@@ -31,7 +32,6 @@ cdef class CompositeType(Type):
         object types = None,
         ScalarType[:] index = None
     ):
-        """TODO"""
         super().__init__()  # init aliases
 
         if types is None:
@@ -71,6 +71,14 @@ cdef class CompositeType(Type):
     ############################
     ####    CONSTRUCTORS    ####
     ############################
+
+    @property
+    def index(self) -> np.ndarray:
+        """TODO"""
+        return np.asarray(self._index, dtype=object)
+
+    cdef void forget_index(self):
+        self._index = None
 
     def from_string(self, *args: str) -> CompositeType:
         """Construct a :class:`CompositeType <pdcast.CompositeType>` from a
@@ -127,49 +135,9 @@ cdef class CompositeType(Type):
 
         return self
 
-    ###############################
-    ####    UTILITY METHODS    ####
-    ###############################
-
-    @property
-    def index(self) -> np.ndarray:
-        """TODO"""
-        return np.asarray(self._index, dtype=object)
-
-    cdef void forget_index(self):
-        self._index = None
-
-    def expand(self, expand_generics: bool = True) -> CompositeType:
-        """Expand the contained types to include each of their subtypes."""
-        cdef CompositeType result
-        cdef VectorType original
-        cdef VectorType typ
-
-        result = self.copy()
-        if expand_generics:
-            for original in self:
-                for typ in original.backends.values():
-                    result.add(typ)
-
-        for typ in result.copy():
-            result |= traverse_subtypes(typ)
-
-        return result
-
-    def collapse(self) -> CompositeType:
-        """Return a copy with redundant subtypes removed.  A subtype is
-        redundant if it is fully encapsulated within the other members of the
-        CompositeType.
-        """
-        cdef VectorType atomic_type
-        cdef VectorType t
-
-        # for every type a in self, check if there is another type b such that
-        # a != b and b contains a.  If true, the type is redundant.
-        return CompositeType(
-            a for a in self
-            if not any(a != b and a in b for b in self.types)
-        )
+    ##########################
+    ####    MEMBERSHIP    ####
+    ##########################
 
     def contains(self, other: type_specifier) -> bool:
         """Check whether ``other`` is a member of the composite or any of its
@@ -210,6 +178,42 @@ cdef class CompositeType(Type):
             return all(self.contains(other_typ) for other_typ in other)
 
         return any(typ.contains(other) for typ in self)
+
+    ###########################
+    ####    HIERARCHIES    ####
+    ###########################
+
+    def expand(self, expand_generics: bool = True) -> CompositeType:
+        """Expand the contained types to include each of their subtypes."""
+        cdef CompositeType result
+        cdef VectorType original
+        cdef VectorType typ
+
+        result = self.copy()
+        if expand_generics:
+            for original in self:
+                for typ in original.backends.values():
+                    result.add(typ)
+
+        for typ in result.copy():
+            result |= traverse_subtypes(typ)
+
+        return result
+
+    def collapse(self) -> CompositeType:
+        """Return a copy with redundant subtypes removed.  A subtype is
+        redundant if it is fully encapsulated within the other members of the
+        CompositeType.
+        """
+        cdef VectorType atomic_type
+        cdef VectorType t
+
+        # for every type a in self, check if there is another type b such that
+        # a != b and b contains a.  If true, the type is redundant.
+        return CompositeType(
+            a for a in self
+            if not any(a != b and a in b for b in self.types)
+        )
 
     #############################
     ####    SET INTERFACE    ####
