@@ -56,6 +56,7 @@ and traverse any decorators that have been applied to it.
     DecoratorType.decorators
     DecoratorType.unwrap
     DecoratorType.__getattr__
+    DecoratorType.__setattr__
 
 .. note::
 
@@ -82,6 +83,8 @@ Special Methods
 .. autosummary::
     :toctree: ../../generated
 
+    DecoratorType.__instancecheck__
+    DecoratorType.__subclasscheck__
     DecoratorType.__hash__
     DecoratorType.__eq__
     DecoratorType.__str__

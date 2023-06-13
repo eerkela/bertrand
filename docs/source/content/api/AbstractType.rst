@@ -82,6 +82,7 @@ the type itself.
     AbstractType.na_value
     AbstractType.make_nullable
     AbstractType.__getattr__
+    AbstractType.__setattr__
 
 .. _AbstractType.traversal:
 
@@ -147,6 +148,8 @@ dictionary keys and set elements.
 .. autosummary::
     :toctree: ../../generated
 
+    AbstractType.__instancecheck__
+    AbstractType.__subclasscheck__
     AbstractType.__hash__
     AbstractType.__eq__
     AbstractType.__str__

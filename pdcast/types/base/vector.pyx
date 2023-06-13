@@ -25,7 +25,7 @@ from .scalar cimport ScalarType
 
 
 cdef Exception READ_ONLY_ERROR = (
-    AttributeError("VectorType objects are read-only")
+    AttributeError("VectorTypes are read-only")
 )
 
 
@@ -158,6 +158,46 @@ cdef class VectorType(Type):
         self._slug = self.encoder((), self._kwargs)
         self.instances = base.instances
 
+
+    def __call__(self, *args, **kwargs) -> VectorType:
+        """Constructor for parametrized types.
+
+        Parameters
+        ----------
+        *args, **kwargs :
+            Arbitrary arguments corresponding to parametrized attributes of
+            this type.
+
+        Returns
+        -------
+        VectorType
+            A new instance of this type with the specified values.
+
+        See Also
+        --------
+        VectorType.replace() :
+            Return a modified copy of a type.
+
+        Examples
+        --------
+        This method can be used just like a normal class constructor.
+
+        .. doctest::
+
+            >>> pdcast.PandasTimestampType("US/Pacific")
+            PandasTimestampType(tz=zoneinfo.ZoneInfo(key='US/Pacific'))
+
+        It is responsible for implementing the `flyweight
+        <https://en.wikipedia.org/wiki/Flyweight_pattern>`_ pattern for type
+        objects.
+
+        .. doctest::
+
+            >>> _ is pdcast.PandasTimestampType("US/Pacific")
+            True
+        """
+        return self.instances(args, kwargs)
+
     ##########################
     ####    ATTRIBUTES    ####
     ##########################
@@ -207,7 +247,7 @@ cdef class VectorType(Type):
 
     @property
     def kwargs(self):
-        """A map containing the parametrized arguments for a type.
+        """A map containing parametrized arguments for a type.
 
         Returns
         -------
@@ -264,6 +304,139 @@ cdef class VectorType(Type):
             ['sparse[categorical[string, None], None]', 'categorical[string, None]']
         """
         yield from ()
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward attribute lookups to
+        :attr:`kwargs <pdcast.VectorType.kwargs>`.
+
+        Parameters
+        ----------
+        name : str
+            The name of the attribute to look up.
+
+        Returns
+        -------
+        Any
+            The value of the attribute.
+
+        Raises
+        ------
+        AttributeError
+            If the attribute is not found.
+
+        Examples
+        --------
+        This method makes the values in
+        :attr:`kwargs <pdcast.VectorType.kwargs>` available as dotted
+        attributes on the type object itself.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("m8[5ns]").kwargs
+            mappingproxy({'unit': 'ns', 'step_size': 5})
+            >>> pdcast.resolve_type("m8[5ns]").unit
+            'ns'
+            >>> pdcast.resolve_type("m8[5ns]").step_size
+            5
+        """
+        try:
+            return self.kwargs[name]
+        except KeyError as err:
+            err_msg = (
+                f"{repr(type(self).__name__)} object has no attribute: "
+                f"{repr(name)}"
+            )
+            raise AttributeError(err_msg) from err
+
+    def __setattr__(self, str name, object value) -> None:
+        """Control attribute assignment for
+        :class:`VectorType <pdcast.VectorType>` objects.
+
+        Parameters
+        ----------
+        name : str
+            The name of the attribute to assign.
+        value : Any
+            The value to assign to the attribute.
+
+        Raises
+        ------
+        AttributeError
+            If the attribute is assigned outside of
+            :meth:`__init__() <pdcast.VectorType.__init__>`.
+
+        Examples
+        --------
+        Attributes can still be assigned normally within the constructor.
+
+        .. doctest::
+
+            >>> @pdcast.register
+            ... class CustomType(pdcast.ScalarType):
+            ...     name = "custom"
+            ... 
+            ...     def __init__(self, value=None):
+            ...         self.assigned = value
+            ...         super().__init__(value=value)
+
+            >>> CustomType("abc")
+            CustomType(value='abc')
+            >>> _.assigned
+            'abc'
+
+        But not outside of it.
+
+        .. doctest::
+
+            >>> CustomType("abc").assigned = "xyz"
+            Traceback (most recent call last):
+                ...
+            AttributeError: VectorTypes are read-only
+
+        .. note::
+
+            Explicit :class:`@property <python:property>` setters will still be
+            invoked as normal, though they should be used sparingly.
+
+            .. testsetup::
+
+                pdcast.registry.remove(CustomType)
+
+            .. doctest::
+
+                >>> @pdcast.register
+                ... class CustomType(pdcast.ScalarType):
+                ...     name = "custom"
+                ... 
+                ...     def __init__(self, value=None):
+                ...         self.assigned = value
+                ...         super().__init__(value=value)
+                ... 
+                ...     @property
+                ...     def assigned(self):
+                ...         return self._assigned
+                ... 
+                ...     @assigned.setter
+                ...     def assigned(self, value):
+                ...         self._assigned = value
+
+                >>> instance = CustomType("abc")
+                >>> instance.assigned = "xyz"
+                >>> instance.assigned
+                'xyz'
+        """
+        # respect @property setters, if present
+        prop = getattr(type(self), name, None)
+        if hasattr(prop, "__set__"):
+            self._read_only = False
+            prop.__set__(self, value)
+            self._read_only = True
+
+        # prevent assignment outside __init__()
+        elif self._read_only:
+            raise READ_ONLY_ERROR
+        else:
+            self.__dict__[name] = value
 
     ############################
     ####    BASE METHODS    ####
@@ -330,10 +503,35 @@ cdef class VectorType(Type):
     ###############################
 
     def __instancecheck__(self, instance: Any) -> bool:
-        """Implement isinstance() for non-parametrized types.
+        """Implement :func:`isinstance() <python:isinstance>` for
+        non-parametrized types.
 
+        Parameters
+        ----------
+        instance : Any
+            The object to check.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``instance`` is an instance of this type.
+
+        Raises
+        ------
+        TypeError
+            If this type is parametrized.
+
+        Examples
+        --------
         This allows base instances to be used interchangeably with their class
         objects.
+
+        .. doctest::
+
+            >>> isinstance(pdcast.PandasTimestampType, pdcast.PandasTimestampType)
+            True
+            >>> isinstance(pdcast.PandasTimestampType("US/Pacific"), pdcast.PandasTimestampType)
+            True
         """
         if self is self.base_instance:
             return isinstance(instance, type(self))
@@ -341,52 +539,98 @@ cdef class VectorType(Type):
         return isinstance(instance, None)  # raises TypeError
 
     def __subclasscheck__(self, subclass: type) -> bool:
-        """Implement issubclass() for non-parametrized types.
+        """Implement :func:`issubclass() <python:issubclass>` for
+        non-parametrized types.
 
+        Parameters
+        ----------
+        instance : type
+            The type to check.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``subclass`` is an instance of this type.
+
+        Raises
+        ------
+        TypeError
+            If ``subclass`` is not a class object, or if this type is
+            parametrized.
+
+        Examples
+        --------
         This allows base instances to be used interchangeably with their class
         objects.
+
+        .. doctest::
+
+            >>> issubclass(type(pdcast.PandasTimestampType), pdcast.PandasTimestampType)
+            True
         """
         if self is self.base_instance:
             return issubclass(subclass, type(self))
 
         return issubclass(subclass, None)  # raises TypeError
 
-    def __getattr__(self, name: str) -> Any:
-        """Pass attribute lookups to :attr:`kwargs <pdcast.VectorType.kwargs>`.
-        """
-        try:
-            return self.kwargs[name]
-        except KeyError as err:
-            err_msg = (
-                f"{repr(type(self).__name__)} object has no attribute: "
-                f"{repr(name)}"
-            )
-            raise AttributeError(err_msg) from err
-
-    def __setattr__(self, str name, object value) -> None:
-        """Make :class:`VectorType <pdcast.VectorType>` instances read-only
-        after ``__init__``.
-
-        Explicit @property setters will still be invoked as normal.
-        """
-        # respect @property setters, if present
-        prop = getattr(type(self), name, None)
-        if hasattr(prop, "__set__"):
-            prop.__set__(self, value)
-
-        # prevent assignment outside __init__()
-        elif self._read_only:
-            raise READ_ONLY_ERROR
-        else:
-            self.__dict__[name] = value
-
-    def __call__(self, *args, **kwargs) -> VectorType:
-        """Constructor for parametrized types."""
-        return self.instances(args, kwargs)
-
     def __hash__(self) -> int:
-        """Return the hash of this type's string identifier."""
+        """Return the hash of this type's string identifier.
+
+        Returns
+        -------
+        int
+            A unique hash for this type.
+
+        See Also
+        --------
+        VectorType.__str__ :
+            Return this type's string identifier.
+
+        Notes
+        -----
+        This method coincides with the string identifier returned by
+        :meth:`VectorType.__str__ <pdcast.VectorType.__str__>`.  Since this is
+        used to look up `flyweights
+        <https://en.wikipedia.org/wiki/Flyweight_pattern>`_ for a given type,
+        every instance is guaranteed to have a unique hash.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> hash(pdcast.resolve_type("int[numpy]"))   # doctest: +SKIP
+            -350723806823902966
+        """
         return self._hash
+
+    def __str__(self) -> str:
+        """Return this type's string identifier.
+
+        Returns
+        -------
+        str
+            A unique string representation of this type.
+
+        See Also
+        --------
+        VectorType.__hash__ :
+            Return the hash of this type's string identifier.
+
+        Notes
+        -----
+        The returned value is used to identify `flyweights
+        <https://en.wikipedia.org/wiki/Flyweight_pattern>`_ for this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> str(pdcast.resolve_type("int[numpy]"))
+            'int[numpy]'
+            >>> pdcast.resolve_type("int[numpy]").instances
+            {'int[numpy]': NumpyIntegerType()}
+        """
+        return self._slug
 
     def __eq__(self, other: type_specifier) -> bool:
         """Compare two types for equality.
@@ -398,13 +642,6 @@ cdef class VectorType(Type):
 
         other = resolve_type(other)
         return isinstance(other, VectorType) and hash(self) == hash(other)
-
-    def __str__(self) -> str:
-        """Return this type's string identifier.
-
-        This is the same identifier that is used to identify flyweights.
-        """
-        return self._slug
 
     def __repr__(self) -> str:
         sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())

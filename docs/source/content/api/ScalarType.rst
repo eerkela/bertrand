@@ -98,6 +98,7 @@ customize their behavior.
     ScalarType.na_value
     ScalarType.make_nullable
     ScalarType.__getattr__
+    ScalarType.__setattr__
 
 ..
     HACK - commenting out an autosummary directive like this will still
@@ -173,6 +174,8 @@ elements of :class:`sets <python:set>` or keys in a :class:`dict <python:dict>`.
 .. autosummary::
     :toctree: ../../generated
 
+    ScalarType.__instancecheck__
+    ScalarType.__subclasscheck__
     ScalarType.__hash__
     ScalarType.__eq__
     ScalarType.__str__
