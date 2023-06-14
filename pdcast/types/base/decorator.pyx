@@ -208,9 +208,39 @@ cdef class DecoratorType(VectorType):
         return self
 
     def replace(self, **kwargs) -> DecoratorType:
-        """Return an immutable copy of this type with the specified attributes.
+        """Return a modified copy of a type with the values specified in
+        ``**kwargs``.
 
-        This can be used to modify a type without mutating it.
+        Parameters
+        ----------
+        **kwargs : dict
+            Keyword arguments corresponding to parametrized attributes of this
+            type or any of its wrapped children.  Any parameters that are not
+            listed explicitly will use the current values for this instance.
+
+        Returns
+        -------
+        DecoratorType
+            A new instance of this type with the specified values.
+
+        Examples
+        --------
+        This method is used to modify a type without mutating it.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse[int64]").replace(wrapped="float64")
+            SparseType(wrapped=Float64Type(), fill_value=None)
+            >>> pdcast.resolve_type("sparse[int64]").replace(fill_value=1)
+            SparseType(wrapped=Int64Type(), fill_value=1)
+
+        Unlike :meth:`ScalarType.replace() <pdcast.ScalarType.replace>`, this
+        method can also delegate parameters to the wrapped type.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse[M8[5ns]]").replace(unit="s")
+            SparseType(wrapped=NumpyDatetime64Type(unit='s', step_size=5), fill_value=None)
         """
         # filter kwargs pertaining to this decorator
         extracted = {}
@@ -304,33 +334,135 @@ cdef class DecoratorType(VectorType):
     #################################
 
     @property
-    def wrapped(self) -> VectorType:
-        """Access the type object that this DecoratorType modifies."""
+    def wrapped(self):
+        """Access the type object that this decorator modifies.
+
+        Returns
+        -------
+        ScalarType | DecoratorType | None
+            The :class:`ScalarType <pdcast.ScalarType>` or
+            :class:`DecoratorType <pdcast.DecoratorType>` being wrapped by this
+            type.  If the decorator is naked, then this will be ``None``.
+
+        See Also
+        --------
+        DecoratorType.decorators : Iterate through the decorators that are
+            attached to this type.
+        DecoratorType.unwrap : Retrieve the base type object.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse").wrapped
+            None
+            >>> pdcast.resolve_type("sparse[int]").wrapped
+            IntegerType()
+            >>> pdcast.resolve_type("sparse[categorical[int]]").wrapped
+            CategoricalType(wrapped=IntegerType(), levels=None)
+        """
         return self.kwargs["wrapped"]
 
     @property
-    def decorators(self) -> Iterator[DecoratorType]:
-        """Iterate through every DecoratorType that is attached to the wrapped
-        ScalarType.
+    def decorators(self):
+        """A generator that iterates over every
+        :class:`DecoratorType <pdcast.DecoratorType>` that is attached to this
+        type.
+
+        Returns
+        -------
+        Iterator
+            A generator expression that yields each decorator in order.
+
+        See Also
+        --------
+        DecoratorType.wrapped : Access the type object that this decorator
+            modifies.
+        DecoratorType.unwrap() :
+            Get the base :class:`ScalarType <pdcast.ScalarType>` associated
+            with this type.
+
+        Examples
+        --------
+        Decorators can be nested to form a singly-linked list on top of a base
+        :class:`ScalarType <pdcast.ScalarType>` object.  This attribute allows
+        users to iterate through the decorators in order, progressively
+        unwrapping them.
+
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse[categorical[str]]")
+            SparseType(wrapped=CategoricalType(wrapped=StringType(), levels=None), fill_value=None)
+            >>> [str(x) for x in _.decorators]
+            ['sparse[categorical[string, None], None]', 'categorical[string, None]']
         """
         curr = self
         while isinstance(curr, DecoratorType):
             yield curr
             curr = curr.wrapped
 
-    def unwrap(self) -> ScalarType:
-        """Strip any DecoratorTypes that have been attached to this ScalarType.
+    def unwrap(self) -> ScalarType | None:
+        """Strip all the :class:`DecoratorTypes <pdcast.DecoratorType>` that
+        are attached to this type.
+
+        Returns
+        -------
+        ScalarType
+            The base :class:`ScalarType <pdcast.ScalarType>` associated with
+            this type.
+
+        See Also
+        --------
+        DecoratorType.wrapped : Access the type object that this decorator
+            modifies.
+        DecoratorType.decorators :
+            A generator that iterates through decorators layer by layer.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("categorical[str]")
+            CategoricalType(wrapped=StringType(), levels=None)
+            >>> _.unwrap()
+            StringType()
         """
         for curr in self.decorators:
             pass  # exhaust the iterator
         return curr.wrapped
 
     def __getattr__(self, name: str) -> Any:
-        """Delegate attribute lookups to the wrapped type.
+        """Forward attribute lookups to the wrapped type.
 
+        Parameters
+        ----------
+        name : str
+            The name of the attribute to look up.
+
+        Returns
+        -------
+        Any
+            The value of the attribute on the wrapped type.
+
+        See Also
+        --------
+        DecoratorType.wrapped : Access the type object that this decorator
+            modifies.
+
+        Notes
+        -----
         This is a sticky wrapper, meaning that if the returned value is a
         compatible type object, it will be automatically re-wrapped with this
-        decorator.
+        :class:`DecoratorType <pdcast.DecoratorType>`.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse[int8]").max
+            127
+            >>> pdcast.resolve_type("sparse[int8]").supertype
+            SparseType(wrapped=SignedIntegerType(), fill_value=None)
         """
         try:
             return self.kwargs[name]
@@ -388,21 +520,65 @@ cdef class DecoratorType(VectorType):
     ##########################
 
     @property
-    def backends(self) -> MappingProxyType:
-        """Modify the wrapped type's
-        :attr:`backends <pdcast.ScalarType.backends>` dictionary, adding the
-        wrapper to each of its values.
+    def backends(self):
+        """A mapping of all the
+        :meth:`implementations <pdcast.AbstractType.implementation>` that are
+        registered to the wrapped type.
+
+        Returns
+        -------
+        MappingProxyType
+            A read-only dictionary listing the concrete implementations that
+            have been registered to the base
+            :class:`ScalarType <pdcast.ScalarType>`, with their backend
+            specifiers as keys.  This always includes the type's default
+            implementation under the ``None`` key.
+
+        See Also
+        --------
+        ScalarType.backends : The scalar equivalent of this attribute.
+        AbstractType.implementation : A class decorator used to mark types as
+            concrete implementations of an abstract type.
+
+        Notes
+        -----
+        This is equivalent to the :meth:`backends <pdcast.ScalarType.backends>`
+        property of the wrapped type, except that the results are automatically
+        wrapped using this :class:`DecoratorType <pdcast.DecoratorType>`.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("sparse[int64[numpy]]").backends
+            mappingproxy({None: SparseType(wrapped=NumpyInt64Type(), fill_value=None)})
+            >>> pdcast.resolve_type("sparse[float16]").backends
+            mappingproxy({None: SparseType(wrapped=NumpyFloat16Type(), fill_value=None), 'numpy': SparseType(wrapped=NumpyFloat16Type(), fill_value=None)})
+            >>> pdcast.resolve_type("sparse[bool]").backends
+            mappingproxy({None: SparseType(wrapped=NumpyBooleanType(), fill_value=None), 'numpy': SparseType(wrapped=NumpyBooleanType(), fill_value=None), 'pandas': SparseType(wrapped=PandasBooleanType(), fill_value=None), 'python': SparseType(wrapped=PythonBooleanType(), fill_value=None)})
         """
         if self.wrapped is None:
-            return {}
+            return MappingProxyType({})
 
-        return {
+        return MappingProxyType({
             k: self.replace(wrapped=v)
             for k, v in self.wrapped.backends.items()
-        }
+        })
 
     def __dir__(self) -> list:
-        """Merge dir() fields with those of the decorated type."""
+        """Merge :func:`dir() <python:dir>` fields with those of the decorated
+        type.
+
+        Returns
+        -------
+        list
+            A list of all the attributes on this type and its wrapped type.
+
+        See Also
+        --------
+        DecoratorType.wrapped : Access the type object that this decorator
+            modifies.
+        """
         result = dir(type(self))
         result += list(self.__dict__.keys())
         result += [x for x in dir(self.wrapped) if x not in result]

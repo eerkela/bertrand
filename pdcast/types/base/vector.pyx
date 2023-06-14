@@ -271,7 +271,7 @@ cdef class VectorType(Type):
     @property
     def decorators(self):
         """A generator that iterates over every
-        :class:`DecoratorType <pdcast.DecoratorType>` that is attached to a
+        :class:`DecoratorType <pdcast.DecoratorType>` that is attached to this
         type.
 
         Returns
@@ -283,7 +283,7 @@ cdef class VectorType(Type):
         --------
         VectorType.unwrap() :
             Get the base :class:`ScalarType <pdcast.ScalarType>` associated
-            with a type.
+            with this type.
 
         Examples
         --------

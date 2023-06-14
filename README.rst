@@ -21,16 +21,10 @@ objects, with support for:
 
    .. doctest::
 
-      >>> import pandas as pd
-
       >>> @register
       ... class CustomType(ScalarType):
       ...     name = "custom"
       ...     aliases = {"foo", "bar"}
-      ...     dtype = pd.BooleanDtype()
-      ...     type_def = bool
-      ...     itemsize = 1
-      ...     na_value = pd.NA
       ... 
       ...     def __init__(self, x=None):
       ...         super().__init__(x=x)
@@ -43,11 +37,11 @@ objects, with support for:
 
       >>> resolve_type("foo")
       CustomType(x=None)
-      >>> _.aliases.add("baz")
+      >>> resolve_type("foo").aliases.add("baz")
       >>> resolve_type("baz[x]")
       CustomType(x="x")
 
-*  Vectorized **type detection** from example data in any format.  This works
+*  Vectorized **type detection** for example data in any format.  This works
    regardless of an example's ``.dtype`` attribute, allowing ``pdcast`` to
    infer the types of ambiguous sequences such as lists, tuples, generators,
    and ``dtype: object`` arrays.  In each case, inference is fast, reliable,
@@ -339,8 +333,8 @@ License
 
 Related Projects
 ----------------
-*  `pdlearn <https://github.com/eerkela/pdlearn>`_ - Seamless AutoML
-   integration for pandas DataFrames leveraging the ``pdcast`` type system.
+*  `pdlearn <https://github.com/eerkela/pdlearn>`_ - AutoML integration for
+   pandas DataFrames using the ``pdcast`` type system.
 
 Contributing
 ------------
