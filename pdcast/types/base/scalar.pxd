@@ -16,5 +16,5 @@ cdef class ScalarType(VectorType):
 
 cdef class AbstractType(ScalarType):
     cdef:
-        CacheValue _backends
+        CacheValue _implementations
         CacheValue _subtypes

@@ -520,7 +520,7 @@ cdef class DecoratorType(VectorType):
     ##########################
 
     @property
-    def backends(self):
+    def implementations(self):
         """A mapping of all the
         :meth:`implementations <pdcast.AbstractType.implementation>` that are
         registered to the wrapped type.
@@ -536,25 +536,26 @@ cdef class DecoratorType(VectorType):
 
         See Also
         --------
-        ScalarType.backends : The scalar equivalent of this attribute.
+        ScalarType.implementations : The scalar equivalent of this attribute.
         AbstractType.implementation : A class decorator used to mark types as
             concrete implementations of an abstract type.
 
         Notes
         -----
-        This is equivalent to the :meth:`backends <pdcast.ScalarType.backends>`
-        property of the wrapped type, except that the results are automatically
-        wrapped using this :class:`DecoratorType <pdcast.DecoratorType>`.
+        This is equivalent to the
+        :meth:`implementations <pdcast.ScalarType.implementations>` property of
+        the wrapped type, except that the results are automatically wrapped
+        using this :class:`DecoratorType <pdcast.DecoratorType>`.
 
         Examples
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse[int64[numpy]]").backends
+            >>> pdcast.resolve_type("sparse[int64[numpy]]").implementations
             mappingproxy({None: SparseType(wrapped=NumpyInt64Type(), fill_value=None)})
-            >>> pdcast.resolve_type("sparse[float16]").backends
+            >>> pdcast.resolve_type("sparse[float16]").implementations
             mappingproxy({None: SparseType(wrapped=NumpyFloat16Type(), fill_value=None), 'numpy': SparseType(wrapped=NumpyFloat16Type(), fill_value=None)})
-            >>> pdcast.resolve_type("sparse[bool]").backends
+            >>> pdcast.resolve_type("sparse[bool]").implementations
             mappingproxy({None: SparseType(wrapped=NumpyBooleanType(), fill_value=None), 'numpy': SparseType(wrapped=NumpyBooleanType(), fill_value=None), 'pandas': SparseType(wrapped=PandasBooleanType(), fill_value=None), 'python': SparseType(wrapped=PythonBooleanType(), fill_value=None)})
         """
         if self.wrapped is None:
@@ -562,7 +563,7 @@ cdef class DecoratorType(VectorType):
 
         return MappingProxyType({
             k: self.replace(wrapped=v)
-            for k, v in self.wrapped.backends.items()
+            for k, v in self.wrapped.implementations.items()
         })
 
     def __dir__(self) -> list:

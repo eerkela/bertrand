@@ -93,10 +93,10 @@ class ExtensionFunc(FunctionDecorator, threading.local):
 
     Notes
     -----
-    Whenever an argument is :meth:`registered <ExtensionFunc.register_arg>` to
-    this object, it is added as a managed :class:`property <python:property>`.
-    This automatically generates an appropriate getter, setter, and deleter for
-    the attribute based on the decorated validation function.
+    Whenever an argument is :meth:`registered <ExtensionFunc.argument>` to this
+    object, it is added as a managed :class:`property <python:property>`.  This
+    automatically generates an appropriate getter, setter, and deleter for the
+    attribute based on the decorated validation function.
 
     Additionally, this object inherits from :class:`threading.local`.  If the
     decorated function is referenced in a child thread, a new instance will be
@@ -152,7 +152,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             ... def foo(bar, baz, **kwargs):
             ...     return bar, baz
 
-            >>> @foo.register_arg
+            >>> @foo.argument
             ... def bar(val: int, state: dict) -> int:
             ...     return int(val)
 
@@ -178,7 +178,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
         """
         return MappingProxyType({**self._defaults, **self._vals})
 
-    def register_arg(
+    def argument(
         self,
         _func: Callable = None,
         *,
@@ -325,7 +325,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             ... def foo(bar, baz, **kwargs):
             ...     return bar, baz
 
-            >>> @foo.register_arg(default=1)
+            >>> @foo.argument(default=1)
             ... def bar(val: int, state: dict) -> int:
             ...     return int(val)
 
@@ -372,11 +372,11 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             ... def foo(bar, baz, **kwargs):
             ...     return bar, baz
 
-            >>> @foo.register_arg(default=1)
+            >>> @foo.argument(default=1)
             ... def bar(val: int, state: dict) -> int:
             ...     return int(val)
 
-            >>> @foo.register_arg(default=2)
+            >>> @foo.argument(default=2)
             ... def baz(val: int, state: dict) -> int:
             ...     return int(val)
 

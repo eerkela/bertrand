@@ -39,7 +39,7 @@ objects, with support for:
       CustomType(x=None)
       >>> resolve_type("foo").aliases.add("baz")
       >>> resolve_type("baz[x]")
-      CustomType(x="x")
+      CustomType(x='x')
 
 *  Vectorized **type detection** for example data in any format.  This works
    regardless of an example's ``.dtype`` attribute, allowing ``pdcast`` to
@@ -51,7 +51,7 @@ objects, with support for:
 
       >>> detect_type([1, 2, 3])
       PythonIntegerType()
-      >>> detect_type([1, 2.0, 3+0j])   # doctest: +SKIP
+      >>> detect_type([1, 2.3, 4+5j])   # doctest: +SKIP
       CompositeType({int[python], float64[python], complex128[python]})
 
 *  Efficient **type checks** for vectorized data.  These combine the above
@@ -62,15 +62,11 @@ objects, with support for:
 
    .. doctest::
 
-         >>> import timeit
-
          >>> df = pd.DataFrame({"a": [1, 2], "b": [1., 2.], "c": ["a", "b"]})
          >>> typecheck(df, {"a": "int", "b": "float", "c": "string"})
          True
          >>> typecheck(df["a"], "int")
          True
-         >>> timeit.timeit(lambda: typecheck(df["a"], "int"), number=10**3)   # doctest +SKIP
-         0.036023307002324145
 
 *  **Multiple dispatch** based on the inferred type of one or more of a
    function's arguments.  With the ``pdcast`` type system, this can be extended
@@ -204,7 +200,7 @@ through each of the core families of the ``pdcast`` type system:
    0    CustomObj(366 days, 0:00:00)
    1              CustomObj(0:00:00)
    2                            <NA>
-   dtype: object[CustomObj]
+   dtype: object[<class 'CustomObj'>]
    >>> _.cast("categorical[str[pyarrow]]")  # to string (categorical with PyArrow backend)
    0    CustomObj(366 days, 0:00:00)
    1              CustomObj(0:00:00)
@@ -275,12 +271,13 @@ includes by default.
    ...     return series
 
    >>> bar.attach_to(pd.Series, namespace="foo", pattern="property")
-   >>> pd.Series([1.0, 2.0]).foo.bar
+   >>> pd.Series([1.0, 2.0, 3.0]).foo.bar
    Hello, World!
    0    1.0
    1    2.0
+   2    3.0
    dtype: float64
-   >>> pd.Series([1, 0]).foo.bar
+   >>> pd.Series([1, 2, 3]).foo.bar
    Traceback (most recent call last):
       ...
    NotImplementedError: bar is only defined for floating point values
@@ -301,7 +298,7 @@ includes by default.
 
    If a wheel is not available for your system, ``pdcast`` also provides a
    source distribution to allow pip to build locally, although doing so
-   requires an additional ``cython >= 3.0`` dependency.
+   requires a C compiler such as ``gcc`` for Mac/Linux or ``MinGW`` for Windows.
 
    .. code:: console
 
@@ -322,7 +319,7 @@ includes by default.
 
    Documentation
    -------------
-   Detailed documentation is hosted on readthedocs.
+   Detailed API documentation is hosted on readthedocs.
 
    .. TODO: add hyperlink once documentation goes live
 
@@ -330,11 +327,6 @@ License
 -------
 ``pdcast`` is available under an `MIT license
 <https://github.com/eerkela/pdcast/blob/main/LICENSE>`_.
-
-Related Projects
-----------------
-*  `pdlearn <https://github.com/eerkela/pdlearn>`_ - AutoML integration for
-   pandas DataFrames using the ``pdcast`` type system.
 
 Contributing
 ------------
@@ -347,3 +339,8 @@ Contact
 The package maintainer can be contacted via the
 `GitHub issue tracker <https://github.com/eerkela/pdcast/issues>`_, or directly
 at eerkela42@gmail.com.
+
+Related Projects
+----------------
+*  `pdlearn <https://github.com/eerkela/pdlearn>`_ - AutoML integration for
+   pandas DataFrames using the ``pdcast`` type system.

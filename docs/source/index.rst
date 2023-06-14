@@ -3,7 +3,16 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
+.. testsetup::
+
+   import pandas as pd
+   from pdcast import *
+
 .. include:: ../../README.rst
+
+.. testcleanup::
+
+   registry.remove(CustomType)
 
 .. toctree::
    :hidden:

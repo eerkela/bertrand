@@ -30,7 +30,7 @@ def tz_convert(
 #########################
 
 
-tz_convert.register_arg(time.tz)
+tz_convert.argument(time.tz)
 
 
 #######################

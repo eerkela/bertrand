@@ -123,11 +123,11 @@ The behavior of this function can be customized using the following arguments.
         dtype: datetime64[ns]
 
     Additionally, new arguments can be added by calling
-    :meth:`@cast.register_arg <ExtensionFunc.register_arg>`.
+    :meth:`@cast.argument <ExtensionFunc.argument>`.
 
     .. doctest::
 
-        >>> @pdcast.cast.register_arg(default="bar")
+        >>> @pdcast.cast.argument(default="bar")
         ... def foo(val: str, state: dict) -> str:
         ...     '''docstring for `foo`.'''
         ...     if val not in ("bar", "baz"):
@@ -151,7 +151,7 @@ The behavior of this function can be customized using the following arguments.
 
     :func:`extension_func <extension_func>` ensures that ``foo`` is always
     passed to the conversion method, either with the default value specified in
-    :meth:`register_arg <ExtensionFunc.register_arg>` or a dynamic value from
+    :meth:`argument <ExtensionFunc.argument>` or a dynamic value from
     the global configuration.
 
 .. _cast.stand_alone:

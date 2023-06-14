@@ -889,7 +889,7 @@ cdef class ScalarType(VectorType):
         See Also
         --------
         ScalarType.is_generic : A flag indicating whether this type is managing
-            any backends.
+            any implementations.
 
         Examples
         --------
@@ -905,7 +905,7 @@ cdef class ScalarType(VectorType):
         return self.registry.get_generic(self)
 
     @property
-    def backends(self):
+    def implementations(self):
         """A mapping of all the
         :meth:`implementations <pdcast.AbstractType.implementation>` that are
         registered to this type.
@@ -935,11 +935,11 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").backends
+            >>> pdcast.resolve_type("int64[numpy]").implementations
             mappingproxy({None: NumpyInt64Type()})
-            >>> pdcast.resolve_type("float16").backends
+            >>> pdcast.resolve_type("float16").implementations
             mappingproxy({None: NumpyFloat16Type(), 'numpy': NumpyFloat16Type()})
-            >>> pdcast.resolve_type("bool").backends
+            >>> pdcast.resolve_type("bool").implementations
             mappingproxy({None: NumpyBooleanType(), 'numpy': NumpyBooleanType(), 'pandas': PandasBooleanType(), 'python': PythonBooleanType()})
         """
         return MappingProxyType({None: self})
@@ -1031,7 +1031,7 @@ cdef class ScalarType(VectorType):
         ScalarType.subtypes : A :class:`CompositeType <pdcast.CompositeType>`
             containing all the :meth:`subtypes <pdcast.AbstractType.subtype>`
             of this type.
-        ScalarType.backends : A mapping of all the
+        ScalarType.implementations : A mapping of all the
             :meth:`implementations <pdcast.AbstractType.implementation>` of
             this type.
 
@@ -1370,8 +1370,8 @@ cdef class AbstractType(ScalarType):
         Parameters
         ----------
         backend : str, optional
-            The :attr:`backend <pdcast.AbstractType.backends>` specifier to
-            delegate to.
+            The :attr:`backend <pdcast.AbstractType.implementations>` specifier
+            to delegate to.
         *args : str
             Positional arguments supplied to the delegated type.  These will
             always be passed as strings, exactly as they appear in the
@@ -1427,7 +1427,7 @@ cdef class AbstractType(ScalarType):
         if backend is None:
             return self
 
-        return self.backends[backend].from_string(*args)  
+        return self.implementations[backend].from_string(*args)  
 
     def from_dtype(self, dtype: dtype_like) -> ScalarType:
         """Construct an :class:`AbstractType <pdcast.AbstractType>` from a
@@ -1534,7 +1534,7 @@ cdef class AbstractType(ScalarType):
         if other == self:
             return True
 
-        children = {typ for typ in self.backends.values()}
+        children = {typ for typ in self.implementations.values()}
         children |= {typ for typ in self.subtypes}
         return any(typ.contains(other) for typ in children)
 
@@ -1680,7 +1680,7 @@ cdef class AbstractType(ScalarType):
             ... class ChildType(pdcast.ScalarType):
             ...     pass
 
-            >>> ParentType.backends
+            >>> ParentType.implementations
             mappingproxy({'concrete': ChildType()})
             >>> ParentType.contains(ChildType)
             True
@@ -1986,7 +1986,7 @@ cdef class AbstractType(ScalarType):
         return bool(self.registry.get_implementations(self))
 
     @property
-    def backends(self):
+    def implementations(self):
         """A mapping of all the
         :meth:`implementations <pdcast.AbstractType.implementation>` that are
         registered to this type.
@@ -2001,7 +2001,7 @@ cdef class AbstractType(ScalarType):
 
         See Also
         --------
-        ScalarType.backends : The scalar equivalent of this attribute.
+        ScalarType.implementations : The scalar equivalent of this attribute.
         AbstractType.implementation : A class decorator used to mark types as
             concrete implementations of this type.
 
@@ -2009,22 +2009,22 @@ cdef class AbstractType(ScalarType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").backends
+            >>> pdcast.resolve_type("int64[numpy]").implementations
             mappingproxy({None: NumpyInt64Type()})
-            >>> pdcast.resolve_type("float16").backends
+            >>> pdcast.resolve_type("float16").implementations
             {None: NumpyFloat16Type(), 'numpy': NumpyFloat16Type()}
-            >>> pdcast.resolve_type("bool").backends
+            >>> pdcast.resolve_type("bool").implementations
             {None: NumpyBooleanType(), 'numpy': NumpyBooleanType(), 'pandas': PandasBooleanType(), 'python': PythonBooleanType()}
         """
-        if not self._backends:
+        if not self._implementations:
             try:
                 result = {None: self.registry.get_default(self)}
             except NotImplementedError:
                 result = {}
             result |= self.registry.get_implementations(self)
-            self._backends = CacheValue(MappingProxyType(result))
+            self._implementations = CacheValue(MappingProxyType(result))
 
-        return self._backends.value
+        return self._implementations.value
 
     @property
     def subtypes(self):

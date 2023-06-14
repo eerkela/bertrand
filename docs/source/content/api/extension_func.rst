@@ -27,7 +27,7 @@ interface, in addition to any that are present on the callable itself (see
     ExtensionFunc
     ExtensionFunc.validators
     ExtensionFunc.default_values
-    ExtensionFunc.register_arg
+    ExtensionFunc.argument
     ExtensionFunc.remove_arg
     ExtensionFunc.reset_defaults
 
@@ -57,12 +57,12 @@ The behavior of the original function is otherwise unchanged.
 Managed arguments
 -----------------
 We can manage the values that are supplied to our :class:`ExtensionFunc` by
-defining :meth:`validators <ExtensionFunc.register_arg>` for one or more of its
+defining :meth:`validators <ExtensionFunc.argument>` for one or more of its
 arguments.
 
 .. doctest::
 
-    >>> @foo.register_arg
+    >>> @foo.argument
     ... def bar(val: int, state: dict) -> int:
     ...     return int(val)
 
@@ -102,7 +102,7 @@ default values for our managed arguments.
 .. note::
 
     We can also do this by supplying a ``default`` argument to the
-    :func:`@register_arg <ExtensionFunc.register_arg>` decorator.
+    :func:`@argument <ExtensionFunc.argument>` decorator.
 
     .. testsetup::
 
@@ -110,7 +110,7 @@ default values for our managed arguments.
 
     .. doctest::
 
-        >>> @foo.register_arg(default=1)
+        >>> @foo.argument(default=1)
         ... def bar(val: int, state: dict) -> int:
         ...     return int(val)
 
@@ -122,7 +122,7 @@ default values for our managed arguments.
 
     .. doctest::
 
-        >>> @foo.register_arg
+        >>> @foo.argument
         ... def baz(val: int, state: dict) -> int:
         ...     return int(val)
 
@@ -155,7 +155,7 @@ or by simply deleting the attribute:
 .. note::
 
     Unless a default is assigned in
-    :meth:`@register_arg <ExtensionFunc.register_arg>` or the signature
+    :meth:`@argument <ExtensionFunc.argument>` or the signature
     of ``foo()`` itself, deleting the argument will make it required
     whenever ``foo()`` is invoked.
 
@@ -207,13 +207,13 @@ instance can then be modified without affecting the behavior of other threads.
 Extension arguments
 -------------------
 If the decorated callable allows variable-length keyword arguments
-(``**kwargs``), then :class:`@register_arg <pdcast.ExtensionFunc.register_arg>`
-allows us to add new arguments dynamically at run time. These use the same
-validation and default value logic as above. 
+(``**kwargs``), then :class:`@argument <pdcast.ExtensionFunc.argument>` allows
+us to add new arguments dynamically at run time. These use the same validation
+and default value logic as above. 
 
 .. doctest::
 
-    >>> @foo.register_arg(default=3)
+    >>> @foo.argument(default=3)
     ... def qux(val: int, state: dict) -> int:
     ...     return int(val)
 
@@ -246,7 +246,7 @@ Imagine you have a whole :doc:`type system's <../types/types>` worth of
     ... def my_func(foo: Any, **kwargs) -> int:
     ...     return cast(foo, int, **kwargs)
 
-    >>> @my_func.register_arg
+    >>> @my_func.argument
     ... def foo(val: Any, state: dict) -> datetime_like:
     ...     return cast(val, "datetime")
 

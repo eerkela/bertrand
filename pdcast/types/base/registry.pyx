@@ -261,7 +261,7 @@ cdef class TypeRegistry:
         # recur for each of the instance's children
         for typ in typ.subtypes:
             self.remove(typ)
-        for backend, typ in getattr(typ, "backends", {}).items():
+        for backend, typ in getattr(typ, "implementations", {}).items():
             if backend is not None:
                 self.remove(typ)
 
@@ -769,7 +769,7 @@ cdef class TypeRegistry:
         Notes
         -----
         This method is called to implement
-        :class:`ScalarType.backends <pdcast.ScalarType.backends>`.
+        :class:`ScalarType.implementations <pdcast.ScalarType.implementations>`.
 
         Examples
         --------

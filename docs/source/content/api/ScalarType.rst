@@ -127,7 +127,7 @@ the following properties.
     ScalarType.is_generic
     ScalarType.generic
     ScalarType.backend
-    ScalarType.backends
+    ScalarType.implementations
     ScalarType.subtypes
     ScalarType.is_leaf
     ScalarType.leaves

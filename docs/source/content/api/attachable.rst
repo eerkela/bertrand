@@ -321,7 +321,7 @@ function decorators.  For example:
     ...         f"foo() has no implementation for type: {bar.element_type}"
     ...     )
 
-    >>> @foo.register_arg
+    >>> @foo.argument
     ... def baz(val, defaults):
     ...     return int(val)
 

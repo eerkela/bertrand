@@ -190,7 +190,7 @@ cdef class CompositeType(Type):
         result = self.copy()
         if expand_generics:
             for original in self:
-                for typ in original.backends.values():
+                for typ in original.implementations.values():
                     result.add(typ)
 
         for typ in result.copy():

@@ -35,7 +35,7 @@ def snap(series: pd.Series, tol: numeric = 1e-6) -> pd.Series:
 #########################
 
 
-@snap.register_arg
+@snap.argument
 def tol(val: numeric, state: dict) -> Tolerance:
     """The maximum amount of precision loss that can occur before an error
     is raised.

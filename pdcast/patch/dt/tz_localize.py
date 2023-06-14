@@ -3,6 +3,8 @@ from __future__ import annotations
 import datetime
 from functools import partial
 
+import pandas as pd
+
 from pdcast.decorators.attachable import attachable
 from pdcast.decorators.dispatch import dispatch
 from pdcast.decorators.extension import extension_func
@@ -30,7 +32,7 @@ def tz_localize(
 #########################
 
 
-tz_localize.register_arg(time.tz)
+tz_localize.argument(time.tz)
 
 
 #######################

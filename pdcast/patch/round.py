@@ -43,13 +43,13 @@ valid_rules = (
 )
 
 
-@round.register_arg
+@round.argument
 def decimals(val: int, state: dict) -> int:
     """Ensure that `decimals` are integer-like."""
     return int(val)
 
 
-@round.register_arg
+@round.argument
 def rule(val: str | None, state: dict) -> str:
     """The rounding rule to use for numeric conversions.
 
