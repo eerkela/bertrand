@@ -399,12 +399,10 @@ cdef class TypeRegistry:
 
         See Also
         --------
-        TypeRegistry.regex :
-            A regular expression to match strings in the
+        TypeRegistry.regex : A regular expression to match strings in the
             :ref:`type specification mini-language <resolve_type.mini_language>`.
-        TypeRegistry.resolvable :
-            A regular expression that matches any number of individual type
-            specifiers.
+        TypeRegistry.resolvable : A regular expression that matches any number
+            of individual type specifiers.
 
         Examples
         --------
@@ -440,10 +438,10 @@ cdef class TypeRegistry:
 
         See Also
         --------
-        TypeRegistry.aliases :
-            A complete map of every alias to its corresponding type.
-        TypeRegistry.resolvable :
-            A regular expression that matches any number of these expressions.
+        TypeRegistry.aliases : A complete map of every alias to its
+            corresponding type.
+        TypeRegistry.resolvable : A regular expression that matches any number
+            of these expressions.
 
         Notes
         -----
@@ -502,10 +500,10 @@ cdef class TypeRegistry:
 
         See Also
         --------
-        TypeRegistry.aliases :
-            A complete map of every alias to its corresponding type.
-        TypeRegistry.regex :
-            A regular expression to match individual specifiers.
+        TypeRegistry.aliases : A complete map of every alias to its
+            corresponding type.
+        TypeRegistry.regex : A regular expression to match individual
+            specifiers.
 
         Notes
         -----
@@ -572,10 +570,10 @@ cdef class TypeRegistry:
 
         See Also
         --------
-        TypeRegistry.get_subtypes :
-            Get a set of subtypes that the type can be delegated to.
-        TypeRegistry.get_implementations :
-            Get a map of implementations that the type can be delegated to.
+        TypeRegistry.get_subtypes : Get a set of subtypes that the type can be
+            delegated to.
+        TypeRegistry.get_implementations : Get a map of implementations that
+            the type can be delegated to.
 
         Notes
         -----
@@ -623,8 +621,8 @@ cdef class TypeRegistry:
 
         See Also
         --------
-        TypeRegistry.get_subtypes :
-            Get the set of subtypes that are registered to a supertype.
+        TypeRegistry.get_subtypes : Get the set of subtypes that are registered
+            to a supertype.
 
         Notes
         -----
@@ -664,8 +662,8 @@ cdef class TypeRegistry:
 
         See Also
         --------
-        TypeRegistry.get_supertype :
-            Get the supertype associated with a subtype.
+        TypeRegistry.get_supertype : Get the supertype associated with a
+            subtype.
 
         Notes
         -----
@@ -714,8 +712,8 @@ cdef class TypeRegistry:
 
         See Also
         --------
-        TypeRegistry.get_implementations :
-            Get a map of implementations that are registered to a generic.
+        TypeRegistry.get_implementations : Get a map of implementations that
+            are registered to a generic.
 
         Notes
         -----
@@ -757,8 +755,8 @@ cdef class TypeRegistry:
 
         See Also
         --------
-        TypeRegistry.get_generic :
-            Get the generic type that an implementation is registered.
+        TypeRegistry.get_generic : Get the generic type that an implementation
+            is registered.
 
         Notes
         -----
@@ -1319,13 +1317,12 @@ cdef class Type:
     
         See Also
         --------
-        Type.from_dtype :
-            Resolve a :class:`Type <pdcast.Type>` from a numpy/pandas
-            :class:`dtype <numpy.dtype>`\ /
+        Type.from_dtype : Resolve a :class:`Type <pdcast.Type>` from a
+            numpy/pandas :class:`dtype <numpy.dtype>`\ /
             :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
             object.
-        Type.from_scalar :
-            Detect a :class:`Type <pdcast.Type>` from a scalar example object.
+        Type.from_scalar : Detect a :class:`Type <pdcast.Type>` from a scalar
+            example object.
 
         Examples
         --------
@@ -1371,11 +1368,11 @@ cdef class Type:
 
         See Also
         --------
-        Type.from_string :
-            Resolve a :class:`Type <pdcast.Type>` from a string in the
+        Type.from_string : Resolve a :class:`Type <pdcast.Type>` from a string
+            in the
             :ref:`type specification mini-language <resolve_type.mini_language>`.
-        Type.from_scalar :
-            Detect a :class:`Type <pdcast.Type>` from a scalar example object.
+        Type.from_scalar : Detect a :class:`Type <pdcast.Type>` from a scalar
+            example object.
 
         Examples
         --------
@@ -1437,12 +1434,11 @@ cdef class Type:
 
         See Also
         --------
-        Type.from_string :
-            Resolve a :class:`Type <pdcast.Type>` from a string in the
+        Type.from_string : Resolve a :class:`Type <pdcast.Type>` from a string
+            in the
             :ref:`type specification mini-language <resolve_type.mini_language>`.
-        Type.from_dtype :
-            Resolve a :class:`Type <pdcast.Type>` from a numpy/pandas
-            :class:`dtype <numpy.dtype>`\ /
+        Type.from_dtype : Resolve a :class:`Type <pdcast.Type>` from a
+            numpy/pandas :class:`dtype <numpy.dtype>`\ /
             :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>`
             object.
 
@@ -1518,11 +1514,9 @@ cdef class Type:
 
         See Also
         --------
-        typecheck :
-            :func:`isinstance() <python:isinstance>`-like hierarchical checks
-            within the ``pdcast`` type system.
-        dispatch :
-            Multiple dispatch based on argument membership.
+        typecheck : :func:`isinstance() <python:isinstance>`-like hierarchical
+            checks within the ``pdcast`` type system.
+        dispatch : Multiple dispatch based on argument membership.
 
         Notes
         -----

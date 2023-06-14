@@ -8,15 +8,11 @@ cimport cython
 cimport numpy as np
 import numpy as np
 
-# from pdcast import resolve  # TODO: causes import error
 from pdcast.util.structs cimport LRUDict
 from pdcast.util.type_hints import type_specifier
 
 from .registry cimport Type, AliasManager
 from .scalar cimport ScalarType
-
-
-# TODO: remove non top-level imports in __eq__
 
 
 ######################

@@ -62,10 +62,10 @@ establishing hierarchies.
 
 Configuration
 -------------
-:class:`AbstractTypes <AbstractType>` inherit from :class:`ScalarType`.  They
-forward the following attributes to their
-:meth:`default <pdcast.AbstractType.default>` concretion if not implemented on
-the type itself.
+:class:`AbstractTypes <AbstractType>` inherit the same interface as their
+:class:`ScalarType` equivalents, and can be used interchangeably with them.
+They forward any attributes that are not defined on the type itself to their
+:meth:`default <pdcast.AbstractType.default>` concretion.
 
 .. autosummary::
     :toctree: ../../generated
@@ -99,7 +99,6 @@ can be traversed using these properties:
     AbstractType.supertype
     AbstractType.is_generic
     AbstractType.generic
-    AbstractType.backend
     AbstractType.backends
     AbstractType.subtypes
     AbstractType.is_leaf

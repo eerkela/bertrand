@@ -53,8 +53,7 @@ cdef class ScalarType(VectorType):
 
     See Also
     --------
-    AbstractType :
-        Base class for parent nodes in an abstract hierarchy.
+    AbstractType : Base class for parent nodes in an abstract hierarchy.
     """
 
     # NOTE: this is a sample __init__ method for a parametrized type.
@@ -100,8 +99,7 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        Type.from_string :
-            For more information on how this method is called.
+        Type.from_string : For more information on how this method is called.
 
         Examples
         --------
@@ -144,8 +142,7 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        Type.from_dtype :
-            For more information on how this method is called.
+        Type.from_dtype : For more information on how this method is called.
 
         Examples
         --------
@@ -187,8 +184,7 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        Type.from_scalar :
-            For more information on how this method is called.
+        Type.from_scalar : For more information on how this method is called.
 
         Notes
         -----
@@ -238,8 +234,7 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        Type.contains :
-            For more information on how this method is called.
+        Type.contains : For more information on how this method is called.
 
         Examples
         --------
@@ -286,8 +281,8 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.dtype :
-            A pandas array dtype associated with objects of this type.
+        ScalarType.dtype : A pandas array dtype associated with objects of this
+            type.
 
         Examples
         --------
@@ -493,8 +488,7 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.min :
-            The minimum representable value for this type.
+        ScalarType.min : The minimum representable value for this type.
 
         Notes
         -----
@@ -542,8 +536,7 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.max :
-            The maximum representable value for this type.
+        ScalarType.max : The maximum representable value for this type.
 
         Notes
         -----
@@ -663,8 +656,8 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.is_nullable :
-            An indicator specifying whether a type supports missing values.
+        ScalarType.is_nullable : An indicator specifying whether a type
+            supports missing values.
 
         Examples
         --------
@@ -757,10 +750,9 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.supertype :
-            The supertype that this type is registered to, if one exists.
-        ScalarType.root :
-            The root node of this type's subtype hierarchy.
+        ScalarType.supertype : The supertype that this type is registered to,
+            if one exists.
+        ScalarType.root : The root node of this type's subtype hierarchy.
 
         Examples
         --------
@@ -787,11 +779,10 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.supertype :
-            The supertype that this type is registered to, if one exists.
-        ScalarType.is_root :
-            An indicator specifying whether this type is the root of its
-            subtype hierarchy.
+        ScalarType.supertype : The supertype that this type is registered to,
+            if one exists.
+        ScalarType.is_root : An indicator specifying whether this type is the
+            root of its subtype hierarchy.
 
         Examples
         --------
@@ -821,8 +812,7 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.root :
-            The root node of this type's subtype hierarchy.
+        ScalarType.root : The root node of this type's subtype hierarchy.
 
         Examples
         --------
@@ -849,8 +839,8 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.generic :
-            The generic equivalent of this type, if one exists.
+        ScalarType.generic : The generic equivalent of this type, if one
+            exists.
 
         Notes
         -----
@@ -883,8 +873,8 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.is_generic :
-            A flag indicating whether this type is managing any backends.
+        ScalarType.is_generic : A flag indicating whether this type is managing
+            any backends.
 
         Examples
         --------
@@ -915,11 +905,16 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.generic :
-            The generic equivalent of this type, if one exists.
-        AbstractType.implementation :
-            A class decorator used to mark types as concrete implementations of
-            an abstract type.
+        ScalarType.generic : The generic equivalent of this type, if one
+            exists.
+        AbstractType.implementation : A class decorator used to mark types as
+            concrete implementations of an abstract type.
+
+        Notes
+        -----
+        For :class:`ScalarType <pdcast.ScalarType>` objects, this will always
+        have a single entry containing a reference to this type's base instance
+        under the ``None`` key.
 
         Examples
         --------
@@ -943,14 +938,14 @@ cdef class ScalarType(VectorType):
         Returns
         -------
         CompositeType
-            A collection of :class:`ScalarTypes <pdcast.ScalarType>`
-            representing the immediate children of this type.
+            A collection of :class:`ScalarTypes <pdcast.ScalarType>` and/or
+            :class:`AbstractTypes <pdcast.AbstractType>` representing the
+            immediate children of this type.
 
         See Also
         --------
-        ScalarType.leaves :
-            A :class:`CompositeType <pdcast.CompositeType>` containing all the
-            leaf nodes associated with this type.
+        ScalarType.leaves : A :class:`CompositeType <pdcast.CompositeType>`
+            containing all the leaf nodes associated with this type.
 
         Notes
         -----
@@ -984,9 +979,8 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.leaves :
-            A :class:`CompositeType <pdcast.CompositeType>` containing all the
-            leaf nodes associated with this type.
+        ScalarType.leaves : A :class:`CompositeType <pdcast.CompositeType>`
+            containing all the leaf nodes associated with this type.
 
         Notes
         -----
@@ -1019,13 +1013,17 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.subtypes :
-            A :class:`CompositeType <pdcast.CompositeType>` containing all the
-            :meth:`subtypes <pdcast.AbstractType.subtype>` of this type.
-        ScalarType.backends :
-            A mapping of all the
+        ScalarType.subtypes : A :class:`CompositeType <pdcast.CompositeType>`
+            containing all the :meth:`subtypes <pdcast.AbstractType.subtype>`
+            of this type.
+        ScalarType.backends : A mapping of all the
             :meth:`implementations <pdcast.AbstractType.implementation>` of
             this type.
+
+        Notes
+        -----
+        For :class:`ScalarType <pdcast.ScalarType>` objects, this will always
+        be an empty :class:`CompositeType <pdcast.CompositeType>`.
 
         Examples
         --------
@@ -1062,9 +1060,8 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.smaller :
-            An ordered sequence of types that this type can be downcasted to
-            for memory efficiency.
+        ScalarType.smaller : An ordered sequence of types that this type can be
+            downcasted to for memory efficiency.
 
         Examples
         --------
@@ -1107,11 +1104,9 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.larger :
-            An ordered sequence of types that this type can be upcasted to in
-            the event of overflow.
-        AbstractType.smaller :
-            Abstract equivalent of this method.
+        ScalarType.larger : An ordered sequence of types that this type can be
+            upcasted to in the event of overflow.
+        AbstractType.smaller : Abstract equivalent of this method.
 
         Notes
         -----
@@ -1136,8 +1131,7 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.__gt__ :
-            The inverse of this method.
+        ScalarType.__gt__ : The inverse of this method.
 
         Notes
         -----
@@ -1194,8 +1188,7 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.__lt__ :
-            The inverse of this method.
+        ScalarType.__lt__ : The inverse of this method.
 
         Notes
         -----
@@ -1330,8 +1323,7 @@ cdef class AbstractType(ScalarType):
 
     See Also
     --------
-    ScalarType :
-        Base class for leaf nodes in an abstract hierarchy.
+    ScalarType : Base class for leaf nodes in an abstract hierarchy.
 
     Notes
     -----
@@ -1384,8 +1376,7 @@ cdef class AbstractType(ScalarType):
 
         See Also
         --------
-        Type.from_string :
-            For more information on how this method is called.
+        Type.from_string : For more information on how this method is called.
 
         Examples
         --------
@@ -1444,8 +1435,7 @@ cdef class AbstractType(ScalarType):
 
         See Also
         --------
-        Type.from_dtype :
-            For more information on how this method is called.
+        Type.from_dtype : For more information on how this method is called.
 
         Notes
         -----
@@ -1475,8 +1465,7 @@ cdef class AbstractType(ScalarType):
 
         See Also
         --------
-        Type.from_scalar :
-            For more information on how this method is called.
+        Type.from_scalar : For more information on how this method is called.
 
         Notes
         -----
@@ -1508,8 +1497,7 @@ cdef class AbstractType(ScalarType):
 
         See Also
         --------
-        Type.contains :
-            For more information on how this method is called.
+        Type.contains : For more information on how this method is called.
 
         Examples
         --------
@@ -1569,11 +1557,9 @@ cdef class AbstractType(ScalarType):
 
         See Also
         --------
-        AbstractType.subtype :
-            Link a type as a subtype of this
+        AbstractType.subtype : Link a type as a subtype of this
             :class:`AbstractType <pdcast.AbstractType>`.
-        AbstractType.implementation :
-            Link a type as an implementation of this
+        AbstractType.implementation : Link a type as an implementation of this
             :class:`AbstractType <pdcast.AbstractType>`.
 
         Notes
@@ -1644,11 +1630,9 @@ cdef class AbstractType(ScalarType):
 
         See Also
         --------
-        AbstractType.default :
-            Assign a type as the default concretion of this
+        AbstractType.default : Assign a type as the default concretion of this
             :class:`AbstractType <pdcast.AbstractType>`.
-        AbstractType.subtype :
-            Link a type as a subtype of this
+        AbstractType.subtype : Link a type as a subtype of this
             :class:`AbstractType <pdcast.AbstractType>`.
 
         Notes
@@ -1740,11 +1724,9 @@ cdef class AbstractType(ScalarType):
 
         See Also
         --------
-        AbstractType.default :
-            Assign a type as the default concretion of this
+        AbstractType.default : Assign a type as the default concretion of this
             :class:`AbstractType <pdcast.AbstractType>`.
-        AbstractType.implementation :
-            Link a type as an implementation of this
+        AbstractType.implementation : Link a type as an implementation of this
             :class:`AbstractType <pdcast.AbstractType>`.
 
         Notes
@@ -1797,56 +1779,143 @@ cdef class AbstractType(ScalarType):
     #############################
 
     @property
-    def type_def(self) -> type | None:
-        """Delegate `type_def` to default."""
+    def type_def(self):
+        """Delegate to :meth:`default <pdcast.AbstractType.default>`.
+
+        See Also
+        --------
+        ScalarType.type_def
+        """
         return self.registry.get_default(self).type_def
 
     @property
-    def dtype(self) -> dtype_like:
-        """Delegate `dtype` to default."""
+    def dtype(self):
+        """Delegate to :meth:`default <pdcast.AbstractType.default>`.
+
+        See Also
+        --------
+        ScalarType.dtype
+        """
         return self.registry.get_default(self).dtype
 
     @property
-    def itemsize(self) -> int | None:
-        """Delegate `itemsize` to default."""
+    def itemsize(self):
+        """Delegate to :meth:`default <pdcast.AbstractType.default>`.
+
+        See Also
+        --------
+        ScalarType.itemsize
+        """
         return self.registry.get_default(self).itemsize
 
     @property
-    def is_numeric(self) -> bool:
-        """Delegate `is_numeric` to default."""
+    def is_numeric(self):
+        """Delegate to :meth:`default <pdcast.AbstractType.default>`.
+
+        See Also
+        --------
+        ScalarType.is_numeric
+        """
         return self.registry.get_default(self).is_numeric
 
     @property
-    def max(self) -> decimal.Decimal:
-        """Delegate `max` to default."""
+    def max(self):
+        """Delegate to :meth:`default <pdcast.AbstractType.default>`.
+
+        See Also
+        --------
+        ScalarType.max
+        """
         return self.registry.get_default(self).max
 
     @property
-    def min(self) -> decimal.Decimal:
-        """Delegate `min` to default."""
+    def min(self):
+        """Delegate to :meth:`default <pdcast.AbstractType.default>`.
+
+        See Also
+        --------
+        ScalarType.min
+        """
         return self.registry.get_default(self).min
 
     @property
-    def is_nullable(self) -> bool:
-        """Delegate `is_nullable` to default."""
+    def is_nullable(self):
+        """Delegate to :meth:`default <pdcast.AbstractType.default>`.
+
+        See Also
+        --------
+        ScalarType.is_nullable
+        """
         return self.registry.get_default(self).is_nullable
 
     @property
-    def na_value(self) -> Any:
-        """Delegate `na_value` to default."""
+    def na_value(self):
+        """Delegate to :meth:`default <pdcast.AbstractType.default>`.
+
+        See Also
+        --------
+        ScalarType.na_value
+        """
         return self.registry.get_default(self).na_value
 
     def make_nullable(self) -> ScalarType:
-        """Delegate `make_nullable()` to default."""
+        """Delegate to :meth:`default <pdcast.AbstractType.default>`.
+
+        See Also
+        --------
+        ScalarType.make_nullable
+        """
         return self.registry.get_default(self).make_nullable()
 
     def __getattr__(self, name: str) -> Any:
-        """Dynamically forward attribute access to this type's
-        :meth:`default <pdcast.AbstractType.default>` concretion.
+        """Delegate all other attributes to
+        :meth:`default <pdcast.AbstractType.default>`.
 
+        Parameters
+        ----------
+        name : str
+            The name of the attribute to look up.
+
+        Returns
+        -------
+        Any
+            The value of the attribute on the
+            :meth:`default <pdcast.AbstractType.default>` concretion.
+
+        Raises
+        ------
+        AttributeError
+            If the attribute is not defined on the
+            :meth:`default <pdcast.AbstractType.default>` concretion.
+
+        See Also
+        --------
+        AbstractType.default : Assign a type as the default concretion of this
+            :class:`AbstractType <pdcast.AbstractType>`.
+
+        Notes
+        -----
         This allows :class:`AbstractTypes <pdcast.AbstractType>` to
         automatically inherit attributes from its default concretion if they
         are not defined on the parent type itself.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> @pdcast.register
+            ... class ParentType(pdcast.AbstractType):
+            ...     name = "parent"
+
+            >>> @pdcast.register
+            ... @ParentType.default
+            ... @ParentType.subtype
+            ... class ChildType(pdcast.ScalarType):
+            ...     name = "child"
+            ...     value = 1
+
+            >>> ParentType.value
+            1
         """
         return getattr(self.registry.get_default(self), name)
 
@@ -1856,13 +1925,61 @@ cdef class AbstractType(ScalarType):
 
     @property
     def is_generic(self):
-        """Indicates whether this type is managing any backends."""
+        """A flag indicating whether this type is managing any implementations.
+
+        Returns
+        -------
+        bool
+            ``True`` if this type has one or more registered
+            :meth:`implementations <pdcast.AbstractType.implementation>`.
+
+        See Also
+        --------
+        ScalarType.is_generic : The scalar equivalent of this attribute.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").is_generic
+            False
+            >>> pdcast.resolve_type("float16").is_generic
+            True
+            >>> pdcast.resolve_type("bool").is_generic
+            True
+        """
         return bool(self.registry.get_implementations(self))
 
     @property
     def backends(self):
-        """A mapping of all backend specifiers to their corresponding
-        concretions.
+        """A mapping of all the
+        :meth:`implementations <pdcast.AbstractType.implementation>` that are
+        registered to this type.
+
+        Returns
+        -------
+        MappingProxyType
+            A read-only dictionary listing the concrete implementations that
+            have been registered to this type, with their backend specifiers
+            as keys.  This always includes the type's default implementation
+            under the ``None`` key.
+
+        See Also
+        --------
+        ScalarType.backends : The scalar equivalent of this attribute.
+        AbstractType.implementation : A class decorator used to mark types as
+            concrete implementations of this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").backends
+            mappingproxy({None: NumpyInt64Type()})
+            >>> pdcast.resolve_type("float16").backends
+            {None: NumpyFloat16Type(), 'numpy': NumpyFloat16Type()}
+            >>> pdcast.resolve_type("bool").backends
+            {None: NumpyBooleanType(), 'numpy': NumpyBooleanType(), 'pandas': PandasBooleanType(), 'python': PythonBooleanType()}
         """
         if not self._backends:
             try:
@@ -1876,8 +1993,32 @@ cdef class AbstractType(ScalarType):
 
     @property
     def subtypes(self):
-        """A :class:`CompositeType <pdcast.CompositeType>` containing every
-        subtype that is currently registered to this :class:`AbstractType <pdcast.AbstractType>`.
+        """A :class:`CompositeType <pdcast.CompositeType>` containing all the
+        :meth:`subtypes <pdcast.AbstractType.subtype>` that are currently
+        registered to this type.
+
+        Returns
+        -------
+        CompositeType
+            A collection of :class:`ScalarTypes <pdcast.ScalarType>` and/or
+            :class:`AbstractTypes <pdcast.AbstractType>` representing the
+            immediate children of this type.
+
+        See Also
+        --------
+        ScalarType.leaves : A :class:`CompositeType <pdcast.CompositeType>`
+            containing all the leaf nodes associated with this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").subtypes
+            CompositeType({})
+            >>> pdcast.resolve_type("float").subtypes   # doctest: +SKIP
+            CompositeType({float16, float32, float64, float80})
+            >>> pdcast.resolve_type("int").subtypes   # doctest: +SKIP
+            CompositeType({signed, unsigned})
         """
         if not self._subtypes:
             self._subtypes = CacheValue(self.registry.get_subtypes(self))
@@ -1886,7 +2027,32 @@ cdef class AbstractType(ScalarType):
 
     @property
     def is_leaf(self):
-        """Indicates whether this type has subtypes."""
+        """A flag indicating whether this type is a leaf node within its
+        hierarchy.
+
+        Returns
+        -------
+        bool
+            ``True`` if this type has no registered
+            :meth:`subtypes <pdcast.AbstractType.subtype>` or
+            :meth:`implementations <pdcast.AbstractType.implementations>`.
+
+        See Also
+        --------
+        ScalarType.leaves : A :class:`CompositeType <pdcast.CompositeType>`
+            containing all the leaf nodes associated with this type.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("int64[numpy]").is_leaf
+            True
+            >>> pdcast.resolve_type("float16").is_leaf
+            False
+            >>> pdcast.resolve_type("bool").is_leaf
+            False
+        """
         return not self.subtypes and not self.is_generic
 
     ###############################
@@ -1906,11 +2072,9 @@ cdef class AbstractType(ScalarType):
 
         See Also
         --------
-        AbstractType.smaller :
-            An ordered sequence of types that this type can be downcasted to
-            for memory efficiency.
-        ScalarType.larger :
-            Scalar equivalent of this method.
+        AbstractType.smaller : An ordered sequence of types that this type can
+            be downcasted to for memory efficiency.
+        ScalarType.larger : Scalar equivalent of this method.
 
         Notes
         -----
@@ -1962,11 +2126,9 @@ cdef class AbstractType(ScalarType):
 
         See Also
         --------
-        AbstractType.larger :
-            An ordered sequence of types that this type can be upcasted to in
-            the event of overflow.
-        ScalarType.smaller :
-            Scalar equivalent of this method.
+        AbstractType.larger : An ordered sequence of types that this type can
+            be upcasted to in the event of overflow.
+        ScalarType.smaller : Scalar equivalent of this method.
 
         Notes
         -----

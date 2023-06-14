@@ -102,8 +102,7 @@ cdef class CompositeType(Type):
 
         See Also
         --------
-        Type.from_string :
-            For more information on how this method is called.
+        Type.from_string : For more information on how this method is called.
 
         Examples
         --------
@@ -157,8 +156,7 @@ cdef class CompositeType(Type):
 
         See Also
         --------
-        Type.contains :
-            For more information on how this method is called.
+        Type.contains : For more information on how this method is called.
 
         Examples
         --------
