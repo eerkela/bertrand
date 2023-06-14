@@ -30,6 +30,21 @@ from ..array import construct_object_dtype
 # -> There doesn't appear to be a reliable way of doing this in cython.
 
 
+# TODO: when checking for interface matches in AbstractType, call
+# object.__getattribute__ on every name in dir() to find out which ones are
+# overridden on the abstract type.  Then, only check for interface matches on
+# this subset.
+
+
+# TODO: to do doctests on a single file:
+# make install
+# make doc
+# sphinx-build -b doctest -q docs/source/ docs/build/ docs/source/generated/pdcast.ScalarType*.rst
+
+# -> for ScalarType, most are being emitted because of min/max not having a
+# standardized type.  Some are being emitted due to VectorType.__setattr__
+
+
 ######################
 ####    SCALAR    ####
 ######################
@@ -791,7 +806,7 @@ cdef class ScalarType(VectorType):
             >>> pdcast.resolve_type("int64[numpy]").root
             NumpyIntegerType()
             >>> pdcast.resolve_type("float16")
-            FloatType()
+            Float16Type()
             >>> pdcast.resolve_type("bool").root
             BooleanType()
         """
@@ -923,9 +938,9 @@ cdef class ScalarType(VectorType):
             >>> pdcast.resolve_type("int64[numpy]").backends
             mappingproxy({None: NumpyInt64Type()})
             >>> pdcast.resolve_type("float16").backends
-            {None: NumpyFloat16Type(), 'numpy': NumpyFloat16Type()}
+            mappingproxy({None: NumpyFloat16Type(), 'numpy': NumpyFloat16Type()})
             >>> pdcast.resolve_type("bool").backends
-            {None: NumpyBooleanType(), 'numpy': NumpyBooleanType(), 'pandas': PandasBooleanType(), 'python': PythonBooleanType()}
+            mappingproxy({None: NumpyBooleanType(), 'numpy': NumpyBooleanType(), 'pandas': PandasBooleanType(), 'python': PythonBooleanType()})
         """
         return MappingProxyType({None: self})
 
@@ -1587,6 +1602,11 @@ cdef class AbstractType(ScalarType):
 
             >>> ParentType.max
             10
+
+        .. testcleanup::
+
+            pdcast.registry.remove(ParentType)
+            pdcast.registry.remove(ChildType)
         """
         def decorator(_concrete: type):
             """Link the decorated type as the default value of this parent."""
@@ -1664,6 +1684,11 @@ cdef class AbstractType(ScalarType):
             mappingproxy({'concrete': ChildType()})
             >>> ParentType.contains(ChildType)
             True
+
+        .. testcleanup::
+
+            pdcast.registry.remove(ParentType)
+            pdcast.registry.remove(ChildType)
         """
         if not isinstance(backend, str):
             raise TypeError(
@@ -1758,6 +1783,11 @@ cdef class AbstractType(ScalarType):
             CompositeType({child})
             >>> ParentType.contains(ChildType)
             True
+
+        .. testcleanup::
+
+            pdcast.registry.remove(ParentType)
+            pdcast.registry.remove(ChildType)
         """
         def decorator(_subtype: type):
             """Link the decorated type as a subtype of this parent."""
@@ -1916,6 +1946,11 @@ cdef class AbstractType(ScalarType):
 
             >>> ParentType.value
             1
+
+        .. testcleanup::
+
+            pdcast.registry.remove(ParentType)
+            pdcast.registry.remove(ChildType)
         """
         return getattr(self.registry.get_default(self), name)
 

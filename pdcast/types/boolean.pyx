@@ -35,10 +35,6 @@ class BooleanType(AbstractType):
     *   **max**: 1
     *   **min**: 0
 
-    .. testsetup::
-
-        import pdcast
-
     .. doctest::
 
         >>> pdcast.resolve_type("bool")

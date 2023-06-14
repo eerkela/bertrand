@@ -25,8 +25,6 @@ extensions = [
     "sphinx_rtd_theme",
 ]
 
-# TODO: check out sphinx.ext.inheritance_diagram
-
 templates_path = ['_templates']
 exclude_patterns = []
 
@@ -36,6 +34,10 @@ intersphinx_mapping = {
     "pandas": ("https://pandas.pydata.org/pandas-docs/stable/", None),
     "python": ("https://docs.python.org/3", None),
 }
+
+doctest_global_setup = """
+import pdcast
+"""
 
 
 # -- Options for HTML output -------------------------------------------------

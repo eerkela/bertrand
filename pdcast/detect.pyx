@@ -120,7 +120,7 @@ cdef class ScalarDetector(Detector):
 
         result = self.aliases.get(self.example_type, None)
         if result is None:
-            return types.ObjectType[self.example_type]
+            return types.ObjectType(self.example_type)
         return result.from_scalar(self.example)
 
 
@@ -165,9 +165,9 @@ cdef class ArrayDetector(Detector):
         if fill_value is not None:
             if isinstance(result, types.CompositeType):
                 return types.CompositeType(
-                    types.SparseType[typ, fill_value] for typ in result
+                    types.SparseType(typ, fill_value) for typ in result
                 )
-            return types.SparseType[result, fill_value]
+            return types.SparseType(result, fill_value)
 
         return result
 

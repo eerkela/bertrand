@@ -160,6 +160,10 @@ cdef class TypeRegistry:
             True
             >>> pdcast.resolve_type("bar")
             CustomType()
+
+        .. testcleanup::
+
+            pdcast.registry.remove(CustomType)
         """
         # validate type is a subclass of VectorType
         if isinstance(typ, type):
@@ -285,6 +289,10 @@ cdef class TypeRegistry:
             >>> pdcast.IntegerType.aliases.add("foo")
             >>> hash == pdcast.registry.hash
             False
+
+        .. testcleanup::
+
+            pdcast.IntegerType.aliases.remove("foo")
         """
         return self._hash
 
@@ -981,6 +989,10 @@ cdef class AliasManager:
             >>> pdcast.BooleanType.aliases.add("foo")
             >>> pdcast.resolve_type("foo")
             BooleanType()
+
+        .. testcleanup::
+
+            pdcast.BooleanType.aliases.remove("foo")
         """
         alias = self.normalize_specifier(alias)
 
@@ -1292,6 +1304,10 @@ cdef class Type:
             >>> pdcast.BooleanType.aliases.add("foo")
             >>> pdcast.resolve_type("foo")
             BooleanType()
+
+        .. testcleanup::
+
+            pdcast.BooleanType.aliases.remove("foo")
         """
         return self._aliases
 
@@ -1335,6 +1351,7 @@ cdef class Type:
             >>> pdcast.resolve_type("float")
             FloatType()
             >>> pdcast.resolve_type("datetime[pandas, US/Pacific]")
+            PandasTimestampType(tz=zoneinfo.ZoneInfo(key='US/Pacific'))
 
         This directly translates to:
 
@@ -1457,6 +1474,8 @@ cdef class Type:
 
         .. doctest::
 
+            >>> import pandas as pd
+
             >>> pdcast.detect_type([True, False, True])
             PythonBooleanType()
             >>> pdcast.detect_type(pd.Series([1, 2, 3], dtype=object))
@@ -1476,8 +1495,8 @@ cdef class Type:
 
         .. doctest::
 
-            >>> mixed = pdcast.detect_type([False, 1, 2.0])   # doctest: +SKIP
-            >>> mixed
+            >>> mixed = pdcast.detect_type([False, 1, 2.0])
+            >>> mixed   # doctest: +SKIP
             CompositeType({bool[python], int[python], float64[python]})
 
         The result records the observed type at every index:
@@ -1486,7 +1505,7 @@ cdef class Type:
 
             >>> mixed.index
             array([PythonBooleanType(), PythonIntegerType(), PythonFloatType()],
-                   dtype=object)
+                  dtype=object)
         """
         raise NotImplementedError(
             f"{type(self).__qualname__} cannot be constructed from example "
@@ -1610,7 +1629,6 @@ cdef class CacheValue:
 
     Examples
     --------
-
     .. doctest::
 
         >>> foo = pdcast.CacheValue(1)

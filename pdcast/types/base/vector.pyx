@@ -389,14 +389,14 @@ cdef class VectorType(Type):
                 ...
             AttributeError: VectorTypes are read-only
 
+        .. testcleanup::
+
+            pdcast.registry.remove(CustomType)
+
         .. note::
 
             Explicit :class:`@property <python:property>` setters will still be
             invoked as normal, though they should be used sparingly.
-
-            .. testsetup::
-
-                pdcast.registry.remove(CustomType)
 
             .. doctest::
 
@@ -420,6 +420,10 @@ cdef class VectorType(Type):
                 >>> instance.assigned = "xyz"
                 >>> instance.assigned
                 'xyz'
+
+            .. testcleanup::
+
+                pdcast.registry.remove(CustomType)
         """
         # respect @property setters, if present
         prop = getattr(type(self), name, None)
