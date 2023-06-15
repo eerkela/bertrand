@@ -6,6 +6,6 @@ from .scalar cimport ScalarType
 cdef class CompositeType(Type):
     cdef readonly:
         set types
-        ScalarType[:] _index
+        np.ndarray _index
 
     cdef void forget_index(self)

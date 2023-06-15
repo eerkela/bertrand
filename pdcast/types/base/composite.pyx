@@ -30,7 +30,7 @@ cdef class CompositeType(Type):
     def __init__(
         self,
         object types = None,
-        ScalarType[:] index = None
+        np.ndarray index = None
     ):
         super().__init__()  # init aliases
 
@@ -73,9 +73,68 @@ cdef class CompositeType(Type):
     ############################
 
     @property
-    def index(self) -> np.ndarray:
-        """TODO"""
-        return np.asarray(self._index, dtype=object)
+    def index(self):
+        """The inferred type at every index of a mixed iterable.
+
+        Returns
+        -------
+        numpy.ndarray
+            An :class: `ndarray <numpy.ndarray>` of
+            :class:`ScalarTypes <pdcast.ScalarType>` that are contained in this
+            composite.
+
+        See Also
+        --------
+        detect_type : For more information on how this property is generated.
+
+        Notes
+        -----
+        Internally, this uses `Run Length Encoding (RLE)
+        <https://en.wikipedia.org/wiki/Run-length_encoding>`_ to compress the
+        inferred types.  This makes it extremely space efficient, especially
+        for large arrays with many elements of a repeated type.
+
+        Additionally, since :class:`ScalarTypes <pdcast.ScalarType>` are
+        :ref:`flyweights <ScalarType.constructors>`, multiple runs can
+        reference the same type in memory.  This makes it efficient even in the
+        worst case, where runs frequently start and stop.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> vector = [0, True, 2, 3, 4.0, 5]
+            >>> mixed = pdcast.detect_type(vector)
+            >>> mixed   # doctest: +SKIP
+            CompositeType({int[python], bool[python], float64[python]})
+            >>> mixed.index
+            array([PythonIntegerType(), PythonBooleanType(), PythonIntegerType(),
+                   PythonIntegerType(), PythonFloatType(), PythonIntegerType()],
+                  dtype=object)
+
+        .. note::
+
+            This index can be used for :meth:`groupby() <pandas.Series.groupby>`
+            operations on the original array.
+
+            .. doctest::
+
+                >>> import pandas as pd
+
+                >>> groups = pd.Series(vector, dtype=object).groupby(mixed.index)
+                >>> for _, group in groups:
+                ...     print(group)
+                1    True
+                dtype: object
+                4    4.0
+                dtype: object
+                0    0
+                2    2
+                3    3
+                5    5
+                dtype: object
+        """
+        return np.repeat(self._index['type'], self._index['count'])
 
     cdef void forget_index(self):
         self._index = None

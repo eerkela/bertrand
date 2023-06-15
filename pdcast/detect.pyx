@@ -199,26 +199,57 @@ cdef class ElementWiseDetector(Detector):
 cdef types.CompositeType detect_vector_type(object[:] arr, dict lookup):
     """Loop through an object array and return a CompositeType that corresponds
     to the type of each element.
+
+    This uses run-length encoding to reduce memory consumption.
     """
-    cdef long long arr_length = arr.shape[0]
-    cdef long long i
+    cdef int arr_length = arr.shape[0]
+    cdef int i
     cdef object element
     cdef type element_type
-    cdef types.ScalarType result
+    cdef types.ScalarType resolved
     cdef set observed = set()
-    cdef types.ScalarType[:] index = np.empty(arr_length, dtype=object)
 
+    # for run-length encoding
+    cdef list counts = []
+    cdef types.ScalarType last = None
+    cdef int count = 0
+    cdef np.ndarray index
+
+    # iterate through array
     for i in range(arr_length):
+
+        # call type() on each element
         element = arr[i]
         element_type = type(element)
 
-        result = lookup.get(element_type, None)
-        if result is None:
-            result = types.ObjectType(element_type)
+        # look up type in registry.aliases and call appropriate constructor
+        resolved = lookup.get(element_type, None)
+        if resolved is None:
+            resolved = types.ObjectType(element_type)
         else:
-            result = result.from_scalar(element)
+            resolved = resolved.from_scalar(element)
 
-        observed.add(result)
-        index[i] = result
+        # add result to observed
+        observed.add(resolved)
 
+        # increment count if result is same as the previous index
+        if resolved == last:
+            count += 1
+        else:
+            # otherwise, append the last type and count to list
+            if last is not None:
+                counts.append((last, count))
+
+            # reset count
+            last = resolved
+            count = 1
+
+    # append the last type and count to list
+    if last is not None:
+        counts.append((last, count))
+
+    # create structured index
+    index = np.array(counts, dtype=[("type", object), ("count", np.int64)])
+
+    # package result
     return types.CompositeType(observed, index=index)

@@ -18,7 +18,6 @@ setup(
         language_level="3",
         compiler_directives={
             "embedsignature": True,
-            "embedsignature.format": "python"
         },
     ),
     include_dirs=[numpy.get_include()],
