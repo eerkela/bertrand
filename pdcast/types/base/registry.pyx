@@ -326,7 +326,9 @@ cdef class TypeRegistry:
         """
         if not self._roots:
             is_root = lambda typ: getattr(typ, "is_root", False)
-            generic = lambda typ: getattr(typ, "backend", NotImplemented) is None
+            generic = lambda typ: (
+                getattr(typ, "backend", NotImplemented) is None
+            )
             result = CompositeType(
                 typ for typ in self if is_root(typ) and generic(typ)
             )

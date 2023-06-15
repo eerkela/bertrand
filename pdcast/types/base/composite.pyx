@@ -245,18 +245,43 @@ cdef class CompositeType(Type):
     ####    HIERARCHIES    ####
     ###########################
 
-    def expand(self, expand_generics: bool = True) -> CompositeType:
-        """Expand the contained types to include each of their subtypes.
+    def expand(self) -> CompositeType:
+        """Expand the contained types to include their full hierarchies.
+
+        Returns
+        -------
+        CompositeType
+            A copy of this composite with the full contents of every type's
+            hierarchy.
+
+        See Also
+        --------
+        CompositeType.collapse : Inverse of this method.
+
+        Notes
+        -----
+        By default, :class:`CompositeTypes <pdcast.CompositeType>` implicitly
+        contain the full hierarchies of each of their members.  This method
+        makes these explicit by expanding the composite to include all the
+        :meth:`subtypes <pdcast.AbstractType.subtype>` and
+        :meth:`implementations <pdcast.AbstractType.implementation>` for each
+        member.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type(["bool"]).expand()   # doctest: +SKIP
+            CompositeType({bool, bool[numpy], bool[pandas], bool[python]})
         """
         cdef CompositeType result
         cdef VectorType original
         cdef VectorType typ
 
         result = self.copy()
-        if expand_generics:
-            for original in self:
-                for typ in original.implementations.values():
-                    result.add(typ)
+        for original in self:
+            for typ in original.implementations.values():
+                result.add(typ)
 
         for typ in result.copy():
             result |= traverse_subtypes(typ)
@@ -264,9 +289,32 @@ cdef class CompositeType(Type):
         return result
 
     def collapse(self) -> CompositeType:
-        """Return a copy with redundant subtypes removed.  A subtype is
-        redundant if it is fully encapsulated within the other members of the
-        CompositeType.
+        """Strip redundant types from this composite.
+
+        Returns
+        -------
+        CompositeType
+            A copy of this composite without any redundant types.
+
+        See Also
+        --------
+        CompositeType.expand : Inverse of this method.
+
+        Notes
+        -----
+        By default, :class:`CompositeTypes <pdcast.CompositeType>` implicitly
+        contain the full hierarchies of each of their members.  This method
+        utilizes this to remove any types that are fully contained within
+        another type's hierarchy from the composite.  The result is a
+        composite that is functionally equivalent to the original, but without
+        any redundant members.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("bool, bool[numpy], bool[pandas], bool[python]").collapse()
+            CompositeType({bool})
         """
         cdef VectorType atomic_type
         cdef VectorType t
@@ -283,7 +331,29 @@ cdef class CompositeType(Type):
     #############################
 
     def add(self, typespec: type_specifier) -> None:
-        """Add a type specifier to the CompositeType."""
+        """Add a type to the composite.
+
+        This is equivalent to :meth:`set.add() <python:set.add>`.
+
+        Parameters
+        ----------
+        typespec : type_specifier
+            The type to add.  This can be in any format recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`.
+
+        See Also
+        --------
+        CompositeType.remove : Remove a type from the composite.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float, complex")
+            >>> composite.add("bool")
+            >>> composite   # doctest: +SKIP
+            CompositeType({int, float, complex, bool})
+        """
         cdef CompositeType other
         cdef VectorType typ
 
@@ -292,45 +362,187 @@ cdef class CompositeType(Type):
         self.forget_index()
 
     def remove(self, typespec: type_specifier) -> None:
-        """Remove the given type specifier from the CompositeType.  Raises a
-        KeyError if `typespec` is not contained in the set.
+        """Remove a type from the composite.
+
+        This is equivalent to :meth:`set.remove() <python:set.remove>`.
+
+        Parameters
+        ----------
+        typespec : type_specifier
+            The type to remove.  This can be in any format recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`, and may reference
+            an implicit type in this composite's shared hierarchy.
+
+        Raises
+        ------
+        KeyError
+            If the type is not contained in the composite.
+
+        See Also
+        --------
+        CompositeType.add : Add a type to the composite.
+        CompositeType.discard : Remove a type from the composite if it is
+            present.
+        CompositeType.pop : Remove and return an arbitrary type from the
+            composite.
+        CompositeType.clear : Remove all types from the composite.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float, complex")
+            >>> composite.remove("int")
+            >>> composite   # doctest: +SKIP
+            CompositeType({float, complex})
+            >>> composite.remove("float16")   # implicit
+            >>> composite   # doctest: +SKIP
+            CompositeType({float32, float64, float80, complex})
+            >>> composite.remove("bool")  # not present
+            Traceback (most recent call last):
+                ...
+            KeyError: 'bool'
         """
-        cdef CompositeType other
-        cdef VectorType typ
+        cdef CompositeType other = resolve_type([typespec])
 
-        other = resolve_type([typespec])
-        for typ in other:
-            self.types.remove(typ)
+        if not self.contains(other):
+            raise KeyError(typespec)
 
+        cdef CompositeType result = self - other
+
+        self.types = result.types
         self.forget_index()
 
     def discard(self, typespec: type_specifier) -> None:
-        """Remove the given type specifier from the CompositeType if it is
-        present.
+        """Remove a type specifier from the composite if it is present.
+
+        This is equivalent to :meth:`set.discard() <python:set.discard>`.
+
+        Parameters
+        ----------
+        typespec : type_specifier
+            The type to remove.  This can be in any format recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`, and may reference
+            an implicit type in this composite's shared hierarchy.
+
+        See Also
+        --------
+        CompositeType.add : Add a type to the composite.
+        CompositeType.remove : Remove a type from the composite.
+        CompositeType.pop : Remove and return an arbitrary type from the
+            composite.
+        CompositeType.clear : Remove all types from the composite.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float, complex")
+            >>> composite.discard("int")
+            >>> composite   # doctest: +SKIP
+            CompositeType({float, complex})
+            >>> composite.discard("float16")   # implicit
+            >>> composite   # doctest: +SKIP
+            CompositeType({float32, float64, float80, complex})
+            >>> composite.discard("bool")   # not present
         """
-        cdef CompositeType other
-        cdef VectorType typ
-
-        other = resolve_type([typespec])
-        for typ in other:
-            self.types.discard(typ)
-
-        self.forget_index()
+        try:
+            self.remove(typespec)
+        except KeyError:
+            pass
 
     def pop(self) -> VectorType:
-        """Remove and return an arbitrary type from the CompositeType. Raises a
-        KeyError if the CompositeType is empty.
+        """Remove and return an arbitrary type from the composite.
+
+        This is equivalent to :meth:`set.pop() <python:set.pop>`.
+
+        Returns
+        -------
+        VectorType
+            The type that was removed.
+
+        Raises
+        ------
+        KeyError
+            If the composite is empty.
+
+        See Also
+        --------
+        CompositeType.add : Add a type to the composite.
+        CompositeType.remove : Remove a type from the composite.
+        CompositeType.discard : Remove a type from the composite if it is
+            present.
+        CompositeType.clear : Remove all types from the composite.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite.pop()
+            int
+            >>> composite   # doctest: +SKIP
+            CompositeType({float, complex})
+            >>> composite.pop()
+            float
+            >>> composite   # doctest: +SKIP
+            CompositeType({})
+            >>> composite.pop()   # empty
+            Traceback (most recent call last):
+                ...
+            KeyError: 'pop from an empty set'
         """
         self.forget_index()
         return self.types.pop()
 
     def clear(self) -> None:
-        """Remove all types from the CompositeType."""
+        """Remove all types from the composite.
+
+        This is equivalent to :meth:`set.clear() <python:set.clear>`.
+
+        See Also
+        --------
+        CompositeType.add : Add a type to the composite.
+        CompositeType.remove : Remove a type from the composite.
+        CompositeType.discard : Remove a type from the composite if it is
+            present.
+        CompositeType.pop : Remove and return an arbitrary type from the
+            composite.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float, complex")
+            >>> composite.clear()
+            >>> composite   # doctest: +SKIP
+            CompositeType({})
+        """
         self.types.clear()
         self.forget_index()
 
     def copy(self) -> CompositeType:
-        """Return a shallow copy of the CompositeType."""
+        """Return a shallow copy of the composite.
+
+        This is equivalent to :meth:`set.copy() <python:set.copy>`.
+
+        Returns
+        -------
+        CompositeType
+            A shallow copy of the composite.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float, complex")
+            >>> composite2 = composite.copy()
+            >>> composite2.add("bool")
+            >>> composite   # doctest: +SKIP
+            CompositeType({int, float, complex})
+            >>> composite2   # doctest: +SKIP
+            CompositeType({int, float, complex, bool})
+        """
         return CompositeType(self)
 
     ##########################
@@ -340,6 +552,36 @@ cdef class CompositeType(Type):
     def union(self, *others: type_specifier) -> CompositeType:
         """Return a new :class:`CompositeType <pdcast.CompositeType>` with the
         contents of this and all others.
+
+        This is equivalent to :meth:`set.union() <python:set.union>`.
+
+        Parameters
+        ----------
+        *others : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        CompositeType
+            A new composite with the contents of this and all others.
+
+        See Also
+        --------
+        CompositeType.intersection : Return a new composite with types in
+            common to this and all others.
+        CompositeType.difference : Return a new composite with types that are
+            not in any of the others.
+        CompositeType.symmetric_difference : Return a new composite with types
+            that are in exactly one of this and the others.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite.union("float, complex")   # doctest: +SKIP
+            CompositeType({int, float, complex})
         """
         cdef CompositeType result
 
@@ -351,6 +593,37 @@ cdef class CompositeType(Type):
     def intersection(self, *others: type_specifier) -> CompositeType:
         """Return a new :class:`CompositeType <pdcast.CompositeType>` with
         types in common to this and all others.
+
+        This is equivalent to
+        :meth:`set.intersection() <python:set.intersection>`.
+
+        Parameters
+        ----------
+        *others : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        CompositeType
+            A new composite with types in common to this and all others.
+
+        See Also
+        --------
+        CompositeType.union : Return a new composite with the contents of this
+            and all others.
+        CompositeType.difference : Return a new composite with types that are
+            not in any of the others.
+        CompositeType.symmetric_difference : Return a new composite with types
+            that are in exactly one of this and the others.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite.intersection("float, complex")   # doctest: +SKIP
+            CompositeType({float})
         """
         cdef CompositeType result
 
@@ -362,6 +635,36 @@ cdef class CompositeType(Type):
     def difference(self, *others: type_specifier) -> CompositeType:
         """Return a new :class:`CompositeType <pdcast.CompositeType>` with
         types that are not in any of the others.
+
+        This is equivalent to :meth:`set.difference() <python:set.difference>`.
+
+        Parameters
+        ----------
+        *others : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        CompositeType
+            A new composite with types that are not in any of the others.
+
+        See Also
+        --------
+        CompositeType.union : Return a new composite with the contents of this
+            and all others.
+        CompositeType.intersection : Return a new composite with types in
+            common to this and all others.
+        CompositeType.symmetric_difference : Return a new composite with types
+            that are in exactly one of this and the others.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite.difference("float, complex")   # doctest: +SKIP
+            CompositeType({int})
         """
         cdef CompositeType result
         cdef CompositeType other
@@ -378,19 +681,115 @@ cdef class CompositeType(Type):
 
     def symmetric_difference(self, other: type_specifier) -> CompositeType:
         """Return a new :class:`CompositeType <pdcast.CompositeType>` with
-        types that are in either this or ``other``, but not both.
+        types that are in either this composite or ``other``, but not both.
+
+        This is equivalent to
+        :meth:`set.symmetric_difference() <python:set.symmetric_difference>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        CompositeType
+            A new composite with types that are in exactly one of this and
+            ``other``.
+
+        See Also
+        --------
+        CompositeType.union : Return a new composite with the contents of this
+            and all others.
+        CompositeType.intersection : Return a new composite with types in
+            common to this and all others.
+        CompositeType.difference : Return a new composite with types that are
+            not in any of the others.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite.symmetric_difference("float, complex")   # doctest: +SKIP
+            CompositeType({int, complex})
         """
         return self ^ other
 
     def __or__(self, typespec: type_specifier) -> CompositeType:
-        """Return the union of two CompositeTypes."""
+        """Return the union of two
+        :class:`CompositeTypes <pdcast.CompositeType>`.
+
+        This is equivalent to :meth:`set.__or__() <python:set.__or__>`.
+
+        Parameters
+        ----------
+        typespec : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        CompositeType
+            A new composite with the contents of this and ``typespec``.
+
+        See Also
+        --------
+        CompositeType.__and__ : Return a new composite with types in common to
+            this and ``typespec``.
+        CompositeType.__sub__ : Return a new composite with types that are not
+            in ``typespec``.
+        CompositeType.__xor__ : Return a new composite with types that are in
+            exactly one of this and ``typespec``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite | {"float", "complex"}   # doctest: +SKIP
+            CompositeType({int, float, complex})
+        """
         cdef CompositeType other
 
         other = resolve_type([typespec])
         return CompositeType(self.types | other.types)
 
     def __and__(self, typespec: type_specifier) -> CompositeType:
-        """Return the intersection of two CompositeTypes."""
+        """Return the intersection of two
+        :class:`CompositeTypes <pdcast.CompositeType>`.
+
+        This is equivalent to :meth:`set.__and__() <python:set.__and__>`.
+
+        Parameters
+        ----------
+        typespec : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        CompositeType
+            A new composite with types in common to this and ``typespec``.
+
+        See Also
+        --------
+        CompositeType.__or__ : Return a new composite with the contents of this
+            and ``typespec``.
+        CompositeType.__sub__ : Return a new composite with types that are not
+            in ``typespec``.
+        CompositeType.__xor__ : Return a new composite with types that are in
+            exactly one of this and ``typespec``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite & {"float", "complex"}   # doctest: +SKIP
+            CompositeType({float})
+        """
         cdef CompositeType other
         cdef VectorType typ
         cdef set forward
@@ -402,7 +801,39 @@ cdef class CompositeType(Type):
         return CompositeType(forward | backward)
 
     def __sub__(self, typespec: type_specifier) -> CompositeType:
-        """Return the difference of two CompositeTypes."""
+        """Return the difference of two
+        :class:`CompositeTypes <pdcast.CompositeType>`.
+
+        This is equivalent to :meth:`set.__sub__() <python:set.__sub__>`.
+
+        Parameters
+        ----------
+        typespec : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        CompositeType
+            A new composite with types that are not in ``typespec``.
+
+        See Also
+        --------
+        CompositeType.__or__ : Return a new composite with the contents of this
+            and ``typespec``.
+        CompositeType.__and__ : Return a new composite with types in common to
+            this and ``typespec``.
+        CompositeType.__xor__ : Return a new composite with types that are in
+            exactly one of this and ``typespec``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite - {"float", "complex"}   # doctest: +SKIP
+            CompositeType({int})
+        """
         cdef CompositeType result
         cdef CompositeType other
         cdef VectorType typ
@@ -417,7 +848,40 @@ cdef class CompositeType(Type):
         return result.collapse()
 
     def __xor__(self, typespec: type_specifier) -> CompositeType:
-        """Return the symmetric difference of two CompositeTypes."""
+        """Return the symmetric difference of two
+        :class:`CompositeTypes <pdcast.CompositeType>`.
+
+        This is equivalent to :meth:`set.__xor__() <python:set.__xor__>`.
+
+        Parameters
+        ----------
+        typespec : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        CompositeType
+            A new composite with types that are in exactly one of this and
+            ``typespec``.
+
+        See Also
+        --------
+        CompositeType.__or__ : Return a new composite with the contents of this
+            and ``typespec``.
+        CompositeType.__and__ : Return a new composite with types in common to
+            this and ``typespec``.
+        CompositeType.__sub__ : Return a new composite with types that are not
+            in ``typespec``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite ^ {"float", "complex"}   # doctest: +SKIP
+            CompositeType({int, complex})
+        """
         cdef CompositeType other
 
         other = resolve_type([typespec])
@@ -430,6 +894,33 @@ cdef class CompositeType(Type):
     def update(self, *others: type_specifier) -> None:
         """Update this :class:`CompositeType <pdcast.CompositeType>` in-place,
         adding the contents of all others.
+
+        This is equivalent to :meth:`set.update() <python:set.update>`.
+
+        Parameters
+        ----------
+        others : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        See Also
+        --------
+        CompositeType.intersection_update : Update this composite, keeping only
+            types found in all others.
+        CompositeType.difference_update : Update this composite, removing
+            types found in any of the others.
+        CompositeType.symmetric_difference_update : Update this composite,
+            keeping types that are found in it or any of the others, but not
+            both.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite.update({"float", "complex"})
+            >>> composite   # doctest: +SKIP
+            CompositeType({int, float, complex})
         """
         for other in others:
             self |= other
@@ -437,6 +928,34 @@ cdef class CompositeType(Type):
     def intersection_update(self, *others: type_specifier) -> None:
         """Update this :class:`CompositeType <pdcast.CompositeType>` in-place,
         keeping types found in it and all others.
+
+        This is equivalent to
+        :meth:`set.intersection_update() <python:set.intersection_update>`.
+
+        Parameters
+        ----------
+        others : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        See Also
+        --------
+        CompositeType.update : Update this composite, adding the contents of
+            all others.
+        CompositeType.difference_update : Update this composite, removing
+            types found in any of the others.
+        CompositeType.symmetric_difference_update : Update this composite,
+            keeping types that are found in it or any of the others, but not
+            both.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite.intersection_update({"float", "complex"})
+            >>> composite   # doctest: +SKIP
+            CompositeType({float})
         """
         for other in others:
             self &= other
@@ -444,6 +963,34 @@ cdef class CompositeType(Type):
     def difference_update(self, *others: type_specifier) -> None:
         """Update this :class:`CompositeType <pdcast.CompositeType>` in-place,
         removing types from any of the others.
+
+        This is equivalent to
+        :meth:`set.difference_update() <python:set.difference_update>`.
+
+        Parameters
+        ----------
+        others : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        See Also
+        --------
+        CompositeType.update : Update this composite, adding the contents of
+            all others.
+        CompositeType.intersection_update : Update this composite, keeping only
+            types found in all others.
+        CompositeType.symmetric_difference_update : Update this composite,
+            keeping types that are found in it or any of the others, but not
+            both.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite.difference_update({"float", "complex"})
+            >>> composite   # doctest: +SKIP
+            CompositeType({int})
         """
         for other in others:
             self -= other
@@ -451,12 +998,70 @@ cdef class CompositeType(Type):
     def symmetric_difference_update(self, other: type_specifier) -> None:
         """Update this :class:`CompositeType <pdcast.CompositeType>` in-place,
         keeping types that are found in it or ``other``, but not both.
+
+        This is equivalent to
+        :meth:`set.symmetric_difference_update() <python:set.symmetric_difference_update>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        See Also
+        --------
+        CompositeType.update : Update this composite, adding the contents of
+            all others.
+        CompositeType.intersection_update : Update this composite, keeping only
+            types found in all others.
+        CompositeType.difference_update : Update this composite, removing
+            types found in any of the others.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite.symmetric_difference_update({"float", "complex"})
+            >>> composite   # doctest: +SKIP
+            CompositeType({int, complex})
         """
         self ^= other
 
     def __ior__(self, other: type_specifier) -> CompositeType:
         """Merge the contents of another
         :class:`CompositeType <pdcast.CompositeType>` into this one.
+
+        This is equivalent to :meth:`set.__ior__() <python:set.__ior__>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        CompositeType
+            This composite, after merging the contents of ``other``.
+
+        See Also
+        --------
+        CompositeType.__iand__ : Keep only types found in both this and another
+            composite.
+        CompositeType.__isub__ : Remove types found in another composite from
+            this one.
+        CompositeType.__ixor__ : Keep only types found in either this or
+            another composite, but not both.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite |= {"float", "complex"}
+            >>> composite   # doctest: +SKIP
+            CompositeType({int, float, complex})
         """
         result = self | other
         self.types = result.types
@@ -465,6 +1070,38 @@ cdef class CompositeType(Type):
     def __iand__(self, other: type_specifier) -> CompositeType:
         """Keep only types found in both this and another
         :class:`CompositeType <pdcast.CompositeType>`.
+
+        This is equivalent to :meth:`set.__iand__() <python:set.__iand__>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        CompositeType
+            This composite, after keeping only types found in both it and
+            ``other``.
+
+        See Also
+        --------
+        CompositeType.__ior__ : Merge the contents of another composite into
+            this one.
+        CompositeType.__isub__ : Remove types found in another composite from
+            this one.
+        CompositeType.__ixor__ : Keep only types found in either this or
+            another composite, but not both.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite &= {"float", "complex"}
+            >>> composite   # doctest: +SKIP
+            CompositeType({float})
         """
         result = self & other
         self.types = result.types
@@ -473,6 +1110,37 @@ cdef class CompositeType(Type):
     def __isub__(self, other: type_specifier) -> CompositeType:
         """Remove types found in another
         :class:`CompositeType <pdcast.CompositeType>` from this one.
+
+        This is equivalent to :meth:`set.__isub__() <python:set.__isub__>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        CompositeType
+            This composite, after removing types found in ``other``.
+
+        See Also
+        --------
+        CompositeType.__ior__ : Merge the contents of another composite into
+            this one.
+        CompositeType.__iand__ : Keep only types found in both this and another
+            composite.
+        CompositeType.__ixor__ : Keep only types found in either this or
+            another composite, but not both.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite -= {"float", "complex"}
+            >>> composite   # doctest: +SKIP
+            CompositeType({int})
         """
         result = self - other
         self.types = result.types
@@ -481,6 +1149,38 @@ cdef class CompositeType(Type):
     def __ixor__(self, other: type_specifier) -> CompositeType:
         """Keep only types found in either this or another
         :class:`CompositeType <pdcast.CompositeType>`, but not both.
+
+        This is equivalent to :meth:`set.__ixor__() <python:set.__ixor__>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The other types to include in the composite.  These can be in any
+            format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        CompositeType
+            This composite, after keeping only types found in either it or
+            ``other``, but not both.
+
+        See Also
+        --------
+        CompositeType.__ior__ : Merge the contents of another composite into
+            this one.
+        CompositeType.__iand__ : Keep only types found in both this and another
+            composite.
+        CompositeType.__isub__ : Remove types found in another composite from
+            this one.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite ^= {"float", "complex"}
+            >>> composite   # doctest: +SKIP
+            CompositeType({int, complex})
         """
         result = self ^ other
         self.types = result.types
@@ -491,20 +1191,149 @@ cdef class CompositeType(Type):
     ###########################
 
     def issubset(self, other: type_specifier) -> bool:
-        """TODO"""
-        raise NotImplementedError()
+        """Check whether every element in ``self`` is contained in ``other``.
+
+        This is equivalent to :meth:`set.issubset() <python:set.issubset>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The types to compare against.  These can be in any format
+            recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if every element in ``self`` is contained in ``other``.
+            ``False`` otherwise.
+
+        See Also
+        --------
+        CompositeType.issuperset : Check whether every element in ``other`` is
+            contained in ``self``.
+        CompositeType.isdisjoint : Check whether ``self`` and ``other`` have no
+            elements in common.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite.issubset({"int", "float", "complex"})
+            True
+            >>> composite.issubset({"int", "complex"})
+            False
+        """
+        return resolve_type([other]).contains(self)
 
     def issuperset(self, other: type_specifier) -> bool:
-        """TODO"""
-        raise NotImplementedError()
+        """Check whether every element in ``other`` is contained in ``self``.
+
+        This is equivalent to :meth:`set.issuperset() <python:set.issuperset>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The types to compare against.  These can be in any format
+            recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if every element in ``other`` is contained in ``self``.
+            ``False`` otherwise.
+
+        See Also
+        --------
+        CompositeType.issubset : Check whether every element in ``self`` is
+            contained in ``other``.
+        CompositeType.isdisjoint : Check whether ``self`` and ``other`` have no
+            elements in common.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite.issuperset({"int"})
+            True
+            >>> composite.issuperset({"int", "complex"})
+            False
+        """
+        return self.contains(other)
 
     def isdisjoint(self, other: type_specifier) -> bool:
-        """TODO"""
-        raise NotImplementedError()
+        """Check whether ``self`` and ``other`` have no elements in common.
+
+        This is equivalent to :meth:`set.isdisjoint() <python:set.isdisjoint>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The types to compare against.  These can be in any format
+            recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``self`` and ``other`` have no elements in common.
+            ``False`` otherwise.
+
+        See Also
+        --------
+        CompositeType.issubset : Check whether every element in ``self`` is
+            contained in ``other``.
+        CompositeType.issuperset : Check whether every element in ``other`` is
+            contained in ``self``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite.isdisjoint("complex")
+            True
+            >>> composite.isdisjoint("int, complex")
+            False
+        """
+        return not self & other
 
     def __gt__(self, typespec: type_specifier) -> bool:
-        """Test whether `self` is a proper superset of `other`
+        """Test whether ``self`` is a proper superset of ``other``
         (``self >= other and self != other``).
+
+        This is equivalent to :meth:`set.__gt__() <python:set.__gt__>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The types to compare against.  These can be in any format
+            recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``self`` is a proper superset of ``other``.
+            ``False`` otherwise.
+
+        See Also
+        --------
+        CompositeType.__ge__ : Test whether every element in ``other`` is
+            contained within ``self``.
+        CompositeType.__lt__ : Test whether ``self`` is a proper subset of
+            ``other``.
+        CompositeType.__le__ : Test whether every element in ``self`` is
+            contained within ``other``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite > {"int"}
+            True
+            >>> composite > {"int", "float"}
+            False
         """
         cdef Type other
 
@@ -512,20 +1341,111 @@ cdef class CompositeType(Type):
         return self != other and self >= other
 
     def __ge__(self, typespec: type_specifier) -> bool:
-        """Test whether every element in `other` is contained within `self`.
+        """Test whether every element in ``other`` is contained within ``self``.
+
+        This is equivalent to :meth:`set.__ge__() <python:set.__ge__>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The types to compare against.  These can be in any format
+            recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if every element in ``other`` is contained within
+            ``self``.  ``False`` otherwise.
+
+        See Also
+        --------
+        CompositeType.__gt__ : Test whether ``self`` is a proper superset of
+            ``other``.
+        CompositeType.__lt__ : Test whether ``self`` is a proper subset of
+            ``other``.
+        CompositeType.__le__ : Test whether every element in ``self`` is
+            contained within ``other``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite >= {"int"}
+            True
+            >>> composite >= {"int", "float"}
+            True
         """
         return self.contains(typespec)
 
     def __eq__(self, typespec: type_specifier) -> bool:
-        """Test whether `self` and `other` contain identical types."""
+        """Test whether ``self`` and ``other`` contain identical types.
+
+        This is equivalent to :meth:`set.__eq__() <python:set.__eq__>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The types to compare against.  These can be in any format
+            recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``self`` and ``other`` contain identical types.
+            ``False`` otherwise.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite == {"int", "float"}
+            True
+            >>> composite == {"int", "complex"}
+            False
+        """
         cdef CompositeType other
 
         other = resolve_type([typespec])
         return self.types == other.types
 
     def __lt__(self, typespec: type_specifier) -> bool:
-        """Test whether `self` is a proper subset of `other`
+        """Test whether ``self`` is a proper subset of ``other``
         (``self <= other and self != other``).
+
+        This is equivalent to :meth:`set.__lt__() <python:set.__lt__>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The types to compare against.  These can be in any format
+            recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if ``self`` is a proper subset of ``other``.
+            ``False`` otherwise.
+
+        See Also
+        --------
+        CompositeType.__le__ : Test whether every element in ``self`` is
+            contained within ``other``.
+        CompositeType.__gt__ : Test whether ``self`` is a proper superset of
+            ``other``.
+        CompositeType.__ge__ : Test whether every element in ``other`` is
+            contained within ``self``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite < {"int", "float", "complex"}
+            True
+            >>> composite < {"int", "float"}
+            False
         """
         cdef Type other
 
@@ -533,7 +1453,41 @@ cdef class CompositeType(Type):
         return self != other and self <= other
 
     def __le__(self, typespec: type_specifier) -> bool:
-        """Test whether every element in `self` is contained within `other`."""
+        """Test whether every element in ``self`` is contained within ``other``.
+
+        This is equivalent to :meth:`set.__le__() <python:set.__le__>`.
+
+        Parameters
+        ----------
+        other : type_specifier
+            The types to compare against.  These can be in any format
+            recognized by :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if every element in ``self`` is contained within
+            ``other``.  ``False`` otherwise.
+
+        See Also
+        --------
+        CompositeType.__lt__ : Test whether ``self`` is a proper subset of
+            ``other``.
+        CompositeType.__gt__ : Test whether ``self`` is a proper superset of
+            ``other``.
+        CompositeType.__ge__ : Test whether every element in ``other`` is
+            contained within ``self``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite <= {"int", "float", "complex"}
+            True
+            >>> composite <= {"int", "float"}
+            True
+        """
         return resolve_type(typespec).contains(self)
 
     ####################
@@ -541,20 +1495,86 @@ cdef class CompositeType(Type):
     ####################
 
     def __bool__(self) -> bool:
-        """True if this :class:`CompositeType <pdcast.CompositeType>` is empty.
+        """Check if this :class:`CompositeType <pdcast.CompositeType>` is empty.
+
+        Returns
+        -------
+        bool
+            ``True`` if this composite is empty.  ``False`` otherwise.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> bool(pdcast.resolve_type("int, float"))
+            True
+            >>> bool(pdcast.resolve_type([]))
+            False
         """
         return bool(self.types)
 
     def __contains__(self, typespec: type_specifier) -> bool:
-        """Equivalent to ``self.contains(typespec)``."""
+        """Check if the composite contains a given type.
+
+        This is equivalent to ``self.contains(typespec)``.
+
+        Parameters
+        ----------
+        typespec : type_specifier
+            The type to check for.  This can be in any format recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`.
+
+        Returns
+        -------
+        bool
+            ``True`` if the composite contains the type.  ``False`` otherwise.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> "int" in composite
+            True
+            >>> "complex" in composite
+            False
+        """
         return self.contains(typespec)
 
     def __iter__(self):
-        """Iterate through the types contained within a CompositeType."""
+        """Iterate through a :class:`CompositeType <pdcast.CompositeType>`.
+
+        Returns
+        -------
+        Iterator[VectorType]
+            An iterator over the types in the composite.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> [typ for typ in composite]
+            [FloatType(), IntegerType()]
+        """
         return iter(self.types)
 
     def __len__(self):
-        """Return the number of types in the CompositeType."""
+        """Return the number of types in the composite.
+
+        Returns
+        -------
+        int
+            The number of types in the composite.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> composite = pdcast.resolve_type("int, float")
+            >>> len(composite)
+            2
+        """
         return len(self.types)
 
     def __repr__(self) -> str:

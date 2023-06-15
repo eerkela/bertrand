@@ -45,6 +45,10 @@ from ..array import construct_object_dtype
 # standardized type.  Some are being emitted due to VectorType.__setattr__
 
 
+# TODO: remove is_generic
+# -> affects is_leaf, ObjectType
+
+
 ######################
 ####    SCALAR    ####
 ######################

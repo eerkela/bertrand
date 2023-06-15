@@ -126,7 +126,6 @@ the following properties.
     ScalarType.supertype
     ScalarType.is_generic
     ScalarType.generic
-    ScalarType.backend
     ScalarType.implementations
     ScalarType.subtypes
     ScalarType.is_leaf

@@ -312,8 +312,19 @@ includes by default.
 
       (.venv) $ git clone https://github.com/eerkela/pdcast
       (.venv) $ cd pdcast/
-      (.venv) $ pip install -e .
+      (.venv) $ pip install -e .[dev]
       (.venv) $ make help
+
+   .. warning::
+
+      Manual installs may also require Python development headers if they are
+      not already present.  These can be installed via your system's package
+      manager.
+
+         *  On Ubuntu (or other Debian-based systems), run
+            ``sudo apt-get install python3-dev``.
+         *  On CentOS, run: ``sudo yum install python3-devel``.
+         *  On Fedora, run: ``sudo dnf install python3-devel``.
 
 .. uncomment this when documentation goes live
 
