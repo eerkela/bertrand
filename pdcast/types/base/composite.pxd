@@ -4,8 +4,10 @@ from .scalar cimport ScalarType
 
 
 cdef class CompositeType(Type):
+    cdef:
+        np.ndarray _index
+
     cdef readonly:
         set types
-        np.ndarray _index
 
     cdef void forget_index(self)

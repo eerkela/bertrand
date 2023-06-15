@@ -12,7 +12,7 @@ cimport numpy as np
 import numpy as np
 import pandas as pd
 
-from pdcast.decorators import attachable
+from pdcast.decorators.attachable import attachable
 from pdcast.resolve import resolve_type
 from pdcast import types
 from pdcast cimport types
@@ -24,7 +24,7 @@ from pdcast.util.vector cimport as_array
 ######################
 
 
-@attachable.attachable
+@attachable
 def detect_type(data: Any, skip_na: bool = True) -> types.Type | dict:
     """Infer types from example data.
 
@@ -202,18 +202,16 @@ cdef types.CompositeType detect_vector_type(object[:] arr, dict lookup):
 
     This uses run-length encoding to reduce memory consumption.
     """
-    cdef int arr_length = arr.shape[0]
-    cdef int i
+    cdef unsigned int arr_length = arr.shape[0]
+    cdef unsigned int i
     cdef object element
     cdef type element_type
     cdef types.ScalarType resolved
-    cdef set observed = set()
-
-    # for run-length encoding
-    cdef list counts = []
     cdef types.ScalarType last = None
-    cdef int count = 0
+    cdef unsigned int count = 0
+    cdef list counts = []
     cdef np.ndarray index
+    cdef set observed = set()
 
     # iterate through array
     for i in range(arr_length):
@@ -229,14 +227,12 @@ cdef types.CompositeType detect_vector_type(object[:] arr, dict lookup):
         else:
             resolved = resolved.from_scalar(element)
 
-        # add result to observed
-        observed.add(resolved)
-
         # increment count if result is same as the previous index
         if resolved == last:
             count += 1
         else:
             # otherwise, append the last type and count to list
+            observed.add(resolved)
             if last is not None:
                 counts.append((last, count))
 
@@ -246,6 +242,7 @@ cdef types.CompositeType detect_vector_type(object[:] arr, dict lookup):
 
     # append the last type and count to list
     if last is not None:
+        observed.add(last)
         counts.append((last, count))
 
     # create structured index

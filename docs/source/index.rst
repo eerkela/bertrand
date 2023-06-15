@@ -17,13 +17,11 @@
 .. toctree::
    :hidden:
    :caption: Contents
-   :maxdepth: 1
 
    Overview <self>
 
 .. toctree::
    :hidden:
-   :maxdepth: 3
 
    Motivation <content/motivation>
    Tutorial: bfloat16 <content/tutorial>

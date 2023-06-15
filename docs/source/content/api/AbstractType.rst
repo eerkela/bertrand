@@ -99,7 +99,7 @@ can be traversed using these properties:
     AbstractType.supertype
     AbstractType.is_generic
     AbstractType.generic
-    AbstractType.backends
+    AbstractType.implementations
     AbstractType.subtypes
     AbstractType.is_leaf
     AbstractType.leaves

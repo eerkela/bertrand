@@ -78,10 +78,12 @@ cdef class CompositeType(Type):
 
         Returns
         -------
-        numpy.ndarray
-            An :class: `ndarray <numpy.ndarray>` of
-            :class:`ScalarTypes <pdcast.ScalarType>` that are contained in this
-            composite.
+        numpy.ndarray | None
+            a 1D :class:`array <numpy.ndarray>` of
+            :class:`ScalarTypes <pdcast.ScalarType>` contained within this
+            composite if it was created by
+            :func:`detect_type() <pdcast.detect_type>`.
+            Otherwise, :data:`None <python:None>`.
 
         See Also
         --------
@@ -89,15 +91,15 @@ cdef class CompositeType(Type):
 
         Notes
         -----
-        Internally, this uses `Run Length Encoding (RLE)
+        This attribute uses `Run Length Encoding (RLE)
         <https://en.wikipedia.org/wiki/Run-length_encoding>`_ to compress the
-        inferred types.  This makes it extremely space efficient, especially
-        for large arrays with many elements of a repeated type.
+        inferred types.  This makes them extremely space efficient, especially
+        for large arrays with elements of repeated type.
 
         Additionally, since :class:`ScalarTypes <pdcast.ScalarType>` are
         :ref:`flyweights <ScalarType.constructors>`, multiple runs can
-        reference the same type in memory.  This makes it efficient even in the
-        worst case, where runs frequently start and stop.
+        reference the same object in memory.  They are thus efficient even in
+        the worst case, where runs start and stop frequently.
 
         Examples
         --------
@@ -115,7 +117,7 @@ cdef class CompositeType(Type):
         .. note::
 
             This index can be used for :meth:`groupby() <pandas.Series.groupby>`
-            operations on the original array.
+            operations on the original sequence.
 
             .. doctest::
 
@@ -134,6 +136,9 @@ cdef class CompositeType(Type):
                 5    5
                 dtype: object
         """
+        if self._index is None:
+            return None
+
         return np.repeat(self._index['type'], self._index['count'])
 
     cdef void forget_index(self):
@@ -241,7 +246,8 @@ cdef class CompositeType(Type):
     ###########################
 
     def expand(self, expand_generics: bool = True) -> CompositeType:
-        """Expand the contained types to include each of their subtypes."""
+        """Expand the contained types to include each of their subtypes.
+        """
         cdef CompositeType result
         cdef VectorType original
         cdef VectorType typ
