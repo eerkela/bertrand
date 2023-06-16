@@ -45,10 +45,6 @@ from ..array import construct_object_dtype
 # standardized type.  Some are being emitted due to VectorType.__setattr__
 
 
-# TODO: remove is_generic
-# -> affects is_leaf, ObjectType
-
-
 ######################
 ####    SCALAR    ####
 ######################
@@ -847,39 +843,6 @@ cdef class ScalarType(VectorType):
         return self.registry.get_supertype(self)
 
     @property
-    def is_generic(self):
-        """A flag indicating whether this type is managing any implementations.
-
-        Returns
-        -------
-        bool
-            ``True`` if this type has one or more registered
-            :meth:`implementations <pdcast.AbstractType.implementation>`.
-
-        See Also
-        --------
-        ScalarType.generic : The generic equivalent of this type, if one
-            exists.
-
-        Notes
-        -----
-        For :class:`ScalarType <pdcast.ScalarType>` objects, this will always
-        be ``False``.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> pdcast.resolve_type("int64[numpy]").is_generic
-            False
-            >>> pdcast.resolve_type("float16").is_generic
-            True
-            >>> pdcast.resolve_type("bool").is_generic
-            True
-        """
-        return False  # overridden in AbstractType
-
-    @property
     def generic(self):
         """The :class:`AbstractType <pdcast.AbstractType>` that this type is an
         :meth:`implementation <pdcast.AbstractType.implementation>` of, if one
@@ -889,11 +852,6 @@ cdef class ScalarType(VectorType):
         -------
         AbstractType
             The generic type that this type is registered to, if one exists.
-
-        See Also
-        --------
-        ScalarType.is_generic : A flag indicating whether this type is managing
-            any implementations.
 
         Examples
         --------
@@ -1963,33 +1921,6 @@ cdef class AbstractType(ScalarType):
     #########################
 
     @property
-    def is_generic(self):
-        """A flag indicating whether this type is managing any implementations.
-
-        Returns
-        -------
-        bool
-            ``True`` if this type has one or more registered
-            :meth:`implementations <pdcast.AbstractType.implementation>`.
-
-        See Also
-        --------
-        ScalarType.is_generic : The scalar equivalent of this attribute.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> pdcast.resolve_type("int64[numpy]").is_generic
-            False
-            >>> pdcast.resolve_type("float16").is_generic
-            True
-            >>> pdcast.resolve_type("bool").is_generic
-            True
-        """
-        return bool(self.registry.get_implementations(self))
-
-    @property
     def implementations(self):
         """A mapping of all the
         :meth:`implementations <pdcast.AbstractType.implementation>` that are
@@ -2092,7 +2023,12 @@ cdef class AbstractType(ScalarType):
             >>> pdcast.resolve_type("bool").is_leaf
             False
         """
-        return not self.subtypes and not self.is_generic
+        try:
+            implementations = self.registry.get_implementations(self)
+        except TypeError:
+            implementations = {}
+
+        return not self.subtypes and not implementations
 
     ###############################
     ####    UPCAST/DOWNCAST    ####

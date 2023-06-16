@@ -97,7 +97,6 @@ can be traversed using these properties:
     AbstractType.is_root
     AbstractType.root
     AbstractType.supertype
-    AbstractType.is_generic
     AbstractType.generic
     AbstractType.implementations
     AbstractType.subtypes

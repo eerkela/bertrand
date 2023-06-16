@@ -124,7 +124,6 @@ the following properties.
     ScalarType.is_root
     ScalarType.root
     ScalarType.supertype
-    ScalarType.is_generic
     ScalarType.generic
     ScalarType.implementations
     ScalarType.subtypes

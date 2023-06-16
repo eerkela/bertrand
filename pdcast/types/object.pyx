@@ -67,11 +67,6 @@ class ObjectType(ScalarType):
         """Forward `type_def` lookups to parametrized kwargs"""
         return self.kwargs["type_def"]
 
-    @property
-    def is_generic(self) -> bool:
-        """Treat `type_def=object` as generic."""
-        return self.type_def is object
-
 
 #######################
 ####    PRIVATE    ####
