@@ -30,8 +30,8 @@ resolve
 # pylint: disable=undefined-variable, redefined-builtin
 from .types import *
 from .convert import (
-    cast, to_boolean, to_integer, to_float, to_complex, to_decimal,
-    to_datetime, to_timedelta, to_string
+    cast, categorize, decategorize, densify, sparsify, to_boolean, to_integer,
+    to_float, to_complex, to_decimal, to_datetime, to_timedelta, to_string
 )
 from .decorators.attachable import (
     attachable, Attachable, ClassMethod, InstanceMethod, Namespace, Property,

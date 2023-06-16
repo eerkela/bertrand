@@ -490,29 +490,112 @@ cdef class DecoratorType(VectorType):
     ####################################
 
     def transform(self, series: pd.Series) -> pd.Series:
-        """Given an unwrapped conversion result, apply all the necessary logic
-        to bring it into alignment with this DecoratorType and all its children.
+        """Remove the decorator from an equivalently-typed series.
 
-        This is a recursive method that traverses the `decorators` linked list
-        in reverse order (from the inside out).  At the first level, the
-        unwrapped series is passed as input to that decorators's
-        `transform()` method, which may be overridden as needed.  That
-        method must return a properly-wrapped copy of the original, which is
-        passed to the next decorator and so on.  Thus, if an DecoratorType
-        seeks to change any aspect of the series it adapts (as is the case with
-        sparse/categorical types), then it must override this method and invoke
-        it *before* applying its own logic, like so:
+        Parameters
+        ----------
+        series : pd.Series
+            The series to transform.  This will always have this decorator's
+            :attr:`dtype <pdcast.ScalarType.dtype>`.
 
-        ```
-        series = super().apply_adapters(series)
-        ```
+        Returns
+        -------
+        pd.Series
+            A copy of the input series with the decorator removed.
 
-        This pattern maintains the inside-out resolution order of this method.
+        See Also
+        --------
+        DecoratorType.inverse_transform : Apply the decorator to a series.
+
+        Notes
+        -----
+        This method is used to automatically retry :func:`cast() <pdcast.cast>`
+        operations when they fail due to a type mismatch.
+
+        If the mismatch occurs due to the presence of a decorator in the target
+        type, then the decorator will be removed and the conversion will be
+        retried with the wrapped type as the target.  This is done recursively
+        until a match is found somewhere in its decorator stack.  Once found,
+        the conversion is performed, and the result is re-wrapped to match the
+        original target using this method at every level.
+
+        This approach helps reduce the combinatorial explosion of conversions
+        that would otherwise be required to handle all the possible
+        permutations of decorators and types.  As a result, each conversion can
+        be defined exclusively at the scalar level, with decorators being
+        handled automatically in the background.  As long as this method
+        produces the same output as a direct conversion to the original target,
+        it will give identical results.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> import pandas as pd
+
+            >>> target = pdcast.resolve_type("sparse[int64[numpy]]")
+            >>> target.transform(pd.Series([1, 2, 3]))
+            0    1
+            1    2
+            2    3
+            dtype: Sparse[int64, <NA>]
         """
+        # NOTE: by default, this method does nothing.  Users should override
+        # it to implement the appropriate transformations for their type.
         return series
 
     def inverse_transform(self, series: pd.Series) -> pd.Series:
-        """Remove a decorator from an example series."""
+        """Remove a decorator from an example series.
+
+        Parameters
+        ----------
+        series : pd.Series
+            The series to transform.  This will always have the same
+            :attr:`dtype <pdcast.ScalarType.dtype>` as the wrapped type.
+
+        Returns
+        -------
+        pd.Series
+            A copy of the input series with the decorator applied.
+
+        See Also
+        --------
+        DecoratorType.transform : Remove the decorator from a series.
+
+        Notes
+        -----
+        This method is used to automatically retry :func:`cast() <pdcast.cast>`
+        operations when they fail due to a type mismatch.
+
+        If the mismatch occurs due to the presence of a decorator in the source
+        data, then this method will be used to remove it from the data and
+        retry the conversion with the wrapped type as the source.  This is done
+        recursively until a match is found, at which point the conversion is
+        performed and the result returned as normal.
+
+        This approach helps reduce the combinatorial explosion of conversions
+        that would otherwise be required to handle all the possible
+        permutations of decorators and types.  As a result, each conversion can
+        be defined exclusively at the scalar level, with decorators being
+        handled automatically in the background.  As long as this method
+        produces like-valued output data, it will give identical results.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> import pandas as pd
+
+            >>> target = pdcast.resolve_type("sparse[int64[numpy]]")
+            >>> target.inverse_transform(pd.Series([1, 2, 3], dtype="Sparse[int]"))
+            0    1
+            1    2
+            2    3
+            dtype: int64
+        """
+        # NOTE: by default, this method just astypes() to the wrapped dtype.
+        # This may not be appropriate for all decorators, so users should
+        # override it if necessary.
         return series.astype(self.wrapped.dtype, copy=False)
 
     ##########################

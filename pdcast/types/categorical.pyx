@@ -78,12 +78,17 @@ class CategoricalType(DecoratorType):
     ####    DECORATOR-SPECIFIC    ####
     ##################################
 
-    def transform(
-        self,
-        series: pd.Series
-    ) -> pd.Series:
+    def transform(self, series: pd.Series) -> pd.Series:
         """Convert an unwrapped series into a categorical representation."""
-        return self.unwrap().make_categorical(series, levels=self.levels)
+        from pdcast.convert import categorize
+
+        return categorize(series, levels=self.levels)
+
+    def inverse_transform(self, series: pd.Series) -> pd.Series:
+        """TODO"""
+        from pdcast.convert import decategorize
+
+        return decategorize(series)
 
     #############################
     ####    CONFIGURATION    ####

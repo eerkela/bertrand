@@ -6,6 +6,8 @@
     import pandas as pd
     import pdcast
 
+.. TODO: add a section for sparsify/densify and categorize/decategorize
+
 pdcast.cast
 ===========
 

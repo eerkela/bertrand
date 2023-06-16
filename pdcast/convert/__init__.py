@@ -42,3 +42,5 @@ from .datetime import *
 from .timedelta import *
 from .string import *
 from .object import *
+from .sparse import *
+from .categorical import *

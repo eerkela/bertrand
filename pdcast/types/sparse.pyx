@@ -78,19 +78,15 @@ class SparseType(DecoratorType):
 
     def transform(self, series: pd.Series) -> pd.Series:
         """Convert a series into a sparse format with the given fill_value."""
-        # apply custom logic for each ScalarType
-        return self.unwrap().make_sparse(
-            series,
-            fill_value=self.fill_value
-        )
+        from pdcast.convert import sparsify
+
+        return sparsify(series, fill_value=self.fill_value)
 
     def inverse_transform(self, series: pd.Series) -> pd.Series:
         """Convert a sparse series into a dense format"""
-        # NOTE: this is a pending deprecation shim.  In a future version of
-        # pandas, astype() from a sparse to non-sparse dtype will return a
-        # non-sparse series.  Currently, it returns a sparse equivalent. When
-        # this behavior changes, this method can be deleted.
-        return series.sparse.to_dense()
+        from pdcast.convert import densify
+
+        return densify(series)
 
     ##########################
     ####    OVERRIDDEN    ####

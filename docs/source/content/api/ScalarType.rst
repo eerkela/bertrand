@@ -158,8 +158,6 @@ case-by-case basis.
 
     ScalarType.decorators
     ScalarType.unwrap
-    ScalarType.make_sparse
-    ScalarType.make_categorical
 
 .. _ScalarType.special:
 

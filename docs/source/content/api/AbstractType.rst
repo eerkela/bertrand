@@ -132,8 +132,6 @@ case-by-case basis.
 
     AbstractType.decorators
     AbstractType.unwrap
-    AbstractType.make_sparse
-    AbstractType.make_categorical
 
 .. _AbstractType.special:
 
