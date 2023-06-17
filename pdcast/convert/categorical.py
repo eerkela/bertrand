@@ -14,7 +14,7 @@ def categorize(series: pd.Series, levels: list = None) -> pd.Series:
 
     Parameters
     ----------
-    series : pd.Series
+    series : pandas.Series
         The series to transform.
     levels : list, optional
         The levels to use for the categorical series.  If this is omitted, then
@@ -22,7 +22,7 @@ def categorize(series: pd.Series, levels: list = None) -> pd.Series:
 
     Returns
     -------
-    pd.Series
+    pandas.Series
         A categorical series with the same values as the input.
 
     Notes
@@ -61,12 +61,12 @@ def decategorize(series: pd.Series) -> pd.Series:
 
     Parameters
     ----------
-    series : pd.Series
+    series : pandas.Series
         The series to transform.
 
     Returns
     -------
-    pd.Series
+    pandas.Series
         A non-categorical series with the same values as the input.
 
     Notes

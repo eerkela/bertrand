@@ -7,6 +7,9 @@ pdcast.dispatch
 
 .. autodecorator:: dispatch
 
+.. raw:: html
+    :file: ../../images/decorators/Decorators_UML.html
+
 
 
 .. original docstring for SeriesWrapper

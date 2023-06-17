@@ -494,13 +494,13 @@ cdef class DecoratorType(VectorType):
 
         Parameters
         ----------
-        series : pd.Series
+        series : pandas.Series
             The series to transform.  This will always have this decorator's
             :attr:`dtype <pdcast.ScalarType.dtype>`.
 
         Returns
         -------
-        pd.Series
+        pandas.Series
             A copy of the input series with the decorator removed.
 
         See Also
@@ -549,13 +549,13 @@ cdef class DecoratorType(VectorType):
 
         Parameters
         ----------
-        series : pd.Series
+        series : pandas.Series
             The series to transform.  This will always have the same
             :attr:`dtype <pdcast.ScalarType.dtype>` as the wrapped type.
 
         Returns
         -------
-        pd.Series
+        pandas.Series
             A copy of the input series with the decorator applied.
 
         See Also

@@ -10,9 +10,8 @@ class FunctionDecorator:
     """Base class for cooperative decorators.
 
     These decorators implement the Gang of Four's `Decorator pattern
-    <https://python-patterns.guide/gang-of-four/decorator-pattern/>`_ to 
-    cooperatively pass attribute access down a (possibly nested) decorator
-    stack.
+    <https://en.wikipedia.org/wiki/Decorator_pattern>`_ to  cooperatively pass
+    attribute access down a (possibly nested) decorator stack.
 
     Parameters
     ----------

@@ -58,11 +58,11 @@ def attachable(func: Callable) -> Callable:
     Returns
     -------
     Attachable
-        A cooperative decorator that allows full attribute access down the
-        decorator stack.  This object behaves exactly like the original
-        function when called, but exposes additional methods for
-        :meth:`attaching <pdcast.Attachable.attach_to>` it to existing classes
-        in a :ref:`variety of ways <attachable.attributes>`.
+        A :ref:`cooperative <attachable.nested>` decorator that allows
+        transparent access to the decorated function.  These objects behave
+        exactly like the original function when called, but expose additional
+        methods for :meth:`attaching <pdcast.Attachable.attach_to>` them to
+        external classes as :ref:`virtual attributes <attachable.attributes>`.
     """
     return Attachable(func)
 
@@ -691,7 +691,7 @@ class Namespace:
 
     @property
     def original(self) -> Any:
-        """Recover the original implementation, if one exists.
+        """Recover the original attribute, if one exists.
 
         Returns
         -------
@@ -766,7 +766,7 @@ class Namespace:
 
     def detach(self) -> None:
         """Remove the namespace from the object and replace the
-        :attr:`original <pdcast.Namespace.original>`, if one exists.
+        :attr:`original <pdcast.Namespace.original>` attribute, if one exists.
 
         Examples
         --------
@@ -850,7 +850,8 @@ class Namespace:
         instance: Any,
         owner: type = None
     ) -> Namespace:
-        """Access the namespace via a dotted lookup.
+        """Access the :class:`Namespace <pdcast.Namespace>` via a dotted
+        lookup.
 
         See the Python :ref:`descriptor tutorial <python:descriptorhowto>` for
         more information on how this works.
@@ -903,7 +904,7 @@ class Namespace:
 
 class InstanceMethod(VirtualAttribute):
     """Transforms an :class:`Attachable <pdcast.Attachable>` function into a
-    self-binding instance method.
+    bound method.
 
     These descriptors are returned by
     :meth:`Attachable.attach_to <pdcast.Attachable.attach_to>` with
@@ -947,7 +948,7 @@ class InstanceMethod(VirtualAttribute):
 
 class ClassMethod(VirtualAttribute):
     """Transforms an :class:`Attachable <pdcast.Attachable>` function into a
-    self-binding class method.
+    :func:`classmethod <python:classmethod>`.
 
     These descriptors are returned by
     :meth:`Attachable.attach_to <pdcast.Attachable.attach_to>` with
@@ -991,7 +992,7 @@ class ClassMethod(VirtualAttribute):
 
 class StaticMethod(VirtualAttribute):
     """Transforms an :class:`Attachable <pdcast.Attachable>` function into a
-    static method bound to the attached class.
+    :func:`staticmethod <python:staticmethod>`.
 
     These descriptors are returned by
     :meth:`Attachable.attach_to <pdcast.Attachable.attach_to>` with
@@ -1017,7 +1018,7 @@ class StaticMethod(VirtualAttribute):
 
 class Property(VirtualAttribute):
     """Transforms an :class:`Attachable <pdcast.Attachable>` function into a
-    managed property of the attached class.
+    managed :class:`@property <python:property>`.
 
     These descriptors are returned by
     :meth:`Attachable.attach_to <pdcast.Attachable.attach_to>` with
@@ -1074,73 +1075,6 @@ class Property(VirtualAttribute):
         """Call the property, producing an identical error to python."""
         return self._property(*args, **kwargs)  # raises TypeError
 
+    def __repr__(self) -> str:
+        return object.__repr__(self)
 
-
-
-
-# class Parent:
-
-#     def a(self):
-#         print("I'm a method!")
-#         return self
-
-#     @property
-#     def b(self):
-#         print("I'm a property!")
-#         return self
-
-#     @classmethod
-#     def c(cls):
-#         print("I'm a class method!")
-#         return cls
-
-#     @staticmethod
-#     def d():
-#         print("I'm a static method!")
-#         return None
-
-
-# class Foo(Parent):
-
-#     class bar:
-
-#         def __init__(self, obj: Foo):
-#             self.obj = obj
-
-#         def a(self):
-#             print("I'm a namespace method!")
-#             return self
-
-#         @property
-#         def b(self):
-#             print("I'm a namespace property!")
-#             return self
-
-#         @classmethod
-#         def c(cls):
-#             print("I'm a namespace class method!")
-#             return cls
-
-#         @staticmethod
-#         def d():
-#             print("I'm a namespace static method!")
-#             return None
-
-
-# @attachable
-# def baz(self):
-#     print("overloaded")
-#     return self
-
-
-# # baz.attach_to(Foo, name="a")
-# baz.attach_to(Foo, namespace="b", name="d")
-
-
-# def attach(name, namespace=None, pattern="method"):
-#     for v in baz.attached.values():
-#         v.detach()
-#     baz.attach_to(Foo, name=name, namespace=namespace, pattern=pattern)
-
-
-# breakpoint()

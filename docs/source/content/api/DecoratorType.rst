@@ -90,6 +90,10 @@ Special Methods
     DecoratorType.__str__
 
 
+.. TODO: discussion on parsing fill_value and levels should be moved into
+    the type index.
+
+
 
 ``DecoratorType``\s are types that modify other types.  These include sparse and
 categorical types, which provide a wrapper on top of a base ``ScalarType``

@@ -15,7 +15,7 @@ def sparsify(series: pd.Series, fill_value: Any = None) -> pd.Series:
 
     Parameters
     ----------
-    series : pd.Series
+    series : pandas.Series
         The series to transform.
     fill_value : Any, optional
         The value to hold out of the sparse series.  If not given, the
@@ -24,7 +24,7 @@ def sparsify(series: pd.Series, fill_value: Any = None) -> pd.Series:
 
     Returns
     -------
-    pd.Series
+    pandas.Series
         A sparse series with the same values as the input.
 
     Notes
@@ -61,12 +61,12 @@ def densify(series: pd.Series) -> pd.Series:
 
     Parameters
     ----------
-    series : pd.Series
+    series : pandas.Series
         The series to transform.
 
     Returns
     -------
-    pd.Series
+    pandas.Series
         A dense series with the same values as the input.
 
     Notes

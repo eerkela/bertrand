@@ -2,11 +2,17 @@
 
 pdcast/decorators/attachable.py
 ===============================
+The :func:`@attachable <attachable>` decorator is split across two files to
+allow for code reuse.  The first describes a base class that grants transparent
+attribute access to the wrapped function, and the second describes the
+:func:`@attachable <attachable>` decorator itself.
 
-Content of ``pdcast/func/base.py``
+pdcast/decorators/base.py
+-------------------------
 
 .. literalinclude:: ../../../../../pdcast/decorators/base.py
 
-Content of ``pdcast/func/attachable.py``
+pdcast/decorators/attachable.py
+-------------------------------
 
 .. literalinclude:: ../../../../../pdcast/decorators/attachable.py

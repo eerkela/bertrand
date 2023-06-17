@@ -11,6 +11,9 @@ pdcast.extension_func
 
 .. autodecorator:: extension_func
 
+.. raw:: html
+    :file: ../../images/decorators/Decorators_UML.html
+
 .. _extension_func.basic:
 
 Extension functions
