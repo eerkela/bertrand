@@ -171,39 +171,6 @@ in :meth:`Attachable.attach_to`.  The allowed values are:
 
 .. note::
 
-    We can add a setter/deleter for a :class:`Property` using the normal
-    :class:`@property <property>` interface.
-
-    .. doctest::
-
-        >>> @MyClass.foo.setter
-        ... def foo_setter(data, value):
-        ...     print(f"setting MyClass.foo to {value}")
-
-        >>> @MyClass.foo.deleter
-        ... def foo_deleter(data):
-        ...     print("deleting MyClass.foo")
-
-        >>> MyClass().foo = 2
-        setting MyClass.foo to 2
-        >>> del MyClass().foo
-        deleting MyClass.foo
-
-.. warning::
-
-    For :class:`Property` attributes, the :attr:`VirtualAttribute.original`
-    interface will be inaccessible from instances of ``MyClass``.
-
-    .. doctest::
-
-        >>> MyClass().foo.original
-        Hello, World!
-        Traceback (most recent call last):
-            ...
-        AttributeError: 'MyClass' object has no attribute 'original'
-
-.. note::
-
     Virtual attributes can be removed using :meth:`VirtualAttribute.detach`.
 
     .. doctest::

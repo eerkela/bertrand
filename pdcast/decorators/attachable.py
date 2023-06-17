@@ -81,6 +81,30 @@ class Attachable(FunctionDecorator):
     func : Callable
         The decorated function or other callable.
 
+    Notes
+    -----
+    These behave identically to the wrapped function when called, but can also
+    be :meth:`attached <pdcast.Attachable.attach_to>` to external classes as
+    bound attributes.  This is done by creating a new
+    :class:`VirtualAttribute <pdcast.VirtualAttribute>` descriptor on the class
+    object, which is then used to dynamically bind the decorated function using
+    the appropriate binding protocol.
+
+    .. autosummary::
+        :toctree: ../generated/
+
+        VirtualAttribute
+        InstanceMethod
+        ClassMethod
+        StaticMethod
+        Property
+
+    Each of these are analogous to their Python counterparts, but use the
+    :class:`Attachable` function as their underlying callable.  This allows
+    users to dynamically attach the decorated function to an existing class at
+    runtime, without having to explicitly define a new subclass or decorator
+    for that purpose.
+
     Examples
     --------
     The behavior of the decorated function is left unchanged.
@@ -298,11 +322,7 @@ class Attachable(FunctionDecorator):
 
 
 class VirtualAttribute(FunctionDecorator):
-    """Base class for all :ref:`virtual attributes <attachable.attributes>`.
-
-    These are produced by
-    :meth:`Attachable.attach_to() <pdcast.Attachable.attach_to>` and should
-    never be instantiated directly.
+    """Base class for all virtual attributes descriptors.
 
     Parameters
     ----------
@@ -314,20 +334,24 @@ class VirtualAttribute(FunctionDecorator):
         is assigned to.
     name : str
         The name of the attribute during dotted lookups.
-    original_descriptor : Descriptor | Any | None
-        The original implementation that this attribute is masking, if one
-        exists.  This must be unbound and might implement the descriptor
-        protocol, in which case its :meth:`__get__() <python:object.__get__>`
-        method will be called during
-        :attr:`.original <pdcast.VirtualAttribute.original>` lookups.
+    original_descriptor : Any | None
+        The original value that this attribute is masking, if one exists.  This
+        must be unbound and might implement the descriptor protocol, in which
+        case its :meth:`__get__() <python:object.__get__>` method will be
+        called during :attr:`.original <pdcast.VirtualAttribute.original>`
+        lookups.
     instance : Any | None
         An instance of the class that this attribute was accessed from or
         :data:`None <python:None>` if it was invoked from the class itself.
 
     Notes
     -----
+    These are produced by
+    :meth:`Attachable.attach_to() <pdcast.Attachable.attach_to>` and should
+    never be instantiated directly.
+
     See Python's :ref:`descriptor tutorial <python:descriptorhowto>` for more
-    information on how these work.  The actual
+    information on how descriptors work.  The actual
     :meth:`__get__() <python:object.__get__>` implementations are defined in
     subclasses.
 
@@ -906,10 +930,28 @@ class InstanceMethod(VirtualAttribute):
     """Transforms an :class:`Attachable <pdcast.Attachable>` function into a
     bound method.
 
+    Examples
+    --------
     These descriptors are returned by
     :meth:`Attachable.attach_to <pdcast.Attachable.attach_to>` with
     ``pattern="method"`` (the default).  They behave exactly like ordinary
     Python instance methods.
+
+    .. doctest::
+
+        >>> class MyClass:
+        ...     def __repr__(self):
+        ...         return "MyClass()"
+
+        >>> @attachable
+        ... def foo(self):
+        ...     print("Hello, world!")
+        ...     return self
+
+        >>> foo.attach_to(MyClass, pattern="method")
+        >>> MyClass().foo()
+        Hello, world!
+        MyClass()
     """
 
     def __get__(
@@ -950,10 +992,28 @@ class ClassMethod(VirtualAttribute):
     """Transforms an :class:`Attachable <pdcast.Attachable>` function into a
     :func:`classmethod <python:classmethod>`.
 
+    Examples
+    --------
     These descriptors are returned by
     :meth:`Attachable.attach_to <pdcast.Attachable.attach_to>` with
     ``pattern="classmethod"``.  They behave exactly like
     :func:`@classmethod <python:classmethod>` decorators in normal Python.
+
+    .. doctest::
+
+        >>> class MyClass:
+        ...     def __repr__(self):
+        ...         return "MyClass()"
+
+        >>> @attachable
+        ... def foo(cls):
+        ...     print("Hello, world!")
+        ...     return cls
+
+        >>> foo.attach_to(MyClass, pattern="classmethod")
+        >>> MyClass.foo()
+        Hello, world!
+        <class 'MyClass'>
     """
 
     def __get__(
@@ -994,10 +1054,28 @@ class StaticMethod(VirtualAttribute):
     """Transforms an :class:`Attachable <pdcast.Attachable>` function into a
     :func:`staticmethod <python:staticmethod>`.
 
+    Examples
+    --------
     These descriptors are returned by
     :meth:`Attachable.attach_to <pdcast.Attachable.attach_to>` with
     ``pattern="staticmethod"``.  They behave exactly like
     :func:`@staticmethod <python:staticmethod>` decorators in normal Python.
+
+    .. doctest::
+
+        >>> class MyClass:
+        ...     def __repr__(self):
+        ...         return "MyClass()"
+
+        >>> @attachable
+        ... def foo(data):
+        ...     print("Hello, world!")
+        ...     return data
+
+        >>> foo.attach_to(MyClass, pattern="staticmethod")
+        >>> MyClass().foo(1)
+        Hello, world!
+        1
     """
 
     def __get__(
@@ -1020,10 +1098,59 @@ class Property(VirtualAttribute):
     """Transforms an :class:`Attachable <pdcast.Attachable>` function into a
     managed :class:`@property <python:property>`.
 
+    Examples
+    --------
     These descriptors are returned by
     :meth:`Attachable.attach_to <pdcast.Attachable.attach_to>` with
     ``pattern="property"``.  They behave exactly like
     :class:`@property <python:property>` decorators in normal Python.
+
+    .. doctest::
+
+        >>> class MyClass:
+        ...     def __repr__(self):
+        ...         return "MyClass()"
+
+        >>> @attachable
+        ... def foo(self):
+        ...     print("Hello, world!")
+        ...     return self
+
+        >>> foo.attach_to(MyClass, pattern="property")
+        >>> MyClass().foo
+        Hello, world!
+        MyClass()
+
+    We can add a setter/deleter using the normal :class:`@property <property>`
+    interface.
+
+    .. doctest::
+
+        >>> @MyClass.foo.setter
+        ... def foo_setter(data, value):
+        ...     print(f"setting MyClass.foo to {value}")
+
+        >>> @MyClass.foo.deleter
+        ... def foo_deleter(data):
+        ...     print("deleting MyClass.foo")
+
+        >>> MyClass().foo = 2
+        setting MyClass.foo to 2
+        >>> del MyClass().foo
+        deleting MyClass.foo
+
+    .. warning::
+
+        For :class:`Property` attributes, the :attr:`VirtualAttribute.original`
+        interface will be inaccessible from instances of ``MyClass``.
+
+        .. doctest::
+
+            >>> MyClass().foo.original
+            Hello, World!
+            Traceback (most recent call last):
+                ...
+            AttributeError: 'MyClass' object has no attribute 'original'
     """
 
     _reserved = VirtualAttribute._reserved | {"_property"}
@@ -1077,4 +1204,3 @@ class Property(VirtualAttribute):
 
     def __repr__(self) -> str:
         return object.__repr__(self)
-
