@@ -31,7 +31,20 @@ The following data structures define the standard interface for the ``pdcast``
 
 .. raw:: html
 
-    <h2>Checks, inference & resolution</h2>
+  <h2>Extension functions</h2>
+
+.. list-table::
+
+    * - :func:`@attachable <attachable>`
+      - TODO
+    * - :func:`@extension_func <extension_func>`
+      - TODO
+    * - :func:`@dispatch <dispatch>`
+      - TODO
+
+.. raw:: html
+
+    <h2>Utilities</h2>
 
 The functions below are used to navigate the ``pdcast``
 :doc:`type system <../types/types>` and convert data from one representation to
@@ -46,28 +59,8 @@ another.
       - Infer types from example data.
     * - :func:`typecheck`
       - Check whether example data contains elements of a specified type.
-
-.. raw:: html
-
-  <h2>Universal conversions</h2>
-
-.. list-table::
-
     * - :func:`cast`
       - Cast arbitrary data to the specified type.
-
-.. raw:: html
-
-  <h2>Extension functions</h2>
-
-.. list-table::
-
-    * - :func:`@dispatch <dispatch>`
-      - TODO
-    * - :func:`@extension_func <extension_func>`
-      - TODO
-    * - :func:`@attachable <attachable>`
-      - TODO
 
 .. raw:: html
 
@@ -105,7 +98,6 @@ structures when :func:`attach` is invoked.
 
 .. toctree::
     :hidden:
-    :maxdepth: 1
 
     pdcast.Type <Type>
     pdcast.TypeRegistry <TypeRegistry>
@@ -114,12 +106,12 @@ structures when :func:`attach` is invoked.
     pdcast.DecoratorType <DecoratorType>
     pdcast.CompositeType <CompositeType>
     pdcast.register <register>
+    pdcast.attachable <attachable>
+    pdcast.extension_func <extension_func>
+    pdcast.dispatch <dispatch>
     pdcast.resolve_type <resolve_type>
     pdcast.detect_type <detect_type>
     pdcast.typecheck <typecheck>
     pdcast.cast <cast>
-    pdcast.dispatch <dispatch>
-    pdcast.extension_func <extension_func>
-    pdcast.attachable <attachable>
     pdcast.attach <attach>
     pdcast.detach <detach>

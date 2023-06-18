@@ -578,7 +578,7 @@ We can fix this by patching in a new ``round()`` function that works for
         the specified rounding rule.
         """
         print("Hello, World!")
-        rule = pdcast.defaults.validators["rounding"](rule)
+        rule = pdcast.defaults.arguments["rounding"](rule)
         return pdcast.cast.SeriesWrapper(
             pdcast.util.round.round_float(
                 series.series,
@@ -635,7 +635,7 @@ first is to manually append it to our ``BFloat16Mixin``, like so:
             """Round a bfloat16 series to the given number of decimal places using
             the specified rounding rule.
             """
-            rule = pdcast.defaults.validators["rounding"](rule)
+            rule = pdcast.defaults.arguments["rounding"](rule)
             return pdcast.cast.SeriesWrapper(
                 pdcast.util.round.round_float(
                     series.series,
@@ -664,7 +664,7 @@ argument in :func:`@dispatch <dispatch>`
     ...     """Round a bfloat16 series to the given number of decimal places using
     ...     the specified rounding rule.
     ...     """
-    ...     rule = pdcast.defaults.validators["rounding"](rule)
+    ...     rule = pdcast.defaults.arguments["rounding"](rule)
     ...     return pdcast.cast.SeriesWrapper(
     ...         pdcast.util.round.round_float(
     ...             series.series,
@@ -725,7 +725,7 @@ in :func:`@dispatch <dispatch>`, like so:
     ...     """Round a bfloat16 series to the given number of decimal places using
     ...     the specified rounding rule.
     ...     """
-    ...     rule = pdcast.defaults.validators["rounding"](rule)
+    ...     rule = pdcast.defaults.arguments["rounding"](rule)
     ...     return pdcast.cast.SeriesWrapper(
     ...        pdcast.util.round.round_float(
     ...             series.series,

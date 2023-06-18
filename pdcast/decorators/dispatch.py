@@ -26,13 +26,22 @@ from .base import FunctionDecorator, no_default
 
 
 # TODO: emit a warning whenever an implementation is replaced.
+# -> do this.
 
 # TODO: None wildcard value?
+# -> use registry wildcards instead
 
 # TODO: result is None -> fill with NA?
+# -> probably not.  Just return an empty series if filtering.
+
 
 # TODO: appears to be an index mismatch in composite add() example from
 # README.features
+
+# TODO: DispatchStrategies should reference the DispatchDict, not the
+# DispatchFunc.  This is a more direct code path.
+
+# TODO: DispatchDict -> DispatchTable
 
 
 ######################
@@ -169,7 +178,7 @@ class DispatchDict(OrderedDict):
                 f"overloaded implementation must be callable: {repr(call)}"
             )
 
-    def reorder(self) -> None:
+    def sort(self) -> None:
         """Sort the dictionary into topological order, with most specific
         keys first.
         """
@@ -210,7 +219,7 @@ class DispatchDict(OrderedDict):
         # sort dict
         if not self._ordered:
             self._cache.clear()
-            self.reorder()
+            self.sort()
 
         # check for cached result
         if key in self._cache:
@@ -437,8 +446,8 @@ class DispatchFunc(FunctionDecorator):
 
         return implementation
 
-    def generic(self, *args, **kwargs) -> Any:
-        """A reference to the generic implementation of the decorated function.
+    def fallback(self, *args, **kwargs) -> Any:
+        """A reference to the default implementation of the decorated function.
         """
         return self.__wrapped__(*args, **kwargs)
 

@@ -18,24 +18,24 @@ from .base import FunctionDecorator, no_default
 
 
 def extension_func(func: Callable) -> Callable:
-    """A decorator that allows Python functions to accept managed arguments
-    and default values.
+    """A decorator that allows a function to accept managed arguments and
+    default values.
 
     Parameters
     ----------
     func : Callable
         A Python function or other callable to be decorated.  If this accepts a
         ``**kwargs`` dict or similar variable-length keyword argument, then it
-        will be allowed to take on arbitrary
-        :ref:`extension arguments <extension_func.extension>` defined at run
+        will be allowed to take on
+        :ref:`dynamic arguments <extension_func.extension>` defined at run
         time.
 
     Returns
     -------
     ExtensionFunc
-        A cooperative :class:`ExtensionFunc <pdcast.ExtensionFunc>` decorator,
-        which manages default values and argument validators for the decorated
-        callable.
+        A :ref:`cooperative <attachable.nested>` decorator that allows
+        transparent access to the decorated function.  These objects manage
+        default values and argument validators for the decorated callable.
 
     Notes
     -----
@@ -54,7 +54,7 @@ def extension_func(func: Callable) -> Callable:
 
         def __init__(self, _func: Callable):
             super().__init__(_func)
-            # update_wrapper(self, _func)
+            # TODO: update_wrapper(self, _func)?
 
             # store attributes from main thread
             if threading.current_thread() == threading.main_thread():
@@ -128,14 +128,14 @@ class ExtensionFunc(FunctionDecorator, threading.local):
 
         self._vals = {}
         self._defaults = {}
-        self._validators = {}  # TODO: make this a WeakValueDictionary
+        self._validators = {}  # TODO: make this a WeakValueDictionary?
 
     ####################
     ####    BASE    ####
     ####################
 
     @property
-    def validators(self) -> MappingProxyType:
+    def arguments(self) -> MappingProxyType:
         """A mapping of all managed arguments to their respective validators.
 
         Returns
@@ -156,7 +156,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             ... def bar(val: int, state: dict) -> int:
             ...     return int(val)
 
-            >>> foo.validators   # doctest: +SKIP
+            >>> foo.arguments   # doctest: +SKIP
             mappingproxy({'bar': <function bar at 0x7ff5ad9c6e60>})
         """
         return MappingProxyType(self._validators)
