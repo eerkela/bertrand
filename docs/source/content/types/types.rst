@@ -3,6 +3,8 @@
 .. TODO: split each of these into a separate page and use autoclass directives
     rather than autosummary.  This prevents automatic membership documentation
 
+.. _types:
+
 Types
 =====
 Below is a complete list of all the types that come prepackaged with

@@ -16,7 +16,7 @@ pdcast.attachable
 .. raw:: html
     :file: ../../images/decorators/Decorators_UML.html
 
-.. _attachable.decorated:
+.. _attachable.basic:
 
 Attachable functions
 --------------------
@@ -33,6 +33,7 @@ that of the function itself itself.
     Attachable
     Attachable.attached
     Attachable.attach_to
+    Attachable.__call__
 
 The behavior of the decorated function is otherwise unchanged.
 
@@ -92,8 +93,8 @@ for the decorated function.  It behaves exactly like a normal bound method of
 
 .. doctest::
 
-    >>> MyClass.foo   # doctest: +SKIP
-    <function foo at 0x7fb5d383c4c0>
+    >>> MyClass.foo
+    <function foo at ...>
     >>> MyClass().foo()
     Hello, World!
     MyClass()
@@ -166,8 +167,8 @@ in :meth:`Attachable.attach_to`.  The allowed values are:
             >>> MyClass().foo
             Hello, World!
             MyClass()
-            >>> MyClass.foo   # doctest: +SKIP
-            <pdcast.decorators.attachable.Property object at 0x7fea376216d0>
+            >>> MyClass.foo
+            <pdcast.decorators.attachable.Property object at ...>
 
 .. note::
 
@@ -240,8 +241,8 @@ In order to avoid this, we can either rename the overloaded method:
 .. doctest::
 
     >>> foo.attach_to(MyClass, name="bar")
-    >>> MyClass.bar   # doctest: +SKIP
-    <function foo at 0x7f50672f04c0>
+    >>> MyClass.bar
+    <function foo at ...>
     >>> MyClass().bar()
     Hello, World!
     MyClass()
@@ -256,10 +257,10 @@ existing attributes of ``MyClass``.
 .. doctest::
 
     >>> foo.attach_to(MyClass, namespace="baz")
-    >>> MyClass.baz   # doctest: +SKIP
-    <pdcast.decorators.attachable.Namespace object at 0x7fe73dd10af0>
-    >>> MyClass.baz.foo   # doctest: +SKIP
-    <function foo at 0x7fe73dd1c4c0>
+    >>> MyClass.baz
+    <pdcast.decorators.attachable.Namespace object at ...>
+    >>> MyClass.baz.foo
+    <function foo at ...>
     >>> MyClass().baz.foo()
     Hello, World!
     MyClass()

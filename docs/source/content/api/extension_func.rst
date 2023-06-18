@@ -32,6 +32,7 @@ default values.  These have the following interface,
     ExtensionFunc.argument
     ExtensionFunc.remove_arg
     ExtensionFunc.reset_defaults
+    ExtensionFunc.__call__
 
 The behavior of the decorated function is otherwise unchanged.
 
@@ -212,7 +213,7 @@ modified independently, without affecting the behavior of other threads.
     ...     print(foo())  # using random values for each thread
 
     >>> threads = [threading.Thread(target=worker) for _ in range(3)]
-    >>> for t in threads:   # doctest: +SKIP
+    >>> for t in threads:
     ...     t.start()
     {'bar': 29, 'baz': -18}
     {'bar': 44, 'baz': -5}
@@ -320,7 +321,7 @@ Applications
 ------------
 Imagine you have a whole :doc:`type system's <../types/types>` worth of
 :doc:`robust <detect_type>` and :doc:`extendable <AtomicType>` type
-:doc:`checks <typecheck>` and :doc:`conversions <cast>` at your disposal.
+:doc:`checks <typecheck>` and :doc:`conversions <cast>` at your disposal!
 
 .. doctest::
 

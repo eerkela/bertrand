@@ -60,6 +60,8 @@ will be invoked:
 
 Individual types can override these methods to customize their behavior.
 
+.. _Type.membership:
+
 Membership
 ----------
 Types can be arranged into trees to represent

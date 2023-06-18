@@ -1076,8 +1076,8 @@ objects.
 .. doctest:: decimal_support
 
     >>> pdcast.attach()
-    >>> series.round   # doctest: +SKIP
-    <pdcast.patch.virtual.DispatchMethod object at 0x7f6ad2ed9990>
+    >>> series.round
+    <pdcast.patch.virtual.DispatchMethod object at ...>
     >>> series.round()
     0    -2
     1     0

@@ -178,7 +178,7 @@ associated meanings.
 
     >>> pdcast.resolve_type("string")
     StringType()
-    >>> pdcast.resolve_type("timedelta[pandas]")   # doctest: +SKIP
+    >>> pdcast.resolve_type("timedelta[pandas]")
     PandasTimedeltaType()
     >>> pdcast.resolve_type("datetime[pandas, US/Pacific]")
     PandasTimestampType(tz=<DstTzInfo 'US/Pacific' LMT-1 day, 16:07:00 STD>)
