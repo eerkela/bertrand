@@ -27,9 +27,9 @@ default values.  These have the following interface,
     :toctree: ../../generated
 
     ExtensionFunc
-    ExtensionFunc.arguments
-    ExtensionFunc.default_values
     ExtensionFunc.argument
+    ExtensionFunc.arguments
+    ExtensionFunc.settings
     ExtensionFunc.remove_arg
     ExtensionFunc.reset_defaults
     ExtensionFunc.__call__
@@ -65,7 +65,7 @@ like so:
 .. doctest::
 
     >>> @foo.argument
-    ... def bar(val, args: dict) -> int:
+    ... def bar(val, context: dict) -> int:
     ...     return int(val)
 
 .. warning::
@@ -118,7 +118,7 @@ assign and modify default values for each of our managed arguments.
     .. doctest::
 
         >>> @foo.argument(default=4)
-        ... def bar(val, args: dict) -> int:
+        ... def bar(val, context: dict) -> int:
         ...     return int(val)
 
         >>> foo.bar
@@ -130,7 +130,7 @@ assign and modify default values for each of our managed arguments.
         foo.remove_arg("bar")
 
         @foo.argument
-        def bar(val, args: dict) -> int:
+        def bar(val, context: dict) -> int:
             return int(val)
 
         foo.bar = 1
@@ -141,7 +141,7 @@ assign and modify default values for each of our managed arguments.
     .. doctest::
 
         >>> @foo.argument
-        ... def baz(val, args: dict) -> int:
+        ... def baz(val, context: dict) -> int:
         ...     return int(val)
 
         >>> foo.baz
@@ -236,7 +236,7 @@ the function itself.  We can create one of these by doing the following:
 .. doctest::
 
     >>> @foo.argument(default=3)
-    ... def qux(val: int, args: dict) -> int:
+    ... def qux(val, context: dict) -> int:
     ...     # NOTE: 'qux' is not mentioned in the signature of 'foo()'
     ...     return int(val)
 
@@ -265,7 +265,7 @@ passed through to ``**kwargs`` unless it is explicitly specified.
 .. doctest::
 
     >>> @foo.argument  # NOTE: no default value
-    ... def corge(val, args: dict) -> int:
+    ... def corge(val, context: dict) -> int:
     ...     return int(val)
 
     >>> foo  # ``corge`` is not listed
@@ -298,7 +298,7 @@ turn.
         ...     return x
 
         >>> @func.argument(default=2)
-        ... def y(val, args: dict) -> int:
+        ... def y(val, context: dict) -> int:
         ...     return int(val)
 
         >>> @func.overload("int")
@@ -330,7 +330,7 @@ Imagine you have a whole :doc:`type system's <../types/types>` worth of
     ...     return cast(date, int, **kwargs)
 
     >>> @my_func.argument
-    ... def date(val, args: dict) -> datetime_like:
+    ... def date(val, context: dict) -> datetime_like:
     ...     return cast(val, "datetime")
 
     >>> my_func("today", unit="D", since="April 5th, 2022")   # doctest: +SKIP
