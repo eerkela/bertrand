@@ -9,10 +9,6 @@ from pdcast.util.error import shorten_list
 from pdcast.util.round cimport Tolerance
 
 
-# TODO: tol should clip overflowing values if they are within the window.
-# -> force boundscheck to accept ``tol``.
-
-
 # TODO: downcast_integer should use its tol argument for bounds checks
 
 

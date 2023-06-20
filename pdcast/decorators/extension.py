@@ -12,6 +12,12 @@ from typing import Any, Callable
 from .base import FunctionDecorator, no_default
 
 
+# TODO: add a method to allow an ExtensionSignature to inherit values from
+# main thread.
+# -> this has to be a standalone function, since namespace is precious
+# on ExtensionFunc.
+
+
 ######################
 ####    PUBLIC    ####
 ######################
@@ -60,14 +66,14 @@ def extension_func(func: Callable) -> Callable:
             if threading.current_thread() == threading.main_thread():
                 main_thread.append({
                     "class": type(self),
-                    "_vals": self._vals,
-                    "_defaults": self._defaults,
-                    "_validators": self._validators
+                    "_signature": self._signature,
                 })
 
             # copy attributes from main thread
             else:
                 main = main_thread[0]
+                self._signature.copy_from(main["_signature"])
+
                 for k in main["_validators"]:
                     setattr(type(self), k, getattr(main["class"], k))
                 self._vals = main["_vals"].copy()
@@ -110,25 +116,11 @@ class ExtensionFunc(FunctionDecorator, threading.local):
     example usage.
     """
 
-    _reserved = (
-        FunctionDecorator._reserved |
-        {"_signature", "_vals", "_defaults", "_validators"}
-    )
+    _reserved = FunctionDecorator._reserved | {"_signature"}
 
     def __init__(self, func: Callable):
         super().__init__(func=func)
-
-        # check if function accepts **kwargs
-        self._signature = inspect.signature(func)
-        self._kwargs_name = None
-        for par in self._signature.parameters.values():
-            if par.kind == par.VAR_KEYWORD:
-                self._kwargs_name = par.name
-                break
-
-        self._vals = {}
-        self._defaults = {}
-        self._validators = {}  # TODO: make this a WeakValueDictionary?
+        self._signature = ExtensionSignature(func)
 
     ####################
     ####    BASE    ####
@@ -159,7 +151,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             >>> foo.arguments   # doctest: +SKIP
             mappingproxy({'bar': <function bar at 0x7ff5ad9c6e60>})
         """
-        return MappingProxyType(self._validators)
+        return MappingProxyType(self._signature.validators)
 
     @property
     def default_values(self) -> MappingProxyType:
@@ -176,7 +168,10 @@ class ExtensionFunc(FunctionDecorator, threading.local):
         If no default value is associated with an argument, then it will be
         excluded from this dictionary.
         """
-        return MappingProxyType({**self._defaults, **self._vals})
+        return MappingProxyType({
+            **self._signature.defaults,
+            **self._signature.settings
+        })
 
     def argument(
         self,
@@ -252,50 +247,36 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             """Attach a validation function to the ExtensionFunc as a managed
             property.
             """
-            _name = self._check_validator(validator, name)
+            # Ensure validator is valid
+            _name = self._signature.check_validator(validator, name)
 
-            # wrap validator to accept default arguments
+            # wrap validator to accept argument context
             @wraps(validator)
-            def accept_default(val, state=self.default_values, *args, **kwargs):
-                return validator(val, state, *args, **kwargs)
+            def validate_context(val, context=self.default_values, **kwargs):
+                """Automatically populate `context` argument of validator."""
+                return validator(val, context, **kwargs)
 
             # get default value and pass through validator
-            if default is no_default:
+            defaults = self._signature.defaults
+            if default is not no_default:
+                defaults[_name] = validate_context(default)
+            else:
                 pars = self._signature.parameters
                 empty = inspect.Parameter.empty
-                if getattr(pars.get(_name), "default", empty) is not empty:
-                    self._defaults[_name] = accept_default(pars[_name].default)
-            else:
-                self._defaults[_name] = accept_default(default)
+                if _name in pars and pars[_name].default is not empty:
+                    defaults[_name] = validate_context(pars[_name].default)
 
-            # generate getter, setter, and deleter attributes for @property
-            def getter(self) -> Any:
-                if _name in self._vals:
-                    return self._vals[_name]
-                if _name in self._defaults:
-                    return self._defaults[_name]
-                raise AttributeError(f"'{_name}' has no default value")
-
-            def setter(self, val: Any) -> None:
-                self._vals[_name] = accept_default(val)
-
-            def deleter(self) -> None:
-                if _name in self._defaults:
-                    accept_default(self._defaults[_name])
-                self._vals.pop(_name, None)
-
-            # attach @property to DefaultFunc
-            prop = property(
-                getter,
-                setter,
-                deleter,
+            # add @property to ExtensionFunc
+            prop = self._signature.generate_property(
+                validator=validate_context,
+                name=_name,
                 doc=validator.__doc__
             )
             setattr(type(self), _name, prop)
 
             # remember validator
-            self._validators[_name] = accept_default
-            return accept_default
+            self._signature.validators[_name] = validate_context
+            return validate_context
 
         if _func is None:
             return argument
@@ -339,15 +320,15 @@ class ExtensionFunc(FunctionDecorator, threading.local):
         """
         # ensure each argument is being actively managed
         for name in args:
-            if name not in self:
+            if name not in self._signature:
                 raise AttributeError(f"'{name}' is not a managed argument")
 
         # commit to deletion
         for name in args:
             delattr(type(self), name)
-            self._vals.pop(name, None)
-            self._defaults.pop(name, None)
-            self._validators.pop(name)
+            self._signature.settings.pop(name, None)
+            self._signature.defaults.pop(name, None)
+            self._signature.validators.pop(name)
 
     def reset_defaults(self, *args: str) -> None:
         """Reset one or more arguments to their default values.
@@ -401,93 +382,20 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             >>> foo.bar, foo.baz
             (1, 2)
         """
-        # reset all
         if not args:
-            for name in self._validators:
+            # reset all
+            for name in self:
                 delattr(self, name)
 
-        # reset some
         else:
-            # ensure each argument is being actively managed
-            for name in args:
+            # reset some
+            for name in args:  # ensure all args are being actively managed
                 if name not in self:
                     raise AttributeError(f"'{name}' is not a managed argument")
 
-            # commit
+            # commit to reset
             for name in args:
                 delattr(self, name)
-
-    def _check_validator(self, validator: Callable, name: str) -> str:
-        """Ensure that an argument validation function is of the expected form.
-        """
-        # ensure validator is callable
-        if not callable(validator):
-            raise TypeError(f"validator must be callable: {validator}")
-
-        # ensure validator accepts at least 2 arguments
-        if len(inspect.signature(validator).parameters) < 2:
-            raise TypeError(
-                f"validator must accept at least 2 arguments: {validator}"
-            )
-
-        # get name of validated argument
-        if name is None:
-            name = validator.__name__
-        elif not isinstance(name, str):
-            raise TypeError(f"name must be a string, not {type(name)}")
-
-        # check name is not duplicate
-        if name in self._validators:
-            raise KeyError(
-                f"default argument '{name}' already exists."
-            )
-
-        # check name exists in signature or **kwargs
-        pars = self._signature.parameters
-        if self._kwargs_name is None and name not in pars:
-            raise TypeError(
-                f"'{self.__qualname__}()' has no argument '{name}'"
-            )
-
-        return name
-
-    def _reconstruct_signature(self) -> list[str]:
-        """Reconstruct the original function's signature in string form,
-        incorporating the default values from this ExtensionFunc.
-        """
-        # bind managed defaults
-        defaults = self._signature.bind_partial(**self.default_values)
-
-        # apply defaults from annotations
-        defaults.apply_defaults()
-
-        # flatten extension arguments
-        defaults = defaults.arguments
-        if self._kwargs_name in defaults:
-            defaults.update(defaults[self._kwargs_name])
-            del defaults[self._kwargs_name]
-
-        # insert args
-        signature = []
-        parameters = self._signature.parameters
-        for par in parameters.values():
-            # display default value
-            if par.name in defaults:
-                signature.append(f"{par.name}={repr(defaults[par.name])}")
-
-            # display extension arguments if they have default values
-            elif par.name == self._kwargs_name:
-                kwargs = {
-                    k: v for k, v in defaults.items() if k not in parameters
-                }
-                signature.extend(f"{k}={repr(v)}" for k, v in kwargs.items())
-                signature.append(f"**{self._kwargs_name}")
-
-            # arg has no default
-            else:
-                signature.append(par.name)
-
-        return signature
 
     ###############################
     ####    SPECIAL METHODS    ####
@@ -500,50 +408,275 @@ class ExtensionFunc(FunctionDecorator, threading.local):
         This also validates the input to each argument using the attached
         validators.
         """
-        # bind *args to **kwargs
-        kwargs = self._signature.bind_partial(*args, **kwargs).arguments
+        # generate bound arguments
+        bound = self._signature(*args, **kwargs)
 
-        # flatten **kwargs
-        if self._kwargs_name in kwargs:
-            kwargs.update(kwargs[self._kwargs_name])
-            del kwargs[self._kwargs_name]
+        # flatten extension arguments
+        bound.flatten_kwargs()
 
-        # apply validator for each argument
-        for name, value in kwargs.items():
-            if name in self._validators:
-                kwargs[name] = self._validators[name](value, kwargs)
+        # pass through validator
+        bound.validate()
 
-        # merge with pre-validated defaults
-        kwargs = {**self.default_values, **kwargs}
+        # apply current settings (pre-validated)
+        bound.apply_settings()
 
-        # recover *args
-        pars = self._signature.parameters
-        args = [kwargs.pop(a) for a in list(pars)[:len(args)]]
-
-        # pass to wrapped
-        return self.__wrapped__(*args, **kwargs)
+        # invoke wrapped function
+        return self.__wrapped__(*bound.args, **bound.kwargs)
 
     def __contains__(self, item: str) -> bool:
         """Check if the named argument is being managed by this ExtensionFunc.
         """
-        return item in self._validators
+        return item in self._signature.validators
 
     def __iter__(self):
         """Iterate through the arguments that are being managed by this
         ExtensionFunc.
         """
-        return iter(self._validators)
+        return iter(self._signature.validators)
 
     def __len__(self) -> int:
         """Return the total number of arguments that are being managed by this
         ExtensionFunc
         """
-        return len(self._validators)
+        return len(self._signature.validators)
 
     def __repr__(self) -> str:
         """Return a string representation of the decorated function with a
         reconstructed signature incorporating the default values stored in this
         ExtensionFunc.
         """
-        sig = self._reconstruct_signature()
-        return f"{self.__wrapped__.__qualname__}({', '.join(sig)})"
+        args = self._signature().reconstruct()
+
+        return f"{self.__wrapped__.__qualname__}({', '.join(args)})"
+
+
+class ExtensionSignature:
+    """A wrapper around an `inspect.Signature` object that creates
+    `ExtensionArguments`.
+    """
+
+    def __init__(self, func: Callable):
+        self.signature = inspect.signature(func)
+
+        # get name of **kwargs argument
+        self.kwargs_name = None
+        for par in self.signature.parameters.values():
+            if par.kind == par.VAR_KEYWORD:
+                self.kwargs_name = par.name
+                break
+
+        # init validators, default values
+        self.validators = {}  # TODO: make this a WeakValueDictionary?
+        self.defaults = {}
+        self.settings = {}
+
+    @property
+    def parameters(self) -> MappingProxyType:
+        """Get the hardcoded parameters of the decorated function."""
+        return self.signature.parameters
+
+    def check_validator(self, validator: Callable, name: str = None) -> str:
+        """Ensure that an argument validator is of the expected form.
+
+        Parameters
+        ----------
+        validator : Callable
+            A function decorated with :meth:`ExtensionFunc.argument`.
+        name : str, optional
+            The name of the argument that ``validator`` validates.  If this is
+            not given, then the name of ``validator`` will be used directly.
+
+        Returns
+        -------
+        str
+            The final name of the argument that ``validator`` validates.
+
+        Raises
+        ------
+        TypeError
+            If ``validator`` is not callable with at least 2 arguments, or if
+            ``name`` is not a string contained within the parameters of this
+            :class:`ExtensionSignature`.
+        KeyError
+            If ``name`` is already in use by another validator.
+
+        Notes
+        -----
+        The following conditions must be met for this method to return
+        normally:
+
+            *   ``validator`` must be callable with at least 2 arguments.  The
+                first will be the value of the argument being validated, and
+                the second will be a dictionary of all the other arguments
+                passed to :meth:`ExtensionFunc.__call__`.
+            *   ``name`` must be the name of a unique argument in the original
+                function's signature or its ``**kwargs``.
+        """
+        # ensure validator is callable
+        if not callable(validator):
+            raise TypeError(f"validator must be callable: {validator}")
+
+        # ensure validator accepts at least 2 arguments
+        if len(inspect.signature(validator).parameters) < 2:
+            raise TypeError(
+                f"validator must accept at least 2 arguments: {validator}"
+            )
+
+        # use name of validator as argument name if not explicitly given
+        if name is None:
+            name = validator.__name__
+        elif not isinstance(name, str):
+            raise TypeError(f"name must be a string, not {type(name)}")
+
+        # check name is not duplicate
+        if name in self.validators:
+            raise KeyError(f"default argument '{name}' already exists.")
+
+        # check name exists in signature or **kwargs
+        pars = self.signature.parameters
+        if self.kwargs_name is None and name not in pars:
+            raise TypeError(
+                f"'{self.__qualname__}()' has no argument '{name}'"
+            )
+
+        # return final argument name
+        return name
+
+    def generate_property(
+        self,
+        validator: Callable,
+        name: str,
+        doc: str = None
+    ) -> property:
+        """Generate a property with appropriate getter, setter, and deleter
+        methods for a managed argument.
+        """
+        def getter(self) -> Any:
+            """Get the value of a managed argument."""
+            # use current setting
+            if name in self.settings:
+                return self.settings[name]
+
+            # fall back to default
+            if name in self.defaults:
+                return self.defaults[name]
+
+            raise AttributeError(f"'{name}' has no default value")
+
+        def setter(self, val: Any) -> None:
+            """Set the value of a managed argument."""
+            self.settings[name] = validator(val)
+
+        def deleter(self) -> None:
+            """Replace the value of a managed argument with its default."""
+            # pass default through validator
+            if name in self.defaults:
+                validator(self.defaults[name])
+
+            # remove setting if present
+            self.settings.pop(name, None)
+
+        # combine into @property descriptor
+        return property(getter, setter, deleter, doc=doc)
+
+    def __call__(self, *args, **kwargs) -> ExtensionArguments:
+        """Create an `ExtensionArguments` from *args, **kwargs"""
+        bound = self.signature.bind_partial(*args, **kwargs)
+        parameters = tuple(self.signature.parameters)
+
+        return ExtensionArguments(
+            arguments=bound.arguments,
+            parameters=parameters,
+            positional=parameters[:len(args)],
+            kwargs_name=self.kwargs_name,
+            validators=self.validators,
+            settings=self.settings
+        )
+
+
+class ExtensionArguments:
+    """A wrapper around an `inspect.BoundArguments` object that exposes
+    additional operations for validating arguments and applying dynamic
+    defaults.
+    """
+
+    def __init__(
+        self,
+        arguments: dict[str, Any],
+        parameters: tuple[str],
+        positional: tuple[str],
+        kwargs_name: str,
+        validators: dict[str, Callable],
+        settings: dict[str, Any]
+    ):
+        self.arguments = arguments
+        self.parameters = parameters
+        self.positional = positional
+        self.kwargs_name = kwargs_name
+        self.validators = validators
+        self.settings = settings
+
+    def flatten_kwargs(self) -> None:
+        """Flatten the `**kwargs` argument into the main argument list if it is
+        present.
+        """
+        if self.kwargs_name in self.arguments:
+            self.arguments.update(self.arguments[self.kwargs_name])
+            del self.arguments[self.kwargs_name]
+
+    def validate(self) -> None:
+        """Pass each argument through its associated validator."""
+        for name, value in self.arguments.items():
+            if name in self.validators:
+                self.arguments[name] = self.validators[name](value)
+
+    def apply_settings(self) -> None:
+        """Apply dynamic defaults."""
+        self.arguments |= {
+            k: v for k, v in self.settings.items() if k not in self.arguments
+        }
+
+    def reconstruct(self) -> str:
+        """Reconstruct the original function's signature in string form using
+        the bound arguments.
+        """
+        # apply current settings
+        self.apply_settings()
+
+        # flatten extension arguments
+        self.flatten_kwargs()
+
+        # stringify args according to original signature
+        strings = []
+        for par in self.parameters:
+
+            # display managed value
+            if par in self.arguments:
+                strings.append(f"{par}={repr(self.arguments[par])}")
+
+            # display extension arguments
+            elif par == self.kwargs_name:
+                kwargs = {
+                    k: v for k, v in self.arguments.items()
+                    if k not in self.parameters
+                }
+                strings.extend(f"{k}={repr(v)}" for k, v in kwargs.items())
+                strings.append(f"**{self.kwargs_name}")
+
+            # display original
+            else:
+                strings.append(par)
+
+        return strings
+
+    @property
+    def args(self) -> tuple[Any, ...]:
+        """Positional arguments to be supplied to the wrapped function."""
+        return tuple(self.arguments[p] for p in self.positional)
+
+    @property
+    def kwargs(self) -> dict[str, Any]:
+        """Keyword arguments to be supplied to the wrapped function."""
+        return {
+            k: v for k, v in self.arguments.items() if k not in self.positional
+        }

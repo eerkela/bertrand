@@ -36,15 +36,6 @@ from ..array import construct_object_dtype
 # this subset.
 
 
-# TODO: to do doctests on a single file:
-# make install
-# make doc
-# sphinx-build -b doctest -q docs/source/ docs/build/ docs/source/generated/pdcast.ScalarType*.rst
-
-# -> for ScalarType, most are being emitted because of min/max not having a
-# standardized type.  Some are being emitted due to VectorType.__setattr__
-
-
 ######################
 ####    SCALAR    ####
 ######################
@@ -1019,10 +1010,6 @@ cdef class ScalarType(VectorType):
     ###############################
     ####    UPCAST/DOWNCAST    ####
     ###############################
-
-    # TODO: the current larger/smaller implementations should be offloaded to
-    # AbstractType.  These methods should yield from an empty list, and talk
-    # about overloading them in subclasses.
 
     @property
     def larger(self):

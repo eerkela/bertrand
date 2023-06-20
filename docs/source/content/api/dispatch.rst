@@ -10,7 +10,6 @@ pdcast.dispatch
 .. raw:: html
     :file: ../../images/decorators/Decorators_UML.html
 
-
 .. _dispatch.basic:
 
 Dispatch functions
@@ -357,9 +356,11 @@ of steps are performed in reverse to normalize the output:
     Since our ``add()`` function just adds numeric series according to the
     ``+`` operator, it is automatically vectorized.  In general, however, we
     need to be careful to ensure that our implementations are properly
-    vectorized if we want to use this feature.  In essence, this boils down to
-    using proper numpy/pandas functions for our dispatched implementations,
-    which we should be doing anyway wherever possible.
+    vectorized if we want to use this feature.
+    
+    In essence, this boils down to using proper numpy/pandas functions for our
+    dispatched implementations, which we should be already be doing wherever
+    possible.
 
 
 .. _dispatch.mixed:
@@ -372,18 +373,22 @@ Mixed data
 .. TODO: talk about split-apply-combine and how vectors are bound into
     dataframes.
 
-
-.. TODO: maybe add a whole section for a sequence diagram of the dispatch
-    process.
-
-
-
 .. _dispatch.method:
 
 Dispatch methods
 ----------------
 We can combine the :func:`@dispatch <dispatch>` decorator with
 :func:`@attachable <attachable>` to create dispatch methods.
+
+
+
+.. _dispatch.diagram:
+
+Activity Diagram
+----------------
+
+.. raw:: html
+    :file: ../../images/decorators/Dispatch_Control.html
 
 
 

@@ -451,7 +451,7 @@ class DispatchFunc(FunctionDecorator):
         """
         return self.__wrapped__(*args, **kwargs)
 
-    def _build_strategy(self, dispatched: dict[str, Any]) -> DispatchStrategy:
+    def _build_strategy(self, dispatch_args: dict[str, Any]) -> DispatchStrategy:
         """Normalize vectorized inputs to this :class:`DispatchFunc`.
 
         This method converts input vectors into pandas Series objects with
@@ -467,7 +467,7 @@ class DispatchFunc(FunctionDecorator):
         # extract vectors
         vectors = {}
         names = {}
-        for arg, value in dispatched.items():
+        for arg, value in dispatch_args.items():
             if isinstance(value, pd.Series):
                 vectors[arg] = value
                 names[arg] = value.name
@@ -502,7 +502,7 @@ class DispatchFunc(FunctionDecorator):
         if any(isinstance(v, types.CompositeType) for v in detected.values()):
             return CompositeDispatch(
                 func=self,
-                dispatched=dispatched,
+                dispatch_args=dispatch_args,
                 frame=frame,
                 detected=detected,
                 names=names,
@@ -514,7 +514,7 @@ class DispatchFunc(FunctionDecorator):
         # homogenous case
         return HomogenousDispatch(
             func=self,
-            dispatched=dispatched,
+            dispatch_args=dispatch_args,
             frame=frame,
             detected=detected,
             names=names,
@@ -545,18 +545,21 @@ class DispatchFunc(FunctionDecorator):
         bound = self._signature.bind(*args, **kwargs)
         bound.apply_defaults()
 
-        # extract dispatched args
-        dispatched = {arg: bound.arguments[arg] for arg in self._args}
+        # extract dispatched arguments
+        dispatch_args = {arg: bound.arguments[arg] for arg in self._args}
+
+        # call detect_type() on each argument
+        
 
         # fastpath for recursive calls
         if getattr(self._flags, "recursive", False):
-            strategy = DirectDispatch(func=self, dispatched=dispatched)
+            strategy = DirectDispatch(func=self, dispatch_args=dispatch_args)
             return strategy(bound)
 
         # outermost call - extract/normalize vectors and finalize results
         self._flags.recursive = True
         try:
-            strategy = self._build_strategy(dispatched)
+            strategy = self._build_strategy(dispatch_args)
             return strategy(bound)
         finally:
             self._flags.recursive = False
@@ -582,6 +585,121 @@ class DispatchFunc(FunctionDecorator):
 #######################
 ####    PRIVATE    ####
 #######################
+
+# DispatchArguments are passed to every DispatchStrategy, along with a reference
+# to the parent DispatchFunc.  DirectDispatch, uses its arguments to index the
+# DispatchFunc using DispatchArguments.key, and then calls the appropriate
+# implementation with *DispatchArguments.args, **DispatchArguments.kwargs.
+
+# DispatchArguments have a .normalize method, which extracts vectors and
+# normalizes them.  This is only called if the recursive flag is false.
+
+# CompositeDispatch constructs its own DispatchArguments for each group.
+
+
+# TODO: DispatchSignature is merged with DispatchDict
+
+
+class DispatchSignature:
+    """Factory object for creating `Signature` objects.
+
+    These are used to extract dispatchable context from the arguments supplied
+    to `DispatchFunc.__call__()`.
+    """
+
+    def __init__(self, func: Callable, args: tuple[str]):
+        self.signature = inspect.signature(func)
+        self.args = args
+
+    def __call__(self, *args, **kwargs) -> DispatchArguments:
+        """Bind this signature to create a `DispatchArguments` object."""
+        # bind *args, **kwargs
+        bound = self.signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+
+        # extract dispatched arguments
+        dispatched = {arg: bound.arguments[arg] for arg in self.args}
+
+        # call detect_type() on each argument
+        detected = {arg: detect_type(val) for arg, val in dispatched.items()}
+
+        # build signature
+        return DispatchArguments(
+            bound=bound,
+            dispatched=dispatched,
+            detected=detected
+        )
+
+
+class DispatchArguments:
+    """A simple wrapper for an `inspect.BoundArguments` object with extra
+    context for dispatched arguments and their detected types.
+    """
+
+    def __init__(
+        self,
+        bound: inspect.BoundArguments,
+        dispatched: dict[str, Any],
+        detected: dict[str, types.Type]
+    ):
+        self.bound = bound
+        self.dispatched = dispatched
+        self.detected = detected
+
+    @property
+    def arguments(self) -> dict[str, Any]:
+        """Get all arguments and their valuues from the bound signature."""
+        return self.bound.arguments
+
+    @property
+    def args(self) -> tuple[Any, ...]:
+        """Get an *args tuple from the bound signature."""
+        return self.bound.args
+
+    @property
+    def kwargs(self) -> dict[str, Any]:
+        """Get a **kwargs dict from the bound signature."""
+        return self.bound.kwargs
+
+    @property
+    def key(self) -> tuple[types.Type, ...]:
+        """Form a key for indexing a DispatchFunc."""
+        return tuple(self.detected.values())
+
+    def normalize(self) -> DispatchArguments:
+        """Extract vectors from dispatched arguments and normalize them."""
+        raise NotImplementedError()
+
+
+# TODO: before doing anything crazy, just update DispatchFunc/DispatchStrategy
+# to use Signatures
+
+
+
+# TODO: Signature needs a .vectors property that returns a dict of pd.Series
+# objects.
+
+# Maybe Signature.vectors creates a VectorContext object that has no logic
+# in __init__.  Instead, it has a .normalize() method that binds the vectors
+# into a DataFrame with a normalized index and no missing values, and then
+# separates them back out into a dict of pd.Series objects.
+
+
+
+# TODO: add a class for normalizing vectorized arguments.
+
+# class VectorContext:
+#   __init__(signature: Signature)
+#   frame -> pd.DataFrame
+#   vectors -> dict[str, pd.Series]
+#   groups() -> dict[tuple[VectorType], pd.DataFrame]
+#   normalize(result)  # -> replace NAs, reindex, rename
+
+# __init__ gets the Signature from above, extracts the vectors, and binds them
+# into a DataFrame with a normalized index and no missing values.  It stores
+# the original index and names of each vector for later use.
+
+
 
 
 class DispatchStrategy:
@@ -615,15 +733,15 @@ class DirectDispatch(DispatchStrategy):
     def __init__(
         self,
         func: DispatchFunc,
-        dispatched: dict[str, Any]
+        dispatch_args: dict[str, Any]
     ):
         self.func = func
-        self.dispatched = dispatched
-        self.key = tuple(detect_type(v) for v in dispatched.values())
+        self.dispatch_args = dispatch_args
+        self.key = tuple(detect_type(v) for v in dispatch_args.values())
 
     def execute(self, bound: inspect.BoundArguments) -> Any:
         """Call the dispatched function with the bound arguments."""
-        bound.arguments = {**bound.arguments, **self.dispatched}
+        bound.arguments = {**bound.arguments, **self.dispatch_args}
         return self.func[self.key](*bound.args, **bound.kwargs)
 
     def finalize(self, result: Any) -> Any:
@@ -637,7 +755,7 @@ class HomogenousDispatch(DispatchStrategy):
     def __init__(
         self,
         func: DispatchFunc,
-        dispatched: dict[str, Any],
+        dispatch_args: dict[str, Any],
         frame: pd.DataFrame,
         detected: dict[str, types.VectorType],
         names: dict[str, str],
@@ -651,12 +769,12 @@ class HomogenousDispatch(DispatchStrategy):
         # split frame into normalized columns
         for col, series in frame.items():
             series = series.rename(names.get(col, None))
-            dispatched[col] = series.astype(detected[col].dtype, copy=False)
+            dispatch_args[col] = series.astype(detected[col].dtype, copy=False)
 
         # construct DispatchDirect wrapper
         self.direct = DirectDispatch(
             func=func,
-            dispatched=dispatched
+            dispatch_args=dispatch_args
         )
 
     def execute(self, bound: inspect.BoundArguments) -> Any:
@@ -717,7 +835,7 @@ class CompositeDispatch(DispatchStrategy):
     def __init__(
         self,
         func: DispatchFunc,
-        dispatched: dict[str, Any],
+        dispatch_args: dict[str, Any],
         frame: pd.DataFrame,
         detected: dict[str, types.VectorType | types.CompositeType],
         names: dict[str, str],
@@ -726,7 +844,7 @@ class CompositeDispatch(DispatchStrategy):
         convert_mixed: bool
     ):
         self.func = func
-        self.dispatched = dispatched
+        self.dispatch_args = dispatch_args
         self.frame = frame
         self.names = names
         self.hasnans = hasnans
@@ -766,7 +884,7 @@ class CompositeDispatch(DispatchStrategy):
         for detected, group in self:
             strategy = HomogenousDispatch(
                 func=self.func,
-                dispatched=self.dispatched,
+                dispatch_args=self.dispatch_args,
                 frame=group,
                 detected=detected,
                 names=self.names,

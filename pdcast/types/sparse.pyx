@@ -58,7 +58,7 @@ class SparseType(DecoratorType):
             if fill_value in na_strings:
                 parsed = na_strings[fill_value]
             else:
-                from pdcast.convert import cast  # TODO: borked 
+                from pdcast.convert import cast
                 parsed = cast(fill_value, instance)[0]
 
         return self(instance, fill_value=parsed)

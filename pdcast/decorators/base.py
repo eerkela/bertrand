@@ -6,6 +6,16 @@ from functools import update_wrapper, WRAPPER_ASSIGNMENTS
 from typing import Any, Callable
 
 
+class NoDefault:
+    """Signals that an argument does not have an associated default value."""
+
+    def __repr__(self) -> str:
+        return "<no default>"
+
+
+no_default = NoDefault()
+
+
 class FunctionDecorator:
     """Base class for cooperative decorators.
 
@@ -111,13 +121,3 @@ class FunctionDecorator:
 
     def __delitem__(self, key) -> None:
         return self.__wrapped__.__delitem__(key)
-
-
-class NoDefault:
-    """Signals that an argument does not have an associated default value."""
-
-    def __repr__(self) -> str:
-        return "<no default>"
-
-
-no_default = NoDefault()
