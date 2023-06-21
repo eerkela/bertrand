@@ -6,6 +6,8 @@
     import pandas as pd
     from pdcast.decorators.extension import *
 
+.. _extension_func:
+
 pdcast.extension_func
 =====================
 
@@ -27,9 +29,9 @@ default values.  These have the following interface,
     :toctree: ../../generated
 
     ExtensionFunc
-    ExtensionFunc.argument
     ExtensionFunc.arguments
     ExtensionFunc.settings
+    ExtensionFunc.argument
     ExtensionFunc.remove_arg
     ExtensionFunc.reset_defaults
     ExtensionFunc.__call__
@@ -53,7 +55,7 @@ The behavior of the decorated function is otherwise unchanged.
         ...
     TypeError: foo() missing 1 required positional argument: 'bar'
 
-.. _extension_func.validator:
+.. _extension_func.managed:
 
 Managed arguments
 -----------------
@@ -91,7 +93,7 @@ in-place, effectively replacing the original value.
 In this way, we can separate argument validation from the body of ``foo()``
 itself, making it easier to maintain and extend as we add new features.
 
-.. _extension_func.default:
+.. _extension_func.settings:
 
 Default Values
 --------------

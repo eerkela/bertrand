@@ -44,6 +44,12 @@ from .base import FunctionDecorator, no_default
 # TODO: DispatchDict -> DispatchTable
 
 
+# TODO: DispatchSignature takes over DispatchDict's role as a container for
+# signatures + implementations.
+# It creates DispatchArguments, which are referenced in every DispatchStrategy.
+
+
+
 ######################
 ####    PUBLIC    ####
 ######################
