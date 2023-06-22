@@ -133,7 +133,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
 
             >>> @extension_func
             ... def foo(bar, baz, **kwargs):
-            ...     return bar, baz
+            ...     return {"bar": bar, "baz": baz} | kwargs
 
             >>> @foo.argument
             ... def bar(val, context: dict) -> int:
@@ -360,7 +360,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
 
             >>> @extension_func
             ... def foo(bar, baz, **kwargs):
-            ...     return bar, baz
+            ...     return {"bar": bar, "baz": baz} | kwargs
 
             >>> @foo.argument(default=1)
             ... def bar(val, context: dict) -> int:

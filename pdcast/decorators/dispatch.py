@@ -50,6 +50,10 @@ from .base import FunctionDecorator, no_default
 
 
 
+# TODO: pdcast.cast("today", "datetime") uses python datetimes rather than
+# pandas
+
+
 ######################
 ####    PUBLIC    ####
 ######################
@@ -1081,47 +1085,62 @@ def topological_sort(edges: dict) -> list:
     Parameters
     ----------
     edges : dict
-        a dict of the form {A: {B, C}} where B and C depend on A
+        A dict of the form `{A: {B, C}}` where `B` and `C` depend on `A`.
 
     Returns
     -------
     list
-        an ordered list of nodes that satisfy the dependencies of edges
+        An ordered list of nodes that satisfy the dependencies of `edges`.
 
     Examples
     --------
-    >>> topological_sort({1: (2, 3), 2: (3, )})
-    [1, 2, 3]
+    .. doctest::
+
+        >>> topological_sort({1: (2, 3), 2: (3, )})
+        [1, 2, 3]
 
     References
     ----------    
     Kahn, Arthur B. (1962), "Topological sorting of large networks",
     Communications of the ACM
     """
+    # edge_count is used to detect cycles
+    edge_count = sum(len(dependencies) for dependencies in edges.values())
+
     # invert edges: {A: {B, C}} -> {B: {A}, C: {A}}
-    inverted = OrderedDict()
-    for key, val in edges.items():
-        for item in val:
-            inverted[item] = inverted.get(item, set()) | {key}
+    inverted = {}
+    for node, dependencies in edges.items():
+        for dependent in dependencies:
+            inverted.setdefault(dependent, set()).add(node)
 
     # Proceed with Kahn topological sort algorithm
-    S = OrderedDict.fromkeys(v for v in edges if v not in inverted)
-    L = []
-    while S:
-        n, _ = S.popitem()
-        L.append(n)
-        for m in edges.get(n, ()):
-            assert n in inverted[m]
-            inverted[m].remove(n)
-            if not inverted[m]:
-                S[m] = None
+    no_incoming = [node for node in edges if node not in inverted]
+    result = []
+    while no_incoming:
 
-    # check for cycles
-    if any(inverted.get(v, None) for v in edges):
-        cycles = [v for v in edges if inverted.get(v, None)]
+        # pop a node with no incoming edges (order doesn't matter)
+        node = no_incoming.pop()
+        result.append(node)
+
+        # for each edge from node -> dependent:
+        for dependent in edges.get(node, ()):
+
+            # remove edge from inverted map
+            inverted[dependent].remove(node)
+
+            # decrement edge count
+            edge_count -= 1
+
+            # if dependent has no more incoming edges, add it to the queue
+            if not inverted[dependent]:
+                no_incoming.append(dependent)
+
+    # if there are any edges left, then there must be a cycle
+    if edge_count:
+        cycles = [node for node in edges if inverted.get(node, None)]
         raise ValueError(f"edges are cyclic: {cycles}")
 
-    return L
+    return result
 
 
 def replace_na(
