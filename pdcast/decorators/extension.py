@@ -7,7 +7,7 @@ from functools import wraps
 import inspect
 import threading
 from types import MappingProxyType
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, get_type_hints
 
 from .base import EMPTY, Arguments, FunctionDecorator, Signature
 
@@ -287,7 +287,8 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             prop = self._signature.register_argument(
                 name=_name,
                 validator=validate_context,
-                default=default
+                default=default,
+                annotation=get_type_hints(validator)["return"]
             )
             setattr(type(self), _name, prop)
 
@@ -539,7 +540,7 @@ class ExtensionSignature(Signature):
         self.defaults = other.defaults.copy()
 
     def reset_defaults(self) -> None:
-        """Reset all settings to their original defaults.
+        """Reset all settings to their hardcoded defaults.
 
         Notes
         -----
@@ -681,7 +682,7 @@ class ExtensionSignature(Signature):
 
         # if argument is in signature, modify its default
         if name in self.parameter_map:
-            self.set_parameter(name, default=default)
+            self.set_parameter(name, default=default, annotation=annotation)
 
         # otherwise, extend signature with new argument
         else:
@@ -694,7 +695,7 @@ class ExtensionSignature(Signature):
             # generate parameter and insert into signature
             self.add_parameter(
                 name,
-                kind=inspect.Parameter.KEYWORD_ONLY,
+                kind="KEYWORD_ONLY",
                 default=default,
                 annotation=annotation
             )

@@ -11,6 +11,9 @@ from typing import Any, Callable, Mapping
 EMPTY = inspect.Parameter.empty
 
 
+# TODO: remove no_default, just use EMPTY instead
+
+
 class NoDefault:
     """Signals that an argument does not have an associated default value."""
 
