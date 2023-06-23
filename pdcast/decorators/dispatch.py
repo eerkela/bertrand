@@ -110,7 +110,7 @@ def dispatch(
         """Convert a callable into a DispatchFunc object."""
         return DispatchFunc(
             func,
-            args=args,
+            dispatched=args,
             drop_na=drop_na,
             cache_size=cache_size,
             convert_mixed=convert_mixed
@@ -122,150 +122,6 @@ def dispatch(
 #######################
 ####    PRIVATE    ####
 #######################
-
-
-class DispatchDict(OrderedDict):
-    """An :class:`OrderedDict <python:collections.OrderedDict>` that stores
-    types and their dispatched implementations for :class:`DispatchFunc`
-    operations.
-    """
-
-    def __init__(
-        self,
-        mapping: dict | None = None,
-        cache_size: int = 64
-    ):
-        super().__init__()
-        if mapping:
-            for key, val in mapping.items():
-                self[key] = val
-
-        self._cache = LRUDict(maxsize=cache_size)
-        self._ordered = False
-
-    @classmethod
-    def fromkeys(cls, iterable: Iterable, value: Any = None) -> DispatchDict:
-        """Implement :meth:`dict.fromkeys` for DispatchDict objects."""
-        return DispatchDict(super().fromkeys(iterable, value))
-
-    def get(self, key: type_specifier, default: Any = None) -> Any:
-        """Implement :meth:`dict.get` for DispatchDict objects."""
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def pop(self, key: type_specifier, default: Any = no_default) -> Any:
-        """Implement :meth:`dict.pop` for DispatchDict objects."""
-        key = resolve_key(key)
-        try:
-            result = self[key]
-            del self[key]
-            return result
-        except KeyError as err:
-            if default is no_default:
-                raise err
-            return default
-
-    def setdefault(self, key: type_specifier, default: Callable = None) -> Any:
-        """Implement :meth:`dict.setdefault` for DispatchDict objects."""
-        key = resolve_key(key)
-        try:
-            return self[key]
-        except KeyError:
-            self[key] = default
-            return default
-
-    def update(self, other) -> None:
-        """Implement :meth:`dict.update` for DispatchDict objects."""
-        super().update(DispatchDict(other))
-        self._ordered = False
-
-    def _validate_implementation(self, call: Callable) -> None:
-        """Ensure that an overloaded implementation is valid."""
-        if not callable(call):
-            raise TypeError(
-                f"overloaded implementation must be callable: {repr(call)}"
-            )
-
-    def sort(self) -> None:
-        """Sort the dictionary into topological order, with most specific
-        keys first.
-        """
-        sigs = list(self)
-        edges = {}
-
-        # group edges by first node
-        for _edge in [(a, b) for a in sigs for b in sigs if edge(a, b)]:
-            edges.setdefault(_edge[0], []).append(_edge[1])
-
-        # add signatures not contained in edges
-        for sig in sigs:
-            if sig not in edges:
-                edges[sig] = []
-
-        # sort according to edges
-        for sig in topological_sort(edges):
-            super().move_to_end(sig)
-
-        self._ordered = True
-
-    def __or__(self, other) -> DispatchDict:
-        result = self.copy()
-        result.update(other)
-        return result
-
-    def __ior__(self, other) -> DispatchDict:
-        self.update(other)
-        return self
-
-    def __getitem__(self, key: type_specifier | tuple[type_specifier]) -> Any:
-        key = resolve_key(key)
-
-        # trivial case: key has exact match
-        if super().__contains__(key):
-            return super().__getitem__(key)
-
-        # sort dict
-        if not self._ordered:
-            self._cache.clear()
-            self.sort()
-
-        # check for cached result
-        if key in self._cache:
-            return self._cache[key]
-
-        # search for first (sorted) match that fully contains key
-        for sig, val in self.items():
-            if all(x.contains(y) for x, y in zip(sig, key)):
-                self._cache[key] = val
-                return val
-
-        # no match found
-        raise KeyError(tuple(str(x) for x in key))
-
-    def __setitem__(self, key: type_specifier, value: Callable) -> None:
-        key = resolve_key(key)
-        self._validate_implementation(value)
-        super().__setitem__(key, value)
-        self._ordered = False
-
-    def __delitem__(self, key: type_specifier) -> None:
-        key = resolve_key(key)
-
-        # require exact match
-        if super().__contains__(key):
-            return super().__delitem__(key)
-
-        # no match found
-        raise KeyError(tuple(str(x) for x in key))
-
-    def __contains__(self, key: type_specifier):
-        try:
-            self.__getitem__(key)
-            return True
-        except KeyError:
-            return False
 
 
 class DispatchFunc(FunctionDecorator):
@@ -282,38 +138,41 @@ class DispatchFunc(FunctionDecorator):
     See the docs for :func:`@dispatch <pdcast.dispatch>` for example usage.
     """
 
+    # TODO: remember to update _reserved after refactor
+
     _reserved = (
         FunctionDecorator._reserved |
-        {"_args", "_dispatched", "_drop_na", "_flags", "_signature"}
+        {"_args", "_drop_na", "_flags", "_signature"}
     )
 
     def __init__(
         self,
         func: Callable,
-        args: list[str],
+        dispatched: tuple[str, ...],
         drop_na: bool,
         cache_size: int,
         convert_mixed: bool
     ):
         super().__init__(func=func)
-
-        if not args:
+        if not dispatched:
             raise TypeError(
                 f"'{func.__qualname__}' must dispatch on at least one argument"
             )
-        self._signature = inspect.signature(func)
-        bad = [a for a in args if a not in self._signature.parameters]
-        if bad:
-            raise TypeError(f"argument not recognized: {bad}")
 
-        self._args = args
+        self._signature = DispatchSignature(
+            func,
+            dispatched=dispatched,
+            cache_size=cache_size
+        )
+
+
+        self._args = dispatched
         self._drop_na = drop_na
-        self._dispatched = DispatchDict(cache_size=cache_size)
         self._convert_mixed = convert_mixed
         self._flags = threading.local()
 
     @property
-    def dispatched(self) -> MappingProxyType:
+    def overloaded(self) -> MappingProxyType:
         """A mapping from :doc:`types </content/types/types>` to their
         dispatched implementations.
 
@@ -343,11 +202,11 @@ class DispatchFunc(FunctionDecorator):
             ...     print("integer implementation")
             ...     return bar
 
-            >>> foo.dispatched
+            >>> foo.overloaded
 
         .. TODO: check
         """
-        return MappingProxyType(self._dispatched)
+        return MappingProxyType(self._signature.map)
 
     def overload(self, *args, **kwargs) -> Callable:
         """A decorator that transforms a naked function into a dispatched
@@ -391,68 +250,12 @@ class DispatchFunc(FunctionDecorator):
         example usage.
         """
 
-        def implementation(call: Callable) -> Callable:
+        def implementation(func: Callable) -> Callable:
             """Attach a dispatched implementation to the DispatchFunc with the
             associated types.
             """
-            # validate func accepts dispatched arguments
-            sig = inspect.signature(call)
-            missing = [a for a in self._args if a not in sig.parameters]
-            if missing:
-                call_name = f"'{call.__module__}.{call.__qualname__}()'"
-                raise TypeError(
-                    f"{call_name} must accept dispatched arguments: {missing}"
-                )
-
-            # bind signature
-            try:
-                bound = sig.bind_partial(*args, **kwargs).arguments
-            except TypeError as err:
-                call_name = f"'{call.__module__}.{call.__qualname__}()'"
-                reconstructed = [
-                    ", ".join(repr(v) for v in args),
-                    ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
-                ]
-                reconstructed = ", ".join(s for s in reconstructed if s)
-                err_msg = (
-                    f"invalid signature for {call_name}: ({reconstructed})"
-                )
-                raise TypeError(err_msg) from err
-
-            # parse overloaded signature
-            paths = []
-            missing = []
-            for name in self._args:
-                if name in bound:
-                    paths.append(bound.pop(name))
-                else:
-                    missing.append(name)
-            if missing:
-                raise TypeError(f"no signature given for argument: {missing}")
-            if bound:
-                raise TypeError(
-                    f"signature contains non-dispatched arguments: "
-                    f"{list(bound)}"
-                )
-
-            # generate dispatch keys
-            paths = [resolve_type([spec]) for spec in paths]
-            paths = list(itertools.product(*paths))
-
-            # merge with dispatch table
-            existing = dict(self._dispatched)
-            for path in paths:
-                previous = existing.get(path, None)
-                # if previous:
-                #     warn_msg = (
-                #         f"Replacing '{previous.__qualname__}()' with "
-                #         f"'{call.__qualname__}()' for signature "
-                #         f"{tuple(str(x) for x in path)}"
-                #     )
-                #     warnings.warn(warn_msg, UserWarning, stacklevel=2)
-                self._dispatched[path] = call
-
-            return call
+            self._signature.register(func, args, kwargs, warn=True)
+            return func
 
         return implementation
 
@@ -551,6 +354,31 @@ class DispatchFunc(FunctionDecorator):
                 This will be a DataFrame with rows for each group.
 
         """
+        # arguments = self._signature(*args, **kwargs)
+
+        # if getattr(self._flags, "recursive", False):
+        #   strategy = DirectDispatch(func=self, dispatch_args=arguments)
+        #   return strategy(arguments)
+
+        # arguments.normalize()
+        # if arguments.is_composite:
+        #   strategy = CompositeDispatch(
+        #       func=self,
+        #       arguments=arguments,
+        #       standardize_dtype=self._standardize_dtype,
+        # )
+        # else:
+        #   strategy = HomogenousDispatch(
+        #       func=self,
+        #       arguments=arguments,
+        #   )
+
+        # self._flags.recursive = True
+        # try:
+        #   return strategy(arguments)
+        # finally:
+        #   self._flags.recursive = False
+
         # bind signature
         bound = self._signature.bind(*args, **kwargs)
         bound.apply_defaults()
@@ -574,7 +402,10 @@ class DispatchFunc(FunctionDecorator):
         finally:
             self._flags.recursive = False
 
-    def __getitem__(self, key: type_specifier) -> Callable:
+    def __getitem__(
+        self,
+        key: type_specifier
+    ) -> Callable:
         """Get the dispatched implementation for objects of a given type.
 
         This method searches the implementation space being managed by this
@@ -582,19 +413,414 @@ class DispatchFunc(FunctionDecorator):
         is used when the function is invoked.
         """
         try:
-            return self._dispatched[key]
+            return self._signature[key]
         except KeyError:
             return self.__wrapped__
 
     def __delitem__(self, key: type_specifier) -> None:
         """Remove an implementation from the pool.
         """
-        self._dispatched.__delitem__(key)
+        del self._signature[key]
 
 
-#######################
-####    PRIVATE    ####
-#######################
+class DispatchSignature:
+    """An ordered dictionary that stores types and their dispatched
+    implementations for :class:`DispatchFunc` operations.
+    """
+
+    def __init__(
+        self,
+        func: Callable,
+        dispatched: tuple[str, ...],
+        cache_size: int = 128
+    ):
+        self.signature = inspect.signature(func)
+        self.dispatched = dispatched
+        bad = [name for name in dispatched if name not in self.parameters]
+        if bad:
+            raise TypeError(f"argument not recognized: {bad}")
+
+        self.map = {}
+        self.cache = LRUDict(maxsize=cache_size)
+        self.ordered = False
+
+    @property
+    def parameters(self) -> dict[str, inspect.Parameter]:
+        """TODO: take from ExtensionSignature
+        """
+        return self.signature.parameters
+
+    def get(self, key: type_specifier, default: Any = None) -> Any:
+        """Implement :meth:`dict.get` for DispatchSignature objects."""
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def pop(self, key: type_specifier, default: Any = no_default) -> Any:
+        """Implement :meth:`dict.pop` for DispatchSignature objects."""
+        key = self.resolve_key(key)
+        try:
+            result = self[key]
+            del self[key]
+            return result
+        except KeyError as err:
+            if default is no_default:
+                raise err
+            return default
+
+    def setdefault(self, key: type_specifier, default: Callable = None) -> Any:
+        """Implement :meth:`dict.setdefault` for DispatchSignature objects."""
+        key = self.resolve_key(key)
+        try:
+            return self[key]
+        except KeyError:
+            self[key] = default
+            return default
+
+    def update(self, other: dict) -> None:
+        """Implement :meth:`dict.update` for DispatchSignature objects."""
+        for key, value in other.items():
+            self[key] = value
+
+    def sort(self) -> None:
+        """Sort the dictionary into topological order, with most specific
+        keys first.
+        """
+        keys = list(self)
+
+        # draw edges between keys according to their specificity
+        edges = dict.fromkeys(keys, set())
+        for key1 in keys:
+            for key2 in keys:
+                if edge(key1, key2):
+                    edges[key1].add(key2)
+
+        # sort according to edges
+        for key in topological_sort(edges):
+            item = self.map.pop(key)
+            self.map[key] = item
+
+        self.ordered = True
+
+    def resolve_key(
+        self,
+        key: type_specifier | tuple[type_specifier]
+    ) -> tuple[types.VectorType]:
+        """Convert arbitrary type specifiers into a valid key for
+        `DispatchSignature` lookups.
+        """
+        if not isinstance(key, tuple):
+            key = (key,)
+
+        result = []
+        for typespec in key:
+            resolved = resolve_type(typespec)
+            if isinstance(resolved, types.CompositeType):
+                raise TypeError(f"key must not be composite: {repr(typespec)}")
+            result.append(resolved)
+
+        return tuple(result)
+
+    def parse_overload(
+        self,
+        func: Callable,
+        signature: inspect.Signature,
+        args: tuple[type_specifier],
+        kwargs: dict[str, type_specifier]
+    ):
+        """Bind the arguments to the function and sort their values into the
+        expected order.
+
+        Raises
+        ------
+        TypeError
+            If the arguments could not be bound to the function's signature or
+            if they do not exactly match the dispatched arguments specified in
+            this :class:`DispatchSignature`.
+        """
+        # bind *args, **kwargs
+        try:
+            bound = signature.bind_partial(*args, **kwargs).arguments
+        except TypeError as err:
+            func_name = f"'{func.__module__}.{func.__qualname__}()'"
+            reconstructed = [repr(value) for value in args]
+            reconstructed.extend(
+                f"{name}={repr(value)}" for name, value in kwargs.items()
+            )
+            err_msg = (
+                f"invalid signature for {func_name}: "
+                f"({', '.join(reconstructed)})"
+            )
+            raise TypeError(err_msg) from err
+
+        # translate into the expected order
+        result = []
+        missing = []
+        for name in self.dispatched:
+            if name in bound:
+                result.append(bound.pop(name))
+            else:
+                missing.append(name)
+
+        # confirm all arguments were matched
+        if missing:
+            raise TypeError(f"no signature given for argument: {missing}")
+
+        # confirm no extra arguments were given
+        if bound:
+            raise TypeError(
+                f"signature contains non-dispatched arguments: "
+                f"{list(bound)}"
+            )
+
+        return result
+
+    def register(
+        self,
+        func: Callable,
+        args: tuple[type_specifier],
+        kwargs: dict[str, type_specifier],
+        warn: bool = True
+    ) -> None:
+        """Ensure that an overloaded implementation is valid."""
+        if not callable(func):
+            raise TypeError(
+                f"overloaded implementation must be callable: {repr(func)}"
+            )
+
+        # confirm func accepts named arguments
+        sig = inspect.signature(func)
+        missing = [arg for arg in self.dispatched if arg not in sig.parameters]
+        if missing:
+            func_name = f"'{func.__module__}.{func.__qualname__}()'"
+            raise TypeError(
+                f"{func_name} must accept dispatched arguments: {missing}"
+            )
+
+        # bind *args, **kwargs into correct key order
+        key = self.parse_overload(func, sig, args, kwargs)
+
+        # expand key into cartesian product
+        key = [resolve_type([typespec]) for typespec in key]
+        key = list(itertools.product(*key))
+
+        # register implementation under each key
+        for path in key:
+            previous = self.get(path, None)
+            if warn and previous:
+                warn_msg = (
+                    f"Replacing '{previous.__qualname__}()' with "
+                    f"'{func.__qualname__}()' for signature "
+                    f"{tuple(str(x) for x in path)}"
+                )
+                warnings.warn(warn_msg, UserWarning, stacklevel=2)
+
+            self[path] = func
+
+    def __call__(self, *args, **kwargs) -> DispatchArguments:
+        """Bind this signature to create a `DispatchArguments` object."""
+        parameters = tuple(self.parameters.values())
+
+        # bind *args, **kwargs
+        bound = self.signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+
+        # extract dispatched arguments
+        dispatched = {arg: bound.arguments[arg] for arg in self.dispatched}
+
+        # call detect_type() on each argument
+        detected = {arg: detect_type(val) for arg, val in dispatched.items()}
+
+        # build signature
+        return DispatchArguments(
+            arguments=bound.arguments,
+            parameters=parameters,
+            positional=parameters[:len(args)],
+            dispatched=dispatched,
+            detected=detected
+        )
+
+    def __getitem__(
+        self,
+        key: type_specifier | tuple[type_specifier]
+    ) -> Callable:
+        """Search the :class:`DispatchSignature <pdcast.DispatchSignature>` for
+        a particular implementation.
+        """
+        key = self.resolve_key(key)
+
+        # trivial case: key has exact match
+        if key in self.map:
+            return self.map[key]
+
+        # check for cached result
+        if key in self.cache:
+            return self.cache[key]
+
+        # sort map
+        if not self.ordered:
+            self.cache.clear()
+            self.sort()
+
+        # search for first (sorted) match that fully contains key
+        for comp_key, implementation in self.map.items():
+            if all(x.contains(y) for x, y in zip(comp_key, key)):
+                self.cache[key] = implementation
+                return implementation
+
+        # no match found
+        raise KeyError(tuple(str(x) for x in key))
+
+    def __setitem__(self, key: type_specifier, value: Callable) -> None:
+        """Add an overloaded implementation to the
+        :class:`DispatchSignature <pdcast.DispatchSignature>`.
+        """
+        key = self.resolve_key(key)
+        self.check_implementation(value)
+        self.map[key] = value
+        self.ordered = False
+
+    def __delitem__(self, key: type_specifier) -> None:
+        """Remove an overloaded implementation from the
+        :class:`DispatchSignature <pdcast.DispatchSignature>`.
+        """
+        key = self.resolve_key(key)
+
+        # require exact match
+        if key in self.map:
+            del self.map[key]
+        else:
+            raise KeyError(tuple(str(x) for x in key))
+
+    def __contains__(self, key: type_specifier):
+        """Check if a particular implementation is present in the
+        :class:`DispatchSignature <pdcast.DispatchSignature>`.
+        """
+        try:
+            self.__getitem__(key)
+            return True
+        except KeyError:
+            return False
+
+
+class DispatchArguments:
+    """A simple wrapper for an `inspect.BoundArguments` object with extra
+    context for dispatched arguments and their detected types.
+    """
+
+    def __init__(
+        self,
+        arguments: dict[str, Any],
+        parameters: tuple[inspect.Parameter, ...],
+        positional: tuple[inspect.Parameter, ...],
+        dispatched: dict[str, Any],
+        detected: dict[str, types.Type]
+    ):
+        self.arguments = arguments
+        self.parameters = parameters
+        self.positional = positional
+        self.dispatched = dispatched
+        self.detected = detected
+        self.names = {}
+        self.frame = None
+        self.original_index = None
+        self.hasnans = None
+
+    @property
+    def args(self) -> tuple[Any, ...]:
+        """Get an *args tuple from the bound signature."""
+        return tuple(self.arguments[par.name] for par in self.positional)
+
+    @property
+    def kwargs(self) -> dict[str, Any]:
+        """Get a **kwargs dict from the bound signature."""
+        pos = {par.name for par in self.positional}
+        return {k: v for k, v in self.arguments.items() if k not in pos}
+
+    @property
+    def key(self) -> tuple[types.Type, ...]:
+        """Form a key for indexing a DispatchFunc."""
+        return tuple(self.detected.values())
+
+    @property
+    def is_composite(self) -> bool:
+        """Indicates whether any dispatched arguments are of mixed type."""
+        return any(
+            isinstance(val, types.CompositeType)
+            for val in self.detected.values()
+        )
+
+    @property
+    def vectors(self) -> dict[str, pd.Series]:
+        """Extract vectors from dispatched arguments."""
+        result = {}
+        for arg, series in self.frame.items():
+            # NOTE: Each column is stored under its argument name by default.
+            # If a named series was supplied as that argument's value, then we
+            # will have lost the original name.  To fix this, we store a
+            # parallel dict of argument names to series names and rename them
+            # here.
+            if arg in self.names:
+                series = series.rename(self.names[arg], copy=True)
+            result[arg] = series
+
+        return result
+
+    @property
+    def groups(self) -> dict[str, pd.Index]:
+        """Group vectors by type.
+
+        This only applies if `is_composite=True`.
+        """
+        type_frame = pd.DataFrame({
+            arg: getattr(typ, "index", typ)
+            for arg, typ in self.detected.items()
+        })
+        groupby = type_frame.groupby(list(type_frame.columns), sort=False)
+        return groupby.groups
+
+    def normalize(self) -> DispatchArguments:
+        """Extract vectors from dispatched arguments and normalize them."""
+        # extract vectors
+        vectors = {}
+        for arg, value in self.arguments:
+            if isinstance(value, pd.Series):
+                vectors[arg] = value
+                self.names[arg] = value.name
+            elif isinstance(value, np.ndarray):
+                vectors[arg] = value
+            else:
+                value = np.asarray(value, dtype=object)
+                if value.shape:
+                    vectors[arg] = value
+
+        # bind vectors into DataFrame
+        self.frame = pd.DataFrame(vectors)
+
+        # normalize indices
+        original_index = self.frame.index
+        if not isinstance(original_index, pd.RangeIndex):
+            self.frame.index = pd.RangeIndex(0, self.frame.shape[0])
+
+        # NOTE: the DataFrame constructor will happily accept vectors with
+        # misaligned indices, filling any absent values with NaNs.  Since this
+        # is a likely source of bugs, we always warn the user when it happens.
+
+        original_length = original_index.shape[0]
+        if any(vec.shape[0] != original_length for vec in vectors.values()):
+            warn_msg = (
+                f"{self.__qualname__}() - vectors have misaligned indices"
+            )
+            warnings.warn(warn_msg, UserWarning, stacklevel=2)
+
+        # drop missing values
+        self.frame.dropna(how="any")
+        self.hasnans = self.frame.shape[0] != original_length
+
+
+
+
 
 # DispatchArguments are passed to every DispatchStrategy, along with a reference
 # to the parent DispatchFunc.  DirectDispatch, uses its arguments to index the
@@ -607,109 +833,99 @@ class DispatchFunc(FunctionDecorator):
 # CompositeDispatch constructs its own DispatchArguments for each group.
 
 
-# TODO: DispatchSignature is merged with DispatchDict
 
 
-class DispatchSignature:
-    """Factory object for creating `Signature` objects.
 
-    These are used to extract dispatchable context from the arguments supplied
-    to `DispatchFunc.__call__()`.
+def supercedes(sig1: tuple, sig2: tuple) -> bool:
+    """Check if sig1 is consistent with and strictly more specific than sig2.
     """
-
-    def __init__(self, func: Callable, args: tuple[str]):
-        self.signature = inspect.signature(func)
-        self.args = args
-
-    def __call__(self, *args, **kwargs) -> DispatchArguments:
-        """Bind this signature to create a `DispatchArguments` object."""
-        # bind *args, **kwargs
-        bound = self.signature.bind(*args, **kwargs)
-        bound.apply_defaults()
-
-        # extract dispatched arguments
-        dispatched = {arg: bound.arguments[arg] for arg in self.args}
-
-        # call detect_type() on each argument
-        detected = {arg: detect_type(val) for arg, val in dispatched.items()}
-
-        # build signature
-        return DispatchArguments(
-            bound=bound,
-            dispatched=dispatched,
-            detected=detected
-        )
+    return all(x.contains(y) for x, y in zip(sig2, sig1))
 
 
-class DispatchArguments:
-    """A simple wrapper for an `inspect.BoundArguments` object with extra
-    context for dispatched arguments and their detected types.
+def edge(sig1: tuple, sig2: tuple) -> bool:
+    """If ``True``, check sig1 before sig2.
+
+    Ties are broken by recursively backing off the last element of both
+    signatures.  As a result, whichever one is more specific in its earlier
+    elements will always be preferred.
     """
+    # pylint: disable=arguments-out-of-order
+    if not sig1 or not sig2:
+        return False
 
-    def __init__(
-        self,
-        bound: inspect.BoundArguments,
-        dispatched: dict[str, Any],
-        detected: dict[str, types.Type]
-    ):
-        self.bound = bound
-        self.dispatched = dispatched
-        self.detected = detected
-
-    @property
-    def arguments(self) -> dict[str, Any]:
-        """Get all arguments and their valuues from the bound signature."""
-        return self.bound.arguments
-
-    @property
-    def args(self) -> tuple[Any, ...]:
-        """Get an *args tuple from the bound signature."""
-        return self.bound.args
-
-    @property
-    def kwargs(self) -> dict[str, Any]:
-        """Get a **kwargs dict from the bound signature."""
-        return self.bound.kwargs
-
-    @property
-    def key(self) -> tuple[types.Type, ...]:
-        """Form a key for indexing a DispatchFunc."""
-        return tuple(self.detected.values())
-
-    def normalize(self) -> DispatchArguments:
-        """Extract vectors from dispatched arguments and normalize them."""
-        raise NotImplementedError()
+    return (
+        supercedes(sig1, sig2) and
+        not supercedes(sig2, sig1) or edge(sig1[:-1], sig2[:-1])
+    )
 
 
-# TODO: before doing anything crazy, just update DispatchFunc/DispatchStrategy
-# to use Signatures
+def topological_sort(edges: dict) -> list:
+    """Topological sort algorithm by Kahn (1962).
+
+    Parameters
+    ----------
+    edges : dict
+        A dict of the form `{A: {B, C}}` where `B` and `C` depend on `A`.
+
+    Returns
+    -------
+    list
+        An ordered list of nodes that satisfy the dependencies of `edges`.
+
+    Examples
+    --------
+    .. doctest::
+
+        >>> topological_sort({1: (2, 3), 2: (3, )})
+        [1, 2, 3]
+
+    References
+    ----------    
+    Kahn, Arthur B. (1962), "Topological sorting of large networks",
+    Communications of the ACM
+    """
+    # edge_count is used to detect cycles
+    edge_count = sum(len(dependencies) for dependencies in edges.values())
+
+    # invert edges: {A: {B, C}} -> {B: {A}, C: {A}}
+    inverted = {}
+    for node, dependencies in edges.items():
+        for dependent in dependencies:
+            inverted.setdefault(dependent, set()).add(node)
+
+    # Proceed with Kahn topological sort algorithm
+    no_incoming = [node for node in edges if node not in inverted]
+    result = []
+    while no_incoming:
+
+        # pop a node with no incoming edges (order doesn't matter)
+        node = no_incoming.pop()
+        result.append(node)
+
+        # for each edge from node -> dependent:
+        for dependent in edges.get(node, ()):
+
+            # remove edge from inverted map
+            inverted[dependent].remove(node)
+
+            # decrement edge count
+            edge_count -= 1
+
+            # if dependent has no more incoming edges, add it to the queue
+            if not inverted[dependent]:
+                no_incoming.append(dependent)
+
+    # if there are any edges left, then there must be a cycle
+    if edge_count:
+        cycles = [node for node in edges if inverted.get(node, None)]
+        raise ValueError(f"edges are cyclic: {cycles}")
+
+    return result
 
 
-
-# TODO: Signature needs a .vectors property that returns a dict of pd.Series
-# objects.
-
-# Maybe Signature.vectors creates a VectorContext object that has no logic
-# in __init__.  Instead, it has a .normalize() method that binds the vectors
-# into a DataFrame with a normalized index and no missing values, and then
-# separates them back out into a dict of pd.Series objects.
-
-
-
-# TODO: add a class for normalizing vectorized arguments.
-
-# class VectorContext:
-#   __init__(signature: Signature)
-#   frame -> pd.DataFrame
-#   vectors -> dict[str, pd.Series]
-#   groups() -> dict[tuple[VectorType], pd.DataFrame]
-#   normalize(result)  # -> replace NAs, reindex, rename
-
-# __init__ gets the Signature from above, extracts the vectors, and binds them
-# into a DataFrame with a normalized index and no missing values.  It stores
-# the original index and names of each vector for later use.
-
-
+##########################
+####    STRATEGIES    ####
+##########################
 
 
 class DispatchStrategy:
@@ -1033,114 +1249,10 @@ class CompositeDispatch(DispatchStrategy):
                 ]
                 observed = {typ}
                 return computed, observed
-            except:
+            except Exception:
                 continue
 
         return computed, observed
-
-
-def resolve_key(key: type_specifier | tuple[type_specifier]) -> tuple:
-    """Convert arbitrary type specifiers into a valid key for DispatchDict
-    lookups.
-    """
-    if not isinstance(key, tuple):
-        key = (key,)
-
-    key_type = []
-    for spec in key:
-        spec_type = resolve_type(spec)
-        if isinstance(spec_type, types.CompositeType):
-            raise TypeError(f"key must not be composite: {repr(spec)}")
-        key_type.append(spec_type)
-
-    return tuple(key_type)
-
-
-def supercedes(sig1: tuple, sig2: tuple) -> bool:
-    """Check if sig1 is consistent with and strictly more specific than sig2.
-    """
-    return all(x.contains(y) for x, y in zip(sig2, sig1))
-
-
-def edge(sig1: tuple, sig2: tuple) -> bool:
-    """If ``True``, check sig1 before sig2.
-
-    Ties are broken by recursively backing off the last element of both
-    signatures.  As a result, whichever one is more specific in its earlier
-    elements will always be preferred.
-    """
-    # pylint: disable=arguments-out-of-order
-    if not sig1 or not sig2:
-        return False
-
-    return (
-        supercedes(sig1, sig2) and
-        not supercedes(sig2, sig1) or edge(sig1[:-1], sig2[:-1])
-    )
-
-
-def topological_sort(edges: dict) -> list:
-    """Topological sort algorithm by Kahn (1962).
-
-    Parameters
-    ----------
-    edges : dict
-        A dict of the form `{A: {B, C}}` where `B` and `C` depend on `A`.
-
-    Returns
-    -------
-    list
-        An ordered list of nodes that satisfy the dependencies of `edges`.
-
-    Examples
-    --------
-    .. doctest::
-
-        >>> topological_sort({1: (2, 3), 2: (3, )})
-        [1, 2, 3]
-
-    References
-    ----------    
-    Kahn, Arthur B. (1962), "Topological sorting of large networks",
-    Communications of the ACM
-    """
-    # edge_count is used to detect cycles
-    edge_count = sum(len(dependencies) for dependencies in edges.values())
-
-    # invert edges: {A: {B, C}} -> {B: {A}, C: {A}}
-    inverted = {}
-    for node, dependencies in edges.items():
-        for dependent in dependencies:
-            inverted.setdefault(dependent, set()).add(node)
-
-    # Proceed with Kahn topological sort algorithm
-    no_incoming = [node for node in edges if node not in inverted]
-    result = []
-    while no_incoming:
-
-        # pop a node with no incoming edges (order doesn't matter)
-        node = no_incoming.pop()
-        result.append(node)
-
-        # for each edge from node -> dependent:
-        for dependent in edges.get(node, ()):
-
-            # remove edge from inverted map
-            inverted[dependent].remove(node)
-
-            # decrement edge count
-            edge_count -= 1
-
-            # if dependent has no more incoming edges, add it to the queue
-            if not inverted[dependent]:
-                no_incoming.append(dependent)
-
-    # if there are any edges left, then there must be a cycle
-    if edge_count:
-        cycles = [node for node in edges if inverted.get(node, None)]
-        raise ValueError(f"edges are cyclic: {cycles}")
-
-    return result
 
 
 def replace_na(

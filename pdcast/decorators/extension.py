@@ -1,15 +1,15 @@
 """This module describes an ``@extension_func`` decorator that transforms an
-ordinary Python function into one that can accept dynamic, managed arguments
-with custom validators and default values.
+ordinary Python function into one that can accept managed arguments with custom
+validators and dynamic values.
 """
 from __future__ import annotations
 from functools import wraps
 import inspect
 import threading
 from types import MappingProxyType
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
-from .base import FunctionDecorator, no_default
+from .base import EMPTY, Arguments, FunctionDecorator, Signature
 
 
 ######################
@@ -27,8 +27,8 @@ def extension_func(func: Callable) -> Callable:
         A Python function or other callable to be decorated.  If this accepts a
         ``**kwargs`` dict or similar variable-length keyword argument, then it
         will be allowed to take on
-        :ref:`extension arguments <extension_func.extension>` defined at run
-        time.
+        :ref:`extension arguments <extension_func.extension>` that are defined
+        at runtime.
 
     Returns
     -------
@@ -42,7 +42,7 @@ def extension_func(func: Callable) -> Callable:
     The returned :class:`ExtensionFunc <pdcast.ExtensionFunc>` inherits from
     :class:`threading.local <python:threading.local>`, which isolates its
     default values to the current thread.  Each instance inherits the default
-    values of the main thread during at the time it is constructed.
+    values of the main thread at the time it is constructed.
     """
     main_thread = []  # using a one-element list bypasses UnboundLocalError
 
@@ -146,18 +146,37 @@ class ExtensionFunc(FunctionDecorator, threading.local):
 
     @property
     def settings(self) -> MappingProxyType:
-        """A mapping of all managed arguments to their current settings.
+        """A mapping of all managed arguments to their current values.
 
         Returns
         -------
         MappingProxyType
-            A read-only dictionary suitable for use as the ``**kwargs`` input
-            to the decorated function.
+            A read-only dictionary mapping argument names to their current
+            values for this :class:`ExtensionFunc <pdcast.ExtensionFunc>`.  If
+            no explicit value is associated with an argument, then it will be
+            excluded from the map.
 
-        Notes
-        -----
-        If no default value is associated with an argument, then it will be
-        excluded from this dictionary.
+        Examples
+        --------
+        .. doctest::
+
+            >>> @extension_func
+            ... def foo(bar, baz=2, **kwargs)
+            ...     return {"bar": bar, "baz": baz} | kwargs
+
+            >>> @foo.argument(default=1)
+            ... def bar(val, context: dict) -> int:
+            ...     return int(val)
+
+            >>> @foo.argument
+            ... def baz(val, context: dict) -> int:
+            ...     return int(val)
+
+            >>> foo.settings
+            mappingproxy({'bar': 1, 'baz': 2})
+            >>> foo.bar, foo.baz = 24, "-17"
+            >>> foo.settings
+            mappingproxy({'bar': 24, 'baz': -17})
         """
         return self._signature.settings
 
@@ -166,7 +185,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
         func: Callable = None,
         *,
         name: str | None = None,
-        default: Any = no_default
+        default: Any = EMPTY
     ) -> Callable:
         """A decorator that transforms a validation function into a managed
         argument for this :class:`ExtensionFunc <pdcast.ExtensionFunc>`.
@@ -177,12 +196,13 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             The name of the argument that the validator validates.  If this is
             left as :data:`None <python:None>`, then the name of the validator
             will be used instead.
-        default : Any | None, default no_default
+        default : Any | None, default EMPTY
             The default value to use for this argument.  This is implicitly
             passed to the validator itself, so any custom logic that is
-            implemented there will also be applied to this value.  If this
-            argument is omitted and the decorated function defines a default
-            value in its call signature, then that value will be used instead.
+            implemented there will also be applied to this value if it is not
+            empty.  Otherwise, if this argument is omitted and the decorated
+            function defines a default value in its call signature, then that
+            value will be used instead.
 
         Returns
         -------
@@ -248,7 +268,10 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             property.
             """
             # Ensure validator is valid
-            _name = self._signature.check_validator(validator, name)
+            self._signature.check_validator(validator)
+
+            # get name of argument and ensure unique
+            _name = self._signature.get_argument_name(name, validator)
 
             # check name is not overwriting a reserved attribute
             if _name in dir(self):
@@ -260,44 +283,15 @@ class ExtensionFunc(FunctionDecorator, threading.local):
                 """Automatically populate `context` argument of validator."""
                 return validator(val, context, **kwargs)
 
-            # get default value and pass through validator
-            defaults = self._signature.defaults
-            if default is not no_default:
-                defaults[_name] = validate_context(default)
-            else:
-                pars = self._signature.parameters
-                empty = inspect.Parameter.empty
-                if _name in pars and pars[_name].default is not empty:
-                    defaults[_name] = validate_context(pars[_name].default)
-
-            # generate getter, setter, and deleter for @property
-            def getter(self) -> Any:
-                """Get the value of a managed argument."""
-                overrides = self._signature.overrides
-                defaults = self._signature.defaults
-                if _name in overrides:
-                    return overrides[_name]
-                if _name in defaults:
-                    return defaults[_name]
-                raise TypeError(f"'{_name}' has no default value")
-
-            def setter(self, val: Any) -> None:
-                """Set the value of a managed argument."""
-                self._signature.overrides[_name] = validate_context(val)
-
-            def deleter(self) -> None:
-                """Replace the value of a managed argument with its default."""
-                defaults = self._signature.defaults
-                if _name in defaults:
-                    validate_context(defaults[_name])
-                self._signature.overrides.pop(_name, None)
-
-            # attach property to class
-            prop = property(getter, setter, deleter, doc=validator.__doc__)
+            # add argument to signature and generate @property
+            prop = self._signature.register_argument(
+                name=_name,
+                validator=validate_context,
+                default=default
+            )
             setattr(type(self), _name, prop)
 
-            # remember validator
-            self._signature.validators[_name] = validate_context
+            # return wrapped validator
             return validate_context
 
         if func is None:
@@ -347,12 +341,18 @@ class ExtensionFunc(FunctionDecorator, threading.local):
 
         # commit to deletion
         delattr(type(self), name)
-        self._signature.validators.pop(name)
+        self._signature.remove_parameter(name, replace=True)
         self._signature.defaults.pop(name, None)
-        self._signature.overrides.pop(name, None)
+        self._signature.validators.pop(name)
 
     def reset_defaults(self) -> None:
-        """Reset all arguments to their hardcoded defaults.
+        """Reset all arguments to their original defaults.
+
+        Notes
+        -----
+        This is effectively equivalent to calling the ``del`` keyword on every
+        argument registered to this
+        :class:`ExtensionFunc <pdcast.ExtensionFunc>`.
 
         Examples
         --------
@@ -379,7 +379,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             >>> foo.bar, foo.baz
             (1, 2)
         """
-        self._signature.overrides.clear()
+        self._signature.reset_defaults()
 
     ###############################
     ####    SPECIAL METHODS    ####
@@ -391,10 +391,9 @@ class ExtensionFunc(FunctionDecorator, threading.local):
         Parameters
         ----------
         *args, **kwargs
-            Arbitrary positional and keyword arguments that were passed to this
-            function.  These will always be redirected through their respective
-            validation function before being passed on to the decorated
-            callable.
+            Arbitrary positional and keyword arguments passed to this function.
+            These will always be redirected through their respective validation
+            function before being passed to the decorated callable.
 
         Returns
         -------
@@ -415,14 +414,11 @@ class ExtensionFunc(FunctionDecorator, threading.local):
         # generate bound arguments
         bound = self._signature(*args, **kwargs)
 
-        # flatten extension arguments
-        bound.flatten_kwargs()
-
-        # pass through validator
+        # pass *args, **kwargs through validator
         bound.validate()
 
         # fill in pre-validated settings
-        bound.apply_settings()
+        bound.apply_defaults()
 
         # invoke wrapped function
         return self.__wrapped__(*bound.args, **bound.kwargs)
@@ -459,14 +455,14 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             ...     return int(val)
 
             >>> foo
-            foo(bar=1, baz=2, qux=3, **kwargs)
+            foo(bar=1, baz=2, *, qux=3, **kwargs)
             >>> repr(foo)
-            'foo(bar=1, baz=2, qux=3, **kwargs)'
+            'foo(bar=1, baz=2, *, qux=3, **kwargs)'
         """
-        return self._signature.reconstruct()
+        return self._signature.reconstruct(annotations=False)
 
 
-class ExtensionSignature:
+class ExtensionSignature(Signature):
     """A wrapper around an :class:`inspect.Signature <python:inspect.Signature>`
     object that serves as a factory for
     :class:`ExtensionArguments <pdcast.ExtensionArguments>`.
@@ -478,123 +474,45 @@ class ExtensionSignature:
 
     Notes
     -----
-    These capture the arguments that are passed to an
-    :class:`ExtensionFunc <pdcast.ExtensionFunc>`'s
-    :meth:`__call__() <pdcast.ExtensionFunc.__call__>` method, encapsulating them
-    in a dedicated :class:`ExtensionArguments <pdcast.ExtensionArguments>`
-    class.
+    These capture the arguments that are passed to
+    :class:`ExtensionFunc.__call__() <pdcast.ExtensionFunc.__call__>` and
+    encapsulate them in a dedicated
+    :class:`ExtensionArguments <pdcast.ExtensionArguments>` object.
 
     :class:`ExtensionArguments <pdcast.ExtensionArguments>` provide a
     high-level interface for interacting with and validating arguments, without
-    having to worry about the complicated machinery of the
+    having to interact with the complicated machinery of the
     :mod:`inspect <python:inspect>` module.
     """
 
     def __init__(self, func: Callable):
-        self.func_name = func.__qualname__
-        self.signature = inspect.signature(func)
-
-        # get name of **kwargs argument
-        self.kwargs_name = None
-        for par in self.parameters.values():
-            if par.kind == par.VAR_KEYWORD:
-                self.kwargs_name = par.name
-                break
-
-        # init validators, default values
+        super().__init__(func=func)
+        self.accepts_kwargs = any(
+            par.kind == par.VAR_KEYWORD for par in self.parameters
+        )
+        self.defaults = {
+            par.name: par.default for par in self.parameters
+            if par.default is not EMPTY
+        }
         self.validators = {}
-        self.defaults = {}
-        self.overrides = {}
 
     @property
-    def parameters(self) -> MappingProxyType:
-        """Get the hardcoded parameters of the decorated function.
+    def settings(self) -> Mapping[str, Any]:
+        """A mapping of all managed arguments to their current values.
 
         Returns
         -------
         MappingProxyType
-            An ordered, read-only mapping of the decorated function's
-            parameters, as they were defined in its original signature.
-
-        Notes
-        -----
-        This is equivalent to the output of
-        :attr:`inspect.Signature.parameters <python:inspect.Signature.parameters>`.
+            A read-only dictionary mapping argument names to their current
+            values for this
+            :class:`ExtensionSignature <pdcast.ExtensionSignature>`.  If no
+            explicit value is associated with an argument, then it will be
+            excluded from the map.
         """
-        return self.signature.parameters
-
-    @property
-    def settings(self) -> MappingProxyType:
-        """A mapping of all managed arguments to their current defaults.
-
-        Returns
-        -------
-        MappingProxyType
-            A read-only dictionary suitable for use as the ``**kwargs`` input
-            to the decorated function.  If no default value is associated with
-            an argument, then it will be excluded from this dictionary.
-        """
-        return MappingProxyType({**self.defaults, **self.overrides})
-
-    def check_validator(
-        self,
-        validator: Callable,
-        name: str | None = None
-    ) -> str:
-        """Ensure that an argument validator is of the expected form.
-
-        Parameters
-        ----------
-        validator : Callable
-            A function decorated with
-            :meth:`ExtensionFunc.argument() <pdcast.ExtensionFunc.argument>`.
-        name : str | None
-            The name of the argument that ``validator`` validates.  If this is
-            left as :data:`None <python:None>`, then the name of the validator
-            itself will be used instead.
-
-        Returns
-        -------
-        str
-            The final name of the validated argument.
-
-        Raises
-        ------
-        TypeError
-            If ``validator`` is not callable with at least 2 arguments, or if
-            ``name`` is not a string contained within the parameters of this
-            :class:`ExtensionSignature`.
-        KeyError
-            If ``name`` is already in use by another validator.
-        """
-        # ensure validator is callable
-        if not callable(validator):
-            raise TypeError(f"validator must be callable: {validator}")
-
-        # ensure validator accepts at least 2 arguments
-        if len(inspect.signature(validator).parameters) < 2:
-            raise TypeError(
-                f"validator must accept at least 2 arguments: {validator}"
-            )
-
-        # use name of validator as argument name if not explicitly given
-        if name is None:
-            name = validator.__name__
-        elif not isinstance(name, str):
-            raise TypeError(f"name must be a string, not {type(name)}")
-
-        # ensure name is not already in use
-        if name in self.validators:
-            raise KeyError(f"default argument '{name}' already exists")
-
-        # check name exists in signature or **kwargs
-        if self.kwargs_name is None and name not in self.parameters:
-            raise TypeError(
-                f"'{self.__qualname__}()' has no argument '{name}'"
-            )
-
-        # return final argument name
-        return name
+        return MappingProxyType({
+            par.name: par.default for par in self.parameters
+            if par.name in self.validators and par.default is not EMPTY
+        })
 
     def copy_settings(self, other: ExtensionSignature) -> None:
         """Copy the current settings of another
@@ -611,20 +529,211 @@ class ExtensionSignature:
         :class:`ExtensionFunc <pdcast.ExtensionFunc>` to its children when a
         new thread is spawned.
         """
+        self.signature = other.signature.replace()  # copy other signature
         self.validators = other.validators.copy()
         self.defaults = other.defaults.copy()
-        self.overrides = other.overrides.copy()
 
-    def reconstruct(self) -> str:
-        """Reconstruct the function's signature using the managed arguments.
+    def reset_defaults(self) -> None:
+        """Reset all settings to their original defaults.
+
+        Notes
+        -----
+        This resets to either the ``default`` that was given in
+        :meth:`@argument <pdcast.ExtensionFunc.argument>` or the hardcoded
+        value in the function's original signature, whichever comes first.
+        """
+        self.parameters = tuple(
+            par.replace(default=self.defaults.get(par.name, EMPTY))
+            for par in self.parameters
+        )
+
+    def check_validator(self, validator: Callable) -> None:
+        """Confirm that a validator is callable with the expected parameters.
+
+        Parameters
+        ----------
+        validator : Callable
+            A custom validation function decorated with
+            :meth:`@argument <pdcast.ExtensionFunc.argument>`.
+
+        Raises
+        ------
+        TypeError
+            If the validator is not callable, or if it does not accept at least
+            2 arguments: the value itself and a context dictionary storing the
+            values of every other argument that the function was invoked with.
+        """
+        # ensure validator is callable
+        if not callable(validator):
+            raise TypeError(f"validator must be callable: {validator}")
+
+        # ensure validator accepts at least 2 arguments
+        if len(inspect.signature(validator).parameters) < 2:
+            raise TypeError(
+                f"validator must accept at least 2 arguments: {validator}"
+            )
+
+    def get_argument_name(
+        self,
+        name: str | None,
+        validator: Callable
+    ) -> str:
+        """Get the appropriate argument name for a given validator and ensure
+        that it is unique.
+
+        Parameters
+        ----------
+        name : str | None
+            The name of the argument that ``validator`` validates.  If this is
+            :data:`None <python:None>`, then the name of the validation
+            function will be used instead.
+        validator : Callable
+            A custom validation function decorated with
+            :meth:`@argument <pdcast.ExtensionFunc.argument>`.
 
         Returns
         -------
         str
-            A string representation of the function's signature using the
-            current values of all its managed arguments.
+            The final name of the validated argument.
+
+        Raises
+        ------
+        TypeError
+            If ``name`` is not a string or :data:`None <python:None>`.
+        KeyError
+            If ``name`` is already in use by another validator.
         """
-        return f"{self.func_name}({', '.join(self().reconstruct())})"
+        # use name of validator as argument name if not explicitly given
+        if name is None:
+            name = validator.__name__
+        elif not isinstance(name, str):
+            raise TypeError(f"name must be a string, not {type(name)}")
+
+        # ensure name is not already in use
+        if name in self.validators:
+            raise KeyError(f"argument '{name}' already exists")
+
+        # return final argument name
+        return name
+
+    def register_argument(
+        self,
+        name: str,
+        validator: Callable,
+        default: Any = EMPTY,
+        annotation: Any = EMPTY
+    ) -> property:
+        """Add an argument to this signature.
+
+        Parameters
+        ----------
+        name : str
+            The name of the argument to add.
+        validator : Callable
+            The validation function to use when validating and setting the
+            argument.  This must be decorated with
+            :meth:`@ExtensionFunc.argument <pdcast.ExtensionFunc.argument>`.
+
+        Returns
+        -------
+        property
+            A managed :class:`property <python:property>` to be added to the
+            :class:`ExtensionFunc <pdcast.ExtensionFunc>` itself.  This has
+            full getter, setter, and deleter logic based on the ``validator``
+            that was passed as input.
+
+        Raises
+        ------
+        TypeError
+            If the argument name does not appear in the function's signature
+            and the function does not accept a variable-length ``**kwargs``
+            argument (or a differently-named equivalent).
+
+        Notes
+        -----
+        The returned :class:`property <python:property>` uses the following
+        logic for attribute access:
+
+            *   When :meth:`__get__() <python:object.__get__>` is called, the
+                result is always equal to the default value of the associated
+                :class:`Parameter <python:inspect.Parameter>` for this
+                :class:`ExtensionSignature <pdcast.ExtensionSignature>`.
+            *   When :meth:`__set__() <python:object.__set__>` is called, the
+                assigned value will be passed through the validator and then
+                stored directly on the argument's
+                :class:`Parameter <python:inspect.Parameter>`.
+            *   When :meth:`__del__() <python:object.__del__>` is called, the
+                argument will be reset to its original state, removing any
+                dynamic values that were assigned to it.
+        """
+        # pass default value through validator
+        if default is EMPTY:
+            pars = self.parameter_map
+            if name in pars and pars[name].default is not EMPTY:
+                default = validator(pars[name].default)
+        else:
+            default = validator(default)
+
+        # if argument is in signature, modify its default
+        if name in self.parameter_map:
+            self.parameters = tuple(
+                par.replace(default=default) if par.name == name else par
+                for par in self.parameters
+            )
+
+        # otherwise, extend signature with new argument
+        else:
+            # assert signature accepts a `**kwargs`-equivalent
+            if not self.accepts_kwargs:
+                raise TypeError(
+                    f"'{self.__qualname__}()' has no argument '{name}'"
+                )
+
+            # generate parameter and insert into signature
+            parameter = inspect.Parameter(
+                name=name,
+                kind=inspect.Parameter.KEYWORD_ONLY,
+                default=default,
+                annotation=annotation
+            )
+
+            # `**kwargs`-equivalent must be last element
+            params = self.parameters
+            self.parameters = params[:-1] + (parameter, params[-1])
+
+        # remember validator, default
+        self.validators[name] = validator
+        if default is not EMPTY:
+            self.defaults[name] = default
+
+        # generate getter, setter, and deleter for @property
+        def getter(self) -> Any:
+            """Get the value of a managed argument."""
+            result = self._signature.parameter_map[name].default
+            if result is EMPTY:
+                raise TypeError(f"'{name}' has no default value")
+            return result
+
+        def setter(self, val: Any) -> None:
+            """Set the value of a managed argument."""
+            val = validator(val)
+            self._signature.parameters = tuple(
+                par.replace(default=val) if par.name == name else par
+                for par in self._signature.parameters
+            )
+
+        def deleter(self) -> None:
+            """Replace the value of a managed argument with its default."""
+            val = self._signature.defaults.get(name, EMPTY)
+            if val is EMPTY:
+                self._signature.parameters = tuple(
+                    par.replace(default=EMPTY) if par.name == name else par
+                    for par in self._signature.parameters
+                )
+            else:
+                setter(self, val)
+
+        return property(getter, setter, deleter, doc=validator.__doc__)
 
     def __call__(self, *args, **kwargs) -> ExtensionArguments:
         """Bind the arguments to form a new
@@ -648,168 +757,34 @@ class ExtensionSignature:
         :meth:`ExtensionFunc.__call__() <pdcast.ExtensionFunc.__call__>`.
         """
         bound = self.signature.bind_partial(*args, **kwargs)
-        parameters = tuple(self.parameters.values())
-
-        return ExtensionArguments(
-            arguments=bound.arguments,
-            parameters=parameters,
-            positional=parameters[:len(args)],
-            kwargs_name=self.kwargs_name,
-            validators=self.validators,
-            settings=self.settings
-        )
+        return ExtensionArguments(bound=bound, signature=self)
 
 
-class ExtensionArguments:
-    """Captured arguments from a call to `ExtensionFunc(*args, **kwargs)`.
-
-    Parameters
-    ----------
-    arguments : dict[str, Any]
-        A dictionary of all the arguments that were passed to an
-        `ExtensionFunc`.  This is equivalent to the `arguments` attribute of an
-        `inspect.BoundArguments` object.
-    parameters : tuple[str]
-        All the parameter names from the function's original signature, in
-        order.
-    positional : tuple[str]
-        The names of all the positional arguments that were passed to the
-        `ExtensionFunc`.  This is just the first `n` elements of `parameters`,
-        where `n` is the number of `*args` that were supplied.
-    kwargs_name : str
-        The name of the `**kwargs` argument in the function's original
-        signature, or `None` if no such argument exists.
-    validators : dict[str, Callable]
-        A reference to the `validators` table of the function's
-        `ExtensionSignature`.
-    settings : MappingProxyType
-        A reference to the `settings` table of the function's
-        `ExtensionSignature`.  This combines its `defaults` and `overrides`
-        into a single read-only dictionary.
+class ExtensionArguments(Arguments):
+    """Captured arguments from a call to
+    :meth:`ExtensionFunc(*args, **kwargs) <pdcast.ExtensionFunc.__call__>`.
 
     Notes
     -----
-    Whenever an `ExtensionFunc` is called, its arguments are intercepted and
-    encapsulated into an `ExtensionArguments` object.  These behave similarly
-    to `inspect.BoundArguments`, but with additional operations for validating
-    argument values and applying dynamic defaults.
+    Whenever an :class:`ExtensionFunc <pdcast.ExtensionFunc>` is called, its
+    arguments are intercepted and encapsulated in an
+    :class:`ExtensionArguments <pdcast.ExtensionArguments>` object.  These
+    behave similarly to
+    :class:`inspect.BoundArguments <python:inspect.BoundArguments>`, but with
+    additional operations for validating their values and applying dynamic
+    defaults.
     """
-
-    def __init__(
-        self,
-        arguments: dict[str, Any],
-        parameters: tuple[inspect.Parameter],
-        positional: tuple[inspect.Parameter],
-        kwargs_name: str,
-        validators: dict[str, Callable],
-        settings: MappingProxyType
-    ):
-        self.arguments = arguments
-        self.parameters = parameters
-        self.positional = positional
-        self.kwargs_name = kwargs_name
-        self.validators = validators
-        self.settings = settings
-
-    def flatten_kwargs(self) -> None:
-        """Flatten a `**kwargs` argument into the main argument table if it is
-        present.
-        """
-        if self.kwargs_name in self.arguments:
-            self.arguments.update(self.arguments[self.kwargs_name])
-            del self.arguments[self.kwargs_name]
 
     def validate(self) -> None:
         """Pass each argument through its associated validator.
 
         Notes
         -----
-        :meth:`flatten_kwargs() <pdcast.ExtensionArguments.flatten_kwargs>`
-        should always be called before this method to ensure that all arguments
-        are caught by their respective validators.
+        This should always be called before
+        :meth:`apply_defaults() <pdcast.Arguments.apply_defaults>` in order to
+        minimize validation calls.  Since defaults are pre-validated by their
+        associated properties, there is no need to check them manually.
         """
         for name, value in self.arguments.items():
-            if name in self.validators:
-                self.arguments[name] = self.validators[name](value)
-
-    def apply_settings(self) -> None:
-        """Fill in the current settings for any arguments that are missing from
-        the main argument table.
-
-        Notes
-        -----
-        These settings are pre-validated, so this method should always be
-        called after :meth:`validate() <pdcast.ExtensionArguments.validate>`.
-        """
-        self.arguments = {**self.settings, **self.arguments}
-
-    def reconstruct(self) -> list[str]:
-        """Reconstruct a function's effective signature using the current
-        settings and extension arguments.
-
-        Returns
-        -------
-        list
-            A list of strings that can be joined with commas to produce the
-            arguments portion of an `ExtensionFunc`'s signature string.
-
-        Notes
-        -----
-        This is used to display the function's signature in
-        :func:`repr() <python:repr>` calls.
-        """
-        # apply current settings
-        self.apply_settings()
-
-        # flatten extension arguments
-        self.flatten_kwargs()
-
-        # stringify args according to original signature
-        strings = []
-        for par in self.parameters:
-
-            # display managed value
-            if par.name in self.arguments:
-                strings.append(f"{par.name}={repr(self.arguments[par.name])}")
-
-            # display extension arguments
-            elif par.name == self.kwargs_name:
-                hardcoded = {p.name for p in self.parameters}
-                kwargs = {
-                    k: v for k, v in self.arguments.items()
-                    if k not in hardcoded
-                }
-                strings.extend(f"{k}={repr(v)}" for k, v in kwargs.items())
-                strings.append(f"**{self.kwargs_name}")
-
-            # display original
-            else:
-                if par.default is not inspect.Parameter.empty:
-                    strings.append(f"{par.name}={par.default}")
-                else:
-                    strings.append(par.name)
-
-        return strings
-
-    @property
-    def args(self) -> tuple[Any, ...]:
-        """Positional arguments to be supplied to the wrapped function.
-
-        Notes
-        -----
-        The output from this property can be used as an ``*args`` input to the
-        decorated function.
-        """
-        return tuple(self.arguments[p.name] for p in self.positional)
-
-    @property
-    def kwargs(self) -> dict[str, Any]:
-        """Keyword arguments to be supplied to the wrapped function.
-
-        Notes
-        -----
-        The output from this property can be used as a ``**kwargs`` input to
-        the decorated function.
-        """
-        pos = {p.name for p in self.positional}
-        return {k: v for k, v in self.arguments.items() if k not in pos}
+            if name in self.signature.validators:
+                self.arguments[name] = self.signature.validators[name](value)

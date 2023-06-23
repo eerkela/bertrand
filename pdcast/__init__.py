@@ -29,19 +29,19 @@ resolve
 """
 # pylint: disable=undefined-variable, redefined-builtin
 from .types import *
-from .convert import (
-    cast, categorize, decategorize, densify, sparsify, to_boolean, to_integer,
-    to_float, to_complex, to_decimal, to_datetime, to_timedelta, to_string
-)
+# from .convert import (
+#     cast, categorize, decategorize, densify, sparsify, to_boolean, to_integer,
+#     to_float, to_complex, to_decimal, to_datetime, to_timedelta, to_string
+# )
 from .decorators.attachable import (
     attachable, Attachable, ClassMethod, InstanceMethod, Namespace, Property,
     StaticMethod, VirtualAttribute
 )
 from .decorators.extension import extension_func, ExtensionFunc
-from .decorators.dispatch import dispatch, DispatchFunc
+# from .decorators.dispatch import dispatch, DispatchFunc
 from .resolve import resolve_type
 from .detect import detect_type
-from .patch.base import attach, detach
+# from .patch.base import attach, detach
 from .check import typecheck
 
 
