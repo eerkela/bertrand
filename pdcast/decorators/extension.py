@@ -341,9 +341,14 @@ class ExtensionFunc(FunctionDecorator, threading.local):
 
         # commit to deletion
         delattr(type(self), name)
-        self._signature.remove_parameter(name, replace=True)
         self._signature.defaults.pop(name, None)
         self._signature.validators.pop(name)
+
+        # replace with original parameter if present
+        try:
+            self._signature.reset_parameter(name)
+        except TypeError:
+            self._signature.remove_parameter(name)
 
     def reset_defaults(self) -> None:
         """Reset all arguments to their original defaults.
@@ -676,10 +681,7 @@ class ExtensionSignature(Signature):
 
         # if argument is in signature, modify its default
         if name in self.parameter_map:
-            self.parameters = tuple(
-                par.replace(default=default) if par.name == name else par
-                for par in self.parameters
-            )
+            self.set_parameter(name, default=default)
 
         # otherwise, extend signature with new argument
         else:
@@ -690,16 +692,12 @@ class ExtensionSignature(Signature):
                 )
 
             # generate parameter and insert into signature
-            parameter = inspect.Parameter(
-                name=name,
+            self.add_parameter(
+                name,
                 kind=inspect.Parameter.KEYWORD_ONLY,
                 default=default,
                 annotation=annotation
             )
-
-            # `**kwargs`-equivalent must be last element
-            params = self.parameters
-            self.parameters = params[:-1] + (parameter, params[-1])
 
         # remember validator, default
         self.validators[name] = validator
@@ -716,22 +714,15 @@ class ExtensionSignature(Signature):
 
         def setter(self, val: Any) -> None:
             """Set the value of a managed argument."""
-            val = validator(val)
-            self._signature.parameters = tuple(
-                par.replace(default=val) if par.name == name else par
-                for par in self._signature.parameters
-            )
+            self._signature.set_parameter(name, default=validator(val))
 
         def deleter(self) -> None:
             """Replace the value of a managed argument with its default."""
             val = self._signature.defaults.get(name, EMPTY)
-            if val is EMPTY:
-                self._signature.parameters = tuple(
-                    par.replace(default=EMPTY) if par.name == name else par
-                    for par in self._signature.parameters
-                )
-            else:
+            if val is not EMPTY:
                 setter(self, val)
+            else:
+                self._signature.set_parameter(name, default=EMPTY)
 
         return property(getter, setter, deleter, doc=validator.__doc__)
 
