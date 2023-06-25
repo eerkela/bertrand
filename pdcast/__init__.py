@@ -29,10 +29,10 @@ resolve
 """
 # pylint: disable=undefined-variable, redefined-builtin
 from .types import *
-# from .convert import (
-#     cast, categorize, decategorize, densify, sparsify, to_boolean, to_integer,
-#     to_float, to_complex, to_decimal, to_datetime, to_timedelta, to_string
-# )
+from .convert import (
+    cast, categorize, decategorize, densify, sparsify, to_boolean, to_integer,
+    to_float, to_complex, to_decimal, to_datetime, to_timedelta, to_string
+)
 from .decorators.base import FunctionDecorator, Signature, Arguments
 from .decorators.attachable import (
     attachable, Attachable, ClassMethod, InstanceMethod, Namespace, Property,
@@ -41,12 +41,12 @@ from .decorators.attachable import (
 from .decorators.extension import (
     extension_func, ExtensionFunc, ExtensionSignature, ExtensionArguments
 )
-# from .decorators.dispatch import (
-#     dispatch, DispatchFunc, DispatchSignature, DispatchArguments
-# )
+from .decorators.dispatch import (
+    dispatch, DispatchFunc, DispatchSignature, DispatchArguments
+)
 from .resolve import resolve_type
 from .detect import detect_type
-# from .patch.base import attach, detach
+from .patch.base import attach, detach
 from .check import typecheck
 
 

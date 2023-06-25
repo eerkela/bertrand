@@ -10,7 +10,7 @@ import inspect
 import itertools
 import threading
 from types import MappingProxyType
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Mapping
 import warnings
 
 import numpy as np
@@ -22,7 +22,7 @@ from pdcast import types
 from pdcast.util.structs import LRUDict
 from pdcast.util.type_hints import type_specifier
 
-from .base import FunctionDecorator, no_default
+from .base import Arguments, FunctionDecorator, Signature, no_default
 
 
 # TODO: emit a warning whenever an implementation is replaced.
@@ -423,7 +423,7 @@ class DispatchFunc(FunctionDecorator):
         del self._signature[key]
 
 
-class DispatchSignature:
+class DispatchSignature(Signature):
     """An ordered dictionary that stores types and their dispatched
     implementations for :class:`DispatchFunc` operations.
     """
@@ -434,54 +434,43 @@ class DispatchSignature:
         dispatched: tuple[str, ...],
         cache_size: int = 128
     ):
-        self.signature = inspect.signature(func)
-        self.dispatched = dispatched
-        bad = [name for name in dispatched if name not in self.parameters]
-        if bad:
-            raise TypeError(f"argument not recognized: {bad}")
+        super().__init__(func=func)
+        missing = [arg for arg in dispatched if arg not in self.parameter_map]
+        if missing:
+            raise TypeError(f"argument not recognized: {missing}")
 
-        self.map = {}
+        self.dispatched = dispatched
+        self._dispatch_map = {}
         self.cache = LRUDict(maxsize=cache_size)
         self.ordered = False
 
     @property
-    def parameters(self) -> dict[str, inspect.Parameter]:
-        """TODO: take from ExtensionSignature
+    def dispatch_map(self) -> Mapping[tuple[types.VectorType, ...], Callable]:
+        """A map containing all the dispatched implementations being handled by
+        this :class:`DispatchSignature <pdcast.DispatchSignature>`.
+
+        Returns
+        -------
+        MappingProxyType
+            A read-only mapping from
+            :meth:`dispatch_keys <pdcast.DispatchSignature.dispatch_key>` to
+            their respective
+            :meth:`implementations <pdcast.DispatchFunc.overload>`.
+
+        See Also
+        --------
+        DispatchSignature.__getitem__ :
+            Index the dispatch map for a particular combination of types.
+        DispatchSignature.__setitem__ :
+            Set an item within the dispatch map.
+        DispatchSignature.__delitem__ :
+            Delete an implementation from the map.
+
+        Notes
+        -----
+        
         """
-        return self.signature.parameters
-
-    def get(self, key: type_specifier, default: Any = None) -> Any:
-        """Implement :meth:`dict.get` for DispatchSignature objects."""
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def pop(self, key: type_specifier, default: Any = no_default) -> Any:
-        """Implement :meth:`dict.pop` for DispatchSignature objects."""
-        key = self.resolve_key(key)
-        try:
-            result = self[key]
-            del self[key]
-            return result
-        except KeyError as err:
-            if default is no_default:
-                raise err
-            return default
-
-    def setdefault(self, key: type_specifier, default: Callable = None) -> Any:
-        """Implement :meth:`dict.setdefault` for DispatchSignature objects."""
-        key = self.resolve_key(key)
-        try:
-            return self[key]
-        except KeyError:
-            self[key] = default
-            return default
-
-    def update(self, other: dict) -> None:
-        """Implement :meth:`dict.update` for DispatchSignature objects."""
-        for key, value in other.items():
-            self[key] = value
+        return MappingProxyType(self._dispatch_map)
 
     def sort(self) -> None:
         """Sort the dictionary into topological order, with most specific
@@ -498,10 +487,91 @@ class DispatchSignature:
 
         # sort according to edges
         for key in topological_sort(edges):
-            item = self.map.pop(key)
-            self.map[key] = item
+            # (Python 3.6+) equivalent to OrderedDict.move_to_end() 
+            item = self._dispatch_map.pop(key)
+            self._dispatch_map[key] = item
 
         self.ordered = True
+
+    def dispatch_key(self, *args, **kwargs) -> tuple[types.Type, ...]:
+        """Create a dispatch key from the provided arguments.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Arbitrary positional and/or keyword arguments to bind to this
+            signature.  Any that are marked as dispatched arguments for this
+            :class:`DispatchSignature <pdcast.DispatchSignature>` will be
+            extracted and resolved in a deterministic order.
+
+        Returns
+        -------
+        tuple[types.Type, ...]
+            A sequence of resolved types that can be used as a key to the
+            signature's
+            :attr:`dispatch_map <pdcast.DispatchSignature.dispatch_map>`.
+
+        See Also
+        --------
+        DispatchSignature.cartesian_product :
+            Expand composite keys into a cartesian product of all possible
+            combinations.
+
+        Notes
+        -----
+        :class:`composite <pdcast.CompositeType>` specifiers will be resolved
+        as normal.  However, as they are not hashable, they cannot be stored in
+        :attr:`dispatch_map <pdcast.dispatch_map>` directly.  Instead they must
+        be expanded using
+        :meth:`DispatchSignature.cartesian_product() <pdcast.DispatchSignature.cartesian_product>`
+        and stored independently.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> TODO
+        """
+        bound = self.signature.bind_partial(*args, **kwargs)
+        bound.apply_defaults()
+
+        return tuple(resolve_type(bound.arguments[x]) for x in self.dispatched)
+
+    def cartesian_product(
+        self,
+        key: tuple[types.Type, ...]
+    ) -> Iterator[tuple[types.VectorType, ...]]:
+        """Convert a composite
+        :meth:`dispatch key <pdcast.DispatchSignature.dispatch_key>` into a
+        Cartesian product containing all possible combinations.
+
+        Parameters
+        ----------
+        key : tuple[types.Type, ...]
+            A :meth:`dispatch key <pdcast.DispatchSignature.dispatch_key>` to
+            parse.
+
+        Returns
+        -------
+        Iterator[tuple[types.VectorType, ...]]
+            A generator that yields non-composite dispatch keys representing
+            every combination of the input types.
+
+        See Also
+        --------
+        DispatchSignature.dispatch_key :
+            Create a dispatch key by binding to the signature.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> TODO
+        """
+        # convert keys into CompositeTypes
+        key = tuple(resolve_type([x]) for x in key)
+        for path in itertools.product(*key):
+            yield path
 
     def resolve_key(
         self,
@@ -539,6 +609,10 @@ class DispatchSignature:
             if they do not exactly match the dispatched arguments specified in
             this :class:`DispatchSignature`.
         """
+        # TODO: right now this binds to the overloaded function.  That should
+        # instead be handled in @overload, and the bound arguments passed
+        # through as kwargs to dispatch_key().  That replaces this whole method
+
         # bind *args, **kwargs
         try:
             bound = signature.bind_partial(*args, **kwargs).arguments
@@ -607,11 +681,10 @@ class DispatchSignature:
 
         # register implementation under each key
         for path in key:
-            previous = self.get(path, None)
-            if warn and previous:
+            if warn and path in self.dispatch_map:
                 warn_msg = (
-                    f"Replacing '{previous.__qualname__}()' with "
-                    f"'{func.__qualname__}()' for signature "
+                    f"Replacing '{self.dispatch_map[path].__qualname__}()' "
+                    f"with '{func.__qualname__}()' for signature "
                     f"{tuple(str(x) for x in path)}"
                 )
                 warnings.warn(warn_msg, UserWarning, stacklevel=2)
@@ -651,8 +724,8 @@ class DispatchSignature:
         key = self.resolve_key(key)
 
         # trivial case: key has exact match
-        if key in self.map:
-            return self.map[key]
+        if key in self._dispatch_map:
+            return self._dispatch_map[key]
 
         # check for cached result
         if key in self.cache:
@@ -664,8 +737,8 @@ class DispatchSignature:
             self.sort()
 
         # search for first (sorted) match that fully contains key
-        for comp_key, implementation in self.map.items():
-            if all(x.contains(y) for x, y in zip(comp_key, key)):
+        for dispatch_key, implementation in self._dispatch_map.items():
+            if all(y.contains(x) for x, y in zip(key, dispatch_key)):
                 self.cache[key] = implementation
                 return implementation
 
@@ -678,7 +751,7 @@ class DispatchSignature:
         """
         key = self.resolve_key(key)
         self.check_implementation(value)
-        self.map[key] = value
+        self._dispatch_map[key] = value
         self.ordered = False
 
     def __delitem__(self, key: type_specifier) -> None:
@@ -688,8 +761,8 @@ class DispatchSignature:
         key = self.resolve_key(key)
 
         # require exact match
-        if key in self.map:
-            del self.map[key]
+        if key in self._dispatch_map:
+            del self._dispatch_map[key]
         else:
             raise KeyError(tuple(str(x) for x in key))
 

@@ -145,7 +145,7 @@ class Signature:
     def __init__(self, func: Callable):
         self.func_name = func.__qualname__
         self.signature = inspect.signature(func)
-        self.original = self.signature.replace()
+        self.original = self.signature.replace()  # store a copy
 
     @property
     def parameter_map(self) -> Mapping[str, inspect.Parameter]:
@@ -253,67 +253,6 @@ class Signature:
         self.signature = self.signature.replace(
             return_annotation=self.original.return_annotation
         )
-
-    def reconstruct(
-        self,
-        defaults: bool = True,
-        annotations: bool = True,
-        return_annotation: bool = True,
-    ) -> str:
-        """Return a complete string representation of the signature.
-
-        Parameters
-        ----------
-        annotations: bool, default True
-            Indicates whether to include type annotations for each parameter in
-            the resulting string.
-        defaults: bool, default True
-            Indicates whether to include default values for each parameter in
-            the resulting string.
-        return_annotation: bool, default True
-            Indicates whether to include the return annotation in the resulting
-            string.
-
-        Returns
-        -------
-        str
-            A string listing the function name and all its arguments, with or
-            without type annotations/default values.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> def foo(bar: int, baz: int = 2, **kwargs) -> dict[str, int]:
-            ...     return {"bar": bar, "baz": baz} | kwargs
-
-            >>> sig = pdcast.Signature(foo)
-            >>> sig.reconstruct()
-            'foo(bar: int, baz: int = 2, **kwargs) -> dict[str, int]'
-            >>> sig.reconstruct(annotations=False)
-            'foo(bar, baz=2, **kwargs) -> dict[str, int]'
-            >>> sig.reconstruct(annotations=False, return_annotation=False)
-            'foo(bar, baz=2, **kwargs)'
-            >>> sig.reconstruct(defaults=False, annotations=False, return_annotation=False)
-            'foo(bar, baz, **kwargs)'
-        """
-        # configure replacement kwargs
-        kwargs = {}
-        if not annotations:
-            kwargs["annotation"] = EMPTY
-        if not defaults:
-            kwargs["default"] = EMPTY
-
-        # replace parameters
-        parameters = tuple(par.replace(**kwargs) for par in self.parameters)
-        sig = self.signature.replace(parameters=parameters)
-
-        # replace return annotation
-        if not return_annotation:
-            sig = sig.replace(return_annotation=EMPTY)
-
-        # combine into string
-        return f"{self.func_name}{sig}"
 
     def add_parameter(
         self,
@@ -681,6 +620,67 @@ class Signature:
 
         # insert parameter at specified index
         self.parameters = parameters[:index] + (param,) + parameters[index:]
+
+    def reconstruct(
+        self,
+        defaults: bool = True,
+        annotations: bool = True,
+        return_annotation: bool = True,
+    ) -> str:
+        """Return a complete string representation of the signature.
+
+        Parameters
+        ----------
+        annotations: bool, default True
+            Indicates whether to include type annotations for each parameter in
+            the resulting string.
+        defaults: bool, default True
+            Indicates whether to include default values for each parameter in
+            the resulting string.
+        return_annotation: bool, default True
+            Indicates whether to include the return annotation in the resulting
+            string.
+
+        Returns
+        -------
+        str
+            A string listing the function name and all its arguments, with or
+            without type annotations/default values.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> def foo(bar: int, baz: int = 2, **kwargs) -> dict[str, int]:
+            ...     return {"bar": bar, "baz": baz} | kwargs
+
+            >>> sig = pdcast.Signature(foo)
+            >>> sig.reconstruct()
+            'foo(bar: int, baz: int = 2, **kwargs) -> dict[str, int]'
+            >>> sig.reconstruct(annotations=False)
+            'foo(bar, baz=2, **kwargs) -> dict[str, int]'
+            >>> sig.reconstruct(annotations=False, return_annotation=False)
+            'foo(bar, baz=2, **kwargs)'
+            >>> sig.reconstruct(defaults=False, annotations=False, return_annotation=False)
+            'foo(bar, baz, **kwargs)'
+        """
+        # configure replacement kwargs
+        kwargs = {}
+        if not annotations:
+            kwargs["annotation"] = EMPTY
+        if not defaults:
+            kwargs["default"] = EMPTY
+
+        # replace parameters
+        parameters = tuple(par.replace(**kwargs) for par in self.parameters)
+        sig = self.signature.replace(parameters=parameters)
+
+        # replace return annotation
+        if not return_annotation:
+            sig = sig.replace(return_annotation=EMPTY)
+
+        # combine into string
+        return f"{self.func_name}{sig}"
 
     def __call__(self, *args, **kwargs) -> Arguments:
         """Bind the arguments to the :class:`Signature <pdcast.Signature>`,
