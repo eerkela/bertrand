@@ -791,6 +791,7 @@ class DispatchArguments(Arguments):
         bound: inspect.BoundArguments,
         signature: DispatchSignature,
         detected: dict[str, types.Type] | None = None,
+        normalized: bool = False
     ):
         super().__init__(bound=bound, signature=signature)
         self.dispatched = {
@@ -799,19 +800,17 @@ class DispatchArguments(Arguments):
 
         # cached in .types
         self._types = detected
-        if detected is not None:
-            for arg, typ in detected.items():
-                if arg not in self.dispatched:
-                    raise KeyError(f"invalid argument: {repr(arg)}")
-                if not isinstance(typ, types.Type):
-                    raise TypeError(f"invalid type: {repr(typ)}")
 
         # cached in .normalize()
-        self.normalized = False
+        self.normalized = normalized
         self.series_names = {}
         self.frame = None
-        self.hasnans = None
         self.original_index = None
+        self.hasnans = None
+
+    # TODO: make sure CompositeDispatch works without frame/hasnans/etc.
+    # These will be blocked for any DispatchArguments that are spawned in
+    # .groups
 
     @property
     def types(self) -> dict[str, types.Type]:
@@ -833,7 +832,7 @@ class DispatchArguments(Arguments):
         return any(isinstance(typ, types.CompositeType) for typ in self.key)
 
     @property
-    def groups(self) -> dict[str, pd.Index]:
+    def groups(self) -> Iterator[DispatchArguments]:
         """Group vectors by type.
 
         This only applies if `is_composite=True`.
@@ -859,36 +858,22 @@ class DispatchArguments(Arguments):
                 key = (key,)
             detected = dict(zip(group.columns, key))
 
-            # TODO: rectify vector dtypes
-            
+            # split group into vectors and rectify their dtypes
+            vectors = self._rectify(self._extract_vectors(group), detected)
 
             # generate new BoundArguments for each group
             bound = type(self.bound)(
-                arguments=self.bound.arguments | self._extract_vectors(group),
+                arguments=self.bound.arguments | vectors,
                 signature=self.bound.signature
             )
 
             # convert to DispatchArguments and yield
-            args = DispatchArguments(
+            yield DispatchArguments(
                 bound=bound,
                 signature=self.signature,
-                detected=detected
+                detected=detected,
+                normalized=True  # block normalize() calls
             )
-            args.frame = group  # TODO: leave frame empty
-            args.rectify()  # TODO: args have not been normalized.  Do this before extract_vectors()
-            yield args
-
-    def rectify(self) -> None:
-        """Normalize the dtypes of all dispatched vectors.
-        """
-        if self.is_composite:
-            raise RuntimeError("cannot rectify: vectors are composite")
-
-        # astype() to detected type
-        self.bound.arguments |= {
-            arg: self.arguments[arg].astype(self.types[arg].dtype, copy=False)
-            for arg in self.frame.columns
-        }
 
     def normalize(self) -> None:
         """Extract vectors from dispatched arguments and normalize them."""
@@ -900,12 +885,22 @@ class DispatchArguments(Arguments):
         if self._types is not None:
             raise RuntimeError("types were inferred before normalizing")
 
+        # extract vectors from dispatched args and bind them to a DataFrame
         self._build_frame()
+
+        # convert index to RangeIndex
         self._replace_index()
+
+        # drop missing values
         self._dropna()  # TODO: should be optional
 
-        # write vectors back to bound arguments
-        self.bound.arguments |= self._extract_vectors(self.frame)
+        # split DataFrame into vectors and replace original args
+        vectors = self._extract_vectors(self.frame)
+        self.bound.arguments |= vectors
+
+        # rectify dtypes.  NOTE: implicitly detectes type of each arg
+        if not self.is_composite:
+            self.bound.arguments |= self._rectify(vectors, self.types)
 
         # mark as normalized
         self.normalized = True
@@ -962,6 +957,18 @@ class DispatchArguments(Arguments):
         return {
             arg: col.rename(self.series_names.get(arg, None), copy=False)
             for arg, col in df.items()
+        }
+
+    def _rectify(
+        self,
+        vectors: dict[str, pd.Series],
+        detected: dict[str, types.VectorType]
+    ) -> dict[str, pd.Series]:
+        """Convert the vectors to the detected types.
+        """
+        return {
+            arg: series.astype(detected[arg].dtype, copy=False)
+            for arg, series in vectors.items()
         }
 
 
