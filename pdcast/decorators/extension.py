@@ -417,13 +417,13 @@ class ExtensionFunc(FunctionDecorator, threading.local):
         --------
         See the :ref:`API docs <extension_func.arguments>` for example usage.
         """
-        # generate bound arguments
+        # generate ExtensionArguments
         bound = self._signature(*args, **kwargs)
 
-        # pass *args, **kwargs through validator
+        # pass arguments through their respective validators
         bound.validate()
 
-        # fill in pre-validated settings
+        # fill in current settings (pre-validated)
         bound.apply_defaults()
 
         # invoke wrapped function

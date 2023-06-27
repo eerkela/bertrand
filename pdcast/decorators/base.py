@@ -86,16 +86,16 @@ class FunctionDecorator:
     ####     SPECIAL METHODS    ####
     ################################
 
+    def __call__(self, *args, **kwargs):
+        """Invoke the wrapped object's ``__call__()`` method."""
+        return self.__wrapped__(*args, **kwargs)
+
     def __dir__(self) -> list:
         """Include attributes of wrapped object."""
         result = dir(type(self))
         result += [k for k in self.__dict__ if k not in result]
         result += [k for k in dir(self.__wrapped__) if k not in result]
         return result
-
-    def __call__(self, *args, **kwargs):
-        """Invoke the wrapped object's ``__call__()`` method."""
-        return self.__wrapped__(*args, **kwargs)
 
     def __str__(self) -> str:
         """Pass ``str()`` calls to wrapped object."""
@@ -105,9 +105,9 @@ class FunctionDecorator:
         """Pass ``repr()`` calls to wrapped object."""
         return repr(self.__wrapped__)
 
-    def __contains__(self, item: Any) -> bool:
-        """Pass ``in`` keyword to wrapped object."""
-        return item in self.__wrapped__
+    def __next__(self) -> Any:
+        """Pass ``next()`` calls to wrapped object."""
+        return next(self.__wrapped__)
 
     def __iter__(self):
         """Pass ``iter()`` calls to wrapped object."""
@@ -127,6 +127,12 @@ class FunctionDecorator:
 
     def __delitem__(self, key) -> None:
         return self.__wrapped__.__delitem__(key)
+
+    def __contains__(self, item: Any) -> bool:
+        """Pass ``in`` keyword to wrapped object."""
+        return item in self.__wrapped__
+
+    # TODO: math, comp operators, etc.
 
 
 class Signature:

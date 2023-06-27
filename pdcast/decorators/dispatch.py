@@ -298,7 +298,6 @@ class DispatchFunc(FunctionDecorator):
             (Int64Type(),): <function int64_foo at ...>
             (IntegerType(),): <function integer_foo at ...>
         """
-        # NOTE: sorting is done lazily for efficiency
         if not self._signature.ordered:
             self._signature.sort()
 
@@ -373,7 +372,9 @@ class DispatchFunc(FunctionDecorator):
             # register every combination of types
             for path in self._signature.cartesian_product(key):
                 self._signature[path] = func
-                self._signature.signatures[func] = signature
+
+            # remember dispatched function's signature
+            self._signature.signatures[func] = signature
 
             return func
 
@@ -456,33 +457,29 @@ class DispatchFunc(FunctionDecorator):
 
         """
         # bind arguments
-        arguments = self._signature(*args, **kwargs)
+        bound = self._signature(*args, **kwargs)
 
-        # skip normalization if calling from a recursive context
+        # fastpath: if calling from a recursive context, skip normalization
         if getattr(self._flags, "recursive", False):
-            strategy = DirectDispatch(func=self, dispatch_args=arguments)
-            return strategy(arguments)
+            return DirectDispatch(self)(bound)
 
         # normalize arguments
-        arguments.normalize()
+        bound.normalize()
 
-        # dispatch to the appropriate implementation(s)
-        if any(isinstance(typ, types.CompositeType) for typ in arguments.key):
-          strategy = CompositeDispatch(
-              func=self,
-              arguments=arguments,
-              standardize_dtype=self._standardize_dtype,
-        )
+        # choose strategy
+        if not bound.is_composite:
+            strategy = HomogenousDispatch(func=self, arguments=bound)
         else:
-          strategy = HomogenousDispatch(
-              func=self,
-              arguments=arguments,
-          )
+            strategy = CompositeDispatch(
+                func=self,
+                arguments=bound,
+                standardize_dtype=self._standardize_dtype,
+            )
 
-        # execute
+        # execute strategy
         self._flags.recursive = True
         try:
-          return strategy(arguments)
+          return strategy(bound)
         finally:
           self._flags.recursive = False
 
@@ -810,7 +807,8 @@ class DispatchArguments(Arguments):
                     raise TypeError(f"invalid type: {repr(typ)}")
 
         # cached in .normalize()
-        self.names = {}
+        self.normalized = False
+        self.series_names = {}
         self.frame = None
         self.hasnans = None
         self.original_index = None
@@ -829,23 +827,10 @@ class DispatchArguments(Arguments):
         """Form a key for indexing a DispatchFunc."""
         return tuple(self.types.values())
 
-    # TODO: .vectors may not be necessary
-
     @property
-    def vectors(self) -> dict[str, pd.Series]:
-        """Extract vectors from dispatched arguments."""
-        result = {}
-        for arg, series in self.frame.items():
-            # NOTE: Each column is stored under its argument name by default.
-            # If a named series was supplied as that argument's value, then we
-            # will have lost the original name.  To fix this, we store a
-            # parallel dict of argument names to series names and rename them
-            # here.
-            if arg in self.names:
-                series = series.rename(self.names.get(arg, None), copy=True)
-            result[arg] = series
-
-        return result
+    def is_composite(self) -> bool:
+        """Check if the dispatched arguments are composite."""
+        return any(isinstance(typ, types.CompositeType) for typ in self.key)
 
     @property
     def groups(self) -> dict[str, pd.Index]:
@@ -853,20 +838,88 @@ class DispatchArguments(Arguments):
 
         This only applies if `is_composite=True`.
         """
+        if not self.is_composite:
+            raise RuntimeError("DispatchArguments are not composite")
+
+        # generate frame of types observed at each index
         type_frame = pd.DataFrame({
             arg: getattr(typ, "index", typ) for arg, typ in self.types.items()
         })
-        groupby = type_frame.groupby(list(type_frame.columns), sort=False)
-        return groupby.groups
 
-    def normalize(self) -> DispatchArguments:
+        # groupby() to get indices of each group
+        groupby = type_frame.groupby(list(type_frame.columns), sort=False)
+        del type_frame  # free memory
+
+        # extract groups one by one
+        for key, indices in groupby.groups.items():
+            group = self.frame.iloc[indices]
+
+            # bind names to key
+            if not isinstance(key, tuple):
+                key = (key,)
+            detected = dict(zip(group.columns, key))
+
+            # TODO: rectify vector dtypes
+            
+
+            # generate new BoundArguments for each group
+            bound = type(self.bound)(
+                arguments=self.bound.arguments | self._extract_vectors(group),
+                signature=self.bound.signature
+            )
+
+            # convert to DispatchArguments and yield
+            args = DispatchArguments(
+                bound=bound,
+                signature=self.signature,
+                detected=detected
+            )
+            args.frame = group  # TODO: leave frame empty
+            args.rectify()  # TODO: args have not been normalized.  Do this before extract_vectors()
+            yield args
+
+    def rectify(self) -> None:
+        """Normalize the dtypes of all dispatched vectors.
+        """
+        if self.is_composite:
+            raise RuntimeError("cannot rectify: vectors are composite")
+
+        # astype() to detected type
+        self.bound.arguments |= {
+            arg: self.arguments[arg].astype(self.types[arg].dtype, copy=False)
+            for arg in self.frame.columns
+        }
+
+    def normalize(self) -> None:
         """Extract vectors from dispatched arguments and normalize them."""
+        # ensure normalize() is only called once
+        if self.normalized:
+            raise RuntimeError("DispatchArguments have already been normalized")
+
+        # ensure types have not yet been detected
+        if self._types is not None:
+            raise RuntimeError("types were inferred before normalizing")
+
+        self._build_frame()
+        self._replace_index()
+        self._dropna()  # TODO: should be optional
+
+        # write vectors back to bound arguments
+        self.bound.arguments |= self._extract_vectors(self.frame)
+
+        # mark as normalized
+        self.normalized = True
+
+    def _build_frame(self) -> None:
+        """Extract vectors from dispatched arguments and bind them into a
+        shared DataFrame.
+        """
         # extract vectors
         vectors = {}
         for arg, value in self.dispatched.items():
             if isinstance(value, pd.Series):
                 vectors[arg] = value
-                self.names[arg] = value.name
+                self.series_names[arg] = value.name
             elif isinstance(value, np.ndarray):
                 vectors[arg] = value
             else:
@@ -881,68 +934,58 @@ class DispatchArguments(Arguments):
         # misaligned indices, filling any absent values with NaNs.  Since this
         # is a likely source of bugs, we always warn the user when it happens.
 
-        # normalize indices
-        original_index = self.frame.index
-        if not isinstance(original_index, pd.RangeIndex):
-            self.frame.index = pd.RangeIndex(0, self.frame.shape[0])
-
         # warn if indices were misaligned
-        original_length = original_index.shape[0]
+        original_length = self.frame.shape[0]
         if any(vec.shape[0] != original_length for vec in vectors.values()):
             warn_msg = (
                 f"{self.__qualname__}() - vectors have misaligned indices"
             )
-            warnings.warn(warn_msg, UserWarning, stacklevel=2)
+            warnings.warn(warn_msg, UserWarning, stacklevel=3)
 
-        # drop missing values
+    def _replace_index(self) -> None:
+        """Normalize the indices of the dispatched vectors.
+        """
+        self.original_index = self.frame.index
+        if not isinstance(self.original_index, pd.RangeIndex):
+            self.frame.index = pd.RangeIndex(0, self.frame.shape[0])
+
+    def _dropna(self) -> None:
+        """Drop missing values from the dispatched vectors.
+        """
+        original_length = self.frame.shape[0]
         self.frame.dropna(how="any")
         self.hasnans = self.frame.shape[0] != original_length
 
-        # write vectors back to bound arguments
-        self.bound.arguments |= {
-            arg: col.rename(self.names.get(arg, None), copy=False)
-            for arg, col in self.frame.items()
+    def _extract_vectors(self, df: pd.DataFrame) -> dict[str, pd.Series]:
+        """Split a DataFrame into individual vectors.
+        """
+        return {
+            arg: col.rename(self.series_names.get(arg, None), copy=False)
+            for arg, col in df.items()
         }
 
 
-
-
-
-# DispatchArguments are passed to every DispatchStrategy, along with a reference
-# to the parent DispatchFunc.  DirectDispatch, uses its arguments to index the
-# DispatchFunc using DispatchArguments.key, and then calls the appropriate
-# implementation with *DispatchArguments.args, **DispatchArguments.kwargs.
-
-# DispatchArguments have a .normalize method, which extracts vectors and
-# normalizes them.  This is only called if the recursive flag is false.
-
-# CompositeDispatch constructs its own DispatchArguments for each group.
-
-
-
-
-
-def supercedes(key1: tuple, key2: tuple) -> bool:
-    """Check if sig1 is consistent with and strictly more specific than sig2.
+def supercedes(node1: tuple, node2: tuple) -> bool:
+    """Check if node1 is consistent with and strictly more specific than node2.
     """
-    return all(x.contains(y) for x, y in zip(key2, key1))
+    return all(x.contains(y) for x, y in zip(node2, node1))
 
 
-def edge(key1: tuple, key2: tuple) -> bool:
-    """If ``True``, check sig1 before sig2.
+def edge(node1: tuple, node2: tuple) -> bool:
+    """If ``True``, check node1 before node2.
 
     Ties are broken by recursively backing off the last element of both
     signatures.  As a result, whichever one is more specific in its earlier
     elements will always be preferred.
     """
     # pylint: disable=arguments-out-of-order
-    if not key1 or not key2:
+    if not node1 or not node2:
         return False
 
     return (
-        supercedes(key1, key2) and
-        not supercedes(key2, key1) or
-        edge(key1[:-1], key2[:-1])  # back off from right to left
+        supercedes(node1, node2) and
+        not supercedes(node2, node1) or
+        edge(node1[:-1], node2[:-1])  # back off from right to left
     )
 
 
@@ -1062,8 +1105,6 @@ class DirectDispatch(DispatchStrategy):
         # robust, we always translate them to the dispatched signature before
         # calling the function.
 
-        # breakpoint()
-
         # translate *args, **kwargs
         func = self.func[bound.key]
         signature = self.signature.signatures[func]
@@ -1098,6 +1139,8 @@ class HomogenousDispatch(DispatchStrategy):
         for col, series in frame.items():
             series = series.rename(names.get(col, None))
             dispatch_args[col] = series.astype(detected[col].dtype, copy=False)
+
+        # TODO: move dtype conversion to DispatchArguments
 
         # construct DispatchDirect wrapper
         self.direct = DirectDispatch(
@@ -1403,9 +1446,9 @@ def add1(x, y):
 
 
 sig = add._signature
-bound = sig([1, 2, 3], [3, 2, 1])
+bound = sig([1, 2, 3.0], [3, 2, 1])
 
-strat = DirectDispatch(add)
+# strat = DirectDispatch(add)
 
 
 
