@@ -22,11 +22,12 @@ from pdcast import types
 from pdcast.util.structs import LRUDict
 from pdcast.util.type_hints import type_specifier
 
-from .base import Arguments, FunctionDecorator, Signature, no_default
+from .base import Arguments, FunctionDecorator, Signature
 
 
 # TODO: emit a warning whenever an implementation is replaced.
-# -> do this.
+# -> use a simplefilter when the module is loaded
+
 
 # TODO: None wildcard value?
 # -> use registry wildcards instead
@@ -38,20 +39,23 @@ from .base import Arguments, FunctionDecorator, Signature, no_default
 # TODO: appears to be an index mismatch in composite add() example from
 # README.features
 
+
 # TODO: DispatchStrategies should reference the DispatchDict, not the
 # DispatchFunc.  This is a more direct code path.
-
-# TODO: DispatchDict -> DispatchTable
-
-
-# TODO: DispatchSignature takes over DispatchDict's role as a container for
-# signatures + implementations.
-# It creates DispatchArguments, which are referenced in every DispatchStrategy.
-
 
 
 # TODO: pdcast.cast("today", "datetime") uses python datetimes rather than
 # pandas
+# -> this because of an errant .larger lookup that made it through the
+# refactor.
+
+
+
+# TODO: May need to store the implementation's signature and translate
+# arguments from the base into it during invocation.  If we invoke the
+# implementation with the base's *args and **kwargs, then we might get
+# different behavior if an implementation defines these args in the opposite
+# order, for instance.
 
 
 ######################
@@ -106,6 +110,9 @@ def dispatch(
     decorated function itself will be called as a generic implementation,
     similar to :func:`@functools.singledispatch <functools.singledispatch>`.
     """
+    if not args or len(args) == 1 and callable(args[0]):
+        raise TypeError("@dispatch requires at least one named argument")
+
     def decorator(func: Callable):
         """Convert a callable into a DispatchFunc object."""
         return DispatchFunc(
@@ -138,11 +145,9 @@ class DispatchFunc(FunctionDecorator):
     See the docs for :func:`@dispatch <pdcast.dispatch>` for example usage.
     """
 
-    # TODO: remember to update _reserved after refactor
-
     _reserved = (
         FunctionDecorator._reserved |
-        {"_args", "_drop_na", "_flags", "_signature"}
+        {"_signature", "_drop_na", "_convert_mixed", "_flags"}
     )
 
     def __init__(
@@ -154,198 +159,292 @@ class DispatchFunc(FunctionDecorator):
         convert_mixed: bool
     ):
         super().__init__(func=func)
-        if not dispatched:
-            raise TypeError(
-                f"'{func.__qualname__}' must dispatch on at least one argument"
-            )
-
         self._signature = DispatchSignature(
             func,
             dispatched=dispatched,
             cache_size=cache_size
         )
-
-
-        self._args = dispatched
         self._drop_na = drop_na
         self._convert_mixed = convert_mixed
         self._flags = threading.local()
 
     @property
+    def dispatched(self) -> tuple[str, ...]:
+        """The names of the arguments that this function dispatches on.
+
+        Returns
+        -------
+        tuple[str, ...]
+            The tuple containing the name of every dispatched argument, as
+            provided to :func:`@dispatch <pdcast.dispatch>`.
+
+        Notes
+        -----
+        The order of this tuple is significant, as it determines the order of
+        the keys under which dispatched implementations are stored.  The keys
+        themselves are always sorted according to their specificity, but ties
+        can still occur if two or more implementations are equally valid for a
+        given set of inputs.  For example:
+
+        .. code:: python
+
+            @dispatch("a", "b")
+            def foo(a, b):
+                ...
+
+            @foo.overload("int", "int[python]")
+            def foo1(a, b):
+                ...
+
+            @foo.overload("int[python]", "int")
+            def foo2(a, b):
+                ...
+
+            >>> foo["int[python]", "int[python]"]
+            ???
+
+        In this case, it's not immediately clear which implementation we should
+        choose.  ``foo1()`` is more specific in its first argument and
+        ``foo2()`` in its second.
+
+        In these cases, :func:`@dispatch <pdcast.dispatch>` always **prefers
+        implementations** that are **more specific in their first argument**,
+        from left to right.  In the case above, this means we would always
+        choose ``foo2()`` over ``foo1()``.  This behavior can be reversed by
+        changing the order of the arguments in the decorator, like so:
+
+        .. code:: python
+
+            @dispatch("b", "a")  # reversed
+            def foo(a, b):
+                ...
+
+            @foo.overload("int", "int[python]")  # same order (a, b)
+            def foo1(a, b):
+                ...
+
+            @foo.overload(a="int[python]", b="int")  # keyword (a, b)
+            def foo2(a, b):
+                ...
+
+        We will now always prefer ``foo1()`` over ``foo2()``.
+
+        .. note::
+
+            :meth:`@overload() <pdcast.DispatchFunc.overload>` always parses
+            arguments relative to the function that it decorates, not those
+            specified in :func:`@dispatch() <pdcast.dispatch>`.  This is for
+            clarity and maintenance, allowing users to write implementations
+            without coupling too strongly to the base definition.
+
+            At an implementation level,
+            :meth:`@overload() <pdcast.DispatchFunc.overload>` binds its
+            arguments to the decorated function, extracts the dispatched names,
+            and then sorts them into the order specified by
+            :func:`@dispatch() <pdcast.dispatch>`.  All changing this order
+            does is reverse the keys that are used to index the
+            :class:`DispatchFunc <pdcast.DispatchFunc>`, and thereby consider
+            them from right to left (``b`` before ``a``) instead of
+            left to right (``a`` before ``b``).
+
+            More complicated dispatch priorities can be achieved if there are
+            more than 2 arguments, but the same principle applies.
+        """
+        return self._signature.dispatched
+
+    @property
     def overloaded(self) -> MappingProxyType:
         """A mapping from :doc:`types </content/types/types>` to their
-        dispatched implementations.
+        corresponding implementations.
 
         Returns
         -------
         MappingProxyType
-            A read-only dictionary mapping types to their associated dispatch
-            functions.
+            A read-only dictionary mapping types to their
+            :meth:`overloaded <pdcast.DispatchFunc.overload>` callables.  The
+            keys are always in the same order as the
+            :attr:`dispatched <pdcast.DispatchFunc.dispatched>` arguments.
 
         Notes
         -----
-        The mapping that is returned by this method is sorted according to the
-        order in which implementations are searched when dispatching is
-        performed.  If no match is found for any of the 
+        The returned mapping is sorted according to `topological order
+        <https://en.wikipedia.org/wiki/Topological_sorting>`_.  Iterating
+        through the map equates to searching it from most to least specific.
 
         Examples
         --------
         .. doctest::
 
-            >>> @dispatch
+            >>> @dispatch("bar")
             ... def foo(bar):
-            ...     print("generic implementation")
+            ...     print("base")
             ...     return bar
 
-            >>> @foo.overload("int")
+            >>> @foo.overload("int")  # least specific
             ... def integer_foo(bar):
-            ...     print("integer implementation")
+            ...     print("integer")
             ...     return bar
 
-            >>> foo.overloaded
+            >>> @foo.overload("int64[numpy]")  # most specific
+            ... def numpy_int64_foo(bar):
+            ...     print("int64[numpy]")
+            ...     return bar
 
-        .. TODO: check
+            >>> @foo.overload("int64")
+            ... def int64_foo(bar):
+            ...     print("int64")
+            ...     return bar
+
+            >>> for key, func in foo.overloaded.items():
+            ...     print(f"{key}: {func}")
+            (NumpyInt64Type(),): <function numpy_int64_foo at ...>
+            (Int64Type(),): <function int64_foo at ...>
+            (IntegerType(),): <function integer_foo at ...>
         """
-        return MappingProxyType(self._signature.map)
+        # NOTE: sorting is done lazily for efficiency
+        if not self._signature.ordered:
+            self._signature.sort()
+
+        return self._signature.dispatch_map
 
     def overload(self, *args, **kwargs) -> Callable:
-        """A decorator that transforms a naked function into a dispatched
-        implementation for this :class:`DispatchFunc`.
-
-        TODO: update this
+        """A decorator that transforms a function into a dispatched
+        implementation for this :class:`DispatchFunc <pdcast.DispatchFunc>`.
 
         Parameters
         ----------
-        types : type_specifier | Iterable[type_specifier] | None, default None
-            The type(s) to dispatch to this implementation.  See notes for
-            handling of :data:`None <python:None>`.
+        *args, **kwargs
+            The type(s) to dispatch on.  These are provided as positional and
+            keyword arguments that are bound to the decorated function's
+            signature.  They have the same semantics as if the function
+            were being invoked directly, and can be in any form recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`.
 
         Returns
         -------
         Callable
-            The original undecorated function.
+            The same function as was decorated.  This is not changed in any
+            way.
 
         Raises
         ------
         TypeError
-            If the decorated function is not callable with at least one
-            argument.
+            If the decorated function does not accept the arguments specified
+            in :func:`@dispatch() <pdcast.dispatch>`.
 
         Notes
         -----
         This decorator works just like the :meth:`register` method of
         :func:`singledispatch <python:functools.singledispatch>` objects,
         except that it does not interact with type annotations in any way.
-        Instead, if a type is not provided as an argument to this method, it
-        will be disregarded during dispatch lookups, unless the decorated
-        callable is a method of an :class:`ScalarType <pdcast.ScalarType>` or
-        :class:`DecoratorType <pdcast.DecoratorType>` subclass.  In that case, the
-        attached type will be automatically bound to the dispatched
-        implementation during
-        :meth:`__init_subclass__() <ScalarType.__init_subclass__>`.
+
+        Instead, types are declared naturally in the decorator itself and
+        bound to the function as if it were being invoked.  They can be
+        supplied as either positional or keyword arguments, and can be in any
+        format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
 
         Examples
         --------
-        See the :func:`dispatch` :ref:`API docs <dispatch.dispatched>` for
-        example usage.
+        See the :ref:`API docs <dispatch.dispatched>` for example usage.
         """
 
         def implementation(func: Callable) -> Callable:
             """Attach a dispatched implementation to the DispatchFunc with the
             associated types.
             """
-            self._signature.register(func, args, kwargs, warn=True)
+            signature = inspect.signature(func)
+
+            # bind *args, **kwargs to the decorated function
+            try:
+                bound = signature.bind_partial(*args, **kwargs)
+            except TypeError as err:
+                func_name = f"'{func.__module__}.{func.__qualname__}()'"
+                reconstructed = [repr(value) for value in args]
+                reconstructed.extend(
+                    f"{name}={repr(value)}" for name, value in kwargs.items()
+                )
+                err_msg = (
+                    f"invalid signature for {func_name}: "
+                    f"({', '.join(reconstructed)})"
+                )
+                raise TypeError(err_msg) from err
+
+            # translate bound arguments into this signature's order
+            bound.apply_defaults()
+            key = self._signature.dispatch_key(**bound.arguments)
+
+            # register every combination of types
+            for path in self._signature.cartesian_product(key):
+                self._signature[path] = func
+
             return func
 
         return implementation
 
     def fallback(self, *args, **kwargs) -> Any:
-        """A reference to the default implementation of the decorated function.
+        """A reference to the base implementation of the decorated function.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Positional and keyword arguments to supply to the base
+            implementation.
+
+        Returns
+        -------
+        Any
+            The return value of the base implementation.
+
+        Examples
+        --------
+        This allows direct access to the base implementation of the decorated
+        function, bypassing the dispatch mechanism entirely.
+
+        .. doctest::
+
+            >>> @dispatch("bar")
+            ... def foo(bar):
+            ...     print("base")
+            ...     return bar
+
+            >>> @foo.overload("int")
+            ... def integer_foo(bar):
+            ...     print("integer")
+            ...     return bar
+
+            >>> foo(1)
+            integer
+            1
+            >>> foo.fallback(1)
+            base
+            1
         """
         return self.__wrapped__(*args, **kwargs)
-
-    def _build_strategy(self, dispatch_args: dict[str, Any]) -> DispatchStrategy:
-        """Normalize vectorized inputs to this :class:`DispatchFunc`.
-
-        This method converts input vectors into pandas Series objects with
-        homogenous indices, missing values, and element types.  Composite
-        vectors will be grouped along with their homogenous counterparts and
-        processed as independent frames.
-
-        Notes
-        -----
-        Normalization is skipped if the dispatched function is called from a
-        recursive context.
-        """
-        # extract vectors
-        vectors = {}
-        names = {}
-        for arg, value in dispatch_args.items():
-            if isinstance(value, pd.Series):
-                vectors[arg] = value
-                names[arg] = value.name
-            elif isinstance(value, np.ndarray):
-                vectors[arg] = value
-            else:
-                value = np.asarray(value, dtype=object)
-                if value.shape:
-                    vectors[arg] = value
-
-        # bind vectors into DataFrame
-        frame = pd.DataFrame(vectors)
-
-        # normalize indices
-        original_index = frame.index
-        if not isinstance(original_index, pd.RangeIndex):
-            frame.index = pd.RangeIndex(0, frame.shape[0])
-        if any(v.shape[0] != original_index.shape[0] for v in vectors.values()):
-            warn_msg = f"index mismatch in {self.__qualname__}()"
-            warnings.warn(warn_msg, UserWarning, stacklevel=2)
-
-        # drop missing values
-        hasnans = None
-        if self._drop_na:
-            frame = frame.dropna(how="any")
-            hasnans = frame.shape[0] < original_index.shape[0]
-
-        # detect type of each column
-        detected = detect_type(frame)
-
-        # composite case
-        if any(isinstance(v, types.CompositeType) for v in detected.values()):
-            return CompositeDispatch(
-                func=self,
-                dispatch_args=dispatch_args,
-                frame=frame,
-                detected=detected,
-                names=names,
-                hasnans=hasnans,
-                original_index=original_index,
-                convert_mixed=self._convert_mixed
-            )
-
-        # homogenous case
-        return HomogenousDispatch(
-            func=self,
-            dispatch_args=dispatch_args,
-            frame=frame,
-            detected=detected,
-            names=names,
-            hasnans=hasnans,
-            original_index=original_index
-        )
 
     def __call__(self, *args, **kwargs) -> Any:
         """Execute the decorated function, dispatching to an overloaded
         implementation if one exists.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Positional and keyword arguments to supply to the dispatched
+            implementation.  The dispatched arguments are automatically
+            extracted, normalized, and grouped according to their inferred
+            type.
+
+        Returns
+        -------
+        Any
+            The return value of the dispatched implementation(s).
+
+        TODO: expand notes and examples
 
         Notes
         -----
         This automatically detects aggregations, transformations, and
         filtrations based on the return value.
 
-            *   :data:`None <python:None>` signifies a filtration.  The passed
-                values will be excluded from the resulting series.
             *   A pandas :class:`Series <pandas.Series>` or
                 :class:`DataFrame <pandas.DataFrame>`signifies a
                 transformation.  Any missing indices will be replaced with NA.
@@ -353,54 +452,41 @@ class DispatchFunc(FunctionDecorator):
                 returned as-is if data is homogenous.  If mixed data is given,
                 This will be a DataFrame with rows for each group.
 
+        Examples
+        --------
+        TODO
+
         """
-        # arguments = self._signature(*args, **kwargs)
+        # bind arguments
+        arguments = self._signature(*args, **kwargs)
 
-        # if getattr(self._flags, "recursive", False):
-        #   strategy = DirectDispatch(func=self, dispatch_args=arguments)
-        #   return strategy(arguments)
-
-        # arguments.normalize()
-        # if arguments.is_composite:
-        #   strategy = CompositeDispatch(
-        #       func=self,
-        #       arguments=arguments,
-        #       standardize_dtype=self._standardize_dtype,
-        # )
-        # else:
-        #   strategy = HomogenousDispatch(
-        #       func=self,
-        #       arguments=arguments,
-        #   )
-
-        # self._flags.recursive = True
-        # try:
-        #   return strategy(arguments)
-        # finally:
-        #   self._flags.recursive = False
-
-        # bind signature
-        bound = self._signature.bind(*args, **kwargs)
-        bound.apply_defaults()
-
-        # extract dispatched arguments
-        dispatch_args = {arg: bound.arguments[arg] for arg in self._args}
-
-        # call detect_type() on each argument
-        
-
-        # fastpath for recursive calls
+        # skip normalization if calling from a recursive context
         if getattr(self._flags, "recursive", False):
-            strategy = DirectDispatch(func=self, dispatch_args=dispatch_args)
-            return strategy(bound)
+            strategy = DirectDispatch(func=self, dispatch_args=arguments)
+            return strategy(arguments)
 
-        # outermost call - extract/normalize vectors and finalize results
+        # normalize arguments
+        arguments.normalize()
+
+        # dispatch to the appropriate implementation(s)
+        if any(isinstance(typ, types.CompositeType) for typ in arguments.key):
+          strategy = CompositeDispatch(
+              func=self,
+              arguments=arguments,
+              standardize_dtype=self._standardize_dtype,
+        )
+        else:
+          strategy = HomogenousDispatch(
+              func=self,
+              arguments=arguments,
+          )
+
+        # execute
         self._flags.recursive = True
         try:
-            strategy = self._build_strategy(dispatch_args)
-            return strategy(bound)
+          return strategy(arguments)
         finally:
-            self._flags.recursive = False
+          self._flags.recursive = False
 
     def __getitem__(
         self,
@@ -476,10 +562,10 @@ class DispatchSignature(Signature):
         """Sort the dictionary into topological order, with most specific
         keys first.
         """
-        keys = list(self)
+        keys = tuple(self._dispatch_map)
 
         # draw edges between keys according to their specificity
-        edges = dict.fromkeys(keys, set())
+        edges = {key: set() for key in keys}
         for key1 in keys:
             for key2 in keys:
                 if edge(key1, key2):
@@ -487,7 +573,7 @@ class DispatchSignature(Signature):
 
         # sort according to edges
         for key in topological_sort(edges):
-            # (Python 3.6+) equivalent to OrderedDict.move_to_end() 
+            # NOTE: (Python 3.6+) equivalent to OrderedDict.move_to_end()
             item = self._dispatch_map.pop(key)
             self._dispatch_map[key] = item
 
@@ -573,146 +659,12 @@ class DispatchSignature(Signature):
         for path in itertools.product(*key):
             yield path
 
-    def resolve_key(
-        self,
-        key: type_specifier | tuple[type_specifier]
-    ) -> tuple[types.VectorType]:
-        """Convert arbitrary type specifiers into a valid key for
-        `DispatchSignature` lookups.
-        """
-        if not isinstance(key, tuple):
-            key = (key,)
-
-        result = []
-        for typespec in key:
-            resolved = resolve_type(typespec)
-            if isinstance(resolved, types.CompositeType):
-                raise TypeError(f"key must not be composite: {repr(typespec)}")
-            result.append(resolved)
-
-        return tuple(result)
-
-    def parse_overload(
-        self,
-        func: Callable,
-        signature: inspect.Signature,
-        args: tuple[type_specifier],
-        kwargs: dict[str, type_specifier]
-    ):
-        """Bind the arguments to the function and sort their values into the
-        expected order.
-
-        Raises
-        ------
-        TypeError
-            If the arguments could not be bound to the function's signature or
-            if they do not exactly match the dispatched arguments specified in
-            this :class:`DispatchSignature`.
-        """
-        # TODO: right now this binds to the overloaded function.  That should
-        # instead be handled in @overload, and the bound arguments passed
-        # through as kwargs to dispatch_key().  That replaces this whole method
-
-        # bind *args, **kwargs
-        try:
-            bound = signature.bind_partial(*args, **kwargs).arguments
-        except TypeError as err:
-            func_name = f"'{func.__module__}.{func.__qualname__}()'"
-            reconstructed = [repr(value) for value in args]
-            reconstructed.extend(
-                f"{name}={repr(value)}" for name, value in kwargs.items()
-            )
-            err_msg = (
-                f"invalid signature for {func_name}: "
-                f"({', '.join(reconstructed)})"
-            )
-            raise TypeError(err_msg) from err
-
-        # translate into the expected order
-        result = []
-        missing = []
-        for name in self.dispatched:
-            if name in bound:
-                result.append(bound.pop(name))
-            else:
-                missing.append(name)
-
-        # confirm all arguments were matched
-        if missing:
-            raise TypeError(f"no signature given for argument: {missing}")
-
-        # confirm no extra arguments were given
-        if bound:
-            raise TypeError(
-                f"signature contains non-dispatched arguments: "
-                f"{list(bound)}"
-            )
-
-        return result
-
-    def register(
-        self,
-        func: Callable,
-        args: tuple[type_specifier],
-        kwargs: dict[str, type_specifier],
-        warn: bool = True
-    ) -> None:
-        """Ensure that an overloaded implementation is valid."""
-        if not callable(func):
-            raise TypeError(
-                f"overloaded implementation must be callable: {repr(func)}"
-            )
-
-        # confirm func accepts named arguments
-        sig = inspect.signature(func)
-        missing = [arg for arg in self.dispatched if arg not in sig.parameters]
-        if missing:
-            func_name = f"'{func.__module__}.{func.__qualname__}()'"
-            raise TypeError(
-                f"{func_name} must accept dispatched arguments: {missing}"
-            )
-
-        # bind *args, **kwargs into correct key order
-        key = self.parse_overload(func, sig, args, kwargs)
-
-        # expand key into cartesian product
-        key = [resolve_type([typespec]) for typespec in key]
-        key = list(itertools.product(*key))
-
-        # register implementation under each key
-        for path in key:
-            if warn and path in self.dispatch_map:
-                warn_msg = (
-                    f"Replacing '{self.dispatch_map[path].__qualname__}()' "
-                    f"with '{func.__qualname__}()' for signature "
-                    f"{tuple(str(x) for x in path)}"
-                )
-                warnings.warn(warn_msg, UserWarning, stacklevel=2)
-
-            self[path] = func
-
     def __call__(self, *args, **kwargs) -> DispatchArguments:
         """Bind this signature to create a `DispatchArguments` object."""
-        parameters = tuple(self.parameters.values())
-
-        # bind *args, **kwargs
-        bound = self.signature.bind(*args, **kwargs)
+        bound = self.signature.bind_partial(*args, **kwargs)
         bound.apply_defaults()
 
-        # extract dispatched arguments
-        dispatched = {arg: bound.arguments[arg] for arg in self.dispatched}
-
-        # call detect_type() on each argument
-        detected = {arg: detect_type(val) for arg, val in dispatched.items()}
-
-        # build signature
-        return DispatchArguments(
-            arguments=bound.arguments,
-            parameters=parameters,
-            positional=parameters[:len(args)],
-            dispatched=dispatched,
-            detected=detected
-        )
+        return DispatchArguments(bound=bound, signature=self)
 
     def __getitem__(
         self,
@@ -721,7 +673,11 @@ class DispatchSignature(Signature):
         """Search the :class:`DispatchSignature <pdcast.DispatchSignature>` for
         a particular implementation.
         """
-        key = self.resolve_key(key)
+        if not isinstance(key, tuple):
+            key = (key,)
+
+        # resolve key
+        key = self.dispatch_key(**dict(zip(self.dispatched, key)))
 
         # trivial case: key has exact match
         if key in self._dispatch_map:
@@ -749,8 +705,37 @@ class DispatchSignature(Signature):
         """Add an overloaded implementation to the
         :class:`DispatchSignature <pdcast.DispatchSignature>`.
         """
-        key = self.resolve_key(key)
-        self.check_implementation(value)
+        if not isinstance(key, tuple):
+            key = (key,)
+
+        # resolve key
+        key = self.dispatch_key(**dict(zip(self.dispatched, key)))
+
+        # verify implementation is callable
+        if not callable(value):
+            raise TypeError(f"implementation must be callable: {repr(value)}")
+
+        # verify implementation accepts the dispatched arguments
+        signature = inspect.signature(value)
+        missing = [
+            arg for arg in self.dispatched if arg not in signature.parameters
+        ]
+        if missing:
+            func_name = f"'{value.__module__}.{value.__qualname__}()'"
+            raise TypeError(
+                f"{func_name} must accept dispatched arguments: {missing}"
+            )
+
+        # warn if overwriting a previous key
+        if key in self._dispatch_map:
+            warn_msg = (
+                f"Replacing '{self.dispatch_map[key].__qualname__}()' "
+                f"with '{value.__qualname__}()' for signature "
+                f"{tuple(str(x) for x in key)}"
+            )
+            # warnings.warn(warn_msg, UserWarning, stacklevel=2)
+
+        # insert into dispatch map
         self._dispatch_map[key] = value
         self.ordered = False
 
@@ -758,7 +743,11 @@ class DispatchSignature(Signature):
         """Remove an overloaded implementation from the
         :class:`DispatchSignature <pdcast.DispatchSignature>`.
         """
-        key = self.resolve_key(key)
+        if not isinstance(key, tuple):
+            key = (key,)
+
+        # resolve key
+        key = self.dispatch_key(**dict(zip(self.dispatched, key)))
 
         # require exact match
         if key in self._dispatch_map:
@@ -777,52 +766,50 @@ class DispatchSignature(Signature):
             return False
 
 
-class DispatchArguments:
+class DispatchArguments(Arguments):
     """A simple wrapper for an `inspect.BoundArguments` object with extra
     context for dispatched arguments and their detected types.
     """
 
     def __init__(
         self,
-        arguments: dict[str, Any],
-        parameters: tuple[inspect.Parameter, ...],
-        positional: tuple[inspect.Parameter, ...],
-        dispatched: dict[str, Any],
-        detected: dict[str, types.Type]
+        bound: inspect.BoundArguments,
+        signature: DispatchSignature,
+        detected: dict[str, types.Type] | None = None,
     ):
-        self.arguments = arguments
-        self.parameters = parameters
-        self.positional = positional
-        self.dispatched = dispatched
-        self.detected = detected
+        super().__init__(bound=bound, signature=signature)
+        self.dispatched = {
+            arg: bound.arguments[arg] for arg in self.signature.dispatched
+        }
+
+        # cached in .types
+        self._types = detected
+        if detected is not None:
+            for arg, typ in detected.items():
+                if arg not in self.dispatched:
+                    raise KeyError(f"invalid argument: {repr(arg)}")
+                if not isinstance(typ, types.Type):
+                    raise TypeError(f"invalid type: {repr(typ)}")
+
+        # cached in .normalize()
         self.names = {}
         self.frame = None
-        self.original_index = None
         self.hasnans = None
+        self.original_index = None
 
     @property
-    def args(self) -> tuple[Any, ...]:
-        """Get an *args tuple from the bound signature."""
-        return tuple(self.arguments[par.name] for par in self.positional)
-
-    @property
-    def kwargs(self) -> dict[str, Any]:
-        """Get a **kwargs dict from the bound signature."""
-        pos = {par.name for par in self.positional}
-        return {k: v for k, v in self.arguments.items() if k not in pos}
+    def types(self) -> dict[str, types.Type]:
+        """The detected type of each dispatched argument."""
+        if self._types is None:
+            self._types = {
+                arg: detect_type(val) for arg, val in self.dispatched.items()
+            }
+        return self._types
 
     @property
     def key(self) -> tuple[types.Type, ...]:
         """Form a key for indexing a DispatchFunc."""
-        return tuple(self.detected.values())
-
-    @property
-    def is_composite(self) -> bool:
-        """Indicates whether any dispatched arguments are of mixed type."""
-        return any(
-            isinstance(val, types.CompositeType)
-            for val in self.detected.values()
-        )
+        return tuple(self.types.values())
 
     @property
     def vectors(self) -> dict[str, pd.Series]:
@@ -857,7 +844,7 @@ class DispatchArguments:
         """Extract vectors from dispatched arguments and normalize them."""
         # extract vectors
         vectors = {}
-        for arg, value in self.arguments:
+        for arg, value in self.arguments.items():
             if isinstance(value, pd.Series):
                 vectors[arg] = value
                 self.names[arg] = value.name
@@ -978,15 +965,14 @@ def topological_sort(edges: dict) -> list:
         # for each edge from node -> dependent:
         for dependent in edges.get(node, ()):
 
-            # remove edge from inverted map
+            # remove edge from inverted map and decrement edge count
             inverted[dependent].remove(node)
-
-            # decrement edge count
             edge_count -= 1
 
             # if dependent has no more incoming edges, add it to the queue
             if not inverted[dependent]:
                 no_incoming.append(dependent)
+                del inverted[dependent]  # no reason to keep an empty set
 
     # if there are any edges left, then there must be a cycle
     if edge_count:
@@ -1041,6 +1027,11 @@ class DirectDispatch(DispatchStrategy):
     def execute(self, bound: inspect.BoundArguments) -> Any:
         """Call the dispatched function with the bound arguments."""
         bound.arguments = {**bound.arguments, **self.dispatch_args}
+
+        # TODO: translate *bound.args and **bound.kwargs to match the
+        # dispatched implementation's signature?
+        # -> could be a method on DispatchArguments.
+
         return self.func[self.key](*bound.args, **bound.kwargs)
 
     def finalize(self, result: Any) -> Any:
@@ -1345,3 +1336,56 @@ def replace_na(
     )
     result[series.index] = series
     return result.astype(dtype, copy=False)
+
+
+#######################
+####    TESTING    ####
+#######################
+
+
+@dispatch("x", "y")
+def add(x, y):
+    return x + y
+
+
+@add.overload("int", "int")
+def add1(x, y):
+    return x - y
+
+
+# @add.overload("int64", "int64")
+# def add2(x, y):
+#     return x + y
+
+
+# @add.overload("float", "float")
+# def add3(x, y):
+#     return x + y
+
+
+
+sig = add._signature
+bound = sig([1, 2, 3], [3, 2, 1])
+
+
+
+
+# @dispatch("bar")
+# def foo(bar):
+#     print("base")
+#     return bar
+
+# @foo.overload("int")  # least specific
+# def integer_foo(bar):
+#     print("integer")
+#     return bar
+
+# @foo.overload("int64[numpy]")  # most specific
+# def numpy_int64_foo(bar):
+#     print("int64[numpy]")
+#     return bar
+
+# @foo.overload("int64")
+# def int64_foo(bar):
+#     print("int64")
+#     return bar

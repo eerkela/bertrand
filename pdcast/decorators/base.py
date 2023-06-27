@@ -8,20 +8,18 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 
+# shortcut for inspect.Parameter.empty
 EMPTY = inspect.Parameter.empty
 
 
-# TODO: remove no_default, just use EMPTY instead
-
-
-class NoDefault:
-    """Signals that an argument does not have an associated default value."""
-
-    def __repr__(self) -> str:
-        return "<no default>"
-
-
-no_default = NoDefault()
+# shortcut for inspect.Parameter.kind
+KINDS = {
+    "POSITIONAL_ONLY": inspect.Parameter.POSITIONAL_ONLY,
+    "POSITIONAL_OR_KEYWORD": inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    "VAR_POSITIONAL": inspect.Parameter.VAR_POSITIONAL,
+    "KEYWORD_ONLY": inspect.Parameter.KEYWORD_ONLY,
+    "VAR_KEYWORD": inspect.Parameter.VAR_KEYWORD,
+}
 
 
 class FunctionDecorator:
@@ -907,12 +905,3 @@ class Arguments:
 
     def __repr__(self) -> str:
         return repr(self.bound)
-
-
-KINDS = {
-    "POSITIONAL_ONLY": inspect.Parameter.POSITIONAL_ONLY,
-    "POSITIONAL_OR_KEYWORD": inspect.Parameter.POSITIONAL_OR_KEYWORD,
-    "VAR_POSITIONAL": inspect.Parameter.VAR_POSITIONAL,
-    "KEYWORD_ONLY": inspect.Parameter.KEYWORD_ONLY,
-    "VAR_KEYWORD": inspect.Parameter.VAR_KEYWORD,
-}
