@@ -5,12 +5,11 @@ ordinary Python function into one that dispatches to a method attached to the
 inferred type of its first argument.
 """
 from __future__ import annotations
-from collections import OrderedDict
 import inspect
 import itertools
 import threading
 from types import MappingProxyType
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 import warnings
 
 import numpy as np
@@ -26,7 +25,8 @@ from .base import Arguments, FunctionDecorator, Signature
 
 
 # TODO: emit a warning whenever an implementation is replaced.
-# -> use a simplefilter when the module is loaded
+# -> use a simplefilter when the module is loaded, or implement None as a
+# wildcard.  This would get expanded to registry.roots at runtime.
 
 
 # TODO: None wildcard value?
@@ -39,9 +39,6 @@ from .base import Arguments, FunctionDecorator, Signature
 # TODO: appears to be an index mismatch in composite add() example from
 # README.features
 
-
-# TODO: DispatchStrategies should reference the DispatchDict, not the
-# DispatchFunc.  This is a more direct code path.
 
 
 # TODO: pdcast.cast("today", "datetime") uses python datetimes rather than
@@ -376,6 +373,7 @@ class DispatchFunc(FunctionDecorator):
             # register every combination of types
             for path in self._signature.cartesian_product(key):
                 self._signature[path] = func
+                self._signature.signatures[func] = signature
 
             return func
 
@@ -527,6 +525,7 @@ class DispatchSignature(Signature):
 
         self.dispatched = dispatched
         self._dispatch_map = {}
+        self._signatures = {func: self.signature}
         self.cache = LRUDict(maxsize=cache_size)
         self.ordered = False
 
@@ -557,6 +556,25 @@ class DispatchSignature(Signature):
         
         """
         return MappingProxyType(self._dispatch_map)
+
+    @property
+    def signatures(self) -> Mapping[Callable, inspect.Signature]:
+        """A map containing the signatures of all the dispatched
+        implementations that are being handled by this
+        :class:`DispatchSignature <pdcast.DispatchSignature>`.
+
+        Returns
+        -------
+        MappingProxyType
+            A read-only mapping from
+            :meth:`implementations <pdcast.DispatchFunc.overload>` to their
+            respective :class:`signatures <inspect.Signature>`.
+
+        Examples
+        --------
+        TODO
+        """
+        return self._signatures
 
     def sort(self) -> None:
         """Sort the dictionary into topological order, with most specific
@@ -811,6 +829,8 @@ class DispatchArguments(Arguments):
         """Form a key for indexing a DispatchFunc."""
         return tuple(self.types.values())
 
+    # TODO: .vectors may not be necessary
+
     @property
     def vectors(self) -> dict[str, pd.Series]:
         """Extract vectors from dispatched arguments."""
@@ -822,7 +842,7 @@ class DispatchArguments(Arguments):
             # parallel dict of argument names to series names and rename them
             # here.
             if arg in self.names:
-                series = series.rename(self.names[arg], copy=True)
+                series = series.rename(self.names.get(arg, None), copy=True)
             result[arg] = series
 
         return result
@@ -834,8 +854,7 @@ class DispatchArguments(Arguments):
         This only applies if `is_composite=True`.
         """
         type_frame = pd.DataFrame({
-            arg: getattr(typ, "index", typ)
-            for arg, typ in self.detected.items()
+            arg: getattr(typ, "index", typ) for arg, typ in self.types.items()
         })
         groupby = type_frame.groupby(list(type_frame.columns), sort=False)
         return groupby.groups
@@ -844,7 +863,7 @@ class DispatchArguments(Arguments):
         """Extract vectors from dispatched arguments and normalize them."""
         # extract vectors
         vectors = {}
-        for arg, value in self.arguments.items():
+        for arg, value in self.dispatched.items():
             if isinstance(value, pd.Series):
                 vectors[arg] = value
                 self.names[arg] = value.name
@@ -858,15 +877,16 @@ class DispatchArguments(Arguments):
         # bind vectors into DataFrame
         self.frame = pd.DataFrame(vectors)
 
+        # NOTE: the DataFrame constructor will happily accept vectors with
+        # misaligned indices, filling any absent values with NaNs.  Since this
+        # is a likely source of bugs, we always warn the user when it happens.
+
         # normalize indices
         original_index = self.frame.index
         if not isinstance(original_index, pd.RangeIndex):
             self.frame.index = pd.RangeIndex(0, self.frame.shape[0])
 
-        # NOTE: the DataFrame constructor will happily accept vectors with
-        # misaligned indices, filling any absent values with NaNs.  Since this
-        # is a likely source of bugs, we always warn the user when it happens.
-
+        # warn if indices were misaligned
         original_length = original_index.shape[0]
         if any(vec.shape[0] != original_length for vec in vectors.values()):
             warn_msg = (
@@ -877,6 +897,12 @@ class DispatchArguments(Arguments):
         # drop missing values
         self.frame.dropna(how="any")
         self.hasnans = self.frame.shape[0] != original_length
+
+        # write vectors back to bound arguments
+        self.bound.arguments |= {
+            arg: col.rename(self.names.get(arg, None), copy=False)
+            for arg, col in self.frame.items()
+        }
 
 
 
@@ -896,13 +922,13 @@ class DispatchArguments(Arguments):
 
 
 
-def supercedes(sig1: tuple, sig2: tuple) -> bool:
+def supercedes(key1: tuple, key2: tuple) -> bool:
     """Check if sig1 is consistent with and strictly more specific than sig2.
     """
-    return all(x.contains(y) for x, y in zip(sig2, sig1))
+    return all(x.contains(y) for x, y in zip(key2, key1))
 
 
-def edge(sig1: tuple, sig2: tuple) -> bool:
+def edge(key1: tuple, key2: tuple) -> bool:
     """If ``True``, check sig1 before sig2.
 
     Ties are broken by recursively backing off the last element of both
@@ -910,12 +936,13 @@ def edge(sig1: tuple, sig2: tuple) -> bool:
     elements will always be preferred.
     """
     # pylint: disable=arguments-out-of-order
-    if not sig1 or not sig2:
+    if not key1 or not key2:
         return False
 
     return (
-        supercedes(sig1, sig2) and
-        not supercedes(sig2, sig1) or edge(sig1[:-1], sig2[:-1])
+        supercedes(key1, key2) and
+        not supercedes(key2, key1) or
+        edge(key1[:-1], key2[:-1])  # back off from right to left
     )
 
 
@@ -987,10 +1014,23 @@ def topological_sort(edges: dict) -> list:
 ##########################
 
 
-class DispatchStrategy:
-    """Base class for Strategy-Pattern dispatch pipelines."""
+# TODO: document these
 
-    def execute(self, bound: inspect.BoundArguments) -> Any:
+
+class DispatchStrategy:
+    """Interface for Strategy pattern dispatch pipelines.
+
+
+    """
+
+    def __init__(
+        self,
+        func: DispatchFunc,
+    ):
+        self.func = func
+        self.signature = func._signature
+
+    def execute(self, bound: DispatchArguments) -> Any:
         """Abstract method for executing a dispatched strategy."""
         raise NotImplementedError(
             f"strategy does not implement an `execute()` method: "
@@ -1005,7 +1045,7 @@ class DispatchStrategy:
             f"{self.__qualname__}"
         )
 
-    def __call__(self, bound: inspect.BoundArguments) -> Any:
+    def __call__(self, bound: DispatchArguments) -> Any:
         """A macro for invoking a strategy's `execute` and `finalize` methods
         in sequence.
         """
@@ -1015,24 +1055,22 @@ class DispatchStrategy:
 class DirectDispatch(DispatchStrategy):
     """Dispatch raw inputs to the appropriate implementation."""
 
-    def __init__(
-        self,
-        func: DispatchFunc,
-        dispatch_args: dict[str, Any]
-    ):
-        self.func = func
-        self.dispatch_args = dispatch_args
-        self.key = tuple(detect_type(v) for v in dispatch_args.values())
-
-    def execute(self, bound: inspect.BoundArguments) -> Any:
+    def execute(self, bound: DispatchArguments) -> Any:
         """Call the dispatched function with the bound arguments."""
-        bound.arguments = {**bound.arguments, **self.dispatch_args}
+        # NOTE: arguments are bound to the base implementation's signature,
+        # which may not match the dispatched function.  To make this more
+        # robust, we always translate them to the dispatched signature before
+        # calling the function.
 
-        # TODO: translate *bound.args and **bound.kwargs to match the
-        # dispatched implementation's signature?
-        # -> could be a method on DispatchArguments.
+        # breakpoint()
 
-        return self.func[self.key](*bound.args, **bound.kwargs)
+        # translate *args, **kwargs
+        func = self.func[bound.key]
+        signature = self.signature.signatures[func]
+        bound = signature.bind(**bound.arguments)
+
+        # call the dispatched function with the translated arguments
+        return func(*bound.args, **bound.kwargs)
 
     def finalize(self, result: Any) -> Any:
         """Process the result returned by this strategy's `execute` method."""
@@ -1067,7 +1105,7 @@ class HomogenousDispatch(DispatchStrategy):
             dispatch_args=dispatch_args
         )
 
-    def execute(self, bound: inspect.BoundArguments) -> Any:
+    def execute(self, bound: DispatchArguments) -> Any:
         """Call the dispatched implementation with the bound arguments."""
         return self.direct(bound)
 
@@ -1164,7 +1202,7 @@ class CompositeDispatch(DispatchStrategy):
             # yield to __call__()
             yield detected, group
 
-    def execute(self, bound: inspect.BoundArguments) -> list:
+    def execute(self, bound: DispatchArguments) -> list:
         """For each group in the input, call the dispatched implementation
         with the bound arguments.
         """
@@ -1366,6 +1404,8 @@ def add1(x, y):
 
 sig = add._signature
 bound = sig([1, 2, 3], [3, 2, 1])
+
+strat = DirectDispatch(add)
 
 
 
