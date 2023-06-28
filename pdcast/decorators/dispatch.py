@@ -19,7 +19,7 @@ from pdcast.detect import detect_type
 from pdcast.resolve import resolve_type
 from pdcast import types
 from pdcast.util.structs import LRUDict
-from pdcast.util.type_hints import type_specifier
+from pdcast.util.type_hints import dtype_like, type_specifier
 
 from .base import Arguments, FunctionDecorator, Signature
 
@@ -47,12 +47,6 @@ from .base import Arguments, FunctionDecorator, Signature
 # refactor.
 
 
-
-# TODO: May need to store the implementation's signature and translate
-# arguments from the base into it during invocation.  If we invoke the
-# implementation with the base's *args and **kwargs, then we might get
-# different behavior if an implementation defines these args in the opposite
-# order, for instance.
 
 
 ######################
@@ -461,25 +455,22 @@ class DispatchFunc(FunctionDecorator):
 
         # fastpath: if calling from a recursive context, skip normalization
         if getattr(self._flags, "recursive", False):
-            return DirectDispatch(self)(bound)
+            strategy = HomogenousDispatch(self, bound)
+            return strategy.execute()  # do not finalize
 
         # normalize arguments
         bound.normalize()
 
         # choose strategy
         if not bound.is_composite:
-            strategy = HomogenousDispatch(func=self, arguments=bound)
+            strategy = HomogenousDispatch(self, bound)
         else:
-            strategy = CompositeDispatch(
-                func=self,
-                arguments=bound,
-                standardize_dtype=self._standardize_dtype,
-            )
+            strategy = CompositeDispatch(self, bound)
 
         # execute strategy
         self._flags.recursive = True
         try:
-          return strategy(bound)
+            return strategy.finalize(strategy.execute())
         finally:
           self._flags.recursive = False
 
@@ -898,7 +889,7 @@ class DispatchArguments(Arguments):
         vectors = self._extract_vectors(self.frame)
         self.bound.arguments |= vectors
 
-        # rectify dtypes.  NOTE: implicitly detectes type of each arg
+        # rectify dtypes.  NOTE: implicitly detects type of each arg
         if not self.is_composite:
             self.bound.arguments |= self._rectify(vectors, self.types)
 
@@ -1076,11 +1067,13 @@ class DispatchStrategy:
     def __init__(
         self,
         func: DispatchFunc,
+        arguments: DispatchArguments
     ):
         self.func = func
         self.signature = func._signature
+        self.arguments = arguments
 
-    def execute(self, bound: DispatchArguments) -> Any:
+    def execute(self) -> Any:
         """Abstract method for executing a dispatched strategy."""
         raise NotImplementedError(
             f"strategy does not implement an `execute()` method: "
@@ -1095,113 +1088,85 @@ class DispatchStrategy:
             f"{self.__qualname__}"
         )
 
-    def __call__(self, bound: DispatchArguments) -> Any:
-        """A macro for invoking a strategy's `execute` and `finalize` methods
-        in sequence.
+    def replace_na(
+        self,
+        series: pd.Series,
+        dtype: dtype_like
+    ) -> pd.Series:
+        """Abstract method to replace missing values in the result of a
+        dispatched strategy.
         """
-        return self.finalize(self.execute(bound))
+        original_length = self.arguments.original_index.shape[0]
+
+        result = pd.Series(
+            np.full(original_length, dtype.na_value, dtype=object),
+            index = pd.RangeIndex(0, original_length),
+            name=series.name,
+            # dtype=object
+            dtype=dtype
+        )
+        result[series.index] = series
+        # return result.astype(dtype, copy=False)
+        return result
 
 
-class DirectDispatch(DispatchStrategy):
-    """Dispatch raw inputs to the appropriate implementation."""
-
-    def execute(self, bound: DispatchArguments) -> Any:
-        """Call the dispatched function with the bound arguments."""
-        # NOTE: arguments are bound to the base implementation's signature,
-        # which may not match the dispatched function.  To make this more
-        # robust, we always translate them to the dispatched signature before
-        # calling the function.
-
-        # translate *args, **kwargs
-        func = self.func[bound.key]
-        signature = self.signature.signatures[func]
-        bound = signature.bind(**bound.arguments)
-
-        # call the dispatched function with the translated arguments
-        return func(*bound.args, **bound.kwargs)
-
-    def finalize(self, result: Any) -> Any:
-        """Process the result returned by this strategy's `execute` method."""
-        return result  # do nothing
+# TODO: add transform() and aggregate() methods
 
 
 class HomogenousDispatch(DispatchStrategy):
     """Dispatch homogenous inputs to the appropriate implementation."""
 
-    def __init__(
-        self,
-        func: DispatchFunc,
-        dispatch_args: dict[str, Any],
-        frame: pd.DataFrame,
-        detected: dict[str, types.VectorType],
-        names: dict[str, str],
-        hasnans: bool,
-        original_index: pd.Index
-    ):
-        self.index = frame.index
-        self.original_index = original_index
-        self.hasnans = hasnans
+    def execute(self) -> Any:
+        """Call the dispatched function with the bound arguments."""
+        # search for dispatched implementation
+        func = self.func[self.arguments.key]
 
-        # split frame into normalized columns
-        for col, series in frame.items():
-            series = series.rename(names.get(col, None))
-            dispatch_args[col] = series.astype(detected[col].dtype, copy=False)
+        # flatten *args and **kwargs
+        arg_names = tuple(self.arguments.signature.parameter_map)
+        kwargs = dict(zip(arg_names, self.arguments.args))
+        kwargs |= self.arguments.kwargs
 
-        # TODO: move dtype conversion to DispatchArguments
+        # translate flatten arguments to the dispatched function's signature
+        signature = self.signature.signatures[func]
+        bound = signature.bind(**kwargs)
 
-        # construct DispatchDirect wrapper
-        self.direct = DirectDispatch(
-            func=func,
-            dispatch_args=dispatch_args
-        )
-
-    def execute(self, bound: DispatchArguments) -> Any:
-        """Call the dispatched implementation with the bound arguments."""
-        return self.direct(bound)
+        # call the dispatched function with the translated arguments
+        return func(*bound.args, **bound.kwargs)
 
     def finalize(self, result: Any) -> Any:
         """Infer mode of operation (filter/transform/aggregate) from return
         type and adjust result accordingly.
         """
+        context = self.arguments
+
         # transform
         if isinstance(result, (pd.Series, pd.DataFrame)):
             # warn if final index is not a subset of original
-            if not result.index.difference(self.index).empty:
+            if not result.index.difference(context.frame.index).empty:
                 warn_msg = (
                     f"index mismatch in {self.__qualname__}() with signature"
-                    f"{tuple(str(x) for x in self.direct.key)}: dispatched "
+                    f"{tuple(str(x) for x in context.key)}: dispatched "
                     f"implementation did not return a like-indexed Series/"
                     f"DataFrame"
                 )
                 warnings.warn(warn_msg, UserWarning, stacklevel=4)
-                self.hasnans = True
+                context.hasnans = True
 
             # replace missing values, aligning on index
-            if self.hasnans or result.shape[0] < self.index.shape[0]:
+            if context.hasnans or result.shape[0] < context.frame.shape[0]:
                 output_type = detect_type(result)
-                output_index = pd.RangeIndex(0, self.original_index.shape[0])
                 if isinstance(result, pd.Series):
                     nullable = output_type.make_nullable()
-                    result = replace_na(
-                        result,
-                        dtype=nullable.dtype,
-                        index=output_index,
-                        na_value=nullable.na_value
-                    )
+                    result = self.replace_na(result, nullable.dtype)
                 else:
                     with_na = {}
                     for col, series in result.items():
                         nullable = output_type[col].make_nullable()
-                        with_na[col] = replace_na(
-                            series,
-                            dtype=nullable.dtype,
-                            index=output_index,
-                            na_value=nullable.na_value
-                        )
+                        with_na[col] = self.replace_na(series, nullable.dtype)
                     result = pd.DataFrame(with_na)
 
             # replace original index
-            result.index = self.original_index
+            result.index = context.original_index
 
         # aggregate
         return result
@@ -1210,67 +1175,16 @@ class HomogenousDispatch(DispatchStrategy):
 class CompositeDispatch(DispatchStrategy):
     """Dispatch composite inputs to the appropriate implementations."""
 
-    def __init__(
-        self,
-        func: DispatchFunc,
-        dispatch_args: dict[str, Any],
-        frame: pd.DataFrame,
-        detected: dict[str, types.VectorType | types.CompositeType],
-        names: dict[str, str],
-        hasnans: bool,
-        original_index: pd.Index,
-        convert_mixed: bool
-    ):
-        self.func = func
-        self.dispatch_args = dispatch_args
-        self.frame = frame
-        self.names = names
-        self.hasnans = hasnans
-        self.original_index = original_index
-        self.convert_mixed = convert_mixed
-
-        # generate type frame
-        type_frame = pd.DataFrame({
-            k: getattr(v, "index", v) for k, v in detected.items()
-        })
-
-        # group by type
-        grouped = type_frame.groupby(list(detected), sort=False)
-        self.groups = grouped.groups
-
-    def __iter__(self):
-        """Sequentially extract each group from the parent frame"""
-        for key, indices in self.groups.items():
-            # extract group
-            group = self.frame.iloc[indices]
-
-            # bind names to key
-            if not isinstance(key, tuple):
-                key = (key,)
-            detected = dict(zip(group.columns, key))
-
-            # yield to __call__()
-            yield detected, group
-
-    def execute(self, bound: DispatchArguments) -> list:
+    def execute(self) -> list:
         """For each group in the input, call the dispatched implementation
         with the bound arguments.
         """
         results = []
 
         # process each group independently
-        for detected, group in self:
-            strategy = HomogenousDispatch(
-                func=self.func,
-                dispatch_args=self.dispatch_args,
-                frame=group,
-                detected=detected,
-                names=self.names,
-                hasnans=self.hasnans,
-                original_index=self.original_index
-            )
-            result = (detected, strategy.execute(bound))
-            results.append(result)
+        for group in self.arguments.groups:
+            strategy = HomogenousDispatch(self.func, group)
+            results.append((group.detected, strategy.execute()))
 
         return results
 
@@ -1350,12 +1264,7 @@ class CompositeDispatch(DispatchStrategy):
             final.sort_index()
             if self.hasnans or final.shape[0] < self.frame.shape[0]:
                 nullable = unique.pop().make_nullable()
-                final = replace_na(
-                    final,
-                    dtype=nullable.dtype,
-                    index=pd.RangeIndex(0, self.original_index.shape[0]),
-                    na_value=nullable.na_value
-                )
+                final = self.replace_na(final, nullable.dtype)
             final.index = self.original_index
             return final
 
@@ -1405,25 +1314,6 @@ class CompositeDispatch(DispatchStrategy):
                 continue
 
         return computed, observed
-
-
-def replace_na(
-    series: pd.Series,
-    dtype: np.dtype | pd.api.extensions.ExtensionDtype,
-    index: pd.Index,
-    na_value: Any
-) -> pd.Series:
-    """Replace any index that is not present in ``result`` with a missing
-    value.
-    """
-    result = pd.Series(
-        np.full(index.shape[0], na_value, dtype=object),
-        index=index,
-        name=series.name,
-        dtype=object
-    )
-    result[series.index] = series
-    return result.astype(dtype, copy=False)
 
 
 #######################
