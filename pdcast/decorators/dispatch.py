@@ -939,7 +939,7 @@ class DispatchArguments(Arguments):
         """Drop missing values from the dispatched vectors.
         """
         original_length = self.frame.shape[0]
-        self.frame.dropna(how="any")
+        self.frame = self.frame.dropna(how="any")
         self.hasnans = self.frame.shape[0] != original_length
 
     def _extract_vectors(self, df: pd.DataFrame) -> dict[str, pd.Series]:
@@ -1088,29 +1088,29 @@ class DispatchStrategy:
             f"{self.__qualname__}"
         )
 
-    def replace_na(
-        self,
-        series: pd.Series,
-        dtype: dtype_like
-    ) -> pd.Series:
+    def replace_na(self, series: pd.Series) -> pd.Series:
         """Abstract method to replace missing values in the result of a
         dispatched strategy.
         """
+        # get nullable type for series
+        nullable = detect_type(series).make_nullable()
+
+        # get length of vectors before normalizing
         original_length = self.arguments.original_index.shape[0]
 
+        # build empty series containing only missing values
         result = pd.Series(
-            np.full(original_length, dtype.na_value, dtype=object),
+            np.full(original_length, nullable.na_value, dtype=object),
             index = pd.RangeIndex(0, original_length),
             name=series.name,
-            # dtype=object
-            dtype=dtype
+            # dtype=object  # TODO: decide which of these are best
+            dtype=nullable.dtype
         )
+
+        # merge result into the empty series
         result[series.index] = series
-        # return result.astype(dtype, copy=False)
+        # return result.astype(nullable.dtype, copy=False)  # TODO: same as above
         return result
-
-
-# TODO: add transform() and aggregate() methods
 
 
 class HomogenousDispatch(DispatchStrategy):
@@ -1121,14 +1121,18 @@ class HomogenousDispatch(DispatchStrategy):
         # search for dispatched implementation
         func = self.func[self.arguments.key]
 
-        # flatten *args and **kwargs
-        arg_names = tuple(self.arguments.signature.parameter_map)
-        kwargs = dict(zip(arg_names, self.arguments.args))
-        kwargs |= self.arguments.kwargs
+        # translate *args, **kwargs to appropriate signature
+        if func is self.func.__wrapped__:
+            bound = self.arguments
+        else:
+            # flatten *args, **kwargs
+            arg_names = tuple(self.arguments.signature.parameter_map)
+            kwargs = dict(zip(arg_names, self.arguments.args))
+            kwargs |= self.arguments.kwargs
 
-        # translate flatten arguments to the dispatched function's signature
-        signature = self.signature.signatures[func]
-        bound = signature.bind(**kwargs)
+            # bind flatten arguments to the dispatched signature
+            signature = self.signature.signatures[func]
+            bound = signature.bind(**kwargs)
 
         # call the dispatched function with the translated arguments
         return func(*bound.args, **bound.kwargs)
@@ -1137,39 +1141,73 @@ class HomogenousDispatch(DispatchStrategy):
         """Infer mode of operation (filter/transform/aggregate) from return
         type and adjust result accordingly.
         """
-        context = self.arguments
-
         # transform
         if isinstance(result, (pd.Series, pd.DataFrame)):
-            # warn if final index is not a subset of original
-            if not result.index.difference(context.frame.index).empty:
-                warn_msg = (
-                    f"index mismatch in {self.__qualname__}() with signature"
-                    f"{tuple(str(x) for x in context.key)}: dispatched "
-                    f"implementation did not return a like-indexed Series/"
-                    f"DataFrame"
-                )
-                warnings.warn(warn_msg, UserWarning, stacklevel=4)
-                context.hasnans = True
+            # rectify output dtype
+            result = self._rectify(result)
 
-            # replace missing values, aligning on index
-            if context.hasnans or result.shape[0] < context.frame.shape[0]:
-                output_type = detect_type(result)
-                if isinstance(result, pd.Series):
-                    nullable = output_type.make_nullable()
-                    result = self.replace_na(result, nullable.dtype)
-                else:
-                    with_na = {}
-                    for col, series in result.items():
-                        nullable = output_type[col].make_nullable()
-                        with_na[col] = self.replace_na(series, nullable.dtype)
-                    result = pd.DataFrame(with_na)
+            # check if index is subset of normalized
+            self._check_index(result.index)
+
+            # replace missing values
+            frame_length = self.arguments.frame.shape[0]
+            if self.arguments.hasnans or result.shape[0] < frame_length:
+                result = self._merge_na(result)
 
             # replace original index
-            result.index = context.original_index
+            result.index = self.arguments.original_index
 
         # aggregate
         return result
+
+    # TODO: _rectify() should maybe go in DispatchStrategy
+
+    def _rectify(
+        self,
+        result: pd.Series | pd.DataFrame
+    ) -> pd.Series | pd.DataFrame:
+        """Rectify the dtype of a series to match the detected output."""
+        # detect type of result
+        detected = detect_type(result)
+
+        # series
+        if isinstance(result, pd.Series):
+            return result.astype(detected.dtype, copy=False)
+
+        # dataframe
+        for col, series in result.items():
+            result[col] = series.astype(detected[col].dtype, copy=False)
+        return result
+
+    def _check_index(self, index: pd.Index) -> None:
+        """Check that the index is a subset of the original."""
+        if not index.difference(self.arguments.frame.index).empty:
+            warn_msg = (
+                f"index mismatch in {self.__qualname__}() with signature "
+                f"{tuple(str(x) for x in self.arguments.key)}: dispatched "
+                f"implementation did not return a like-indexed Series/"
+                f"DataFrame"
+            )
+            warnings.warn(warn_msg, UserWarning, stacklevel=4)
+
+            # index mismatch results in extraneous NaNs
+            self.arguments.hasnans = True
+
+    def _merge_na(
+        self,
+        result: pd.Series | pd.DataFrame
+    ) -> pd.Series | pd.DataFrame:
+        """Replace missing values.
+        """
+        # series
+        if isinstance(result, pd.Series):
+            return self.replace_na(result)
+
+        # dataframe
+        with_na = {
+            col: self.replace_na(series) for col, series in result.items()
+        }
+        return pd.DataFrame(with_na)
 
 
 class CompositeDispatch(DispatchStrategy):
@@ -1264,7 +1302,7 @@ class CompositeDispatch(DispatchStrategy):
             final.sort_index()
             if self.hasnans or final.shape[0] < self.frame.shape[0]:
                 nullable = unique.pop().make_nullable()
-                final = self.replace_na(final, nullable.dtype)
+                final = self.replace_na(final, nullable)
             final.index = self.original_index
             return final
 
