@@ -76,13 +76,12 @@ class columnwise(FunctionDecorator):
         self,
         data: Any,
         dtype: type_specifier | dict[str, type_specifier] = NotImplemented,
-        *args,
         **kwargs
     ):
         """Apply the wrapped function for each column independently."""
         # use default dtype if not given
         if dtype is NotImplemented:
-            dtype = self.__wrapped__.dtype
+            dtype = self.__wrapped__.dtype  # NOTE: from @extension_func
 
         # recursive DataFrame case
         if isinstance(data, pd.DataFrame):
@@ -101,13 +100,12 @@ class columnwise(FunctionDecorator):
                 result[col] = self.__wrapped__(
                     result[col],
                     typespec,
-                    *args,
                     **kwargs
                 )
             return result
 
         # base case
-        return self.__wrapped__(data, dtype, *args, **kwargs)
+        return self.__wrapped__(data, dtype, **kwargs)
 
 
 class catch_errors(FunctionDecorator):
@@ -129,7 +127,7 @@ class catch_errors(FunctionDecorator):
     ):
         """Call the wrapped function in a try/except block."""
         if errors is NotImplemented:
-            errors = self.__wrapped__.errors  # from @extension_func
+            errors = self.__wrapped__.errors  # NOTE: from @extension_func
 
         try:
             return self.__wrapped__(
@@ -143,24 +141,6 @@ class catch_errors(FunctionDecorator):
         # never ignore these errors
         except (KeyboardInterrupt, MemoryError, SystemError, SystemExit):
             raise
-
-        # retry overflow errors using dtype.larger
-        except OverflowError as err:
-            last_err = err
-            for candidate in dtype.larger:
-                try:
-                    return self(
-                        data,
-                        candidate,
-                        *args,
-                        errors=errors,
-                        **kwargs
-                    )
-                except OverflowError as next_err:
-                    last_err = next_err
-
-            # no valid conversion was found
-            raise last_err
 
         # process according to `errors` arg
         except Exception as err:
@@ -183,7 +163,7 @@ def cast(
     series: Any,
     dtype: type_specifier | None = None,
     **kwargs
-) -> pd.Series:
+) -> pd.Series | pd.DataFrame:
     """Cast arbitrary data to the specified data type.
 
     Parameters

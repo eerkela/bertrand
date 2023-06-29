@@ -52,7 +52,27 @@ def integer_to_integer(
     if detect_type(series) == dtype:
         return series
 
-    series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
+    # check for overflow and upcast if applicable
+    try:
+        series = boundscheck(series, dtype=dtype, tol=tol.real, errors=errors)
+    except OverflowError as err:
+        last_err = err
+        for typ in dtype.larger:
+            try:
+                series = boundscheck(
+                    series,
+                    dtype=typ,
+                    tol=tol.real,
+                    errors=errors
+                )
+                dtype = typ
+                break
+            except OverflowError as exc:
+                last_err = exc
+        else:
+            raise last_err from err
+
+    # use generic implementation
     return generic_to_integer(
         series,
         dtype,

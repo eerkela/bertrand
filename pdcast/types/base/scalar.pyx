@@ -36,6 +36,11 @@ from ..array import construct_object_dtype
 # this subset.
 
 
+# TODO: .generic should return a self reference if the type is already generic.
+# -> this is required in CompositeDispatch.finalize() to determine whether
+# results are of the same family.
+
+
 ######################
 ####    SCALAR    ####
 ######################
