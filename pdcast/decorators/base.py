@@ -880,8 +880,6 @@ class Arguments:
 
         See Also
         --------
-        Arguments.flat :
-            A single map containing all arguments, both positional and keyword.
         Arguments.args :
             An ``*args`` tuple that can be used to invoke the original
             function.
@@ -912,53 +910,6 @@ class Arguments:
         return self.bound.arguments
 
     @property
-    def flat(self) -> Mapping[str, Any]:
-        """Collapse positional and keyword arguments into a single argument
-        map.
-
-        Returns
-        -------
-        Mapping[str, Any]
-            A read-only dictionary containing the name and current value of
-            each argument.
-
-        See Also
-        --------
-        Arguments.arguments :
-            A mutable dictionary containing the current value of each argument.
-        Arguments.args :
-            An ``*args`` tuple that can be used to invoke the original
-            function.
-        Arguments.kwargs :
-            A ``**kwargs`` map that can be used to invoke the original
-            function.
-
-        Examples
-        --------
-        If a :class:`Signature <pdcast.Signature>` accepts variable-length
-        ``**kwargs``, then arbitrary keywords can be encapsulated in the
-        :class:`Arguments <pdcast.Arguments>` object.  Internally, these are
-        stored under a separate key in the
-        :attr:`arguments <pdcast.Arguments.arguments>` map, which may not
-        always be desirable.
-
-        .. doctest::
-
-            >>> def foo(bar, baz=2, **kwargs):
-            ...     return {"bar": bar, "baz": baz} | kwargs
-
-            >>> sig = pdcast.Signature(foo)
-            >>> bound = sig(1, qux=4, corge=5)
-            >>> bound.arguments
-            {'bar': 1, 'kwargs': {'qux': 4, 'corge': 5}}
-            >>> bound.flat
-            mappingproxy({'bar': 1, 'qux': 4, 'corge': 5})
-        """
-        flattened = dict(zip(self.signature.parameter_map, self.args))
-        flattened |= self.kwargs
-        return MappingProxyType(flattened)
-
-    @property
     def args(self) -> tuple[Any, ...]:
         """Positional arguments that can be supplied to the original function.
 
@@ -972,8 +923,7 @@ class Arguments:
         --------
         Arguments.arguments :
             A mutable dictionary containing the current value of each argument.
-        Arguments.flat :
-            A single map containing all arguments, both positional and keyword.
+
         Arguments.kwargs :
             A ``**kwargs`` map that can be used to invoke the original
             function.
@@ -1009,8 +959,6 @@ class Arguments:
         --------
         Arguments.arguments :
             A mutable dictionary containing the current value of each argument.
-        Arguments.flat :
-            A single map containing all arguments, both positional and keyword.
         Arguments.args :
             An ``*args`` tuple that can be used to invoked the original
             function.

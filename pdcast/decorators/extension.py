@@ -428,8 +428,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
         # pass arguments through their respective validators
         bound.validate()
 
-        # fill in current settings (pre-validated)
-        bound.apply_defaults()
+        # NOTE: validate() implicitly applies defaults
 
         # invoke wrapped function
         return self.__wrapped__(*bound.args, **bound.kwargs)
@@ -782,9 +781,17 @@ class ExtensionArguments(Arguments):
         minimize validation calls.  Since defaults are pre-validated by their
         associated properties, there is no need to check them manually.
         """
-        # TODO: how does this interact with **kwargs?
+        # record original arguments before applying defaults
+        explicit = tuple(self.arguments)
 
-        for name, value in self.arguments.items():
+        # apply defaults.  These are pre-validated by their properties.
+        self.apply_defaults()
+
+        # validate the non-default arguments
+        for name in explicit:
             if name in self.signature.validators:
                 validator = self.signature.validators[name]
-                self.arguments[name] = validator(value)
+                self.arguments[name] = validator(
+                    self.arguments[name],
+                    self.arguments
+                )
