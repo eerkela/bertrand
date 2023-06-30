@@ -21,7 +21,7 @@ from pdcast import types
 from pdcast.util.structs import LRUDict
 from pdcast.util.type_hints import dtype_like, type_specifier
 
-from .base import Arguments, FunctionDecorator, Signature
+from .base import KINDS, Arguments, FunctionDecorator, Signature
 
 
 # TODO: emit a warning whenever an implementation is replaced.
@@ -56,9 +56,12 @@ from .base import Arguments, FunctionDecorator, Signature
 
 def dispatch(
     *args,
+    vectorize: bool = True,
+    allow_composite: bool = True,
     drop_na: bool = True,
-    cache_size: int = 128,
-    convert_mixed: bool = False
+    replace_na: bool = True,
+    convert_mixed: bool = False,
+    cache_size: int = 128
 ) -> Callable:
     """A decorator that allows a Python function to dispatch to multiple
     implementations based on the type of one or more of its arguments.
@@ -123,13 +126,30 @@ def dispatch(
 
 
 class DispatchFunc(FunctionDecorator):
-    """A wrapper for the decorated callable that manages its dispatched
-    implementations.
+    """A wrapper for a function that can dispatch to a collection of virtual
+    implementations based on the inferred type of its arguments.
 
     Parameters
     ----------
     func : Callable
         The decorated function or other callable.
+    dispatched : tuple[str, ...]
+        The names of the arguments that the function dispatches on.  These
+        must occur within the decorated function's signature, and their order
+        determines the order of the keys under which implementations are
+        searched and stored.
+    cache_size : int, default 128
+        Implementation searches are performed every time the decorated function
+        is executed, which may be expensive depending on how many
+        implementations are being dispatched to and how often the function is
+        being called.  To mitigate this,
+        :class:`DispatchFuncs <pdcast.dispatch.DispatchFunc>` maintain an LRU
+        cache containing the ``n`` most recently requested implementations,
+        where ``n`` is equal to the value of this argument.  This cache is
+        always checked before performing a full search on the
+        :attr:`overloaded <pdcast.DispatchFunc.overloaded>` table itself.
+
+    TODO: document drop_na and convert_mixed + other flags as they are added.
 
     Examples
     --------
@@ -171,7 +191,7 @@ class DispatchFunc(FunctionDecorator):
 
         Notes
         -----
-        The order of this tuple is significant, as it determines the order of
+        The order of these names is significant, as it determines the order of
         the keys under which dispatched implementations are stored.  The keys
         themselves are always sorted according to their specificity, but ties
         can still occur if two or more implementations are equally valid for a
@@ -200,9 +220,9 @@ class DispatchFunc(FunctionDecorator):
 
         In these cases, :func:`@dispatch <pdcast.dispatch>` always **prefers
         implementations** that are **more specific in their first argument**,
-        from left to right.  In the case above, this means we would always
-        choose ``foo2()`` over ``foo1()``.  This behavior can be reversed by
-        changing the order of the arguments in the decorator, like so:
+        from left to right.  In the case above, this means we always choose
+        ``foo2()`` over ``foo1()``.  This behavior can be reversed by changing
+        the order of the arguments to :func:`@dispatch() <pdcast.dispatch>`.
 
         .. code:: python
 
@@ -214,53 +234,56 @@ class DispatchFunc(FunctionDecorator):
             def foo1(a, b):
                 ...
 
-            @foo.overload(a="int[python]", b="int")  # keyword (a, b)
+            @foo.overload("int[python]", "int")  # same order (a, b)
             def foo2(a, b):
                 ...
 
         We will now always prefer ``foo1()`` over ``foo2()``.
 
+        More complicated priorities can be assigned if a function has 3 or
+        more arguments.
+
         .. note::
 
-            :meth:`@overload() <pdcast.DispatchFunc.overload>` always parses
-            arguments relative to the function that it decorates, not those
-            specified in :func:`@dispatch() <pdcast.dispatch>`.  This is for
-            clarity and maintenance, allowing users to write implementations
-            without coupling too strongly to the base definition.
+            The argument order given in in :func:`@dispatch() <pdcast.dispatch>`
+            **does not affect** the signature of
+            :meth:`@overload() <pdcast.DispatchFunc.overload>` in any way.  The
+            latter always parses its arguments relative to the function that it
+            decorates.
 
             At an implementation level,
             :meth:`@overload() <pdcast.DispatchFunc.overload>` binds its
-            arguments to the decorated function, extracts the dispatched names,
-            and then sorts them into the order specified by
+            arguments directly to the decorated function's signature.  It then
+            extracts the dispatched arguments by name, resolves them, and sorts
+            them into the order specified by
             :func:`@dispatch() <pdcast.dispatch>`.  All changing this order
             does is reverse the keys that are used to index the
             :class:`DispatchFunc <pdcast.DispatchFunc>`, and thereby consider
-            them from right to left (``b`` before ``a``) instead of
-            left to right (``a`` before ``b``).
+            them from right to left (``b`` before ``a``) instead of left to
+            right (``a`` before ``b``).
 
-            More complicated dispatch priorities can be achieved if there are
-            more than 2 arguments, but the same principle applies.
         """
         return self._signature.dispatched
 
     @property
-    def overloaded(self) -> MappingProxyType:
-        """A mapping from :doc:`types </content/types/types>` to their
-        corresponding implementations.
+    def overloaded(self) -> Mapping[tuple[types.VectorType, ...], Callable]:
+        """A map connecting :doc:`types </content/types/types>` to their
+        :meth:`overloaded <pdcast.DispatchFunc.overload>` implementations.
 
         Returns
         -------
-        MappingProxyType
-            A read-only dictionary mapping types to their
-            :meth:`overloaded <pdcast.DispatchFunc.overload>` callables.  The
-            keys are always in the same order as the
-            :attr:`dispatched <pdcast.DispatchFunc.dispatched>` arguments.
+        Mapping[tuple[types.VectorType, ...], Callable]
+            A read-only dictionary mapping types to their associated
+            implementations.  The keys are tuples that are sorted into the same
+            order as the :attr:`dispatched <pdcast.DispatchFunc.dispatched>`
+            arguments.
 
         Notes
         -----
-        The returned mapping is sorted according to `topological order
-        <https://en.wikipedia.org/wiki/Topological_sorting>`_.  Iterating
-        through the map equates to searching it from most to least specific.
+        The returned mapping is `topologically sorted
+        <https://en.wikipedia.org/wiki/Topological_sorting>`_ according to
+        specificity.  Iterating through the map equates to searching it from
+        most to least specific.
 
         Examples
         --------
@@ -292,6 +315,8 @@ class DispatchFunc(FunctionDecorator):
             (Int64Type(),): <function int64_foo at ...>
             (IntegerType(),): <function integer_foo at ...>
         """
+        # sort the dispatch map if it hasn't been sorted already.  Usually,
+        # this is done lazily the first time the function is called.
         if not self._signature.ordered:
             self._signature.sort()
 
@@ -319,16 +344,16 @@ class DispatchFunc(FunctionDecorator):
         Raises
         ------
         TypeError
-            If the decorated function does not accept the arguments specified
-            in :func:`@dispatch() <pdcast.dispatch>`.
+            If the decorated function does not accept the arguments named in
+            :func:`@dispatch() <pdcast.dispatch>` (order doesn't matter).
 
         Notes
         -----
         This decorator works just like the :meth:`register` method of
-        :func:`singledispatch <python:functools.singledispatch>` objects,
+        :func:`singledispatch <python:functools.singledispatch>` functions,
         except that it does not interact with type annotations in any way.
 
-        Instead, types are declared naturally in the decorator itself and
+        Instead, types are declared naturally through the decorator itself and
         bound to the function as if it were being invoked.  They can be
         supplied as either positional or keyword arguments, and can be in any
         format recognized by :func:`resolve_type() <pdcast.resolve_type>`.
@@ -342,11 +367,11 @@ class DispatchFunc(FunctionDecorator):
             """Attach a dispatched implementation to the DispatchFunc with the
             associated types.
             """
-            signature = inspect.signature(func)
+            signature = Signature(func)
 
             # bind *args, **kwargs to the decorated function
             try:
-                bound = signature.bind_partial(*args, **kwargs)
+                bound = signature(*args, **kwargs)
             except TypeError as err:
                 func_name = f"'{func.__module__}.{func.__qualname__}()'"
                 reconstructed = [repr(value) for value in args]
@@ -361,27 +386,28 @@ class DispatchFunc(FunctionDecorator):
 
             # translate bound arguments into this signature's order
             bound.apply_defaults()
-            key = self._signature.dispatch_key(**bound.arguments)
+            key = self._signature.dispatch_key(*bound.args, **bound.kwargs)
+
+            # remember dispatched function's signature
+            self._signature.signatures[func] = signature
 
             # register every combination of types
             for path in self._signature.cartesian_product(key):
                 self._signature[path] = func
-
-            # remember dispatched function's signature
-            self._signature.signatures[func] = signature
 
             return func
 
         return implementation
 
     def fallback(self, *args, **kwargs) -> Any:
-        """A reference to the base implementation of the decorated function.
+        """A reference to the base implementation of the dispatch function.
 
         Parameters
         ----------
         *args, **kwargs
             Positional and keyword arguments to supply to the base
-            implementation.
+            implementation.  These are passed through directly to the base
+            function.
 
         Returns
         -------
@@ -390,8 +416,9 @@ class DispatchFunc(FunctionDecorator):
 
         Examples
         --------
-        This allows direct access to the base implementation of the decorated
-        function, bypassing the dispatch mechanism entirely.
+        This allows direct access to the base implementation of a
+        :class:`DispatchFunc <pdcast.DispatchFunc>`, bypassing the dispatch
+        mechanism entirely.
 
         .. doctest::
 
@@ -415,40 +442,102 @@ class DispatchFunc(FunctionDecorator):
         return self.__wrapped__(*args, **kwargs)
 
     def __call__(self, *args, **kwargs) -> Any:
-        """Execute the decorated function, dispatching to an overloaded
-        implementation if one exists.
+        """Execute the :class:`DispatchFunc <pdcast.DispatchFunc>`, searching
+        for an overloaded implementation.
 
         Parameters
         ----------
         *args, **kwargs
-            Positional and keyword arguments to supply to the dispatched
-            implementation.  The dispatched arguments are automatically
-            extracted, normalized, and grouped according to their inferred
-            type.
+            Positional and keyword arguments to supply to the virtual
+            implementation.  The
+            :attr:`dispatched <pdcast.DispatchFunc.dispatched>` arguments are
+            automatically extracted from these and analyzed to determine the
+            most specific implementation to use.  They may also include
+            vectors, which are normalized and grouped according to their
+            inferred type.
 
         Returns
         -------
         Any
-            The return value of the dispatched implementation(s).
+            The return value of the dispatched implementation(s).  If any of
+            the arguments were vectorized, then this value will be analyzed for
+            aggregations, transformations, and filtrations.  See the notes
+            below for more information.
 
-        TODO: expand notes and examples
+        See Also
+        --------
+        DispatchFunc.__getitem__ :
+            Access a specific implementation of the dispatch function.
 
         Notes
         -----
-        This automatically detects aggregations, transformations, and
-        filtrations based on the return value.
+        :func:`@dispatch() <pdcast.dispatch>` automatically intercepts any
+        vectors that are supplied to the
+        :attr:`dispatched <pdcast.DispatchFunc.dispatched>` arguments and
+        converts them into properly-formatted
+        :class:`pandas.Series <pandas.Series>` objects.  These are always
+        normalized and labeled with an appropriate ``dtype`` before being
+        passed into the dispatched function itself.  Scalars are passed through
+        as-is.
+
+        The steps that are taken to normalize input vectors are as follows:
+
+            #.  Convert each vector into a
+                :class:`pandas.Series <pandas.Series>` object if it is not one
+                already.  If a vector does not have an explicit ``dtype``, then
+                it is treated as a ``dtype: object`` series.
+            #.  Bind each :class:`Series <pandas.Series>` into a single
+                :class:`DataFrame <pandas.DataFrame>` with a column for each
+                argument.
+            #.  Normalize the frame's collective index to be a
+                :class:`RangeIndex <pandas.RangeIndex>` spanning the length of
+                each vector.  If the vectors had a custom index, then it is
+                stored until the end of the dispatch process.
+            #.  Drop any row that contains a missing value in one or more
+                columns.  This creates gaps in the index, which are used to
+                identify the locations of missing values later on in the
+                dispatch process.
+            #.  Detect the type of each vector and label it accordingly.  This
+                allows :func:`detect_type() <pdcast.detect_type>` to infer each
+                vector's type in constant time within the dispatched context.
+                If any of the vectors contain data of mixed type, then the
+                whole frame is split into groups based on the observed type at
+                every index.  Each group is then passed through individually
+                and combined afterwards.
+            #.  Break the frame back into its constituent vectors, replacing
+                their original values in ``*args`` and ``**kwargs``.
+
+        The dispatched implementation is then invoked with the normalized
+        arguments, and its return value is analyzed for aggregations,
+        transformations, and filtrations.  These are determined based on the
+        type of the return value.
 
             *   A pandas :class:`Series <pandas.Series>` or
-                :class:`DataFrame <pandas.DataFrame>`signifies a
-                transformation.  Any missing indices will be replaced with NA.
-            *   Anything else signifies an aggreggation.  Its result will be
-                returned as-is if data is homogenous.  If mixed data is given,
-                This will be a DataFrame with rows for each group.
+                :class:`DataFrame <pandas.DataFrame>` signifies a
+                transformation.  Upon exiting the dispatched context, any
+                missing indices will be replaced with the appropriate
+                :attr:`na_value <pdcast.ScalarType.na_value>` for the inferred
+                output type.  If the arguments defined a custom index, then it
+                will be replaced, and the output ``dtype`` will be labeled with
+                the type of its elements.
+            *   :data:`None <python:None>` signifies a filtration.  In most
+                cases, this will be passed through as-is.  However, if the
+                input includes a vector of mixed type, then the group will
+                be removed from the output.
+            *   Anything else signifies an aggreggation.  The result will be
+                returned as-is if the data are homogenous.  If mixed data are
+                given, the result will be a
+                :class:`DataFrame <pandas.DataFrame>` with columns containing
+                the observed type of each argument for every group.  The final
+                column contains the result of the computation for that group.
+
+        These behaviors can be customized using the keyword arguments to
+        :func:`@dispatch() <pdcast.dispatch>`.  See the
+        :ref:`documentation <dispatch>` for more details.
 
         Examples
         --------
-        TODO
-
+        See the :ref:`API docs <dispatch>` for example usage.
         """
         # bind arguments
         bound = self._signature(*args, **kwargs)
@@ -489,13 +578,49 @@ class DispatchFunc(FunctionDecorator):
 
     def __getitem__(
         self,
-        key: type_specifier
+        key: type_specifier | tuple[type_specifier, ...]
     ) -> Callable:
-        """Get the dispatched implementation for objects of a given type.
+        """Get the dispatched implementation for arguments of a given type.
 
-        This method searches the implementation space being managed by this
-        :class:`DispatchFunc`.  It always returns the same implementation that
-        is used when the function is invoked.
+        Parameters
+        ----------
+        key : type_specifier | tuple[type_specifier, ...]
+            The type of input to get the implementation for.  Multiple types
+            can be given by separating them with commas.
+
+        Returns
+        -------
+        Callable
+            The implementation that will be chosen when the function is invoked
+            with the given type(s).  If no specific implementation is found
+            for the associated types, then a reference to the default
+            implementation is returned.
+
+        See Also
+        --------
+        DispatchFunc.__call__ :
+            Call the :class:`DispatchFunc <pdcast.DispatchFunc>` with the
+            associated implementation.
+
+        Notes
+        -----
+        This always returns the same implementation that is chosen when the
+        dispatch mechanism is executed.  In fact, the mechanism simply calls
+        this method to retrieve the implementation in the first place.
+
+        Examples
+        --------
+        Types must be supplied in the same order as the
+        :attr:`dispatched <pdcast.DispatchFunc.dispatched>` arguments.
+
+        .. doctest::
+
+            >>> pdcast.cast[int, int]
+            <function integer_to_integer at ...>
+            >>> pdcast.cast[float, bool]
+            <function float_to_boolean at ...>
+            >>> pdcast.cast[int, "datetime[pandas, US/Pacific]"]
+            <function integer_to_pandas_timestamp at ...>
         """
         try:
             return self._signature[key]
@@ -723,7 +848,11 @@ class DispatchSignature(Signature):
         # no match found
         raise KeyError(tuple(str(x) for x in key))
 
-    def __setitem__(self, key: type_specifier, value: Callable) -> None:
+    def __setitem__(
+        self,
+        key: tuple[type_specifier, ...],
+        value: Callable
+    ) -> None:
         """Add an overloaded implementation to the
         :class:`DispatchSignature <pdcast.DispatchSignature>`.
         """
@@ -737,15 +866,22 @@ class DispatchSignature(Signature):
         if not callable(value):
             raise TypeError(f"implementation must be callable: {repr(value)}")
 
-        # verify implementation accepts the dispatched arguments
-        signature = inspect.signature(value)
-        missing = [
-            arg for arg in self.dispatched if arg not in signature.parameters
-        ]
-        if missing:
-            func_name = f"'{value.__module__}.{value.__qualname__}()'"
+        # verify implementation has compatible signature
+        signature = self.signatures[value]
+        if not self.compatible(signature):
+            self_str = self.reconstruct(
+                defaults=False,
+                annotations=False,
+                return_annotation=False
+            )
+            other_str = signature.reconstruct(
+                defaults=False,
+                annotations=False,
+                return_annotation=False
+            )
             raise TypeError(
-                f"{func_name} must accept dispatched arguments: {missing}"
+                f"signatures are not compatible: '{other_str}' is not an "
+                f"extension of '{self_str}'"
             )
 
         # warn if overwriting a previous key
@@ -1049,19 +1185,8 @@ class HomogenousDispatch(DispatchStrategy):
 
     def execute(self) -> Any:
         """Call the dispatched function with the bound arguments."""
-        # search for dispatched implementation
-        func = self.func[self.arguments.key]
-
-        # translate *args, **kwargs to appropriate signature
-        if func is self.func.__wrapped__:
-            bound = self.arguments
-        else:
-            # bind flattened arguments to the dispatched signature
-            signature = self.signature.signatures[func]
-            bound = signature.bind(**self.arguments.flat)
-
-        # call the dispatched function with the translated arguments
-        return func(*bound.args, **bound.kwargs)
+        bound = self.arguments
+        return self.func[bound.key](*bound.args, **bound.kwargs)
 
     def finalize(self, result: Any) -> Any:
         """Infer mode of operation (filter/transform/aggregate) from return
@@ -1408,20 +1533,6 @@ def topological_sort(edges: dict) -> list:
 #######################
 ####    TESTING    ####
 #######################
-
-
-# TODO: add([1, 2, 3], [1, True, 1.0])
-# 0    0.0
-# 1    3.0
-# 2    4.0
-# dtype: int[python]
-
-# -> this is actually broken in ObjectArray.  The only way to fix it is to
-# run detect_type() on the first non-missing value of the series and update it
-# accordingly.  This forces us to implement our own math operators.  In essence,
-# we reimplement the mass of special methods that were originally attached to
-# SeriesWrapper.
-
 
 
 @dispatch("x", "y")

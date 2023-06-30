@@ -162,7 +162,7 @@ class catch_errors(FunctionDecorator):
 def cast(
     series: Any,
     dtype: type_specifier | None = None,
-    **kwargs
+    **unused
 ) -> pd.Series | pd.DataFrame:
     """Cast arbitrary data to the specified data type.
 

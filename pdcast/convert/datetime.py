@@ -76,7 +76,7 @@ def pandas_timestamp_to_integer(
     tz: datetime.tzinfo,
     downcast: types.CompositeType,
     errors: str,
-    **kwargs
+    **unused
 ) -> pd.Series:
     """Convert pandas Timestamps into an integer data type."""
     # apply tz if naive

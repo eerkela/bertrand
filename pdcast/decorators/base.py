@@ -686,6 +686,103 @@ class Signature:
         # combine into string
         return f"{self.func_name}{sig}"
 
+    def compatible(self, other: Signature) -> bool:
+        """Return ``True`` if the other signature implements all of this
+        function's arguments.
+
+        Parameters
+        ----------
+        other : Signature
+            The signature to match against.  This is free to define additional
+            parameters beyond those of this signature, but it must implement
+            at least these parameters for this method to return ``True``.
+
+        Returns
+        -------
+        bool
+            ``True`` if the other signature this signature's interface.
+            ``False`` otherwise.
+
+        Notes
+        -----
+        The following rules are used to determine compatibility:
+
+            *   The other signature must implement every positional argument of
+                this :class:`Signature <pdcast.Signature>` in the same order.
+                They can have different annotations and/or default values, but
+                they must have the same name and kind.  The other signature can
+                also define additional positional arguments beyond those of
+                this object, which are not compared.
+            *   If this signature accepts variadic positional arguments, the
+                other signature must also accept variadic positional arguments
+                with the same name.
+            *   The other signature must implement every keyword-only argument
+                of this :class:`Signature <pdcast.Signature>`.  The order does
+                not matter, and they can have different annotations and/or
+                default values, but they must have the same name and kind.  The
+                other signature can also define additional keyword-only
+                arguments beyond those of this object, which are not compared.
+            *   If this signature accepts variadic keyword arguments, the other
+                signature must also accept variadic keyword arguments with the
+                same name.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> def foo(bar, baz=2, **kwargs):
+            ...     return {"bar": bar, "baz": baz} | kwargs
+
+            >>> sig = pdcast.Signature(foo)
+            >>> sig.compatible(pdcast.Signature(lambda bar, baz, **kwargs: None))
+            True
+            >>> sig.compatible(pdcast.Signature(lambda bar, baz, *, qux=3, corge=4, **kwargs: None))
+            True
+            >>> sig.compatible(pdcast.Signature(lambda x, y: None))
+            False
+        """
+        positional = {KINDS["POSITIONAL_ONLY"], KINDS["POSITIONAL_OR_KEYWORD"]}
+        keyword = {KINDS["KEYWORD_ONLY"], KINDS["VAR_KEYWORD"]}
+
+        def compatible(par, other_par):
+            return par.name == other_par.name and par.kind == other_par.kind
+
+        # iterate through this signature's parameters
+        idx = 0
+        for par in self.parameters:
+            # get corresponding parameter from other signature
+            try:
+                other_par = other.parameters[idx]
+            except IndexError:
+                return False
+
+            # check all positional arguments match exactly
+            if par.kind in positional and not compatible(par, other_par):
+                return False
+
+            # if signature accepts *args, skip remaining positional args
+            elif par.kind == KINDS["VAR_POSITIONAL"]:
+                while other_par.kind in positional:
+                    idx += 1
+                    try:
+                        other_par = other.parameters[idx]
+                    except IndexError:
+                        return False
+
+                # check next parameter matches exactly
+                if not compatible(par, other_par):
+                    return False
+
+            # check keyword-only arguments are present (no specific order)
+            elif par.kind in keyword:
+                equivalent = other.parameter_map.get(par.name, None)
+                if equivalent is None or not compatible(par, equivalent):
+                    return False
+
+            idx += 1
+
+        return True
+
     def __call__(self, *args, **kwargs) -> Arguments:
         """Bind the arguments to the :class:`Signature <pdcast.Signature>`,
         returning a corresponding :class:`Arguments <pdcast.Arguments>` object.

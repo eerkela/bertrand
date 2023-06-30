@@ -84,8 +84,7 @@ def extension_func(func: Callable) -> Callable:
 
 
 class ExtensionFunc(FunctionDecorator, threading.local):
-    """A wrapper for the decorated callable that can be dynamically extended
-    with custom arguments.
+    """A wrapper for a function that manages its arguments.
 
     Parameters
     ----------

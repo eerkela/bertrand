@@ -87,60 +87,65 @@ cpdef object round_div(
 #######################
 
 
-cdef object _bias_down(object n, object d):
-    """Apply floor where `n` and `d` have the same sign, and ceiling where
+cdef object _bias_down(object numer, object denom):
+    """Apply floor where `numer` and `d` have the same sign, and ceiling where
     they differ.  This is equivalent to:
-        `((n < 0) ^ (d < 0)) * (d - sign(d))`
+
+    `((numer < 0) ^ (denom < 0)) * (denom - sign(denom))`
     """
-    cdef object d_less_than_zero = (d < 0)
-    cdef object bias = d + d_less_than_zero - (d > 0)
-    bias *= (n < 0) ^ d_less_than_zero
+    cdef object neg_d = (denom < 0)
+    cdef object bias = denom + neg_d - (denom > 0)
+    bias *= (numer < 0) ^ neg_d
     return bias
 
 
-cdef object _bias_up(object n, object d):
-    """Apply ceiling where `n` and `d` have the same sign, and floor where
-    they differ.  This is equivalent to:
-        `((n > 0) ^ (d < 0)) * (d - sign(d))`
-    """
-    cdef object d_less_than_zero = (d < 0)
-    cdef object bias = d + d_less_than_zero - (d > 0)
-    bias *= (n > 0) ^ d_less_than_zero
-    return bias
-
-
-cdef object _bias_half_down(object n, object d):
-    """Apply half_floor where `n` and `d` have the same sign, and half_ceiling
+cdef object _bias_up(object numer, object denom):
+    """Apply ceiling where `numer` and `denom` have the same sign, and floor
     where they differ.  This is equivalent to:
-        `(d + (d < 0) - ((n > 0) ^ (d < 0)) * sign(d)) // 2`
+
+    `((numer > 0) ^ (denom < 0)) * (denom - sign(denom))`
     """
-    cdef object d_less_than_zero = (d < 0)
-    cdef object bias = d + d_less_than_zero
-    bias -= ((n > 0) ^ d_less_than_zero) * (-1 * d_less_than_zero + (d > 0))
+    cdef object neg_d = (denom < 0)
+    cdef object bias = denom + neg_d - (denom > 0)
+    bias *= (numer > 0) ^ neg_d
+    return bias
+
+
+cdef object _bias_half_down(object numer, object denom):
+    """Apply half_floor where `numer` and `denom` have the same sign, and
+    half_ceiling where they differ.  This is equivalent to:
+
+    `(denom + (denom < 0) - ((numer > 0) ^ (denom < 0)) * sign(denom)) // 2`
+    """
+    cdef object neg_d = (denom < 0)
+    cdef object bias = denom + neg_d
+    bias -= ((numer > 0) ^ neg_d) * (-1 * neg_d + (denom > 0))
     bias //= 2
     return bias
 
 
-cdef object _bias_half_up(object n, object d):
-    """Apply half_ceiling where `n` and `d` have the same sign, and half_floor
-    where they differ.  This is equivalent to:
-        `(d + (d < 0) - ((n < 0) ^ (d < 0)) * sign(d)) // 2`
+cdef object _bias_half_up(object numer, object denom):
+    """Apply half_ceiling where `numer` and `denom` have the same sign, and
+    half_floor where they differ.  This is equivalent to:
+
+    `(denom + (denom < 0) - ((numer < 0) ^ (denom < 0)) * sign(denom)) // 2`
     """
-    cdef object d_less_than_zero = (d < 0)
-    cdef object bias = d + d_less_than_zero
-    bias -= ((n < 0) ^ d_less_than_zero) * (-1 * d_less_than_zero + (d > 0))
+    cdef object neg_d = (denom < 0)
+    cdef object bias = denom + neg_d
+    bias -= ((numer < 0) ^ neg_d) * (-1 * neg_d + (denom > 0))
     bias //= 2
     return bias
 
 
-cdef object _bias_half_even(object n, object d):
-    """Apply half_ceiling where the quotient `n // d` would be odd, and
+cdef object _bias_half_even(object numer, object denom):
+    """Apply half_ceiling where the quotient `numer // denom` would be odd, and
     half_floor where it would be even.  This is equivalent to:
-        `(d + (d < 0) + ((n // d) % 2 - 1) * sign(d)) // 2`
+
+    `(denom + (denom < 0) + ((numer // denom) % 2 - 1) * sign(denom)) // 2`
     """
-    cdef object d_less_than_zero = (d < 0)
-    cdef object bias = d + d_less_than_zero
-    bias += ((n // d) % 2 - 1) * (-1 * d_less_than_zero + (d > 0))
+    cdef object neg_d = (denom < 0)
+    cdef object bias = denom + neg_d
+    bias += ((numer // denom) % 2 - 1) * (-1 * neg_d + (denom > 0))
     bias //= 2
     return bias
 
