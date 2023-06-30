@@ -36,30 +36,17 @@ from .base import Arguments, FunctionDecorator, Signature
 # -> probably not.  Just return an empty series if filtering.
 
 
-# TODO: appears to be an index mismatch in composite add() example from
-# README.features
-
-
-
 # TODO: pdcast.cast("today", "datetime") uses python datetimes rather than
 # pandas
 # -> this because of an errant .larger lookup that made it through the
 # refactor.
 
 
-# TODO: replace all instance of `tuple(str(x) for x in self.arguments.key)`
-# with a dictionary explicitly naming the types.  Avoids confusion when types
-# are in a different order than the arguments.
-
-
-# TODO: because of the way cast() catches OverflowErrors, we end up invoking
-# __call__ (and all the logic in between) more than once.  This should instead
-# be handled by the dispatch logic
-# -> pdcast.cast([1, 2, 2**63], "int") invokes __call__ twice.
-# -> pdcast.cast([1, 2, 2**64], "int") invokes __call__ up to 4 times.
-
-# handling the upcast within the conversion logic would dramatically improve
-# performance and fix issues with standardizing mixed-type results.
+# TODO: consider empty series during dispatch.
+# -> pdcast.cast([None, None, None], int)
+# Traceback (most recent call last):
+#     ...
+# AttributeError: 'NoneType' object has no attribute 'dtype'
 
 
 ######################
@@ -611,7 +598,8 @@ class DispatchSignature(Signature):
 
         self.ordered = True
 
-    def dispatch_key(self, *args, **kwargs) -> tuple[types.Type, ...]:
+    # pylint: disable=no-self-argument
+    def dispatch_key(__self, *args, **kwargs) -> tuple[types.Type, ...]:
         """Create a dispatch key from the provided arguments.
 
         Parameters
@@ -650,10 +638,12 @@ class DispatchSignature(Signature):
 
             >>> TODO
         """
-        bound = self.signature.bind_partial(*args, **kwargs)
+        bound = __self.signature.bind_partial(*args, **kwargs)
         bound.apply_defaults()
 
-        return tuple(resolve_type(bound.arguments[x]) for x in self.dispatched)
+        return tuple(
+            resolve_type(bound.arguments[x]) for x in __self.dispatched
+        )
 
     def cartesian_product(
         self,
@@ -825,10 +815,6 @@ class DispatchArguments(Arguments):
         self.original_index = None
         self.hasnans = None
 
-    # TODO: make sure CompositeDispatch works without frame/hasnans/etc.
-    # These will be blocked for any DispatchArguments that are spawned in
-    # .groups
-
     @property
     def types(self) -> dict[str, types.Type]:
         """The detected type of each dispatched argument."""
@@ -989,6 +975,349 @@ class DispatchArguments(Arguments):
         }
 
 
+class DispatchStrategy:
+    """Interface for Strategy pattern dispatch pipelines.
+
+
+    """
+
+    def __init__(
+        self,
+        func: DispatchFunc,
+        arguments: DispatchArguments
+    ):
+        self.func = func
+        self.signature = func._signature
+        self.arguments = arguments
+
+    def execute(self) -> Any:
+        """Abstract method for executing a dispatched strategy."""
+        raise NotImplementedError(
+            f"strategy does not implement an `execute()` method: "
+            f"{self.__qualname__}"
+        )
+
+    def finalize(self, result: Any) -> Any:
+        """Abstract method to post-process the result of a dispatched strategy.
+        """
+        raise NotImplementedError(
+            f"strategy does not implement a `finalize()` method: "
+            f"{self.__qualname__}"
+        )
+
+    def rectify(self, series: pd.Series) -> pd.Series:
+        """Normalize the dtype of an output series to its detected type.
+        """
+        return series.astype(detect_type(series).dtype, copy=False)
+
+    def replace_na(self, series: pd.Series) -> pd.Series:
+        """Abstract method to replace missing values in the result of a
+        dispatched strategy.
+        """
+        # get nullable type for series
+        nullable = detect_type(series).make_nullable()
+
+        # get length of vectors before normalizing
+        original_length = self.arguments.original_index.shape[0]
+
+        # build empty series containing only missing values
+        result = pd.Series(
+            np.full(original_length, nullable.na_value, dtype=object),
+            index = pd.RangeIndex(0, original_length),
+            name=series.name,
+            # dtype=object  # TODO: decide which of these are best
+            dtype=nullable.dtype
+        )
+
+        # merge result into the empty series
+        result[series.index] = series
+        # return result.astype(nullable.dtype, copy=False)  # TODO: same as above
+        return result
+
+
+class HomogenousDispatch(DispatchStrategy):
+    """Dispatch homogenous inputs to the appropriate implementation."""
+
+    def __init__(
+        self,
+        func: DispatchFunc,
+        arguments: DispatchArguments,
+        drop_na: bool,
+    ):
+        super().__init__(func=func, arguments=arguments)
+        self.drop_na = drop_na
+
+    def execute(self) -> Any:
+        """Call the dispatched function with the bound arguments."""
+        # search for dispatched implementation
+        func = self.func[self.arguments.key]
+
+        # translate *args, **kwargs to appropriate signature
+        if func is self.func.__wrapped__:
+            bound = self.arguments
+        else:
+            # bind flattened arguments to the dispatched signature
+            signature = self.signature.signatures[func]
+            bound = signature.bind(**self.arguments.flat)
+
+        # call the dispatched function with the translated arguments
+        return func(*bound.args, **bound.kwargs)
+
+    def finalize(self, result: Any) -> Any:
+        """Infer mode of operation (filter/transform/aggregate) from return
+        type and adjust result accordingly.
+        """
+        # transform
+        if isinstance(result, (pd.Series, pd.DataFrame)):
+            # rectify output dtype
+            result = self._standardize_dtype(result)
+
+            # check if index is subset of normalized
+            self._check_index(result)
+
+            # replace missing values
+            frame_length = self.arguments.frame.shape[0]
+            if self.arguments.hasnans or result.shape[0] < frame_length:
+                result = self._merge_na(result)
+
+            # replace original index
+            result.index = self.arguments.original_index
+
+        # aggregate
+        return result
+
+    def _standardize_dtype(
+        self,
+        result: pd.Series | pd.DataFrame
+    ) -> pd.Series | pd.DataFrame:
+        """Rectify the dtype of a series to match the detected output."""
+        # series
+        if isinstance(result, pd.Series):
+            return self.rectify(result)
+
+        # dataframe
+        return pd.DataFrame(
+            {col: self.rectify(series) for col, series in result.items()},
+            copy=False
+        )
+
+    def _check_index(self, result: pd.Series | pd.DataFrame) -> None:
+        """Check that the index is a subset of the original."""
+        if not result.index.difference(self.arguments.frame.index).empty:
+            sig = [f"{k}: {str(v)}" for k, v in self.arguments.types.items()]
+            warn_msg = (
+                f"index mismatch in '{self.__qualname__}({', '.join(sig)})': "
+                f"final index is not a subset of starting index"
+            )
+            warnings.warn(warn_msg, UserWarning, stacklevel=4)
+
+            # index mismatch results in extraneous NaNs
+            self.arguments.hasnans = True
+
+    def _merge_na(
+        self,
+        result: pd.Series | pd.DataFrame
+    ) -> pd.Series | pd.DataFrame:
+        """Replace missing values.
+        """
+        # series
+        if isinstance(result, pd.Series):
+            return self.replace_na(result)
+
+        # dataframe
+        return pd.DataFrame(
+            {col: self.replace_na(series) for col, series in result.items()},
+            copy=False
+        )
+
+
+class CompositeDispatch(DispatchStrategy):
+    """Dispatch composite inputs to the appropriate implementations."""
+
+    def __init__(
+        self,
+        func: DispatchFunc,
+        arguments: DispatchArguments,
+        drop_na: bool,
+        convert_mixed: bool
+    ):
+        super().__init__(func=func, arguments=arguments)
+        self.drop_na = drop_na
+        self.convert_mixed = convert_mixed
+
+    def execute(self) -> list:
+        """For each group in the input, call the dispatched implementation
+        with the bound arguments.
+        """
+        results = []
+
+        # process each group independently
+        for group in self.arguments.groups:
+            strategy = HomogenousDispatch(
+                self.func,
+                arguments=group,
+                drop_na=self.drop_na
+            )
+            results.append((group.key, strategy.execute()))
+
+        return results
+
+    def finalize(self, result: list) -> Any:
+        groups = dict(result)
+
+        # transform
+        as_series = all(isinstance(grp, pd.Series) for grp in groups.values())
+        as_df = all(isinstance(grp, pd.DataFrame) for grp in groups.values())
+        if as_series or as_df:
+            # rectify output dtype
+            groups = self._standardize_dtype(groups, as_series=as_series)
+
+            # check if index is subset of normalized
+            self._check_index(groups)
+
+            # merge series and replace missing values
+            if as_series:
+                return self._merge_series(groups)  # TODO: include a flag to convert mixed
+
+            # check for column mismatch
+            columns = {tuple(df.columns) for df in groups.values()}
+            if len(columns) > 1:
+                raise ValueError(
+                    f"DataFrames do not share the same column names {columns}"
+                )
+
+            # merge each column and replace missing values
+            df = {}
+            for col in columns.pop():
+                df[col] = self._merge_series(
+                    {key: df[col] for key, df in groups.items()}
+                )
+            return pd.DataFrame(df, copy=False)
+
+        # aggregate
+        df = {}
+        for idx, arg_name in enumerate(self.arguments.dispatched):
+            df[arg_name] = [key[idx] for key in groups]
+        df[f"{self.func.__name__}()"] = list(groups.values())
+        return pd.DataFrame(df, copy=False)
+
+    def _standardize_dtype(
+        self,
+        groups: dict[tuple[types.VectorType, ...], pd.Series | pd.DataFrame],
+        as_series: bool
+    ) -> dict[tuple[types.VectorType, ...], pd.Series | pd.DataFrame]:
+        """Rectify each group to match the detected output.
+        """
+        # series
+        if as_series:
+            return {
+                key: self.rectify(grp) for key, grp in groups.items()
+            }
+
+        # dataframe
+        return {
+            key: pd.DataFrame(
+                {col: self.rectify(series) for col, series in grp.items()},
+                copy=False
+            )
+            for key, grp in groups.items()
+        }
+
+    def _check_index(
+        self,
+        groups: dict[tuple[types.VectorType, ...], pd.Series | pd.DataFrame]
+    ) -> None:
+        """Validate and merge a collection of transformed Series/DataFrame
+        indices.
+        """
+        # merge indices
+        group_iter = iter(groups.values())
+        index = next(group_iter).index
+        size = index.shape[0]
+        for grp in group_iter:
+            index = index.union(grp.index)
+            if len(index) < size + grp.shape[0]:
+                sig = [
+                    f"{k}: {str(v)}" for k, v in self.arguments.types.items()
+                ]
+                warn_msg = (
+                    f"index collision in '{self.__qualname__}("
+                    f"{', '.join(sig)})': 2 or more implementations returned "
+                    f"overlapping indices"
+                )
+                warnings.warn(warn_msg, UserWarning)
+            size = index.shape[0]
+
+        # check that final index is subset of starting index
+        if not index.difference(self.arguments.frame.index).empty:
+            sig = [f"{k}: {str(v)}" for k, v in self.arguments.types.items()]
+            warn_msg = (
+                f"index mismatch in '{self.__qualname__}({', '.join(sig)})': "
+                f"final index is not a subset of starting index"
+            )
+            warnings.warn(warn_msg, UserWarning, stacklevel=4)
+
+            # index mismatch results in extraneous NaNs
+            self.arguments.hasnans = True
+
+    def _merge_series(
+        self,
+        groups: dict[tuple[types.VectorType, ...], pd.Series]
+    ) -> pd.Series:
+        """Merge the computed series results by index."""
+        # get unique output types
+        unique = set(detect_type(series) for series in groups.values())
+
+        # if all types are in same family, attempt to standardize to widest
+        if (
+            self.convert_mixed and len(unique) > 1 and any(
+                all(t2.contains(t1) for t1 in unique)
+                for t2 in {t.generic.root for t in unique}
+            )
+        ):
+            from pdcast.convert import cast
+            widest = max(unique)  # using comparison operators
+            try:
+                groups = {
+                    key: cast(grp, widest, downcast=False, errors="raise")
+                    for key, grp in groups.items()
+                }
+                unique = {widest}
+            except Exception:
+                pass
+
+        # results are homogenous
+        if len(unique) == 1:
+            # merge series
+            result = pd.concat(groups.values())  # NOTE: can remove ObjectDtype
+            result = result.astype(unique.pop().dtype, copy=False)
+            result.sort_index(inplace=True)
+
+            # replace missing values
+            frame_length = self.arguments.frame.shape[0]
+            if self.arguments.hasnans or result.shape[0] < frame_length:
+                result = self.replace_na(result)
+
+            # replace original index
+            result.index = self.arguments.original_index
+            return result
+
+        # NOTE: we can't use pd.concat() because it tends to coerce mixed-type
+        # results in uncontrollable ways.  Instead, we fold each group into a
+        # `dtype: object` series to preserve the actual values.
+
+        # results are mixed
+        original_length = self.arguments.original_index.shape[0]
+        result = pd.Series(
+            np.full(original_length, pd.NA, dtype=object),
+            index=pd.RangeIndex(0, original_length)
+        )
+        for series in groups.values():
+            result[series.index] = series
+        result.index = self.arguments.original_index
+        return result
+
+
 def supercedes(node1: tuple, node2: tuple) -> bool:
     """Check if node1 is consistent with and strictly more specific than node2.
     """
@@ -1076,371 +1405,23 @@ def topological_sort(edges: dict) -> list:
     return result
 
 
-##########################
-####    STRATEGIES    ####
-##########################
-
-
-# TODO: document these
-
-
-class DispatchStrategy:
-    """Interface for Strategy pattern dispatch pipelines.
-
-
-    """
-
-    def __init__(
-        self,
-        func: DispatchFunc,
-        arguments: DispatchArguments
-    ):
-        self.func = func
-        self.signature = func._signature
-        self.arguments = arguments
-
-    def execute(self) -> Any:
-        """Abstract method for executing a dispatched strategy."""
-        raise NotImplementedError(
-            f"strategy does not implement an `execute()` method: "
-            f"{self.__qualname__}"
-        )
-
-    def finalize(self, result: Any) -> Any:
-        """Abstract method to post-process the result of a dispatched strategy.
-        """
-        raise NotImplementedError(
-            f"strategy does not implement a `finalize()` method: "
-            f"{self.__qualname__}"
-        )
-
-    def rectify(self, series: pd.Series) -> pd.Series:
-        """Normalize the dtype of an output series to its detected type.
-        """
-        return series.astype(detect_type(series).dtype, copy=False)
-
-    def replace_na(self, series: pd.Series) -> pd.Series:
-        """Abstract method to replace missing values in the result of a
-        dispatched strategy.
-        """
-        # get nullable type for series
-        nullable = detect_type(series).make_nullable()
-
-        # get length of vectors before normalizing
-        original_length = self.arguments.original_index.shape[0]
-
-        # build empty series containing only missing values
-        result = pd.Series(
-            np.full(original_length, nullable.na_value, dtype=object),
-            index = pd.RangeIndex(0, original_length),
-            name=series.name,
-            # dtype=object  # TODO: decide which of these are best
-            dtype=nullable.dtype
-        )
-
-        # merge result into the empty series
-        result[series.index] = series
-        # return result.astype(nullable.dtype, copy=False)  # TODO: same as above
-        return result
-
-
-class HomogenousDispatch(DispatchStrategy):
-    """Dispatch homogenous inputs to the appropriate implementation."""
-
-    def __init__(
-        self,
-        func: DispatchFunc,
-        arguments: DispatchArguments,
-        drop_na: bool,
-    ):
-        super().__init__(func=func, arguments=arguments)
-        self.drop_na = drop_na
-
-    def execute(self) -> Any:
-        """Call the dispatched function with the bound arguments."""
-        # search for dispatched implementation
-        func = self.func[self.arguments.key]
-
-        # translate *args, **kwargs to appropriate signature
-        if func is self.func.__wrapped__:
-            bound = self.arguments
-        else:
-            # flatten *args, **kwargs
-            arg_names = tuple(self.arguments.signature.parameter_map)
-            kwargs = dict(zip(arg_names, self.arguments.args))
-            kwargs |= self.arguments.kwargs
-
-            # bind flatten arguments to the dispatched signature
-            signature = self.signature.signatures[func]
-            bound = signature.bind(**kwargs)
-
-        # call the dispatched function with the translated arguments
-        return func(*bound.args, **bound.kwargs)
-
-    def finalize(self, result: Any) -> Any:
-        """Infer mode of operation (filter/transform/aggregate) from return
-        type and adjust result accordingly.
-        """
-        # transform
-        if isinstance(result, (pd.Series, pd.DataFrame)):
-            # rectify output dtype
-            result = self._standardize_dtype(result)
-
-            # check if index is subset of normalized
-            self._check_index(result)
-
-            # replace missing values
-            frame_length = self.arguments.frame.shape[0]
-            if self.arguments.hasnans or result.shape[0] < frame_length:
-                result = self._merge_na(result)
-
-            # replace original index
-            result.index = self.arguments.original_index
-
-        # aggregate
-        return result
-
-    def _standardize_dtype(
-        self,
-        result: pd.Series | pd.DataFrame
-    ) -> pd.Series | pd.DataFrame:
-        """Rectify the dtype of a series to match the detected output."""
-        # series
-        if isinstance(result, pd.Series):
-            return self.rectify(result)
-
-        # dataframe
-        return pd.DataFrame(
-            {col: self.rectify(series) for col, series in result.items()},
-            copy=False
-        )
-
-    def _check_index(self, result: pd.Series | pd.DataFrame) -> None:
-        """Check that the index is a subset of the original."""
-        if not result.index.difference(self.arguments.frame.index).empty:
-            warn_msg = (
-                f"index mismatch in {self.__qualname__}() with signature "
-                f"{tuple(str(x) for x in self.arguments.key)}: final index is "
-                f"not a subset of starting index"
-            )
-            warnings.warn(warn_msg, UserWarning, stacklevel=4)
-
-            # index mismatch results in extraneous NaNs
-            self.arguments.hasnans = True
-
-    def _merge_na(
-        self,
-        result: pd.Series | pd.DataFrame
-    ) -> pd.Series | pd.DataFrame:
-        """Replace missing values.
-        """
-        # series
-        if isinstance(result, pd.Series):
-            return self.replace_na(result)
-
-        # dataframe
-        return pd.DataFrame(
-            {col: self.replace_na(series) for col, series in result.items()},
-            copy=False
-        )
-
-
-# TODO: pdcast.cast([True, 2, 2**64], "int[python]")
-# -> returns dtype: object
-
-
-class CompositeDispatch(DispatchStrategy):
-    """Dispatch composite inputs to the appropriate implementations."""
-
-    def __init__(
-        self,
-        func: DispatchFunc,
-        arguments: DispatchArguments,
-        drop_na: bool,
-        convert_mixed: bool
-    ):
-        super().__init__(func=func, arguments=arguments)
-        self.drop_na = drop_na
-        self.convert_mixed = convert_mixed
-
-    def execute(self) -> list:
-        """For each group in the input, call the dispatched implementation
-        with the bound arguments.
-        """
-        results = []
-
-        # process each group independently
-        for group in self.arguments.groups:
-            strategy = HomogenousDispatch(
-                self.func,
-                arguments=group,
-                drop_na=self.drop_na
-            )
-            results.append((group.key, strategy.execute()))
-
-        return results
-
-    def finalize(self, result: list) -> Any:
-        groups = dict(result)
-
-        # transform
-        as_series = all(isinstance(grp, pd.Series) for grp in groups.values())
-        as_df = all(isinstance(grp, pd.DataFrame) for grp in groups.values())
-        if as_series or as_df:
-            # rectify output dtype
-            groups = self._standardize_dtype(groups, as_series=as_series)
-
-            # check if index is subset of normalized
-            self._check_index(groups)
-
-            # merge series and replace missing values
-            if as_series:
-                return self._merge_series(groups)  # TODO: include a flag to convert mixed
-
-            # check for column mismatch
-            columns = {tuple(df.columns) for df in groups.values()}
-            if len(columns) > 1:
-                raise ValueError(
-                    f"column mismatch: in {self.__qualname__}() with "
-                    f"signature {tuple(str(x) for x in self.arguments.key)}: "
-                    f"final index is not a subset of starting index"
-                )
-
-            # merge each column and replace missing values
-            df = {}
-            for col in columns.pop():
-                df[col] = self._merge_series(
-                    {key: df[col] for key, df in groups.items()}
-                )
-            return pd.DataFrame(df, copy=False)
-
-        # aggregate
-        df = {}
-        for idx, arg_name in enumerate(self.arguments.dispatched):
-            df[arg_name] = [key[idx] for key in groups]
-        df[f"{self.func.__name__}()"] = list(groups.values())
-        return pd.DataFrame(df, copy=False)
-
-    def _standardize_dtype(
-        self,
-        groups: dict[tuple[types.VectorType, ...], pd.Series | pd.DataFrame],
-        as_series: bool
-    ) -> dict[tuple[types.VectorType, ...], pd.Series | pd.DataFrame]:
-        """Rectify each group to match the detected output.
-        """
-        # series
-        if as_series:
-            return {
-                key: self.rectify(grp) for key, grp in groups.items()
-            }
-
-        # dataframe
-        return {
-            key: pd.DataFrame(
-                {col: self.rectify(series) for col, series in grp.items()},
-                copy=False
-            )
-            for key, grp in groups.items()
-        }
-
-    def _check_index(
-        self,
-        groups: dict[tuple[types.VectorType, ...], pd.Series | pd.DataFrame]
-    ) -> None:
-        """Validate and merge a collection of transformed Series/DataFrame
-        indices.
-        """
-        # merge indices
-        group_iter = iter(groups.values())
-        index = next(group_iter).index
-        size = index.shape[0]
-        for grp in group_iter:
-            index = index.union(grp.index)
-            if len(index) < size + grp.shape[0]:
-                warn_msg = (
-                    f"index collision in {self.__name__}() with signature "
-                    f"{tuple(str(x) for x in self.arguments.key)}: 2 or more "
-                    f"implementations returned overlapping indices"
-                )
-                warnings.warn(warn_msg, UserWarning)
-            size = index.shape[0]
-
-        # TODO: this results in a KeyError during slice assignment, so just
-        # raise it as an error here and in HomogenousDispatch
-
-        # check that final index is subset of starting index
-        if not index.difference(self.arguments.frame.index).empty:
-            warn_msg = (
-                f"index mismatch in {self.__qualname__}() with signature "
-                f"{tuple(str(x) for x in self.arguments.key)}: final index is "
-                f"not a subset of starting index"
-            )
-            warnings.warn(warn_msg, UserWarning, stacklevel=4)
-
-            # index mismatch results in extraneous NaNs
-            self.arguments.hasnans = True
-
-    def _merge_series(
-        self,
-        groups: dict[tuple[types.VectorType, ...], pd.Series]
-    ) -> pd.Series:
-        """Merge the computed series results by index."""
-        # get unique output types
-        unique = set(detect_type(series) for series in groups.values())
-
-        # if all types are in same family, attempt to standardize to widest
-        if (
-            self.convert_mixed and len(unique) > 1 and any(
-                all(t2.contains(t1) for t1 in unique)
-                for t2 in {t.generic.root for t in unique}
-            )
-        ):
-            from pdcast.convert import cast
-            widest = max(unique)  # using comparison operators
-            try:
-                groups = {
-                    key: cast(grp, widest, downcast=False, errors="raise")
-                    for key, grp in groups.items()
-                }
-                unique = {widest}
-            except Exception:
-                pass
-
-        # results are homogenous
-        if len(unique) == 1:
-            # merge series
-            result = pd.concat(groups.values())  # NOTE: can remove ObjectDtype
-            result = result.astype(unique.pop().dtype, copy=False)
-            result.sort_index(inplace=True)
-
-            # replace missing values
-            frame_length = self.arguments.frame.shape[0]
-            if self.arguments.hasnans or result.shape[0] < frame_length:
-                result = self.replace_na(result)
-
-            # replace original index
-            result.index = self.arguments.original_index
-            return result
-
-        # NOTE: we can't use pd.concat() because it tends to coerce mixed-type
-        # results in undesirable ways.  Instead, we fold each group into a
-        # `dtype: object` series to preserve the actual values.
-
-        # results are mixed
-        original_length = self.arguments.original_index.shape[0]
-        result = pd.Series(
-            np.full(original_length, pd.NA, dtype=object),
-            index=pd.RangeIndex(0, original_length)
-        )
-        for series in groups.values():
-            result[series.index] = series
-        result.index = self.arguments.original_index
-        return result
-
-
 #######################
 ####    TESTING    ####
 #######################
+
+
+# TODO: add([1, 2, 3], [1, True, 1.0])
+# 0    0.0
+# 1    3.0
+# 2    4.0
+# dtype: int[python]
+
+# -> this is actually broken in ObjectArray.  The only way to fix it is to
+# run detect_type() on the first non-missing value of the series and update it
+# accordingly.  This forces us to implement our own math operators.  In essence,
+# we reimplement the mass of special methods that were originally attached to
+# SeriesWrapper.
+
 
 
 @dispatch("x", "y")

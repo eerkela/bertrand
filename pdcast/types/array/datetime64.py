@@ -241,9 +241,9 @@ class M8Array(ExtensionArray, ExtensionScalarOpsMixin):
                 raise ValueError(
                     "setting an array element with a sequence."
                 )
-            value = np.asarray(convert.cast(value, self._atomic_type))
+            value = np.asarray(convert.cast(value, self._pdcast_type))
         # else:
-        #     value = convert.cast(value, self._atomic_type)[0]
+        #     value = convert.cast(value, self._pdcast_type)[0]
         self._data[key] = value
 
     def __len__(self) -> int:
@@ -531,14 +531,14 @@ class M8Array(ExtensionArray, ExtensionScalarOpsMixin):
 
         if name == "sum" and len(self) == 0:
             # GH#29630 avoid returning int 0 or np.bool_(False) on old numpy
-            item_type = self._atomic_type.type_def
+            item_type = self._pdcast_type.type_def
             return item_type(0)
 
         try:
             op = getattr(self.data, name)
         except AttributeError:
             raise NotImplementedError(
-                f"{str(self._atomic_type)} does not support the {name} "
+                f"{str(self._pdcast_type)} does not support the {name} "
                 f"operation"
             )
         return op(axis=0)
@@ -560,7 +560,7 @@ class M8Array(ExtensionArray, ExtensionScalarOpsMixin):
 
         # get handled values
         array_like = (np.ndarray, ExtensionArray)
-        scalar_like = (self._atomic_type.type_def,)
+        scalar_like = (self._pdcast_type.type_def,)
         if self.dtype._is_numeric:
             scalar_like += (numbers.Number,)
 

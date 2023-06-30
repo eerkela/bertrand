@@ -12,6 +12,12 @@ from typing import Any, Callable, Mapping, get_type_hints
 from .base import EMPTY, Arguments, FunctionDecorator, Signature
 
 
+# TODO: context dictionaries are not being correctly passed to validators.
+# -> have to apply_defaults() before passing to validator, not after.
+# This must happen in validate(), we just only validate the values that are
+# present before this step.
+
+
 ######################
 ####    PUBLIC    ####
 ######################
@@ -777,6 +783,9 @@ class ExtensionArguments(Arguments):
         minimize validation calls.  Since defaults are pre-validated by their
         associated properties, there is no need to check them manually.
         """
+        # TODO: how does this interact with **kwargs?
+
         for name, value in self.arguments.items():
             if name in self.signature.validators:
-                self.arguments[name] = self.signature.validators[name](value)
+                validator = self.signature.validators[name]
+                self.arguments[name] = validator(value)

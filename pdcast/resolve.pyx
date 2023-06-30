@@ -80,7 +80,7 @@ def resolve_type(typespec: type_specifier) -> types.Type:
 
     elif isinstance(typespec, (np.dtype, pd.api.extensions.ExtensionDtype)):
         if isinstance(typespec, ObjectDtype):
-            return typespec._atomic_type
+            return typespec._pdcast_type
 
         factory = DtypeResolver(typespec)
 

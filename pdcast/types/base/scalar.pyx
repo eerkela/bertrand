@@ -407,9 +407,7 @@ cdef class ScalarType(VectorType):
             return construct_object_dtype(
                 self,
                 is_boolean=BooleanType.contains(self),
-                is_numeric=self.is_numeric,
-                add_comparison_ops=True,
-                add_arithmetic_ops=True
+                is_numeric=self.is_numeric
             )
         return self._dtype
 
