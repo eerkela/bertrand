@@ -703,7 +703,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(self._data & other, self._pdcast_type)
+        return rectify(self._data & np.asarray(other), self._pdcast_type)
 
     def __or__(self, other: Any) -> ObjectArray:
         """Implement the binary OR operator ``|`` for
@@ -713,7 +713,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(self._data & other, self._pdcast_type)
+        return rectify(self._data & np.asarray(other), self._pdcast_type)
 
     def __xor__(self, other: Any) -> ObjectArray:
         """Implement the binary XOR operator ``^`` for
@@ -723,7 +723,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(self._data & other, self._pdcast_type)
+        return rectify(self._data & np.asarray(other), self._pdcast_type)
 
     def __rshift__(self, other: Any) -> ObjectArray:
         """Implement the binary right-shift operator ``>>`` for
@@ -733,7 +733,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(self._data & other, self._pdcast_type)
+        return rectify(self._data & np.asarray(other), self._pdcast_type)
 
     def __lshift__(self, other: Any) -> ObjectArray:
         """Implement the binary left-shift operator ``<<`` for
@@ -743,7 +743,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(self._data & other, self._pdcast_type)
+        return rectify(self._data & np.asarray(other), self._pdcast_type)
 
     ########################################
     ####    REVERSE BINARY OPERATORS    ####
@@ -757,7 +757,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(other & self._data, self._pdcast_type)
+        return rectify(np.asarray(other) & self._data, self._pdcast_type)
 
     def __ror__(self, other: Any) -> ObjectArray:
         """Implement the reverse binary OR operator ``|`` for
@@ -767,7 +767,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(other | self._data, self._pdcast_type)
+        return rectify(np.asarray(other) | self._data, self._pdcast_type)
 
     def __rxor__(self, other: Any) -> ObjectArray:
         """Implement the reverse binary XOR operator ``^`` for
@@ -777,7 +777,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(other ^ self._data, self._pdcast_type)
+        return rectify(np.asarray(other) ^ self._data, self._pdcast_type)
 
     def __rrshift__(self, other: Any) -> ObjectArray:
         """Implement the reverse binary right-shift operator ``>>`` for
@@ -787,7 +787,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(other >> self._data, self._pdcast_type)
+        return rectify(np.asarray(other) >> self._data, self._pdcast_type)
 
     def __rlshift__(self, other: Any) -> ObjectArray:
         """Implement the reverse binary left-shift operator ``<<`` for
@@ -797,7 +797,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(other << self._data, self._pdcast_type)
+        return rectify(np.asarray(other) << self._data, self._pdcast_type)
 
     #########################################
     ####    IN-PLACE BINARY OPERATORS    ####
@@ -811,7 +811,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data &= other
+        self._data &= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     def __ior__(self, other: Any) -> ObjectArray:
@@ -822,7 +822,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data |= other
+        self._data |= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     def __ixor__(self, other: Any) -> ObjectArray:
@@ -833,7 +833,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data ^= other
+        self._data ^= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     def __irshift__(self, other: Any) -> ObjectArray:
@@ -844,7 +844,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data >>= other
+        self._data >>= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     def __ilshift__(self, other: Any) -> ObjectArray:
@@ -855,7 +855,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data <<= other
+        self._data <<= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     ##############################
@@ -873,7 +873,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(self._data + other, self._pdcast_type)
+        return rectify(self._data + np.asarray(other), self._pdcast_type)
 
     def __sub__(self, other: Any) -> ObjectArray:
         """Implement the subtraction operator ``-`` for
@@ -883,7 +883,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(self._data - other, self._pdcast_type)
+        return rectify(self._data - np.asarray(other), self._pdcast_type)
 
     def __mul__(self, other: Any) -> ObjectArray:
         """Implement the multiplication operator ``*`` for
@@ -893,7 +893,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(self._data * other, self._pdcast_type)
+        return rectify(self._data * np.asarray(other), self._pdcast_type)
 
     def __matmul__(self, other: Any) -> ObjectArray:
         """Implement the matrix multiplication operator ``@`` for
@@ -903,7 +903,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(self._data @ other, self._pdcast_type)
+        return rectify(self._data @ np.asarray(other), self._pdcast_type)
 
     def __truediv__(self, other: Any) -> ObjectArray:
         """Implement the true division operator ``/`` for
@@ -913,7 +913,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(self._data / other, self._pdcast_type)
+        return rectify(self._data / np.asarray(other), self._pdcast_type)
 
     def __floordiv__(self, other: Any) -> ObjectArray:
         """Implement the floor division operator ``//`` for
@@ -923,7 +923,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(self._data // other, self._pdcast_type)
+        return rectify(self._data // np.asarray(other), self._pdcast_type)
 
     def __mod__(self, other: Any) -> ObjectArray:
         """Implement the modulo operator ``%`` for
@@ -933,7 +933,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(self._data % other, self._pdcast_type)
+        return rectify(self._data % np.asarray(other), self._pdcast_type)
 
     def __divmod__(self, other: Any) -> ObjectArray:
         """Implement the :func:`divmod() <python:divmod>` function for
@@ -943,7 +943,10 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(divmod(self._data, other), self._pdcast_type)
+        return rectify(
+            divmod(self._data, np.asarray(other)),
+            self._pdcast_type
+        )
 
     def __pow__(self, other: Any, mod: Any = None) -> ObjectArray:
         """Implement the exponentiation operator ``**`` for
@@ -953,7 +956,10 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(pow(self._data, other, mod), self._pdcast_type)
+        return rectify(
+            pow(self._data, np.asarray(other), mod),
+            self._pdcast_type
+        )
 
     ######################################
     ####    REVERSE MATH OPERATORS    ####
@@ -967,7 +973,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(other + self._data, self._pdcast_type)
+        return rectify(np.asarray(other) + self._data, self._pdcast_type)
 
     def __rsub__(self, other: Any) -> ObjectArray:
         """Implement the reverse subtraction operator ``-`` for
@@ -977,7 +983,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(other - self._data, self._pdcast_type)
+        return rectify(np.asarray(other) - self._data, self._pdcast_type)
 
     def __rmul__(self, other: Any) -> ObjectArray:
         """Implement the reverse multiplication operator ``*`` for
@@ -987,7 +993,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(other * self._data, self._pdcast_type)
+        return rectify(np.asarray(other) * self._data, self._pdcast_type)
 
     def __rmatmul__(self, other: Any) -> ObjectArray:
         """Implement the reverse matrix multiplication operator ``@`` for
@@ -997,7 +1003,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(other @ self._data, self._pdcast_type)
+        return rectify(np.asarray(other) @ self._data, self._pdcast_type)
 
     def __rtruediv__(self, other: Any) -> ObjectArray:
         """Implement the reverse true division operator ``/`` for
@@ -1007,7 +1013,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(other / self._data, self._pdcast_type)
+        return rectify(np.asarray(other) / self._data, self._pdcast_type)
 
     def __rfloordiv__(self, other: Any) -> ObjectArray:
         """Implement the reverse floor division operator ``//`` for
@@ -1017,7 +1023,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(other // self._data, self._pdcast_type)
+        return rectify(np.asarray(other) // self._data, self._pdcast_type)
 
     def __rmod__(self, other: Any) -> ObjectArray:
         """Implement the reverse modulo operator ``%`` for
@@ -1027,7 +1033,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(other % self._data, self._pdcast_type)
+        return rectify(np.asarray(other) % self._data, self._pdcast_type)
 
     def __rdivmod__(self, other: Any) -> ObjectArray:
         """Implement the reverse :func:`divmod() <python:divmod>` function for
@@ -1037,7 +1043,10 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(divmod(other, self._data), self._pdcast_type)
+        return rectify(
+            divmod(np.asarray(other), self._data),
+            self._pdcast_type
+        )
 
     def __rpow__(self, other: Any, mod: Any = None) -> ObjectArray:
         """Implement the reverse exponentiation operator ``**`` for
@@ -1047,7 +1056,10 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        return rectify(pow(other, self._data, mod), self._pdcast_type)
+        return rectify(
+            pow(np.asarray(other), self._data, mod),
+            self._pdcast_type
+        )
 
     #######################################
     ####    IN-PLACE MATH OPERATORS    ####
@@ -1061,7 +1073,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data += other
+        self._data += np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     def __isub__(self, other: Any) -> ObjectArray:
@@ -1072,7 +1084,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data -= other
+        self._data -= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     def __imul__(self, other: Any) -> ObjectArray:
@@ -1083,7 +1095,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data *= other
+        self._data *= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     def __imatmul__(self, other: Any) -> ObjectArray:
@@ -1094,7 +1106,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data @= other
+        self._data @= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     def __itruediv__(self, other: Any) -> ObjectArray:
@@ -1105,7 +1117,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data /= other
+        self._data /= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     def __ifloordiv__(self, other: Any) -> ObjectArray:
@@ -1116,7 +1128,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data //= other
+        self._data //= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     def __imod__(self, other: Any) -> ObjectArray:
@@ -1127,7 +1139,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data %= other
+        self._data %= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     def __ipow__(self, other: Any, mod: Any = None) -> ObjectArray:
@@ -1138,7 +1150,7 @@ class ObjectArray(ExtensionArray):
         if isinstance(other, (ABCSeries, ABCIndex)):
             return NotImplemented
 
-        self._data **= other
+        self._data **= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
     ####################################
@@ -1268,6 +1280,7 @@ class ObjectArray(ExtensionArray):
             value = np.asarray(convert.cast(value, self._pdcast_type))
         else:
             value = convert.cast(value, self._pdcast_type)[0]
+
         self._data[key] = value
 
     def __delitem__(self, key: Any) -> None:
