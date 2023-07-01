@@ -36,7 +36,7 @@ generic
 from .array import ObjectArray, ObjectDtype
 from .base import (
     AbstractType, AliasManager, CacheValue, CompositeType, DecoratorType,
-    PriorityList, ScalarType, Type, TypeRegistry, VectorType, register
+    PrioritySet, ScalarType, Type, TypeRegistry, VectorType, register
 )
 from .boolean import (
     BooleanType, NumpyBooleanType, PandasBooleanType, PythonBooleanType

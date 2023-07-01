@@ -18,7 +18,6 @@ cdef class TypeRegistry:
         CacheValue _aliases
         CacheValue _regex
         CacheValue _resolvable
-        PriorityList _decorator_priority
         PrioritySet _priority
 
     cdef void update_hash(self)
@@ -47,24 +46,6 @@ cdef class CacheValue:
     cdef readonly:
         object value
         long long hash
-
-
-cdef class PriorityList:
-    cdef:
-        PriorityNode head
-        PriorityNode tail
-        dict items
-
-    cdef void append(self, object item)
-    cdef void remove(self, object item)
-    cdef int normalize_index(self, int index)
-
-
-cdef class PriorityNode:
-    cdef public:
-        object item
-        PriorityNode next
-        PriorityNode prev
 
 
 cdef class PrioritySet(set):

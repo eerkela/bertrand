@@ -46,13 +46,13 @@ cdef class VectorType(Type):
 
     _encoder: ArgumentEncoder = None
     _cache_size: int = 0
-    base_instance: VectorType = None
+    _base_instance: VectorType = None
 
     def __init__(self, **kwargs):
         super().__init__()
         self._kwargs = kwargs
 
-        if not type(self).base_instance:
+        if not self.base_instance:
             self.init_base()
         else:
             self.init_parametrized()
@@ -104,7 +104,7 @@ cdef class VectorType(Type):
                 f"{repr(self)}.name must be a string, not {repr(self.name)}"
             )
 
-        type(self).base_instance = self
+        type(self)._base_instance = self
 
         # pass name, parameters to encoder
         self.encoder = type(self)._encoder
@@ -148,7 +148,7 @@ cdef class VectorType(Type):
         Every attribute that is assigned in init_base should also be assigned
         here.
         """
-        cdef VectorType base = type(self).base_instance
+        cdef VectorType base = self.base_instance
 
         self.encoder = base.encoder
         self._slug = self.encoder((), self._kwargs)
@@ -267,6 +267,65 @@ cdef class VectorType(Type):
             mappingproxy({'wrapped': BooleanType(), 'fill_value': True})
         """
         return MappingProxyType({} if self._kwargs is None else self._kwargs)
+
+    @property
+    def base_instance(self) -> VectorType:
+        """A reference to this type's base instance.
+
+        Returns
+        -------
+        VectorType
+            The base instance of this type.
+
+        See Also
+        --------
+        VectorType.is_parametrized : Check if a type is equal to its base
+            instance.
+
+        Notes
+        -----
+        Base instances are generated automatically by the
+        :func:`@register <pdcast.register>` decorator.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("M8[5ns]")
+            NumpyDatetime64Type(unit='ns', step_size=5)
+            >>> _.base_instance
+            NumpyDatetime64Type(unit=None, step_size=1)
+        """
+        return type(self)._base_instance
+
+    @property
+    def is_parametrized(self) -> bool:
+        """Indicates whether this type is equal to its base instance.
+
+        Returns
+        -------
+        bool
+            ``True`` if any parameters were supplied to create this type.
+            ``False`` otherwise.
+
+        See Also
+        --------
+        VectorType.base_instance : Get a type's base (unparametrized) instance.
+
+        Notes
+        -----
+        This is equivalent to ``self != self.base_instance``.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("M8").is_parametrized
+            False
+            >>> pdcast.resolve_type("M8[ns]").is_parametrized
+            True
+        """
+        return self != self.base_instance
 
     @property
     def decorators(self):

@@ -701,19 +701,22 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.SparseType(pdcast.CategoricalType(pdcast.BooleanType))
+            >>> SparseType(CategoricalType(BooleanType))
             SparseType(wrapped=CategoricalType(wrapped=BooleanType(), levels=None), fill_value=None)
 
-        The order of these decorators is determined by
-        :attr:`TypeRegistry.decorator_priority <pdcast.TypeRegistry.decorator_priority>`,
-        which can be customized at run time.
+        The order of these decorators is determined by the
+        :attr:`TypeRegistry.priority <pdcast.TypeRegistry.priority>` table,
+        which can be customized at runtime.
 
         .. doctest::
 
-            >>> pdcast.registry.decorator_priority
-            PriorityList([<class 'pdcast.types.sparse.SparseType'>, <class 'pdcast.types.categorical.CategoricalType'>])
-            >>> pdcast.registry.decorator_priority.move(pdcast.CategoricalType, 0)
-            >>> pdcast.resolve_type("sparse[categorical[bool]]")
+            >>> registry.priority
+            PrioritySet({...})
+            >>> (SparseType, CategoricalType) in registry.priority
+            True
+            >>> registry.priority.remove((SparseType, CategoricalType))
+            >>> registry.priority.add((CategoricalType, SparseType))
+            >>> resolve_type("sparse[categorical[bool]]")
             CategoricalType(wrapped=SparseType(wrapped=BooleanType(), fill_value=None), levels=None)
 
         .. note::
@@ -725,14 +728,42 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse[categorical[sparse[bool]], True]")
+            >>> resolve_type("sparse[categorical[sparse[bool]], True]")
             CategoricalType(wrapped=SparseType(wrapped=BooleanType(), fill_value=True), levels=None)
             >>> str(_)
             categorical[sparse[bool, True], None]
         """
         # insert into linked list according to priority
         if isinstance(wrapped, DecoratorType):
-            return insort(self, wrapped, args, kwargs)
+            encountered = []
+            for curr in wrapped.decorators:
+
+                # curr is higher priority than self
+                if curr.base_instance < self.base_instance:
+                    encountered.append(curr)  # remember for later
+                    continue
+
+                # curr is a duplicate of self
+                if isinstance(curr, type(self)):
+                    if self == self.base_instance:
+                        return wrapped
+                    curr = curr.wrapped
+
+                # curr is lower priority than self
+                result = type(self)(curr, *args, **kwargs)
+                break
+
+            else:
+                # all decorators are higher priority - insert at base
+                result = type(self)(curr.wrapped, *args, **kwargs)
+
+            # replace all encountered decorators in original order
+            for prev in reversed(encountered):
+                result = prev.replace(wrapped=result)
+
+            return result
+
+            # return insort(self, wrapped, args, kwargs)
 
         # wrap directly
         return type(self)(wrapped, *args, **kwargs)
@@ -932,39 +963,3 @@ cdef Type wrap_result(DecoratorType decorator, Type result):
 
     # wrap a single result
     return decorator.replace(wrapped=result)
-
-
-cdef DecoratorType insort(
-    DecoratorType self,
-    DecoratorType wrapped,
-    tuple args,
-    dict kwargs
-):
-    """Insert a decorator into a singly-linked list in sorted order."""
-    priority = self.registry.decorator_priority
-    threshold = priority.index(self)
-
-    # iterate through list
-    encountered = []
-    for curr in wrapped.decorators:
-        # curr is higher priority than self
-        if priority.index(curr) < threshold:
-            encountered.append(curr)
-            continue
-
-        # curr is a duplicate of self
-        if isinstance(curr, type(self)):
-            if self == self.base_instance:
-                return wrapped
-            curr = curr.wrapped
-
-        # curr is lower priority than self
-        result = type(self)(curr, *args, **kwargs)
-        break
-    else:
-        # all decorators are higher priority - insert at base
-        result = type(self)(curr.wrapped, *args, **kwargs)
-
-    for prev in reversed(encountered):
-        result = prev.replace(wrapped=result)
-    return result

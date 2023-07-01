@@ -67,9 +67,6 @@ def register(class_: type = None, *, cond: bool = True):
                 f"{cls}"
             )
 
-        if issubclass(cls, DecoratorType):
-            add_to_decorator_priority(cls)
-
         # short-circuit for conditional types
         if not cond:
             return cls
@@ -111,7 +108,6 @@ cdef class TypeRegistry:
         self.generics = {}
         self.implementations = {}
 
-        self._decorator_priority = PriorityList()
         self._priority = PrioritySet()
         self.update_hash()
 
@@ -170,7 +166,7 @@ cdef class TypeRegistry:
         if isinstance(typ, type):
             if not issubclass(typ, VectorType):
                 raise TypeError(f"type must be a subclass of VectorType: {typ}")
-            typ = typ() if not typ.base_instance else typ.base_instance
+            typ = typ() if not typ._base_instance else typ._base_instance
 
         elif not isinstance(typ, VectorType):
             raise TypeError(f"type must be an instance of VectorType: {typ}")
@@ -794,65 +790,6 @@ cdef class TypeRegistry:
     #############################
     ####    CONFIGURATION    ####
     #############################
-
-    @property
-    def decorator_priority(self):
-        """A list describing the order of nested
-        :class:`DecoratorTypes <pdcast.DecoratorType>`.
-
-        Returns
-        -------
-        PriorityList
-            A read-only list whose elements can be rearranged to change the
-            desired order of nested decorators.
-
-        Notes
-        -----
-        :class:`PriorityLists <pdcast.PriorityList>` behave like immutable
-        sequences that cannot be appended to or removed from once created.
-
-        .. currentmodule:: pdcast
-
-        .. autosummary::
-            :toctree: ../generated/
-
-            PriorityList
-            PriorityList.index
-            PriorityList.move_up
-            PriorityList.move_down
-            PriorityList.move
-
-        Examples
-        --------
-        This list dictates the order of nested decorators when constructed
-        manually (through
-        :meth:`DecoratorType.__call__ <pdcast.DecoratorType.__call__>`) or as
-        supplied to :func:`resolve_type() <pdcast.resolve_type>`.
-
-        .. doctest::
-
-            >>> pdcast.registry.decorator_priority
-            PriorityList([<class 'pdcast.types.sparse.SparseType'>, <class 'pdcast.types.categorical.CategoricalType'>])
-            >>> pdcast.resolve_type("sparse[categorical]")
-            SparseType(wrapped=CategoricalType(wrapped=None, levels=None), fill_value=None)
-            >>> pdcast.resolve_type("categorical[sparse]")
-            SparseType(wrapped=CategoricalType(wrapped=None, levels=None), fill_value=None)
-
-        Rearranging its elements changes this order for any newly-constructed
-        type.
-
-        .. doctest::
-
-            >>> pdcast.registry.decorator_priority.move(pdcast.SparseType, -1)
-            >>> pdcast.registry.decorator_priority
-            PriorityList([<class 'pdcast.types.categorical.CategoricalType'>, <class 'pdcast.types.sparse.SparseType'>])
-            >>> pdcast.resolve_type("sparse[categorical]")
-            CategoricalType(wrapped=SparseType(wrapped=None, fill_value=None), levels=None)
-            >>> pdcast.resolve_type("categorical[sparse]")
-            CategoricalType(wrapped=SparseType(wrapped=None, fill_value=None), levels=None)
-        """
-        return self._decorator_priority
-
 
     @property
     def priority(self) -> set:
@@ -1665,275 +1602,15 @@ cdef class CacheValue:
         return self.hash == Type.registry.hash
 
 
-cdef class PriorityList:
-    """A doubly-linked list whose elements can be rearranged to represent a
-    a precedence order during sort operations.
-
-    The list is read-only when accessed from Python.
-
-    Examples
-    --------
-    .. doctest::
-
-        >>> foo = pdcast.PriorityList([1, 2, 3])
-        >>> foo
-        PriorityList([1, 2, 3])
-        >>> foo.index(2)
-        1
-        >>> foo.move_up(2)
-        >>> foo
-        PriorityList([2, 1, 3])
-        >>> foo.move_down(2)
-        >>> foo
-        PriorityList([1, 2, 3])
-        >>> foo.move(2, -1)
-        >>> foo
-        PriorityList([1, 3, 2])
-    """
-
-    def __init__(self, items: Iterable = None):
-        self.head = None
-        self.tail = None
-        self.items = {}
-        if items is not None:
-            for item in items:
-                self.append(item)
-
-    cdef void append(self, object item):
-        """Add an item to the list.
-
-        This method is inaccessible from Python.
-        """
-        node = PriorityNode(item)
-        self.items[item] = node
-        if self.head is None:
-            self.head = node
-            self.tail = node
-        else:
-            self.tail.next = node
-            node.prev = self.tail
-            self.tail = node
-
-    cdef void remove(self, object item):
-        """Remove an item from the list.
-
-        This method is inaccessible from Python.
-        """
-        node = self.items[item]
-
-        if node.prev is None:
-            self.head = node.next
-        else:
-            node.prev.next = node.prev
-
-        if node.next is None:
-            self.tail = node.prev
-        else:
-            node.next.prev = node.next
-
-        del self.items[item]
-
-    cdef int normalize_index(self, int index):
-        """Allow negative indexing and enforcing boundschecking."""
-        if index < 0:
-            index = index + len(self)
-
-        if not 0 <= index < len(self):
-            raise IndexError("list index out of range")
-
-        return index
-
-    def index(self, item: Any) -> int:
-        """Get the index of an item within the list.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> foo = pdcast.PriorityList([1, 2, 3])
-            >>> foo.index(2)
-            1
-        """
-        if isinstance(item, VectorType):
-            item = type(item)
-
-        for idx, typ in enumerate(self):
-            if item == typ:
-                return idx
-
-        raise ValueError(f"{repr(item)} is not contained in the list")
-
-    def move_up(self, item: Any) -> None:
-        """Move an item up one level in priority.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> foo = pdcast.PriorityList([1, 2, 3])
-            >>> foo.move_up(2)
-            >>> foo
-            PriorityList([2, 1, 3])
-        """
-        if isinstance(item, VectorType):
-            item = type(item)
-
-        node = self.items[item]
-        prev = node.prev
-        if prev is not None:
-            node.prev = prev.prev
-
-            if node.prev is None:
-                self.head = node
-            else:
-                node.prev.next = node
-
-            if node.next is None:
-                self.tail = prev
-            else:
-                node.next.prev = prev
-
-            prev.next = node.next
-            node.next = prev
-            prev.prev = node
-
-    def move_down(self, item: Any) -> None:
-        """Move an item down one level in priority.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> foo = pdcast.PriorityList([1, 2, 3])
-            >>> foo.move_down(2)
-            >>> foo
-            PriorityList([1, 3, 2])
-        """
-        if isinstance(item, VectorType):
-            item = type(item)
-
-        node = self.items[item]
-        next = node.next
-        if next is not None:
-            node.next = next.next
-
-            if node.next is None:
-                self.tail = node
-            else:
-                node.next.prev = node
-
-            if node.prev is None:
-                self.head = next
-            else:
-                node.prev.next = next
-
-            next.prev = node.prev
-            node.prev = next
-            next.next = node
-
-    def move(self, item: Any, index: int) -> None:
-        """Move an item to the specified index.
-
-        Notes
-        -----
-        This method can accept negative indices.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> foo = pdcast.PriorityList([1, 2, 3])
-            >>> foo.move(2, -1)
-            >>> foo
-            PriorityList([1, 3, 2])
-        """
-        if isinstance(item, VectorType):
-            item = type(item)
-
-        curr_index = self.index(item)
-        index = self.normalize_index(index)
-
-        node = self.items[item]
-        if index < curr_index:
-            for _ in range(curr_index - index):
-                self.move_up(item)
-        else:
-            for _ in range(index - curr_index):
-                self.move_down(item)
-
-    def __len__(self) -> int:
-        """Get the total number of items in the list."""
-        return len(self.items)
-
-    def __iter__(self):
-        """Iterate through the list items in order."""
-        node = self.head
-        while node is not None:
-            yield node.item
-            node = node.next
-
-    def __reversed__(self):
-        """Iterate through the list in reverse order."""
-        node = self.tail
-        while node is not None:
-            yield node.item
-            node = node.prev
-
-    def __bool__(self) -> bool:
-        """Treat empty lists as boolean False."""
-        return bool(self.items)
-
-    def __contains__(self, item: type | VectorType) -> bool:
-        """Check if the item is contained in the list."""
-        if isinstance(item, VectorType):
-            item = type(item)
-
-        return item in self.items
-
-    def __getitem__(self, key):
-        """Index into the list using standard syntax."""
-        # support slicing
-        if isinstance(key, slice):
-            start, stop, step = key.indices(len(self))
-            return PriorityList(self[i] for i in range(start, stop, step))
-
-        key = self.normalize_index(key)
-
-        # count from nearest end
-        if key < len(self) // 2:
-            node = self.head
-            for _ in range(key):
-                node = node.next
-        else:
-            node = self.tail
-            for _ in range(len(self) - key - 1):
-                node = node.prev
-
-        return node.item
-
-    def __str__(self):
-        return str(list(self))
-
-    def __repr__(self):
-        return f"{type(self).__name__}({list(self)})"
-
-
-cdef class PriorityNode:
-    """A node containing an individual element of a PriorityList."""
-
-    def __init__(self, object item):
-        self.item = item
-        self.next = None
-        self.prev = None
-
-
 cdef class PrioritySet(set):
     """A subclass of set that stores pairs of VectorTypes ``(A, B)``, where
     ``A`` is always considered to be less than ``B``.
     """
 
     def _get_types(self, item: tuple) -> tuple:
-        """Convert the pair into their types if they are given as instances."""
+        """Convert a pair into their types if they are given as instances and
+        ensure that they are subclasses of VectorType.
+        """
         # unpack
         small, large = item
 
@@ -1945,37 +1622,157 @@ cdef class PrioritySet(set):
 
         # ensure subclass of VectorType
         if not issubclass(small, VectorType):
-            raise TypeError(f"{repr(small)} must be a subclass of VectorType")
+            raise TypeError(
+                f"'{small.__qualname__}' must be a subclass of VectorType"
+            )
         if not issubclass(large, VectorType):
-            raise TypeError(f"{repr(large)} is not a subclass of VectorType")
+            raise TypeError(
+                f"'{large.__qualname__}' is not a subclass of VectorType"
+            )
 
         return (small, large)
 
     def add(self, item: tuple) -> None:
-        """Add a pair of types to the set."""
+        """Add a pair of types to the set as a directed edge.
+
+        Parameters
+        ----------
+        item : tuple
+            A pair of types ``(A, B)`` where ``A < B``.
+
+        Raises
+        ------
+        ValueError
+            If ``A`` and ``B`` are the same type or if the reverse edge
+            ``(B, A)`` already exists.
+
+        See Also
+        --------
+        PrioritySet.remove : Remove a pair of types from the set.
+        PrioritySet.discard : Remove a pair of types from the set if it exists.
+        PrioritySet.pop : Remove and return a pair of types from the set.
+        PrioritySet.update : Add multiple pairs of types to the set.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> edges = PrioritySet()
+            >>> edges.add((IntegerType, FloatType))
+            >>> edges
+            PrioritySet({(<class 'pdcast.types.integer.IntegerType'>, <class 'pdcast.types.float.FloatType'>)})
+        """
         small, large = self._get_types(item)
 
         # ensure types are different
         if small is large:
             raise ValueError(
-                f"types must be different: {repr(small)} == {repr(large)}"
+                f"types must be different: '{small.__qualname__}' == "
+                f"'{large.__qualname__}'"
+            )
+
+        # ensure reverse edge does not exist
+        if (large, small) in self:
+            raise ValueError(
+                f"edge already exists: '{small.__qualname__}' < "
+                f"'{large.__qualname__}'"
             )
 
         super().add((small, large))
 
     def remove(self, item: tuple) -> None:
-        """Remove a pair of types from the set."""
+        """Remove an edge from the set.
+
+        Parameters
+        ----------
+        item : tuple
+            A pair of types ``(A, B)`` where ``A < B``.
+
+        Raises
+        ------
+        KeyError
+            If the edge ``(A, B)`` does not exist.
+
+        See Also
+        --------
+        PrioritySet.add : Add a pair of types to the set.
+        PrioritySet.discard : Remove a pair of types from the set if it exists.
+        PrioritySet.pop : Remove and return a pair of types from the set.
+        PrioritySet.update : Add multiple pairs of types to the set.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> edges = PrioritySet()
+            >>> edges.add((IntegerType, FloatType))
+            >>> edges
+            PrioritySet({(<class 'pdcast.types.integer.IntegerType'>, <class 'pdcast.types.float.FloatType'>)})
+            >>> edges.remove((IntegerType, FloatType))
+            >>> edges
+            PrioritySet(set())
+        """
         super().remove(self._get_types(item))
 
     def discard(self, item: tuple) -> None:
-        """Remove a pair of types from the set if it exists."""
+        """Remove an edge from the set if it exists.
+
+        Parameters
+        ----------
+        item : tuple
+            A pair of types ``(A, B)`` where ``A < B``.
+
+        See Also
+        --------
+        PrioritySet.add : Add a pair of types to the set.
+        PrioritySet.remove : Remove a pair of types from the set.
+        PrioritySet.pop : Remove and return a pair of types from the set.
+        PrioritySet.update : Add multiple pairs of types to the set.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> edges = PrioritySet()
+            >>> edges.add((IntegerType, FloatType))
+            >>> edges
+            PrioritySet({(<class 'pdcast.types.integer.IntegerType'>, <class 'pdcast.types.float.FloatType'>)})
+            >>> edges.discard((IntegerType, FloatType))
+            >>> edges
+            PrioritySet(set())
+            >>> edges.discard((BooleanType, ComplexType))
+            >>> edges
+            PrioritySet(set())
+        """
         super().discard(self._get_types(item))
 
     def update(
         self,
         other: Iterable[Tuple[object, object]]
     ) -> None:
-        """Update the set with a collection of pairs."""
+        """Update the set with a collection of edges.
+
+        Parameters
+        ----------
+        other : Iterable
+            A collection of pairs of types ``(A, B)`` where ``A < B``.
+
+        See Also
+        --------
+        PrioritySet.add : Add a pair of types to the set.
+        PrioritySet.remove : Remove a pair of types from the set.
+        PrioritySet.discard : Remove a pair of types from the set if it exists.
+        PrioritySet.pop : Remove and return a pair of types from the set.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> edges = PrioritySet()
+            >>> edges.update([(IntegerType, FloatType), (BooleanType, ComplexType)])
+            >>> edges  # doctest: +SKIP
+            PrioritySet({(<class 'pdcast.types.integer.IntegerType'>, <class 'pdcast.types.float.FloatType'>), (<class 'pdcast.types.boolean.BooleanType'>, <class 'pdcast.types.complex.ComplexType'>)})
+        """
         for item in other:
             self.add(item)
 
@@ -1983,7 +1780,33 @@ cdef class PrioritySet(set):
         self,
         other: Iterable[Tuple[object, object]
     ]) -> None:
-        """Update the set with the intersection of itself and another."""
+        """Update the set with the intersection of itself and another.
+
+        Parameters
+        ----------
+        other : Iterable
+            A collection of pairs of types ``(A, B)`` where ``A < B``.
+
+        See Also
+        --------
+        PrioritySet.update : Add multiple edges to the set.
+        PrioritySet.difference_update : Remove a collection of pairs from the
+            set.
+        PrioritySet.symmetric_difference_update : Update the set with the
+            symmetric difference of itself and another.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> edges = PrioritySet()
+            >>> edges.update([(IntegerType, FloatType), (BooleanType, ComplexType)])
+            >>> edges  # doctest: +SKIP
+            PrioritySet({(<class 'pdcast.types.integer.IntegerType'>, <class 'pdcast.types.float.FloatType'>), (<class 'pdcast.types.boolean.BooleanType'>, <class 'pdcast.types.complex.ComplexType'>)})
+            >>> edges.intersection_update([(IntegerType, FloatType), (FloatType, ComplexType)])
+            >>> edges
+            PrioritySet({(<class 'pdcast.types.integer.IntegerType'>, <class 'pdcast.types.float.FloatType'>)})
+        """
         other = set(self._get_types(item) for item in other)
         for item in self:
             if item not in other:
@@ -1993,7 +1816,33 @@ cdef class PrioritySet(set):
         self,
         other: Iterable[Tuple[object, object]]
     ) -> None:
-        """Remove a collection of pairs from the set."""
+        """Remove a collection of edges from the set.
+
+        Parameters
+        ----------
+        other : Iterable
+            A collection of pairs of types ``(A, B)`` where ``A < B``.
+
+        See Also
+        --------
+        PrioritySet.update : Add multiple edges to the set.
+        PrioritySet.intersection_update : Update the set with the intersection
+            of itself and another.
+        PrioritySet.symmetric_difference_update : Update the set with the
+            symmetric difference of itself and another.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> edges = PrioritySet()
+            >>> edges.update([(IntegerType, FloatType), (BooleanType, ComplexType)])
+            >>> edges   # doctest: +SKIP
+            PrioritySet({(<class 'pdcast.types.integer.IntegerType'>, <class 'pdcast.types.float.FloatType'>), (<class 'pdcast.types.boolean.BooleanType'>, <class 'pdcast.types.complex.ComplexType'>)})
+            >>> edges.difference_update([(IntegerType, FloatType), (FloatType, ComplexType)])
+            >>> edges
+            PrioritySet({(<class 'pdcast.types.boolean.BooleanType'>, <class 'pdcast.types.complex.ComplexType'>)})
+        """
         other = set(self._get_types(item) for item in other)
         for item in other:
             self.discard(item)
@@ -2003,6 +1852,31 @@ cdef class PrioritySet(set):
         other: Iterable[Tuple[object, object]]
     ) -> None:
         """Update the set with the symmetric difference of itself and another.
+
+        Parameters
+        ----------
+        other : Iterable
+            A collection of pairs of types ``(A, B)`` where ``A < B``.
+
+        See Also
+        --------
+        PrioritySet.update : Add multiple edges to the set.
+        PrioritySet.intersection_update : Update the set with the intersection
+            of itself and another.
+        PrioritySet.difference_update : Remove a collection of edges from the
+            set.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> edges = PrioritySet()
+            >>> edges.update([(IntegerType, FloatType), (BooleanType, ComplexType)])
+            >>> edges   # doctest: +SKIP
+            PrioritySet({(<class 'pdcast.types.integer.IntegerType'>, <class 'pdcast.types.float.FloatType'>), (<class 'pdcast.types.boolean.BooleanType'>, <class 'pdcast.types.complex.ComplexType'>)})
+            >>> edges.symmetric_difference_update([(IntegerType, FloatType), (FloatType, ComplexType)])
+            >>> edges   # doctest: +SKIP
+            PrioritySet({(<class 'pdcast.types.boolean.BooleanType'>, <class 'pdcast.types.complex.ComplexType'>), (<class 'pdcast.types.float.FloatType'>, <class 'pdcast.types.integer.IntegerType'>)})
         """
         other = set(self._get_types(item) for item in other)
         for item in other:
@@ -2036,9 +1910,8 @@ cdef class PrioritySet(set):
         """Check if a pair of types is contained in the set."""
         return super().__contains__(self._get_types(item))
 
+    def __str__(self) -> str:
+        return str(set(self))
 
-cdef void add_to_decorator_priority(type typ):
-    """C-level helper function to add a decorator type to the priority list."""
-    cdef PriorityList prio = Type.registry.decorator_priority
-
-    prio.append(typ)  # this can't be done from normal Python
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({str(self)})"

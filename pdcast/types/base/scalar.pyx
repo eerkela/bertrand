@@ -222,27 +222,6 @@ cdef class ScalarType(VectorType):
 
         return self  # if the type is parametrized, call self() directly
 
-    @property
-    def is_parametrized(self) -> bool:
-        """Indicates whether this type is equal to its base instance.
-
-        Returns
-        -------
-        bool
-            ``True`` if any parameters were supplied to create this type.
-            ``False`` otherwise.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> pdcast.resolve_type("M8").is_parametrized
-            False
-            >>> pdcast.resolve_type("M8[ns]").is_parametrized
-            True
-        """
-        return self != self.base_instance
-
     ##########################
     ####    MEMBERSHIP    ####
     ##########################
