@@ -85,3 +85,9 @@ except ImportError:
 
 # global objects
 registry = Type.registry
+
+
+# ``<`` and ``>`` operator overrides
+registry.priority.update([
+    (SparseType, CategoricalType),
+])

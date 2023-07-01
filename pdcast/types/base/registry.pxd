@@ -19,6 +19,7 @@ cdef class TypeRegistry:
         CacheValue _regex
         CacheValue _resolvable
         PriorityList _decorator_priority
+        PrioritySet _priority
 
     cdef void update_hash(self)
     cdef void pin(self, Type instance, AliasManager aliases)
@@ -64,3 +65,7 @@ cdef class PriorityNode:
         object item
         PriorityNode next
         PriorityNode prev
+
+
+cdef class PrioritySet(set):
+    pass

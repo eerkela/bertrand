@@ -527,10 +527,25 @@ class PandasUInt64Type(ScalarType):
 #######################
 
 
-# NOTE: these aliases are platform-specific and may be assigned to different
+# overrides for ``<`` and ``>`` operators ``(A < B)``
+ScalarType.registry.priority.update([
+    (NumpyIntegerType, PandasIntegerType),
+    (NumpySignedIntegerType, PandasSignedIntegerType),
+    (NumpyUnsignedIntegerType, PandasUnsignedIntegerType),
+    (NumpyInt8Type, PandasInt8Type),
+    (NumpyInt16Type, PandasInt16Type),
+    (NumpyInt32Type, PandasInt32Type),
+    (NumpyInt64Type, PandasInt64Type),
+    (NumpyUInt8Type, PandasUInt8Type),
+    (NumpyUInt16Type, PandasUInt16Type),
+    (NumpyUInt32Type, PandasUInt32Type),
+    (NumpyUInt64Type, PandasUInt64Type),
+])
+
+
+# NOTE: some aliases are platform-specific and may be assigned to different
 # integer types based on hardware configuration.  Luckily, numpy's dtype()
 # factory automatically resolves these, so we can just piggyback off it.
-
 
 cdef dict platform_specific_aliases = {
     # C char

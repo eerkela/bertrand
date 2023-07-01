@@ -46,10 +46,6 @@ class PandasTimedeltaType(ScalarType):
     max = pd.Timedelta.max.value
     min = pd.Timedelta.min.value
 
-    def __lt__(self, other: ScalarType) -> bool:
-        """Always prioritize native pandas types."""
-        return True
-
 
 ######################
 ####    PYTHON    ####
@@ -65,13 +61,6 @@ class PythonTimedeltaType(ScalarType):
     na_value = pd.NaT
     max = time.pytimedelta_to_ns(datetime.timedelta.max)
     min = time.pytimedelta_to_ns(datetime.timedelta.min)
-
-    def __lt__(self, other: ScalarType) -> bool:
-        """Prioritize python timedeltas over numpy."""
-        if isinstance(other, NumpyTimedelta64Type):
-            return True
-
-        return super(type(self), self).__lt__(other)
 
 
 #####################
@@ -190,19 +179,19 @@ class NumpyTimedelta64Type(ScalarType):
         else:
             yield from ()
 
-    def __lt__(self, other: ScalarType) -> bool:
-        """Prioritize numpy timedeltas last."""
-        if not isinstance(other, type(self)):
-            return False
-
-        return super(type(self), self).__lt__(other)
-
 
 #######################
 ####    PRIVATE    ####
 #######################
 
 
+# overrides for ``<`` and ``>`` operators ``(A < B)``
+ScalarType.registry.priority.update([
+    (PythonTimedeltaType, NumpyTimedelta64Type),
+])
+
+
+# regex to parse numpy-style "m8[{step_size}{unit}]" strings
 cdef object m8_pattern = re.compile(
     r"(?P<step_size>[0-9]+)?(?P<unit>ns|us|ms|s|m|h|D|W|M|Y)"
 )

@@ -730,10 +730,193 @@ cdef class DecoratorType(VectorType):
             >>> str(_)
             categorical[sparse[bool, True], None]
         """
+        # insert into linked list according to priority
         if isinstance(wrapped, DecoratorType):
             return insort(self, wrapped, args, kwargs)
 
+        # wrap directly
         return type(self)(wrapped, *args, **kwargs)
+
+
+    def __lt__(self, other: VectorType) -> bool:
+        """Sort types according to their priority and representable range.
+
+        Parameters
+        ----------
+        other : VectorType
+            Another type to compare against.
+
+        Returns
+        -------
+        bool
+            ``True`` if this type is considered to be smaller than ``other``.
+            See the notes below for details.
+
+        Raises
+        ------
+        ValueError
+            If this decorator has no
+            :attr:`wrapped <pdcast.DecoratorType.wrapped>` type, ``other`` is
+            another decorator, and no edge exists between them in the
+            :attr:`TypeRegistry.priority <pdcast.TypeRegistry.priority>` table.
+
+        See Also
+        --------
+        DecoratorType.__gt__ : The inverse of this operator.
+        TypeRegistry.priority : Override the default sorting behavior.
+
+        Notes
+        -----
+        This operator is the decorated equivalent of
+        :meth:ScalarType.__lt__ <pdcast.ScalarType.__lt__>`.  Most of the time,
+        it simply delegates to that operator, but if a decorator is naked,
+        (i.e. has no :attr:`wrapped <pdcast.DecoratorType.wrapped>` type), then
+        its behavior can become undefined.  In these cases, special logic is
+        applied to determine its priority.
+
+        The priority of a naked decorator is determined by the following rules:
+
+            *   If the comparison type is a decorator of the same species, then
+                the naked decorator is considered to be smaller.  If the other
+                decorator is also naked, then this operator returns ``False``.
+            *   If the comparison type is a decorator of a different species,
+                then the
+                :attr:`TypeRegistry.priority <pdcast.TypeRegistry.priority>`
+                table is searched for an edge containing the two types.  If
+                none is found, then a :class:`ValueError <python:ValueError>`
+                is raised stating the ambiguity.
+            *   If the comparison type is scalar, then the naked
+                decorator is always considered to be smaller.
+
+        Examples
+        --------
+        In most cases, this operator simply delegates to the wrapped type.
+
+        .. doctest::
+
+            >>> SparseType(BooleanType) < SparseType(IntegerType)
+            True
+            >>> SparseType(IntegerType) < SparseType(BooleanType)
+            False
+            >>> SparseType(BooleanType) < CategoricalType(IntegerType)
+            True
+            >>> SparseType(IntegerType) < SparseType(CategoricalType(BooleanType))
+            False
+
+        If the decorator is naked, then its priority is determined by the
+        :attr:`TypeRegistry.priority <pdcast.TypeRegistry.priority>` table.
+
+        .. doctest::
+
+            >>> SparseType < CategoricalType
+            True
+            >>> CategoricalType < SparseType
+            False
+            >>> (SparseType, CategoricalType) in registry.priority
+            True
+
+        Naked decorators are always considered smaller than scalars and their
+        non-naked counterparts.
+
+        .. doctest::
+
+            >>> SparseType < BooleanType
+            True
+            >>> SparseType < SparseType(BooleanType)
+            True
+            >>> SparseType < CategoricalType(BooleanType)
+            True
+            >>> SparseType(BooleanType) < SparseType
+            False
+            >>> SparseType(BooleanType) < CategoricalType
+            False
+        """
+        # special case for decorators with no wrapped type
+        if self.wrapped is None:
+            # comparison type is another decorator
+            if isinstance(other, DecoratorType):
+                # decorator is of the same species
+                if isinstance(other, type(self)):
+                    return other.wrapped is not None
+
+                # search for edge
+                if (type(self), type(other)) in self.registry.priority:
+                    return True
+                if (type(other), type(self)) in self.registry.priority:
+                    return False
+
+                # no edge found
+                raise ValueError(
+                    f"no edge between {self} and {other} in registry.priority"
+                )
+
+            # comparison type is scalar
+            return True
+
+        # delegate to wrapped type
+        return self.wrapped < other
+
+    def __gt__(self, other: VectorType) -> bool:
+        """Sort types according to their priority and representable range.
+
+        Parameters
+        ----------
+        other : VectorType
+            Another type to compare against.
+
+        Returns
+        -------
+        bool
+            ``True`` if this type is considered to be larger than ``other``.
+            See the notes below for details.
+
+        Raises
+        ------
+        ValueError
+            If this decorator has no
+            :attr:`wrapped <pdcast.DecoratorType.wrapped>` type, ``other`` is
+            another decorator, and no edge exists between them in the
+            :attr:`TypeRegistry.priority <pdcast.TypeRegistry.priority>` table.
+
+        See Also
+        --------
+        DecoratorType.__lt__ : The inverse of this operator.
+        TypeRegistry.priority : Override the default sorting behavior.
+
+        Notes
+        -----
+        This operator is provided for completeness with respect to
+        :meth:`DecoratorType.__lt__ <pdcast.DecoratorType.__lt__>`.  It
+        represents the inverse of that operation.
+
+        If a manual override is registered under the
+        :attr:`TypeRegistry.priority <pdcast.TypeRegistry.priority>` table,
+        then it will be used for both operators.
+        """
+        # special case for decorators with no wrapped type
+        if self.wrapped is None:
+            # comparison type is another decorator
+            if isinstance(other, DecoratorType):
+                # decorator is of the same species
+                if isinstance(other, type(self)):
+                    return self.wrapped is not None
+
+                # search for edge
+                if (type(self), type(other)) in self.registry.priority:
+                    return False
+                if (type(other), type(self)) in self.registry.priority:
+                    return True
+
+                # no edge found
+                raise ValueError(
+                    f"no edge between {self} and {other} in registry.priority"
+                )
+
+            # comparison type is scalar
+            return False
+
+        # delegate to wrapped type
+        return self.wrapped > other
 
 
 #######################
@@ -743,8 +926,11 @@ cdef class DecoratorType(VectorType):
 
 cdef Type wrap_result(DecoratorType decorator, Type result):
     """Replace a decorator on the result of a wrapped computation."""
+    # broadcast the decorator to all types
     if isinstance(result, CompositeType):
         return CompositeType(decorator.replace(wrapped=typ) for typ in result)
+
+    # wrap a single result
     return decorator.replace(wrapped=result)
 
 

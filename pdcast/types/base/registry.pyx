@@ -112,6 +112,7 @@ cdef class TypeRegistry:
         self.implementations = {}
 
         self._decorator_priority = PriorityList()
+        self._priority = PrioritySet()
         self.update_hash()
 
     ############################
@@ -851,6 +852,13 @@ cdef class TypeRegistry:
             CategoricalType(wrapped=SparseType(wrapped=None, fill_value=None), levels=None)
         """
         return self._decorator_priority
+
+
+    @property
+    def priority(self) -> set:
+        """A set of priority tuples (a, b) where a is always preferred over b.
+        """
+        return self._priority
 
     #######################
     ####    PRIVATE    ####
@@ -1917,6 +1925,116 @@ cdef class PriorityNode:
         self.item = item
         self.next = None
         self.prev = None
+
+
+cdef class PrioritySet(set):
+    """A subclass of set that stores pairs of VectorTypes ``(A, B)``, where
+    ``A`` is always considered to be less than ``B``.
+    """
+
+    def _get_types(self, item: tuple) -> tuple:
+        """Convert the pair into their types if they are given as instances."""
+        # unpack
+        small, large = item
+
+        # get types
+        if not isinstance(small, type):
+            small = type(small)
+        if not isinstance(large, type):
+            large = type(large)
+
+        # ensure subclass of VectorType
+        if not issubclass(small, VectorType):
+            raise TypeError(f"{repr(small)} must be a subclass of VectorType")
+        if not issubclass(large, VectorType):
+            raise TypeError(f"{repr(large)} is not a subclass of VectorType")
+
+        return (small, large)
+
+    def add(self, item: tuple) -> None:
+        """Add a pair of types to the set."""
+        small, large = self._get_types(item)
+
+        # ensure types are different
+        if small is large:
+            raise ValueError(
+                f"types must be different: {repr(small)} == {repr(large)}"
+            )
+
+        super().add((small, large))
+
+    def remove(self, item: tuple) -> None:
+        """Remove a pair of types from the set."""
+        super().remove(self._get_types(item))
+
+    def discard(self, item: tuple) -> None:
+        """Remove a pair of types from the set if it exists."""
+        super().discard(self._get_types(item))
+
+    def update(
+        self,
+        other: Iterable[Tuple[object, object]]
+    ) -> None:
+        """Update the set with a collection of pairs."""
+        for item in other:
+            self.add(item)
+
+    def intersection_update(
+        self,
+        other: Iterable[Tuple[object, object]
+    ]) -> None:
+        """Update the set with the intersection of itself and another."""
+        other = set(self._get_types(item) for item in other)
+        for item in self:
+            if item not in other:
+                self.remove(item)
+
+    def difference_update(
+        self,
+        other: Iterable[Tuple[object, object]]
+    ) -> None:
+        """Remove a collection of pairs from the set."""
+        other = set(self._get_types(item) for item in other)
+        for item in other:
+            self.discard(item)
+
+    def symmetric_difference_update(
+        self,
+        other: Iterable[Tuple[object, object]]
+    ) -> None:
+        """Update the set with the symmetric difference of itself and another.
+        """
+        other = set(self._get_types(item) for item in other)
+        for item in other:
+            if item in self:
+                self.remove(item)
+            else:
+                self.add(item)
+
+    def __ior__(self, other: Iterable[Tuple[object, object]]) -> PrioritySet:
+        """Update the set with the union of itself and another."""
+        self.update(other)
+        return self
+
+    def __iand__(self, other: Iterable[Tuple[object, object]]) -> PrioritySet:
+        """Update the set with the intersection of itself and another."""
+        self.intersection_update(other)
+        return self
+
+    def __isub__(self, other: Iterable[Tuple[object, object]]) -> PrioritySet:
+        """Remove a collection of pairs from the set."""
+        self.difference_update(other)
+        return self
+
+    def __ixor__(self, other: Iterable[Tuple[object, object]]) -> PrioritySet:
+        """Update the set with the symmetric difference of itself and another.
+        """
+        self.symmetric_difference_update(other)
+        return self
+
+    def __contains__(self, item: tuple) -> bool:
+        """Check if a pair of types is contained in the set."""
+        return super().__contains__(self._get_types(item))
 
 
 cdef void add_to_decorator_priority(type typ):

@@ -16,6 +16,7 @@ from pdcast.util.type_hints import dtype_like, numeric, type_specifier
 
 from .registry cimport CacheValue, TypeRegistry
 from .vector cimport READ_ONLY_ERROR, VectorType, BackendEncoder
+from .decorator cimport DecoratorType
 from .composite cimport CompositeType
 from ..array import construct_object_dtype
 
@@ -23,11 +24,8 @@ from ..array import construct_object_dtype
 # TODO: .max/.min are currently stored as arbitrary objects.
 
 
-# TODO: .larger sorts are unstable if __lt__ is only overridden on one class.
-# This leads to ties.
-# -> Break ties by looking for overloaded < operator.  If this is found, we
-# always put this type first.
-# -> There doesn't appear to be a reliable way of doing this in cython.
+# TODO: registry should be directly sortable.  Currently this fails because
+# .max/.min can have arbitrary types.  This should be standardized.
 
 
 # TODO: when checking for interface matches in AbstractType, call
@@ -199,8 +197,8 @@ cdef class ScalarType(VectorType):
 
         Notes
         -----
-        When an ambiguous sequence (without a parsable ``.dtype``) is given as
-        input to :func:`detect_type() <pdcast.detect_type>`, this method
+        When an ambiguous sequence (without a recognizable ``.dtype``) is given
+        as input to :func:`detect_type() <pdcast.detect_type>`, this method
         will be called to resolve the ambiguity.  It should be fast, as it will
         be called at every index of the input.
 
@@ -223,6 +221,27 @@ cdef class ScalarType(VectorType):
         # NOTE: scalar parsing goes here
 
         return self  # if the type is parametrized, call self() directly
+
+    @property
+    def is_parametrized(self) -> bool:
+        """Indicates whether this type is equal to its base instance.
+
+        Returns
+        -------
+        bool
+            ``True`` if any parameters were supplied to create this type.
+            ``False`` otherwise.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.resolve_type("M8").is_parametrized
+            False
+            >>> pdcast.resolve_type("M8[ns]").is_parametrized
+            True
+        """
+        return self != self.base_instance
 
     ##########################
     ####    MEMBERSHIP    ####
@@ -1083,29 +1102,32 @@ cdef class ScalarType(VectorType):
         """
         yield from ()
 
-    def __lt__(self, other: ScalarType) -> bool:
-        """Sort types by their size in memory and representable range.
+    def __lt__(self, other: VectorType) -> bool:
+        """Sort types according to their priority and representable range.
 
         Parameters
         ----------
-        other : ScalarType
-            The type to compare against.
+        other : VectorType
+            Another type to compare against.
 
         Returns
         -------
         bool
-            ``True`` if this type is smaller than ``other``.
+            ``True`` if this type is considered to be smaller than ``other``.
+            See the notes below for details.
 
         See Also
         --------
-        ScalarType.__gt__ : The inverse of this method.
+        ScalarType.__gt__ : The inverse of this operator.
+        TypeRegistry.priority : Override the default sorting order.
 
         Notes
         -----
-        This method is automatically called by the built-in
-        :func:`sorted() <python:sorted>` function to order type objects.
-
-        By default, types are sorted by the following criteria (in order):
+        This operator is automatically called by the built-in
+        :func:`sorted() <python:sorted>` function to sort type objects.  By
+        default, types are sorted by the following criteria in ascending
+        `lexicographic <https://en.wikipedia.org/wiki/Lexicographic_order>`_
+        (smallest to largest) order:
 
             #.  Their total representable range (:attr:`max <ScalarType.max>` -
                 :attr:`min <ScalarType.min>`).
@@ -1115,9 +1137,20 @@ cdef class ScalarType(VectorType):
             #.  Alphabetically by their backend specifier ('numpy', 'pandas',
                 'python', etc.).
 
+        Manual overrides for this operator can be registered under the
+        :attr:`TypeRegistry.priority <pdcast.TypeRegistry.priority>` table,
+        which represents a set of edges ``(A, B)`` where ``A < B``.  If an
+        edge is present in this table, the above criteria will be bypassed
+        entirely.
+
+        .. note::
+
+            In order to maintain the stability of sorts, this operator should
+            never be overridden in subclasses.
+
         Examples
         --------
-        This is used to sort types in
+        This operator is used to sort types in
         :attr:`AbstractType.larger <pdcast.AbstractType.larger>`\ /
         :attr:`AbstractType.smaller <pdcast.AbstractType.smaller>`.
 
@@ -1128,6 +1161,17 @@ cdef class ScalarType(VectorType):
             >>> pdcast.NumpyUInt64Type < pdcast.PythonIntegerType
             True
         """
+        # decorator special case - recur with wrapped type
+        if isinstance(other, DecoratorType):
+            return other.wrapped is not None and self < other.wrapped
+
+        # check for manual override
+        if (type(self), type(other)) in self.registry.priority:
+            return True
+        if (type(other), type(self)) in self.registry.priority:
+            return False
+
+        # default sort order
         itemsize = lambda typ: typ.itemsize or np.inf
         coverage = lambda typ: typ.max - typ.min
         bias = lambda typ: abs(typ.max + typ.min)
@@ -1140,13 +1184,13 @@ cdef class ScalarType(VectorType):
 
         return features(self) < features(other)
 
-    def __gt__(self, other: ScalarType) -> bool:
-        """Sort types by their size in memory and representable range.
+    def __gt__(self, other: VectorType) -> bool:
+        """Sort types by their priority and representable range.
 
         Parameters
         ----------
-        other : ScalarType
-            The type to compare against.
+        other : VectorType
+            Another type to compare against.
 
         Returns
         -------
@@ -1155,13 +1199,30 @@ cdef class ScalarType(VectorType):
 
         See Also
         --------
-        ScalarType.__lt__ : The inverse of this method.
+        ScalarType.__lt__ : The inverse of this operator.
+        TypeRegistry.priority : Override the default sorting order.
 
         Notes
         -----
-        This method is provided for completeness with respect to
-        :meth:`__lt__() <pdcast.ScalarType.__lt__>`.
+        This operator is provided for completeness with respect to
+        :meth:`ScalarType.__lt__() <pdcast.ScalarType.__lt__>`.  It represents
+        the inverse of that operation.
+
+        If a manual override is registered under the
+        :attr:`TypeRegistry.priority <pdcast.TypeRegistry.priority>` table,
+        then it will be used for both operators.
         """
+        # decorator special case - recur with wrapped type
+        if isinstance(other, DecoratorType):
+            return other.wrapped is None or self > other.wrapped
+
+        # check for manual override
+        if (type(self), type(other)) in self.registry.priority:
+            return False
+        if (type(other), type(self)) in self.registry.priority:
+            return True
+
+        # default sort order
         itemsize = lambda typ: typ.itemsize or np.inf
         coverage = lambda typ: typ.max - typ.min
         bias = lambda typ: abs(typ.max + typ.min)
@@ -1173,10 +1234,6 @@ cdef class ScalarType(VectorType):
         )
 
         return features(self) > features(other)
-
-    ###############################
-    ####    SPECIAL METHODS    ####
-    ###############################
 
     def __hash__(self) -> int:
         """Reimplement hash() for ScalarTypes.

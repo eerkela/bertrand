@@ -134,17 +134,6 @@ class PythonDatetimeType(ScalarType):
         """Parse a scalar datetime according to timezone."""
         return self(tz=example.tzinfo)
 
-    #############################
-    ####    CONFIGURATION    ####
-    #############################
-
-    def __lt__(self, other: ScalarType) -> bool:
-        """Prioritize python datetimes over numpy."""
-        if isinstance(other, NumpyDatetime64Type):
-            return True
-
-        return super(type(self), self).__lt__(other)
-
 
 #####################
 ####    NUMPY    ####
@@ -259,18 +248,21 @@ class NumpyDatetime64Type(ScalarType):
         else:
             yield from ()
 
-    def __lt__(self, other: ScalarType) -> bool:
-        """Prioritize numpy datetimes last."""
-        if not isinstance(other, type(self)):
-            return False
-
-        return super(type(self), self).__lt__(other)
 
 #######################
 ####    PRIVATE    ####
 #######################
 
 
+# overrides for ``<`` and ``>`` operators ``(A < B)``
+ScalarType.registry.priority.update([
+    (PandasTimestampType, PythonDatetimeType),
+    (PandasTimestampType, NumpyDatetime64Type),
+    (PythonDatetimeType, NumpyDatetime64Type),
+])
+
+
+# regex to parse numpy-style "M8[{step_size}{unit}]" strings
 cdef object M8_pattern = re.compile(
     r"(?P<step_size>[0-9]+)?(?P<unit>ns|us|ms|s|m|h|D|W|M|Y)"
 )
