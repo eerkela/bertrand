@@ -34,11 +34,6 @@ from ..array import construct_object_dtype
 # this subset.
 
 
-# TODO: .generic should return a self reference if the type is already generic.
-# -> this is required in CompositeDispatch.finalize() to determine whether
-# results are of the same family.
-
-
 ######################
 ####    SCALAR    ####
 ######################
@@ -836,14 +831,24 @@ cdef class ScalarType(VectorType):
 
     @property
     def generic(self):
-        """The :class:`AbstractType <pdcast.AbstractType>` that this type is an
+        """The type that this type is an
         :meth:`implementation <pdcast.AbstractType.implementation>` of, if one
         exists.
 
         Returns
         -------
-        AbstractType
-            The generic type that this type is registered to, if one exists.
+        ScalarType
+            The generic equivalent of this type.  If this type is not an
+            :meth:`implementation <pdcast.AbstractType.implementation>` of
+            another type, then this will be a reference to ``self``.
+
+        See Also
+        --------
+        ScalarType.implementations : A mapping of all the
+            :meth:`implementations <pdcast.AbstractType.implementation>` that
+            are registered to this type.
+        AbstractType.implementation : A class decorator used to mark types as
+            concrete implementations of an abstract type.
 
         Examples
         --------
@@ -851,10 +856,8 @@ cdef class ScalarType(VectorType):
 
             >>> pdcast.resolve_type("int64[numpy]").generic
             Int64Type()
-            >>> pdcast.resolve_type("float16").generic is None
-            True
-            >>> pdcast.resolve_type("bool").generic is None
-            True
+            >>> pdcast.resolve_type("int64").generic
+            Int64Type()
         """
         return self.registry.get_generic(self)
 

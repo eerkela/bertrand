@@ -695,21 +695,21 @@ cdef class TypeRegistry:
 
         return CompositeType(result)
 
-    def get_generic(self, typ: ScalarType) -> AbstractType:
-        """Get a type's :attr:`generic <pdcast.ScalarType.generic>` if it is
-        registered.
+    def get_generic(self, typ: ScalarType) -> ScalarType:
+        """Get a type's :attr:`generic <pdcast.ScalarType.generic>` equivalent.
 
         Parameters
         ----------
         typ : ScalarType
-            A concrete :class:`ScalarType <pdcast.ScalarType>` to check for.
+            A type to check for.
 
         Returns
         -------
-        AbstractType | None
-            An abstract generic type that the
-            :class:`ScalarType <pdcast.ScalarType>` is registered to, or
-            :data:`None <python:None>` if none exists.
+        ScalarType
+            The generic equivalent of the type.  If the type is an
+            :meth:`implementation <pdcast.AbstractType.implementation>` of
+            another type, then this will be a reference to that type.
+            Otherwise, it will be a reference to the type itself.
 
         Raises
         ------
@@ -733,10 +733,13 @@ cdef class TypeRegistry:
 
             >>> pdcast.registry.get_generic(pdcast.NumpyFloat32Type)
             Float32Type()
+            >>> pdcast.registry.get_generic(pdcast.Float32Type)
+            Float32Type()
         """
         result = self.generics.get(type(typ), None)
-        if result is not None:
-            result = self.instances.get(result, None)
+        result = self.instances.get(result, None)
+        if result is None:
+            return typ
         return result
 
     def get_implementations(self, typ: AbstractType) -> MappingProxyType:
@@ -792,8 +795,55 @@ cdef class TypeRegistry:
     #############################
 
     @property
-    def priority(self) -> set:
-        """A set of priority tuples (a, b) where a is always preferred over b.
+    def priority(self):
+        """A collection of edges ``(A, B)`` where ``A < B``.
+
+        Returns
+        -------
+        PrioritySet
+            A :class:`set <python:set>`-like object containing pairs of types
+            as tuples where the first element is always considered to be less
+            than the second.  This behaves just like an ordinary
+            :class:`set <python:set>`, except that it can only contain tuples
+            of two type objects, and it is not possible to add tuples that
+            would violate the overall ordering.
+
+        See Also
+        --------
+        ScalarType.__lt__ : implement the ``<`` operator for scalar types.
+        ScalarType.__gt__ : implement the ``>`` operator for scalar types.
+        DecoratorType.__lt__ : implement the ``<`` operator for decorator
+            types.
+        DecoratorType.__gt__ : implement the ``>`` operator for decorator
+            types.
+
+        Notes
+        -----
+        This attribute contains overrides for the :meth:`< <ScalarType.__lt__>`
+        and :meth:`> <ScalarType.__gt__>` operators for
+        :class:`ScalarType <pdcast.ScalarType>` and
+        :class:`DecoratorType <pdcast.DecoratorType>` objects.  If an edge
+        ``(A, B)`` is present in this set, then ``A < B`` will always be
+        ``True``, as will ``B > A``.
+
+        Users should never override the operators directly, as doing so can
+        cause sorts to become inconsistent.  Instead, they should add edges to
+        this set to override the default ordering.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.registry.priority
+            PrioritySet({...})
+            >>> (SparseType, CategoricalType) in pdcast.registry.priority
+            True
+            >>> SparseType < CategoricalType
+            True
+            >>> CategoricalType > SparseType
+            True
+            >>> CategoricalType < SparseType
+            False
         """
         return self._priority
 

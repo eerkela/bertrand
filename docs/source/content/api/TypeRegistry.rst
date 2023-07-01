@@ -93,26 +93,13 @@ These relationships are established by
 
 Configuration
 -------------
-Lastly, the registry contains some global configuration values for types within
-the ``pdcast`` type system.
+Lastly, the registry contains some global configuration variables for types
+within the ``pdcast`` type system.
 
 .. autosummary::
     :toctree: ../../generated
 
-    TypeRegistry.decorator_priority
-
-..
-    HACK - commenting out an autosummary directive like this will still
-    generate stubs, which can then be linked inside decorator_priority.
-
-    .. autosummary::
-        :toctree: ../../generated
-
-        PriorityList
-        PriorityList.index
-        PriorityList.move_up
-        PriorityList.move_down
-        PriorityList.move
+    TypeRegistry.priority
 
 Special methods
 ---------------
