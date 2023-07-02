@@ -24,16 +24,6 @@ from pdcast.util.vector import apply_with_errors
 from . import arguments
 
 
-# TODO: handling OverflowErrors in catch_errors works, but can kill performance
-# if multiple retries are made.  A better solution would involve a context
-# manager that allows users to override arguments locally within conversions.
-# If an OverflowError occurs within the block, then the conversion will be
-# retried with the overridden arguments.  This avoids repeating previous work.
-
-# with retry_overflow(series=series, unit="ns", step_size=1, since="utc"):
-#     series = boundscheck(series, dtype, tol.real, errors)
-
-
 # conversions
 # +===========+===+===+===+===+===+===+===+===+===+
 # |           | b | i | f | c | d | d | t | s | o |

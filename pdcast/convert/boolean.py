@@ -7,13 +7,6 @@ from pdcast import types
 from .base import cast
 
 
-# TODO: bool -> object does not return a dtype: object array
-# -> pdcast.cast([True, False], "object")  returns object
-# -> pdcast.cast([True, False, None], "object")  returns bool[python]
-
-# ^ There appears to be an erroneous rectify() branch in @dispatch
-
-
 @cast.overload("bool", "decimal")
 def boolean_to_decimal(
     series: pd.Series,

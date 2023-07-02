@@ -179,3 +179,14 @@ class PythonBooleanType(ScalarType):
     is_numeric = True
     max = 1
     min = 0
+
+
+#######################
+####    PRIVATE    ####
+#######################
+
+
+# overrides for ``<`` and ``>`` operators ``(A < B)``
+ScalarType.registry.priority.update([
+    (NumpyBooleanType, PandasBooleanType),
+])

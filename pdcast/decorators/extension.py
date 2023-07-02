@@ -12,12 +12,6 @@ from typing import Any, Callable, Mapping, get_type_hints
 from .base import EMPTY, Arguments, FunctionDecorator, Signature
 
 
-# TODO: context dictionaries are not being correctly passed to validators.
-# -> have to apply_defaults() before passing to validator, not after.
-# This must happen in validate(), we just only validate the values that are
-# present before this step.
-
-
 ######################
 ####    PUBLIC    ####
 ######################

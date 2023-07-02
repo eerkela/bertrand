@@ -21,13 +21,6 @@ from .composite cimport CompositeType
 from ..array import construct_object_dtype
 
 
-# TODO: .max/.min are currently stored as arbitrary objects.
-
-
-# TODO: registry should be directly sortable.  Currently this fails because
-# .max/.min can have arbitrary types.  This should be standardized.
-
-
 # TODO: when checking for interface matches in AbstractType, call
 # object.__getattribute__ on every name in dir() to find out which ones are
 # overridden on the abstract type.  Then, only check for interface matches on
@@ -441,7 +434,7 @@ cdef class ScalarType(VectorType):
             104
         """
         if self._itemsize is None:
-            return None
+            return np.inf
 
         return self._itemsize
 
@@ -485,8 +478,9 @@ cdef class ScalarType(VectorType):
 
         Returns
         -------
-        decimal.Decimal
-            A decimal value representing the maximum value for this type.
+        int | infinity
+            An integer representing the maximum value for this type, or
+            :data:`infinity <python:math.inf>` if no maximum is given.
 
         See Also
         --------
@@ -494,22 +488,23 @@ cdef class ScalarType(VectorType):
 
         Notes
         -----
-        These are used to check for overflow when coercing values to this type.
+        These properties are used to check for overflow when converting values
+        to this type.
 
         Examples
         --------
         .. doctest::
 
             >>> pdcast.resolve_type("bool[numpy]").max
-            Decimal('1')
+            1
             >>> pdcast.resolve_type("int8[numpy]").max
-            Decimal('127')
+            127
             >>> pdcast.resolve_type("int64[numpy]").max
-            Decimal('9223372036854775807')
+            9223372036854775807
             >>> pdcast.resolve_type("datetime64[ns]").max
-            Decimal('9223372036854775807')
+            9223372036854775807
             >>> pdcast.resolve_type("decimal").max
-            Decimal('Infinity')
+            Infinity
 
         Floating-point types have a maximum value, but rather than representing
         a hard limit, it instead describes the largest value that can be
@@ -518,12 +513,12 @@ cdef class ScalarType(VectorType):
         .. doctest::
 
             >>> pdcast.resolve_type("float32[numpy]").max
-            Decimal('16777216')
+            16777216
             >>> pdcast.resolve_type("float64[numpy]").max
-            Decimal('9007199254740992')
+            9007199254740992
         """
         if self._max is None:
-            return decimal.Decimal("inf")
+            return np.inf
 
         return self._max
 
@@ -533,8 +528,9 @@ cdef class ScalarType(VectorType):
 
         Returns
         -------
-        decimal.Decimal
-            A decimal value representing the minimum value for this type.
+        int | infinity
+            An integer representing the minimum value for this type, or
+            negative :data:`infinity <numpy.inf>` if no minimum is given.
 
         See Also
         --------
@@ -542,22 +538,23 @@ cdef class ScalarType(VectorType):
 
         Notes
         -----
-        These are used to check for overflow when coercing values to this type.
+        These properties are used to check for overflow when converting values
+        to this type.
 
         Examples
         --------
         .. doctest::
 
             >>> pdcast.resolve_type("bool[numpy]").min
-            Decimal('0')
+            0
             >>> pdcast.resolve_type("int8[numpy]").min
-            Decimal('-128')
+            -128
             >>> pdcast.resolve_type("int64[numpy]").min
-            Decimal('-9223372036854775808')
+            -9223372036854775808
             >>> pdcast.resolve_type("datetime64[ns]").min
-            Decimal('-9223372036854775807')
+            -9223372036854775807
             >>> pdcast.resolve_type("decimal").min
-            Decimal('-Infinity')
+            -inf
 
         Floating-point types have a minimum value, but rather than representing
         a hard limit, it instead describes the smallest value that can be
@@ -566,12 +563,12 @@ cdef class ScalarType(VectorType):
         .. doctest::
 
             >>> pdcast.resolve_type("float32[numpy]").min
-            Decimal('-16777216')
+            -16777216
             >>> pdcast.resolve_type("float64[numpy]").min
-            Decimal('-9007199254740992')
+            -9007199254740992
         """
         if self._min is None:
-            return decimal.Decimal("-inf")
+            return -np.inf
 
         return self._min
 
@@ -1154,7 +1151,7 @@ cdef class ScalarType(VectorType):
             return False
 
         # default sort order
-        itemsize = lambda typ: typ.itemsize or np.inf
+        itemsize = lambda typ: typ.itemsize
         coverage = lambda typ: typ.max - typ.min
         bias = lambda typ: abs(typ.max + typ.min)
         family = lambda typ: typ.backend or ""
@@ -1205,7 +1202,7 @@ cdef class ScalarType(VectorType):
             return True
 
         # default sort order
-        itemsize = lambda typ: typ.itemsize or np.inf
+        itemsize = lambda typ: typ.itemsize
         coverage = lambda typ: typ.max - typ.min
         bias = lambda typ: abs(typ.max + typ.min)
         family = lambda typ: typ.backend or ""
@@ -2091,8 +2088,7 @@ cdef class AbstractType(ScalarType):
         }
 
         # filter off any leaves with itemsize greater than self
-        itemsize = lambda typ: typ.itemsize or np.inf
-        narrower = lambda typ: itemsize(typ) < itemsize(self)
+        narrower = lambda typ: typ.itemsize < self.itemsize
 
         # sort according to comparison operators
         yield from sorted([typ for typ in candidates if narrower(typ)])

@@ -361,7 +361,7 @@ cdef object combine_real_imag(
     cdef types.VectorType target
     cdef object result
 
-    largest = max([real_type, imag_type], key=lambda x: x.itemsize or np.inf)
+    largest = max([real_type, imag_type])
     target = largest.equiv_complex
     result = (real_part + imag_part * 1j)
     return result.astype(target.dtype, copy=False)

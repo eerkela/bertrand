@@ -133,7 +133,7 @@ cdef class VectorType(Type):
             aliases = set()
 
         for alias in aliases:
-            self.aliases.add(alias)  # registers with resolve_type()
+            self.aliases.add(alias, pin=False)  # registers with resolve_type()
 
     cdef void init_parametrized(self):
         """Initialize a parametrized instance of this type with attributes

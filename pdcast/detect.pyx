@@ -216,7 +216,7 @@ cdef types.CompositeType detect_vector_type(object[:] arr, dict lookup):
     # iterate through array
     for i in range(arr_length):
 
-        # call type() on each element
+        # extract element and get its type
         element = arr[i]
         element_type = type(element)
 

@@ -21,20 +21,24 @@ cdef class TypeRegistry:
         PrioritySet _priority
 
     cdef void update_hash(self)
-    cdef void pin(self, Type instance, AliasManager aliases)
-    cdef void unpin(self, Type instance)
+    cdef void validate_instance(self, typ)
+    cdef void validate_name(self, typ)
+    cdef void validate_type_def(self, typ)
+    cdef void validate_dtype(self, typ)
+    cdef void validate_itemsize(self, typ)
+    cdef void validate_min_max(self, typ)
+    cdef void validate_na_value(self, typ)
 
 
 cdef class AliasManager:
     cdef:
         set aliases
+        bint pinned
 
     cdef readonly:
         Type instance
 
     cdef object normalize_specifier(self, alias)
-    cdef void pin(self)
-    cdef void unpin(self)
 
 
 cdef class Type:

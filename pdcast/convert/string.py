@@ -20,6 +20,9 @@ from .base import (
 )
 
 
+# TODO: string -> datetime has an extraneous upcast() step.
+
+
 @cast.overload("string", "bool")
 def string_to_boolean(
     series: pd.Series,

@@ -1,6 +1,7 @@
 """This module contains a doubly-linked list that can be used to represent
 a precedence order during sort operations.
 """
+from typing import Any, Iterable
 
 # NOTE: this is not currently used anywhere, but it is a simple and useful data
 # structure that could maybe be used in the future.

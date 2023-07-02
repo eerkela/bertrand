@@ -6,6 +6,8 @@ import regex as re  # using alternate regex
 from types import MappingProxyType
 from typing import Any, Iterable
 
+import numpy as np
+import pandas as pd
 from pdcast.util.type_hints import type_specifier, dtype_like
 
 from .composite cimport CompositeType
@@ -162,37 +164,26 @@ cdef class TypeRegistry:
 
             pdcast.registry.remove(CustomType)
         """
-        # validate type is a subclass of VectorType
+        # validate type is a subclass of VectorType and instantiate it
         if isinstance(typ, type):
             if not issubclass(typ, VectorType):
                 raise TypeError(f"type must be a subclass of VectorType: {typ}")
             typ = typ() if not typ._base_instance else typ._base_instance
-
         elif not isinstance(typ, VectorType):
             raise TypeError(f"type must be an instance of VectorType: {typ}")
 
-        # validate instance is not parametrized
-        if typ != typ.base_instance:
-            raise TypeError(f"{repr(typ)} must not be parametrized")
+        # validate type attributes
+        self.validate_instance(typ)
+        self.validate_name(typ)
+        if not isinstance(typ, (AbstractType, DecoratorType)):
+            self.validate_type_def(typ)
+            self.validate_dtype(typ)
+            self.validate_itemsize(typ)
+            self.validate_min_max(typ)
+            self.validate_na_value(typ)
 
-        # validate type is not already registered
-        if type(typ) in self.instances:
-            previous = self.instances[type(typ)]
-            raise RuntimeError(
-                f"{type(typ)} is already registered to {repr(previous)}"
-            )
-
-        # validate name is unique
-        existing = self.names.get(typ.name, None)
-        if existing is None:
-            self.names[typ.name] = typ
-        else:
-            implementations = self.implementations.get(type(existing), {})
-            if type(typ) not in implementations.values():
-                raise TypeError(
-                    f"{repr(typ)} name must be unique: '{typ.name}' is "
-                    f"currently registered to {repr(existing)}"
-                )
+        # ensure aliases are unique and pin them
+        pin_aliases(typ.aliases)
 
         self.instances[type(typ)] = typ
         self.update_hash()
@@ -251,7 +242,7 @@ cdef class TypeRegistry:
             raise TypeError(f"type must not be composite: {typ}")
 
         del self.instances[type(typ)]
-        typ.aliases.clear()
+        unpin_aliases(typ.aliases)
         if typ in self.names.values():
             del self.names[typ.name]
 
@@ -855,22 +846,93 @@ cdef class TypeRegistry:
         """Hash the registry's internal state, for use in cached properties."""
         self._hash = hash(tuple(self.instances))
 
-    cdef void pin(self, Type instance, AliasManager aliases):
-        """Pin a type to the global alias namespace if it is not already being
-        tracked.
+    cdef void validate_instance(self, typ):
+        """Check that a type is not parametrized and not already present in the
+        registry.
         """
-        for manager in self.pinned_aliases:
-            if manager.instance is instance:
-                break
-        else:
-            self.pinned_aliases.append(aliases)
+        # validate instance is not parametrized
+        if typ.is_parametrized:
+            raise TypeError(f"{repr(typ)} must not be parametrized")
 
-    cdef void unpin(self, Type instance):
-        """Unpin a type from the global alias namespace."""
-        self.pinned_aliases = [
-            manager for manager in self.pinned_aliases
-            if manager.instance is not instance
-        ]
+        # validate type is not already registered
+        if type(typ) in self.instances:
+            previous = self.instances[type(typ)]
+            raise RuntimeError(
+                f"{type(typ)} is already registered to {repr(previous)}"
+            )
+
+    cdef void validate_name(self, typ):
+        """Ensure that a type's name is unique.
+        """
+        # validate name is unique
+        existing = self.names.get(typ.name, None)
+        if existing is None:
+            self.names[typ.name] = typ
+        else:
+            implementations = self.implementations.get(type(existing), {})
+            if type(typ) not in implementations.values():
+                raise TypeError(
+                    f"{repr(typ)} name must be unique: '{typ.name}' is "
+                    f"currently registered to {repr(existing)}"
+                )
+
+    cdef void validate_type_def(self, typ):
+        """Ensure that a type's type_def is a valid class object.
+        """
+        # validate type_def is a class object
+        if not isinstance(typ.type_def, type):
+            raise TypeError(
+                f"{repr(typ)} type_def must be a class object: "
+                f"{repr(typ.type_def)}"
+            )
+
+    cdef void validate_dtype(self, typ):
+        """Ensure that a type's dtype is a valid numpy/pandas dtype object.
+        """
+        # validate dtype is a numpy/pandas dtype object
+        if not isinstance(typ.dtype, dtype_like):
+            raise TypeError(
+                f"{repr(typ)} dtype must be a numpy/pandas dtype object: "
+                f"{repr(typ.dtype)}"
+            )
+
+    cdef void validate_itemsize(self, typ):
+        """Ensure that a type's itemsize is a positive integer or infinity.
+        """
+        # validate itemsize > 0 or inf
+        if (
+            typ.itemsize <= 0 or
+            typ.itemsize != np.inf and not isinstance(typ.itemsize, int)
+        ):
+            raise TypeError(
+                f"{repr(typ)} itemsize must be a positive integer or infinity: "
+                f"{repr(typ.itemsize)}"
+            )
+
+    cdef void validate_min_max(self, typ):
+        """Ensure that a type's min/max are integers or infinity.
+        """
+        # validate min/max are integers or inf
+        if typ.min != -np.inf and not isinstance(typ.min, int):
+            raise TypeError(
+                f"{repr(typ)} min must be an integer or negative infinity: "
+                f"{repr(typ.min)}"
+            )
+        if typ.max != np.inf and not isinstance(typ.max, int):
+            raise TypeError(
+                f"{repr(typ)} max must be an integer or infinity: "
+                f"{repr(typ.max)}"
+            )
+
+    cdef void validate_na_value(self, typ):
+        """Ensure that a type's na_value passes a pd.isna() check.
+        """
+        # validate na_value passes pd.isna()
+        if not pd.isna(typ.na_value):
+            raise TypeError(
+                f"{repr(typ)} na_value must pass pandas.isna(): "
+                f"{repr(typ.na_value)}"
+            )
 
     ###############################
     ####    SPECIAL METHODS    ####
@@ -933,297 +995,6 @@ cdef class TypeRegistry:
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}{set(self.instances.values())}"
-
-
-cdef class AliasManager:
-    """A set-like interface that holds :attr:`aliases <pdcast.Type.aliases>`
-    for a given :class:`Type <pdcast.Type>`.
-
-    These objects are attached to every :class:`Type <pdcast.Type>` that
-    ``pdcast`` generates, enabling users to modify the behavior of
-    :func:`detect_type() <pdcast.detect_type>` and
-    :func:`resolve_type() <pdcast.resolve_type>` at runtime.
-    """
-
-    def __init__(self, Type instance):
-        self.instance = instance
-        self.aliases = set()
-
-    #############################
-    ####    SET INTERFACE    ####
-    #############################
-
-    def add(self, alias: type_specifier, overwrite: bool = False) -> None:
-        """Register a type specifier as an alias of the managed
-        :class:`Type <pdcast.Type>`.
-
-        Parameters
-        ----------
-        alias : type_specifier
-            A valid type specifier to register.
-        overwrite : bool, default False
-            Indicates whether to overwrite existing aliases (``True``) or
-            raise an error (``False``) in the event of a conflict.
-
-        Raises
-        ------
-        TypeError
-            If the alias is not of a recognizable type.
-        ValueError
-            If ``overwrite=False`` and the alias conflicts with another type.
-
-        Notes
-        -----
-        See the :ref:`API docs <Type.aliases>` for more information on how
-        aliases work.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
-            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.BooleanType.aliases.add("foo")
-            >>> pdcast.resolve_type("foo")
-            BooleanType()
-
-        .. testcleanup::
-
-            pdcast.BooleanType.aliases.remove("foo")
-        """
-        alias = self.normalize_specifier(alias)
-
-        registry = Type.registry
-        if alias in registry.aliases:
-            other = registry.aliases[alias]
-            if overwrite:
-                del other.aliases[alias]
-            else:
-                raise ValueError(
-                    f"alias {repr(alias)} is already registered to "
-                    f"{repr(other)}"
-                )
-
-        # register aliases with global registry
-        if not self:
-            self.pin()
-
-        self.aliases.add(alias)
-        registry.flush()  # rebuild regex patterns
-
-    def remove(self, alias: type_specifier) -> None:
-        """Remove an alias from the managed type.
-
-        Parameters
-        ----------
-        alias : type_specifier
-            A valid type specifier to remove.
-
-        Raises
-        ------
-        TypeError
-            If the alias is not of a recognizable type.
-        KeyError
-            If the alias is not a member of the set.
-
-        Notes
-        -----
-        See the :ref:`API docs <Type.aliases>` for more information on how
-        aliases work.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
-            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.resolve_type("boolean")
-            BooleanType()
-            >>> pdcast.BooleanType.aliases.remove("boolean")
-            >>> pdcast.resolve_type("boolean")
-            Traceback (most recent call last):
-                ...
-            ValueError: invalid specifier: 'boolean'
-        """
-        alias = self.normalize_specifier(alias)
-        self.aliases.remove(alias)
-
-        # remove aliases from global registry
-        if not self:
-            self.unpin()
-
-        Type.registry.flush()  # rebuild regex patterns
-
-    def discard(self, alias: type_specifier) -> None:
-        """Remove an alias from the managed type if it is present.
-
-        Parameters
-        ----------
-        alias : type_specifier
-            A valid type specifier to remove.
-
-        Raises
-        ------
-        TypeError
-            If the alias is not of a recognizable type.
-
-        Notes
-        -----
-        See the :ref:`API docs <Type.aliases>` for more information on how
-        aliases work.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
-            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.BooleanType.aliases.discard("boolean")
-            >>> pdcast.BooleanType.aliases    # doctest: +SKIP
-            AliasManager({'bool', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.BooleanType.aliases.discard("foo")
-            >>> pdcast.BooleanType.aliases    # doctest: +SKIP
-            AliasManager({'bool', 'bool_', 'bool8', 'b1', '?'})
-        """
-        try:
-            self.remove(alias)
-        except KeyError:
-            pass
-
-    def pop(self) -> type_specifier:
-        """Pop an alias from the set.
-
-        Returns
-        -------
-        type_specifier
-            A random alias from the set.
-
-        Raises
-        ------
-        KeyError
-            If the set is empty.
-
-        Notes
-        -----
-        See the :ref:`API docs <Type.aliases>` for more information on how
-        aliases work.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
-            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.BooleanType.aliases.pop()   # doctest: +SKIP
-            "bool"
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
-            AliasManager({'boolean', 'bool_', 'bool8', 'b1', '?'})
-        """
-        value = self.aliases.pop()
-
-        # remove aliases from global registry
-        if not self:
-            self.unpin()
-
-        Type.registry.flush()  # rebuild regex patterns
-        return value
-
-    def clear(self) -> None:
-        """Remove every alias from the managed type.
-
-        Notes
-        -----
-        See the :ref:`API docs <Type.aliases>` for more information on how
-        aliases work.
-
-        Examples
-        --------
-        .. doctest::
-
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
-            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.BooleanType.aliases.clear()
-            >>> pdcast.BooleanType.aliases
-            AliasManager(set())
-        """
-        # remove aliases from global registry
-        if self:
-            self.unpin()
-
-        self.aliases.clear()
-        Type.registry.flush()  # rebuild regex patterns
-
-    ##############################
-    ####    SET OPERATIONS    ####
-    ##############################
-
-    def __or__(self, other: set) -> set:
-        """Set-like union operator."""
-        return self.aliases | other
-
-    def __and__(self, other: set) -> set:
-        """Set-like intersection operator."""
-        return self.aliases & other
-
-    def __sub__(self, other: set) -> set:
-        """Set-like difference operator."""
-        return self.aliases - other
-
-    def __xor__(self, other: set) -> set:
-        """Set-like symmetric difference operator."""
-        return self.aliases ^ other
-
-    #######################
-    ####    PRIVATE    ####
-    #######################
-
-    cdef object normalize_specifier(self, alias: type_specifier):
-        """Preprocess a type specifier, converting it into a recognizable
-        format.
-        """
-        if not isinstance(alias, type_specifier):
-            raise TypeError(
-                f"alias must be a valid type specifier: {repr(alias)}"
-            )
-
-        # ignore parametrized dtypes
-        if isinstance(alias, dtype_like):
-            return type(alias)
-
-        return alias
-
-    cdef void pin(self):
-        """Pin the associated instance to the global alias namespace."""
-        cdef TypeRegistry registry = Type.registry
-
-        registry.pin(self.instance, self)
-
-    cdef void unpin(self):
-        cdef TypeRegistry registry = Type.registry
-
-        registry.unpin(self.instance)
-
-    #############################
-    ####    MAGIC METHODS    ####
-    #############################
-
-    def __bool__(self) -> bool:
-        return bool(self.aliases)
-
-    def __len__(self) -> int:
-        return len(self.aliases)
-
-    def __contains__(self, alias: type_specifier) -> bool:
-        return alias in self.aliases
-
-    def __iter__(self):
-        return iter(self.aliases)
-
-    def __str__(self):
-        return str(self.aliases)
-
-    def __repr__(self):
-        return f"{type(self).__name__}({self.aliases})"
 
 
 cdef class Type:
@@ -1652,6 +1423,308 @@ cdef class CacheValue:
         return self.hash == Type.registry.hash
 
 
+cdef class AliasManager:
+    """A set-like interface that holds :attr:`aliases <pdcast.Type.aliases>`
+    for a given :class:`Type <pdcast.Type>`.
+
+    These objects are attached to every :class:`Type <pdcast.Type>` that
+    ``pdcast`` generates, enabling users to modify the behavior of
+    :func:`detect_type() <pdcast.detect_type>` and
+    :func:`resolve_type() <pdcast.resolve_type>` at runtime.
+    """
+
+    def __init__(self, Type instance):
+        self.instance = instance
+        self.aliases = set()
+        self.pinned = False
+
+    #############################
+    ####    SET INTERFACE    ####
+    #############################
+
+    def add(
+        self,
+        alias: type_specifier,
+        overwrite: bool = False,
+        pin: bool = True
+    ) -> None:
+        """Register a type specifier as an alias of the managed
+        :class:`Type <pdcast.Type>`.
+
+        Parameters
+        ----------
+        alias : type_specifier
+            A valid type specifier to register.
+        overwrite : bool, default False
+            Indicates whether to overwrite existing aliases (``True``) or
+            raise an error (``False``) in the event of a conflict.
+        pin : bool, default True
+            Indicates whether to pin the aliases to the global
+            :class:`TypeRegistry <pdcast.TypeRegistry>` and make them available
+            to :func:`detect_type() <pdcast.detect_type>` and
+            :func:`resolve_type() <pdcast.resolve_type>`.  If this is
+            ``False``, then the alias will be added to the manager without
+            changing its pinned/unpinned status.  In general, this is only used
+            during initialization.
+
+        Raises
+        ------
+        TypeError
+            If the alias is not of a recognizable type.
+        ValueError
+            If ``overwrite=False`` and the alias conflicts with another type.
+
+        Notes
+        -----
+        See the :ref:`API docs <Type.aliases>` for more information on how
+        aliases work.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.BooleanType.aliases.add("foo")
+            >>> pdcast.resolve_type("foo")
+            BooleanType()
+
+        .. testcleanup::
+
+            pdcast.BooleanType.aliases.remove("foo")
+        """
+        alias = self.normalize_specifier(alias)
+
+        registry = Type.registry
+        if self.pinned and alias in registry.aliases:
+            other = registry.aliases[alias]
+            if overwrite:
+                del other.aliases[alias]
+            else:
+                raise ValueError(
+                    f"alias {repr(alias)} is already registered to "
+                    f"{repr(other)}"
+                )
+
+        # register aliases with global registry
+        if pin and not self.pinned:
+            pin_aliases(self)
+
+        self.aliases.add(alias)
+        registry.flush()  # rebuild regex patterns
+
+    def remove(self, alias: type_specifier, pin: bool = True) -> None:
+        """Remove an alias from the managed type.
+
+        Parameters
+        ----------
+        alias : type_specifier
+            A valid type specifier to remove.
+        pin : bool, default True
+            Indicates whether to pin the aliases to the global
+            :class:`TypeRegistry <pdcast.TypeRegistry>` and make them available
+            to :func:`detect_type() <pdcast.detect_type>` and
+            :func:`resolve_type() <pdcast.resolve_type>`.  If this is
+            ``False``, then the alias will be removed from the manager without
+            changing its pinned/unpinned status.  In general, this is only used
+            during initialization.
+
+        Raises
+        ------
+        TypeError
+            If the alias is not of a recognizable type.
+        KeyError
+            If the alias is not a member of the set.
+
+        Notes
+        -----
+        See the :ref:`API docs <Type.aliases>` for more information on how
+        aliases work.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.resolve_type("boolean")
+            BooleanType()
+            >>> pdcast.BooleanType.aliases.remove("boolean")
+            >>> pdcast.resolve_type("boolean")
+            Traceback (most recent call last):
+                ...
+            ValueError: invalid specifier: 'boolean'
+        """
+        alias = self.normalize_specifier(alias)
+        self.aliases.remove(alias)
+
+        # remove aliases from global registry
+        if pin and not self.pinned:
+            unpin_aliases(self)
+
+        Type.registry.flush()  # rebuild regex patterns
+
+    def discard(self, alias: type_specifier) -> None:
+        """Remove an alias from the managed type if it is present.
+
+        Parameters
+        ----------
+        alias : type_specifier
+            A valid type specifier to remove.
+
+        Raises
+        ------
+        TypeError
+            If the alias is not of a recognizable type.
+
+        Notes
+        -----
+        See the :ref:`API docs <Type.aliases>` for more information on how
+        aliases work.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.BooleanType.aliases.discard("boolean")
+            >>> pdcast.BooleanType.aliases    # doctest: +SKIP
+            AliasManager({'bool', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.BooleanType.aliases.discard("foo")
+            >>> pdcast.BooleanType.aliases    # doctest: +SKIP
+            AliasManager({'bool', 'bool_', 'bool8', 'b1', '?'})
+        """
+        try:
+            self.remove(alias)
+        except KeyError:
+            pass
+
+    def pop(self) -> type_specifier:
+        """Pop an alias from the set.
+
+        Returns
+        -------
+        type_specifier
+            A random alias from the set.
+
+        Raises
+        ------
+        KeyError
+            If the set is empty.
+
+        Notes
+        -----
+        See the :ref:`API docs <Type.aliases>` for more information on how
+        aliases work.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.BooleanType.aliases.pop()   # doctest: +SKIP
+            "bool"
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'boolean', 'bool_', 'bool8', 'b1', '?'})
+        """
+        value = self.aliases.pop()
+
+        # remove aliases from global registry
+        if not self:
+            self.unpin()
+
+        Type.registry.flush()  # rebuild regex patterns
+        return value
+
+    def clear(self) -> None:
+        """Remove every alias from the managed type.
+
+        Notes
+        -----
+        See the :ref:`API docs <Type.aliases>` for more information on how
+        aliases work.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
+            >>> pdcast.BooleanType.aliases.clear()
+            >>> pdcast.BooleanType.aliases
+            AliasManager(set())
+        """
+        # remove aliases from global registry
+        if self:
+            self.unpin()
+
+        self.aliases.clear()
+        Type.registry.flush()  # rebuild regex patterns
+
+    ##############################
+    ####    SET OPERATIONS    ####
+    ##############################
+
+    def __or__(self, other: set) -> set:
+        """Set-like union operator."""
+        return self.aliases | other
+
+    def __and__(self, other: set) -> set:
+        """Set-like intersection operator."""
+        return self.aliases & other
+
+    def __sub__(self, other: set) -> set:
+        """Set-like difference operator."""
+        return self.aliases - other
+
+    def __xor__(self, other: set) -> set:
+        """Set-like symmetric difference operator."""
+        return self.aliases ^ other
+
+    #######################
+    ####    PRIVATE    ####
+    #######################
+
+    cdef object normalize_specifier(self, alias: type_specifier):
+        """Preprocess a type specifier, converting it into a recognizable
+        format.
+        """
+        if not isinstance(alias, type_specifier):
+            raise TypeError(
+                f"alias must be a valid type specifier: {repr(alias)}"
+            )
+
+        # ignore parametrized dtypes
+        if isinstance(alias, dtype_like):
+            return type(alias)
+
+        return alias
+
+    #############################
+    ####    MAGIC METHODS    ####
+    #############################
+
+    def __bool__(self) -> bool:
+        return bool(self.aliases)
+
+    def __len__(self) -> int:
+        return len(self.aliases)
+
+    def __contains__(self, alias: type_specifier) -> bool:
+        return alias in self.aliases
+
+    def __iter__(self):
+        return iter(self.aliases)
+
+    def __str__(self):
+        return str(self.aliases)
+
+    def __repr__(self):
+        return f"{type(self).__name__}({self.aliases})"
+
+
 cdef class PrioritySet(set):
     """A subclass of set that stores pairs of VectorTypes ``(A, B)``, where
     ``A`` is always considered to be less than ``B``.
@@ -1965,3 +2038,42 @@ cdef class PrioritySet(set):
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({str(self)})"
+
+
+cdef void pin_aliases(AliasManager manager):
+    """Pin the aliases to the global TypeRegistry.
+    """
+    cdef TypeRegistry registry = Type.registry
+
+    # validate aliases are unique
+    for alias in manager:
+        if alias in registry.aliases:
+            raise ValueError(
+                f"{repr(manager.instance)} alias must be unique: '{alias}' is "
+                f"already registered to {repr(registry.aliases[alias])}"
+            )
+
+    # append to the pinned_aliases list if it is not already present
+    for existing in registry.pinned_aliases:
+        if existing.instance is manager.instance:
+            break
+    else:
+        registry.pinned_aliases.append(manager)
+
+    # set the pinned flag
+    manager.pinned = True
+
+
+cdef void unpin_aliases(AliasManager manager):
+    """Unpin the aliases from the global TypeRegistry.
+    """
+    cdef TypeRegistry registry = Type.registry
+
+    # remove from the pinned_aliases list if it is present
+    registry.pinned_aliases = [
+        existing for existing in registry.pinned_aliases
+        if existing.instance is not manager.instance
+    ]
+
+    # reset the pinned flag
+    manager.pinned = False
