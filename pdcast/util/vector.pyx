@@ -24,7 +24,7 @@ cpdef np.ndarray as_array(object data):
     if isinstance(data, np.ndarray):
         return np.atleast_1d(data)
 
-    return np.atleast_1d(np.array(data, dtype="O"))
+    return np.atleast_1d(np.array(data, dtype=object))
 
 
 cpdef object as_series(object data):
@@ -39,7 +39,7 @@ cpdef object as_series(object data):
     if isinstance(data, np.ndarray):
         return pd.Series(np.atleast_1d(data))
 
-    return pd.Series(data, dtype="O")
+    return pd.Series(data, dtype=object)
 
 
 cpdef object apply_with_errors(object series, object call, str errors):
@@ -104,7 +104,7 @@ cdef tuple _apply_with_errors(
     """Helper for the apply step of `apply_with_errors()`."""
     cdef unsigned int arr_length = arr.shape[0]
     cdef unsigned int i
-    cdef np.ndarray[object] result = np.full(arr_length, None, dtype="O")
+    cdef np.ndarray[object] result = np.full(arr_length, None, dtype=object)
     cdef bint has_errors = False
     cdef np.ndarray[np.uint8_t, cast=True] index
 

@@ -25,6 +25,9 @@ from pdcast.util.vector import as_series
 from .base import cast
 
 
+# TODO: include context dicts in parameter lists
+
+
 # ignore this file when doing string-based object lookups in resolve_type()
 IGNORE_FRAME_OBJECTS = True
 
@@ -99,25 +102,88 @@ defaults = {
 
 
 @cast.argument
-def series(val: Any, state: dict) -> pd.Series:
-    """TODO"""
+def series(val: Any, context: dict) -> pd.Series:
+    """The series to convert.
+
+    Parameters
+    ----------
+    val : Any
+        An object to be wrapped as a :class:`pandas.Series <pandas.Series>`.
+        If this is already a series, then it is used as-is.  If it is a
+        numpy array, then it is converted to a series with the same dtype.
+        Other iterables are interpreted as a ``dtype: object`` series, and
+        scalars are converted into a ``dtype: object`` series with a single
+        element.
+    context : dict
+        The current settings of each argument that was supplied to the
+        conversion.  This is automatically inserted by the
+        :class:`ExtensionFunc <pdcast.ExtensionFunc>` machinery, but is not
+        used for this argument.
+
+    Returns
+    -------
+    pandas.Series
+        The input object as a series.
+
+    Notes
+    -----
+    :meth:`Overloaded <pdcast.DispatchFunc.overload>` implementations of
+    :func:`cast() <pdcast.cast>` should note that this argument is always
+    supplied as a series, even if the original value was a scalar.
+    """
     return as_series(val)
 
 
 @cast.argument
 def dtype(
-    val: type_specifier,
-    state: dict,
-    supertype: type_specifier = None
+    val: type_specifier | None,
+    context: dict,
+    supertype: type_specifier | None = None
 ) -> types.VectorType:
-    """Resolve a type specifier and reject it if it is composite or not a
-    subtype of the given supertype.
+    """The type to convert to.
+
+    Parameters
+    ----------
+    val : type_specifier | None
+        A type specifier that determines the output type.  This can be in any
+        format recognized by
+        :func:`resolve_type() <pdcast.resolve.resolve_type>` and must not be
+        composite.  If it is left as :data:`None <python:None>`, then the
+        inferred type of the :func:`series <pdcast.convert.arguments.series>`
+        will be used instead.
+    context : dict
+        The current settings of each argument that was supplied to the
+        conversion.  This is automatically inserted by the
+        :class:`ExtensionFunc <pdcast.ExtensionFunc>` machinery, and allows
+        this argument to access the series being converted.
+    supertype : type_specifier | None
+        A type specifier to check the output type against.  If this is given,
+        then this argument will reject any output type that is not a member of
+        the given supertype's hierarchy.  This can be in any format recognized
+        by :func:`resolve_type() <pdcast.resolve.resolve_type>`.
+
+    Returns
+    -------
+    VectorType
+        The resolved output type.
+
+    Raises
+    ------
+    ValueError
+        If the output type is composite or not a member of the supertype's
+        hierarchy.  This can also be raised if no output type is given and the
+        series is empty or contains only NAs.
+
+    TODO: update with NullType once it is implemented
+
+    TODO: Notes/Examples
     """
     # no dtype given
     if val is None:
-        if "series" in state:
-            series = state["series"]
+        if "series" in context:
+            series = context["series"]
             val = detect_type(series)
+            # TODO: replace with NullType
             if val is None:  # series is empty or contains only NAs
                 raise ValueError(
                     "cannot interpret empty series without an explicit "
@@ -129,13 +195,13 @@ def dtype(
 
         # dtype is naked decorator
         if val.unwrap() is None:
-            if "series" not in state:
+            if "series" not in context:
                 raise ValueError(
                     "cannot perform anonymous conversion without data"
                 )
             encountered = list(val.decorators)
             val = encountered.pop(-1).replace(
-                wrapped=detect_type(state["series"])
+                wrapped=detect_type(context["series"])
             )
             for decorator in reversed(encountered):
                 val = decorator.replace(wrapped=val)
@@ -158,7 +224,7 @@ def dtype(
 
 
 @cast.argument(default=defaults["tol"])
-def tol(val: str, state: dict) -> Tolerance:
+def tol(val: str, context: dict) -> Tolerance:
     """The maximum amount of precision loss that can occur before an error
     is raised.
 
@@ -270,11 +336,11 @@ def tol(val: str, state: dict) -> Tolerance:
         ``"half_even"``, with additional clipping around the minimum and
         maximum values.
     """
-    return snap_tol(val, state)
+    return snap_tol(val, context)
 
 
 @cast.argument(default=defaults["rounding"])
-def rounding(val: str, state: dict) -> str:
+def rounding(val: str, context: dict) -> str:
     """The rounding rule to use for numeric conversions.
 
     Parameters
@@ -376,11 +442,11 @@ def rounding(val: str, state: dict) -> str:
         3    2
         dtype: int64
     """
-    return rounding_rule(val, state)
+    return rounding_rule(val, context)
 
 
 @cast.argument(default=defaults["unit"])
-def unit(val: str, state: dict) -> str:
+def unit(val: str, context: dict) -> str:
     """The unit to use for numeric <-> datetime/timedelta conversions.
 
     Parameters
@@ -486,7 +552,7 @@ def unit(val: str, state: dict) -> str:
 
 
 @cast.argument(default=defaults["step_size"])
-def step_size(val: int, state: dict) -> int:
+def step_size(val: int, context: dict) -> int:
     """The step size to use for each
     :func:`unit <pdcast.convert.arguments.unit>`.
 
@@ -535,7 +601,7 @@ def step_size(val: int, state: dict) -> int:
 
 
 @cast.argument(default=defaults["since"])
-def since(val: str | datetime_like | time.Epoch, state: dict) -> time.Epoch:
+def since(val: str | datetime_like | time.Epoch, context: dict) -> time.Epoch:
     """The epoch to use for datetime/timedelta conversions.
 
     Parameters
@@ -694,7 +760,7 @@ def since(val: str | datetime_like | time.Epoch, state: dict) -> time.Epoch:
 @cast.argument(default=defaults["tz"])
 def tz(
     val: str | datetime.tzinfo | None,
-    state: dict
+    context: dict
 ) -> datetime.tzinfo:
     """Specifies a time zone to use for datetime conversions.
 
@@ -786,11 +852,11 @@ def tz(
         the ``utc`` argument of :func:`pandas.to_datetime`, but allows for full
         control over the handling of naive inputs.
     """
-    return time.tz(val, state)
+    return time.tz(val, context)
 
 
 @cast.argument(default=defaults["day_first"])
-def day_first(val: bool, state: dict) -> bool:
+def day_first(val: bool, context: dict) -> bool:
     """Indicates whether to interpret the first value in an ambiguous
     3-integer date (e.g. 01/05/09) as the day (``True``) or month
     (``False``).
@@ -852,7 +918,7 @@ def day_first(val: bool, state: dict) -> bool:
 
 
 @cast.argument(default=defaults["year_first"])
-def year_first(val: bool, state: dict) -> bool:
+def year_first(val: bool, context: dict) -> bool:
     """Indicates whether to interpret the first value in an ambiguous
     3-integer date (e.g. 01/05/09) as the year.
 
@@ -904,7 +970,7 @@ def year_first(val: bool, state: dict) -> bool:
 
 
 @cast.argument(default=defaults["as_hours"])
-def as_hours(val: bool, state: dict) -> bool:
+def as_hours(val: bool, context: dict) -> bool:
     """Indicates whether to interpret ambiguous MM:SS timedeltas as HH:MM.
 
     Parameters
@@ -944,7 +1010,7 @@ def as_hours(val: bool, state: dict) -> bool:
 
 
 @cast.argument(default=defaults["true"])
-def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
+def true(val: str | Iterable[str] | None, context: dict) -> set[str]:
     """A set of truthy strings to use for boolean conversions.
 
     Parameters
@@ -955,7 +1021,7 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
         strings are converted into sets of length 1.  This can also include the
         special character ``"*"`` as a catch-all wildcard.  Defaults to
         ``{"true", "t", "yes", "y", "on", "1"}``.
-    state : dict
+    context : dict
         A dictionary containing the values of other arguments, for comparison
         with :func:`false <pdcast.convert.arguments.false>`.
 
@@ -1076,7 +1142,7 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
     """
     # convert to string sets
     true_set = set() if val is None else as_string_set(val)
-    false_set = as_string_set(state.get("false", set()))
+    false_set = as_string_set(context.get("false", set()))
 
     # ensure sets are disjoint
     try:
@@ -1085,13 +1151,13 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
         raise ValueError("`true` and `false` must be disjoint") from err
 
     # apply ignore_case
-    if bool(state.get("ignore_case", True)):
+    if bool(context.get("ignore_case", True)):
         true_set = {x.lower() for x in true_set}
     return true_set
 
 
 @cast.argument(default=defaults["false"])
-def false(val, state: dict) -> set[str]:
+def false(val, context: dict) -> set[str]:
     """A set of falsy strings to use for boolean conversions.
 
     Parameters
@@ -1102,7 +1168,7 @@ def false(val, state: dict) -> set[str]:
         strings are converted into sets of length 1.  This can also include the
         special character ``"*"`` as a catch-all wildcard.  Defaults to
         ``{"false", "f", "no", "n", "off", "0"}``.
-    state : dict
+    context : dict
         A dictionary containing the values of other arguments, for comparison
         with :func:`true <pdcast.convert.arguments.true>`.
 
@@ -1135,7 +1201,7 @@ def false(val, state: dict) -> set[str]:
     for examples on how to customize boolean conversions using these arguments.
     """
     # convert to string sets
-    true_set = as_string_set(state.get("true", set()))
+    true_set = as_string_set(context.get("true", set()))
     false_set = set() if val is None else as_string_set(val)
 
     # ensure sets are disjoint
@@ -1145,13 +1211,13 @@ def false(val, state: dict) -> set[str]:
         raise ValueError("`true` and `false` must be disjoint") from err
 
     # apply ignore_case
-    if bool(state.get("ignore_case", True)):
+    if bool(context.get("ignore_case", True)):
         false_set = {x.lower() for x in false_set}
     return false_set
 
 
 @cast.argument(default=defaults["ignore_case"])
-def ignore_case(val: bool, state: dict) -> bool:
+def ignore_case(val: bool, context: dict) -> bool:
     """Indicates whether to ignore differences in case during string
     conversions.
 
@@ -1195,7 +1261,7 @@ def ignore_case(val: bool, state: dict) -> bool:
 
 
 @cast.argument(default=defaults["format"])
-def format(val: str | None, state: dict) -> str:
+def format(val: str | None, context: dict) -> str:
     """A :ref:`format specifier <python:formatspec>` to use for string
     conversions.
 
@@ -1256,7 +1322,7 @@ def format(val: str | None, state: dict) -> str:
 
 
 @cast.argument(default=defaults["base"])
-def base(val: int, state: dict) -> int:
+def base(val: int, context: dict) -> int:
     """Base to use for integer <-> string conversions, as supplied to
     :class:`int() <python:int>`.
 
@@ -1355,13 +1421,15 @@ def base(val: int, state: dict) -> int:
 
 
 @cast.argument(default=defaults["call"])
-def call(val: Callable | None, state: dict) -> Callable:
+def call(val: Callable | None, context: dict) -> Callable:
     """Apply a callable over the input data, producing the desired output.
 
     This is only used for conversions from
     :class:`ObjectType <pdcast.ObjectType>`.  It allows users to specify a
     custom endpoint to perform this conversion, rather than relying exclusively
     on special methods (which is the default).
+    
+    TODO
     """
     if val is not None and not callable(val):
         raise TypeError(f"`call` must be callable, not {val}")
@@ -1371,9 +1439,11 @@ def call(val: Callable | None, state: dict) -> Callable:
 @cast.argument(default=defaults["downcast"])
 def downcast(
     val: bool | type_specifier,
-    state: dict
+    context: dict
 ) -> types.CompositeType:
     """Losslessly reduce the precision of numeric data after converting.
+    
+    TODO
     """
     if val is None:
         return val
@@ -1383,8 +1453,10 @@ def downcast(
 
 
 @cast.argument(default=defaults["errors"])
-def errors(val: str, state: dict) -> str:
+def errors(val: str, context: dict) -> str:
     """The rule to apply if/when errors are encountered during conversion.
+    
+    TODO
     """
     if val not in valid_errors:
         raise ValueError(

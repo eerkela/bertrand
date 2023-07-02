@@ -1362,6 +1362,8 @@ def rectify(arr: np.ndarray, orig_dtype) -> ExtensionArray:
     first = next(iter(arr[~is_na]), None)
     detected = detect_type(first)
 
+    # TODO: replace with NullType
+
     # check for empty array
     if detected is None:
         return arr
