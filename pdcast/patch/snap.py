@@ -80,10 +80,10 @@ def tol(val: numeric, state: dict) -> Tolerance:
 
     .. doctest::
 
-        >>> pdcast.cast(1.001, "int", tol=0.01)
+        >>> cast(1.001, "int", tol=0.01)
         0    1
         dtype: int64
-        >>> pdcast.cast(1.001, "int", tol=0)
+        >>> cast(1.001, "int", tol=0)
         Traceback (most recent call last):
             ...
         ValueError: precision loss exceeds tolerance 0 at index [0]
@@ -93,10 +93,10 @@ def tol(val: numeric, state: dict) -> Tolerance:
 
     .. doctest::
 
-        >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0.01j)
+        >>> cast(1.001+0.001j, "int", tol=0.01+0.01j)
         0    1
         dtype: int64
-        >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0j)
+        >>> cast(1.001+0.001j, "int", tol=0.01+0j)
         Traceback (most recent call last):
             ...
         ValueError: imaginary component exceeds tolerance 0 at index [0]
@@ -109,10 +109,10 @@ def tol(val: numeric, state: dict) -> Tolerance:
 
     .. doctest::
 
-        >>> pdcast.cast(129, "int8", tol=2)
+        >>> cast(129, "int8", tol=2)
         0    127
         dtype: int8
-        >>> pdcast.cast(129, "int8", tol=0)
+        >>> cast(129, "int8", tol=0)
         Traceback (most recent call last):
             ...
         OverflowError: values exceed int8 range at index [0]
@@ -123,10 +123,10 @@ def tol(val: numeric, state: dict) -> Tolerance:
 
     .. doctest::
 
-        >>> pdcast.cast(1.1, "float", tol=0, downcast=True)
+        >>> cast(1.1, "float", tol=0, downcast=True)
         0    1.1
         dtype: float64
-        >>> pdcast.cast(1.1, "float", tol=0.001, downcast=True)
+        >>> cast(1.1, "float", tol=0.001, downcast=True)
         0    1.099609
         dtype: float16
 
@@ -134,10 +134,10 @@ def tol(val: numeric, state: dict) -> Tolerance:
 
     .. doctest::
 
-        >>> pdcast.cast(1.5, "int", tol=np.inf)
+        >>> cast(1.5, "int", tol=np.inf)
         0    2
         dtype: int64
-        >>> pdcast.cast(np.inf, "int64", tol=np.inf)
+        >>> cast(np.inf, "int64", tol=np.inf)
         0    9223372036854775807
         dtype: int64
 

@@ -97,55 +97,55 @@ def rule(val: str | None, state: dict) -> str:
     --------
     .. doctest::
 
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="floor")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="floor")
         0   -2
         1   -1
         2    0
         3    1
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="ceiling")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="ceiling")
         0   -1
         1    0
         2    1
         3    2
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="down")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="down")
         0   -1
         1    0
         2    0
         3    1
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="up")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="up")
         0   -2
         1   -1
         2    1
         3    2
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_floor")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_floor")
         0   -2
         1   -1
         2    0
         3    2
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_ceiling")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_ceiling")
         0   -1
         1    0
         2    0
         3    2
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_down")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_down")
         0   -1
         1    0
         2    0
         3    2
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_up")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_up")
         0   -2
         1   -1
         2    0
         3    2
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_even")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_even")
         0   -2
         1    0
         2    0

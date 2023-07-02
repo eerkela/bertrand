@@ -17,7 +17,7 @@ cdef class PriorityList:
     --------
     .. doctest::
 
-        >>> foo = pdcast.PriorityList([1, 2, 3])
+        >>> foo = PriorityList([1, 2, 3])
         >>> foo
         PriorityList([1, 2, 3])
         >>> foo.index(2)
@@ -92,7 +92,7 @@ cdef class PriorityList:
         --------
         .. doctest::
 
-            >>> foo = pdcast.PriorityList([1, 2, 3])
+            >>> foo = PriorityList([1, 2, 3])
             >>> foo.index(2)
             1
         """
@@ -109,7 +109,7 @@ cdef class PriorityList:
         --------
         .. doctest::
 
-            >>> foo = pdcast.PriorityList([1, 2, 3])
+            >>> foo = PriorityList([1, 2, 3])
             >>> foo.move_up(2)
             >>> foo
             PriorityList([2, 1, 3])
@@ -140,7 +140,7 @@ cdef class PriorityList:
         --------
         .. doctest::
 
-            >>> foo = pdcast.PriorityList([1, 2, 3])
+            >>> foo = PriorityList([1, 2, 3])
             >>> foo.move_down(2)
             >>> foo
             PriorityList([1, 3, 2])
@@ -175,7 +175,7 @@ cdef class PriorityList:
         --------
         .. doctest::
 
-            >>> foo = pdcast.PriorityList([1, 2, 3])
+            >>> foo = PriorityList([1, 2, 3])
             >>> foo.move(2, -1)
             >>> foo
             PriorityList([1, 3, 2])

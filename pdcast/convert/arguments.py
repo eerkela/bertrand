@@ -202,10 +202,10 @@ def tol(val: str, state: dict) -> Tolerance:
 
     .. doctest::
 
-        >>> pdcast.cast(1.001, "int", tol=0.01)
+        >>> cast(1.001, "int", tol=0.01)
         0    1
         dtype: int64
-        >>> pdcast.cast(1.001, "int", tol=0)
+        >>> cast(1.001, "int", tol=0)
         Traceback (most recent call last):
             ...
         ValueError: precision loss exceeds tolerance 0 at index [0]
@@ -215,10 +215,10 @@ def tol(val: str, state: dict) -> Tolerance:
 
     .. doctest::
 
-        >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0.01j)
+        >>> cast(1.001+0.001j, "int", tol=0.01+0.01j)
         0    1
         dtype: int64
-        >>> pdcast.cast(1.001+0.001j, "int", tol=0.01+0j)
+        >>> cast(1.001+0.001j, "int", tol=0.01+0j)
         Traceback (most recent call last):
             ...
         ValueError: imaginary component exceeds tolerance 0 at index [0]
@@ -231,10 +231,10 @@ def tol(val: str, state: dict) -> Tolerance:
 
     .. doctest::
 
-        >>> pdcast.cast(129, "int8", tol=2)
+        >>> cast(129, "int8", tol=2)
         0    127
         dtype: int8
-        >>> pdcast.cast(129, "int8", tol=0)
+        >>> cast(129, "int8", tol=0)
         Traceback (most recent call last):
             ...
         OverflowError: values exceed int8 range at index [0]
@@ -245,10 +245,10 @@ def tol(val: str, state: dict) -> Tolerance:
 
     .. doctest::
 
-        >>> pdcast.cast(1.1, "float", tol=0, downcast=True)
+        >>> cast(1.1, "float", tol=0, downcast=True)
         0    1.1
         dtype: float64
-        >>> pdcast.cast(1.1, "float", tol=0.001, downcast=True)
+        >>> cast(1.1, "float", tol=0.001, downcast=True)
         0    1.099609
         dtype: float16
 
@@ -256,10 +256,10 @@ def tol(val: str, state: dict) -> Tolerance:
 
     .. doctest::
 
-        >>> pdcast.cast(1.5, "int", tol=np.inf)
+        >>> cast(1.5, "int", tol=np.inf)
         0    2
         dtype: int64
-        >>> pdcast.cast(np.inf, "int64", tol=np.inf)
+        >>> cast(np.inf, "int64", tol=np.inf)
         0    9223372036854775807
         dtype: int64
 
@@ -321,55 +321,55 @@ def rounding(val: str, state: dict) -> str:
     --------
     .. doctest::
 
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="floor")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="floor")
         0   -2
         1   -1
         2    0
         3    1
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="ceiling")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="ceiling")
         0   -1
         1    0
         2    1
         3    2
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="down")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="down")
         0   -1
         1    0
         2    0
         3    1
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="up")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="up")
         0   -2
         1   -1
         2    1
         3    2
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_floor")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_floor")
         0   -2
         1   -1
         2    0
         3    2
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_ceiling")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_ceiling")
         0   -1
         1    0
         2    0
         3    2
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_down")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_down")
         0   -1
         1    0
         2    0
         3    2
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_up")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_up")
         0   -2
         1   -1
         2    0
         3    2
         dtype: int64
-        >>> pdcast.cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_even")
+        >>> cast([-1.5, -0.5, 0.2, 1.7], "int", rounding="half_even")
         0   -2
         1    0
         2    0
@@ -426,28 +426,28 @@ def unit(val: str, state: dict) -> str:
     --------
     .. doctest::
 
-        >>> pdcast.cast(1, "datetime", unit="ns")
+        >>> cast(1, "datetime", unit="ns")
         0   1970-01-01 00:00:00.000000001
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="us")
+        >>> cast(1, "datetime", unit="us")
         0   1970-01-01 00:00:00.000001
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="ms")
+        >>> cast(1, "datetime", unit="ms")
         0   1970-01-01 00:00:00.001
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="s")
+        >>> cast(1, "datetime", unit="s")
         0   1970-01-01 00:00:01
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="m")
+        >>> cast(1, "datetime", unit="m")
         0   1970-01-01 00:01:00
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="h")
+        >>> cast(1, "datetime", unit="h")
         0   1970-01-01 01:00:00
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="D")
+        >>> cast(1, "datetime", unit="D")
         0   1970-01-02
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="W")
+        >>> cast(1, "datetime", unit="W")
         0   1970-01-08
         dtype: datetime64[ns]
 
@@ -457,10 +457,10 @@ def unit(val: str, state: dict) -> str:
 
     .. doctest::
 
-        >>> pdcast.cast(1, "datetime", unit="M")
+        >>> cast(1, "datetime", unit="M")
         0   1970-02-01
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="Y")
+        >>> cast(1, "datetime", unit="Y")
         0   1971-01-01
         dtype: datetime64[ns]
 
@@ -469,10 +469,10 @@ def unit(val: str, state: dict) -> str:
 
     .. doctest::
 
-        >>> pdcast.cast(1, "datetime", unit="M", since="1972-02")
+        >>> cast(1, "datetime", unit="M", since="1972-02")
         0   1972-03-01
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="Y", since="1972")
+        >>> cast(1, "datetime", unit="Y", since="1972")
         0   1973-01-01
         dtype: datetime64[ns]
     """
@@ -517,13 +517,13 @@ def step_size(val: int, state: dict) -> int:
     --------
     .. doctest::
 
-        >>> pdcast.cast(1, "datetime", unit="ns", step_size=5)
+        >>> cast(1, "datetime", unit="ns", step_size=5)
         0   1970-01-01 00:00:00.000000005
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="s", step_size=30)
+        >>> cast(1, "datetime", unit="s", step_size=30)
         0   1970-01-01 00:00:30
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="M", step_size=3)
+        >>> cast(1, "datetime", unit="M", step_size=3)
         0   1970-04-01
         dtype: datetime64[ns]
     """
@@ -638,13 +638,13 @@ def since(val: str | datetime_like | time.Epoch, state: dict) -> time.Epoch:
 
     .. doctest::
 
-        >>> pdcast.cast(1, "datetime", unit="s", since="j2000")
+        >>> cast(1, "datetime", unit="s", since="j2000")
         0   2000-01-01 12:00:01
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="s", since="gregorian")
+        >>> cast(1, "datetime", unit="s", since="gregorian")
         0    1582-10-14 00:00:01
         dtype: datetime[python]
-        >>> pdcast.cast(1, "datetime", unit="s", since="julian")
+        >>> cast(1, "datetime", unit="s", since="julian")
         0    -4713-11-24T12:00:01.000000
         dtype: object
 
@@ -652,13 +652,13 @@ def since(val: str | datetime_like | time.Epoch, state: dict) -> time.Epoch:
 
     .. doctest::
 
-        >>> pdcast.cast(1, "datetime", unit="s", since="2022-03-27")
+        >>> cast(1, "datetime", unit="s", since="2022-03-27")
         0   2022-03-27 00:00:01
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="s", since="27 mar 2022")
+        >>> cast(1, "datetime", unit="s", since="27 mar 2022")
         0   2022-03-27 00:00:01
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="s", since="03/27/22")
+        >>> cast(1, "datetime", unit="s", since="03/27/22")
         0   2022-03-27 00:00:01
         dtype: datetime64[ns]
 
@@ -666,13 +666,13 @@ def since(val: str | datetime_like | time.Epoch, state: dict) -> time.Epoch:
 
     .. doctest::
 
-        >>> pdcast.cast(1, "datetime", unit="s", since=pd.Timestamp("2022-03-27"))
+        >>> cast(1, "datetime", unit="s", since=pd.Timestamp("2022-03-27"))
         0   2022-03-27 00:00:01
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="s", since=datetime.datetime(2022, 3, 27))
+        >>> cast(1, "datetime", unit="s", since=datetime.datetime(2022, 3, 27))
         0   2022-03-27 00:00:01
         dtype: datetime64[ns]
-        >>> pdcast.cast(1, "datetime", unit="s", since=np.datetime64("2022-03-27"))
+        >>> cast(1, "datetime", unit="s", since=np.datetime64("2022-03-27"))
         0   2022-03-27 00:00:01
         dtype: datetime64[ns]
     """
@@ -737,13 +737,13 @@ def tz(
 
     .. doctest::
 
-        >>> pdcast.cast(0, "datetime", tz="US/Pacific")
+        >>> cast(0, "datetime", tz="US/Pacific")
         0   1969-12-31 16:00:00-08:00
         dtype: datetime64[ns, US/Pacific]
-        >>> pdcast.cast(0, "datetime", since="2022-03-27", tz="Asia/Hong_Kong")
+        >>> cast(0, "datetime", since="2022-03-27", tz="Asia/Hong_Kong")
         0   2022-03-27 08:00:00+08:00
         dtype: datetime64[ns, Asia/Hong_Kong]
-        >>> pdcast.cast(0, "datetime", since="2022-03-27 00:00:00+0800", tz="Asia/Hong_Kong")
+        >>> cast(0, "datetime", since="2022-03-27 00:00:00+0800", tz="Asia/Hong_Kong")
         0   2022-03-27 00:00:00+08:00
         dtype: datetime64[ns, Asia/Hong_Kong]
 
@@ -754,16 +754,16 @@ def tz(
 
     .. doctest::
 
-        >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="US/Pacific")
+        >>> cast(pd.Timestamp(0), "datetime", tz="US/Pacific")
         0   1970-01-01 00:00:00-08:00
         dtype: datetime64[ns, US/Pacific]
-        >>> pdcast.cast(pd.Timestamp(0, tz="UTC"), "datetime", tz="US/Pacific")
+        >>> cast(pd.Timestamp(0, tz="UTC"), "datetime", tz="US/Pacific")
         0   1969-12-31 16:00:00-08:00
         dtype: datetime64[ns, US/Pacific]
-        >>> pdcast.cast("2022-03-27", "datetime", tz="Asia/Hong_Kong")
+        >>> cast("2022-03-27", "datetime", tz="Asia/Hong_Kong")
         0   2022-03-27 00:00:00+08:00
         dtype: datetime64[ns, Asia/Hong_Kong]
-        >>> pdcast.cast("2022-03-27 00:00:00+0000", "datetime", tz="Asia/Hong_Kong")
+        >>> cast("2022-03-27 00:00:00+0000", "datetime", tz="Asia/Hong_Kong")
         0   2022-03-27 08:00:00+08:00
         dtype: datetime64[ns, Asia/Hong_Kong]
 
@@ -773,10 +773,10 @@ def tz(
 
     .. doctest::
 
-        >>> pdcast.cast(pd.Timestamp(0), "datetime", tz="utc").dt.tz_convert("US/Pacific")
+        >>> cast(pd.Timestamp(0), "datetime", tz="utc").dt.tz_convert("US/Pacific")
         0   1969-12-31 16:00:00-08:00
         dtype: datetime64[ns, US/Pacific]
-        >>> pdcast.cast("2022-03-27", "datetime", tz="utc").dt.tz_convert("Asia/Hong_Kong")
+        >>> cast("2022-03-27", "datetime", tz="utc").dt.tz_convert("Asia/Hong_Kong")
         0   2022-03-27 08:00:00+08:00
         dtype: datetime64[ns, Asia/Hong_Kong]
 
@@ -823,7 +823,7 @@ def day_first(val: bool, state: dict) -> bool:
 
     .. doctest::
 
-        >>> pdcast.cast("01/05/09", "datetime")
+        >>> cast("01/05/09", "datetime")
         0   2009-01-05
         dtype: datetime64[ns]
 
@@ -832,7 +832,7 @@ def day_first(val: bool, state: dict) -> bool:
 
     .. doctest::
 
-        >>> pdcast.cast("01/05/09", "datetime", day_first=True)
+        >>> cast("01/05/09", "datetime", day_first=True)
         0   2009-05-01
         dtype: datetime64[ns]
 
@@ -841,10 +841,10 @@ def day_first(val: bool, state: dict) -> bool:
 
     .. doctest::
 
-        >>> pdcast.cast("01/05/09", "datetime", day_first=False, year_first=True)
+        >>> cast("01/05/09", "datetime", day_first=False, year_first=True)
         0   2001-05-09
         dtype: datetime64[ns]
-        >>> pdcast.cast("01/05/09", "datetime", day_first=True, year_first=True)
+        >>> cast("01/05/09", "datetime", day_first=True, year_first=True)
         0   2001-09-05
         dtype: datetime64[ns]
     """
@@ -885,7 +885,7 @@ def year_first(val: bool, state: dict) -> bool:
 
     .. doctest::
 
-        >>> pdcast.cast("01/05/09", "datetime")
+        >>> cast("01/05/09", "datetime")
         0   2009-01-05
         dtype: datetime64[ns]
 
@@ -893,7 +893,7 @@ def year_first(val: bool, state: dict) -> bool:
 
     .. doctest::
 
-        >>> pdcast.cast("01/05/09", "datetime", year_first=True)
+        >>> cast("01/05/09", "datetime", year_first=True)
         0   2001-05-09
         dtype: datetime64[ns]
 
@@ -927,7 +927,7 @@ def as_hours(val: bool, state: dict) -> bool:
 
     .. doctest::
 
-        >>> pdcast.cast("1:22", "timedelta")
+        >>> cast("1:22", "timedelta")
         0   0 days 00:01:22
         dtype: timedelta64[ns]
 
@@ -936,7 +936,7 @@ def as_hours(val: bool, state: dict) -> bool:
 
     .. doctest::
 
-        >>> pdcast.cast("1:22", "timedelta", as_hours=True)
+        >>> cast("1:22", "timedelta", as_hours=True)
         0   0 days 01:22:00
         dtype: timedelta64[ns]
     """
@@ -1008,7 +1008,7 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
 
     .. doctest::
 
-        >>> pdcast.cast(["true", "t", "yes", "y", "on", "1"], "bool")
+        >>> cast(["true", "t", "yes", "y", "on", "1"], "bool")
         0    True
         1    True
         2    True
@@ -1016,7 +1016,7 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
         4    True
         5    True
         dtype: bool
-        >>> pdcast.cast(["false", "f", "no", "n", "off", "0"], "bool")
+        >>> cast(["false", "f", "no", "n", "off", "0"], "bool")
         0    False
         1    False
         2    False
@@ -1030,7 +1030,7 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
 
     .. doctest::
 
-        >>> pdcast.cast("abc", "bool")
+        >>> cast("abc", "bool")
         Traceback (most recent call last):
             ...
         ValueError: encountered non-boolean value: 'abc'
@@ -1041,7 +1041,7 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
 
     .. doctest::
 
-        >>> pdcast.cast("abc", "bool", true=pdcast.cast.true | {"abc"})
+        >>> cast("abc", "bool", true=pdcast.cast.true | {"abc"})
         0    True
         dtype: bool
 
@@ -1050,7 +1050,7 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
 
     .. doctest::
 
-        >>> pdcast.cast("abc", "bool", errors="coerce")
+        >>> cast("abc", "bool", errors="coerce")
         0    <NA>
         dtype: boolean
 
@@ -1059,7 +1059,7 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
 
     .. doctest::
 
-        >>> pdcast.cast("abc", "bool", false="*")
+        >>> cast("abc", "bool", false="*")
         0    False
         dtype: bool
 
@@ -1068,7 +1068,7 @@ def true(val: str | Iterable[str] | None, state: dict) -> set[str]:
 
     .. doctest::
 
-        >>> pdcast.cast(["False", "", "abc"], "bool", true="*", false="")
+        >>> cast(["False", "", "abc"], "bool", true="*", false="")
         0     True
         1    False
         2     True
@@ -1183,10 +1183,10 @@ def ignore_case(val: bool, state: dict) -> bool:
 
     .. doctest::
 
-        >>> pdcast.cast("True", "bool", ignore_case=True)
+        >>> cast("True", "bool", ignore_case=True)
         0    True
         dtype: bool
-        >>> pdcast.cast("True", "bool", ignore_case=False)
+        >>> cast("True", "bool", ignore_case=False)
         Traceback (most recent call last):
             ...
         ValueError: encountered non-boolean value: 'True'
@@ -1231,13 +1231,13 @@ def format(val: str | None, state: dict) -> str:
 
     .. doctest::
 
-        >>> pdcast.cast("Hello, World!", "string", format="_^24")
+        >>> cast("Hello, World!", "string", format="_^24")
         0    _____Hello, World!______
         dtype: string
-        >>> pdcast.cast(1000000, "string", format=",")
+        >>> cast(1000000, "string", format=",")
         0    1,000,000
         dtype: string
-        >>> pdcast.cast(1 / 3, "string", format=".2e")
+        >>> cast(1 / 3, "string", format=".2e")
         0    3.33e-01
         dtype: string
 
@@ -1246,7 +1246,7 @@ def format(val: str | None, state: dict) -> str:
 
     .. doctest::
 
-        >>> pdcast.cast("7:00 AM 01/05/09", "datetime", format="%I:%M %p %d/%m/%y")
+        >>> cast("7:00 AM 01/05/09", "datetime", format="%I:%M %p %d/%m/%y")
         0   2009-05-01 07:00:00
         dtype: datetime64[ns]
     """
@@ -1300,13 +1300,13 @@ def base(val: int, state: dict) -> int:
 
     .. doctest::
 
-        >>> pdcast.cast("0b101", "int")
+        >>> cast("0b101", "int")
         0    5
         dtype: int64
-        >>> pdcast.cast("0o77", "int")
+        >>> cast("0o77", "int")
         0    63
         dtype: int64
-        >>> pdcast.cast("0x3FF", "int")
+        >>> cast("0x3FF", "int")
         0    1023
         dtype: int64
 
@@ -1315,16 +1315,16 @@ def base(val: int, state: dict) -> int:
 
     .. doctest::
 
-        >>> pdcast.cast("101", "int", base=2)
+        >>> cast("101", "int", base=2)
         0    5
         dtype: int64
-        >>> pdcast.cast("77", "int", base=8)
+        >>> cast("77", "int", base=8)
         0    63
         dtype: int64
-        >>> pdcast.cast("3FF", "int", base=16)
+        >>> cast("3FF", "int", base=16)
         0    1023
         dtype: int64
-        >>> pdcast.cast("abc", "int", base=36)
+        >>> cast("abc", "int", base=36)
         0    13368
         dtype: int64
 
@@ -1332,16 +1332,16 @@ def base(val: int, state: dict) -> int:
 
     .. doctest::
 
-        >>> pdcast.cast(5, "string", base=2)
+        >>> cast(5, "string", base=2)
         0    101
         dtype: string
-        >>> pdcast.cast(63, "string", base=8)
+        >>> cast(63, "string", base=8)
         0    77
         dtype: string
-        >>> pdcast.cast(1023, "string", base=16)
+        >>> cast(1023, "string", base=16)
         0    3FF
         dtype: string
-        >>> pdcast.cast(13368, "string", base=36)
+        >>> cast(13368, "string", base=36)
         0    ABC
         dtype: string
     """

@@ -39,7 +39,7 @@ def sparsify(series: pd.Series, fill_value: Any = None) -> pd.Series:
 
         >>> import pandas as pd
 
-        >>> pdcast.sparsify(pd.Series([1, 2, 3]), fill_value=1)
+        >>> sparsify(pd.Series([1, 2, 3]), fill_value=1)
         0    1
         1    2
         2    3
@@ -81,7 +81,7 @@ def densify(series: pd.Series) -> pd.Series:
 
         >>> import pandas as pd
 
-        >>> pdcast.densify(pd.Series([1, 2, 3]).astype("Sparse[int]"))
+        >>> densify(pd.Series([1, 2, 3]).astype("Sparse[int]"))
         0    1
         1    2
         2    3

@@ -37,7 +37,7 @@ def categorize(series: pd.Series, levels: list = None) -> pd.Series:
 
         >>> import pandas as pd
 
-        >>> pdcast.categorize(pd.Series([1, 2, 3]))
+        >>> categorize(pd.Series([1, 2, 3]))
         0    1
         1    2
         2    3
@@ -81,7 +81,7 @@ def decategorize(series: pd.Series) -> pd.Series:
 
         >>> import pandas as pd
 
-        >>> pdcast.decategorize(pd.Series([1, 2, 3], dtype="category"))
+        >>> decategorize(pd.Series([1, 2, 3], dtype="category"))
         0    1
         1    2
         2    3

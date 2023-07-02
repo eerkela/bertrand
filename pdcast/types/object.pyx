@@ -40,7 +40,7 @@ class ObjectType(ScalarType):
         This method can resolve type definitions (and even dotted variables!)
         from the calling context by inspecting the stack frame.
 
-        >>> pdcast.resolve_type("object[int]")
+        >>> resolve_type("object[int]")
         ObjectType(type_def=<class 'int'>)
 
         """

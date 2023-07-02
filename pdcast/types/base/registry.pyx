@@ -16,12 +16,6 @@ from .decorator cimport DecoratorType
 from .scalar cimport AbstractType, ScalarType
 
 
-# TODO: adding aliases during init_base automatically appends them to
-# pinned_aliases and makes them available from registry.aliases.  This may not
-# be desirable.
-# -> Handle aliases during TypeRegistry.add()
-
-
 ######################
 ####    PUBLIC    ####
 ######################
@@ -150,14 +144,14 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> class CustomType(pdcast.ScalarType):
+            >>> class CustomType(ScalarType):
             ...     name = "foo"
             ...     aliases = {"bar"}
 
-            >>> pdcast.registry.add(CustomType)
-            >>> CustomType in pdcast.registry
+            >>> registry.add(CustomType)
+            >>> CustomType in registry
             True
-            >>> pdcast.resolve_type("bar")
+            >>> resolve_type("bar")
             CustomType()
 
         .. testcleanup::
@@ -218,19 +212,19 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> class CustomType(pdcast.ScalarType):
+            >>> class CustomType(ScalarType):
             ...     name = "foo"
             ...     aliases = {"bar"}
 
-            >>> pdcast.registry.add(CustomType)
-            >>> CustomType in pdcast.registry
+            >>> registry.add(CustomType)
+            >>> CustomType in registry
             True
-            >>> pdcast.resolve_type("bar")
+            >>> resolve_type("bar")
             CustomType()
-            >>> pdcast.registry.remove(CustomType)
-            >>> CustomType in pdcast.registry
+            >>> registry.remove(CustomType)
+            >>> CustomType in registry
             False
-            >>> pdcast.resolve_type("bar")
+            >>> resolve_type("bar")
             Traceback (most recent call last):
                 ...
             ValueError: invalid specifier: 'bar'
@@ -273,9 +267,9 @@ cdef class TypeRegistry:
 
         .. doctest::
 
-            >>> hash = pdcast.registry.hash
-            >>> pdcast.IntegerType.aliases.add("foo")
-            >>> hash == pdcast.registry.hash
+            >>> hash = registry.hash
+            >>> IntegerType.aliases.add("foo")
+            >>> hash == registry.hash
             False
 
         .. testcleanup::
@@ -296,9 +290,9 @@ cdef class TypeRegistry:
 
         .. doctest::
 
-            >>> aliases = pdcast.registry.aliases
-            >>> pdcast.registry.flush()
-            >>> aliases is pdcast.registry.aliases
+            >>> aliases = registry.aliases
+            >>> registry.flush()
+            >>> aliases is registry.aliases
             False
         """
         self._hash += 1
@@ -406,7 +400,7 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> aliases = pdcast.registry.aliases
+            >>> aliases = registry.aliases
             >>> aliases[int]
             PythonIntegerType()
             >>> aliases["bool"]
@@ -454,7 +448,7 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> pdcast.registry.resolvable.match("datetime[pandas, US/Pacific]")
+            >>> registry.resolvable.match("datetime[pandas, US/Pacific]")
             <regex.Match object; span=(0, 28), match='datetime[pandas, US/Pacific]'>
         """
         cached = self._regex
@@ -516,7 +510,7 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> pdcast.registry.resolvable.match("int, float, complex")
+            >>> registry.resolvable.match("int, float, complex")
             <regex.Match object; span=(0, 19), match='int, float, complex'>
         """
         cached = self._resolvable
@@ -584,7 +578,7 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> pdcast.registry.get_default(pdcast.BooleanType)
+            >>> registry.get_default(BooleanType)
             NumpyBooleanType()
         """
         default = self.defaults.get(type(typ), None)
@@ -631,7 +625,7 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> pdcast.registry.get_supertype(pdcast.Float32Type)
+            >>> registry.get_supertype(Float32Type)
             FloatType()
         """
         result = self.supertypes.get(type(typ), None)
@@ -672,7 +666,7 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> pdcast.registry.get_subtypes(pdcast.FloatType)   # doctest: +SKIP
+            >>> registry.get_subtypes(FloatType)   # doctest: +SKIP
             CompositeType({float16, float32, float64, float80})
         """
         result = set()
@@ -722,9 +716,9 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> pdcast.registry.get_generic(pdcast.NumpyFloat32Type)
+            >>> registry.get_generic(NumpyFloat32Type)
             Float32Type()
-            >>> pdcast.registry.get_generic(pdcast.Float32Type)
+            >>> registry.get_generic(Float32Type)
             Float32Type()
         """
         result = self.generics.get(type(typ), None)
@@ -768,7 +762,7 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> pdcast.registry.get_implementations(pdcast.Float32Type)
+            >>> registry.get_implementations(Float32Type)
             mappingproxy({'numpy': NumpyFloat32Type()})
         """
         result = {}
@@ -825,9 +819,9 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> pdcast.registry.priority
+            >>> registry.priority
             PrioritySet({...})
-            >>> (SparseType, CategoricalType) in pdcast.registry.priority
+            >>> (SparseType, CategoricalType) in registry.priority
             True
             >>> SparseType < CategoricalType
             True
@@ -945,7 +939,7 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> len([typ for typ in pdcast.registry])
+            >>> len([typ for typ in registry])
             74
         """
         return iter(self.instances.values())
@@ -957,7 +951,7 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> len(pdcast.registry)
+            >>> len(registry)
             74
         """
         return len(self.instances)
@@ -969,7 +963,7 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> pdcast.BooleanType in pdcast.registry
+            >>> BooleanType in registry
             True
         """
         if not isinstance(val, type):
@@ -983,7 +977,7 @@ cdef class TypeRegistry:
         --------
         .. doctest::
 
-            >>> pdcast.registry[pdcast.BooleanType]
+            >>> registry[BooleanType]
             BooleanType()
         """
         if not isinstance(val, type):
@@ -1065,12 +1059,12 @@ cdef class Type:
         --------
         .. doctest::
 
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            >>> BooleanType.aliases   # doctest: +SKIP
             AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.resolve_type("?")
+            >>> resolve_type("?")
             BooleanType()
-            >>> pdcast.BooleanType.aliases.add("foo")
-            >>> pdcast.resolve_type("foo")
+            >>> BooleanType.aliases.add("foo")
+            >>> resolve_type("foo")
             BooleanType()
 
         .. testcleanup::
@@ -1116,18 +1110,18 @@ cdef class Type:
 
         .. doctest::
 
-            >>> pdcast.resolve_type("float")
+            >>> resolve_type("float")
             FloatType()
-            >>> pdcast.resolve_type("datetime[pandas, US/Pacific]")
+            >>> resolve_type("datetime[pandas, US/Pacific]")
             PandasTimestampType(tz=zoneinfo.ZoneInfo(key='US/Pacific'))
 
         This directly translates to:
 
         .. doctest::
 
-            >>> pdcast.FloatType.from_string()
+            >>> FloatType.from_string()
             FloatType()
-            >>> pdcast.DatetimeType.from_string("pandas", "US/Pacific")
+            >>> DatetimeType.from_string("pandas", "US/Pacific")
             PandasTimestampType(tz=zoneinfo.ZoneInfo(key='US/Pacific'))
         """
         return NotImplementedError(
@@ -1170,18 +1164,18 @@ cdef class Type:
             >>> import numpy as np
             >>> import pandas as pd
 
-            >>> pdcast.resolve_type(np.dtype("bool"))
+            >>> resolve_type(np.dtype("bool"))
             NumpyBooleanType()
-            >>> pdcast.resolve_type(pd.Int64Dtype())
+            >>> resolve_type(pd.Int64Dtype())
             PandasInt64Type()
 
         This directly translates to:
 
         .. doctest::
 
-            >>> pdcast.NumpyBooleanType.from_dtype(np.dtype("bool"))
+            >>> NumpyBooleanType.from_dtype(np.dtype("bool"))
             NumpyBooleanType()
-            >>> pdcast.PandasInt64Type.from_dtype(pd.Int64Dtype())
+            >>> PandasInt64Type.from_dtype(pd.Int64Dtype())
             PandasInt64Type()
 
         It is also called whenever :func:`detect_type() <pdcast.detect_type>`
@@ -1189,9 +1183,9 @@ cdef class Type:
 
         .. doctest::
 
-            >>> pdcast.detect_type(np.array([True, False, True]))
+            >>> detect_type(np.array([True, False, True]))
             NumpyBooleanType()
-            >>> pdcast.detect_type(pd.Series([1, 2, 3], dtype=pd.Int64Dtype()))
+            >>> detect_type(pd.Series([1, 2, 3], dtype=pd.Int64Dtype()))
             PandasInt64Type()
 
         Which follows the same pattern as above.  This allows
@@ -1244,26 +1238,26 @@ cdef class Type:
 
             >>> import pandas as pd
 
-            >>> pdcast.detect_type([True, False, True])
+            >>> detect_type([True, False, True])
             PythonBooleanType()
-            >>> pdcast.detect_type(pd.Series([1, 2, 3], dtype=object))
+            >>> detect_type(pd.Series([1, 2, 3], dtype=object))
             PythonIntegerType()
 
         At a high level, this translates to:
 
         .. doctest::
 
-            >>> {pdcast.PythonBooleanType.from_scalar(x) for x in [True, False, True]}.pop()
+            >>> {PythonBooleanType.from_scalar(x) for x in [True, False, True]}.pop()
             PythonBooleanType()
-            >>> {pdcast.PythonIntegerType.from_scalar(x) for x in [1, 2, 3]}.pop()
+            >>> {PythonIntegerType.from_scalar(x) for x in [1, 2, 3]}.pop()
             PythonIntegerType()
 
         This can be naturally extended to support data of mixed type, yielding
-        a :class:`composite <pdcast.CompositeType>` result.
+        a :class:`composite <CompositeType>` result.
 
         .. doctest::
 
-            >>> mixed = pdcast.detect_type([False, 1, 2.0])
+            >>> mixed = detect_type([False, 1, 2.0])
             >>> mixed   # doctest: +SKIP
             CompositeType({bool[python], int[python], float64[python]})
 
@@ -1314,30 +1308,30 @@ cdef class Type:
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int").contains("int32")
+            >>> resolve_type("int").contains("int32")
             True
-            >>> pdcast.resolve_type("datetime").contains("M8[5ns]")
+            >>> resolve_type("datetime").contains("M8[5ns]")
             True
-            >>> pdcast.resolve_type("sparse").contains("sparse[bool[numpy]]")
+            >>> resolve_type("sparse").contains("sparse[bool[numpy]]")
             True
-            >>> pdcast.resolve_type("int, float, complex").contains("float16")
+            >>> resolve_type("int, float, complex").contains("float16")
             True
-            >>> pdcast.resolve_type("complex").contains(["complex64", "complex128"])
+            >>> resolve_type("complex").contains(["complex64", "complex128"])
             True
 
         Using the ``in`` keyword reverses its behavior:
 
         .. doctest::
 
-            >>> "int32" in pdcast.resolve_type("int")
+            >>> "int32" in resolve_type("int")
             True
-            >>> "M8[5ns]" in pdcast.resolve_type("datetime")
+            >>> "M8[5ns]" in resolve_type("datetime")
             True
-            >>> "sparse[bool[numpy]]" in pdcast.resolve_type("sparse")
+            >>> "sparse[bool[numpy]]" in resolve_type("sparse")
             True
-            >>> "float16" in pdcast.resolve_type("int, float, complex")
+            >>> "float16" in resolve_type("int, float, complex")
             True
-            >>> ["complex64", "complex128"] in pdcast.resolve_type("complex")
+            >>> ["complex64", "complex128"] in resolve_type("complex")
             True
 
         :func:`typecheck() <pdcast.typecheck>` allows this method to be called
@@ -1345,18 +1339,18 @@ cdef class Type:
 
         .. doctest::
 
-            >>> pdcast.typecheck([1, 2, 3], "int")
+            >>> typecheck([1, 2, 3], "int")
             True
-            >>> pdcast.typecheck([1, 2.0, 3+0j], "int, float, complex")
+            >>> typecheck([1, 2.0, 3+0j], "int, float, complex")
             True
 
         Which is semantically equivalent to:
 
         .. doctest::
 
-            >>> pdcast.resolve_type("int").contains(pdcast.detect_type([1, 2, 3]))
+            >>> resolve_type("int").contains(detect_type([1, 2, 3]))
             True
-            >>> pdcast.resolve_type("int, float, complex").contains(pdcast.detect_type([1, 2.0, 3+0j]))
+            >>> resolve_type("int, float, complex").contains(detect_type([1, 2.0, 3+0j]))
             True
         """
         raise NotImplementedError(
@@ -1399,7 +1393,7 @@ cdef class CacheValue:
     --------
     .. doctest::
 
-        >>> foo = pdcast.CacheValue(1)
+        >>> foo = CacheValue(1)
 
         >>> def compute():
         ...     if foo:
@@ -1409,7 +1403,7 @@ cdef class CacheValue:
 
         >>> compute()
         foo is valid
-        >>> pdcast.registry.flush()
+        >>> registry.flush()
         >>> compute()
         foo is invalid
     """
@@ -1483,10 +1477,10 @@ cdef class AliasManager:
         --------
         .. doctest::
 
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            >>> BooleanType.aliases   # doctest: +SKIP
             AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.BooleanType.aliases.add("foo")
-            >>> pdcast.resolve_type("foo")
+            >>> BooleanType.aliases.add("foo")
+            >>> resolve_type("foo")
             BooleanType()
 
         .. testcleanup::
@@ -1545,12 +1539,12 @@ cdef class AliasManager:
         --------
         .. doctest::
 
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            >>> BooleanType.aliases   # doctest: +SKIP
             AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.resolve_type("boolean")
+            >>> resolve_type("boolean")
             BooleanType()
-            >>> pdcast.BooleanType.aliases.remove("boolean")
-            >>> pdcast.resolve_type("boolean")
+            >>> BooleanType.aliases.remove("boolean")
+            >>> resolve_type("boolean")
             Traceback (most recent call last):
                 ...
             ValueError: invalid specifier: 'boolean'
@@ -1586,13 +1580,13 @@ cdef class AliasManager:
         --------
         .. doctest::
 
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            >>> BooleanType.aliases   # doctest: +SKIP
             AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.BooleanType.aliases.discard("boolean")
-            >>> pdcast.BooleanType.aliases    # doctest: +SKIP
+            >>> BooleanType.aliases.discard("boolean")
+            >>> BooleanType.aliases    # doctest: +SKIP
             AliasManager({'bool', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.BooleanType.aliases.discard("foo")
-            >>> pdcast.BooleanType.aliases    # doctest: +SKIP
+            >>> BooleanType.aliases.discard("foo")
+            >>> BooleanType.aliases    # doctest: +SKIP
             AliasManager({'bool', 'bool_', 'bool8', 'b1', '?'})
         """
         try:
@@ -1622,11 +1616,11 @@ cdef class AliasManager:
         --------
         .. doctest::
 
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            >>> BooleanType.aliases   # doctest: +SKIP
             AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.BooleanType.aliases.pop()   # doctest: +SKIP
+            >>> BooleanType.aliases.pop()   # doctest: +SKIP
             "bool"
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            >>> BooleanType.aliases   # doctest: +SKIP
             AliasManager({'boolean', 'bool_', 'bool8', 'b1', '?'})
         """
         value = self.aliases.pop()
@@ -1650,10 +1644,10 @@ cdef class AliasManager:
         --------
         .. doctest::
 
-            >>> pdcast.BooleanType.aliases   # doctest: +SKIP
+            >>> BooleanType.aliases   # doctest: +SKIP
             AliasManager({'bool', 'boolean', 'bool_', 'bool8', 'b1', '?'})
-            >>> pdcast.BooleanType.aliases.clear()
-            >>> pdcast.BooleanType.aliases
+            >>> BooleanType.aliases.clear()
+            >>> BooleanType.aliases
             AliasManager(set())
         """
         # remove aliases from global registry

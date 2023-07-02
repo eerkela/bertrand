@@ -116,7 +116,7 @@ class SparseType(DecoratorType):
 
         # if target is composite, test each element individually
         if isinstance(other, CompositeType):
-            return all(self.contains(o) for o in other)
+            return all(self.contains(typ) for typ in other)
 
         # assert other is sparse
         if not isinstance(other, type(self)):

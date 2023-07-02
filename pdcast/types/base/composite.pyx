@@ -176,11 +176,11 @@ cdef class CompositeType(Type):
 
         .. doctest::
 
-            >>> numeric = pdcast.resolve_type(["bool", "int", "float", "complex"])
+            >>> numeric = resolve_type(["bool", "int", "float", "complex"])
             >>> numeric.aliases.add("numeric")
-            >>> pdcast.resolve_type("numeric")   # doctest: +SKIP
+            >>> resolve_type("numeric")   # doctest: +SKIP
             CompositeType({bool, int, float, complex})
-            >>> pdcast.resolve_type("numeric") is numeric
+            >>> resolve_type("numeric") is numeric
             True
 
         If the alias is removed, then the composite will be inaccessible.
@@ -188,7 +188,7 @@ cdef class CompositeType(Type):
         .. doctest::
 
             >>> numeric.aliases.remove("numeric")
-            >>> pdcast.resolve_type("numeric")
+            >>> resolve_type("numeric")
             Traceback (most recent call last):
                 ...
             ValueError: invalid specifier: 'numeric'
@@ -230,9 +230,9 @@ cdef class CompositeType(Type):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("int, float, complex").contains("complex64")
+            >>> resolve_type("int, float, complex").contains("complex64")
             True
-            >>> pdcast.resolve_type("int, float, complex").contains("int64, complex64")
+            >>> resolve_type("int, float, complex").contains("int64, complex64")
             True
         """
         other = resolve_type(other)
@@ -271,7 +271,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type(["bool"]).expand()   # doctest: +SKIP
+            >>> resolve_type(["bool"]).expand()   # doctest: +SKIP
             CompositeType({bool, bool[numpy], bool[pandas], bool[python]})
         """
         cdef CompositeType result
@@ -313,7 +313,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("bool, bool[numpy], bool[pandas], bool[python]").collapse()
+            >>> resolve_type("bool, bool[numpy], bool[pandas], bool[python]").collapse()
             CompositeType({bool})
         """
         cdef VectorType atomic_type
@@ -349,7 +349,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float, complex")
+            >>> composite = resolve_type("int, float, complex")
             >>> composite.add("bool")
             >>> composite   # doctest: +SKIP
             CompositeType({int, float, complex, bool})
@@ -391,7 +391,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float, complex")
+            >>> composite = resolve_type("int, float, complex")
             >>> composite.remove("int")
             >>> composite   # doctest: +SKIP
             CompositeType({float, complex})
@@ -437,7 +437,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float, complex")
+            >>> composite = resolve_type("int, float, complex")
             >>> composite.discard("int")
             >>> composite   # doctest: +SKIP
             CompositeType({float, complex})
@@ -478,7 +478,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite.pop()
             int
             >>> composite   # doctest: +SKIP
@@ -513,7 +513,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float, complex")
+            >>> composite = resolve_type("int, float, complex")
             >>> composite.clear()
             >>> composite   # doctest: +SKIP
             CompositeType({})
@@ -535,7 +535,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float, complex")
+            >>> composite = resolve_type("int, float, complex")
             >>> composite2 = composite.copy()
             >>> composite2.add("bool")
             >>> composite   # doctest: +SKIP
@@ -579,7 +579,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite.union("float, complex")   # doctest: +SKIP
             CompositeType({int, float, complex})
         """
@@ -621,7 +621,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite.intersection("float, complex")   # doctest: +SKIP
             CompositeType({float})
         """
@@ -662,7 +662,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite.difference("float, complex")   # doctest: +SKIP
             CompositeType({int})
         """
@@ -711,7 +711,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite.symmetric_difference("float, complex")   # doctest: +SKIP
             CompositeType({int, complex})
         """
@@ -747,7 +747,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite | {"float", "complex"}   # doctest: +SKIP
             CompositeType({int, float, complex})
         """
@@ -783,7 +783,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite & {"float", "complex"}   # doctest: +SKIP
             CompositeType({float})
         """
@@ -826,7 +826,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite - {"float", "complex"}   # doctest: +SKIP
             CompositeType({int})
         """
@@ -871,7 +871,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite ^ {"float", "complex"}   # doctest: +SKIP
             CompositeType({int, complex})
         """
@@ -909,7 +909,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite.update({"float", "complex"})
             >>> composite   # doctest: +SKIP
             CompositeType({int, float, complex})
@@ -944,7 +944,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite.intersection_update({"float", "complex"})
             >>> composite   # doctest: +SKIP
             CompositeType({float})
@@ -979,7 +979,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite.difference_update({"float", "complex"})
             >>> composite   # doctest: +SKIP
             CompositeType({int})
@@ -1013,7 +1013,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite.symmetric_difference_update({"float", "complex"})
             >>> composite   # doctest: +SKIP
             CompositeType({int, complex})
@@ -1050,7 +1050,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite |= {"float", "complex"}
             >>> composite   # doctest: +SKIP
             CompositeType({int, float, complex})
@@ -1090,7 +1090,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite &= {"float", "complex"}
             >>> composite   # doctest: +SKIP
             CompositeType({float})
@@ -1129,7 +1129,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite -= {"float", "complex"}
             >>> composite   # doctest: +SKIP
             CompositeType({int})
@@ -1169,7 +1169,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite ^= {"float", "complex"}
             >>> composite   # doctest: +SKIP
             CompositeType({int, complex})
@@ -1210,7 +1210,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite.issubset({"int", "float", "complex"})
             True
             >>> composite.issubset({"int", "complex"})
@@ -1246,7 +1246,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite.issuperset({"int"})
             True
             >>> composite.issuperset({"int", "complex"})
@@ -1282,7 +1282,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite.isdisjoint("complex")
             True
             >>> composite.isdisjoint("int, complex")
@@ -1321,7 +1321,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite > {"int"}
             True
             >>> composite > {"int", "float"}
@@ -1361,7 +1361,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite >= {"int"}
             True
             >>> composite >= {"int", "float"}
@@ -1390,7 +1390,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite == {"int", "float"}
             True
             >>> composite == {"int", "complex"}
@@ -1429,7 +1429,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite < {"int", "float", "complex"}
             True
             >>> composite < {"int", "float"}
@@ -1469,7 +1469,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> composite <= {"int", "float", "complex"}
             True
             >>> composite <= {"int", "float"}
@@ -1493,9 +1493,9 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> bool(pdcast.resolve_type("int, float"))
+            >>> bool(resolve_type("int, float"))
             True
-            >>> bool(pdcast.resolve_type([]))
+            >>> bool(resolve_type([]))
             False
         """
         return bool(self.types)
@@ -1520,7 +1520,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> "int" in composite
             True
             >>> "complex" in composite
@@ -1540,7 +1540,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> [typ for typ in composite]
             [FloatType(), IntegerType()]
         """
@@ -1558,7 +1558,7 @@ cdef class CompositeType(Type):
         --------
         .. doctest::
 
-            >>> composite = pdcast.resolve_type("int, float")
+            >>> composite = resolve_type("int, float")
             >>> len(composite)
             2
         """

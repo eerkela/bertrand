@@ -37,7 +37,7 @@ intersphinx_mapping = {
 
 
 doctest_global_setup = """
-import pdcast
+from pdcast import *
 """
 
 

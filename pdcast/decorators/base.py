@@ -163,7 +163,7 @@ class Signature:
             >>> def foo(bar, baz=2, **kwargs):
             ...     return {"bar": bar, "baz": baz} | kwargs
 
-            >>> sig = pdcast.Signature(foo)
+            >>> sig = Signature(foo)
             >>> sig
             <Signature (bar, baz=2, **kwargs)>
             >>> sig.parameter_map
@@ -193,7 +193,7 @@ class Signature:
             >>> def foo(bar, baz=2, **kwargs):
             ...     return {"bar": bar, "baz": baz} | kwargs
 
-            >>> sig = pdcast.Signature(foo)
+            >>> sig = Signature(foo)
             >>> sig.parameters
             (<Parameter "bar">, <Parameter "baz=2">, <Parameter "**kwargs">)
             >>> sig.parameters = [par.replace(annotation=int) for par in sig.parameters]
@@ -234,7 +234,7 @@ class Signature:
             >>> def foo(bar, baz=2, **kwargs):
             ...     return {"bar": bar, "baz": baz} | kwargs
 
-            >>> sig = pdcast.Signature(foo)
+            >>> sig = Signature(foo)
             >>> sig.return_annotation
             <class 'inspect._empty'>
             >>> sig.return_annotation = dict[str, int]
@@ -303,7 +303,7 @@ class Signature:
             >>> def foo(bar, baz=2, **kwargs):
             ...     return {"bar": bar, "baz": baz} | kwargs
 
-            >>> sig = pdcast.Signature(foo)
+            >>> sig = Signature(foo)
             >>> sig.add_parameter("qux", kind="KEYWORD_ONLY", default=3, annotation=int)
             >>> sig
             <Signature (bar, baz=2, *, qux: int = 3, **kwargs)>
@@ -376,7 +376,7 @@ class Signature:
             >>> def foo(bar, baz=2, **kwargs):
             ...     return {"bar": bar, "baz": baz} | kwargs
 
-            >>> sig = pdcast.Signature(foo)
+            >>> sig = Signature(foo)
             >>> sig.set_parameter("bar", annotation=int)
             >>> sig
             <Signature (bar: int, baz=2, **kwargs)>
@@ -450,7 +450,7 @@ class Signature:
             >>> def foo(bar, baz=2, **kwargs):
             ...     return {"bar": bar, "baz": baz} | kwargs
 
-            >>> sig = pdcast.Signature(foo)
+            >>> sig = Signature(foo)
             >>> sig.add_parameter("qux", default=3)
             >>> sig.set_parameter("bar", annotation=int, default=3)
             >>> sig
@@ -506,7 +506,7 @@ class Signature:
             >>> def foo(bar, baz=2, **kwargs):
             ...     return {"bar": bar, "baz": baz} | kwargs
 
-            >>> sig = pdcast.Signature(foo)
+            >>> sig = Signature(foo)
             >>> sig.remove_parameter("bar")
             >>> sig
             <Signature (baz=2, **kwargs)>
@@ -553,7 +553,7 @@ class Signature:
             >>> def foo(bar, baz, **kwargs):
             ...     return {"bar": bar, "baz": baz} | kwargs
 
-            >>> sig = pdcast.Signature(foo)
+            >>> sig = Signature(foo)
             >>> sig.parameter_index("baz")
             1
             >>> sig.parameter_index("kwargs")
@@ -596,7 +596,7 @@ class Signature:
             >>> def foo(bar, baz, **kwargs):
             ...     return {"bar": bar, "baz": baz} | kwargs
 
-            >>> sig = pdcast.Signature(foo)
+            >>> sig = Signature(foo)
             >>> sig
             <Signature (bar, baz, **kwargs)>
             >>> sig.move_parameter("baz", 0)
@@ -658,7 +658,7 @@ class Signature:
             >>> def foo(bar: int, baz: int = 2, **kwargs) -> dict[str, int]:
             ...     return {"bar": bar, "baz": baz} | kwargs
 
-            >>> sig = pdcast.Signature(foo)
+            >>> sig = Signature(foo)
             >>> sig.reconstruct()
             'foo(bar: int, baz: int = 2, **kwargs) -> dict[str, int]'
             >>> sig.reconstruct(annotations=False)
@@ -733,12 +733,12 @@ class Signature:
             >>> def foo(bar, baz=2, **kwargs):
             ...     return {"bar": bar, "baz": baz} | kwargs
 
-            >>> sig = pdcast.Signature(foo)
-            >>> sig.compatible(pdcast.Signature(lambda bar, baz, **kwargs: None))
+            >>> sig = Signature(foo)
+            >>> sig.compatible(Signature(lambda bar, baz, **kwargs: None))
             True
-            >>> sig.compatible(pdcast.Signature(lambda bar, baz, *, qux=3, corge=4, **kwargs: None))
+            >>> sig.compatible(Signature(lambda bar, baz, *, qux=3, corge=4, **kwargs: None))
             True
-            >>> sig.compatible(pdcast.Signature(lambda x, y: None))
+            >>> sig.compatible(Signature(lambda x, y: None))
             False
         """
         positional = {KINDS["POSITIONAL_ONLY"], KINDS["POSITIONAL_OR_KEYWORD"]}

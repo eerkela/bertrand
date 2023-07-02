@@ -615,11 +615,11 @@ class DispatchFunc(FunctionDecorator):
 
         .. doctest::
 
-            >>> pdcast.cast[int, int]
+            >>> cast[int, int]
             <function integer_to_integer at ...>
-            >>> pdcast.cast[float, bool]
+            >>> cast[float, bool]
             <function float_to_boolean at ...>
-            >>> pdcast.cast[int, "datetime[pandas, US/Pacific]"]
+            >>> cast[int, "datetime[pandas, US/Pacific]"]
             <function integer_to_pandas_timestamp at ...>
         """
         try:

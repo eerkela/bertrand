@@ -37,13 +37,13 @@ class BooleanType(AbstractType):
 
     .. doctest::
 
-        >>> pdcast.resolve_type("bool")
+        >>> resolve_type("bool")
         BooleanType()
-        >>> pdcast.resolve_type("boolean[numpy]")
+        >>> resolve_type("boolean[numpy]")
         NumpyBooleanType()
-        >>> pdcast.resolve_type("b1[pandas]")
+        >>> resolve_type("b1[pandas]")
         PandasBooleanType()
-        >>> pdcast.resolve_type("?[python]")
+        >>> resolve_type("?[python]")
         PythonBooleanType()
     """
 
@@ -79,9 +79,9 @@ class NumpyBooleanType(ScalarType):
 
     .. doctest::
 
-        >>> pdcast.resolve_type(np.bool_)
+        >>> resolve_type(np.bool_)
         NumpyBooleanType()
-        >>> pdcast.resolve_type(np.dtype(bool))
+        >>> resolve_type(np.dtype(bool))
         NumpyBooleanType()
     """
 
@@ -126,11 +126,11 @@ class PandasBooleanType(ScalarType):
 
     .. doctest::
 
-        >>> pdcast.resolve_type("Boolean")
+        >>> resolve_type("Boolean")
         PandasBooleanType()
-        >>> pdcast.resolve_type(pd.BooleanDtype)
+        >>> resolve_type(pd.BooleanDtype)
         PandasBooleanType()
-        >>> pdcast.resolve_type(pd.BooleanDtype())
+        >>> resolve_type(pd.BooleanDtype())
         PandasBooleanType()
     """
 
@@ -169,7 +169,7 @@ class PythonBooleanType(ScalarType):
 
     .. doctest::
 
-        >>> pdcast.resolve_type(bool)
+        >>> resolve_type(bool)
         PythonBooleanType()
     """
 

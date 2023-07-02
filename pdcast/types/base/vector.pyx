@@ -180,7 +180,7 @@ cdef class VectorType(Type):
 
         .. doctest::
 
-            >>> pdcast.PandasTimestampType("US/Pacific")
+            >>> PandasTimestampType("US/Pacific")
             PandasTimestampType(tz=zoneinfo.ZoneInfo(key='US/Pacific'))
 
         It is responsible for implementing the `flyweight
@@ -189,7 +189,7 @@ cdef class VectorType(Type):
 
         .. doctest::
 
-            >>> _ is pdcast.PandasTimestampType("US/Pacific")
+            >>> _ is PandasTimestampType("US/Pacific")
             True
         """
         return self.instances(args, kwargs)
@@ -229,9 +229,9 @@ cdef class VectorType(Type):
 
         .. doctest::
 
-            >>> pdcast.PythonDecimalType.name
+            >>> PythonDecimalType.name
             'decimal'
-            >>> str(pdcast.PythonDecimalType)
+            >>> str(PythonDecimalType)
             'decimal[python]'
 
         It should be defined at the class level and should not change over the
@@ -261,9 +261,9 @@ cdef class VectorType(Type):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("M8[5ns]").kwargs
+            >>> resolve_type("M8[5ns]").kwargs
             mappingproxy({'unit': 'ns', 'step_size': 5})
-            >>> pdcast.resolve_type("sparse[bool, True]").kwargs
+            >>> resolve_type("sparse[bool, True]").kwargs
             mappingproxy({'wrapped': BooleanType(), 'fill_value': True})
         """
         return MappingProxyType({} if self._kwargs is None else self._kwargs)
@@ -291,7 +291,7 @@ cdef class VectorType(Type):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("M8[5ns]")
+            >>> resolve_type("M8[5ns]")
             NumpyDatetime64Type(unit='ns', step_size=5)
             >>> _.base_instance
             NumpyDatetime64Type(unit=None, step_size=1)
@@ -320,9 +320,9 @@ cdef class VectorType(Type):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("M8").is_parametrized
+            >>> resolve_type("M8").is_parametrized
             False
-            >>> pdcast.resolve_type("M8[ns]").is_parametrized
+            >>> resolve_type("M8[ns]").is_parametrized
             True
         """
         return self != self.base_instance
@@ -353,7 +353,7 @@ cdef class VectorType(Type):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse[categorical[str]]")
+            >>> resolve_type("sparse[categorical[str]]")
             SparseType(wrapped=CategoricalType(wrapped=StringType(), levels=None), fill_value=None)
             >>> [str(x) for x in _.decorators]
             ['sparse[categorical[string, None], None]', 'categorical[string, None]']
@@ -387,11 +387,11 @@ cdef class VectorType(Type):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("m8[5ns]").kwargs
+            >>> resolve_type("m8[5ns]").kwargs
             mappingproxy({'unit': 'ns', 'step_size': 5})
-            >>> pdcast.resolve_type("m8[5ns]").unit
+            >>> resolve_type("m8[5ns]").unit
             'ns'
-            >>> pdcast.resolve_type("m8[5ns]").step_size
+            >>> resolve_type("m8[5ns]").step_size
             5
         """
         try:
@@ -426,8 +426,8 @@ cdef class VectorType(Type):
 
         .. doctest::
 
-            >>> @pdcast.register
-            ... class CustomType(pdcast.ScalarType):
+            >>> @register
+            ... class CustomType(ScalarType):
             ...     name = "custom"
             ... 
             ...     def __init__(self, value=None):
@@ -459,8 +459,8 @@ cdef class VectorType(Type):
 
             .. doctest::
 
-                >>> @pdcast.register
-                ... class CustomType(pdcast.ScalarType):
+                >>> @register
+                ... class CustomType(ScalarType):
                 ...     name = "custom"
                 ... 
                 ...     def __init__(self, value=None):
@@ -520,7 +520,7 @@ cdef class VectorType(Type):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("categorical[str]")
+            >>> resolve_type("categorical[str]")
             CategoricalType(wrapped=StringType(), levels=None)
             >>> _.unwrap()
             StringType()
@@ -549,7 +549,7 @@ cdef class VectorType(Type):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("m8[5ns]")
+            >>> resolve_type("m8[5ns]")
             NumpyTimedelta64Type(unit='ns', step_size=5)
             >>> _.replace(unit="s")
             NumpyTimedelta64Type(unit='s', step_size=5)
@@ -587,9 +587,9 @@ cdef class VectorType(Type):
 
         .. doctest::
 
-            >>> isinstance(pdcast.PandasTimestampType, pdcast.PandasTimestampType)
+            >>> isinstance(PandasTimestampType, PandasTimestampType)
             True
-            >>> isinstance(pdcast.PandasTimestampType("US/Pacific"), pdcast.PandasTimestampType)
+            >>> isinstance(PandasTimestampType("US/Pacific"), PandasTimestampType)
             True
         """
         if self is self.base_instance:
@@ -624,7 +624,7 @@ cdef class VectorType(Type):
 
         .. doctest::
 
-            >>> issubclass(type(pdcast.PandasTimestampType), pdcast.PandasTimestampType)
+            >>> issubclass(type(PandasTimestampType), PandasTimestampType)
             True
         """
         if self is self.base_instance:
@@ -657,7 +657,7 @@ cdef class VectorType(Type):
         --------
         .. doctest::
 
-            >>> hash(pdcast.resolve_type("int[numpy]"))   # doctest: +SKIP
+            >>> hash(resolve_type("int[numpy]"))   # doctest: +SKIP
             -350723806823902966
         """
         return self._hash
@@ -684,9 +684,9 @@ cdef class VectorType(Type):
         --------
         .. doctest::
 
-            >>> str(pdcast.resolve_type("int[numpy]"))
+            >>> str(resolve_type("int[numpy]"))
             'int[numpy]'
-            >>> pdcast.resolve_type("int[numpy]").instances
+            >>> resolve_type("int[numpy]").instances
             {'int[numpy]': NumpyIntegerType()}
         """
         return self._slug

@@ -15,11 +15,6 @@ from .vector cimport VectorType
 from .composite cimport CompositeType
 
 
-# TODO: DecoratorType.contains should absorb some of the logic of its
-# subtypes.
-# -> treat base instances as wildcards.
-
-
 cdef class DecoratorType(VectorType):
     """Base class for all `Decorator pattern
     <https://en.wikipedia.org/wiki/Decorator_pattern>`_ type objects.
@@ -87,9 +82,9 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("int64")
+            >>> resolve_type("int64")
             Int64Type()
-            >>> pdcast.resolve_type("sparse[int64]")
+            >>> resolve_type("sparse[int64]")
             SparseType(wrapped=Int64Type(), fill_value=None)
 
         If a wrapped type is not given, then this method will return a naked
@@ -98,7 +93,7 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse")
+            >>> resolve_type("sparse")
             SparseType(wrapped=None, fill_value=None)
 
         These act as wildcards during :func:`cast() <pdcast.cast>` operations,
@@ -106,7 +101,7 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.cast([1, 2, 3], "sparse")
+            >>> cast([1, 2, 3], "sparse")
             0    1
             1    2
             2    3
@@ -117,7 +112,7 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse").contains("sparse[int64]")
+            >>> resolve_type("sparse").contains("sparse[int64]")
             True
         """
         if wrapped is None:
@@ -160,9 +155,9 @@ cdef class DecoratorType(VectorType):
 
             >>> import pandas as pd
 
-            >>> pdcast.resolve_type(pd.SparseDtype("int64"))
+            >>> resolve_type(pd.SparseDtype("int64"))
             SparseType(wrapped=NumpyInt64Type(), fill_value=0)
-            >>> pdcast.resolve_type(pd.CategoricalDtype([1, 2, 3]))
+            >>> resolve_type(pd.CategoricalDtype([1, 2, 3]))
             CategoricalType(wrapped=NumpyInt64Type(), levels=[1, 2, 3])
 
         If either of these objects are given as classes rather than instances,
@@ -172,9 +167,9 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type(pd.SparseDtype)
+            >>> resolve_type(pd.SparseDtype)
             SparseType(wrapped=None, fill_value=None)
-            >>> pdcast.resolve_type(pd.CategoricalDtype)
+            >>> resolve_type(pd.CategoricalDtype)
             CategoricalType(wrapped=None, levels=None)
 
         These act as wildcards during :func:`cast() <pdcast.cast>` operations,
@@ -182,12 +177,12 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.cast([1, 2, 3], pd.SparseDtype)
+            >>> cast([1, 2, 3], pd.SparseDtype)
             0    1
             1    2
             2    3
             dtype: Sparse[int64, <NA>]
-            >>> pdcast.cast([1, 2, 3], pd.CategoricalDtype)
+            >>> cast([1, 2, 3], pd.CategoricalDtype)
             0    1
             1    2
             2    3
@@ -199,9 +194,9 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type(pd.SparseDtype).contains(pd.SparseDtype("int64"))
+            >>> resolve_type(pd.SparseDtype).contains(pd.SparseDtype("int64"))
             True
-            >>> pdcast.resolve_type(pd.CategoricalDtype).contains(pd.CategoricalDtype([1, 2, 3]))
+            >>> resolve_type(pd.CategoricalDtype).contains(pd.CategoricalDtype([1, 2, 3]))
             True
         """
         # NOTE: any special dtype parsing logic goes here
@@ -229,9 +224,9 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse[int64]").replace(wrapped="float64")
+            >>> resolve_type("sparse[int64]").replace(wrapped="float64")
             SparseType(wrapped=Float64Type(), fill_value=None)
-            >>> pdcast.resolve_type("sparse[int64]").replace(fill_value=1)
+            >>> resolve_type("sparse[int64]").replace(fill_value=1)
             SparseType(wrapped=Int64Type(), fill_value=1)
 
         Unlike :meth:`ScalarType.replace() <pdcast.ScalarType.replace>`, this
@@ -239,7 +234,7 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse[M8[5ns]]").replace(unit="s")
+            >>> resolve_type("sparse[M8[5ns]]").replace(unit="s")
             SparseType(wrapped=NumpyDatetime64Type(unit='s', step_size=5), fill_value=None)
         """
         # filter kwargs pertaining to this decorator
@@ -293,11 +288,11 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse[int]").contains("sparse[int32]")
+            >>> resolve_type("sparse[int]").contains("sparse[int32]")
             True
-            >>> pdcast.resolve_type("sparse[int]").contains("categorical[int32]")
+            >>> resolve_type("sparse[int]").contains("categorical[int32]")
             False
-            >>> pdcast.resolve_type("sparse[int]").contains("int32")
+            >>> resolve_type("sparse[int]").contains("int32")
             False
 
         The actual check is delegated down the stack to
@@ -305,9 +300,9 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse[int]").contains("sparse[int8[numpy]]")
+            >>> resolve_type("sparse[int]").contains("sparse[int8[numpy]]")
             True
-            >>> pdcast.resolve_type("sparse[int]").contains("sparse[float16[numpy]]")
+            >>> resolve_type("sparse[int]").contains("sparse[float16[numpy]]")
             False
 
         If the decorator does not have a base
@@ -315,19 +310,29 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse").contains("sparse[int8[numpy]]")
+            >>> resolve_type("sparse").contains("sparse[int8[numpy]]")
             True
-            >>> pdcast.resolve_type("sparse").contains("sparse[float16[numpy]]")
+            >>> resolve_type("sparse").contains("sparse[float16[numpy]]")
             True
         """
         other = resolve.resolve_type(other)
         if isinstance(other, CompositeType):
             return all(self.contains(typ) for typ in other)
 
-        return (
-            isinstance(other, type(self)) and
-            self.wrapped.contains(other.wrapped)
-        )
+        # assert other is same type as self
+        if not isinstance(other, type(self)):
+            return False
+
+        # check for naked specifier
+        if self.wrapped is None:
+            return True
+        if other.wrapped is None:
+            return False
+
+        # NOTE: custom contains() logic goes here
+
+        # delegate to wrapped
+        return self.wrapped.contains(other.wrapped)
 
     #################################
     ####    DECORATOR PATTERN    ####
@@ -354,11 +359,11 @@ cdef class DecoratorType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse").wrapped
+            >>> resolve_type("sparse").wrapped
             None
-            >>> pdcast.resolve_type("sparse[int]").wrapped
+            >>> resolve_type("sparse[int]").wrapped
             IntegerType()
-            >>> pdcast.resolve_type("sparse[categorical[int]]").wrapped
+            >>> resolve_type("sparse[categorical[int]]").wrapped
             CategoricalType(wrapped=IntegerType(), levels=None)
         """
         return self.kwargs["wrapped"]
@@ -391,7 +396,7 @@ cdef class DecoratorType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse[categorical[str]]")
+            >>> resolve_type("sparse[categorical[str]]")
             SparseType(wrapped=CategoricalType(wrapped=StringType(), levels=None), fill_value=None)
             >>> [str(x) for x in _.decorators]
             ['sparse[categorical[string, None], None]', 'categorical[string, None]']
@@ -422,7 +427,7 @@ cdef class DecoratorType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("categorical[str]")
+            >>> resolve_type("categorical[str]")
             CategoricalType(wrapped=StringType(), levels=None)
             >>> _.unwrap()
             StringType()
@@ -459,9 +464,9 @@ cdef class DecoratorType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse[int8]").max
+            >>> resolve_type("sparse[int8]").max
             127
-            >>> pdcast.resolve_type("sparse[int8]").supertype
+            >>> resolve_type("sparse[int8]").supertype
             SparseType(wrapped=SignedIntegerType(), fill_value=None)
         """
         try:
@@ -533,7 +538,7 @@ cdef class DecoratorType(VectorType):
 
             >>> import pandas as pd
 
-            >>> target = pdcast.resolve_type("sparse[int64[numpy]]")
+            >>> target = resolve_type("sparse[int64[numpy]]")
             >>> target.transform(pd.Series([1, 2, 3]))
             0    1
             1    2
@@ -586,7 +591,7 @@ cdef class DecoratorType(VectorType):
 
             >>> import pandas as pd
 
-            >>> target = pdcast.resolve_type("sparse[int64[numpy]]")
+            >>> target = resolve_type("sparse[int64[numpy]]")
             >>> target.inverse_transform(pd.Series([1, 2, 3], dtype="Sparse[int]"))
             0    1
             1    2
@@ -634,11 +639,11 @@ cdef class DecoratorType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("sparse[int64[numpy]]").implementations
+            >>> resolve_type("sparse[int64[numpy]]").implementations
             mappingproxy({None: SparseType(wrapped=NumpyInt64Type(), fill_value=None)})
-            >>> pdcast.resolve_type("sparse[float16]").implementations
+            >>> resolve_type("sparse[float16]").implementations
             mappingproxy({None: SparseType(wrapped=NumpyFloat16Type(), fill_value=None), 'numpy': SparseType(wrapped=NumpyFloat16Type(), fill_value=None)})
-            >>> pdcast.resolve_type("sparse[bool]").implementations
+            >>> resolve_type("sparse[bool]").implementations
             mappingproxy({None: SparseType(wrapped=NumpyBooleanType(), fill_value=None), 'numpy': SparseType(wrapped=NumpyBooleanType(), fill_value=None), 'pandas': SparseType(wrapped=PandasBooleanType(), fill_value=None), 'python': SparseType(wrapped=PythonBooleanType(), fill_value=None)})
         """
         if self.wrapped is None:

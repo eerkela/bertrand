@@ -107,7 +107,7 @@ cdef class ScalarType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("int") is pdcast.resolve_type("int")
+            >>> resolve_type("int") is resolve_type("int")
             True
 
         If a type defines a :attr:`_cache_size` attribute, then only a fixed
@@ -151,7 +151,7 @@ cdef class ScalarType(VectorType):
         .. doctest::
 
             >>> import numpy as np
-            >>> pdcast.resolve_type(np.dtype(int)) is pdcast.resolve_type(np.dtype(int))
+            >>> resolve_type(np.dtype(int)) is resolve_type(np.dtype(int))
             True
 
         If a type defines a :attr:`_cache_size` attribute, then only a fixed
@@ -199,7 +199,7 @@ cdef class ScalarType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.detect_type(1) is pdcast.detect_type(2)
+            >>> detect_type(1) is detect_type(2)
             True
 
         If a type defines a :attr:`_cache_size` attribute, then only a fixed
@@ -240,9 +240,9 @@ cdef class ScalarType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("M8").contains("M8[5ns]")
+            >>> resolve_type("M8").contains("M8[5ns]")
             True
-            >>> pdcast.resolve_type("M8[5ns]").contains("M8")
+            >>> resolve_type("M8[5ns]").contains("M8")
             False
         """
         other = resolve_type(other)
@@ -285,9 +285,9 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").type_def
+            >>> resolve_type("int64[numpy]").type_def
             <class 'numpy.int64'>
-            >>> pdcast.resolve_type("datetime[python]").type_def
+            >>> resolve_type("datetime[python]").type_def
             <class 'datetime.datetime'>
 
         Whenever ``pdcast`` generates a type that lacks an explicit
@@ -296,7 +296,7 @@ cdef class ScalarType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.cast(["1", "2", "3"], "int[python]")
+            >>> cast(["1", "2", "3"], "int[python]")
             0    1
             1    2
             2    3
@@ -308,7 +308,7 @@ cdef class ScalarType(VectorType):
 
             >>> import pandas as pd
 
-            >>> target = pdcast.resolve_type("int[python]")
+            >>> target = resolve_type("int[python]")
             >>> values = [target.type_def(x) for x in ["1", "2", "3"]]
             >>> pd.Series(values, dtype=target.dtype)
             0    1
@@ -358,11 +358,11 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int[numpy]").dtype
+            >>> resolve_type("int[numpy]").dtype
             dtype('int64')
-            >>> pdcast.resolve_type("int[pandas]").dtype
+            >>> resolve_type("int[pandas]").dtype
             Int64Dtype()
-            >>> pdcast.resolve_type("int[python]").dtype
+            >>> resolve_type("int[python]").dtype
             _ObjectDtype(int[python])
 
         Each of these are valid :class:`Series <pandas.Series>` dtypes.
@@ -371,17 +371,17 @@ cdef class ScalarType(VectorType):
 
             >>> import pandas as pd
 
-            >>> pd.Series([1, 2, 3], dtype=pdcast.resolve_type("int[numpy]").dtype)
+            >>> pd.Series([1, 2, 3], dtype=resolve_type("int[numpy]").dtype)
             0    1
             1    2
             2    3
             dtype: int64
-            >>> pd.Series([1, 2, 3], dtype=pdcast.resolve_type("int[pandas]").dtype)
+            >>> pd.Series([1, 2, 3], dtype=resolve_type("int[pandas]").dtype)
             0    1
             1    2
             2    3
             dtype: Int64
-            >>> pd.Series([1, 2, 3], dtype=pdcast.resolve_type("int[python]").dtype)
+            >>> pd.Series([1, 2, 3], dtype=resolve_type("int[python]").dtype)
             0    1
             1    2
             2    3
@@ -426,11 +426,11 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").itemsize
+            >>> resolve_type("int64[numpy]").itemsize
             8
-            >>> pdcast.resolve_type("bool[python]").itemsize
+            >>> resolve_type("bool[python]").itemsize
             28
-            >>> pdcast.resolve_type("decimal").itemsize
+            >>> resolve_type("decimal").itemsize
             104
         """
         if self._itemsize is None:
@@ -460,11 +460,11 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[pandas]").is_numeric
+            >>> resolve_type("int64[pandas]").is_numeric
             True
-            >>> pdcast.resolve_type("float32[numpy]").is_numeric
+            >>> resolve_type("float32[numpy]").is_numeric
             True
-            >>> pdcast.resolve_type("string").is_numeric
+            >>> resolve_type("string").is_numeric
             False
         """
         if self._is_numeric is None:
@@ -495,15 +495,15 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("bool[numpy]").max
+            >>> resolve_type("bool[numpy]").max
             1
-            >>> pdcast.resolve_type("int8[numpy]").max
+            >>> resolve_type("int8[numpy]").max
             127
-            >>> pdcast.resolve_type("int64[numpy]").max
+            >>> resolve_type("int64[numpy]").max
             9223372036854775807
-            >>> pdcast.resolve_type("datetime64[ns]").max
+            >>> resolve_type("datetime64[ns]").max
             9223372036854775807
-            >>> pdcast.resolve_type("decimal").max
+            >>> resolve_type("decimal").max
             Infinity
 
         Floating-point types have a maximum value, but rather than representing
@@ -512,9 +512,9 @@ cdef class ScalarType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("float32[numpy]").max
+            >>> resolve_type("float32[numpy]").max
             16777216
-            >>> pdcast.resolve_type("float64[numpy]").max
+            >>> resolve_type("float64[numpy]").max
             9007199254740992
         """
         if self._max is None:
@@ -545,15 +545,15 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("bool[numpy]").min
+            >>> resolve_type("bool[numpy]").min
             0
-            >>> pdcast.resolve_type("int8[numpy]").min
+            >>> resolve_type("int8[numpy]").min
             -128
-            >>> pdcast.resolve_type("int64[numpy]").min
+            >>> resolve_type("int64[numpy]").min
             -9223372036854775808
-            >>> pdcast.resolve_type("datetime64[ns]").min
+            >>> resolve_type("datetime64[ns]").min
             -9223372036854775807
-            >>> pdcast.resolve_type("decimal").min
+            >>> resolve_type("decimal").min
             -inf
 
         Floating-point types have a minimum value, but rather than representing
@@ -562,9 +562,9 @@ cdef class ScalarType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("float32[numpy]").min
+            >>> resolve_type("float32[numpy]").min
             -16777216
-            >>> pdcast.resolve_type("float64[numpy]").min
+            >>> resolve_type("float64[numpy]").min
             -9007199254740992
         """
         if self._min is None:
@@ -592,11 +592,11 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").is_nullable
+            >>> resolve_type("int64[numpy]").is_nullable
             False
-            >>> pdcast.resolve_type("int64[pandas]").is_nullable
+            >>> resolve_type("int64[pandas]").is_nullable
             True
-            >>> pdcast.resolve_type("string").is_nullable
+            >>> resolve_type("string").is_nullable
             True
         """
         if self._is_nullable is None:
@@ -622,13 +622,13 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[pandas]").na_value
+            >>> resolve_type("int64[pandas]").na_value
             <NA>
-            >>> pdcast.resolve_type("float32[numpy]").na_value
+            >>> resolve_type("float32[numpy]").na_value
             nan
-            >>> pdcast.resolve_type("complex128[numpy]").na_value
+            >>> resolve_type("complex128[numpy]").na_value
             (nan+nanj)
-            >>> pdcast.resolve_type("decimal").na_value
+            >>> resolve_type("decimal").na_value
             Decimal('NaN')
         """
         if self._na_value is None:
@@ -662,9 +662,9 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").make_nullable()
+            >>> resolve_type("int64[numpy]").make_nullable()
             PandasInt64Type()
-            >>> pdcast.resolve_type("int64[pandas]").make_nullable()
+            >>> resolve_type("int64[pandas]").make_nullable()
             PandasInt64Type()
         """
         if self.is_nullable:
@@ -757,11 +757,11 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int").is_root
+            >>> resolve_type("int").is_root
             True
-            >>> pdcast.resolve_type("int[numpy]").is_root
+            >>> resolve_type("int[numpy]").is_root
             True
-            >>> pdcast.resolve_type("int64[numpy]").is_root
+            >>> resolve_type("int64[numpy]").is_root
             False
         """
         return self.supertype is None
@@ -787,11 +787,11 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").root
+            >>> resolve_type("int64[numpy]").root
             NumpyIntegerType()
-            >>> pdcast.resolve_type("float16")
+            >>> resolve_type("float16")
             Float16Type()
-            >>> pdcast.resolve_type("bool").root
+            >>> resolve_type("bool").root
             BooleanType()
         """
         result = self
@@ -817,11 +817,11 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").supertype
+            >>> resolve_type("int64[numpy]").supertype
             NumpySignedIntegerType()
-            >>> pdcast.resolve_type("float16").supertype
+            >>> resolve_type("float16").supertype
             FloatType()
-            >>> pdcast.resolve_type("bool").supertype is None
+            >>> resolve_type("bool").supertype is None
             True
         """
         return self.registry.get_supertype(self)
@@ -851,9 +851,9 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").generic
+            >>> resolve_type("int64[numpy]").generic
             Int64Type()
-            >>> pdcast.resolve_type("int64").generic
+            >>> resolve_type("int64").generic
             Int64Type()
         """
         return self.registry.get_generic(self)
@@ -889,11 +889,11 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").implementations
+            >>> resolve_type("int64[numpy]").implementations
             mappingproxy({None: NumpyInt64Type()})
-            >>> pdcast.resolve_type("float16").implementations
+            >>> resolve_type("float16").implementations
             mappingproxy({None: NumpyFloat16Type(), 'numpy': NumpyFloat16Type()})
-            >>> pdcast.resolve_type("bool").implementations
+            >>> resolve_type("bool").implementations
             mappingproxy({None: NumpyBooleanType(), 'numpy': NumpyBooleanType(), 'pandas': PandasBooleanType(), 'python': PythonBooleanType()})
         """
         return MappingProxyType({None: self})
@@ -925,11 +925,11 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").subtypes
+            >>> resolve_type("int64[numpy]").subtypes
             CompositeType({})
-            >>> pdcast.resolve_type("float").subtypes   # doctest: +SKIP
+            >>> resolve_type("float").subtypes   # doctest: +SKIP
             CompositeType({float16, float32, float64, float80})
-            >>> pdcast.resolve_type("int").subtypes   # doctest: +SKIP
+            >>> resolve_type("int").subtypes   # doctest: +SKIP
             CompositeType({signed, unsigned})
         """
         return CompositeType()  # overridden in AbstractType
@@ -960,11 +960,11 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").is_leaf
+            >>> resolve_type("int64[numpy]").is_leaf
             True
-            >>> pdcast.resolve_type("float16").is_leaf
+            >>> resolve_type("float16").is_leaf
             False
-            >>> pdcast.resolve_type("bool").is_leaf
+            >>> resolve_type("bool").is_leaf
             False
         """
         return True  # overridden in AbstractType
@@ -998,11 +998,11 @@ cdef class ScalarType(VectorType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").leaves
+            >>> resolve_type("int64[numpy]").leaves
             CompositeType({})
-            >>> pdcast.resolve_type("float16").leaves   # doctest: +SKIP
+            >>> resolve_type("float16").leaves   # doctest: +SKIP
             CompositeType({float16[numpy]})
-            >>> pdcast.resolve_type("bool").leaves   # doctest: +SKIP
+            >>> resolve_type("bool").leaves   # doctest: +SKIP
             CompositeType({bool[numpy], bool[pandas], bool[python]})
         """
         candidates = set(CompositeType(self).expand()) - {self}
@@ -1038,7 +1038,7 @@ cdef class ScalarType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.cast(2**65, "datetime[numpy, ns]", unit="ns")
+            >>> cast(2**65, "datetime[numpy, ns]", unit="ns")
             Traceback (most recent call last):
                 ...
             OverflowError: values exceed datetime[numpy, ns, 1] range at index [0]
@@ -1048,7 +1048,7 @@ cdef class ScalarType(VectorType):
 
         .. doctest::
 
-            >>> pdcast.cast(2**65, "datetime[numpy]", unit="ns")
+            >>> cast(2**65, "datetime[numpy]", unit="ns")
             0    3139-02-09T23:09:07.419103
             dtype: object
 
@@ -1135,9 +1135,9 @@ cdef class ScalarType(VectorType):
 
         .. doctest::
 
-            >>> list(pdcast.resolve_type("int").larger)
+            >>> list(resolve_type("int").larger)
             [NumpyUInt64Type(), PandasUInt64Type(), PythonIntegerType()]
-            >>> pdcast.NumpyUInt64Type < pdcast.PythonIntegerType
+            >>> NumpyUInt64Type < PythonIntegerType
             True
         """
         # decorator special case - recur with wrapped type
@@ -1309,9 +1309,9 @@ cdef class AbstractType(ScalarType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("datetime")
+            >>> resolve_type("datetime")
             DatetimeType()
-            >>> isinstance(_, pdcast.AbstractType)
+            >>> isinstance(_, AbstractType)
             True
 
         Otherwise, the first parameter must refer to one of this type's
@@ -1319,9 +1319,9 @@ cdef class AbstractType(ScalarType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("datetime[pandas]")
+            >>> resolve_type("datetime[pandas]")
             PandasTimestampType(tz=None)
-            >>> pdcast.resolve_type("datetime[foo]")
+            >>> resolve_type("datetime[foo]")
             Traceback (most recent call last):
                 ...
             KeyError: 'foo'
@@ -1330,7 +1330,7 @@ cdef class AbstractType(ScalarType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("datetime[pandas, US/Pacific]")
+            >>> resolve_type("datetime[pandas, US/Pacific]")
             PandasTimestampType(tz=zoneinfo.ZoneInfo(key='US/Pacific'))
         """
         if backend is None:
@@ -1431,9 +1431,9 @@ cdef class AbstractType(ScalarType):
 
         .. doctest::
 
-            >>> pdcast.resolve_type("signed").contains("int8, int16, int32, int64")
+            >>> resolve_type("signed").contains("int8, int16, int32, int64")
             True
-            >>> pdcast.resolve_type("int64").contains("int64[numpy], int64[pandas]")
+            >>> resolve_type("int64").contains("int64[numpy], int64[pandas]")
             True
         """
         other = resolve_type(other)
@@ -1498,14 +1498,14 @@ cdef class AbstractType(ScalarType):
         --------
         .. doctest::
 
-            >>> @pdcast.register
-            ... class ParentType(pdcast.AbstractType):
+            >>> @register
+            ... class ParentType(AbstractType):
             ...     name = "parent"
 
-            >>> @pdcast.register
+            >>> @register
             ... @ParentType.default
             ... @ParentType.implementation("concrete")
-            ... class ChildType(pdcast.ScalarType):
+            ... class ChildType(ScalarType):
             ...     max = 10
             ...     min = 0
 
@@ -1580,13 +1580,13 @@ cdef class AbstractType(ScalarType):
         --------
         .. doctest::
 
-            >>> @pdcast.register
-            ... class ParentType(pdcast.AbstractType):
+            >>> @register
+            ... class ParentType(AbstractType):
             ...     name = "parent"
 
-            >>> @pdcast.register
+            >>> @register
             ... @ParentType.implementation("concrete")
-            ... class ChildType(pdcast.ScalarType):
+            ... class ChildType(ScalarType):
             ...     pass
 
             >>> ParentType.implementations
@@ -1679,13 +1679,13 @@ cdef class AbstractType(ScalarType):
         --------
         .. doctest::
 
-            >>> @pdcast.register
-            ... class ParentType(pdcast.AbstractType):
+            >>> @register
+            ... class ParentType(AbstractType):
             ...     name = "parent"
 
-            >>> @pdcast.register
+            >>> @register
             ... @ParentType.subtype
-            ... class ChildType(pdcast.ScalarType):
+            ... class ChildType(ScalarType):
             ...     name = "child"
 
             >>> ParentType.subtypes
@@ -1842,14 +1842,14 @@ cdef class AbstractType(ScalarType):
         --------
         .. doctest::
 
-            >>> @pdcast.register
-            ... class ParentType(pdcast.AbstractType):
+            >>> @register
+            ... class ParentType(AbstractType):
             ...     name = "parent"
 
-            >>> @pdcast.register
+            >>> @register
             ... @ParentType.default
             ... @ParentType.subtype
-            ... class ChildType(pdcast.ScalarType):
+            ... class ChildType(ScalarType):
             ...     name = "child"
             ...     value = 1
 
@@ -1891,11 +1891,11 @@ cdef class AbstractType(ScalarType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").implementations
+            >>> resolve_type("int64[numpy]").implementations
             mappingproxy({None: NumpyInt64Type()})
-            >>> pdcast.resolve_type("float16").implementations
+            >>> resolve_type("float16").implementations
             {None: NumpyFloat16Type(), 'numpy': NumpyFloat16Type()}
-            >>> pdcast.resolve_type("bool").implementations
+            >>> resolve_type("bool").implementations
             {None: NumpyBooleanType(), 'numpy': NumpyBooleanType(), 'pandas': PandasBooleanType(), 'python': PythonBooleanType()}
         """
         if not self._implementations:
@@ -1930,11 +1930,11 @@ cdef class AbstractType(ScalarType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").subtypes
+            >>> resolve_type("int64[numpy]").subtypes
             CompositeType({})
-            >>> pdcast.resolve_type("float").subtypes   # doctest: +SKIP
+            >>> resolve_type("float").subtypes   # doctest: +SKIP
             CompositeType({float16, float32, float64, float80})
-            >>> pdcast.resolve_type("int").subtypes   # doctest: +SKIP
+            >>> resolve_type("int").subtypes   # doctest: +SKIP
             CompositeType({signed, unsigned})
         """
         if not self._subtypes:
@@ -1963,11 +1963,11 @@ cdef class AbstractType(ScalarType):
         --------
         .. doctest::
 
-            >>> pdcast.resolve_type("int64[numpy]").is_leaf
+            >>> resolve_type("int64[numpy]").is_leaf
             True
-            >>> pdcast.resolve_type("float16").is_leaf
+            >>> resolve_type("float16").is_leaf
             False
-            >>> pdcast.resolve_type("bool").is_leaf
+            >>> resolve_type("bool").is_leaf
             False
         """
         try:
@@ -2011,12 +2011,12 @@ cdef class AbstractType(ScalarType):
 
         .. doctest::
 
-            >>> list(pdcast.resolve_type("int").larger)
+            >>> list(resolve_type("int").larger)
             [NumpyUInt64Type(), PandasUInt64Type(), PythonIntegerType()]
-            >>> pdcast.cast(2**64 - 1, "int")
+            >>> cast(2**64 - 1, "int")
             0    18446744073709551615
             dtype: uint64
-            >>> pdcast.cast(2**65 - 1)
+            >>> cast(2**65 - 1)
             0    36893488147419103231
             dtype: int[python]
 
@@ -2065,14 +2065,14 @@ cdef class AbstractType(ScalarType):
 
         .. doctest::
 
-            >>> list(pdcast.resolve_type("signed").smaller)
+            >>> list(resolve_type("signed").smaller)
             [NumpyInt8Type(), PandasInt8Type(), NumpyInt16Type(), PandasInt16Type(), NumpyInt32Type(), PandasInt32Type()]
-            >>> pdcast.cast([1, 2, 3], "int", downcast=True)
+            >>> cast([1, 2, 3], "int", downcast=True)
             0    1
             1    2
             2    3
             dtype: int8
-            >>> pdcast.cast([1, 2, 2**15 - 1], "int", downcast=True)
+            >>> cast([1, 2, 2**15 - 1], "int", downcast=True)
             0        1
             1        2
             2    32767
