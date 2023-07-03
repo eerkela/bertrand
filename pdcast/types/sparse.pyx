@@ -11,7 +11,7 @@ from pdcast.resolve import resolve_type
 from pdcast.detect import detect_type
 from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
-from .base cimport DecoratorType, CompositeType, VectorType
+from .base cimport DecoratorType, CompositeType, VectorType, Type
 from .base import register
 
 
@@ -52,17 +52,18 @@ class SparseType(DecoratorType):
         if wrapped is None:
             return self
 
-        cdef VectorType instance = resolve_type(wrapped)
-        cdef object parsed = None
+        instance = resolve_type(wrapped)
+        parsed_fill_value = None
 
         if fill_value is not None:
+            # TODO: use NullType aliases here?
             if fill_value in na_strings:
-                parsed = na_strings[fill_value]
+                parsed_fill_value = na_strings[fill_value]
             else:
                 from pdcast.convert import cast
-                parsed = cast(fill_value, instance)[0]
+                parsed_fill_value = cast(fill_value, instance)[0]
 
-        return self(instance, fill_value=parsed)
+        return self(instance, fill_value=parsed_fill_value)
 
     def from_dtype(
         self,
@@ -86,7 +87,7 @@ class SparseType(DecoratorType):
             fill_value = dtype.fill_value
             index = wrapped._index  # run-length encoded version of .index
             index["value"] = np.array(
-                [self(typ, fill_value=fill_value) for typ in wrapped]
+                [self(typ, fill_value=fill_value) for typ in index["value"]]
             )
             return CompositeType(
                 {self(typ, fill_value=fill_value) for typ in wrapped},

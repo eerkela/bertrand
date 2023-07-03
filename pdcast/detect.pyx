@@ -19,11 +19,6 @@ from pdcast cimport types
 from pdcast.util.vector cimport as_array
 
 
-# TODO: if a composite categorical is given, split the data up into homogenous
-# chunks and resolve each chunk separately.  We can then avoid the need to
-# encapsulate composite data in a DecoratorType.
-
-
 ######################
 ####    PUBLIC    ####
 ######################
@@ -140,8 +135,9 @@ cdef class ArrayDetector(Detector):
 
     def __call__(self) -> types.Type:
         cdef object dtype
-        cdef object fill_value
         cdef types.Type result
+        cdef object is_na
+        cdef np.ndarray index
 
         # get dtype of original array
         dtype = self.data.dtype
@@ -159,12 +155,18 @@ cdef class ArrayDetector(Detector):
             if not self.skip_na:
                 is_na = pd.isna(self.data)
                 if is_na.any():
-                    # index = np.where(is_na, types.NullType, result)
-                    index = np.full(is_na.shape, types.NullType, dtype=object)
+                    # generate index
+                    index = np.full(
+                        is_na.shape[0],
+                        types.NullType,
+                        dtype=object
+                    )
                     if isinstance(result, types.CompositeType):
                         index[~is_na] = result.index
                     else:
                         index[~is_na] = result
+
+                    # create composite
                     result = types.CompositeType(
                         [result, types.NullType],
                         run_length_encode(index)

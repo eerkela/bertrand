@@ -1,6 +1,7 @@
 """This module describes a pair of functions that can be used to convert
 to and from categorical data representations.
 """
+import numpy as np
 import pandas as pd
 
 from pdcast.decorators.dispatch import dispatch
@@ -8,7 +9,10 @@ from pdcast.detect import detect_type
 
 
 @dispatch("series")
-def categorize(series: pd.Series, levels: list = None) -> pd.Series:
+def categorize(
+    series: pd.Series,
+    levels: np.ndarray | None = None
+) -> pd.Series:
     """Transform a non-categorical series into a categorical series with the
     given levels.
 
@@ -16,7 +20,7 @@ def categorize(series: pd.Series, levels: list = None) -> pd.Series:
     ----------
     series : pandas.Series
         The series to transform.
-    levels : list, optional
+    levels : np.ndarray, optional
         The levels to use for the categorical series.  If this is omitted, then
         levels will be automatically discovered when this method is called.
 

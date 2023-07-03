@@ -9,12 +9,15 @@ from pdcast.resolve import resolve_type
 from pdcast.detect import detect_type
 from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
-from .base cimport DecoratorType, CompositeType, VectorType
+from .base cimport DecoratorType, CompositeType, VectorType, Type
 from .base import register
 
 
 # TODO: CategoricalType should be able to accept CompositeType?
 # NOTE: this is enabled in pandas, but maybe shouldn't be here.
+
+
+# TODO: levels should be stored as a numpy array, not a list.
 
 
 @register
@@ -31,7 +34,7 @@ class CategoricalType(DecoratorType):
         "Categorical"
     }
 
-    def __init__(self, wrapped: VectorType = None, levels: list = None):
+    def __init__(self, wrapped: VectorType = None, levels: np.ndarray = None):
         super(type(self), self).__init__(wrapped=wrapped, levels=levels)
 
     ############################
@@ -49,8 +52,8 @@ class CategoricalType(DecoratorType):
         if wrapped is None:
             return self
 
-        cdef VectorType instance = resolve_type(wrapped)
-        cdef list parsed = None
+        instance = resolve_type(wrapped)
+        parsed_levels = None
 
         # resolve levels
         if levels is not None:
@@ -61,9 +64,9 @@ class CategoricalType(DecoratorType):
                 raise TypeError(f"levels must be list-like: {levels}")
 
             tokens = tokenize(match.group("body"))
-            parsed = cast(tokens, instance).tolist()
+            parsed_levels = cast(tokens, instance).to_numpy()
 
-        return self(instance, levels=parsed)
+        return self(instance, levels=parsed_levels)
 
     def from_dtype(
         self,
@@ -75,28 +78,28 @@ class CategoricalType(DecoratorType):
         """
         # detect type of categories
         categories = dtype.categories
-        levels = categories.tolist()
         wrapped = detect_type(categories)
+        categories = categories.to_numpy()
 
         # if categories are composite, broadcast across non-homogenous array
         if isinstance(wrapped, CompositeType):
             if array is None:  # no index
                 return CompositeType(
-                    {self(typ, levels=levels) for typ in wrapped}
+                    {self(typ, levels=categories) for typ in wrapped}
                 )
 
             # generate an index from the full array
             wrapped = detect_type(array.astype(dtype.categories.dtype))
             index = wrapped._index  # run-length encoded version of .index
             index["value"] = np.array(
-                [self(typ, levels=levels) for typ in wrapped]
+                [self(typ, levels=categories) for typ in index["value"]]
             )
             return CompositeType(
-                {self(typ, levels=levels) for typ in wrapped},
+                {self(typ, levels=categories) for typ in wrapped},
                 index=index
             )
 
-        return self(wrapped=wrapped, levels=levels)
+        return self(wrapped=wrapped, levels=categories)
 
     ##################################
     ####    DECORATOR-SPECIFIC    ####
@@ -161,7 +164,10 @@ class CategoricalType(DecoratorType):
             return False
 
         # check for unequal levels
-        if self.levels is not None and self.levels != other.levels:
+        if (
+            self.levels is not None and
+            not np.array_equal(self.levels, other.levels)
+        ):
             return False
 
         # delegate to wrapped
