@@ -7,7 +7,7 @@ import pandas as pd
 from pdcast.resolve cimport sequence, tokenize
 from pdcast.resolve import resolve_type
 from pdcast.detect import detect_type
-from pdcast.util.type_hints import dtype_like, type_specifier
+from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
 from .base cimport DecoratorType, CompositeType, VectorType
 from .base import register
@@ -65,14 +65,38 @@ class CategoricalType(DecoratorType):
 
         return self(instance, levels=parsed)
 
-    def from_dtype(self, dtype: dtype_like) -> DecoratorType:
+    def from_dtype(
+        self,
+        dtype: dtype_like,
+        array: array_like | None = None
+    ) -> Type:
         """Convert a pandas CategoricalDtype into a
         :class:`CategoricalType <pdcast.CategoricalType>` object.
         """
-        return self(
-            wrapped=detect_type(dtype.categories),
-            levels=dtype.categories.tolist()
-        )
+        # detect type of categories
+        categories = dtype.categories
+        levels = categories.tolist()
+        wrapped = detect_type(categories)
+
+        # if categories are composite, broadcast across non-homogenous array
+        if isinstance(wrapped, CompositeType):
+            if array is None:  # no index
+                return CompositeType(
+                    {self(typ, levels=levels) for typ in wrapped}
+                )
+
+            # generate an index from the full array
+            wrapped = detect_type(array.astype(dtype.categories.dtype))
+            index = wrapped._index  # run-length encoded version of .index
+            index["value"] = np.array(
+                [self(typ, levels=levels) for typ in wrapped]
+            )
+            return CompositeType(
+                {self(typ, levels=levels) for typ in wrapped},
+                index=index
+            )
+
+        return self(wrapped=wrapped, levels=levels)
 
     ##################################
     ####    DECORATOR-SPECIFIC    ####

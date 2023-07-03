@@ -7,7 +7,7 @@ from typing import Any, Iterator
 import pandas as pd
 
 from pdcast import resolve  # importing directly causes an ImportError
-from pdcast.util.type_hints import dtype_like, type_specifier
+from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
 from .registry cimport Type
 from .scalar cimport ScalarType
@@ -118,11 +118,16 @@ cdef class DecoratorType(VectorType):
         if wrapped is None:
             return self
 
+        # resolve the wrapped type
         cdef VectorType instance = resolve.resolve_type(wrapped)
 
         return self(instance, *args)
 
-    def from_dtype(self, dtype: dtype_like) -> DecoratorType:
+    def from_dtype(
+        self,
+        dtype: dtype_like,
+        array: array_like | None = None
+    ) -> Type:
         """Construct a :class:`DecoratorType <pdcast.DecoratorType>` from a
         numpy/pandas :class:`dtype <numpy.dtype>`\ /\
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
@@ -133,10 +138,15 @@ cdef class DecoratorType(VectorType):
             A numpy :class:`dtype <numpy.dtype>` or pandas
             :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
             parse.
+        array : array_like | None, default None
+            An optional array of values to use for inference.  This is
+            supplied by :func:`detect_type() <pdcast.detect_type>` whenever
+            an array of the associated type is encountered.  It will always
+            have the same dtype as above.
 
         Returns
         -------
-        DecoratorType
+        Type
             An instance of the associated type.
 
         See Also
@@ -199,8 +209,9 @@ cdef class DecoratorType(VectorType):
             >>> resolve_type(pd.CategoricalDtype).contains(pd.CategoricalDtype([1, 2, 3]))
             True
         """
-        # NOTE: any special dtype parsing logic goes here
-        return self
+        # NOTE: dtype parsing goes here
+
+        return self  # if the type is parametrized, call self() directly
 
     def replace(self, **kwargs) -> DecoratorType:
         """Return a modified copy of a type with the values specified in
@@ -607,6 +618,8 @@ cdef class DecoratorType(VectorType):
     ####    OVERRIDDEN    ####
     ##########################
 
+    _cache_size: int  = 128
+
     @property
     def implementations(self):
         """A mapping of all the
@@ -754,10 +767,10 @@ cdef class DecoratorType(VectorType):
                     curr = curr.wrapped  # replace original
 
                 # curr is lower priority than self
-                result = type(self)(curr, *args, **kwargs)
+                result = self.instances((curr,) + args, kwargs)
                 break
             else:  # all decorators are higher priority - insert at base
-                result = type(self)(curr.wrapped, *args, **kwargs)
+                result = self.instances((curr.wrapped,) + args, kwargs)
 
             # replace encountered decorators in original order
             for prev in reversed(encountered):
@@ -766,8 +779,7 @@ cdef class DecoratorType(VectorType):
             return result
 
         # wrap directly
-        return type(self)(wrapped, *args, **kwargs)
-
+        return self.instances((wrapped, ) + args, kwargs)
 
     def __lt__(self, other: VectorType) -> bool:
         """Sort types according to their priority and representable range.
@@ -948,6 +960,18 @@ cdef class DecoratorType(VectorType):
 
         # delegate to wrapped type
         return self.wrapped > other
+
+    def __hash__(self) -> int:
+        """Reimplement hash() for DecoratorTypes.
+
+        Notes
+        -----
+        Adding the ``<`` and ``>`` operators mysteriously breaks an inherited
+        cython ``__hash__()`` method for some reason.  This appears to be a
+        problem with cdef class inheritance in the current build, and isn't
+        required for normal python subclasses.
+        """
+        return self._hash
 
 
 #######################

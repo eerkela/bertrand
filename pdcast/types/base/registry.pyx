@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
-from pdcast.util.type_hints import type_specifier, dtype_like
+from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
 from .composite cimport CompositeType
 from .vector cimport VectorType
@@ -1128,7 +1128,11 @@ cdef class Type:
             f"{type(self).__qualname__} cannot be constructed from a string"
         )
 
-    def from_dtype(self, dtype: dtype_like) -> Type:
+    def from_dtype(
+        self,
+        dtype: dtype_like,
+        array: array_like | None = None
+    ) -> Type:
         """Construct a :class:`Type` from a numpy/pandas
         :class:`dtype <numpy.dtype>`\ /\
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
@@ -1139,6 +1143,11 @@ cdef class Type:
             A numpy :class:`dtype <numpy.dtype>` or pandas
             :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
             parse.
+        array : array_like | None, default None
+            An optional array of values to use for inference.  This is
+            supplied by :func:`detect_type() <pdcast.detect_type>` whenever
+            an array of the associated type is encountered.  It will always
+            have the same dtype as above.
 
         Returns
         -------
@@ -1190,7 +1199,7 @@ cdef class Type:
 
         Which follows the same pattern as above.  This allows
         :func:`detect_type() <pdcast.detect_type>` to do *O(1)* inference on
-        properly-labeled, numpy-compatible data.
+        properly-labeled data.
         """
         return NotImplementedError(
             f"{type(self).__qualname__} cannot be constructed from a "

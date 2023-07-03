@@ -146,68 +146,29 @@ cdef class ArrayDetector(Detector):
         # get dtype of original array
         dtype = self.data.dtype
 
-        # strip sparse dtypes
-        fill_value = None
-        if isinstance(dtype, pd.SparseDtype):
-            fill_value = dtype.fill_value
-            dtype = dtype.subtype
-
-        # TODO: add a special case here for categorical dtypes.  Maybe these
-        # should be special methods of DecoratorType objects, similar to
-        # transform() and inverse_transform()?
-        # -> maybe from_array()?  This would be called whenever an array is
-        # detected with that dtype.
-
-        # case 1: type is ambiguous
+        # case 1: type is ambiguous - loop through elementwise
         if dtype == np.dtype(object):
             result = ElementWiseDetector(self.data, skip_na=self.skip_na)()
 
-        # case 2: type is deterministic
+        # case 2: type is deterministic - resolve directly
         else:
-            # special cases for pandas data structures
-            if isinstance(self.data, PANDAS_ARRAYS):
-                # NOTE: pandas uses numpy M8 and m8 dtypes for time data
-                if dtype == np.dtype("M8[ns]"):
-                    dtype = resolve_type(types.PandasTimestampType)
-                elif dtype == np.dtype("m8[ns]"):
-                    dtype = resolve_type(types.PandasTimedeltaType)
+            instance = types.registry.aliases[type(dtype)]
+            result = instance.from_dtype(dtype, self.data)
 
-            # TODO: resolving as composite does not produce an appropriate
-            # index.  This only occurs if the dtype is categorical and the data
-            # are mixed.
-            # -> find a way to break up the data into homogenous chunks
-
-            # resolve dtype directly
-            result = resolve_type([dtype])
-            if len(result) == 1:
-                result = result.pop()
-
-            # TODO: this gets complicated if the result of the resolve_type()
-            # is composite.  However, this only happens if the dtype is
-            # categorical and its categories are mixed, so if we solve that
-            # problem, then this one will be solved as well.
-
-            # consider nans if skip_na=False
+            # insert nans if skip_na=False
             if not self.skip_na:
                 is_na = pd.isna(self.data)
                 if is_na.any():
-                    index = np.where(is_na, types.NullType, result)
+                    # index = np.where(is_na, types.NullType, result)
+                    index = np.full(is_na.shape, types.NullType, dtype=object)
+                    if isinstance(result, types.CompositeType):
+                        index[~is_na] = result.index
+                    else:
+                        index[~is_na] = result
                     result = types.CompositeType(
                         [result, types.NullType],
                         run_length_encode(index)
                     )
-
-        # if data is empty or skip_na=True and all values are NA, return None
-        if not result:
-            return None
-
-        # replace sparse type
-        if fill_value is not None:
-            if isinstance(result, types.CompositeType):
-                return types.CompositeType(
-                    types.SparseType(typ, fill_value) for typ in result
-                )
-            return types.SparseType(result, fill_value)
 
         return result
 

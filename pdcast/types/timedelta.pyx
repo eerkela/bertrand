@@ -10,7 +10,7 @@ import pandas as pd
 
 from pdcast.resolve import resolve_type
 from pdcast.util import time
-from pdcast.util.type_hints import type_specifier
+from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
 from .base cimport ScalarType, AbstractType, CompositeType
 from .base import register
@@ -151,10 +151,17 @@ class NumpyTimedelta64Type(ScalarType):
 
     def from_dtype(
         self,
-        dtype: np.dtype | pd.api.extensions.ExtensionDtype
+        dtype: dtype_like,
+        array: array_like | None = None
     ) -> ScalarType:
         """Translate a numpy m8 dtype into the pdcast type system."""
         unit, step_size = np.datetime_data(dtype)
+
+        # NOTE: pandas uses numpy m8 dtypes for its own Timedelta type, so we
+        # need to check the type of the array to detect this case.
+        if isinstance(array, (pd.Index, pd.Series)):
+            # TODO: include non-ns units?
+            return PandasTimedeltaType
 
         return self(
             unit=None if unit == "generic" else unit,

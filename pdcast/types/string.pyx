@@ -6,7 +6,7 @@ import re  # normal python regex for compatibility with pd.Series.str.extract
 import numpy as np
 import pandas as pd
 
-from pdcast.util.type_hints import dtype_like
+from pdcast.util.type_hints import array_like, dtype_like
 
 from .base cimport ScalarType, AbstractType, Type
 from .base import register
@@ -55,7 +55,11 @@ class StringType(AbstractType):
         "U",
     }
 
-    def from_dtype(self, dtype: dtype_like) -> ScalarType:
+    def from_dtype(
+        self,
+        dtype: dtype_like,
+        array: array_like | None = None
+    ) -> ScalarType:
         """Parse a `pandas.StringDtype` object and return the appropriate
         concretion.
         """

@@ -12,7 +12,9 @@ import numpy as np
 import pandas as pd
 
 from pdcast.resolve import resolve_type
-from pdcast.util.type_hints import dtype_like, numeric, type_specifier
+from pdcast.util.type_hints import (
+    array_like, dtype_like, numeric, type_specifier
+)
 
 from .registry cimport CacheValue, TypeRegistry
 from .vector cimport READ_ONLY_ERROR, VectorType, BackendEncoder
@@ -118,7 +120,11 @@ cdef class ScalarType(VectorType):
 
         return self(*args)  # calling self handles flyweight creation
 
-    def from_dtype(self, dtype: dtype_like) -> ScalarType:
+    def from_dtype(
+        self,
+        dtype: dtype_like,
+        array: array_like | None = None
+    ) -> ScalarType:
         """Construct a :class:`ScalarType <pdcast.ScalarType>` from a
         numpy/pandas :class:`dtype <numpy.dtype>`\ /\
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
@@ -129,6 +135,11 @@ cdef class ScalarType(VectorType):
             A numpy :class:`dtype <numpy.dtype>` or pandas
             :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
             parse.
+        array : array_like | None, default None
+            An optional array of values to use for inference.  This is
+            supplied by :func:`detect_type() <pdcast.detect_type>` whenever
+            an array of the associated type is encountered.  It will always
+            have the same dtype as above.
 
         Returns
         -------
@@ -1338,7 +1349,11 @@ cdef class AbstractType(ScalarType):
 
         return self.implementations[backend].from_string(*args)  
 
-    def from_dtype(self, dtype: dtype_like) -> ScalarType:
+    def from_dtype(
+        self,
+        dtype: dtype_like,
+        array: array_like | None = None
+    ) -> ScalarType:
         """Construct an :class:`AbstractType <pdcast.AbstractType>` from a
         numpy/pandas :class:`dtype <numpy.dtype>`\ /\
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
@@ -1349,6 +1364,11 @@ cdef class AbstractType(ScalarType):
             A numpy :class:`dtype <numpy.dtype>` or pandas
             :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` to
             parse.
+        array : array_like | None, default None
+            An optional array of values to use for inference.  This is
+            supplied by :func:`detect_type() <pdcast.detect_type>` whenever
+            an array of the associated type is encountered.  It will always
+            have the same dtype as above.
 
         Returns
         -------

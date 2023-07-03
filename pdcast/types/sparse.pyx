@@ -8,7 +8,8 @@ import pandas as pd
 
 from pdcast.resolve cimport na_strings
 from pdcast.resolve import resolve_type
-from pdcast.util.type_hints import dtype_like, type_specifier
+from pdcast.detect import detect_type
+from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
 from .base cimport DecoratorType, CompositeType, VectorType
 from .base import register
@@ -63,14 +64,36 @@ class SparseType(DecoratorType):
 
         return self(instance, fill_value=parsed)
 
-    def from_dtype(self, dtype: dtype_like) -> DecoratorType:
+    def from_dtype(
+        self,
+        dtype: dtype_like,
+        array: array_like | None = None
+    ) -> Type:
         """Convert a pandas SparseDtype into a
         :class:`SparseType <pdcast.SparseType>` object.
         """
-        return self(
-            wrapped=resolve_type(dtype.subtype),
-            fill_value=dtype.fill_value
-        )
+        # detect type of unwrapped array
+        if array is not None:
+            # TODO: this may not work in all cases.  We can't call
+            # inverse_transform() here because densify is an @dispatch func,
+            # which calls detect_type() and causes a recursion error.
+            wrapped = detect_type(array.sparse.to_dense())
+        else:
+            wrapped = resolve_type(dtype.subtype)
+
+        # broadcast across non-homogenous array
+        if isinstance(wrapped, CompositeType):
+            fill_value = dtype.fill_value
+            index = wrapped._index  # run-length encoded version of .index
+            index["value"] = np.array(
+                [self(typ, fill_value=fill_value) for typ in wrapped]
+            )
+            return CompositeType(
+                {self(typ, fill_value=fill_value) for typ in wrapped},
+                index=index
+            )
+
+        return self(wrapped, fill_value=dtype.fill_value)
 
     ##################################
     ####    DECORATOR-SPECIFIC    ####
