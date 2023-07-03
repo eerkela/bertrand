@@ -72,6 +72,7 @@ from .timedelta import (
 )
 from .string import StringType, PythonStringType
 from .object import ObjectType
+from .null import NullType
 from .sparse import SparseType
 from .categorical import CategoricalType
 

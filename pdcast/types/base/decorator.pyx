@@ -742,7 +742,6 @@ cdef class DecoratorType(VectorType):
         if isinstance(wrapped, DecoratorType):
             encountered = []
             for curr in wrapped.decorators:
-
                 # curr is higher priority than self
                 if curr.base_instance < self.base_instance:
                     encountered.append(curr)  # remember for later
@@ -751,24 +750,20 @@ cdef class DecoratorType(VectorType):
                 # curr is a duplicate of self
                 if isinstance(curr, type(self)):
                     if self == self.base_instance:
-                        return wrapped
-                    curr = curr.wrapped
+                        return wrapped  # do not modify
+                    curr = curr.wrapped  # replace original
 
                 # curr is lower priority than self
                 result = type(self)(curr, *args, **kwargs)
                 break
-
-            else:
-                # all decorators are higher priority - insert at base
+            else:  # all decorators are higher priority - insert at base
                 result = type(self)(curr.wrapped, *args, **kwargs)
 
-            # replace all encountered decorators in original order
+            # replace encountered decorators in original order
             for prev in reversed(encountered):
                 result = prev.replace(wrapped=result)
 
             return result
-
-            # return insort(self, wrapped, args, kwargs)
 
         # wrap directly
         return type(self)(wrapped, *args, **kwargs)

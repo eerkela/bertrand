@@ -1,8 +1,6 @@
 """This module contains all the prepackaged integer types for the ``pdcast``
 type system.
 """
-import sys
-
 import numpy as np
 import pandas as pd
 

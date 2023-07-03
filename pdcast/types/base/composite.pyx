@@ -139,7 +139,7 @@ cdef class CompositeType(Type):
         if self._index is None:
             return None
 
-        return np.repeat(self._index['type'], self._index['count'])
+        return np.repeat(self._index["value"], self._index["count"])
 
     cdef void forget_index(self):
         self._index = None

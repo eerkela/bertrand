@@ -124,7 +124,7 @@ class CategoricalType(DecoratorType):
 
         # if target is composite, test each element individually
         if isinstance(other, CompositeType):
-            return all(self.contains(o) for o in other)
+            return all(self.contains(typ) for typ in other)
 
         # assert other is categorical
         if not isinstance(other, type(self)):
