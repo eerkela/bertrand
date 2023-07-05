@@ -11,7 +11,7 @@ from pdcast.detect import detect_type
 @dispatch("series")
 def categorize(
     series: pd.Series,
-    levels: np.ndarray | None = None
+    levels: list | None = None
 ) -> pd.Series:
     """Transform a non-categorical series into a categorical series with the
     given levels.
@@ -20,7 +20,7 @@ def categorize(
     ----------
     series : pandas.Series
         The series to transform.
-    levels : np.ndarray, optional
+    levels : list, optional
         The levels to use for the categorical series.  If this is omitted, then
         levels will be automatically discovered when this method is called.
 

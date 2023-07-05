@@ -15,9 +15,10 @@ from .base import register
 
 # TODO: CategoricalType should be able to accept CompositeType?
 # NOTE: this is enabled in pandas, but maybe shouldn't be here.
-
-
-# TODO: levels should be stored as a numpy array, not a list.
+# -> If CategoricalType becomes a Composite Pattern decorator, then this
+# might be handled automatically.
+# -> maybe we don't even need that.  In its current form, nulls are perfectly
+# dispatchable even without needing a composite wrapper.
 
 
 @register
@@ -34,7 +35,7 @@ class CategoricalType(DecoratorType):
         "Categorical"
     }
 
-    def __init__(self, wrapped: VectorType = None, levels: np.ndarray = None):
+    def __init__(self, wrapped: VectorType = None, levels: list = None):
         super(type(self), self).__init__(wrapped=wrapped, levels=levels)
 
     ############################
@@ -64,7 +65,7 @@ class CategoricalType(DecoratorType):
                 raise TypeError(f"levels must be list-like: {levels}")
 
             tokens = tokenize(match.group("body"))
-            parsed_levels = cast(tokens, instance).to_numpy()
+            parsed_levels = cast(tokens, instance).to_list()
 
         return self(instance, levels=parsed_levels)
 
@@ -79,7 +80,7 @@ class CategoricalType(DecoratorType):
         # detect type of categories
         categories = dtype.categories
         wrapped = detect_type(categories)
-        categories = categories.to_numpy()
+        categories = categories.to_list()
 
         # if categories are composite, broadcast across non-homogenous array
         if isinstance(wrapped, CompositeType):
@@ -164,11 +165,24 @@ class CategoricalType(DecoratorType):
             return False
 
         # check for unequal levels
-        if (
-            self.levels is not None and
-            not np.array_equal(self.levels, other.levels)
-        ):
+        if self.levels is not None and not self.levels == other.levels:
             return False
 
         # delegate to wrapped
         return self.wrapped.contains(other.wrapped)
+
+    def __repr__(self) -> str:
+        # limit the number of displayed levels
+        if self.levels and len(self.levels) > 6:
+            levels = "["
+            levels += ", ".join(repr(level) for level in self.levels[:3])
+            levels += ", ..., "
+            levels += ", ".join(repr(level) for level in self.levels[-3:])
+            levels += "]"
+        else:
+            levels = self.levels
+
+        # return in same format as VectorType
+        return (
+            f"{type(self).__name__}(wrapped={self.wrapped}, levels={levels})"
+        )

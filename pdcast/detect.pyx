@@ -16,6 +16,7 @@ from pdcast.decorators.attachable import attachable
 from pdcast.resolve import resolve_type
 from pdcast import types
 from pdcast cimport types
+from pdcast.types.array import ObjectDtype
 from pdcast.util.vector cimport as_array
 
 
@@ -25,7 +26,7 @@ from pdcast.util.vector cimport as_array
 
 
 @attachable
-def detect_type(data: Any, skip_na: bool = True) -> types.Type | dict:
+def detect_type(data: Any, drop_na: bool = True) -> types.Type | dict:
     """Infer types from example data.
 
     Arguments
@@ -33,7 +34,7 @@ def detect_type(data: Any, skip_na: bool = True) -> types.Type | dict:
     data : Any
         The example data whose type will be inferred.  This can be a scalar
         or list-like iterable of any kind.
-    skip_na : bool, default True
+    drop_na : bool, default True
         If ``True``, drop missing values from the example data before
         inferring.
 
@@ -67,7 +68,7 @@ def detect_type(data: Any, skip_na: bool = True) -> types.Type | dict:
     if issubclass(data_type, pd.DataFrame):
         columnwise = {}
         for col in data.columns:
-            columnwise[col] = detect_type(data[col], skip_na=skip_na)
+            columnwise[col] = detect_type(data[col], drop_na=drop_na)
         return columnwise
 
     # build factory
@@ -75,9 +76,9 @@ def detect_type(data: Any, skip_na: bool = True) -> types.Type | dict:
         if data_type in types.ScalarType.registry.aliases:
             factory = ScalarDetector(data, data_type)
         elif hasattr(data, "dtype"):
-            factory = ArrayDetector(data, skip_na=skip_na)
+            factory = ArrayDetector(data, drop_na=drop_na)
         else:
-            factory = ElementWiseDetector(data, skip_na=skip_na)
+            factory = ElementWiseDetector(data, drop_na=drop_na)
     else:
         factory = ScalarDetector(data, data_type)
 
@@ -128,10 +129,10 @@ cdef class ArrayDetector(Detector):
     """A factory that constructs types using an array's .dtype protocol.
     """
 
-    def __init__(self, data: Iterable, skip_na: bool):
+    def __init__(self, data: Iterable, drop_na: bool):
         super().__init__()
         self.data = data
-        self.skip_na = skip_na
+        self.drop_na = drop_na
 
     def __call__(self) -> types.Type:
         cdef object dtype
@@ -144,15 +145,18 @@ cdef class ArrayDetector(Detector):
 
         # case 1: type is ambiguous - loop through elementwise
         if dtype == np.dtype(object):
-            result = ElementWiseDetector(self.data, skip_na=self.skip_na)()
+            result = ElementWiseDetector(self.data, drop_na=self.drop_na)()
 
         # case 2: type is deterministic - resolve directly
         else:
-            instance = types.registry.aliases[type(dtype)]
+            if isinstance(dtype, ObjectDtype):
+                instance = dtype._pdcast_type
+            else:
+                instance = types.registry.aliases[type(dtype)]
             result = instance.from_dtype(dtype, self.data)
 
-            # insert nans if skip_na=False
-            if not self.skip_na:
+            # insert nans if drop_na=False
+            if not self.drop_na:
                 is_na = pd.isna(self.data)
                 if is_na.any():
                     # generate index
@@ -180,11 +184,11 @@ cdef class ElementWiseDetector(Detector):
     vector.
     """
 
-    def __init__(self, data: Iterable, skip_na: bool):
+    def __init__(self, data: Iterable, drop_na: bool):
         super().__init__()
 
         data = as_array(data)
-        self.skip_na = skip_na
+        self.drop_na = drop_na
         self.missing = pd.isna(data)
         self.hasnans = self.missing.any()
         if self.hasnans:
@@ -200,8 +204,12 @@ cdef class ElementWiseDetector(Detector):
         result = detect_vector_type(self.data, self.aliases)
 
         # insert missing values
-        if not self.skip_na and self.hasnans:
-            index = np.full(self.missing.shape[0], types.NullType, dtype=object)
+        if not self.drop_na and self.hasnans:
+            index = np.full(
+                self.missing.shape[0],
+                types.NullType,
+                dtype=object
+            )
             index[~self.missing] = result.index
             result = types.CompositeType(
                 result | {types.NullType},

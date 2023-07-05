@@ -7,6 +7,13 @@ pdcast.dispatch
 
 .. autodecorator:: dispatch
 
+..     :meth:`overloaded <pdcast.DispatchFunc.overload>` implementations are
+    searched from most specific to least specific, with ties broken from left
+    to right.  If no specific implementation can be found for the observed
+    input, then the decorated function itself will be called as a generic
+    implementation, similar to
+    :func:`@functools.singledispatch <functools.singledispatch>`.
+
 .. raw:: html
     :file: ../../images/decorators/Decorators_UML.html
 

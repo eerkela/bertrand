@@ -49,6 +49,9 @@ from .base import KINDS, Arguments, FunctionDecorator, Signature
 # AttributeError: 'NoneType' object has no attribute 'dtype'
 
 
+# TODO: convert_mixed -> rectify
+
+
 ######################
 ####    PUBLIC    ####
 ######################
@@ -56,10 +59,8 @@ from .base import KINDS, Arguments, FunctionDecorator, Signature
 
 def dispatch(
     *args,
-    vectorize: bool = True,
-    allow_composite: bool = True,
     drop_na: bool = True,
-    replace_na: bool = True,
+    fill_na: bool = True,
     convert_mixed: bool = False,
     cache_size: int = 128
 ) -> Callable:
@@ -69,52 +70,69 @@ def dispatch(
     Parameters
     ----------
     *args : str
-        Argument names to dispatch on.  Each of these must be reflected in the
-        signature of the decorated function, and will be required in each of
-        its overloaded implementations.
+        The names of the arguments to dispatch on.  These must occur within the
+        decorated function's signature, and their order determines the order of
+        the keys under which implementations are searched and stored.
     drop_na : bool, default True
         Indicates whether to drop missing values from input vectors before
-        forwarding to a dispatched implementation.
-    cache_size : int, default 64
-        The maximum number of signatures to store in cache.
-    convert_mixed_output : bool, default False
-        Controls whether to attempt standardization of mixed-type results
-        during composite dispatch.  This is only applied if the output type for
-        each group belongs to the same family (i.e. multiple variations of int,
-        float, datetime, etc.).  This argument is primarily used to allow
-        dynamic upcasting for each group during data conversions.
+        forwarding to a dispatched implementation.  If this is set to ``True``,
+        then any row that contains one or more missing values will be excluded
+        from the dispatch process.  If it is set to ``False``, then missing
+        values will be grouped and processed independently, as if they were a
+        separate type within the input data.  Optimal performance is achieved
+        by setting this to ``True``.
+    fill_na : bool, default True
+        Indicates whether to replace missing values in the output of a
+        dispatched operation.  If this is set to ``True``, then the result will
+        be padded with missing values wherever the normalized output index does
+        not match that of the input.  This includes any indices that were
+        filtered out as a result of ``drop_na=True`` as well as any that were
+        dropped within a dispatched implementation itself.  Conversely, if this
+        is set to ``False``, then the output will be returned as-is, and no
+        missing values will be inserted.
+    rectify : bool, default False
+        Indicates whether to attempt standardization of mixed-type results.  If
+        composite data is encountered and two or more implementations return
+        results of different types (but within the same family), then this
+        argument determines whether to return them as-is (``False``) or attempt
+        to convert them to a common dtype (``True``).  The dtype that is chosen
+        will always be the largest of the candidates, as determined by the
+        :meth:`< <pdcast.ScalarType.__lt__>` operator.
+    cache_size : int, default 128
+        Implementation searches are performed every time the decorated function
+        is executed, which may be expensive depending on how many
+        implementations are being dispatched to and how often the function is
+        being called.  To mitigate this,
+        :class:`DispatchFuncs <pdcast.dispatch.DispatchFunc>` maintain an LRU
+        cache containing the ``n`` most recently requested implementations,
+        where ``n`` is equal to the value of this argument.  This cache is
+        always checked before performing a full search on the
+        :attr:`overloaded <pdcast.DispatchFunc.overloaded>` table itself.
 
     Returns
     -------
     DispatchFunc
-        A cooperative :class:`DispatchFunc` decorator, which manages dispatched
-        implementations for the decorated callable.
+        A cooperative decorator that manages dispatched implementations for the
+        decorated callable.
 
     Raises
     ------
     TypeError
         If the decorated function does not accept the named arguments, or if no
         arguments are given.
-
-    Notes
-    -----
-    :meth:`overloaded <pdcast.dispatch.overload>` implementations are searched
-    from most specific to least specific, with ties broken from left to right.
-    If no specific implementation can be found for the observed input, then the
-    decorated function itself will be called as a generic implementation,
-    similar to :func:`@functools.singledispatch <functools.singledispatch>`.
     """
     if not args or len(args) == 1 and callable(args[0]):
         raise TypeError("@dispatch requires at least one named argument")
 
-    def decorator(func: Callable):
+    def decorator(func: Callable) -> DispatchFunc:
         """Convert a callable into a DispatchFunc object."""
         return DispatchFunc(
             func,
             dispatched=args,
             drop_na=drop_na,
-            cache_size=cache_size,
-            convert_mixed=convert_mixed
+            fill_na=fill_na,
+            convert_mixed=convert_mixed,
+            cache_size=cache_size
         )
 
     return decorator
@@ -138,7 +156,32 @@ class DispatchFunc(FunctionDecorator):
         must occur within the decorated function's signature, and their order
         determines the order of the keys under which implementations are
         searched and stored.
-    cache_size : int, default 128
+    drop_na : bool
+        Indicates whether to drop missing values from input vectors before
+        forwarding to a dispatched implementation.  If this is set to ``True``,
+        then any row that contains one or more missing values will be excluded
+        from the dispatch process.  If it is set to ``False``, then missing
+        values will be grouped and processed independently, as if they were a
+        separate type within the input data.  Optimal performance is achieved
+        by setting this to ``True``.
+    fill_na : bool
+        Indicates whether to replace missing values in the output of a
+        dispatched operation.  If this is set to ``True``, then the result will
+        be padded with missing values wherever the normalized output index does
+        not match that of the input.  This includes any indices that were
+        filtered out as a result of ``drop_na=True`` as well as any that were
+        dropped within a dispatched implementation itself.  Conversely, if this
+        is set to ``False``, then the output will be returned as-is, and no
+        missing values will be inserted.
+    rectify : bool
+        Indicates whether to attempt standardization of mixed-type results.  If
+        composite data is encountered and two or more implementations return
+        results of different types (but within the same family), then this
+        argument determines whether to return them as-is (``False``) or attempt
+        to convert them to a common dtype (``True``).  The dtype that is chosen
+        will always be the largest of the candidates, as determined by the
+        :meth:`< <pdcast.ScalarType.__lt__>` operator.
+    cache_size : int
         Implementation searches are performed every time the decorated function
         is executed, which may be expensive depending on how many
         implementations are being dispatched to and how often the function is
@@ -149,8 +192,6 @@ class DispatchFunc(FunctionDecorator):
         always checked before performing a full search on the
         :attr:`overloaded <pdcast.DispatchFunc.overloaded>` table itself.
 
-    TODO: document drop_na and convert_mixed + other flags as they are added.
-
     Examples
     --------
     See the docs for :func:`@dispatch <pdcast.dispatch>` for example usage.
@@ -158,25 +199,27 @@ class DispatchFunc(FunctionDecorator):
 
     _reserved = (
         FunctionDecorator._reserved |
-        {"_signature", "_flags", "_drop_na", "_convert_mixed"}
+        {"_signature", "_flags", "_drop_na", "_fill_na", "_convert_mixed"}
     )
 
     def __init__(
         self,
         func: Callable,
         dispatched: tuple[str, ...],
-        cache_size: int,
         drop_na: bool,
-        convert_mixed: bool
+        fill_na: bool,
+        convert_mixed: bool,
+        cache_size: int
     ):
         super().__init__(func=func)
-        self._flags = threading.local()
+        self._flags = threading.local()  # used to store thread-local state
         self._signature = DispatchSignature(
             func,
             dispatched=dispatched,
-            cache_size=cache_size
+            cache_size=cache_size,
+            drop_na=drop_na,
         )
-        self._drop_na = drop_na
+        self._fill_na = fill_na
         self._convert_mixed = convert_mixed
 
     @property
@@ -547,7 +590,7 @@ class DispatchFunc(FunctionDecorator):
             strategy = HomogenousDispatch(
                 self,
                 arguments=bound,
-                drop_na=self._drop_na
+                fill_na=self._fill_na,
             )
             return strategy.execute()  # do not finalize
 
@@ -559,13 +602,13 @@ class DispatchFunc(FunctionDecorator):
             strategy = HomogenousDispatch(
                 self,
                 arguments=bound,
-                drop_na=self._drop_na
+                fill_na=self._fill_na,
             )
         else:
             strategy = CompositeDispatch(
                 self,
                 arguments=bound,
-                drop_na=self._drop_na,
+                fill_na=self._fill_na,
                 convert_mixed=self._convert_mixed,
             )
 
@@ -642,7 +685,8 @@ class DispatchSignature(Signature):
         self,
         func: Callable,
         dispatched: tuple[str, ...],
-        cache_size: int
+        cache_size: int,
+        drop_na: bool
     ):
         super().__init__(func=func)
         missing = [arg for arg in dispatched if arg not in self.parameter_map]
@@ -654,6 +698,7 @@ class DispatchSignature(Signature):
         self._signatures = {func: self.signature}
         self.cache = LRUDict(maxsize=cache_size)
         self.ordered = False
+        self.drop_na = drop_na
 
     @property
     def dispatch_map(self) -> Mapping[tuple[types.VectorType, ...], Callable]:
@@ -811,7 +856,11 @@ class DispatchSignature(Signature):
         bound = self.signature.bind_partial(*args, **kwargs)
         bound.apply_defaults()
 
-        return DispatchArguments(bound=bound, signature=self)
+        return DispatchArguments(
+            bound=bound,
+            signature=self,
+            drop_na=self.drop_na
+        )
 
     def __getitem__(
         self,
@@ -925,18 +974,53 @@ class DispatchSignature(Signature):
 
 
 class DispatchArguments(Arguments):
-    """A simple wrapper for an `inspect.BoundArguments` object with extra
-    context for dispatched arguments and their detected types.
+    """A wrapper for an `inspect.BoundArguments` object with extra context for
+    dispatched arguments and their detected types.
+
+    Parameters
+    ----------
+    bound : inspect.BoundArguments
+        The bound arguments to wrap.  These are produced by binding an
+        :class:`inspect.Signature <python:inspect.Signature>` object to a
+        collection of positional and/or keyword arguments.
+    signature : DispatchSignature
+        A reference to the :class:`DispatchSignature <pdcast.DispatchSignature>`
+        that was used to produce the bound arguments.
+    drop_na : bool
+        A flag indicating whether to drop missing values during data
+        normalization/type detection.
+    detected : dict[str, types.Type], optional
+        A dictionary mapping argument names to their detected types.  This is
+        usually generated at runtime, but it can be provided manually as an
+        optimization to short-circuit the detection process and limit calls
+        to :func:`detect_type <pdcast.detect_type>`.
+    normalized : bool, optional
+        A flag indicating whether the arguments have been normalized.  If this
+        is set to ``True``, then the
+        :meth:`DispatchArguments.normalize <pdcast.DispatchArguments.normalize>`
+        method will always raise an error.
+
+    Notes
+    -----
+    These are created by :class:`DispatchSignatures <pdcast.DispatchSignature>`
+    and serve as context objects for ``DispatchStrategies``, which
+    control the execution of a :class:`DispatchFunc <pdcast.DispatchFunc>`.  By
+    encapsulating the arguments in a separate object, we can cache certain
+    operations and minimize the work that needs to be done for each invocation.
     """
 
     def __init__(
         self,
         bound: inspect.BoundArguments,
         signature: DispatchSignature,
+        drop_na: bool,
         detected: dict[str, types.Type] | None = None,
         normalized: bool = False
     ):
         super().__init__(bound=bound, signature=signature)
+        self.drop_na = drop_na
+
+        # extract dispatched arguments
         self.dispatched = {
             arg: bound.arguments[arg] for arg in self.signature.dispatched
         }
@@ -953,69 +1037,153 @@ class DispatchArguments(Arguments):
 
     @property
     def types(self) -> dict[str, types.Type]:
-        """The detected type of each dispatched argument."""
+        """The detected type of every :func:`dispatched <pdcast.dispatch>`
+        argument.
+
+        Returns
+        -------
+        dict[str, types.Type]
+            A dictionary mapping argument names to their detected types.  This
+            is computed once and then cached for the duration of the dispatch
+            process.
+
+        Notes
+        -----
+        The result is always sorted in the same order as the arguments that
+        were provided to the :func:`@dispatch <pdcast.dispatch>` decorator.
+
+        The values may be :class:`CompositeTypes <pdcast.CompositeType>`, in
+        which case a ``CompositeDispatch`` strategy will be chosen when the
+        function is executed.
+        """
+        # cache result
         if self._types is None:
             self._types = {
-                arg: detect_type(val) for arg, val in self.dispatched.items()
+                arg: detect_type(val, drop_na=self.drop_na)
+                for arg, val in self.dispatched.items()
             }
         return self._types
 
     @property
     def key(self) -> tuple[types.Type, ...]:
-        """Form a key for indexing a DispatchFunc."""
+        """Form a key that can be used to index a
+        :class:`DispatchFunc <pdcast.DispatchFunc>` in search of a particular
+        implementation.
+
+        Returns
+        -------
+        tuple[types.Type, ...]
+            A tuple containing one or more types corresponding to the values of
+            the :attr:`DispatchArguments.types <pdcast.DispatchArguments.types>`
+            table.
+
+        Notes
+        -----
+        Keys such as these are used to store and retrieve implementations from
+        a :class:`DispatchSignature <pdcast.DispatchSignature>` object.  They
+        may contain :class:`CompositeTypes <pdcast.CompositeType>`, in which
+        case a ``CompositeDispatch`` strategy will be chosen when the function
+        is executed.
+        """
         return tuple(self.types.values())
 
     @property
     def is_composite(self) -> bool:
-        """Check if the dispatched arguments are composite."""
+        """Check if the dispatched arguments are composite.
+
+        Returns
+        -------
+        bool
+            ``True`` if composite input was supplied to any of the function's
+            :func:`dispatched <pdcast.dispatch>` arguments.  ``False``
+            otherwise.
+
+        Notes
+        -----
+        This is used to determine whether a ``CompositeDispatch`` strategy
+        should be applied when the function is executed.
+        """
         return any(isinstance(typ, types.CompositeType) for typ in self.key)
 
     @property
     def groups(self) -> Iterator[DispatchArguments]:
-        """Group vectors by type.
+        """Split input vectors into groups based on their inferred type.
 
-        This only applies if `is_composite=True`.
+        Yields
+        ------
+        DispatchArguments
+            A separate :class:`DispatchArguments <pdcast.DispatchArguments>`
+            context for each group.  Each group will be dispatched
+            independently when the function is executed.
+
+        Notes
+        -----
+        This is only accessed if :attr:`DispatchArguments.is_composite` is set
+        to ``True``.
+
+        ``CompositeDispatch`` is achieved by iterating over these groups and
+        applying a ``HomogenousDispatch`` strategy to each one independently.
+        The results are then collected and combined into a single result.
         """
         if not self.is_composite:
             raise RuntimeError("DispatchArguments are not composite")
 
-        # generate frame of types observed at each index
+        # generate type frame using the inferred indices of each vector
         type_frame = pd.DataFrame({
             arg: getattr(typ, "index", typ) for arg, typ in self.types.items()
         })
 
-        # groupby() to get indices of each group
+        # groupby() to get the frame indices of each group
         groupby = type_frame.groupby(list(type_frame.columns), sort=False)
         del type_frame  # free memory
 
-        # extract groups one by one
+        # extract groups from frame one by one
         for key, indices in groupby.groups.items():
             group = self.frame.iloc[indices]
 
-            # bind names to key
+            # bind argument names to group key
             if not isinstance(key, tuple):
                 key = (key,)
             detected = dict(zip(self.dispatched, key))
 
             # split group into vectors and rectify their dtypes
-            vectors = self._rectify(self._extract_vectors(group), detected)
+            vectors = self._extract_vectors(group)
+            vectors = self._rectify(vectors, detected)
 
-            # generate new BoundArguments for each group
+            # generate a separate BoundArguments instance for each group
             bound = type(self.bound)(
                 arguments=self.bound.arguments | vectors,
                 signature=self.bound.signature
             )
 
-            # convert to DispatchArguments and yield
+            # convert to DispatchArguments and yield to CompositDispatch
             yield DispatchArguments(
                 bound=bound,
                 signature=self.signature,
-                detected=detected,
+                drop_na=False,  # already handled by groupby()
+                detected=detected,  # short-circuit type detection
                 normalized=True  # block normalize() calls
             )
 
     def normalize(self) -> None:
-        """Extract vectors from dispatched arguments and normalize them."""
+        """Extract vectors from dispatched arguments and normalize them.
+
+        Raises
+        ------
+        RuntimeError
+            If this method is called more than once, or if it is called out of
+            order with respect to
+            :attr:`DispatchArguments.types <pdcast.DispatchArguments.types>`.
+            This is to ensure that no performance regressions crop up due to
+            future changes.
+
+        Notes
+        -----
+        This method works by binding the dispatched vectors into a shared
+        DataFrame, and then normalizing that DataFrame.  The normalized vectors
+        are then split back into separate arguments, replacing their original
+        equivalents.  For performance reasons, this is only called once.
+        """
         # ensure normalize() is only called once
         if self.normalized:
             raise RuntimeError("DispatchArguments have already been normalized")
@@ -1031,14 +1199,15 @@ class DispatchArguments(Arguments):
         self._replace_index()
 
         # drop missing values
-        self._dropna()  # TODO: should be optional
+        if self.drop_na:
+            self._dropna()
 
         # split DataFrame into vectors and replace original args
         vectors = self._extract_vectors(self.frame)
         self.bound.arguments |= vectors
 
-        # rectify dtypes.  NOTE: implicitly detects type of each arg
-        if not self.is_composite:
+        # rectify dtypes
+        if not self.is_composite:  # NOTE: implicitly detects type of each arg
             self.bound.arguments |= self._rectify(vectors, self.types)
 
         # mark as normalized
@@ -1047,6 +1216,8 @@ class DispatchArguments(Arguments):
     def _build_frame(self) -> None:
         """Extract vectors from dispatched arguments and bind them into a
         shared DataFrame.
+
+        The resulting frame is accessible under ``DispatchArguments.frame``.
         """
         # extract vectors
         vectors = {}
@@ -1068,7 +1239,7 @@ class DispatchArguments(Arguments):
         # misaligned indices, filling any absent values with NaNs.  Since this
         # is a likely source of bugs, we always warn the user when it happens.
 
-        # warn if indices were misaligned
+        # warn if indices are misaligned
         original_length = self.frame.shape[0]
         if any(vec.shape[0] != original_length for vec in vectors.values()):
             warn_msg = (
@@ -1077,22 +1248,30 @@ class DispatchArguments(Arguments):
             warnings.warn(warn_msg, UserWarning, stacklevel=3)
 
     def _replace_index(self) -> None:
-        """Normalize the indices of the dispatched vectors.
+        """Replace the frame index with a unique
+        :class:`RangeIndex <pandas.RangeIndex>` that has no duplicate values.
+
+        The previous index is retained under
+        ``DispatchArguments.original_index``.
         """
         self.original_index = self.frame.index
         if not isinstance(self.original_index, pd.RangeIndex):
             self.frame.index = pd.RangeIndex(0, self.frame.shape[0])
 
     def _dropna(self) -> None:
-        """Drop missing values from the dispatched vectors.
+        """Drop any row that contains a missing value from the frame.
+
+        This is only called if ``drop_na=True`` was supplied to
+        :func:`@dispatch() <pdcast.dispatch>`.  Otherwise, missing values will
+        be grouped and processed according to a ``CompositeDispatch`` strategy.
         """
         original_length = self.frame.shape[0]
         self.frame = self.frame.dropna(how="any")
         self.hasnans = self.frame.shape[0] != original_length
 
     def _extract_vectors(self, df: pd.DataFrame) -> dict[str, pd.Series]:
-        """Split a DataFrame into individual vectors.
-        """
+        """Split the frame back into individual vectors."""
+        # replace the original series name if one was given
         return {
             arg: col.rename(self.series_names.get(arg, None), copy=False)
             for arg, col in df.items()
@@ -1103,8 +1282,7 @@ class DispatchArguments(Arguments):
         vectors: dict[str, pd.Series],
         detected: dict[str, types.VectorType]
     ) -> dict[str, pd.Series]:
-        """Convert the vectors to the detected types.
-        """
+        """Standardize each vector's dtype according to the detected type."""
         return {
             arg: series.astype(detected[arg].dtype, copy=False)
             for arg, series in vectors.items()
@@ -1120,11 +1298,13 @@ class DispatchStrategy:
     def __init__(
         self,
         func: DispatchFunc,
-        arguments: DispatchArguments
+        arguments: DispatchArguments,
+        fill_na: bool
     ):
         self.func = func
         self.signature = func._signature
         self.arguments = arguments
+        self.fill_na = fill_na
 
     def execute(self) -> Any:
         """Abstract method for executing a dispatched strategy."""
@@ -1140,6 +1320,8 @@ class DispatchStrategy:
             f"strategy does not implement a `finalize()` method: "
             f"{self.__qualname__}"
         )
+
+    # TODO: rectify -> rectify_series
 
     def rectify(self, series: pd.Series) -> pd.Series:
         """Normalize the dtype of an output series to its detected type.
@@ -1174,15 +1356,6 @@ class DispatchStrategy:
 class HomogenousDispatch(DispatchStrategy):
     """Dispatch homogenous inputs to the appropriate implementation."""
 
-    def __init__(
-        self,
-        func: DispatchFunc,
-        arguments: DispatchArguments,
-        drop_na: bool,
-    ):
-        super().__init__(func=func, arguments=arguments)
-        self.drop_na = drop_na
-
     def execute(self) -> Any:
         """Call the dispatched function with the bound arguments."""
         bound = self.arguments
@@ -1202,11 +1375,17 @@ class HomogenousDispatch(DispatchStrategy):
 
             # replace missing values
             frame_length = self.arguments.frame.shape[0]
-            if self.arguments.hasnans or result.shape[0] < frame_length:
+            if (
+                self.fill_na and
+                self.arguments.hasnans or result.shape[0] < frame_length
+            ):
                 result = self._merge_na(result)
 
             # replace original index
-            result.index = self.arguments.original_index
+            final_index = self.arguments.original_index
+            if not self.fill_na:
+                final_index = final_index[result.index]
+            result.index = final_index
 
         # aggregate
         return result
@@ -1263,11 +1442,14 @@ class CompositeDispatch(DispatchStrategy):
         self,
         func: DispatchFunc,
         arguments: DispatchArguments,
-        drop_na: bool,
+        fill_na: bool,
         convert_mixed: bool
     ):
-        super().__init__(func=func, arguments=arguments)
-        self.drop_na = drop_na
+        super().__init__(
+            func=func,
+            arguments=arguments,
+            fill_na=fill_na
+        )
         self.convert_mixed = convert_mixed
 
     def execute(self) -> list:
@@ -1281,7 +1463,7 @@ class CompositeDispatch(DispatchStrategy):
             strategy = HomogenousDispatch(
                 self.func,
                 arguments=group,
-                drop_na=self.drop_na
+                fill_na=False
             )
             results.append((group.key, strategy.execute()))
 
@@ -1298,11 +1480,12 @@ class CompositeDispatch(DispatchStrategy):
             groups = self._standardize_dtype(groups, as_series=as_series)
 
             # check if index is subset of normalized
-            self._check_index(groups)
+            result_index = self._check_index(groups)
 
             # merge series and replace missing values
             if as_series:
-                return self._merge_series(groups)  # TODO: include a flag to convert mixed
+                # TODO: include a flag to convert mixed
+                return self._merge_series(groups, result_index=result_index)
 
             # check for column mismatch
             columns = {tuple(df.columns) for df in groups.values()}
@@ -1315,7 +1498,8 @@ class CompositeDispatch(DispatchStrategy):
             df = {}
             for col in columns.pop():
                 df[col] = self._merge_series(
-                    {key: df[col] for key, df in groups.items()}
+                    {key: df[col] for key, df in groups.items()},
+                    result_index=result_index
                 )
             return pd.DataFrame(df, copy=False)
 
@@ -1351,7 +1535,7 @@ class CompositeDispatch(DispatchStrategy):
     def _check_index(
         self,
         groups: dict[tuple[types.VectorType, ...], pd.Series | pd.DataFrame]
-    ) -> None:
+    ) -> pd.Index:
         """Validate and merge a collection of transformed Series/DataFrame
         indices.
         """
@@ -1385,9 +1569,13 @@ class CompositeDispatch(DispatchStrategy):
             # index mismatch results in extraneous NaNs
             self.arguments.hasnans = True
 
+        # return final index
+        return index
+
     def _merge_series(
         self,
-        groups: dict[tuple[types.VectorType, ...], pd.Series]
+        groups: dict[tuple[types.VectorType, ...], pd.Series],
+        result_index: pd.Index
     ) -> pd.Series:
         """Merge the computed series results by index."""
         # get unique output types
@@ -1414,47 +1602,71 @@ class CompositeDispatch(DispatchStrategy):
         # results are homogenous
         if len(unique) == 1:
             # merge series
-            result = pd.concat(groups.values())  # NOTE: can remove ObjectDtype
-            result = result.astype(unique.pop().dtype, copy=False)
+            result = pd.concat(groups.values())  # NOTE: removes ObjectDtypes
+            result = result.astype(unique.pop().dtype, copy=False)  # ^^^^^^^
             result.sort_index(inplace=True)
 
             # replace missing values
             frame_length = self.arguments.frame.shape[0]
-            if self.arguments.hasnans or result.shape[0] < frame_length:
+            if (
+                self.fill_na and
+                self.arguments.hasnans or result.shape[0] < frame_length
+            ):
                 result = self.replace_na(result)
 
             # replace original index
-            result.index = self.arguments.original_index
+            final_index = self.arguments.original_index
+            if not self.fill_na:
+                final_index = final_index[result.index]
+            result.index = final_index
             return result
 
+        # results are mixed
         # NOTE: we can't use pd.concat() because it tends to coerce mixed-type
-        # results in uncontrollable ways.  Instead, we fold each group into a
+        # results in uncontrollable ways.  Instead, we join each group into a
         # `dtype: object` series to preserve the actual values.
 
-        # results are mixed
-        original_length = self.arguments.original_index.shape[0]
-        result = pd.Series(
-            np.full(original_length, pd.NA, dtype=object),
-            index=pd.RangeIndex(0, original_length)
-        )
+        # generate object series
+        if self.fill_na:
+            original_length = self.arguments.original_index.shape[0]
+            result = pd.Series(
+                np.full(original_length, pd.NA, dtype=object),
+                index=pd.RangeIndex(0, original_length)
+            )
+        else:
+            result = pd.Series(
+                np.full(result_index.shape[0], pd.NA, dtype=object),
+                index=result_index  # NOTE: generated in _check_index()
+            )
+
+        # join results
         for series in groups.values():
             result[series.index] = series
-        result.index = self.arguments.original_index
+
+        # replace with original index
+        final_index = self.arguments.original_index
+        if not self.fill_na:
+            final_index = final_index[result.index]
+        result.index = final_index
         return result
 
 
 def supercedes(node1: tuple, node2: tuple) -> bool:
-    """Check if node1 is consistent with and strictly more specific than node2.
+    """Check if ``node1`` is consistent with and strictly more specific than
+    ``node2``.
+
+    This uses the same hierarchical membership checks as the stand-alone
+    :func:`typecheck() <pdcast.typecheck>` function.
     """
     return all(x.contains(y) for x, y in zip(node2, node1))
 
 
 def edge(node1: tuple, node2: tuple) -> bool:
-    """If ``True``, check node1 before node2.
+    """Determine if ``node1`` should be checked before ``node2``.
 
-    Ties are broken by recursively backing off the last element of both
-    signatures.  As a result, whichever one is more specific in its earlier
-    elements will always be preferred.
+    Ties are broken by recursively backing off the last element of both nodes.
+    Whichever one is more specific in its earlier elements (from left to right)
+    will always be preferred.
     """
     # pylint: disable=arguments-out-of-order
     if not node1 or not node2:
@@ -1463,7 +1675,7 @@ def edge(node1: tuple, node2: tuple) -> bool:
     return (
         supercedes(node1, node2) and
         not supercedes(node2, node1) or
-        edge(node1[:-1], node2[:-1])  # back off from right to left
+        edge(node1[:-1], node2[:-1])  # back off rightmost element
     )
 
 
@@ -1473,12 +1685,13 @@ def topological_sort(edges: dict) -> list:
     Parameters
     ----------
     edges : dict
-        A dict of the form `{A: {B, C}}` where `B` and `C` depend on `A`.
+        A dictionary of the form ``{A: {B, C}}`` where ``B`` and ``C`` depend
+        on ``A``.
 
     Returns
     -------
     list
-        An ordered list of nodes that satisfy the dependencies of `edges`.
+        An ordered list of nodes that satisfy the dependencies of ``edges``.
 
     Examples
     --------
@@ -1535,7 +1748,7 @@ def topological_sort(edges: dict) -> list:
 #######################
 
 
-@dispatch("x", "y")
+@dispatch("x", "y", drop_na=False, fill_na=True, convert_mixed=True)
 def add(x, y):
     return x + y
 
@@ -1543,6 +1756,11 @@ def add(x, y):
 @add.overload("int", "int")
 def add1(x, y):
     return x - y
+
+
+@add.overload("null", "int")
+def add_null(x, y):
+    return pd.Series([256] * len(x), index=x.index)
 
 
 # @add.overload("int64", "int64")
@@ -1556,8 +1774,8 @@ def add1(x, y):
 
 
 
-sig = add._signature
-bound = sig([1, 2, 3.0], [3, 2, 1])
+# sig = add._signature
+# bound = sig([1, 2, 3.0], [3, 2, 1])
 
 # strat = DirectDispatch(add)
 

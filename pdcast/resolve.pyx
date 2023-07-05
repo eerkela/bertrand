@@ -24,10 +24,6 @@ from pdcast.types.array import ObjectDtype
 from pdcast.util.type_hints import type_specifier
 
 
-# TODO: pdcast.resolve_type(pd.CategoricalDtype([False, 1, 2.]))
-# -> CategoricalType must be able to wrap CompositeTypes
-
-
 #####################
 ####   PUBLIC    ####
 #####################

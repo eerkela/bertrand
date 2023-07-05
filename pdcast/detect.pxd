@@ -18,7 +18,7 @@ cdef class ArrayDetector(Detector):
 
     cdef:
         object data
-        bint skip_na
+        bint drop_na
 
 
 cdef class ElementWiseDetector(Detector):
@@ -26,7 +26,7 @@ cdef class ElementWiseDetector(Detector):
     cdef:
         object[:] data
         np.ndarray missing
-        bint skip_na
+        bint drop_na
         bint hasnans
 
 
