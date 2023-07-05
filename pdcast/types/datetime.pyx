@@ -77,7 +77,11 @@ class PandasTimestampType(ScalarType):
 
         return self(tz=time.tz(context, {}))
 
-    def from_dtype(self, dtype: dtype_like) -> ScalarType:
+    def from_dtype(
+        self,
+        dtype: dtype_like,
+        array: array_like = None,
+    ) -> ScalarType:
         """Translate a pandas DatetimeTZDtype into the pdcast type system."""
         return self(tz=getattr(dtype, "tz", None))
 

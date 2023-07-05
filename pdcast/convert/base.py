@@ -148,7 +148,7 @@ class catch_errors(FunctionDecorator):
 @columnwise
 @extension_func
 @catch_errors
-@dispatch("series", "dtype", cache_size=128, convert_mixed=True)
+@dispatch("series", "dtype", cache_size=128, rectify=True)
 def cast(
     series: Any,
     dtype: type_specifier | None = None,

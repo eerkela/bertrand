@@ -266,13 +266,21 @@ class ExtensionFunc(FunctionDecorator, threading.local):
             """Attach a validation function to the ExtensionFunc as a managed
             property.
             """
-            # Ensure validator is valid
+            # ensure validator is valid
             self._signature.check_validator(validator)
 
-            # get name of argument and ensure unique
-            _name = self._signature.get_argument_name(name, validator)
+            # use name of validator as argument name if not explicitly given
+            _name = name
+            if _name is None:
+                _name = validator.__name__
+            elif not isinstance(_name, str):
+                raise TypeError(f"name must be a string, not {type(_name)}")
 
-            # check name is not overwriting a reserved attribute
+            # ensure name is not already in use
+            if _name in self._signature.validators:
+                raise KeyError(f"argument '{_name}' already exists")
+
+            # ensure name is not overwriting a reserved attribute
             if _name in dir(self):
                 raise TypeError(f"'{_name}' is a reserved attribute")
 
@@ -348,7 +356,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
         try:
             self._signature.reset_parameter(name)
         except TypeError:
-            self._signature.remove_parameter(name)
+            self._signature.delete_parameter(name)
 
     def reset_defaults(self) -> None:
         """Reset all arguments to their original defaults.
@@ -533,7 +541,7 @@ class ExtensionSignature(Signature):
         :class:`ExtensionFunc <pdcast.ExtensionFunc>` to its children when a
         new thread is spawned.
         """
-        self.signature = other.signature.replace()  # copy other signature
+        self.sig = other.sig  # copy other signature
         self.validators = other.validators.copy()
         self.defaults = other.defaults.copy()
 
@@ -576,49 +584,6 @@ class ExtensionSignature(Signature):
             raise TypeError(
                 f"validator must accept at least 2 arguments: {validator}"
             )
-
-    def get_argument_name(
-        self,
-        name: str | None,
-        validator: Callable
-    ) -> str:
-        """Get the appropriate argument name for a given validator and ensure
-        that it is unique.
-
-        Parameters
-        ----------
-        name : str | None
-            The name of the argument that ``validator`` validates.  If this is
-            :data:`None <python:None>`, then the name of the validation
-            function will be used instead.
-        validator : Callable
-            A custom validation function decorated with
-            :meth:`@argument <pdcast.ExtensionFunc.argument>`.
-
-        Returns
-        -------
-        str
-            The final name of the validated argument.
-
-        Raises
-        ------
-        TypeError
-            If ``name`` is not a string or :data:`None <python:None>`.
-        KeyError
-            If ``name`` is already in use by another validator.
-        """
-        # use name of validator as argument name if not explicitly given
-        if name is None:
-            name = validator.__name__
-        elif not isinstance(name, str):
-            raise TypeError(f"name must be a string, not {type(name)}")
-
-        # ensure name is not already in use
-        if name in self.validators:
-            raise KeyError(f"argument '{name}' already exists")
-
-        # return final argument name
-        return name
 
     def register_argument(
         self,
@@ -746,7 +711,7 @@ class ExtensionSignature(Signature):
         This is always called on the input to
         :meth:`ExtensionFunc.__call__() <pdcast.ExtensionFunc.__call__>`.
         """
-        bound = self.signature.bind_partial(*args, **kwargs)
+        bound = self.sig.bind_partial(*args, **kwargs)
         return ExtensionArguments(bound=bound, signature=self)
 
 
@@ -776,7 +741,7 @@ class ExtensionArguments(Arguments):
         associated properties, there is no need to check them manually.
         """
         # record original arguments before applying defaults
-        explicit = tuple(self.arguments)
+        explicit = tuple(self.values)
 
         # apply defaults.  These are pre-validated by their properties.
         self.apply_defaults()
@@ -785,7 +750,4 @@ class ExtensionArguments(Arguments):
         for name in explicit:
             if name in self.signature.validators:
                 validator = self.signature.validators[name]
-                self.arguments[name] = validator(
-                    self.arguments[name],
-                    self.arguments
-                )
+                self.values[name] = validator(self.values[name], self.values)

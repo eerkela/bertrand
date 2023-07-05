@@ -56,7 +56,7 @@ class FunctionDecorator:
 
     def __init__(self, func: Callable, **kwargs):
         super().__init__(**kwargs)  # allow multiple inheritance
-        update_wrapper(self, func)
+        update_wrapper(self, func)  # sets __wrapped__, __name__, __doc__, etc.
 
     ################################
     ####    ATTRIBUTE ACCESS    ####
@@ -148,8 +148,8 @@ class Signature:
 
     def __init__(self, func: Callable):
         self.func_name = func.__qualname__
-        self.signature = inspect.signature(func)
-        self.original = self.signature.replace()  # store a copy
+        self.sig = inspect.signature(func)
+        self.original = self.sig  # remember the original signature
 
     @property
     def parameter_map(self) -> Mapping[str, inspect.Parameter]:
@@ -169,7 +169,7 @@ class Signature:
             >>> sig.parameter_map
             mappingproxy(OrderedDict([('bar', <Parameter "bar">), ('baz', <Parameter "baz=2">), ('kwargs', <Parameter "**kwargs">)]))
         """
-        return self.signature.parameters
+        return self.sig.parameters
 
     @property
     def parameters(self) -> tuple[inspect.Parameter, ...]:
@@ -203,15 +203,15 @@ class Signature:
             >>> sig.parameters
             (<Parameter "bar">, <Parameter "baz=2">, <Parameter "**kwargs">)
         """
-        return tuple(self.signature.parameters.values())
+        return tuple(self.sig.parameters.values())
 
     @parameters.setter
     def parameters(self, val: tuple[inspect.Parameter]) -> None:
-        self.signature = self.signature.replace(parameters=val)
+        self.sig = self.sig.replace(parameters=val)
 
     @parameters.deleter
     def parameters(self) -> None:
-        self.signature = self.original
+        self.sig = self.original
 
     @property
     def return_annotation(self) -> Any:
@@ -246,15 +246,15 @@ class Signature:
             >>> sig.return_annotation
             <class 'inspect._empty'>
         """
-        return self.signature.return_annotation
+        return self.sig.return_annotation
 
     @return_annotation.setter
     def return_annotation(self, val: Any) -> None:
-        self.signature = self.signature.replace(return_annotation=val)
+        self.sig = self.sig.replace(return_annotation=val)
 
     @return_annotation.deleter
     def return_annotation(self) -> None:
-        self.signature = self.signature.replace(
+        self.sig = self.sig.replace(
             return_annotation=self.original.return_annotation
         )
 
@@ -293,7 +293,7 @@ class Signature:
         --------
         Signature.set_parameter :
             Modify a parameter in the signature.
-        Signature.remove_parameter :
+        Signature.delete_parameter :
             Remove a parameter from the signature.
 
         Examples
@@ -366,7 +366,7 @@ class Signature:
         --------
         Signature.add_parameter :
             Add a parameter to the signature.
-        Signature.remove_parameter :
+        Signature.delete_parameter :
             Remove a parameter from the signature.
 
         Examples
@@ -440,7 +440,7 @@ class Signature:
             Add a parameter to the signature.
         Signature.set_parameter :
             Modify a parameter in the signature.
-        Signature.remove_parameter :
+        Signature.delete_parameter :
             Remove a parameter from the signature.
 
         Examples
@@ -479,7 +479,7 @@ class Signature:
             self.parameters[index + 1:]
         )
 
-    def remove_parameter(self, name: str) -> None:
+    def delete_parameter(self, name: str) -> None:
         """Remove a parameter from this signature.
 
         Parameters
@@ -507,13 +507,13 @@ class Signature:
             ...     return {"bar": bar, "baz": baz} | kwargs
 
             >>> sig = Signature(foo)
-            >>> sig.remove_parameter("bar")
+            >>> sig.delete_parameter("bar")
             >>> sig
             <Signature (baz=2, **kwargs)>
-            >>> sig.remove_parameter("kwargs")
+            >>> sig.delete_parameter("kwargs")
             >>> sig
             <Signature (baz=2)>
-            >>> sig.remove_parameter("baz")
+            >>> sig.delete_parameter("baz")
             >>> sig
             <Signature ()>
         """
@@ -677,7 +677,7 @@ class Signature:
 
         # replace parameters
         parameters = tuple(par.replace(**kwargs) for par in self.parameters)
-        sig = self.signature.replace(parameters=parameters)
+        sig = self.sig.replace(parameters=parameters)
 
         # replace return annotation
         if not return_annotation:
@@ -826,14 +826,14 @@ class Signature:
             >>> bound.args, bound.kwargs
             ((1, 2), mappingproxy({}))
         """
-        bound = self.signature.bind_partial(*args, **kwargs)
+        bound = self.sig.bind_partial(*args, **kwargs)
         return Arguments(bound=bound, signature=self)
 
     def __str__(self) -> str:
-        return str(self.signature)
+        return str(self.sig)
 
     def __repr__(self) -> str:
-        return repr(self.signature)
+        return repr(self.sig)
 
 
 class Arguments:
@@ -867,7 +867,7 @@ class Arguments:
         self.signature = signature
 
     @property
-    def arguments(self) -> dict[str, Any]:
+    def values(self) -> dict[str, Any]:
         """A mutable mapping containing the current value of each argument.
 
         Returns
@@ -896,14 +896,14 @@ class Arguments:
 
             >>> sig = pdcast.Signature(foo)
             >>> bound = sig(1)
-            >>> bound.arguments
+            >>> bound.values
             {'bar': 1}
             >>> bound.apply_defaults()
-            >>> bound.arguments
+            >>> bound.values
             {'bar': 1, 'baz': 2, 'kwargs': {}}
             >>> foo(*bound.args, **bound.kwargs)
             {'bar': 1, 'baz': 2}
-            >>> bound.arguments["baz"] = 3
+            >>> bound.values["baz"] = 3
             >>> foo(*bound.args, **bound.kwargs)
             {'bar': 1, 'baz': 3}
         """
@@ -921,9 +921,8 @@ class Arguments:
 
         See Also
         --------
-        Arguments.arguments :
+        Arguments.values :
             A mutable dictionary containing the current value of each argument.
-
         Arguments.kwargs :
             A ``**kwargs`` map that can be used to invoke the original
             function.
@@ -957,7 +956,7 @@ class Arguments:
 
         See Also
         --------
-        Arguments.arguments :
+        Arguments.values :
             A mutable dictionary containing the current value of each argument.
         Arguments.args :
             An ``*args`` tuple that can be used to invoked the original

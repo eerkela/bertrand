@@ -49,9 +49,6 @@ from .base import KINDS, Arguments, FunctionDecorator, Signature
 # AttributeError: 'NoneType' object has no attribute 'dtype'
 
 
-# TODO: convert_mixed -> rectify
-
-
 ######################
 ####    PUBLIC    ####
 ######################
@@ -61,7 +58,7 @@ def dispatch(
     *args,
     drop_na: bool = True,
     fill_na: bool = True,
-    convert_mixed: bool = False,
+    rectify: bool = False,
     cache_size: int = 128
 ) -> Callable:
     """A decorator that allows a Python function to dispatch to multiple
@@ -131,7 +128,7 @@ def dispatch(
             dispatched=args,
             drop_na=drop_na,
             fill_na=fill_na,
-            convert_mixed=convert_mixed,
+            rectify=rectify,
             cache_size=cache_size
         )
 
@@ -199,7 +196,7 @@ class DispatchFunc(FunctionDecorator):
 
     _reserved = (
         FunctionDecorator._reserved |
-        {"_signature", "_flags", "_drop_na", "_fill_na", "_convert_mixed"}
+        {"_signature", "_flags", "_fill_na", "_rectify"}
     )
 
     def __init__(
@@ -208,7 +205,7 @@ class DispatchFunc(FunctionDecorator):
         dispatched: tuple[str, ...],
         drop_na: bool,
         fill_na: bool,
-        convert_mixed: bool,
+        rectify: bool,
         cache_size: int
     ):
         super().__init__(func=func)
@@ -220,7 +217,7 @@ class DispatchFunc(FunctionDecorator):
             drop_na=drop_na,
         )
         self._fill_na = fill_na
-        self._convert_mixed = convert_mixed
+        self._rectify = rectify
 
     @property
     def dispatched(self) -> tuple[str, ...]:
@@ -305,6 +302,16 @@ class DispatchFunc(FunctionDecorator):
             them from right to left (``b`` before ``a``) instead of left to
             right (``a`` before ``b``).
 
+        Examples
+        --------
+        .. doctest::
+
+            >>> @dispatch("x", "y")
+            ... def add(x, y):
+            ...     return x + y
+
+            >>> add.dispatched
+            ('x', 'y')
         """
         return self._signature.dispatched
 
@@ -431,9 +438,6 @@ class DispatchFunc(FunctionDecorator):
             bound.apply_defaults()
             key = self._signature.dispatch_key(*bound.args, **bound.kwargs)
 
-            # remember dispatched function's signature
-            self._signature.signatures[func] = signature
-
             # register every combination of types
             for path in self._signature.cartesian_product(key):
                 self._signature[path] = func
@@ -536,10 +540,11 @@ class DispatchFunc(FunctionDecorator):
                 :class:`RangeIndex <pandas.RangeIndex>` spanning the length of
                 each vector.  If the vectors had a custom index, then it is
                 stored until the end of the dispatch process.
-            #.  Drop any row that contains a missing value in one or more
-                columns.  This creates gaps in the index, which are used to
-                identify the locations of missing values later on in the
-                dispatch process.
+            #.  If ``drop_na=True``, drop any row that contains a missing value
+                in one or more columns.  This creates gaps in the index, which
+                are used to identify the locations of missing values later on
+                in the dispatch process.  If ``drop_na=False``, then we skip
+                this step and treat the missing values as a separate group.
             #.  Detect the type of each vector and label it accordingly.  This
                 allows :func:`detect_type() <pdcast.detect_type>` to infer each
                 vector's type in constant time within the dispatched context.
@@ -559,24 +564,27 @@ class DispatchFunc(FunctionDecorator):
                 :class:`DataFrame <pandas.DataFrame>` signifies a
                 transformation.  Upon exiting the dispatched context, any
                 missing indices will be replaced with the appropriate
-                :attr:`na_value <pdcast.ScalarType.na_value>` for the inferred
-                output type.  If the arguments defined a custom index, then it
-                will be replaced, and the output ``dtype`` will be labeled with
-                the type of its elements.
+                :attr:`na_value <pdcast.ScalarType.na_value>` if
+                ``fill_na=True``.  If the arguments defined a custom index,
+                then it will be replaced, and the output ``dtype`` will be
+                labeled with the type of its elements.
             *   :data:`None <python:None>` signifies a filtration.  In most
-                cases, this will be passed through as-is.  However, if the
-                input includes a vector of mixed type, then the group will
-                be removed from the output.
-            *   Anything else signifies an aggreggation.  The result will be
-                returned as-is if the data are homogenous.  If mixed data are
-                given, the result will be a
-                :class:`DataFrame <pandas.DataFrame>` with columns containing
-                the observed type of each argument for every group.  The final
-                column contains the result of the computation for that group.
+                cases, the returned value will be passed through as-is.
+                However, if the input includes a vector of mixed type, then the
+                group will be removed from the output
+                :class:`DataFrame <pdcast.DataFrame>`.
+            *   Anything else signifies an aggreggation.  If the input data are
+                homogenous, then the result will be returned as-is.  Otherwise,
+                the result will be a :class:`DataFrame <pandas.DataFrame>` with
+                columns for each of the
+                :attr:`dispatched <pdcast.DispatchFunc.dispatched>` arguments.
+                These contain the observed type of the argument for each group,
+                and the final column contains the result of the computation for
+                that group.
 
         These behaviors can be customized using the keyword arguments to
         :func:`@dispatch() <pdcast.dispatch>`.  See the
-        :ref:`documentation <dispatch>` for more details.
+        :ref:`documentation <dispatch.missing_values>` for more details.
 
         Examples
         --------
@@ -609,7 +617,7 @@ class DispatchFunc(FunctionDecorator):
                 self,
                 arguments=bound,
                 fill_na=self._fill_na,
-                convert_mixed=self._convert_mixed,
+                rectify=self._rectify,
             )
 
         # execute strategy
@@ -623,13 +631,14 @@ class DispatchFunc(FunctionDecorator):
         self,
         key: type_specifier | tuple[type_specifier, ...]
     ) -> Callable:
-        """Get the dispatched implementation for arguments of a given type.
+        """Get the dispatched implementation for a particular combination of
+        argument types.
 
         Parameters
         ----------
         key : type_specifier | tuple[type_specifier, ...]
-            The type of input to get the implementation for.  Multiple types
-            can be given by separating them with commas.
+            The input types associated with a particular implementation.
+            Multiple types can be given by separating them with commas.
 
         Returns
         -------
@@ -644,6 +653,8 @@ class DispatchFunc(FunctionDecorator):
         DispatchFunc.__call__ :
             Call the :class:`DispatchFunc <pdcast.DispatchFunc>` with the
             associated implementation.
+        DispatchFunc.__delitem__ :
+            Remove a dispatched implementation from the pool.
 
         Notes
         -----
@@ -670,8 +681,36 @@ class DispatchFunc(FunctionDecorator):
         except KeyError:
             return self.__wrapped__
 
-    def __delitem__(self, key: type_specifier) -> None:
-        """Remove an implementation from the pool.
+    def __delitem__(
+        self,
+        key: type_specifier | tuple[type_specifier, ...]
+    ) -> None:
+        """Remove a dispatched implementation from the pool.
+
+        Parameters
+        ----------
+        key : type_specifier | tuple[type_specifier, ...]
+            The input types associated with a particular implementation.
+            Multiple types can be given by separating them with commas.
+
+        See Also
+        --------
+        DispatchFunc.__call__ :
+            Call the :class:`DispatchFunc <pdcast.DispatchFunc>` with the
+            associated implementation.
+        DispatchFunc.__getitem__ :
+            Get the dispatched implementation associated with the given
+            type(s).
+
+        Notes
+        -----
+        No implicit hierarchical checks are performed when removing an
+        implementation.  Types must be given explicitly, exactly as they were
+        given in the implementation's
+        :meth:`@overload() <pdcast.DispatchFunc.overload>` decorator.  This is
+        to prevent impl
+
+        This means that the types must be given explicitly
         """
         del self._signature[key]
 
@@ -695,7 +734,6 @@ class DispatchSignature(Signature):
 
         self.dispatched = dispatched
         self._dispatch_map = {}
-        self._signatures = {func: self.signature}
         self.cache = LRUDict(maxsize=cache_size)
         self.ordered = False
         self.drop_na = drop_na
@@ -727,25 +765,6 @@ class DispatchSignature(Signature):
         
         """
         return MappingProxyType(self._dispatch_map)
-
-    @property
-    def signatures(self) -> Mapping[Callable, inspect.Signature]:
-        """A map containing the signatures of all the dispatched
-        implementations that are being handled by this
-        :class:`DispatchSignature <pdcast.DispatchSignature>`.
-
-        Returns
-        -------
-        MappingProxyType
-            A read-only mapping from
-            :meth:`implementations <pdcast.DispatchFunc.overload>` to their
-            respective :class:`signatures <inspect.Signature>`.
-
-        Examples
-        --------
-        TODO
-        """
-        return self._signatures
 
     def sort(self) -> None:
         """Sort the dictionary into topological order, with most specific
@@ -808,7 +827,7 @@ class DispatchSignature(Signature):
 
             >>> TODO
         """
-        bound = __self.signature.bind_partial(*args, **kwargs)
+        bound = __self.sig.bind_partial(*args, **kwargs)
         bound.apply_defaults()
 
         return tuple(
@@ -853,7 +872,7 @@ class DispatchSignature(Signature):
 
     def __call__(self, *args, **kwargs) -> DispatchArguments:
         """Bind this signature to create a `DispatchArguments` object."""
-        bound = self.signature.bind_partial(*args, **kwargs)
+        bound = self.sig.bind_partial(*args, **kwargs)
         bound.apply_defaults()
 
         return DispatchArguments(
@@ -916,7 +935,7 @@ class DispatchSignature(Signature):
             raise TypeError(f"implementation must be callable: {repr(value)}")
 
         # verify implementation has compatible signature
-        signature = self.signatures[value]
+        signature = Signature(value)
         if not self.compatible(signature):
             self_str = self.reconstruct(
                 defaults=False,
@@ -956,7 +975,7 @@ class DispatchSignature(Signature):
         # resolve key
         key = self.dispatch_key(**dict(zip(self.dispatched, key)))
 
-        # require exact match
+        # require exact match - TODO: allow implicit matches for symmetry with __getitem__
         if key in self._dispatch_map:
             del self._dispatch_map[key]
         else:
@@ -1148,7 +1167,7 @@ class DispatchArguments(Arguments):
 
             # split group into vectors and rectify their dtypes
             vectors = self._extract_vectors(group)
-            vectors = self._rectify(vectors, detected)
+            vectors = self._standardize_dtype(vectors, detected)
 
             # generate a separate BoundArguments instance for each group
             bound = type(self.bound)(
@@ -1208,7 +1227,7 @@ class DispatchArguments(Arguments):
 
         # rectify dtypes
         if not self.is_composite:  # NOTE: implicitly detects type of each arg
-            self.bound.arguments |= self._rectify(vectors, self.types)
+            self.bound.arguments |= self._standardize_dtype(vectors, self.types)
 
         # mark as normalized
         self.normalized = True
@@ -1277,7 +1296,7 @@ class DispatchArguments(Arguments):
             for arg, col in df.items()
         }
 
-    def _rectify(
+    def _standardize_dtype(
         self,
         vectors: dict[str, pd.Series],
         detected: dict[str, types.VectorType]
@@ -1321,9 +1340,7 @@ class DispatchStrategy:
             f"{self.__qualname__}"
         )
 
-    # TODO: rectify -> rectify_series
-
-    def rectify(self, series: pd.Series) -> pd.Series:
+    def rectify_series(self, series: pd.Series) -> pd.Series:
         """Normalize the dtype of an output series to its detected type.
         """
         return series.astype(detect_type(series).dtype, copy=False)
@@ -1397,13 +1414,13 @@ class HomogenousDispatch(DispatchStrategy):
         """Rectify the dtype of a series to match the detected output."""
         # series
         if isinstance(result, pd.Series):
-            return self.rectify(result)
+            return self.rectify_series(result)
 
         # dataframe
-        return pd.DataFrame(
-            {col: self.rectify(series) for col, series in result.items()},
-            copy=False
-        )
+        rectified = {
+            col: self.rectify_series(series) for col, series in result.items()
+        }
+        return pd.DataFrame(rectified, copy=False)
 
     def _check_index(self, result: pd.Series | pd.DataFrame) -> None:
         """Check that the index is a subset of the original."""
@@ -1443,14 +1460,14 @@ class CompositeDispatch(DispatchStrategy):
         func: DispatchFunc,
         arguments: DispatchArguments,
         fill_na: bool,
-        convert_mixed: bool
+        rectify: bool
     ):
         super().__init__(
             func=func,
             arguments=arguments,
             fill_na=fill_na
         )
-        self.convert_mixed = convert_mixed
+        self.rectify = rectify
 
     def execute(self) -> list:
         """For each group in the input, call the dispatched implementation
@@ -1520,17 +1537,17 @@ class CompositeDispatch(DispatchStrategy):
         # series
         if as_series:
             return {
-                key: self.rectify(grp) for key, grp in groups.items()
+                key: self.rectify_series(grp) for key, grp in groups.items()
             }
 
         # dataframe
-        return {
-            key: pd.DataFrame(
-                {col: self.rectify(series) for col, series in grp.items()},
-                copy=False
-            )
-            for key, grp in groups.items()
-        }
+        rectified = {}
+        for key, grp in groups.items():
+            grp_result = {
+                col: self.rectify_series(series) for col, series in grp.items()
+            }
+            rectified[key] = pd.DataFrame(grp_result, copy=False)
+        return rectified
 
     def _check_index(
         self,
@@ -1583,7 +1600,7 @@ class CompositeDispatch(DispatchStrategy):
 
         # if all types are in same family, attempt to standardize to widest
         if (
-            self.convert_mixed and len(unique) > 1 and any(
+            self.rectify and len(unique) > 1 and any(
                 all(t2.contains(t1) for t1 in unique)
                 for t2 in {t.generic.root for t in unique}
             )
@@ -1748,7 +1765,7 @@ def topological_sort(edges: dict) -> list:
 #######################
 
 
-@dispatch("x", "y", drop_na=False, fill_na=True, convert_mixed=True)
+@dispatch("x", "y", drop_na=False, fill_na=True, rectify=True)
 def add(x, y):
     return x + y
 
