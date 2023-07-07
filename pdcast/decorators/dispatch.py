@@ -1661,9 +1661,31 @@ class DispatchArguments(Arguments):
 
 
 class DispatchStrategy:
-    """Interface for Strategy pattern dispatch pipelines.
+    """An abstract class describing an encapsulated strategy for executing a
+    dispatched function.
 
+    These are examples of the Gang of Four `Strategy pattern
+    <https://en.wikipedia.org/wiki/Strategy_pattern>`_.
 
+    Parameters
+    ----------
+    func : DispatchFunc
+        A reference to the dispatched function being executed.
+    arguments : DispatchArguments
+        The arguments to the dispatched function as a
+        :class:`DispatchArguments <pdcast.DispatchArguments>` object.
+    fill_na : bool
+        Indicates whether to replace missing values during the dispatch
+        process.
+
+    Notes
+    -----
+    :class:`DispatchStrategies <pdcast.DispatchStrategy>` are created during
+    :meth:`DispatchFunc.__call__() <pdcast.DispatchFunc.__call__>` to handle
+    the execution of a dispatched function.  The final strategy is chosen based
+    on a combination of external flags managed by the
+    :class:`DispatchFunc <pdcast.DispatchFunc>` itself as well as the detected
+    types of the dispatched arguments.
     """
 
     def __init__(
@@ -1678,14 +1700,72 @@ class DispatchStrategy:
         self.fill_na = fill_na
 
     def execute(self) -> Any:
-        """Abstract method for executing a dispatched strategy."""
+        """Execute the dispatched strategy and return the raw result.
+
+        Returns
+        -------
+        Any
+            The result of the dispatched computation without any
+            post-processing.  This is always equal to the raw output of the
+            dispatched implementation(s).
+
+        Raises
+        ------
+        NotImplementedError
+            If the strategy does not implement an ``execute()`` method.
+
+        Notes
+        -----
+        :meth:`DispatchStrategy.execute() <pdcast.DispatchStrategy.execute>` and
+        :meth:`DispatchStrategy.finalize() <pdcast.DispatchStrategy.finalize>`
+        are split into two separate methods to allow strategies to be nested
+        within one another.
+        
+        For instance, a :class:`CompositeDispatch <pdcast.CompositeDispatch>`
+        strategy essentially consists of a sequence of
+        :class:`HomogenousDispatch <pdcast.HomogenousDispatch>` operations (one
+        for each group), where the output is not finalized until the very end.
+        Separating the execution and finalization steps allows this to be done
+        in a straightforward and efficient manner.
+        """
         raise NotImplementedError(
             f"strategy does not implement an `execute()` method: "
             f"{type(self).__qualname__}"
         )
 
     def finalize(self, result: Any) -> Any:
-        """Abstract method to post-process the result of a dispatched strategy.
+        """Post-process the raw result of a dispatched computation.
+
+        Parameters
+        ----------
+        result : Any
+            The raw result of the dispatched computation, as returned by
+            :meth:`DispatchStrategy.execute() <pdcast.DispatchStrategy.execute>`.
+
+        Returns
+        -------
+        Any
+            The final result of the dispatched computation after applying the
+            appropriate post-processing steps.
+
+        Raises
+        ------
+        NotImplementedError
+            If the strategy does not implement a ``finalize()`` method.
+
+        Notes
+        -----
+        :meth:`DispatchStrategy.execute() <pdcast.DispatchStrategy.execute>` and
+        :meth:`DispatchStrategy.finalize() <pdcast.DispatchStrategy.finalize>`
+        are split into two separate methods to allow strategies to be nested
+        within one another.
+        
+        For instance, a :class:`CompositeDispatch <pdcast.CompositeDispatch>`
+        strategy essentially consists of a sequence of
+        :class:`HomogenousDispatch <pdcast.HomogenousDispatch>` operations (one
+        for each group), where the output is not finalized until the very end.
+        Separating the execution and finalization steps allows this to be done
+        in a straightforward and efficient manner.
         """
         raise NotImplementedError(
             f"strategy does not implement a `finalize()` method: "
@@ -1693,13 +1773,68 @@ class DispatchStrategy:
         )
 
     def rectify_series(self, series: pd.Series) -> pd.Series:
-        """Normalize the dtype of an output series to its detected type.
+        """Normalize the ``dtype`` of a series to its detected type.
+
+        Parameters
+        ----------
+        series : pd.Series
+            The series to rectify.
+
+        Returns
+        -------
+        pd.Series
+            The rectified series.
+
+        Notes
+        -----
+        This method is called on both the input to and output from a dispatched
+        implementation.  Re-labeling the data in this way bypasses a whole
+        category of potential bugs that can arise when working with ambiguous
+        data, such as those contained within a ``dtype: object`` array or other
+        iterable.
+
+        Rectifying the ``dtype`` of an array is also a significant
+        optimization, since it allows :func:`detect_type <pdcast.detect_type>`
+        to run in constant time throughout the dispatch process, including
+        within the dispatched implementations themselves.
         """
         return series.astype(detect_type(series).dtype, copy=False)
 
     def replace_na(self, series: pd.Series) -> pd.Series:
-        """Abstract method to replace missing values in the result of a
-        dispatched strategy.
+        """Fill in missing values based on the final index of a dispatched
+        series.
+
+        Parameters
+        ----------
+        series : pd.Series
+            The series to pad with missing values.
+
+        Returns
+        -------
+        pd.Series
+            The series with missing values filled in.
+
+        Notes
+        -----
+        This method is called whenever vectorized input is given to a
+        :class:`DispatchFunc <pdcast.DispatchFunc>` with ``fill_na=True``.
+
+        The way it works is by comparing the dispatched implementation's output
+        index to that of the original arguments.  Since the input index is
+        always normalized to a unique :class:`RangeIndex <pandas.RangeIndex>`,
+        it should never contain any gaps between indices.  However, if missing
+        values were removed during the dispatch process (via ``drop_na=True``),
+        or if the dispatched implementation itself removes values from its
+        input, then gaps can be introduced to the index wherever this occurs.
+        When this method is called, it searches for these gaps and dynamically
+        fills them with the appropriate
+        :attr:`na_value <pdcast.ScalarType.na_value>`.
+
+        This allows dispatched implementations to be written without having to
+        consider missing values at any point, which can significantly simplify
+        their logic in many cases.  What's more, they can inject missing values
+        into the final output simply by dropping values from their input, which
+        maintains this condition throughout the dispatch process.
         """
         assert self.arguments.original_index is not None
 
@@ -1718,6 +1853,13 @@ class DispatchStrategy:
             dtype=nullable.dtype
         )
 
+        # TODO: When inserting into an ObjectArray, the values will be
+        # converted to the output using cast().  By using dtype: object, we
+        # can avoid this implicit conversion.  However, this also means that
+        # in the case of integers, for instance, we might incur an additional
+        # loop to convert the values to astype() them to the appropriate dtype.
+        # We should check the performance in both cases for int64 vs int[python]
+
         # merge result into the empty series
         result[series.index] = series
         # return result.astype(nullable.dtype, copy=False)  # TODO: same as above
@@ -1725,16 +1867,54 @@ class DispatchStrategy:
 
 
 class HomogenousDispatch(DispatchStrategy):
-    """Dispatch homogenous inputs to the appropriate implementation."""
+    """Dispatch homogenous inputs to the appropriate implementation.
+
+    This strategy is used to perform a 1-to-1 dispatch between a single group
+    of homogenous inputs and a single dispatched implementation.
+    """
 
     def execute(self) -> Any:
-        """Call the dispatched function with the bound arguments."""
+        """Search for a dispatched implementation that matches the types of the
+        arguments and execute it.
+
+        Returns
+        -------
+        Any
+            The raw result of the dispatched computation, directly from the
+            chosen implementation.
+
+        Notes
+        -----
+        See the :ref:`activity diagram <dispatch.activity_diagram>` for a
+        step-by-step overview of the dispatch process.
+        """
         bound = self.arguments
         return self.func[bound.key](*bound.args, **bound.kwargs)
 
     def finalize(self, result: Any) -> Any:
-        """Infer mode of operation (filter/transform/aggregate) from return
-        type and adjust result accordingly.
+        """Process the result of a dispatched computation, converting it into
+        its final output.
+
+        Parameters
+        ----------
+        result : Any
+            The raw result of the dispatched computation, directly from the
+            chosen implementation.
+
+        Returns
+        -------
+        Any
+            The final result of the dispatched computation, after applying any
+            post-processing steps.
+
+        Notes
+        -----
+        This method is only called once at the very end of the dispatch
+        process.  It is responsible for analyzing the final output and applying
+        the correct filter/transform/aggregate logic based on its return type.
+
+        See the :ref:`activity diagram <dispatch.activity_diagram>` for a
+        step-by-step overview of the dispatch process.
         """
         # transform
         if isinstance(result, (pd.Series, pd.DataFrame)):
@@ -1768,7 +1948,7 @@ class HomogenousDispatch(DispatchStrategy):
         self,
         result: pd.Series | pd.DataFrame
     ) -> pd.Series | pd.DataFrame:
-        """Rectify the dtype of a series to match the detected output."""
+        """Convert the output ``dtype`` to match its inferred type."""
         # series
         if isinstance(result, pd.Series):
             return self.rectify_series(result)
@@ -1780,7 +1960,7 @@ class HomogenousDispatch(DispatchStrategy):
         return pd.DataFrame(rectified, copy=False)
 
     def _check_index(self, result: pd.Series | pd.DataFrame) -> None:
-        """Check that the index is a subset of the original."""
+        """Check that the output index is a subset of the original."""
         assert self.arguments.frame is not None
 
         if not result.index.difference(self.arguments.frame.index).empty:
@@ -1799,7 +1979,8 @@ class HomogenousDispatch(DispatchStrategy):
         self,
         result: pd.Series | pd.DataFrame
     ) -> pd.Series | pd.DataFrame:
-        """Replace missing values.
+        """Replace any missing indices with the appropriate
+        :attr:`na_value <pdcast.ScalarType.na_value>`.
         """
         # series
         if isinstance(result, pd.Series):
@@ -1813,7 +1994,12 @@ class HomogenousDispatch(DispatchStrategy):
 
 
 class CompositeDispatch(DispatchStrategy):
-    """Dispatch composite inputs to the appropriate implementations."""
+    """Dispatch composite inputs to the appropriate implementations.
+
+    This strategy is used to perform many-to-many dispatch between multiple
+    groups of composite inputs and a single dispatched implementation for each
+    group.
+    """
 
     def __init__(
         self,
@@ -1829,9 +2015,20 @@ class CompositeDispatch(DispatchStrategy):
         )
         self.rectify = rectify
 
-    def execute(self) -> list:
-        """For each group in the input, call the dispatched implementation
-        with the bound arguments.
+    def execute(self) -> list[tuple[tuple[types.VectorType, ...], Any]]:
+        """For each group in the input, search for an appropriate dispatched
+        implementation and execute it.
+
+        Returns
+        -------
+        list[tuple[tuple[types.VectorType, ...], Any]]
+            A list of results from the dispatched computations, organized into
+            a sequence of ``(key, result)`` tuples.
+
+        Notes
+        -----
+        See the :ref:`activity diagram <dispatch.activity_diagram>` for a
+        step-by-step overview of the dispatch process.
         """
         results = []
 
@@ -1846,7 +2043,35 @@ class CompositeDispatch(DispatchStrategy):
 
         return results
 
-    def finalize(self, result: list) -> Any:
+    def finalize(
+        self,
+        result: list[tuple[tuple[types.VectorType, ...], Any]]
+    ) -> Any:
+        """Process the result of the dispatched computations, converting them
+        into the final output.
+
+        Parameters
+        ----------
+        result : list[tuple[tuple[types.VectorType, ...], Any]]
+            A list containing the raw results of the dispatched computations
+            along with their corresponding input keys, packaged as
+            ``(key, result)`` tuples.
+
+        Returns
+        -------
+        Any
+            The final result of the dispatched computation, after applying any
+            post-processing steps.
+
+        Notes
+        -----
+        This method is only called once at the very end of the dispatch
+        process.  It is responsible for analyzing the final output and applying
+        the correct filter/transform/aggregate logic based on its return type.
+
+        See the :ref:`activity diagram <dispatch.activity_diagram>` for a
+        step-by-step overview of the dispatch process.
+        """
         groups = dict(result)
 
         # transform
@@ -1894,8 +2119,7 @@ class CompositeDispatch(DispatchStrategy):
         groups: dict[tuple[types.VectorType, ...], pd.Series | pd.DataFrame],
         as_series: bool
     ) -> dict[tuple[types.VectorType, ...], pd.Series | pd.DataFrame]:
-        """Rectify each group to match the detected output.
-        """
+        """Convert each group's output ``dtype`` to match its inferred type."""
         # series
         if as_series:
             return {
@@ -1917,7 +2141,7 @@ class CompositeDispatch(DispatchStrategy):
         groups: dict[tuple[types.VectorType, ...], pd.Series | pd.DataFrame]
     ) -> pd.Index:
         """Validate and merge a collection of transformed Series/DataFrame
-        indices.
+        indices, and check that they are a subset of the input index.
         """
         assert self.arguments.frame is not None
 
@@ -2037,19 +2261,55 @@ class CompositeDispatch(DispatchStrategy):
         return result
 
 
-def supercedes(node1: tuple, node2: tuple) -> bool:
+def supercedes(
+    node1: tuple[types.VectorType, ...],
+    node2: tuple[types.VectorType, ...]
+) -> bool:
     """Check if ``node1`` is consistent with and strictly more specific than
     ``node2``.
 
+    Parameters
+    ----------
+    node1 : tuple[types.VectorType, ...]
+        The first node to compare.
+    node2 : tuple[types.VectorType, ...]
+        The second node to compare.
+
+    Returns
+    -------
+    bool
+        ``True`` if ``node1`` is more specific than ``node2``.  ``False``
+        otherwise.
+
+    Notes
+    -----
     This uses the same hierarchical membership checks as the stand-alone
     :func:`typecheck() <pdcast.typecheck>` function.
     """
     return all(x.contains(y) for x, y in zip(node2, node1))
 
 
-def edge(node1: tuple, node2: tuple) -> bool:
+def edge(
+    node1: tuple[types.VectorType, ...],
+    node2: tuple[types.VectorType, ...]
+) -> bool:
     """Determine if ``node1`` should be checked before ``node2``.
 
+    Parameters
+    ----------
+    node1 : tuple[types.VectorType, ...]
+        The first node to compare.
+    node2 : tuple[types.VectorType, ...]
+        The second node to compare.
+
+    Returns
+    -------
+    bool
+        ``True`` if ``node1`` should be topologically ordered before ``node2``.
+        ``False`` otherwise.
+
+    Notes
+    -----
     Ties are broken by recursively backing off the last element of both nodes.
     Whichever one is more specific in its earlier elements (from left to right)
     will always be preferred.
