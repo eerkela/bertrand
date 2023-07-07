@@ -30,6 +30,7 @@ Property
 """
 from __future__ import annotations
 from types import MappingProxyType
+import typing
 from typing import Any, Callable
 import weakref
 
@@ -125,7 +126,7 @@ class Attachable(FunctionDecorator):
 
     def __init__(self, func: Callable):
         super().__init__(func=func)
-        self._attached = weakref.WeakKeyDictionary()
+        self._attached: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
     @property
     def attached(self) -> MappingProxyType:
@@ -268,6 +269,7 @@ class Attachable(FunctionDecorator):
         # default to name of wrapped callable
         if not name:
             name = self.__wrapped__.__name__
+            name = typing.cast(str, name)  # mypy thinks this can still be None
 
         # check pattern is valid
         valid_patterns = ("property", "method", "classmethod", "staticmethod")
@@ -535,6 +537,8 @@ class VirtualAttribute(FunctionDecorator):
                 ...
             RuntimeError: type object 'MyClass' has no attribute 'bar'
         """
+        # pylint: disable=protected-access
+
         # replace original implementation
         if isinstance(self._parent, Namespace):
             delattr(type(self._parent), self.__name__)
@@ -564,7 +568,7 @@ class VirtualAttribute(FunctionDecorator):
     def __get__(
         self,
         instance: Any,
-        owner: type = None
+        owner: type | None = None
     ) -> VirtualAttribute:
         """Access the attribute via a dotted lookup.
 
@@ -872,7 +876,7 @@ class Namespace:
     def __get__(
         self,
         instance: Any,
-        owner: type = None
+        owner: type | None = None
     ) -> Namespace:
         """Access the :class:`Namespace <pdcast.Namespace>` via a dotted
         lookup.
@@ -957,7 +961,7 @@ class InstanceMethod(VirtualAttribute):
     def __get__(
         self,
         instance: Any,
-        owner: type = None
+        owner: type | None = None
     ) -> InstanceMethod:
         """See
         :meth:`VirtualAttribute.__get__() <pdcast.VirtualAttribute.__get__>`.
@@ -1019,7 +1023,7 @@ class ClassMethod(VirtualAttribute):
     def __get__(
         self,
         instance: Any,
-        owner: type = None
+        owner: type | None = None
     ) -> ClassMethod:
         """See
         :meth:`VirtualAttribute.__get__() <pdcast.VirtualAttribute.__get__>`.
@@ -1081,7 +1085,7 @@ class StaticMethod(VirtualAttribute):
     def __get__(
         self,
         instance: Any,
-        owner: type = None
+        owner: type | None = None
     ) -> StaticMethod:
         """See
         :meth:`VirtualAttribute.__get__() <pdcast.VirtualAttribute.__get__>`.

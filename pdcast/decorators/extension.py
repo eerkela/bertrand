@@ -144,7 +144,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
         return MappingProxyType(self._signature.validators)
 
     @property
-    def settings(self) -> MappingProxyType:
+    def settings(self) -> Mapping[str, Any]:
         """A mapping of all managed arguments to their current values.
 
         Returns
@@ -181,7 +181,7 @@ class ExtensionFunc(FunctionDecorator, threading.local):
 
     def argument(
         self,
-        func: Callable = None,
+        func: Callable | None = None,
         *,
         name: str | None = None,
         default: Any = EMPTY
@@ -502,11 +502,11 @@ class ExtensionSignature(Signature):
         self.accepts_kwargs = any(
             par.kind == par.VAR_KEYWORD for par in self.parameters
         )
-        self.defaults = {
+        self.defaults: dict[str, Any] = {
             par.name: par.default for par in self.parameters
             if par.default is not EMPTY
         }
-        self.validators = {}
+        self.validators: dict[str, Callable] = {}
 
     @property
     def settings(self) -> Mapping[str, Any]:

@@ -9,11 +9,11 @@ from typing import Any, Callable, Mapping
 
 
 # shortcut for inspect.Parameter.empty
-EMPTY = inspect.Parameter.empty
+EMPTY: type = inspect.Parameter.empty
 
 
 # shortcut for inspect.Parameter.kind
-KINDS = {
+KINDS: dict[str, inspect._ParameterKind] = {
     "POSITIONAL_ONLY": inspect.Parameter.POSITIONAL_ONLY,
     "POSITIONAL_OR_KEYWORD": inspect.Parameter.POSITIONAL_OR_KEYWORD,
     "VAR_POSITIONAL": inspect.Parameter.VAR_POSITIONAL,
@@ -90,33 +90,6 @@ class FunctionDecorator:
         """Invoke the wrapped object's ``__call__()`` method."""
         return self.__wrapped__(*args, **kwargs)
 
-    def __dir__(self) -> list:
-        """Include attributes of wrapped object."""
-        result = dir(type(self))
-        result += [k for k in self.__dict__ if k not in result]
-        result += [k for k in dir(self.__wrapped__) if k not in result]
-        return result
-
-    def __str__(self) -> str:
-        """Pass ``str()`` calls to wrapped object."""
-        return str(self.__wrapped__)
-
-    def __repr__(self) -> str:
-        """Pass ``repr()`` calls to wrapped object."""
-        return repr(self.__wrapped__)
-
-    def __next__(self) -> Any:
-        """Pass ``next()`` calls to wrapped object."""
-        return next(self.__wrapped__)
-
-    def __iter__(self):
-        """Pass ``iter()`` calls to wrapped object."""
-        return iter(self.__wrapped__)
-
-    def __len__(self) -> int:
-        """Pass ``len()`` calls to wrapped object."""
-        return len(self.__wrapped__)
-
     def __getitem__(self, key) -> Any:
         """Pass indexing to wrapped object."""
         return self.__wrapped__.__getitem__(key)
@@ -132,7 +105,20 @@ class FunctionDecorator:
         """Pass ``in`` keyword to wrapped object."""
         return item in self.__wrapped__
 
-    # TODO: math, comp operators, etc.
+    def __dir__(self) -> list:
+        """Include attributes of wrapped object."""
+        result = dir(type(self))
+        result += [k for k in self.__dict__ if k not in result]
+        result += [k for k in dir(self.__wrapped__) if k not in result]
+        return result
+
+    def __str__(self) -> str:
+        """Pass ``str()`` calls to wrapped object."""
+        return str(self.__wrapped__)
+
+    def __repr__(self) -> str:
+        """Pass ``repr()`` calls to wrapped object."""
+        return repr(self.__wrapped__)
 
 
 class Signature:
@@ -147,9 +133,9 @@ class Signature:
     """
 
     def __init__(self, func: Callable):
-        self.func_name = func.__qualname__
-        self.sig = inspect.signature(func)
-        self.original = self.sig  # remember the original signature
+        self.func_name: str = func.__qualname__
+        self.sig: inspect.Signature = inspect.signature(func)
+        self.original: inspect.Signature = self.sig  # remember original sig
 
     @property
     def parameter_map(self) -> Mapping[str, inspect.Parameter]:
@@ -318,14 +304,14 @@ class Signature:
             raise ValueError(f"Parameter {name} already exists")
 
         try:
-            kind = KINDS[kind]
+            par_kind = KINDS[kind]
         except KeyError as err:
             raise ValueError(f"Invalid kind: {repr(kind)}") from err
 
         # construct Parameter
         parameter = inspect.Parameter(
             name=name,
-            kind=kind,
+            kind=par_kind,
             default=default,
             annotation=annotation
         )
@@ -333,7 +319,7 @@ class Signature:
         # respect Python argument order based on kind.
         # NOTE: we count from the right to maintain lexicographic order.
         reverse = reversed(list(enumerate(self.parameters)))
-        generator = (idx + 1 for idx, par in reverse if par.kind <= kind)
+        generator = (idx + 1 for idx, par in reverse if par.kind <= par_kind)
         index = next(generator, 0)
 
         # insert into parameters
@@ -344,7 +330,7 @@ class Signature:
     def set_parameter(
         self,
         _name: str,
-        kind: str = None,
+        kind: str | None = None,
         **kwargs
     ) -> None:
         """Modify a parameter by name.
@@ -402,8 +388,8 @@ class Signature:
 
         # reorder the signature to respect the new kind
         else:
-            kind = KINDS[kind]
-            param = self.parameter_map[_name].replace(kind=kind, **kwargs)
+            par_kind = KINDS[kind]
+            param = self.parameter_map[_name].replace(kind=par_kind, **kwargs)
 
             # remove parameter
             index = self.parameter_index(_name)
@@ -413,8 +399,8 @@ class Signature:
 
             # add parameter
             reverse = reversed(list(enumerate(parameters)))
-            generator = (idx + 1 for idx, par in reverse if par.kind <= kind)
-            index = next(generator, 0)
+            gen = (idx + 1 for idx, par in reverse if par.kind <= par_kind)
+            index = next(gen, 0)
             self.parameters = (
                 parameters[:index] + (param,) + parameters[index:]
             )
@@ -669,7 +655,7 @@ class Signature:
             'foo(bar, baz, **kwargs)'
         """
         # configure replacement kwargs
-        kwargs = {}
+        kwargs: dict[str, type] = {}
         if not annotations:
             kwargs["annotation"] = EMPTY
         if not defaults:

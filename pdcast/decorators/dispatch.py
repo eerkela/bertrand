@@ -1,32 +1,28 @@
-"""EXPERIMENTAL - NOT CURRENTLY FUNCTIONAL
-
-This module describes an ``@dispatch`` decorator that transforms an
-ordinary Python function into one that dispatches to a method attached to the
-inferred type of its first argument.
+"""This module describes an ``@dispatch`` decorator that implements multiple
+dispatch based on the inferred type of a function's arguments.
 """
 from __future__ import annotations
 import inspect
 import itertools
 import threading
 from types import MappingProxyType
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Hashable, Iterator, Mapping
 import warnings
 
 import numpy as np
 import pandas as pd
 
-from pdcast.detect import detect_type
-from pdcast.resolve import resolve_type
+from pdcast.detect import detect_type  # type: ignore
+from pdcast.resolve import resolve_type  # type: ignore
 from pdcast import types
 from pdcast.util.structs import LRUDict
-from pdcast.util.type_hints import dtype_like, type_specifier
+from pdcast.util.type_hints import type_specifier
 
-from .base import KINDS, Arguments, FunctionDecorator, Signature
+from .base import Arguments, FunctionDecorator, Signature
 
 
 # TODO: emit a warning whenever an implementation is replaced.
-# -> use a simplefilter when the module is loaded, or implement None as a
-# wildcard.  This would get expanded to registry.roots at runtime.
+# -> use a simplefilter when the convert/ module is loaded.
 
 
 # TODO: None wildcard value?
@@ -592,6 +588,8 @@ class DispatchFunc(FunctionDecorator):
         --------
         See the :ref:`API docs <dispatch>` for example usage.
         """
+        strategy: DispatchStrategy
+
         # bind arguments
         bound = self._signature(*args, **kwargs)
 
@@ -627,7 +625,7 @@ class DispatchFunc(FunctionDecorator):
         try:
             return strategy.finalize(strategy.execute())
         finally:
-          self._flags.recursive = False
+            self._flags.recursive = False
 
     def __getitem__(
         self,
@@ -794,6 +792,8 @@ class DispatchSignature(Signature):
         cache_size: int,
         drop_na: bool
     ):
+        self._dispatch_map: dict[tuple[types.VectorType, ...], Callable]
+
         super().__init__(func=func)
         missing = [arg for arg in dispatched if arg not in self.parameter_map]
         if missing:
@@ -881,12 +881,15 @@ class DispatchSignature(Signature):
             >>> foo._signature.dispatch_map
             mappingproxy({(Int32Type(), Int32Type()): <function int32_foo at ...>, (IntegerType(), IntegerType()): <function integer_foo at ...>})
         """
-        keys = tuple(self._dispatch_map)
+        edges: dict[
+            tuple[types.VectorType, ...],
+            set[tuple[types.VectorType, ...]]
+        ]
 
         # draw edges between keys according to their specificity
-        edges = {key: set() for key in keys}
-        for key1 in keys:
-            for key2 in keys:
+        edges = {key: set() for key in self._dispatch_map}
+        for key1 in self._dispatch_map:
+            for key2 in self._dispatch_map:
                 if edge(key1, key2):
                     edges[key1].add(key2)
 
@@ -1380,7 +1383,7 @@ class DispatchArguments(Arguments):
         self.drop_na = drop_na
 
         # extract dispatched arguments
-        self.dispatched = {
+        self.dispatched: dict[str, Any] = {
             arg: bound.arguments[arg] for arg in self.signature.dispatched
         }
 
@@ -1389,10 +1392,10 @@ class DispatchArguments(Arguments):
 
         # cached in .normalize()
         self.normalized = normalized
-        self.series_names = {}
-        self.frame = None
-        self.original_index = None
-        self.hasnans = None
+        self.series_names: dict[str, Hashable] = {}
+        self.frame: pd.DataFrame | None = None
+        self.original_index: pd.Index | None = None
+        self.hasnans: bool | None = None
 
     @property
     def types(self) -> dict[str, types.Type]:
@@ -1484,6 +1487,8 @@ class DispatchArguments(Arguments):
         applying a ``HomogenousDispatch`` strategy to each one independently.
         The results are then collected and combined into a single result.
         """
+        assert self.frame is not None
+
         if not self.is_composite:
             raise RuntimeError("DispatchArguments are not composite")
 
@@ -1562,7 +1567,7 @@ class DispatchArguments(Arguments):
             self._dropna()
 
         # split DataFrame into vectors and replace original args
-        vectors = self._extract_vectors(self.frame)
+        vectors = self._extract_vectors(self.frame)  # type: ignore
         self.bound.arguments |= vectors
 
         # rectify dtypes
@@ -1579,7 +1584,7 @@ class DispatchArguments(Arguments):
         The resulting frame is accessible under ``DispatchArguments.frame``.
         """
         # extract vectors
-        vectors = {}
+        vectors: dict[str, pd.Series | np.ndarray] = {}
         for arg, value in self.dispatched.items():
             if isinstance(value, pd.Series):
                 vectors[arg] = value
@@ -1613,6 +1618,8 @@ class DispatchArguments(Arguments):
         The previous index is retained under
         ``DispatchArguments.original_index``.
         """
+        assert self.frame is not None
+
         self.original_index = self.frame.index
         if not isinstance(self.original_index, pd.RangeIndex):
             self.frame.index = pd.RangeIndex(0, self.frame.shape[0])
@@ -1624,6 +1631,8 @@ class DispatchArguments(Arguments):
         :func:`@dispatch() <pdcast.dispatch>`.  Otherwise, missing values will
         be grouped and processed according to a ``CompositeDispatch`` strategy.
         """
+        assert self.frame is not None
+
         original_length = self.frame.shape[0]
         self.frame = self.frame.dropna(how="any")
         self.hasnans = self.frame.shape[0] != original_length
@@ -1632,7 +1641,10 @@ class DispatchArguments(Arguments):
         """Split the frame back into individual vectors."""
         # replace the original series name if one was given
         return {
-            arg: col.rename(self.series_names.get(arg, None), copy=False)
+            arg: col.rename(  # type: ignore
+                self.series_names.get(arg, None),  # type: ignore
+                copy=False
+            )
             for arg, col in df.items()
         }
 
@@ -1669,7 +1681,7 @@ class DispatchStrategy:
         """Abstract method for executing a dispatched strategy."""
         raise NotImplementedError(
             f"strategy does not implement an `execute()` method: "
-            f"{self.__qualname__}"
+            f"{type(self).__qualname__}"
         )
 
     def finalize(self, result: Any) -> Any:
@@ -1677,7 +1689,7 @@ class DispatchStrategy:
         """
         raise NotImplementedError(
             f"strategy does not implement a `finalize()` method: "
-            f"{self.__qualname__}"
+            f"{type(self).__qualname__}"
         )
 
     def rectify_series(self, series: pd.Series) -> pd.Series:
@@ -1689,6 +1701,8 @@ class DispatchStrategy:
         """Abstract method to replace missing values in the result of a
         dispatched strategy.
         """
+        assert self.arguments.original_index is not None
+
         # get nullable type for series
         nullable = detect_type(series).make_nullable()
 
@@ -1724,6 +1738,9 @@ class HomogenousDispatch(DispatchStrategy):
         """
         # transform
         if isinstance(result, (pd.Series, pd.DataFrame)):
+            assert self.arguments.frame is not None
+            assert self.arguments.original_index is not None
+
             # rectify output dtype
             result = self._standardize_dtype(result)
 
@@ -1764,11 +1781,14 @@ class HomogenousDispatch(DispatchStrategy):
 
     def _check_index(self, result: pd.Series | pd.DataFrame) -> None:
         """Check that the index is a subset of the original."""
+        assert self.arguments.frame is not None
+
         if not result.index.difference(self.arguments.frame.index).empty:
             sig = [f"{k}: {str(v)}" for k, v in self.arguments.types.items()]
             warn_msg = (
-                f"index mismatch in '{self.__qualname__}({', '.join(sig)})': "
-                f"final index is not a subset of starting index"
+                f"index mismatch in "
+                f"'{type(self).__qualname__}({', '.join(sig)})': final index "
+                f"is not a subset of starting index"
             )
             warnings.warn(warn_msg, UserWarning, stacklevel=4)
 
@@ -1841,10 +1861,12 @@ class CompositeDispatch(DispatchStrategy):
 
             # merge series and replace missing values
             if as_series:
-                # TODO: include a flag to convert mixed
-                return self._merge_series(groups, result_index=result_index)
+                return self._merge_series(
+                    groups,  # type: ignore
+                    result_index=result_index
+                )
 
-            # check for column mismatch
+            # returning as dataframe - check for column mismatch
             columns = {tuple(df.columns) for df in groups.values()}
             if len(columns) > 1:
                 raise ValueError(
@@ -1863,8 +1885,8 @@ class CompositeDispatch(DispatchStrategy):
         # aggregate
         df = {}
         for idx, arg_name in enumerate(self.arguments.dispatched):
-            df[arg_name] = [key[idx] for key in groups]
-        df[f"{self.func.__name__}()"] = list(groups.values())
+            df[arg_name] = [key[idx] for key in groups]  # type: ignore
+        df[f"{self.func.__name__}()"] = list(groups.values())  # type: ignore
         return pd.DataFrame(df, copy=False)
 
     def _standardize_dtype(
@@ -1877,7 +1899,8 @@ class CompositeDispatch(DispatchStrategy):
         # series
         if as_series:
             return {
-                key: self.rectify_series(grp) for key, grp in groups.items()
+                key: self.rectify_series(grp)  # type: ignore
+                for key, grp in groups.items()
             }
 
         # dataframe
@@ -1887,7 +1910,7 @@ class CompositeDispatch(DispatchStrategy):
                 col: self.rectify_series(series) for col, series in grp.items()
             }
             rectified[key] = pd.DataFrame(grp_result, copy=False)
-        return rectified
+        return rectified  # type: ignore
 
     def _check_index(
         self,
@@ -1896,6 +1919,8 @@ class CompositeDispatch(DispatchStrategy):
         """Validate and merge a collection of transformed Series/DataFrame
         indices.
         """
+        assert self.arguments.frame is not None
+
         # merge indices
         group_iter = iter(groups.values())
         index = next(group_iter).index
@@ -1907,7 +1932,7 @@ class CompositeDispatch(DispatchStrategy):
                     f"{k}: {str(v)}" for k, v in self.arguments.types.items()
                 ]
                 warn_msg = (
-                    f"index collision in '{self.__qualname__}("
+                    f"index collision in '{type(self).__qualname__}("
                     f"{', '.join(sig)})': 2 or more implementations returned "
                     f"overlapping indices"
                 )
@@ -1918,8 +1943,9 @@ class CompositeDispatch(DispatchStrategy):
         if not index.difference(self.arguments.frame.index).empty:
             sig = [f"{k}: {str(v)}" for k, v in self.arguments.types.items()]
             warn_msg = (
-                f"index mismatch in '{self.__qualname__}({', '.join(sig)})': "
-                f"final index is not a subset of starting index"
+                f"index mismatch in '"
+                f"{type(self).__qualname__}({', '.join(sig)})': final index "
+                f"is not a subset of starting index"
             )
             warnings.warn(warn_msg, UserWarning, stacklevel=4)
 
@@ -1935,6 +1961,9 @@ class CompositeDispatch(DispatchStrategy):
         result_index: pd.Index
     ) -> pd.Series:
         """Merge the computed series results by index."""
+        assert self.arguments.frame is not None
+        assert self.arguments.original_index is not None
+
         # get unique output types
         unique = set(detect_type(series) for series in groups.values())
 
@@ -2036,18 +2065,18 @@ def edge(node1: tuple, node2: tuple) -> bool:
     )
 
 
-def topological_sort(edges: dict) -> list:
+def topological_sort(edges: dict[Any, Any]) -> list[Any]:
     """Topological sort algorithm by Kahn (1962).
 
     Parameters
     ----------
-    edges : dict
+    edges : dict[Any, Any]
         A dictionary of the form ``{A: {B, C}}`` where ``B`` and ``C`` depend
         on ``A``.
 
     Returns
     -------
-    list
+    list[Any]
         An ordered list of nodes that satisfy the dependencies of ``edges``.
 
     Examples
@@ -2066,7 +2095,7 @@ def topological_sort(edges: dict) -> list:
     edge_count = sum(len(dependencies) for dependencies in edges.values())
 
     # invert edges: {A: {B, C}} -> {B: {A}, C: {A}}
-    inverted = {}
+    inverted: dict[Any, Any] = {}
     for node, dependencies in edges.items():
         for dependent in dependencies:
             inverted.setdefault(dependent, set()).add(node)
