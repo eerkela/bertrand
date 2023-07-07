@@ -524,7 +524,7 @@ class DispatchFunc(FunctionDecorator):
         converts them into properly-formatted
         :class:`pandas.Series <pandas.Series>` objects.  These are always
         normalized and labeled with an appropriate ``dtype`` before being
-        passed into the dispatched function itself.  Scalars are passed through
+        passed into the function itself.  Scalars are always passed through
         as-is.
 
         The steps that are taken to normalize input vectors are as follows:
@@ -533,7 +533,7 @@ class DispatchFunc(FunctionDecorator):
                 :class:`pandas.Series <pandas.Series>` object if it is not one
                 already.  If a vector does not have an explicit ``dtype``, then
                 it is treated as a ``dtype: object`` series.
-            #.  Bind each :class:`Series <pandas.Series>` into a single
+            #.  Bind each :class:`Series <pandas.Series>` into a shared
                 :class:`DataFrame <pandas.DataFrame>` with a column for each
                 argument.
             #.  Normalize the frame's collective index to be a
@@ -544,47 +544,49 @@ class DispatchFunc(FunctionDecorator):
                 in one or more columns.  This creates gaps in the index, which
                 are used to identify the locations of missing values later on
                 in the dispatch process.  If ``drop_na=False``, then we skip
-                this step and treat the missing values as a separate group.
+                this step and treat the missing values as a separate group
+                instead.
             #.  Detect the type of each vector and label it accordingly.  This
                 allows :func:`detect_type() <pdcast.detect_type>` to infer each
                 vector's type in constant time within the dispatched context.
                 If any of the vectors contain data of mixed type, then the
                 whole frame is split into groups based on the observed type at
                 every index.  Each group is then passed through individually
-                and combined afterwards.
-            #.  Break the frame back into its constituent vectors, replacing
-                their original values in ``*args`` and ``**kwargs``.
+                and combined afterwards according to its index.
 
         The dispatched implementation is then invoked with the normalized
         arguments, and its return value is analyzed for aggregations,
         transformations, and filtrations.  These are determined based on the
-        type of the return value.
+        return type.
 
             *   A pandas :class:`Series <pandas.Series>` or
                 :class:`DataFrame <pandas.DataFrame>` signifies a
-                transformation.  Upon exiting the dispatched context, any
-                missing indices will be replaced with the appropriate
-                :attr:`na_value <pdcast.ScalarType.na_value>` if
-                ``fill_na=True``.  If the arguments defined a custom index,
-                then it will be replaced, and the output ``dtype`` will be
-                labeled with the type of its elements.
+                transformation.  If ``fill_na=True``, then upon exiting the
+                dispatched context, any missing indices will be replaced with
+                the appropriate :attr:`na_value <pdcast.ScalarType.na_value>`.
+                Otherwise, the concatenated output will be used as-is.  If the
+                arguments defined a custom index, then it will be replaced at
+                this point, and the output ``dtype`` will always correspond to
+                the type of the resulting elements.
             *   :data:`None <python:None>` signifies a filtration.  In most
-                cases, the returned value will be passed through as-is.
-                However, if the input includes a vector of mixed type, then the
-                group will be removed from the output
-                :class:`DataFrame <pdcast.DataFrame>`.
+                cases, this will be passed through as-is.  However, if the
+                input includes a vector of mixed type, then the group will be
+                removed from the output :class:`DataFrame <pdcast.DataFrame>`.
             *   Anything else signifies an aggreggation.  If the input data are
-                homogenous, then the result will be returned as-is.  Otherwise,
-                the result will be a :class:`DataFrame <pandas.DataFrame>` with
-                columns for each of the
-                :attr:`dispatched <pdcast.DispatchFunc.dispatched>` arguments.
-                These contain the observed type of the argument for each group,
-                and the final column contains the result of the computation for
-                that group.
+                homogenous, then the result will be returned immediately.
+                Otherwise, the result will be a
+                :class:`DataFrame <pandas.DataFrame>` with c0olumns for each of
+                the :attr:`dispatched <pdcast.DispatchFunc.dispatched>`
+                arguments.  These contain the observed type of the argument for
+                each group, and the final column contains the result of the
+                computation for that group.
 
         These behaviors can be customized using the keyword arguments to
         :func:`@dispatch() <pdcast.dispatch>`.  See the
         :ref:`documentation <dispatch.missing_values>` for more details.
+
+        A full :ref:`activity diagram <dispatch.activity_diagram>` describing
+        the dispatch process is also provided for clarity.
 
         Examples
         --------
@@ -638,7 +640,9 @@ class DispatchFunc(FunctionDecorator):
         ----------
         key : type_specifier | tuple[type_specifier, ...]
             The input types associated with a particular implementation.
-            Multiple types can be given by separating them with commas.
+            Multiple types can be given by separating them with commas, and
+            they must be given in the same order as the arguments supplied to
+            :func:`@dispatch() <pdcast.dispatch>`.
 
         Returns
         -------
@@ -646,7 +650,7 @@ class DispatchFunc(FunctionDecorator):
             The implementation that will be chosen when the function is invoked
             with the given type(s).  If no specific implementation is found
             for the associated types, then a reference to the default
-            implementation is returned.
+            implementation is returned instead.
 
         See Also
         --------
@@ -691,7 +695,15 @@ class DispatchFunc(FunctionDecorator):
         ----------
         key : type_specifier | tuple[type_specifier, ...]
             The input types associated with a particular implementation.
-            Multiple types can be given by separating them with commas.
+            Multiple types can be given by separating them with commas, and
+            they must be given in the same order as the arguments supplied to
+            :func:`@dispatch() <pdcast.dispatch>`.
+
+        Raises
+        ------
+        KeyError
+            If the given type(s) are not associated with any
+            :meth:`overloaded <pdcast.DispatchFunc.overload>` implementation.
 
         See Also
         --------
@@ -704,20 +716,75 @@ class DispatchFunc(FunctionDecorator):
 
         Notes
         -----
-        No implicit hierarchical checks are performed when removing an
-        implementation.  Types must be given explicitly, exactly as they were
-        given in the implementation's
-        :meth:`@overload() <pdcast.DispatchFunc.overload>` decorator.  This is
-        to prevent impl
+        Just like :meth:`__getitem__() <pdcast.DispatchFunc.__getitem__>`, this
+        method always removes the same implementation that is chosen when the
+        dispatch mechanism is actually executed.  This means that it does not
+        require an exact match for the input types.  Instead, it will always
+        remove the most specific implementation that matches the given types.
 
-        This means that the types must be given explicitly
+        The default implementation cannot be removed.
+
+        Examples
+        --------
+        Types must be supplied in the same order as the
+        :attr:`dispatched <pdcast.DispatchFunc.dispatched>` arguments.
+
+        .. doctest::
+
+            >>> @dispatch("x", "y")
+            ... def foo(x, y):
+            ...     return "default"
+
+            >>> @foo.overload("int", "int")
+            ... def integer_foo(x, y):
+            ...     return "integer"
+
+            >>> foo(1, 2)
+            'integer'
+            >>> foo[int, int]
+            <function integer_foo at ...>
+            >>> del foo[int, int]
+            >>> foo[int, int]
+            <function foo at ...>
+            >>> foo(1, 2)
+            'default'
         """
         del self._signature[key]
 
 
 class DispatchSignature(Signature):
-    """An ordered dictionary that stores types and their dispatched
-    implementations for :class:`DispatchFunc` operations.
+    """A wrapper around an :class:`inspect.Signature <python:inspect.Signature>`
+    object that serves as a factory for
+    :class:`DispatchArguments <pdcast.DispatchArguments>`.
+
+    Parameters
+    ----------
+    func : Callable
+        The function whose signature will be wrapped.
+    dispatched : tuple[str, ...]
+        The names of the arguments that will be used to select a dispatched
+        implementation.  These must be a subset of the function's parameters,
+        and they can be defined in any order.  The order dictates the
+        precedence of the dispatched implementations.
+    cache_size : int
+        The maximum number of dispatched implementations to cache.  This
+        short-circuits the dispatch mechanism for previously used data types.
+    drop_na : bool
+        Indicates whether to drop missing values from the arguments during
+        dispatch.
+
+    Notes
+    -----
+    One of these objects is associated with every
+    :class:`DispatchFunc <pdcast.DispatchFunc>` that ``pdcast`` creates.  They
+    are responsible for parsing the arguments that are supplied to a function
+    and mapping them to the correct implementation for their detected types.
+
+    To this end, every :class:`DispatchSignature <pdcast.DispatchSignature>`
+    maintains an ordered dictionary of all the dispatched implementations that
+    are associated with the parent function.  Whenever the function is invoked,
+    a key will be generated to index this dictionary, returning the most
+    specific implementation that matches the input types.
     """
 
     def __init__(
@@ -756,19 +823,63 @@ class DispatchSignature(Signature):
         DispatchSignature.__getitem__ :
             Index the dispatch map for a particular combination of types.
         DispatchSignature.__setitem__ :
-            Set an item within the dispatch map.
+            Set an implementation within the dispatch map.
         DispatchSignature.__delitem__ :
             Delete an implementation from the map.
 
         Notes
         -----
-        
+        The map is not guaranteed to be in the correct order.  To sort it, use
+        the :meth:`sort() <pdcast.DispatchSignature.sort>` method.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> @dispatch("x", "y")
+            ... def foo(x, y):
+            ...     return "default"
+
+            >>> @foo.overload("int", "int")
+            ... def integer_foo(x, y):
+            ...     return "integer"
+
+            >>> foo._signature.dispatch_map
+            mappingproxy({(IntegerType(), IntegerType()): <function integer_foo at ...>})
         """
         return MappingProxyType(self._dispatch_map)
 
     def sort(self) -> None:
-        """Sort the dictionary into topological order, with most specific
+        """Sort the dictionary into topological order, with the most specific
         keys first.
+
+        Notes
+        -----
+        This method is called automatically whenever the dispatch map is
+        searched without an exact match.  It can also be called manually to
+        sort the map on demand.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> @dispatch("x", "y")
+            ... def foo(x, y):
+            ...     return "default"
+
+            >>> @foo.overload("int", "int")
+            ... def integer_foo(x, y):
+            ...     return "integer"
+
+            >>> @foo.overload("int32", "int32")  # int32 is more specific than int
+            ... def int32_foo(x, y):
+            ...     return "int32"
+
+            >>> foo._signature.dispatch_map
+            mappingproxy({(IntegerType(), IntegerType()): <function integer_foo at ...>, (Int32Type(), Int32Type()): <function int32_foo at ..>})
+            >>> foo._signature.sort()
+            >>> foo._signature.dispatch_map
+            mappingproxy({(Int32Type(), Int32Type()): <function int32_foo at ...>, (IntegerType(), IntegerType()): <function integer_foo at ...>})
         """
         keys = tuple(self._dispatch_map)
 
@@ -789,22 +900,31 @@ class DispatchSignature(Signature):
 
     # pylint: disable=no-self-argument
     def dispatch_key(__self, *args, **kwargs) -> tuple[types.Type, ...]:
-        """Create a dispatch key from the provided arguments.
+        """Form a dispatch key from the provided arguments.
 
         Parameters
         ----------
         *args, **kwargs
             Arbitrary positional and/or keyword arguments to bind to this
-            signature.  Any that are marked as dispatched arguments for this
-            :class:`DispatchSignature <pdcast.DispatchSignature>` will be
-            extracted and resolved in a deterministic order.
+            signature.  These can be provided in any format recognized by
+            :func:`resolve_type() <pdcast.resolve_type>`.  Any that are
+            marked as dispatched arguments will be extracted and resolved in
+            the same order that they were defined in this signature's
+            constructor.
 
         Returns
         -------
         tuple[types.Type, ...]
-            A sequence of resolved types that can be used as a key to the
+            A tuple of resolved types that can be used as a key to the
             signature's
-            :attr:`dispatch_map <pdcast.DispatchSignature.dispatch_map>`.
+            :attr:`dispatch_map <pdcast.DispatchSignature.dispatch_map>`.  The
+            order of this tuple will always match the order of the dispatched
+            arguments that was specified when this signature was constructed.
+
+        Raises
+        ------
+        KeyError
+            If any of the dispatched arguments are not provided.
 
         See Also
         --------
@@ -815,9 +935,9 @@ class DispatchSignature(Signature):
         Notes
         -----
         :class:`composite <pdcast.CompositeType>` specifiers will be resolved
-        as normal.  However, as they are not hashable, they cannot be stored in
-        :attr:`dispatch_map <pdcast.dispatch_map>` directly.  Instead they must
-        be expanded using
+        by this method as normal.  However, since they are not hashable, they
+        cannot be stored in :attr:`dispatch_map <pdcast.dispatch_map>`
+        directly.  Instead they must be expanded using
         :meth:`DispatchSignature.cartesian_product() <pdcast.DispatchSignature.cartesian_product>`
         and stored independently.
 
@@ -825,7 +945,16 @@ class DispatchSignature(Signature):
         --------
         .. doctest::
 
-            >>> TODO
+            >>> @dispatch("x", "y")
+            ... def foo(x, y):
+            ...     return "default"
+
+            >>> foo._signature.dispatch_key("int", "int")
+            (IntegerType(), IntegerType())
+            >>> foo._signature.dispatch_key(x="bool", y="float")
+            (BooleanType(), FloatType())
+            >>> foo._signature.dispatch_key(y="decimal", x="complex")
+            (ComplexType(), DecimalType())
         """
         bound = __self.sig.bind_partial(*args, **kwargs)
         bound.apply_defaults()
@@ -861,24 +990,60 @@ class DispatchSignature(Signature):
 
         Examples
         --------
+        This method expands dispatch keys into a sequence of non-composite
+        types.
+
         .. doctest::
 
-            >>> TODO
+            >>> @dispatch("x", "y")
+            ... def foo(x, y):
+            ...     return "default"
+
+            >>> key = foo._signature.dispatch_key("int, float, complex", "int")
+            >>> key
+            (CompositeType({int, float, complex}), IntegerType())
+            >>> list(foo._signature.cartesian_product(key))
+            [(IntegerType(), IntegerType()), (FloatType(), IntegerType()), (ComplexType(), IntegerType())]
+
+        These types can then be used to index the
+        :attr:`dispatch_map <pdcast.DispatchSignature.dispatch_map>` as normal.
         """
         # convert keys into CompositeTypes
         key = tuple(resolve_type([x]) for x in key)
         for path in itertools.product(*key):
             yield path
 
-    def __call__(self, *args, **kwargs) -> DispatchArguments:
-        """Bind this signature to create a `DispatchArguments` object."""
-        bound = self.sig.bind_partial(*args, **kwargs)
+    # pylint: disable=no-self-argument
+    def __call__(__self, *args, **kwargs) -> DispatchArguments:
+        """Bind the arguments to this signature and return a corresponding
+        :class:`DispatchArguments <pdcast.DispatchArguments>` object.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Arbitrary positional and/or keyword arguments to bind to this
+            signature.
+
+        Returns
+        -------
+        DispatchArguments
+            A new :class:`DispatchArguments <pdcast.DispatchArguments>` object,
+            that encapsulates the bound arguments.  These are used as context
+            objects for :class:`DispatchStrategies <pdcast.DispatchStrategy>`,
+            which manipulate them to perform the actual dispatch.
+
+        Notes
+        -----
+        This is always called on the input to
+        :meth:`DispatchFunc.__call__() <pdcast.DispatchFunc.__call__>`.
+        """
+        bound = __self.sig.bind_partial(*args, **kwargs)
         bound.apply_defaults()
 
         return DispatchArguments(
             bound=bound,
-            signature=self,
-            drop_na=self.drop_na
+            signature=__self,
+            drop_na=__self.drop_na
         )
 
     def __getitem__(
@@ -887,11 +1052,54 @@ class DispatchSignature(Signature):
     ) -> Callable:
         """Search the :class:`DispatchSignature <pdcast.DispatchSignature>` for
         a particular implementation.
+
+        Parameters
+        ----------
+        key : type_specifier | tuple[type_specifier]
+            One or more types to search for.  These are passed directly to the
+            :meth:`dispatch_key() <pdcast.DispatchSignature.dispatch_key>`
+            method, and multiple types can be specified by separating them with
+            commas.
+
+        Returns
+        -------
+        Callable
+            The implementation that matches the provided key.  This is found by
+            searching the
+            :attr:`dispatch_map <pdcast.DispatchSignature.dispatch_map>` for
+            the most specific key that fully contains the input types.
+
+        Raises
+        ------
+        KeyError
+            If no implementation matches the provided key.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> @dispatch("x", "y")
+            ... def foo(x, y):
+            ...     return "default"
+
+            >>> @foo.overload("int", "int")
+            ... def integer_foo(x, y):
+            ...     return "integer"
+
+            >>> foo._signature["int", "int"]
+            <function integer_foo at ...>
+            >>> foo._signature["int32", "int32"]  # subtypes of int
+            <function integer_foo at ...>
+            >>> foo._signature["int, float"]  # no match for float
+            Traceback (most recent call last):
+                ...
+            KeyError: ('int', 'float')
         """
         if not isinstance(key, tuple):
             key = (key,)
 
         # resolve key
+        # TODO: dispatched arguments might be positional-only
         key = self.dispatch_key(**dict(zip(self.dispatched, key)))
 
         # trivial case: key has exact match
@@ -918,11 +1126,59 @@ class DispatchSignature(Signature):
 
     def __setitem__(
         self,
-        key: tuple[type_specifier, ...],
+        key: type_specifier | tuple[type_specifier, ...],
         value: Callable
     ) -> None:
-        """Add an overloaded implementation to the
+        """Register an overloaded implementation with the
         :class:`DispatchSignature <pdcast.DispatchSignature>`.
+
+        Parameters
+        ----------
+        key : type_specifier | tuple[type_specifier, ...]
+            The key to register the implementation under.  This is passed
+            directly to the
+            :meth:`dispatch_key() <pdcast.DispatchSignature.dispatch_key>`
+            method, and multiple types can be specified by separating them with
+            commas.  They must always be specified in the same order as the
+            dispatched arguments that were given to this signature.
+        value : Callable
+            The implementation to register.  This must be a callable object
+            that accepts the same arguments as the signature.  It can include
+            additional arguments, but it must at least implement this
+            signature's interface.
+
+        Raises
+        ------
+        TypeError
+            If the implementation is not callable, or if it has an incompatible
+            signature.
+
+        Warns
+        -----
+        UserWarning
+            If the provided key overwrites a previous implementation.
+
+        Notes
+        -----
+        This is automatically called by the
+        :meth:`@overload() <pdcast.DispatchFunc.overload>` decorator.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> @dispatch("x", "y")
+            ... def foo(x, y):
+            ...     return "default"
+
+            >>> def integer_foo(x, y):
+            ...     return "integer"
+
+            >>> foo._signature["int", "int"]
+            <function foo at ...>
+            >>> foo._signature["int", "int"] = integer_foo
+            >>> foo._signature["int", "int"]
+            <function integer_foo at ...>
         """
         if not isinstance(key, tuple):
             key = (key,)
@@ -965,9 +1221,44 @@ class DispatchSignature(Signature):
         self._dispatch_map[key] = value
         self.ordered = False
 
-    def __delitem__(self, key: type_specifier) -> None:
+    def __delitem__(
+        self,
+        key: type_specifier | tuple[type_specifier, ...]
+    ) -> None:
         """Remove an overloaded implementation from the
         :class:`DispatchSignature <pdcast.DispatchSignature>`.
+
+        Parameters
+        ----------
+        key : type_specifier | tuple[type_specifier, ...]
+            The key to remove.  This is passed directly to the
+            :meth:`dispatch_key() <pdcast.DispatchSignature.dispatch_key>`
+            method, and multiple types can be specified by separating them with
+            commas.  They must always be specified in the same order as the
+            dispatched arguments that were given to this signature.
+
+        Raises
+        ------
+        KeyError
+            If no implementation matches the provided key.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> @dispatch("x", "y")
+            ... def foo(x, y):
+            ...     return "default"
+
+            >>> @foo.overload("int", "int")
+            ... def integer_foo(x, y):
+            ...     return "integer"
+
+            >>> foo._signature["int", "int"]
+            <function integer_foo at ...>
+            >>> del foo._signature["int", "int"]
+            >>> foo._signature["int", "int"]
+            <function foo at ...>
         """
         if not isinstance(key, tuple):
             key = (key,)
@@ -975,15 +1266,64 @@ class DispatchSignature(Signature):
         # resolve key
         key = self.dispatch_key(**dict(zip(self.dispatched, key)))
 
-        # require exact match - TODO: allow implicit matches for symmetry with __getitem__
+        # trivial case: key has exact match
         if key in self._dispatch_map:
             del self._dispatch_map[key]
-        else:
-            raise KeyError(tuple(str(x) for x in key))
+            return None
 
-    def __contains__(self, key: type_specifier):
+        # sort map
+        if not self.ordered:
+            self.sort()
+
+        # search for first (sorted) match that fully contains key
+        # pylint: disable=consider-using-dict-items
+        for dispatch_key in self._dispatch_map:
+            if all(y.contains(x) for x, y in zip(key, dispatch_key)):
+                del self._dispatch_map[dispatch_key]
+                self.cache.clear()
+                return None
+
+        # no match found
+        raise KeyError(tuple(str(x) for x in key))
+
+    def __contains__(
+        self,
+        key: type_specifier | tuple[type_specifier, ...]
+    ) -> bool:
         """Check if a particular implementation is present in the
         :class:`DispatchSignature <pdcast.DispatchSignature>`.
+
+        Parameters
+        ----------
+        key : type_specifier | tuple[type_specifier, ...]
+            The key to check for.  This is passed directly to the
+            :meth:`dispatch_key() <pdcast.DispatchSignature.dispatch_key>`
+            method, and multiple types can be specified by separating them with
+            commas.  They must always be specified in the same order as the
+            dispatched arguments that were given to this signature.
+
+        Returns
+        -------
+        bool
+            ``True`` if the key has a matching implementation.  ``False``
+            otherwise.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> @dispatch("x", "y")
+            ... def foo(x, y):
+            ...     return "default"
+
+            >>> @foo.overload("int", "int")
+            ... def integer_foo(x, y):
+            ...     return "integer"
+
+            >>> ("int", "int") in foo._signature
+            True
+            >>> ("int", "str") in foo._signature
+            False
         """
         try:
             self.__getitem__(key)

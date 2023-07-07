@@ -690,8 +690,9 @@ class ExtensionSignature(Signature):
 
         return property(getter, setter, deleter, doc=validator.__doc__)
 
-    def __call__(self, *args, **kwargs) -> ExtensionArguments:
-        """Bind the arguments to form a new
+    # pylint: disable=no-self-argument
+    def __call__(__self, *args, **kwargs) -> ExtensionArguments:
+        """Bind the arguments to this signature and return a corresponding
         :class:`ExtensionArguments <pdcast.ExtensionArguments>` object.
 
         Parameters
@@ -711,8 +712,8 @@ class ExtensionSignature(Signature):
         This is always called on the input to
         :meth:`ExtensionFunc.__call__() <pdcast.ExtensionFunc.__call__>`.
         """
-        bound = self.sig.bind_partial(*args, **kwargs)
-        return ExtensionArguments(bound=bound, signature=self)
+        bound = __self.sig.bind_partial(*args, **kwargs)
+        return ExtensionArguments(bound=bound, signature=__self)
 
 
 class ExtensionArguments(Arguments):

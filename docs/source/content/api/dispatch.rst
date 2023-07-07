@@ -21,6 +21,12 @@ pdcast.dispatch
 
 Dispatch functions
 ------------------
+.. TODO: To enable registering lambdas and pre-existing functions, the
+    overload() method can also be used in a functional form:
+
+    foo.overload("int", "int")(lambda x, y: "integer")
+
+
 The :func:`@dispatch <pdcast.dispatch>` decorator transforms a function into a
 :class:`DispatchFunc` object, which maintains a collection of virtual
 implementations that it can dispatch to based on the observed type of its
