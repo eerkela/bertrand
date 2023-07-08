@@ -95,66 +95,67 @@ Special Methods
 
 
 
-``DecoratorType``\s are types that modify other types.  These include sparse and
-categorical types, which provide a wrapper on top of a base ``ScalarType``
-instance, adding information related to fill values and levels, respectively.
-These must be provided at least one argument (the type being wrapped), which
-can be another ``DecoratorType`` specifier, allowing them to be arbitrarily
-nested.
+..
+    ``DecoratorType``\s are types that modify other types.  These include sparse and
+    categorical types, which provide a wrapper on top of a base ``ScalarType``
+    instance, adding information related to fill values and levels, respectively.
+    These must be provided at least one argument (the type being wrapped), which
+    can be another ``DecoratorType`` specifier, allowing them to be arbitrarily
+    nested.
 
-Here are some examples of basic adapter types:
+    Here are some examples of basic adapter types:
 
-.. doctest:: type_resolution
+    .. doctest:: type_resolution
 
-    >>> pdcast.resolve_type("sparse[int]")
-    SparseType(wrapped=IntegerType(), fill_value=<NA>)
-    >>> pdcast.resolve_type("sparse[str[pyarrow]]")
-    SparseType(wrapped=PyArrowStringType(), fill_value=<NA>)
-    >>> pdcast.resolve_type("categorical[bool]")
-    CategoricalType(wrapped=BooleanType(), levels=None)
-    >>> pdcast.resolve_type("sparse[categorical[bool]]")
-    SparseType(wrapped=CategoricalType(wrapped=BooleanType(), levels=None), fill_value=<NA>)
+        >>> pdcast.resolve_type("sparse[int]")
+        SparseType(wrapped=IntegerType(), fill_value=<NA>)
+        >>> pdcast.resolve_type("sparse[str[pyarrow]]")
+        SparseType(wrapped=PyArrowStringType(), fill_value=<NA>)
+        >>> pdcast.resolve_type("categorical[bool]")
+        CategoricalType(wrapped=BooleanType(), levels=None)
+        >>> pdcast.resolve_type("sparse[categorical[bool]]")
+        SparseType(wrapped=CategoricalType(wrapped=BooleanType(), levels=None), fill_value=<NA>)
 
-By default, sparse types use the base type's ``na_value`` field to determine
-the ``fill_value``, but this can be manually specified by adding an additional
-argument.
+    By default, sparse types use the base type's ``na_value`` field to determine
+    the ``fill_value``, but this can be manually specified by adding an additional
+    argument.
 
-.. doctest:: type_resolution
+    .. doctest:: type_resolution
 
-    >>> pdcast.resolve_type("sparse[bool, True]")
-    SparseType(wrapped=BooleanType(), fill_value=True)
-    >>> pdcast.resolve_type("sparse[int, -32]")
-    SparseType(wrapped=IntegerType(), fill_value=-32)
-    >>> pdcast.resolve_type("sparse[decimal, 4.68]")
-    SparseType(wrapped=DecimalType(), fill_value=Decimal('4.68'))
+        >>> pdcast.resolve_type("sparse[bool, True]")
+        SparseType(wrapped=BooleanType(), fill_value=True)
+        >>> pdcast.resolve_type("sparse[int, -32]")
+        SparseType(wrapped=IntegerType(), fill_value=-32)
+        >>> pdcast.resolve_type("sparse[decimal, 4.68]")
+        SparseType(wrapped=DecimalType(), fill_value=Decimal('4.68'))
 
-Note that the second argument is provided as a string, but is resolved to an
-object of the same type as the base.  This is thanks to ``pdcast``\s robust
-suite of type conversions!  In fact, any string that can be converted to the
-base type can be accepted here.
+    Note that the second argument is provided as a string, but is resolved to an
+    object of the same type as the base.  This is thanks to ``pdcast``\s robust
+    suite of type conversions!  In fact, any string that can be converted to the
+    base type can be accepted here.
 
-.. doctest:: type_resolution
+    .. doctest:: type_resolution
 
-    >>> pdcast.resolve_type("sparse[bool, y]")
-    SparseType(wrapped=BooleanType(), fill_value=True)
-    >>> pdcast.resolve_type("sparse[datetime[pandas], Jan 12 2022 at 7:00 AM]")
-    SparseType(wrapped=PandasTimestampType(tz=None), fill_value=Timestamp('2022-01-12 07:00:00'))
+        >>> pdcast.resolve_type("sparse[bool, y]")
+        SparseType(wrapped=BooleanType(), fill_value=True)
+        >>> pdcast.resolve_type("sparse[datetime[pandas], Jan 12 2022 at 7:00 AM]")
+        SparseType(wrapped=PandasTimestampType(tz=None), fill_value=Timestamp('2022-01-12 07:00:00'))
 
-This is similar for categorical types, except that the second argument must be
-a sequence, each element of which is resolved to form the levels of the
-categorical type.
+    This is similar for categorical types, except that the second argument must be
+    a sequence, each element of which is resolved to form the levels of the
+    categorical type.
 
-.. doctest:: type_resolution
+    .. doctest:: type_resolution
 
-    >>> pdcast.resolve_type("categorical[bool, [y, n]]")
-    CategoricalType(wrapped=BooleanType(), levels=[True, False])
-    >>> pdcast.resolve_type("categorical[int, [1, 2, 3]]")
-    CategoricalType(wrapped=IntegerType(), levels=[1, 2, 3])
-    >>> pdcast.resolve_type("categorical[decimal, [1.23, 2.34]]")
-    CategoricalType(wrapped=DecimalType(), levels=[Decimal('1.23'), Decimal('2.34')])
+        >>> pdcast.resolve_type("categorical[bool, [y, n]]")
+        CategoricalType(wrapped=BooleanType(), levels=[True, False])
+        >>> pdcast.resolve_type("categorical[int, [1, 2, 3]]")
+        CategoricalType(wrapped=IntegerType(), levels=[1, 2, 3])
+        >>> pdcast.resolve_type("categorical[decimal, [1.23, 2.34]]")
+        CategoricalType(wrapped=DecimalType(), levels=[Decimal('1.23'), Decimal('2.34')])
 
-.. note::
+    .. note::
 
-    These conversions use the **default** values for ``cast()`` operations.  If
-    you'd like to change how these are interpreted, modify the defaults using
-    ``cast.defaults``.
+        These conversions use the **default** values for ``cast()`` operations.  If
+        you'd like to change how these are interpreted, modify the defaults using
+        ``cast.defaults``.

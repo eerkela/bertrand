@@ -399,6 +399,9 @@ We can combine the :func:`@dispatch <dispatch>` decorator with
 
 Activity Diagram
 ----------------
+The following diagram shows the full sequence of events that occur whenever a
+:class:`DispatchFunc` is called.  It starts the moment the function is called,
+and ends when the result is returned.
 
 .. raw:: html
     :file: ../../images/decorators/Dispatch_Control.html

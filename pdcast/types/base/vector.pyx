@@ -361,7 +361,7 @@ cdef class VectorType(Type):
         yield from ()
 
     def __getattr__(self, name: str) -> Any:
-        """Forward attribute lookups to
+        """Forward all other attribute lookups to
         :attr:`kwargs <pdcast.VectorType.kwargs>`.
 
         Parameters
@@ -404,8 +404,7 @@ cdef class VectorType(Type):
             raise AttributeError(err_msg) from err
 
     def __setattr__(self, str name, object value) -> None:
-        """Control attribute assignment for
-        :class:`VectorType <pdcast.VectorType>` objects.
+        """Make :class:`VectorTypes <pdcast.VectorType>` read-only.
 
         Parameters
         ----------

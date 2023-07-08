@@ -81,16 +81,18 @@ cdef class TypeRegistry:
     """A global registry containing the current state of the ``pdcast`` type
     system.
 
-    This object encodes all the types that are currently
-    :func:`registered <pdcast.register>` with the ``pdcast`` type system.  It
-    is responsible for caching base (unparametrized) instances for each type,
-    as well as maintaining the links between them and controlling their
-    creation through the :func:`detect_type() <pdcast.detect_type>` and
-    :func:`resolve_type() <pdcast.resolve_type>` constructors.
-
     See Also
     --------
     register : Add a type to this registry as a class decorator.
+
+    Notes
+    -----
+    This object encodes all the types that are currently registered with the
+    ``pdcast`` type system.  It is responsible for caching base
+    (unparametrized) instances for each type, as well as maintaining the links
+    between them and controlling their creation through the
+    :func:`detect_type() <pdcast.detect_type>` and
+    :func:`resolve_type() <pdcast.resolve_type>` constructors.
     """
 
     def __init__(self):
@@ -781,7 +783,8 @@ cdef class TypeRegistry:
 
     @property
     def priority(self):
-        """A collection of edges ``(A, B)`` where ``A < B``.
+        """A set of edges ``(A, B)`` where ``A`` is always considered to be
+        less than ``B``.
 
         Returns
         -------
@@ -996,8 +999,7 @@ cdef class Type:
 
     Notes
     -----
-    This does relatively little on its own, mainly serving to anchor
-    inheritance and distribute the global
+    This mainly serves to anchor inheritance and distribute the global
     :class:`TypeRegistry <pdcast.TypeRegistry>` to all ``pdcast`` type objects.
     It also provides a unified interface for managing their
     :ref:`aliases <pdcast.Type.aliases>` and customizing their creation via

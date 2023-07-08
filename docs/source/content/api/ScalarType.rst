@@ -18,8 +18,8 @@ pdcast.ScalarType
 
 Constructors
 ------------
-These are automatically called by :func:`detect_type` and :func:`resolve_type`
-to create instances of the associated type.
+These are called by :func:`detect_type` and :func:`resolve_type` to create
+instances of the associated type.
 
 .. autosummary::
     :toctree: ../../generated
@@ -31,20 +31,20 @@ to create instances of the associated type.
     ScalarType.replace
     ScalarType.__call__
 
-The resulting instances are immutable `flyweights
-<https://en.wikipedia.org/wiki/Flyweight_pattern>`_ that are allocated
-once and then cached for the duration of the program.
-
-.. doctest::
-
-    >>> pdcast.resolve_type("int") is pdcast.resolve_type("int")
-    True
-    >>> pdcast.resolve_type("int").new_attribute = 2
-    Traceback (most recent call last):
-        ...
-    AttributeError: ScalarType objects are read-only
-
 .. note::
+
+    The resulting instances are immutable `flyweights
+    <https://en.wikipedia.org/wiki/Flyweight_pattern>`_ that are allocated
+    once and then cached for the duration of the program.
+
+    .. doctest::
+
+        >>> pdcast.resolve_type("int") is pdcast.resolve_type("int")
+        True
+        >>> pdcast.resolve_type("int").new_attribute = 2
+        Traceback (most recent call last):
+            ...
+        AttributeError: ScalarType objects are read-only
 
     Some types might be parameterized with continuous or unpredictable inputs,
     which could cause `memory leaks <https://en.wikipedia.org/wiki/Memory_leak>`_
@@ -55,13 +55,13 @@ once and then cached for the duration of the program.
 
     .. code:: python
 
-        class CustomType(pdcast.ScalarType):
+        class CustomType(ScalarType):
 
             _cache_size = 128
             ...
 
     Setting ``_cache_size = 0`` effectively disables the flyweight protocol,
-    though this is not recommended.
+    although this is not recommended.
 
 .. _ScalarType.membership:
 
@@ -80,8 +80,9 @@ perform membership tests.
 
 Configuration
 -------------
-:class:`ScalarTypes <ScalarType>` can implement the following attributes to
-customize their behavior.
+:class:`ScalarTypes <ScalarType>` are responsible for defining a core set of
+attributes to describe their behavior.  These affect the way ``pdcast`` handles
+them during type detection, resolution, and casting.
 
 .. autosummary::
     :toctree: ../../generated
@@ -110,13 +111,20 @@ customize their behavior.
         ObjectDtype
         ObjectArray  
 
+.. TODO: link directly to source code line number
+
+Default implementations for each of these attributes are defined in the
+:class:`ScalarType` `source code
+<https://github.com/eerkela/pdcast/blob/main/pdcast/types/base/scalar.pyx>`_.
+Users can override them as needed to customize a type's behavior.
+
 .. _ScalarType.traversal:
 
 Traversal
 ---------
-:class:`ScalarTypes <pdcast.ScalarType>` can be embedded into
-:ref:`abstract hierarchies <AbstractType.hierarchy>` that can be traversed with
-the following properties.
+:class:`ScalarTypes <ScalarType>` can also be embedded into
+:ref:`abstract hierarchies <AbstractType.hierarchy>`.  These can be traversed
+with the following attributes.
 
 .. autosummary::
     :toctree: ../../generated
@@ -134,8 +142,9 @@ the following properties.
 
 Upcast/Downcast
 ---------------
-They can also be dynamically resized based on example data, preventing
-overflow and minimizing memory usage.
+Additionally, :class:`ScalarTypes <ScalarType>` can be dynamically resized
+based on example data, minimizing memory usage and allowing for customizable
+overflow behavior.
 
 .. autosummary::
     :toctree: ../../generated
@@ -145,13 +154,17 @@ overflow and minimizing memory usage.
     ScalarType.__lt__
     ScalarType.__gt__
 
+The sorting of specific types can be customized using the
+:attr:`TypeRegistry.priority` attribute.
+
 .. _ScalarType.decorators:
 
 Decorators
 ----------
-Lastly, :class:`ScalarTypes <pdcast.ScalarType>` can be wrapped with
+Lastly, :class:`ScalarTypes <ScalarType>` can be wrapped within
 :class:`DecoratorTypes <pdcast.DecoratorType>` to adjust their behavior on a
-case-by-case basis.
+temporary basis.  The following attributes can be used to traverse these
+decorators.
 
 .. autosummary::
     :toctree: ../../generated
@@ -163,9 +176,8 @@ case-by-case basis.
 
 Special Methods
 ---------------
-:class:`ScalarTypes <pdcast.ScalarType>` are `hashable
-<https://en.wikipedia.org/wiki/Hash_function>`_, and can be contained as
-elements of :class:`sets <python:set>` or keys in a :class:`dict <python:dict>`.
+:class:`ScalarTypes <ScalarType>` are hashable and can be contained as elements
+of :class:`sets <python:set>` or as keys in a :class:`dict <python:dict>`.
 
 .. autosummary::
     :toctree: ../../generated

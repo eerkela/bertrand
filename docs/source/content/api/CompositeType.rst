@@ -49,11 +49,11 @@ inferred type at each index.
 
     >>> _.index
     array([PythonIntegerType(), PythonFloatType(), PythonComplexType()],
-           dtype=object)
+            dtype=object)
 
-They also support the addition of dynamic :attr:`aliases <Type.aliases>` at
-runtime, in which case the :meth:`from_string <Type.from_string>` method may be
-used.
+:class:`CompositeTypes <CompositeType>` also support the addition of
+dynamic :attr:`aliases <Type.aliases>` at runtime, in which case the
+:meth:`from_string() <CompositeType.from_string>` method may be used.
 
 .. autosummary::
     :toctree: ../../generated

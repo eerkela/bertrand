@@ -21,7 +21,7 @@ methods:
 
 .. note::
 
-    :meth:`add <pdcast.TypeRegistry.add>` can also be called from the
+    :meth:`add <pdcast.TypeRegistry.add>` can also be called via the
     :func:`@register <pdcast.register>` class decorator for convenience.
 
 State
@@ -39,13 +39,13 @@ computed values according to the following interface:
     TypeRegistry.hash
     TypeRegistry.flush
 
-These are used internally to store the :class:`TypeRegistry <pdcast.TypeRegistry>`
-properties listed below.  They can also be used to synchronize external values
-with the global state of the ``pdcast`` type system where applicable.
+These are used internally to store the registry properties listed below.  They
+can also be used to synchronize external values with the global state of the
+``pdcast`` type system where applicable.
 
 Accessors
 ---------
-The registry stores a variety of accessors for various parts of the ``pdcast``
+The registry stores a variety of accessors for various slices of the ``pdcast``
 type system.
 
 .. autosummary::
@@ -57,13 +57,10 @@ type system.
     TypeRegistry.decorators
     TypeRegistry.abstract
 
-These can be used to select slices of the registry based on their position
-within the hierarchy.
-
 Aliases
 -------
-The registry also maintains a map of every alias to its associated type, as
-well as a set of regular expressions for use in the
+The registry also maintains a map of every :attr:`alias <Type.aliases>` to its
+associated type, as well as a set of regular expressions for use in the
 :ref:`type specification mini-language <resolve_type.mini_language>`.
 
 .. autosummary::
@@ -93,8 +90,8 @@ These relationships are established by
 
 Configuration
 -------------
-Lastly, the registry contains some global configuration variables for types
-within the ``pdcast`` type system.
+Lastly, the registry contains global overrides for certain behaviors within the
+``pdcast`` type system.
 
 .. autosummary::
     :toctree: ../../generated
@@ -103,7 +100,7 @@ within the ``pdcast`` type system.
 
 Special methods
 ---------------
-These methods are used for syntactic sugar related to registry manipulations.
+These methods are used for syntactic sugar for common registry manipulations.
 
 .. autosummary::
     :toctree: ../../generated

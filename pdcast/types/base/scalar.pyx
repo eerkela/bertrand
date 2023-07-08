@@ -1,5 +1,12 @@
-"""This module describes an ``ScalarType`` object, which serves as the base
-of the ``pdcast`` type system.
+"""This module describes a pair of objects (``ScalarType`` and
+``AbstractType``) which can be used to form type hierarchies.
+
+Classes
+-------
+ScalarType
+    Base class for leaf nodes within the ``pdcast`` type system.
+AbstractType
+    Base class for parent nodes within the ``pdcast`` type system.
 """
 import decimal
 import inspect
@@ -37,11 +44,10 @@ from ..array import construct_object_dtype
 cdef class ScalarType(VectorType):
     """Base class for all user-defined scalar types.
 
-    :class:`ScalarTypes <pdcast.ScalarType>` are the most fundamental unit of
-    the ``pdcast`` type system.  They form the leaves of a
-    :ref:`type hierarchy <AbstractType.hierarchy>` and describe concrete values
-    of a particular type (i.e. :class:`int <python:int>`,
-    :class:`numpy.float32`, etc.).
+    These are the most fundamental unit of the ``pdcast`` type system.  They
+    form the leaves of every :ref:`type hierarchy <AbstractType.hierarchy>` and
+    describe concrete scalars of a particular type (i.e.
+    :class:`int <python:int>`, :class:`float32 <numpy.float32>`, etc.).
 
     Parameters
     ----------
@@ -52,7 +58,7 @@ cdef class ScalarType(VectorType):
 
     See Also
     --------
-    AbstractType : Base class for parent nodes in an abstract hierarchy.
+    AbstractType : Base class for parent nodes within an abstract hierarchy.
     """
 
     # NOTE: this is a sample __init__ method for a parametrized type.
@@ -1237,6 +1243,7 @@ cdef class ScalarType(VectorType):
         """
         return self._hash
 
+
 ########################
 ####    ABSTRACT    ####
 ########################
@@ -1245,8 +1252,8 @@ cdef class ScalarType(VectorType):
 cdef class AbstractType(ScalarType):
     """Base class for all user-defined hierarchical types.
 
-    :class:`AbstractTypes <pdcast.AbstractType>` represent nodes within the
-    ``pdcast`` type system.  They can contain references to other nodes as
+    :class:`AbstractTypes <pdcast.AbstractType>` represent parent nodes within
+    the ``pdcast`` type system.  They can contain references to other nodes as
     :meth:`subtypes <pdcast.AbstractType.subtype>` and/or
     :meth:`implementations <pdcast.AbstractType.implementation>`.
 
