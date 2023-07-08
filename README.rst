@@ -3,21 +3,42 @@
 
 pdcast - flexible type extensions for pandas
 ============================================
-``pdcast`` extends and enhances the numpy/pandas typing infrastructure,
-allowing users to write powerful extensions with an intuitive,
-decorator-focused design.
+``pdcast`` enhances the numpy/pandas typing infrastructure, allowing users to
+write powerful, modular extensions for arbitrary data.
+
+.. contents::
+   :local:
+
+What pdcast does
+----------------
+``pdcast`` provides a robust toolset for handling custom data types, including:
+
+*  **Automatic creation of ExtensionDtypes**: ``pdcast`` simplifies and
+   streamlines the creation of new data types for the pandas ecosystem.
+*  **Universal conversions**: ``pdcast`` implements a single, overloadable
+   conversion function that can losslessly convert data within its expanded
+   type system.
+*  **Type inference and schema validation**: ``pdcast`` can efficiently infer
+   the types of arbitrary data and compare them against an external schema,
+   increasing confidence and reliability in complex data pipelines.
+*  **First-class support for missing values and mixed-type data**: ``pdcast``
+   implements a separate data type for missing values, and can naturally
+   process composite vectors via a split-apply-combine strategy.
+*  **Data compression and third-party compatibility**: ``pdcast`` bridges the
+   gap between dynamically-typed Python and statically-typed extensions,
+   allowing users to losslessly compress data into more efficient
+   representations and export them to other libraries for increased
+   performance.
 
 Features
 --------
-``pdcast`` implements its own `type system
+``pdcast`` implements a rich `type system
 <https://en.wikipedia.org/wiki/Type_system>`_ for numpy/pandas ``dtype``
-objects, with support for:
+objects, adding support for:
 
 *  **Abstract hierarchies** representing different subtypes and
    implementations.  These are lightweight, efficient, and highly extensible,
    with new types added in as little as :ref:`10 lines of code <tutorial>`.
-   They can even automatically generate their own ``ExtensionDtypes``, allowing
-   users to quickly integrate arbitrary data into the pandas ecosystem.
 
    .. doctest::
 
@@ -30,8 +51,8 @@ objects, with support for:
       ...         super().__init__(x=x)
 
 *  A configurable, **domain-specific mini-language** for resolving types.  This
-   represents a superset of the existing numpy/pandas syntax, with support for
-   customizable aliases, semantics, parametrization, and composition.
+   represents a superset of the existing numpy/pandas syntax, with customizable
+   aliases and semantics.
 
    .. doctest::
 
@@ -41,11 +62,10 @@ objects, with support for:
       >>> resolve_type("baz[x]")
       CustomType(x='x')
 
-*  Vectorized **type detection** for example data in any format.  This works
-   regardless of an example's ``.dtype`` attribute, allowing ``pdcast`` to
-   infer the types of ambiguous sequences such as lists, tuples, generators,
-   and ``dtype: object`` arrays.  In each case, inference is fast, reliable,
-   and works even when the examples are of mixed type.
+*  Vectorized **type detection** for example data in any format.  This is
+   highly optimized and works regardless of an example's ``.dtype`` attribute,
+   allowing ``pdcast`` to infer the types of ambiguous sequences such as lists,
+   tuples, generators, and ``dtype: object`` arrays, no matter their contents.
 
    .. doctest::
 
@@ -67,6 +87,18 @@ objects, with support for:
          True
          >>> typecheck(df["a"], "int")
          True
+
+*  Support for **composite** and **decorator** types.  These can be used to
+   represent mixed data and/or add new functionality to an existing type
+   without modifying its original implementation (for instance by marking it as
+   ``sparse`` or ``categorical``).
+
+   .. doctest::
+
+      >>> resolve_type("int, float, complex")  # doctest: +SKIP
+      CompositeType({int, float, complex})
+      >>> resolve_type("sparse[int, 23]")
+      SparseType(wrapped=IntegerType(), fill_value=23)
 
 *  **Multiple dispatch** based on the inferred type of one or more of a
    function's arguments.  With the ``pdcast`` type system, this can be extended
@@ -94,12 +126,40 @@ objects, with support for:
       2    4.0
       dtype: object
 
+*  **Metaprogrammable extension functions** with dynamic arguments.  These can
+   be used to actively manage the values that are supplied to a function by
+   defining validators for one or more arguments, which pass their results into
+   the body of the function in-place.  They can also be used to
+   programmatically add new arguments at runtime, making them available to any
+   virtual implementations that might request them.
+
+   .. doctest::
+
+      >>> @extension_func
+      ... def add(x, y, **kwargs):
+      ...     return x + y
+
+      >>> @add.argument
+      ... def y(val, context: dict) -> int:
+      ...     return int(value)
+
+      >>> add(1, "2")
+      3
+      >>> add.y = 2
+      >>> add(1)
+      3
+      >>> del add.y
+      >>> add(1)
+      Traceback (most recent call last):
+         ...
+      TypeError: add() missing 1 required positional argument: 'y'
+
 *  **Attachable functions** with a variety of access patterns.  These can be
-   used to programmatically extend a class's interface at runtime, attaching
-   the decorated function as a virtual attribute.  These attributes can mask
-   existing behavior while maintaining access to the original implementation,
-   or be hidden behind virtual namespaces to avoid conflicts altogether,
-   similar to ``Series.str``, ``Series.dt``, etc.
+   used to export a function to an existing class as a virtual attribute,
+   dynamically modifying its interface at runtime.  These attributes can be
+   used to mask existing behavior while maintaining access to the original
+   implementation or be hidden behind virtual namespaces to avoid conflicts
+   altogether, similar to ``Series.str``, ``Series.dt``, etc.
 
    .. doctest::
 
@@ -110,46 +170,63 @@ objects, with support for:
       >>> series.typecheck("int") == typecheck(series, "int")
       True
 
-*  Extension functions with **dynamic arguments**.  These can be used to
-   actively manage the values that are supplied to a function by defining
-   validators for one or more of its arguments, which can supply their own
-   logic before passing the result into the body of the function itself.  These
-   can also be used to add new arguments to a function at runtime, making them
-   available to any dispatched implementations that might request them.
+Together, these features enable a functional approach to extending pandas with
+small, fully encapsulated functions that perform special logic based on the
+types of their arguments.  Users are thus able to surgically overload virtually
+any aspect of the pandas interface or add entirely new behavior specific to
+one or more of their own data types - all while maintaining the pandas tools
+they know and love.
 
-   .. doctest::
+Installation
+------------
+Wheels are built using `cibuildwheel
+<https://cibuildwheel.readthedocs.io/en/stable/>`_ and are available for most
+platforms via the Python Package Index (PyPI).
 
-      >>> @extension_func
-      ... def multiply(x, y, z=1):
-      ...     return x * y * z
+.. TODO: add hyperlink to PyPI page when it goes live
 
-      >>> @multiply.argument
-      ... def z(value, args: dict):
-      ...     return int(value)
+.. code:: console
 
-      >>> multiply(2, 3, z="2")
-      12
-      >>> multiply.z = 3
-      >>> multiply(2, 3)
-      18
-      >>> del multiply.z
-      >>> multiply(2, 3)
-      6
+   (.venv) $ pip install pdcast
 
-Together, these enable a functional approach to extending pandas with small,
-fully encapsulated functions performing special operations based on the types
-of their arguments.  They can be combined to create powerful, dynamic patches
-for its rich feature set, which can be seamlessly deployed to existing pandas
-data structures without changing the structure of an analysis.  Users are thus
-able to surgically overload virtually any aspect of the pandas interface, or
-add entirely new behavior specific to one or more of their own data types,
-all while maintaining the pandas tools they know and love.
+If a wheel is not available for your system, ``pdcast`` also provides a
+source distribution to allow pip to build locally, although doing so
+requires a valid `Cython <https://cython.org/>`_ installation, including a C
+compiler such as `gcc <https://gcc.gnu.org/>`_ for Mac/Linux or `MinGW
+<https://sourceforge.net/projects/mingw/>`_ for Windows.
+
+.. code:: console
+
+   (.venv) $ git clone https://github.com/eerkela/pdcast
+   (.venv) $ pip install pdcast/
+
+This should take around 5 minutes to build.  An editable install can be
+created by running:
+
+.. code:: console
+
+   (.venv) $ git clone https://github.com/eerkela/pdcast
+   (.venv) $ cd pdcast/
+   (.venv) $ pip install -e .[dev]
+   (.venv) $ make help
+
+.. warning::
+
+   Manual installs may also require Python development headers if they are
+   not already present.  These can be installed via your system's package
+   manager.
+
+      *  On Ubuntu (or other Debian-based systems), run
+         ``sudo apt-get install python3-dev``.
+      *  On CentOS, run: ``sudo yum install python3-devel``.
+      *  On Fedora, run: ``sudo dnf install python3-devel``.
+
 
 Usage
 -----
-With its advanced features, ``pdcast`` implements its own super-charged
-:func:`cast() <pdcast.cast>` function, which can perform universal, lossless
-data conversions within its expanded type system.  Here's a round-trip journey
+``pdcast`` combines its advanced features to implement its own super-charged
+:func:`cast() <pdcast.cast>` function, which can perform universal data
+conversions within its expanded type system.  Here's a round-trip journey
 through each of the core families of the ``pdcast`` type system:
 
 .. doctest::
@@ -229,8 +306,8 @@ with customization for both the source and destination types.
    1    0
    dtype: object
 
-Finally, ``pdcast``'s powerful decorators allow users to write their own
-specialized extensions for existing pandas behavior:
+Finally, ``pdcast``'s powerful suite of function decorators allow users to
+write their own specialized extensions for existing pandas behavior:
 
 .. doctest::
 
@@ -282,55 +359,9 @@ includes by default.
       ...
    NotImplementedError: bar is only defined for floating point values
 
-.. TODO: uncomment this once the package is pushed to PyPI
-
-   Installation
-   ------------
-   Wheels are built using `cibuildwheel
-   <https://cibuildwheel.readthedocs.io/en/stable/>`_ and are available for most
-   platforms via the Python Package Index (PyPI).
-
-   .. TODO: add hyperlink to PyPI page when it goes live
-
-   .. code:: console
-
-      (.venv) $ pip install pdcast
-
-   If a wheel is not available for your system, ``pdcast`` also provides a
-   source distribution to allow pip to build locally, although doing so
-   requires a C compiler such as ``gcc`` for Mac/Linux or ``MinGW`` for Windows.
-
-   .. code:: console
-
-      (.venv) $ git clone https://github.com/eerkela/pdcast
-      (.venv) $ pip install pdcast/
-
-   This should take around 5 minutes to build.  An editable install can be
-   created by running:
-
-   .. code:: console
-
-      (.venv) $ git clone https://github.com/eerkela/pdcast
-      (.venv) $ cd pdcast/
-      (.venv) $ pip install -e .[dev]
-      (.venv) $ make help
-
-   .. warning::
-
-      Manual installs may also require Python development headers if they are
-      not already present.  These can be installed via your system's package
-      manager.
-
-         *  On Ubuntu (or other Debian-based systems), run
-            ``sudo apt-get install python3-dev``.
-         *  On CentOS, run: ``sudo yum install python3-devel``.
-         *  On Fedora, run: ``sudo dnf install python3-devel``.
-
-.. uncomment this when documentation goes live
-
-   Documentation
-   -------------
-   Detailed API documentation is hosted on readthedocs.
+Documentation
+-------------
+Detailed API documentation is hosted on readthedocs.
 
    .. TODO: add hyperlink once documentation goes live
 
