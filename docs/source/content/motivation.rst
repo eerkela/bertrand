@@ -203,7 +203,7 @@ which becomes increasingly important as it grows in size and complexity.
         error[E0277]: cannot add `&str` to `i32`
          --> src/main.rs:4:20
           |
-        3 |     let c: i32 = a + b;
+        4 |     let c: i32 = a + b;
           |                    ^ no implementation for `i32 + &str`
           |
           = help: the trait `Add<&str>` is not implemented for `i32`
@@ -255,8 +255,8 @@ Performance
 On an implementation level, Python achieves dynamic typing by storing a
 `pointer <https://en.wikipedia.org/wiki/Pointer_(computer_programming)>`_
 to an object's type in its header.  This adds a small overhead for every object
-Python creates - the size of a single pointer on the target system.  We can
-observe this by running :func:`sys.getsizeof() <python:sys.getsizeof>` on a
+that Python creates - the size of a single pointer on the target system.  We
+can observe this by running :func:`sys.getsizeof() <python:sys.getsizeof>` on a
 built-in Python type.
 
 .. doctest::
@@ -268,10 +268,11 @@ built-in Python type.
 On a `64-bit <https://en.wikipedia.org/wiki/64-bit_computing>`_ system, these
 bytes are broken down as follows:
 
-#.  8 byte `reference counter <https://en.wikipedia.org/wiki/Reference_counting>`_
-    for automatic `garbage collection
+#.  An 8 byte `reference counter
+    <https://en.wikipedia.org/wiki/Reference_counting>`_ for automatic `garbage
+    collection
     <https://en.wikipedia.org/wiki/Garbage_collection_(computer_science)>`_.
-#.  8 byte pointer to the :class:`float <python:float>` type object.
+#.  An 8 byte pointer to the :class:`float <python:float>` type object.
 #.  8 bytes describing the value of the float as a 64-bit `double
     <https://en.wikipedia.org/wiki/Double-precision_floating-point_format>`_.
 
@@ -281,9 +282,9 @@ contrast, C can store the same value in only 8 bytes of memory thanks to manual
 `memory management <https://en.wikipedia.org/wiki/Memory_management>`_ and
 static typing.  This allows us to store 3 times as many floats in C as we can
 in Python, without compromising their values or exceeding the original memory
-footprint.  What's more, C exposes several smaller float types with reduced
-precision compared to Python's doubles.  By demoting our floats to a `32
-<https://en.wikipedia.org/wiki/Single-precision_floating-point_format>`_ or
+footprint.  What's more, C exposes several smaller floating point types with
+reduced precision compared to Python's doubles.  By demoting our floats to a
+`32 <https://en.wikipedia.org/wiki/Single-precision_floating-point_format>`_ or
 `16-bit <https://en.wikipedia.org/wiki/Half-precision_floating-point_format>`_
 representation, we can increase memory savings even further, to a maximum 12x
 reduction.
@@ -294,21 +295,44 @@ reduction.
     Memory layouts for floating point values according to the `IEEE 754
     <https://en.wikipedia.org/wiki/IEEE_754>`_ standard.
 
-These factors can dramatically increase the speed and efficiency of
-statically-typed (and non reference-counted) languages over Python, especially
-for numeric computations.  In fact, this is the primary reason numpy implements
-its own type system in the first place, effectively bypassing the
-inefficiencies of the Python data model.  Instead, numpy stores data in
-:ref:`packed arrays <numpy:arrays>`: contiguous blocks of memory whose indices
-correspond to scalars of the associated
-:ref:`array-scalar <numpy:arrays.scalars>` type.  These are essentially
-identical to their C counterparts, bringing the same performance advantages to
-Python without sacrificing its overall convenience.
+What's more, because C stores its types statically, it does not need to perform
+any type checking at runtime.  This means it can perform operations on data
+directly without having to go through an external data model.  It can even
+optimize these operations for us during compilation.  These factors can
+dramatically increase the speed and efficiency of statically-typed (and non
+reference-counted) languages over Python, especially for numeric computations.
 
-.. figure:: /images/motivation/Numpy_Packed_Arrays.png
+.. figure:: /images/motivation/speed-comparison-of-various-programming-languages.jpg
     :align: center
 
-    Basic schematic for numpy's packed array structure.
+    Credit: `Niklas Heer <https://github.com/niklas-heer/speed-comparison>`_
+
+.. note::
+
+    These disparities become even more pronounced when `parallelism
+    <https://en.wikipedia.org/wiki/Parallel_computing>`_ is introduced.  This
+    is due to Python's `Global Interpreter Lock
+    <https://realpython.com/python-gil/>`_, which effectively means that only
+    one thread can execute Python code at a time.  If we want to handle
+    multiple tasks simultaneously, then we need to use
+    :mod:`asyncio <python:asyncio>` or
+    :mod:`multiprocessing <python:multiprocessing>` instead, both of which
+    incur additional overhead.
+
+..
+    In fact, this is the primary reason numpy implements
+    its own type system in the first place, effectively bypassing the
+    inefficiencies of the Python data model.  Instead, numpy stores data in
+    :ref:`packed arrays <numpy:arrays>`: contiguous blocks of memory whose indices
+    correspond to scalars of the associated
+    :ref:`array-scalar <numpy:arrays.scalars>` type.  These are essentially
+    identical to their C counterparts, bringing the same performance advantages to
+    Python without sacrificing its overall convenience.
+
+    .. figure:: /images/motivation/Numpy_Packed_Arrays.png
+        :align: center
+
+        Basic schematic for numpy's packed array structure.
 
 .. _motivation.type_systems.safety:
 
