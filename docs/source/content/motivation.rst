@@ -8,7 +8,10 @@ Motivation
 extensions for the `pandas <https://pandas.pydata.org/>`_ ecosystem.  It offers
 a wealth of tools to do this, but in order to understand how they work, we must
 first examine of the overall state of the numpy/pandas typing infrastructure
-and `type systems <https://en.wikipedia.org/wiki/Type_system>`_ in general.
+and `type systems <https://en.wikipedia.org/wiki/Type_system>`_ as a whole.
+
+.. contents::
+    :local:
 
 .. _motivation.type_systems:
 
@@ -19,7 +22,7 @@ responsible for assigning a type to every term in a program.  These types are
 responsible for determining the set of values that a term can take, as well as
 the operations that can be performed on them and the ways in which they can be
 combined.  Broadly speaking, they vary along 2 main axes: `strong/weak
-<https://en.wikipedia.org/wiki/Strong_and_weak_typing>`_ and `static/dynamic
+<https://en.wikipedia.org/wiki/Strong_and_weak_typing>`_ and `dynamic/static
 <https://en.wikipedia.org/wiki/Type_system#Type_checking>`_.
 
 .. _motivation.type_systems.strong:
@@ -27,19 +30,31 @@ combined.  Broadly speaking, they vary along 2 main axes: `strong/weak
 Strong typing
 ^^^^^^^^^^^^^
 Strongly-typed languages are those that enforce strict rules about how data can
-be combined.  For example, in C, the following code will not compile:
+be combined.  For example, the following Python code will raise a
+:exc:`TypeError <python:TypeError>`:
 
-.. code-block:: c
+.. doctest::
 
-    int a = 1;
-    char b = '2';
-    int c = a + b;
+    >>> a = 1
+    >>> b = "2"
+    >>> a + b
+    Traceback (most recent call last):
+        ...
+    TypeError: unsupported operand type(s) for +: 'int' and 'str'
 
-This is because C requires that all operands in an addition operation be of the
-same type.  In this case, the compiler will throw an error because it cannot
-convert the character ``'2'`` to an integer.  This strictness is generally a
-good thing, as it prevents us from introducing subtle bugs or ambiguities into
-our code.
+This is because Python doesn't know how to add integers to strings by default,
+and rather than guessing, it simply raises an error describing the ambiguity.
+This level of strictness is usually a good thing, as it prevents us from
+introducing subtle bugs into our code where we least expect them.  If we want
+to perform this kind of operation, we need to explicitly convert one of the
+values to resolve the ambiguity:
+
+.. doctest::
+
+    >>> a + int(b)
+    3
+    >>> str(a) + b
+    '12'
 
 .. _motivation.type_systems.weak:
 
@@ -58,10 +73,12 @@ JavaScript, where the following code is perfectly valid:
     > a - b;
     -1
 
-This can often lead to unexpected behavior, as the language will attempt to
-convert data to a common type before performing the operation.  In fact, this
-isn't even the most extreme example we can find in JavaScript.  Consider the
-following:
+This often leads to unexpected behavior as the language attempts to implicitly
+convert the operands to a common type.  Coercion of this form can be useful in
+some cases, but it can also be a source of confusion, as it's not always clear
+what the result of an operation will be.  This can make it difficult to reason
+about the behavior of weakly-typed code, and can lead to some *very* subtle
+bugs.  Consider the following, for example:
 
 .. code-block:: javascript
 
@@ -80,9 +97,6 @@ following:
     > "0" == [];
     false
 
-Needless to say, this can make it extremely difficult to reason about the
-behavior of weakly-typed code, and can lead to some *very* subtle bugs.
-
 .. _motivation.type_systems.dynamic:
 
 Dynamic typing
@@ -91,7 +105,7 @@ Both Python and Javascript are examples of `dynamically-typed
 <https://en.wikipedia.org/wiki/Type_system#Dynamic_type_checking_and_runtime_type_information>`_
 languages, which assign types to variables at **run time**.  This allows us to
 change the type of a variable at any point during the program's execution,
-making it possible to write code like this:
+allowing us to write code like this:
 
 .. doctest::
 
@@ -106,92 +120,133 @@ By assigning types in this way, we avoid the need for explicit type annotations
 in our code, which can make it easier to both read and write.  However, this
 flexibility comes at a cost, as it requires the language to perform additional
 checks at runtime to ensure that the types of our variables are compatible with
-the operations we're performing on them.  This incurs a small performance
-penalty, but more importantly, it means that we can't catch type errors until
-the code is actually executed.  This can make it difficult to debug our code,
-as we may not know that a problem exists until we've already encountered it.
+the operations we're performing.  This incurs a small performance penalty, but
+more importantly, it means that we can't catch type errors until the code is
+actually executed.  This can make it difficult to debug our code, as we may not
+know that a problem exists until we actually encounter it.
 
 .. doctest::
 
-    >>> a = 1
-    >>> b = "2"
-    >>> a + b  # C will catch this error at compile time
+    >>> def add():
+    ...     a = 1
+    ...     b = "2"
+    ...     return a + b  # Python won't catch this error until runtime
+
+    >>> add()  # we have to actually invoke the function
     Traceback (most recent call last):
-      File "<stdin>", line 1, in <module>
+      ...
     TypeError: unsupported operand type(s) for +: 'int' and 'str'
 
 .. _motivation.type_systems.static:
 
 Static typing
 ^^^^^^^^^^^^^
-In contrast to dynamic typing, `statically-typed
+Whereas dynamic typing assigns types to variables at run time, `statically-typed
 <https://en.wikipedia.org/wiki/Type_system#Static_type_checking>`_ languages
-assign types to variables at **compile time**.  This means that the type is
-baked into the code itself and cannot be changed during execution.  As a
-result, both its allowable values and the operations that can be performed on
-it are completely determined during the compilation process, which allows the
-compiler to test the correctness of our code before it's ever run.  This helps
-us catch errors early in the development process, as we saw with our original C
-example:
+do so at **compile time**.  This means that types are baked into the code
+itself and cannot be changed during execution.  Meanwhile, the compiler gets
+full access to these types, allowing it to test the correctness of our code
+before it's ever run.  The following C code, for instance, will fail to
+compile:
 
 .. code-block:: c
 
-    int a = 1;
-    char b = '2';
-    int c = a + b;  // C turns this into a compile-time error
+    int main() {
+        // initializing an array of integers with a single value
+        int a[10] = 1;  // C will catch this error at compile time
 
-Because C is statically-typed, the compiler will catch this error during the
-**build process**, without us ever having to execute the code ourselves.
-This becomes increasingly important as our codebase grows, since it allows us
-to quickly identify and fix errors before they can propagate throughout the
-program.
+        return 0;
+    }
+
+Note that we don't have to actually execute the program to catch this error.
+Instead, the compiler is smart enough to identify the problem for us, and will
+refuse to compile the code until we fix it.  This gives us certain assurances
+about the correctness of our code that we can't get from a dynamically-typed
+language.  Not only can we exclude such pedantic errors from our test cases,
+but we can also avoid the extra runtime checks that are required to catch them
+in the first place.  This can greatly enhance our confidence in the codebase,
+which becomes increasingly important as it grows in size and complexity.
+
+.. note::
+
+    `Rust <https://www.rust-lang.org/>`_ takes this form of static analysis to
+    the next level by implementing an invasive compiler that can detect a wide
+    range of potential errors and give suggestions on how to fix them.  For
+    instance, the following code can sometimes compile in C depending on the
+    specific compiler and flags we use:
+
+    .. code-block:: c
+
+        int main() {
+            int a = 1;
+            char b = "2";
+            int c = a + b;
+
+            return 0;
+        }
+
+    Rust, on the other hand, will refuse to compile this code under any
+    circumstances:
+
+    .. code-block:: rust
+
+        fn main() {
+            let a: i32 = 1;
+            let b: &str = "2";
+            let c: i32 = a + b;  // Rust will catch this error at compile time
+        }
+
+    It even gives us a helpful error message to explain what went wrong:
+
+    .. code-block:: text
+
+        error[E0277]: cannot add `&str` to `i32`
+         --> src/main.rs:4:20
+          |
+        3 |     let c: i32 = a + b;
+          |                    ^ no implementation for `i32 + &str`
+          |
+          = help: the trait `Add<&str>` is not implemented for `i32`
+          = help: the following other types implement trait `Add<Rhs>`:
+                    <&'a i32 as Add<i32>>
+                    <&i32 as Add<&i32>>
+                    <i32 as Add<&i32>>
+                    <i32 as Add>
+
+        For more information about this error, try `rustc --explain E0277`.
+
+.. _motivation.python_vs_c:
 
 Python vs C
 -----------
 As we've seen, the choice of type system can have a significant impact on the
 way we write our code.  In fact, much of what gives Python its unique flavor is
-due to the dynamic nature of its type system, which allows us to write code
-that's both concise and expressive.
+due to the dynamic nature of its type system and the
+:ref:`data model <python:datamodel>` that it implements.  This allows us to
+write code that's both concise and expressive while still retaining the
+relative safety of a strongly-typed language.  
 
-Since variables are allowed to hold objects of any type, assignments can be
-performed without converting the underlying data, and the flexibility of the
-:ref:`data model <python:datamodel>` itself allows us to easily implement
-`polymorphism <https://en.wikipedia.org/wiki/Polymorphism_(computer_science)>`_
-in our code.  It also promotes `duck typing
-<https://en.wikipedia.org/wiki/Duck_typing>`_, which can help enforce a more
-interface-oriented - and therefore flexible - style of programming.  This
-results in a straightforward, easy-to-use programming language that supports a
-wide range of design patterns with relatively little fuss.  It can even emulate
-weak typing to a certain extent through its
-:ref:`special methods <python:numeric-types>`, which further enhance the
-language's flexibility.
+The flexible nature of Python's type system also has tangible benefits for the
+design and capabilities of our code.  Because types can change dynamically and
+are not enforced by the compiler, we can use them in ways that would be
+difficult or impossible in a language like C.  `Duck typing
+<https://en.wikipedia.org/wiki/Duck_typing>`_, for instance, is trivially
+implemented in Python, but would require a significant amount of added
+complexity in C.  This allows us to write code in a more `interface-oriented
+<https://en.wikipedia.org/wiki/Interface_(object-oriented_programming)>`_
+style, which is often more modular and easier to maintain.  Python also
+supports high-level `metaprogramming
+<https://en.wikipedia.org/wiki/Metaprogramming>`_ techniques like `monkey
+patching <https://en.wikipedia.org/wiki/Monkey_patch>`_ and `reflection
+<https://en.wikipedia.org/wiki/Reflective_programming>`_, which have no direct
+analogue in C.  In fact, we can even emulate weak typing to a certain extent
+through the use of Python's :ref:`special methods <python:numeric-types>`,
+which can override the behavior of built-in operators.
 
-This scheme does, however, come with a few important drawbacks, particularly as
-it relates to performance, type safety, and stability.
-
-
-
-
-
-.. 
-    In its default `CPython <https://en.wikipedia.org/wiki/CPython>`_
-    implementation, Python is a **strongly**-typed, **dynamic** language.
-    This configuration allows it to eschew most of the boilerplate code found in
-    statically-typed languages like `Java
-    <https://en.wikipedia.org/wiki/Java_(programming_language)>`_
-    and `C <https://en.wikipedia.org/wiki/C_(programming_language)>`_ while
-    maintaining similar levels of overall predictability.  Since variables are
-    allowed to hold objects of any type, assignments can be performed without
-    converting the underlying data, and the flexibility of the :ref:`data model
-    <python:datamodel>` itself allows us to easily implement `polymorphism
-    <https://en.wikipedia.org/wiki/Polymorphism_(computer_science)>`_ in our code.
-    This results in a straightforward, easy-to-use programming language that
-    supports a wide range of design patterns with relatively little fuss.  It can
-    even emulate weak typing to a certain extent through its
-    :ref:`special methods <python:numeric-types>`, which further enhance the
-    language's flexibility.  This scheme does, however, come with a few important
-    drawbacks, particularly as it relates to performance, type safety, and
-    stability.
+All of this results in a straightforward, easy-to-use programming language that
+supports a wide variety of design patterns with relatively little fuss.  There
+are, however, a few important drawbacks, particularly as it relates to
+performance, type safety, and portability.
 
 .. _motivation.type_systems.performance:
 
