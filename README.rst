@@ -177,47 +177,48 @@ any aspect of the pandas interface or add entirely new behavior specific to
 one or more of their own data types - all while maintaining the pandas tools
 they know and love.
 
-Installation
-------------
-Wheels are built using `cibuildwheel
-<https://cibuildwheel.readthedocs.io/en/stable/>`_ and are available for most
-platforms via the Python Package Index (PyPI).
+..
+   Installation
+   ------------
+   Wheels are built using `cibuildwheel
+   <https://cibuildwheel.readthedocs.io/en/stable/>`_ and are available for most
+   platforms via the Python Package Index (PyPI).
 
-.. TODO: add hyperlink to PyPI page when it goes live
+   .. TODO: add hyperlink to PyPI page when it goes live
 
-.. code:: console
+   .. code:: console
 
-   (.venv) $ pip install pdcast
+      (.venv) $ pip install pdcast
 
-If a wheel is not available for your system, ``pdcast`` also provides a
-source distribution to allow pip to build locally, although doing so
-requires a valid `Cython <https://cython.org/>`_ installation, including a C
-compiler such as `gcc <https://gcc.gnu.org/>`_ for Mac/Linux or `MinGW
-<https://sourceforge.net/projects/mingw/>`_ for Windows.
+   If a wheel is not available for your system, ``pdcast`` also provides a
+   source distribution to allow pip to build locally, although doing so
+   requires a valid `Cython <https://cython.org/>`_ installation, including a C
+   compiler such as `gcc <https://gcc.gnu.org/>`_ for Mac/Linux or `MinGW
+   <https://sourceforge.net/projects/mingw/>`_ for Windows.
 
-.. code:: console
+   .. code:: console
 
-   (.venv) $ git clone https://github.com/eerkela/pdcast
-   (.venv) $ pip install pdcast/
+      (.venv) $ git clone https://github.com/eerkela/pdcast
+      (.venv) $ pip install pdcast/
 
-This should take around 5 minutes to build.  An editable install can be
-created by running:
+   This should take around 5 minutes to build.  An editable install can be
+   created by running:
 
-.. code:: console
+   .. code:: console
 
-   (.venv) $ git clone https://github.com/eerkela/pdcast
-   (.venv) $ cd pdcast/
-   (.venv) $ pip install -e .[dev]
-   (.venv) $ make help
+      (.venv) $ git clone https://github.com/eerkela/pdcast
+      (.venv) $ cd pdcast/
+      (.venv) $ pip install -e .[dev]
+      (.venv) $ make help
 
-Manual installs may also require Python development headers if they are
-not already present.  These can be installed via your system's package
-manager.
+   Manual installs may also require Python development headers if they are
+   not already present.  These can be installed via your system's package
+   manager.
 
-   *  On Ubuntu (or other Debian-based systems), run
-      ``sudo apt-get install python3-dev``.
-   *  On CentOS, run: ``sudo yum install python3-devel``.
-   *  On Fedora, run: ``sudo dnf install python3-devel``.
+      *  On Ubuntu (or other Debian-based systems), run
+         ``sudo apt-get install python3-dev``.
+      *  On CentOS, run: ``sudo yum install python3-devel``.
+      *  On Fedora, run: ``sudo dnf install python3-devel``.
 
 
 Usage
@@ -357,9 +358,10 @@ includes by default.
       ...
    NotImplementedError: bar is only defined for floating point values
 
-Documentation
--------------
-Detailed API documentation is hosted on readthedocs.
+.. 
+   Documentation
+   -------------
+   Detailed API documentation is hosted on readthedocs.
 
    .. TODO: add hyperlink once documentation goes live
 
