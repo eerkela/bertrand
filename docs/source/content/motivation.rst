@@ -298,9 +298,10 @@ reduction.
 What's more, because C stores its types statically, it does not need to perform
 any type checking at runtime.  This means it can perform operations on data
 directly without having to go through an external data model.  It can even
-optimize these operations for us during compilation.  These factors can
-dramatically increase the speed and efficiency of statically-typed (and non
-reference-counted) languages over Python, especially for numeric computations.
+`optimize <https://en.wikipedia.org/wiki/Optimizing_compiler>`_ these
+operations for us during compilation.  These factors can dramatically increase
+the speed and efficiency of statically-typed (and non reference-counted)
+languages over Python, especially for numeric computations.
 
 .. figure:: /images/motivation/speed-comparison-of-various-programming-languages.jpg
     :align: center
@@ -338,225 +339,592 @@ reference-counted) languages over Python, especially for numeric computations.
 
 Safety
 ^^^^^^
-Probably the most significant ramifications of dynamic typing are in error
-detection and `type safety <https://en.wikipedia.org/wiki/Type_safety>`_.
-Because C has access to full type information at `compile
-<https://en.wikipedia.org/wiki/Compiler>`_ time, it can warn users of
-mismatches before the program is ever run.  Python, on the other hand, forces
-users to rely on **runtime** type checks via the built-in
-:func:`isinstance() <python:isinstance>` and
-:func:`issubclass() <python:issubclass>` functions.  This has a number of
-negative consequences.
+We've already seen some of the consequences that dynamic typing can have on
+error detection and `type safety <https://en.wikipedia.org/wiki/Type_safety>`_.
+This, even more than performance, is perhaps the biggest drawback of Python's
+type system, so much so that the community has been `steadily moving away
+<https://peps.python.org/pep-0484/>`_ from it in recent years (toward a system
+known as `gradual typing <https://en.wikipedia.org/wiki/Gradual_typing>`_).
+Static analysis tools like `pylint <https://pypi.org/project/pylint/>`_ and
+`mypy <https://mypy.readthedocs.io/en/stable/>`_ have become increasingly
+popular, and can be directly integrated into many popular `IDEs
+<https://en.wikipedia.org/wiki/Integrated_development_environment>`_.  These
+tools can help us approach the level of safety we would expect from a
+statically-typed language, but they are not perfect and can never be as
+exhaustive as a true static compiler.
 
-First and most importantly, we are unable to catch errors until we actually run
-our program.  This means we can never have absolute confidence that our
-constructs are receiving the data they expect in all cases, and the only way we
-can make sure is by adding an explicit branch to our production code.  This is
-inefficient and cumbersome to the extent that it is often considered an
+As of now, type hints remain optional in Python, and are not enforced by the
+interpreter.  This means that we can still write code that violates our
+expectations, and we will not know about it until we actually run our program.
+This is a particular problem for public-facing APIs, which are free to accept
+any type of input, even if they are not designed to handle it.  The only way to
+detect these errors is to add explicit checks to our code via the
+:func:`isinstance() <python:isinstance>` and
+:func:`issubclass() <python:issubclass>` built-ins, which can be cumbersome
+and inefficient.  This is generally discouraged, and can even be considered an
 `anti-pattern <https://en.wikipedia.org/wiki/Anti-pattern>`_ in large projects.
 
-Instead, we are encouraged to use static analysis tools like `mypy
-<https://mypy-lang.org/>`_, which can analyze `type hints
-<https://peps.python.org/pep-0484/>`_ that are separate from logic.  This
-solves most issues with type safety on an internal level, but public-facing
-functions still need explicit checks to handle arbitrary user input, where
-static analysis cannot reach.  This forces us back into the
-:func:`isinstance() <python:isinstance>`\ /
-:func:`issubclass() <python:issubclass>` paradigm for at least some portion of
-our code base.
+Including these checks in our code means that we need to write additional tests
+to ensure that they are working properly, increasing the size and complexity of
+our testing framework.  Worse still, checks like these are not always
+sufficient, particularly when dealing with collections of objects rather than
+single values.  For example, suppose we have a function that accepts a list of
+:class:`ints <python:float>` and returns their sum.  We might be tempted to
+write something like this:
 
-If our inputs are scalar, then this isn't the end of the world.  Where it
-becomes especially pathological is when the data we're expecting is `vectorized
-<https://en.wikipedia.org/wiki/Array_programming>`_ in some way, as might be
-the case for numpy arrays or pandas data structures.  Running
-:func:`isinstance() <python:isinstance>` on these objects will simply check the
-type of the vector itself rather than any of its contents.  If we want to
-determine the type of each element, then we have 2 options.  Either we check
-the vector's :class:`dtype <numpy.dtype>` attribute (if it has one), or iterate
-through it manually, applying :func:`isinstance() <python:isinstance>` at
-every index.  The former is fast, but restricts us to numpy/pandas types, and
-the latter is slow, but works on generic data.
+.. doctest::
 
-.. figure:: /images/motivation/Checking_Numpy_Packed_Arrays.svg
-    :align: center
+    >>> from typing import List
 
-    An illustration of the two type checking algorithms.
+    >>> def sum_ints(values: List[int]) -> int:
+    ...     return sum(values)
 
-.. _motivation.type_systems.stability:
+    >>> sum_ints([1, 2, 3])
+    6
 
-Stability
-^^^^^^^^^
-Everything we've seen thus far encourages us to couple our code to the numpy
-type system for vectorized operations.  The trouble with this is that we
-inevitably have to translate values from Python to numpy and vice versa, which
-is non-trivial in many cases.  This is true even for simple data types, like
-integers and booleans.
+This seems reasonable enough, but it is not actually type-safe.  The
+:func:`sum() <python:sum>` function is designed to work with any iterable
+object, and will happily accept a list of :class:`floats <python:float>` as
+well.  This will cause our function to produce a non-int output, even though we
+explicitly told Python that we expect all ints.  The only way to avoid this is
+to add a manual check to our code:
 
-In C, integers come in several `varieties
-<https://en.wikipedia.org/wiki/C_data_types>`_ based on the size of their
-underlying memory buffer and signed/unsigned status.  This means they can
-only represent values within a certain fixed range, and are subject to
-`overflow <https://en.wikipedia.org/wiki/Integer_overflow>`_ errors if they
-exceed it.  By contrast, Python (since `3.0
-<https://peps.python.org/pep-0237/>`_) exposes only a single
-:class:`int <python:int>` type with unlimited precision.  Whenever one of these
-integers overflows, Python simply adds another 32-bit buffer to store the
-larger value.  In this way, Python is limited only by the amount of available
-memory, and can work with integers that far exceed the C limitations.
+.. doctest::
 
-.. figure:: /images/motivation/Integer_Data_Formats.svg
-    :align: center
+    >>> def sum_ints(values: List[int]) -> int:
+    ...     if not all(isinstance(v, int) for v in values):
+    ...         raise TypeError("Expected integer input")
+    ... 
+    ...     return sum(values)
 
-    Memory layouts for numpy/C vs. Python integers.
+    >>> sum_ints([1.0, 2.0, 3.0])
+    Traceback (most recent call last):
+      ...
+    TypeError: Expected integer input
 
-This presents a problem for numpy, which has to coerce these integers into a
-C-compatible format for use in its arrays.  As long as they fall within the
-`64-bit <https://en.wikipedia.org/wiki/64-bit_computing>`_ limit, this can be
-done without issue:
+This is not only inefficient, it makes the code harder to read and more brittle
+in its design.  We could not, for instance, use this function to sum the values
+of a numpy array, even though numpy arrays are perfectly capable of storing
+integers.
 
 .. doctest::
 
     >>> import numpy as np
+    >>> sum_ints(np.array([1, 2, 3]))
+    Traceback (most recent call last):
+      ...
+    TypeError: Expected integer input
 
-    >>> np.array([1, 2, 3])
-    array([1, 2, 3])
-    >>> _.dtype
-    dtype('int64')
-
-However, as soon as we exceed this limit, we get inconsistent behavior.  For
-values > int64 but < uint64, this results in an implicit conversion to a
-floating point data type.
-
-.. doctest::
-
-    >>> np.array([1, 2, 2**63])
-    array([1.00000000e+00, 2.00000000e+00, 9.22337204e+18])
-    >>> _.dtype
-    dtype('float64')
-
-For even larger values, we get a ``dtype: object`` array, which is essentially
-just a Python :class:`list <python:list>` with extra operations.
+This is because the :class:`numpy.int64` type (which numpy defaults to) does
+not inherit from the standard library's :class:`int <python:int>` primitive,
+causing it to fail our type check.  To fix this, we would need to amend the
+check to include numpy's integer types as well:
 
 .. doctest::
 
-    >>> np.array([1, 2, 2**64])
-    array([1, 2, 18446744073709551616], dtype=object)
-    >>> _.dtype
-    dtype('O')
+    >>> def sum_ints(values: List[int]) -> int:
+    ...     if not all(isinstance(v, (int, np.integer)) for v in values):
+    ...         raise TypeError("Expected integer input")
+    ... 
+    ...     return sum(values)
 
-This raises the specter of weak typing that we fought so hard to eliminate.
-Such implicit conversions are often unexpected, and can easily result in hidden
-bugs if not properly accounted for.  Worse still, numpy doesn't even warn us
-when this occurs, which makes diagnosing the problem that much more difficult.
-These distinctions become especially problematic when we start doing math on
-our arrays.
+    >>> sum_ints(np.array([1, 2, 3]))
+    6
 
-.. doctest::
-
-    >>> np.array([1, 2, 2**63 - 1]) + 1   # doctest: +NORMALIZE_WHITESPACE
-    array([1, 2, -9223372036854775808])
-    >>> np.array([1, 2, 2**63]) + 1
-    array([2.00000000e+00, 3.00000000e+00, 9.22337204e+18])
-    >>> np.array([1, 2, 2**64]) + 1
-    array([2, 3, 18446744073709551617], dtype=object)
-
-.. warning::
-
-    The first case is an example of `integer overflow
-    <https://en.wikipedia.org/wiki/Integer_overflow>`_. Some languages (like
-    `Rust <https://en.wikipedia.org/wiki/Rust_(programming_language)>`_) will
-    raise an exception in this circumstance, but as we can see, numpy does not.
-
-This gives us 3 different results depending on the input data, further
-compounding the implicit conversion problem.  This means that our answers for
-even simple arithmetic problems depend (in a non-trivial manner) on
-our data.  We can't really be sure which of these we're going to get in
-practice, or what the intended representation was before we constructed the
-array.  We just have to make a note of it in our documentation counseling users
-not to try something like this and move on.
-
-This works for us in the short term and our analysis is progressing smoothly.
-But what if we start adding `missing values <https://en.wikipedia.org/wiki/NaN>`_
-to our data set?
+This is already starting to get messy and we haven't even considered the
+complicated relationships that inheritance can create in instances such as
+these.  Consider :class:`bools <python:bool>`, which inherit from
+:class:`int <python:int>` and therefore pass our type check:
 
 .. doctest::
 
-    >>> np.array([1, 2, np.nan])  # returns floats
-    array([ 1.,  2., nan])
-    >>> np.array([1, 2, None])
-    array([1, 2, None], dtype=object)
+    >>> sum_ints([True, False])
+    1
 
-.. warning::
+This might not be what we want, but there is no way to prevent it without
+writing a separate check for :class:`bools <python:bool>` specifically.  While
+we're at it, we should add a check to make sure that our input is actually a
+:class:`list <python:list>`, and that it isn't empty.  By now, however, we can
+see the problem with this approach: the more we try to make our code type-safe,
+the more we need to rely on manual checks, and the more we rely on manual
+checks, the more obscure and brittle our code becomes.  This is a vicious cycle
+that can quickly spiral out of control, and it is one of the biggest reasons
+why Python is not considered a type-safe language by default.  Python's answer
+to this is `duck typing <https://en.wikipedia.org/wiki/Duck_typing>`_, but as
+we will see, this is not always sufficient.
 
-    This occurs because C integers are `unable
-    <https://en.wikipedia.org/wiki/NaN#Integer_NaN>`_ to hold missing values
-    due to their fixed memory layout.  There is no specific bit pattern that
-    can be reserved for these kinds of `special values
-    <https://en.wikipedia.org/wiki/IEEE_754#Special_values>`_, since every bit
-    is significant.  This is not the case for floating points, which
-    `restrict a particular exponent
-    <https://en.wikipedia.org/wiki/Double-precision_floating-point_format#Exponent_encoding>`_
-    specifically for such purposes, or for Python integers, which are nullable
-    by default.
+..
+    Probably the most significant ramifications of dynamic typing are in error
+    detection and `type safety <https://en.wikipedia.org/wiki/Type_safety>`_.
+    Because C has access to full type information at `compile
+    <https://en.wikipedia.org/wiki/Compiler>`_ time, it can warn users of
+    mismatches before the program is ever run.  Python, on the other hand, forces
+    users to rely on **runtime** type checks via the built-in
+    :func:`isinstance() <python:isinstance>` and
+    :func:`issubclass() <python:issubclass>` functions.  This has a number of
+    negative consequences.
 
-We now have an entirely new set of implicit conversions to deal with.  Now we
-can't even tell whether our operations are failing due to overflow or the
-presence of some illegal value, which can occur anywhere in the array.
-Needless to say, this is unsustainable, so we decide to move to pandas hoping
-for a better solution.  Unfortunately, since pandas shares numpy's type system,
-all the same problems are reflected there as well.
+    First and most importantly, we are unable to catch errors until we actually run
+    our program.  This means we can never have absolute confidence that our
+    constructs are receiving the data they expect in all cases, and the only way we
+    can make sure is by adding an explicit branch to our production code.  This is
+    inefficient and cumbersome to the extent that it is often considered an
+    `anti-pattern <https://en.wikipedia.org/wiki/Anti-pattern>`_ in large projects.
 
-.. doctest::
+    Instead, we are encouraged to use static analysis tools like `mypy
+    <https://mypy-lang.org/>`_, which can analyze `type hints
+    <https://peps.python.org/pep-0484/>`_ that are separate from logic.  This
+    solves most issues with type safety on an internal level, but public-facing
+    functions still need explicit checks to handle arbitrary user input, where
+    static analysis cannot reach.  This forces us back into the
+    :func:`isinstance() <python:isinstance>`\ /
+    :func:`issubclass() <python:issubclass>` paradigm for at least some portion of
+    our code base.
 
-    >>> import pandas as pd
+    If our inputs are scalar, then this isn't the end of the world.  Where it
+    becomes especially pathological is when the data we're expecting is `vectorized
+    <https://en.wikipedia.org/wiki/Array_programming>`_ in some way, as might be
+    the case for numpy arrays or pandas data structures.  Running
+    :func:`isinstance() <python:isinstance>` on these objects will simply check the
+    type of the vector itself rather than any of its contents.  If we want to
+    determine the type of each element, then we have 2 options.  Either we check
+    the vector's :class:`dtype <numpy.dtype>` attribute (if it has one), or iterate
+    through it manually, applying :func:`isinstance() <python:isinstance>` at
+    every index.  The former is fast, but restricts us to numpy/pandas types, and
+    the latter is slow, but works on generic data.
 
-    >>> pd.Series([1, 2, 2**63 - 1])
-    0                      1
-    1                      2
-    2    9223372036854775807
-    dtype: int64
-    >>> pd.Series([1, 2, 2**63])  # numpy gave us a float64 array
-    0                      1
-    1                      2
-    2    9223372036854775808
-    dtype: uint64
-    >>> pd.Series([1, 2, 2**64])
-    0                       1
-    1                       2
-    2    18446744073709551616
-    dtype: object
+    .. figure:: /images/motivation/Checking_Numpy_Packed_Arrays.svg
+        :align: center
 
-    >>> pd.Series([1, 2, np.nan])
-    0    1.0
-    1    2.0
-    2    NaN
-    dtype: float64
-    >>> pd.Series([1, 2, None])  # why is this not dtype: object?
-    0    1.0
-    1    2.0
-    2    NaN
-    dtype: float64
+        An illustration of the two type checking algorithms.
 
-At this point, we might not even be sure if *we* are real, let alone our data.
+.. _motivation.type_systems.stability:
+
+Interoperability
+^^^^^^^^^^^^^^^^
+So what can we do to address these issues?  We could simply ditch Python and
+use a statically typed language like C from the ground up, but this would be
+throwing the baby out with the bathwater.  Python is a powerful language with
+unique features and a rich ecosystem of libraries and tools.  It is the
+language of choice for many scientists and engineers, and consistently ranks
+among the `most popular programming languages
+<https://octoverse.github.com/2022/top-programming-languages>`_ in the world,
+and for good reason.  Writing C is extremely error-prone, and requires a level
+of expertise that is its own kind of deterrent.  In the time it takes to
+rewrite our code in C, we could have written a dozen new features in Python,
+despite all its shortcomings.
+
+Instead, we could try a `"Python as glue"
+<https://numpy.org/doc/stable/user/c-info.python-as-glue.html>`_ approach,
+where we write our performance-critical code in C and then call it from Python
+using a `foreign function interface
+<https://en.wikipedia.org/wiki/Foreign_function_interface>`_.  Python has a
+number of tools for this, including the built-in :mod:`ctypes <python:ctypes>`
+and :mod:`subprocess <python:subprocess>` modules, as well as external
+libraries like `numba <https://numba.pydata.org/>`_ and `Cython
+<https://cython.org/>`_, which can directly interface with C.  In fact, numpy
+does this internally for many of its core functions, which are written in C and
+then exposed to Python via Cython.  This is a powerful technique that can
+virtually eliminate Python's relative performance issues, but it also comes
+with its own set of unique challenges.
+
+In the previous example, we used the built-in :func:`sum() <python:sum>`
+function as the basis for our operation.  What if we wanted to use a different
+function instead, like one written in C?  Here's an example of how we might
+do that using :mod:`ctypes <python:ctypes>`.
+
+First we need to write the C function that we want to invoke:
+
+.. code-block:: c
+
+    // sum.c
+    int sum_ints_c(int *arr, int arr_length) {
+        int total = 0;
+        for (int i = 0; i < arr_length; i++) {
+            total += arr[i];
+        }
+        return total;
+    }
+
+Next we need to compile it into a shared library.  This process differs based
+on operating system, but on Linux we can do it like this:
+
+.. code-block:: bash
+
+    $ gcc -shared -fPIC -o libsum.so sum.c
+
+Windows is much the same except that we use a ``.dll`` extension instead of
+``.so``.
+
+.. code-block:: bash
+
+    $ gcc -shared -o libsum.dll sum.c
+
+Finally, we can use :mod:`ctypes <python:ctypes>` to load the library and call
+the function:
+
+.. code-block:: python
+
+    # sum_ctypes.py
+    import ctypes
+    from pathlib import Path
+    from typing import List
+
+    # Load the compiled C library
+    lib = ctypes.CDLL(str(Path("libsum.so").absolute()))  # or "libsum.dll" on Windows
+
+    # Define the function signature
+    lib.sum_ints_c.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+    lib.sum_ints_c.restype = ctypes.c_int
+
+    # Create a Python wrapper
+    def sum_ints(values: List[int]) -> int:
+        # Convert the Python list into a C array
+        arr_length = len(values)
+        arr = (ctypes.c_int * arr_length)(*values)
+
+        # Call the C function
+        return lib.sum_ints_c(arr, arr_length)
+
+    # The Python wrapper can now be used like any other function
+    sum_ints([1, 2, 3, 4, 5])  # returns 15
+
+This is a fairly complicated process, and it's easy to make mistakes along the
+way.  Cython simplifies it somewhat by allowing us to link directly to the C
+source code, rather than building it ourselves and linking it manually.  To do
+so, we need to create a Cython implementation file (``sum_cython.pyx``) that
+imports the C source code (``sum.c``) and exposes the function we want to use:
+
+.. code-block:: python
+
+    # sum_cython.pyx
+    from cpython.array cimport array
+    from typing import List
+
+    cdef extern from "sum.c":
+        int sum_ints_c(int *arr, int arr_length)
+
+    def sum_ints(values: List[int]) -> int:
+        cdef int[:] arr = array("i", values)  # typecode "i" is equivalent to ctypes.c_int
+        return sum_ints_c(&arr[0], len(values))
+
+    sum_ints([1, 2, 3, 4, 5])  # returns 15
+
+We can then use Cython to compile the implementation file directly, skipping
+the intermediate C library and :mod:`ctypes <python:ctypes>` wrapper:
+
+.. code-block:: bash
+
+    $ cythonize -i sum_cython.pyx
+
+We can then import the cythonized module and use it like any other Python code:
+
+.. code-block:: python
+
+    from sum_cython import sum_ints
+
+    sum_ints([1, 2, 3, 4, 5])  # returns 15
+
+Numba makes this process even simpler by allowing us to write the C function
+directly in Python, and then compiling it automatically.  This way, we don't
+even need the wrapper function:
+
+.. code-block:: python
+
+    # sum_numba.py
+    from numba import njit
+    from numba.typed import List
+    from numba.types import intc
+
+    @njit(locals={"i": intc, "total": intc})
+    def sum_ints(values: List[int]) -> int:
+        total = 0
+        for i in range(len(values)):
+            total += values[i]
+        return total
+
+    sum_ints(List([1, 2, 3, 4, 5]))  # returns 15
+
+If we benchmark these three implementations, we can compare their relative
+performance:
+
+.. code-block:: python
+
+    # benchmark.py
+    import numba
+    import sum_ctypes
+    import sum_cython
+    import sum_numba
+    import timeit
+
+    x = list(range(10**5))
+    y = numba.typed.List(x)
+
+    results = {
+        "ctypes": timeit.timeit(lambda: sum_ctypes.sum_ints(x), number=1000),
+        "cython": timeit.timeit(lambda: sum_cython.sum_ints(x), number=1000),
+        "numba": timeit.timeit(lambda: sum_numba.sum_ints(y), number=1000),
+    }
+    # results = {
+    #     'ctypes':   4.011803085999418,
+    #     'cython':   0.8762848040023528,
+    #     'numba':    0.7847791439999128
+    # }
+
+As we can see, the Cython and Numba implementations are both significantly
+faster than the :mod:`ctypes <python:ctypes>` version.  This is because they
+both compile the C code into native machine code, whereas the
+:mod:`ctypes <python:ctypes>` version has to call into the C library every
+time it wants to execute the function.  We also have to 
+
 
 .. note::
 
-    Pandas does expose its own :ref:`nullable integer types <pandas:integer_na>`
-    to bypass the missing value restriction, but they must be set manually
-    ahead of time, and are easily overlooked.
+    Numba incurs extra overhead by requiring us to convert the Python list into
+    a Numba list/numpy array before we can pass it to the function.  This is because Numba
+
+
+- add built-in sum for comparison.  This is a cautionary tale.  Built-in
+solutions are likely to be the fastest if they're available, and should be
+preferred over custom solutions unless there's a compelling reason to do
+otherwise.
+
+.. code-block:: python
+
+    # benchmark_python.py
+    import timeit
+    from typing import List
+
+    x = list(range(10**5))
+
+    def sum_ints(values: List[int]) -> int:
+        total = 0
+        for i in range(len(values)):
+            total += values[i]
+        return total
+
+    results = {
+        "python": timeit.timeit(lambda: sum_ints(x), number=1000),
+        "sum()": timeit.timeit(lambda: sum(x), number=1000),
+    }
+    # results = {
+    #     'python':   1.6261987879988737,
+    #     'sum()':    0.16206033400158049
+    # }
+
+.. TODO: explain how as the algorithm gets more complicated, the overhead of
+    calling into C becomes less significant, and handling things in Python
+    becomes more expensive.  This is why we want to use Numba/Cython for
+    computationally intensive code, but not for simple code that can be handled
+    by the built-in Python functions.
+
+
+- compare results of these computations.  Our C implementations all overflow!
+
+
+
+
+
+
+.. TODO: actually write out an example lowering the sum() function into C using
+    ctypes.  Follow up with versions using numba and Cython to show how these
+    frameworks work.
+
+
+Most objects in Python have no direct C equivalent, and must be translated
+into a compatible type before they can be passed to a C function.  This is true
+even for simple data types like integers and booleans, which are represented
+differently in C than they are in Python.  C integers, for example, come in
+several `varieties <https://en.wikipedia.org/wiki/C_data_types>`_ based on the
+size of their underlying memory buffer and signed/unsigned status.  This means
+they can only represent values within a certain fixed range, and are subject
+to `overflow <https://en.wikipedia.org/wiki/Integer_overflow>`_ errors if they
+exceed it.  By contrast, Python (since `3.0
+<https://peps.python.org/pep-0237>`_) uses a `variable-length integer
+<https://en.wikipedia.org/wiki/Arbitrary-precision_arithmetic>`_ type that can
+represent arbitrarily large values without overflow.  This means that any
+integer we pass from Python to C must be translated into a C integer of the
+appropriate size, and vice versa.  This brings us back to the type-safety
+problems we were trying to avoid in the first place.
+
+
+
+
+
+
+
+.. 
+    Everything we've seen thus far encourages us to couple our code to the numpy
+    type system for vectorized operations.  The trouble with this is that we
+    inevitably have to translate values from Python to numpy and vice versa, which
+    is non-trivial in many cases.  This is true even for simple data types, like
+    integers and booleans.
+
+    In C, integers come in several `varieties
+    <https://en.wikipedia.org/wiki/C_data_types>`_ based on the size of their
+    underlying memory buffer and signed/unsigned status.  This means they can
+    only represent values within a certain fixed range, and are subject to
+    `overflow <https://en.wikipedia.org/wiki/Integer_overflow>`_ errors if they
+    exceed it.  By contrast, Python (since `3.0
+    <https://peps.python.org/pep-0237/>`_) exposes only a single
+    :class:`int <python:int>` type with unlimited precision.  Whenever one of these
+    integers overflows, Python simply adds another 32-bit buffer to store the
+    larger value.  In this way, Python is limited only by the amount of available
+    memory, and can work with integers that far exceed the C limitations.
+
+    .. figure:: /images/motivation/Integer_Data_Formats.svg
+        :align: center
+
+        Memory layouts for numpy/C vs. Python integers.
+
+    This presents a problem for numpy, which has to coerce these integers into a
+    C-compatible format for use in its arrays.  As long as they fall within the
+    `64-bit <https://en.wikipedia.org/wiki/64-bit_computing>`_ limit, this can be
+    done without issue:
 
     .. doctest::
 
-        >>> pd.Series([1, 2, np.nan], dtype=pd.Int64Dtype())
-        0       1
-        1       2
-        2    <NA>
-        dtype: Int64
-        >>> pd.Series([1, 2, None], dtype=pd.Int64Dtype())
-        0       1
-        1       2
-        2    <NA>
-        dtype: Int64
+        >>> import numpy as np
+
+        >>> np.array([1, 2, 3])
+        array([1, 2, 3])
+        >>> _.dtype
+        dtype('int64')
+
+    However, as soon as we exceed this limit, we get inconsistent behavior.  For
+    values > int64 but < uint64, this results in an implicit conversion to a
+    floating point data type.
+
+    .. doctest::
+
+        >>> np.array([1, 2, 2**63])
+        array([1.00000000e+00, 2.00000000e+00, 9.22337204e+18])
+        >>> _.dtype
+        dtype('float64')
+
+    For even larger values, we get a ``dtype: object`` array, which is essentially
+    just a Python :class:`list <python:list>` with extra operations.
+
+    .. doctest::
+
+        >>> np.array([1, 2, 2**64])
+        array([1, 2, 18446744073709551616], dtype=object)
+        >>> _.dtype
+        dtype('O')
+
+    This raises the specter of weak typing that we fought so hard to eliminate.
+    Such implicit conversions are often unexpected, and can easily result in hidden
+    bugs if not properly accounted for.  Worse still, numpy doesn't even warn us
+    when this occurs, which makes diagnosing the problem that much more difficult.
+    These distinctions become especially problematic when we start doing math on
+    our arrays.
+
+    .. doctest::
+
+        >>> np.array([1, 2, 2**63 - 1]) + 1   # doctest: +NORMALIZE_WHITESPACE
+        array([1, 2, -9223372036854775808])
+        >>> np.array([1, 2, 2**63]) + 1
+        array([2.00000000e+00, 3.00000000e+00, 9.22337204e+18])
+        >>> np.array([1, 2, 2**64]) + 1
+        array([2, 3, 18446744073709551617], dtype=object)
+
+    .. warning::
+
+        The first case is an example of `integer overflow
+        <https://en.wikipedia.org/wiki/Integer_overflow>`_. Some languages (like
+        `Rust <https://en.wikipedia.org/wiki/Rust_(programming_language)>`_) will
+        raise an exception in this circumstance, but as we can see, numpy does not.
+
+    This gives us 3 different results depending on the input data, further
+    compounding the implicit conversion problem.  This means that our answers for
+    even simple arithmetic problems depend (in a non-trivial manner) on
+    our data.  We can't really be sure which of these we're going to get in
+    practice, or what the intended representation was before we constructed the
+    array.  We just have to make a note of it in our documentation counseling users
+    not to try something like this and move on.
+
+    This works for us in the short term and our analysis is progressing smoothly.
+    But what if we start adding `missing values <https://en.wikipedia.org/wiki/NaN>`_
+    to our data set?
+
+    .. doctest::
+
+        >>> np.array([1, 2, np.nan])  # returns floats
+        array([ 1.,  2., nan])
+        >>> np.array([1, 2, None])
+        array([1, 2, None], dtype=object)
+
+    .. warning::
+
+        This occurs because C integers are `unable
+        <https://en.wikipedia.org/wiki/NaN#Integer_NaN>`_ to hold missing values
+        due to their fixed memory layout.  There is no specific bit pattern that
+        can be reserved for these kinds of `special values
+        <https://en.wikipedia.org/wiki/IEEE_754#Special_values>`_, since every bit
+        is significant.  This is not the case for floating points, which
+        `restrict a particular exponent
+        <https://en.wikipedia.org/wiki/Double-precision_floating-point_format#Exponent_encoding>`_
+        specifically for such purposes, or for Python integers, which are nullable
+        by default.
+
+    We now have an entirely new set of implicit conversions to deal with.  Now we
+    can't even tell whether our operations are failing due to overflow or the
+    presence of some illegal value, which can occur anywhere in the array.
+    Needless to say, this is unsustainable, so we decide to move to pandas hoping
+    for a better solution.  Unfortunately, since pandas shares numpy's type system,
+    all the same problems are reflected there as well.
+
+    .. doctest::
+
+        >>> import pandas as pd
+
+        >>> pd.Series([1, 2, 2**63 - 1])
+        0                      1
+        1                      2
+        2    9223372036854775807
+        dtype: int64
+        >>> pd.Series([1, 2, 2**63])  # numpy gave us a float64 array
+        0                      1
+        1                      2
+        2    9223372036854775808
+        dtype: uint64
+        >>> pd.Series([1, 2, 2**64])
+        0                       1
+        1                       2
+        2    18446744073709551616
+        dtype: object
+
+        >>> pd.Series([1, 2, np.nan])
+        0    1.0
+        1    2.0
+        2    NaN
+        dtype: float64
+        >>> pd.Series([1, 2, None])  # why is this not dtype: object?
+        0    1.0
+        1    2.0
+        2    NaN
+        dtype: float64
+
+    At this point, we might not even be sure if *we* are real, let alone our data.
+
+    .. note::
+
+        Pandas does expose its own :ref:`nullable integer types <pandas:integer_na>`
+        to bypass the missing value restriction, but they must be set manually
+        ahead of time, and are easily overlooked.
+
+        .. doctest::
+
+            >>> pd.Series([1, 2, np.nan], dtype=pd.Int64Dtype())
+            0       1
+            1       2
+            2    <NA>
+            dtype: Int64
+            >>> pd.Series([1, 2, None], dtype=pd.Int64Dtype())
+            0       1
+            1       2
+            2    <NA>
+            dtype: Int64
 
 
 
