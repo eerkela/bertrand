@@ -246,7 +246,7 @@ which can override the behavior of built-in operators.
 All of this results in a straightforward, easy-to-use programming language that
 supports a wide variety of design patterns with relatively little fuss.  There
 are, however, a few important drawbacks, particularly as it relates to
-performance, type safety, and portability.
+performance, type safety, and interoperability.
 
 .. _motivation.type_systems.performance:
 
@@ -518,8 +518,8 @@ Instead, we could try a `"Python as glue"
 <https://numpy.org/doc/stable/user/c-info.python-as-glue.html>`_ approach,
 where we write our performance-critical code in C and then call it from Python
 using a `foreign function interface
-<https://en.wikipedia.org/wiki/Foreign_function_interface>`_.  Python has a
-number of tools for this, including the built-in :mod:`ctypes <python:ctypes>`
+<https://en.wikipedia.org/wiki/Foreign_function_interface>`_.  Python has
+several tools for this, including the built-in :mod:`ctypes <python:ctypes>`
 and :mod:`subprocess <python:subprocess>` modules, as well as external
 libraries like `numba <https://numba.pydata.org/>`_ and `Cython
 <https://cython.org/>`_, which can directly interface with C.  In fact, numpy
@@ -530,120 +530,132 @@ with its own set of unique challenges.
 
 In the previous example, we used the built-in :func:`sum() <python:sum>`
 function as the basis for our operation.  What if we wanted to use a different
-function instead, like one written in C?  Here's an example of how we might
-do that using :mod:`ctypes <python:ctypes>`.
+function instead, like one written in C?  Here are a few examples of how we
+might do that.
 
-First we need to write the C function that we want to invoke:
+.. tabs::
 
-.. code-block:: c
+    .. tab:: ctypes
 
-    // sum.c
-    int sum_ints_c(int *arr, int arr_length) {
-        int total = 0;
-        for (int i = 0; i < arr_length; i++) {
-            total += arr[i];
-        }
-        return total;
-    }
+        First we need to write the C function that we want to invoke:
 
-Next we need to compile it into a shared library.  This process differs based
-on operating system, but on Linux we can do it like this:
+        .. code-block:: c
 
-.. code-block:: bash
+            // sum.c
+            int sum_ints_c(int *arr, int arr_length) {
+                int total = 0;
+                for (int i = 0; i < arr_length; i++) {
+                    total += arr[i];
+                }
+                return total;
+            }
 
-    $ gcc -shared -fPIC -o libsum.so sum.c
+        Next we need to compile it into a shared library.  This process differs 
+        somewhat based on operating system, but on Linux we can do it like this:
 
-Windows is much the same except that we use a ``.dll`` extension instead of
-``.so``.
+        .. code-block:: bash
 
-.. code-block:: bash
+            $ gcc -shared -fPIC -o libsum.so sum.c
 
-    $ gcc -shared -o libsum.dll sum.c
+        Windows is much the same except that we need to use a ``.dll`` extension
+        instead of ``.so``.
 
-Finally, we can use :mod:`ctypes <python:ctypes>` to load the library and call
-the function:
+        .. code-block:: bash
 
-.. code-block:: python
+            $ gcc -shared -o libsum.dll sum.c
 
-    # sum_ctypes.py
-    import ctypes
-    from pathlib import Path
-    from typing import List
+        Finally, we can use :mod:`ctypes <python:ctypes>` to load the library and call
+        the function:
 
-    # Load the compiled C library
-    lib = ctypes.CDLL(str(Path("libsum.so").absolute()))  # or "libsum.dll" on Windows
+        .. code-block:: python
 
-    # Define the function signature
-    lib.sum_ints_c.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int]
-    lib.sum_ints_c.restype = ctypes.c_int
+            # sum_ctypes.py
+            import ctypes
+            from pathlib import Path
+            from typing import List
 
-    # Create a Python wrapper
-    def sum_ints(values: List[int]) -> int:
-        # Convert the Python list into a C array
-        arr_length = len(values)
-        arr = (ctypes.c_int * arr_length)(*values)
+            # Load the compiled C library
+            lib = ctypes.CDLL(str(Path("libsum.so").absolute()))  # or "libsum.dll" on Windows
 
-        # Call the C function
-        return lib.sum_ints_c(arr, arr_length)
+            # Define the function signature
+            lib.sum_ints_c.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+            lib.sum_ints_c.restype = ctypes.c_int
 
-    # The Python wrapper can now be used like any other function
-    sum_ints([1, 2, 3, 4, 5])  # returns 15
+            # Create a Python wrapper
+            def sum_ints(values: List[int]) -> int:
+                # Convert the Python list into a C array
+                arr_length = len(values)
+                arr = (ctypes.c_int * arr_length)(*values)
 
-This is a fairly complicated process, and it's easy to make mistakes along the
-way.  Cython simplifies it somewhat by allowing us to link directly to the C
-source code, rather than building it ourselves and linking it manually.  To do
-so, we need to create a Cython implementation file (``sum_cython.pyx``) that
-imports the C source code (``sum.c``) and exposes the function we want to use:
+                # Call the C function
+                return lib.sum_ints_c(arr, arr_length)
 
-.. code-block:: python
+            # The Python wrapper can now be used like any other function
+            sum_ints([1, 2, 3, 4, 5])  # returns 15
 
-    # sum_cython.pyx
-    from cpython.array cimport array
-    from typing import List
+        This is a fairly complicated process, and it's easy to make mistakes along the
+        way.
 
-    cdef extern from "sum.c":
-        int sum_ints_c(int *arr, int arr_length)
+    .. tab:: Cython
 
-    def sum_ints(values: List[int]) -> int:
-        cdef int[:] arr = array("i", values)  # typecode "i" is equivalent to ctypes.c_int
-        return sum_ints_c(&arr[0], len(values))
+        Cython simplifies it somewhat by allowing us to link directly to the C
+        source code, rather than building it ourselves and linking it manually.  To do
+        so, we need to create a Cython implementation file (``sum_cython.pyx``) that
+        imports the C source code (``sum.c``) and exposes the function we want to use:
 
-    sum_ints([1, 2, 3, 4, 5])  # returns 15
+        .. code-block:: python
 
-We can then use Cython to compile the implementation file directly, skipping
-the intermediate C library and :mod:`ctypes <python:ctypes>` wrapper:
+            # sum_cython.pyx
+            from cpython.array cimport array
+            from typing import List
 
-.. code-block:: bash
+            cdef extern from "sum.c":
+                int sum_ints_c(int *arr, int arr_length)
 
-    $ cythonize -i sum_cython.pyx
+            def sum_ints(values: List[int]) -> int:
+                cdef int[:] arr = array("i", values)  # typecode "i" is equivalent to ctypes.c_int
+                return sum_ints_c(&arr[0], len(values))
 
-We can then import the cythonized module and use it like any other Python code:
+            sum_ints([1, 2, 3, 4, 5])  # returns 15
 
-.. code-block:: python
+        We can then use Cython to compile the implementation file directly, skipping
+        the intermediate shared library and :mod:`ctypes <python:ctypes>` wrapper:
 
-    from sum_cython import sum_ints
+        .. code-block:: bash
 
-    sum_ints([1, 2, 3, 4, 5])  # returns 15
+            $ cythonize -i sum_cython.pyx
 
-Numba makes this process even simpler by allowing us to write the C function
-directly in Python, and then compiling it automatically.  This way, we don't
-even need the wrapper function:
+        This allows us to import the cythonized module and use it like any other Python
+        code:
 
-.. code-block:: python
+        .. code-block:: python
 
-    # sum_numba.py
-    from numba import njit
-    from numba.typed import List
-    from numba.types import intc
+            from sum_cython import sum_ints
 
-    @njit(locals={"i": intc, "total": intc})
-    def sum_ints(values: List[int]) -> int:
-        total = 0
-        for i in range(len(values)):
-            total += values[i]
-        return total
+            sum_ints([1, 2, 3, 4, 5])  # returns 15
 
-    sum_ints(List([1, 2, 3, 4, 5]))  # returns 15
+    .. tab:: numba
+
+        Numba makes this process even simpler by allowing us to write the C function
+        directly in Python, and then compiling it automatically `whenever it is
+        requested <https://en.wikipedia.org/wiki/Just-in-time_compilation>`_.  This
+        way, we don't even need the wrapper function:
+
+        .. code-block:: python
+
+            # sum_numba.py
+            from numba import njit
+            from numba.typed import List
+            from numba.types import intc
+
+            @njit(locals={"total": intc, "i": intc})
+            def sum_ints(values: List[int]) -> int:
+                total = 0
+                for i in range(len(values)):
+                    total += values[i]
+                return total
+
+            sum_ints(List([1, 2, 3, 4, 5]))  # returns 15
 
 If we benchmark these three implementations, we can compare their relative
 performance:
@@ -661,79 +673,79 @@ performance:
     y = numba.typed.List(x)
 
     results = {
-        "ctypes": timeit.timeit(lambda: sum_ctypes.sum_ints(x), number=1000),
-        "cython": timeit.timeit(lambda: sum_cython.sum_ints(x), number=1000),
-        "numba": timeit.timeit(lambda: sum_numba.sum_ints(y), number=1000),
+        "ctypes": timeit.timeit(lambda: sum_ctypes.sum_ints(x), number=1000),   # 4.011803085999418
+        "cython": timeit.timeit(lambda: sum_cython.sum_ints(x), number=1000),   # 0.8762848040023528
+        "numba": timeit.timeit(lambda: sum_numba.sum_ints(y), number=1000),     # 0.7847791439999128
     }
-    # results = {
-    #     'ctypes':   4.011803085999418,
-    #     'cython':   0.8762848040023528,
-    #     'numba':    0.7847791439999128
-    # }
 
 As we can see, the Cython and Numba implementations are both significantly
-faster than the :mod:`ctypes <python:ctypes>` version.  This is because they
-both compile the C code into native machine code, whereas the
-:mod:`ctypes <python:ctypes>` version has to call into the C library every
-time it wants to execute the function.  We also have to 
+faster than the :mod:`ctypes <python:ctypes>` version.  This is because 
+:mod:`ctypes <python:ctypes>` provides an *interactive* wrapper around the C
+library, which limits the amount of optimization it can perform.  The C
+function itself is correctly compiled into native machine code, but the wrapper
+is not, nor are any of the conversions it must perform to translate inputs
+between Python and C.  Instead, the wrapper is interpreted at runtime, which
+incurs the full cost of the Python interpreter.  Cython and Numba, on the
+other hand, can compile the wrapper together with the function and optimize
+both as a single unit.
 
+.. warning::
 
-.. note::
+    Now that we've seen how to use Cython and Numba to speed up our code, let's
+    compare them with the built-in Python solution that we started with:
 
-    Numba incurs extra overhead by requiring us to convert the Python list into
-    a Numba list/numpy array before we can pass it to the function.  This is because Numba
+    .. code-block:: python
 
+        x = list(range(10**5))
+        timeit.timeit(lambda: sum(x), number=1000)  # 0.16240401699906215
 
-- add built-in sum for comparison.  This is a cautionary tale.  Built-in
-solutions are likely to be the fastest if they're available, and should be
-preferred over custom solutions unless there's a compelling reason to do
-otherwise.
+    It turns out our original answer was actually faster than any of the
+    "optimized" versions we've written so far!  This is a cautionary tale for
+    this kind of optimization.  Built-in solutions are already highly optimized
+    for their specific use-case and are almost certainly going to be faster
+    than any naive implementation we're likely to write.  They should always be
+    preferred where possible, and custom solutions should only be used if
+    there's a compelling reason to do so.  As always, we should benchmark our
+    code before and after optimization to ensure that we're actually improving
+    performance.
+
+There's still one additional complication that we haven't discussed yet.  If we
+take a look at the values that are returned by each of our implementations, we
+might notice a discrepancy:
 
 .. code-block:: python
 
-    # benchmark_python.py
-    import timeit
-    from typing import List
+    import numba
 
     x = list(range(10**5))
+    y = numba.typed.List(x)
 
-    def sum_ints(values: List[int]) -> int:
-        total = 0
-        for i in range(len(values)):
-            total += values[i]
-        return total
+    sum_ctypes.sum_ints(x)   # 704982704
+    sum_cython.sum_ints(x)   # 704982704 
+    sum_numba.sum_ints(y)    # 704982704
+    sum(x)                   # 4999950000
 
-    results = {
-        "python": timeit.timeit(lambda: sum_ints(x), number=1000),
-        "sum()": timeit.timeit(lambda: sum(x), number=1000),
-    }
-    # results = {
-    #     'python':   1.6261987879988737,
-    #     'sum()':    0.16206033400158049
-    # }
+All of our custom implementations overflow!  This is because the C integer type
+we used to represent the sum is only 32 bits wide, meaning it can only
+represent values up to ``2**32 - 1``, which is less than the sum we are trying
+to compute.  The built-in Python function, on the other hand, uses a
+variable-length integer type that can represent arbitrarily large values
+without overflowing.
 
-.. TODO: explain how as the algorithm gets more complicated, the overhead of
-    calling into C becomes less significant, and handling things in Python
-    becomes more expensive.  This is why we want to use Numba/Cython for
-    computationally intensive code, but not for simple code that can be handled
-    by the built-in Python functions.
+.. figure:: /images/motivation/Integer_Data_Formats.svg
+    :align: center
 
+    Memory layouts for numpy/C vs. Python integers.
 
-- compare results of these computations.  Our C implementations all overflow!
+This is a common problem when working with C libraries.
 
 
+.. TODO: end this section by mentioning numpy
 
 
-
-
-.. TODO: actually write out an example lowering the sum() function into C using
-    ctypes.  Follow up with versions using numba and Cython to show how these
-    frameworks work.
-
-
-Most objects in Python have no direct C equivalent, and must be translated
-into a compatible type before they can be passed to a C function.  This is true
-even for simple data types like integers and booleans, which are represented
+Most Python objects have no direct C equivalent, and must be translated into a
+compatible type before they can be passed to a C function.  This is true even
+for simple data types like integers and booleans, which are represented
 differently in C than they are in Python.  C integers, for example, come in
 several `varieties <https://en.wikipedia.org/wiki/C_data_types>`_ based on the
 size of their underlying memory buffer and signed/unsigned status.  This means

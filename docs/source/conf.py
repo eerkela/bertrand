@@ -23,6 +23,7 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
     "sphinx_rtd_theme",
+    "sphinx_tabs.tabs",
 ]
 
 templates_path = ['_templates']
@@ -38,6 +39,10 @@ intersphinx_mapping = {
 doctest_global_setup = """
 from pdcast import *
 """
+
+sphinx_tabs_valid_builders = [
+    "linkcheck",
+]
 
 
 # -- Options for HTML output -------------------------------------------------
