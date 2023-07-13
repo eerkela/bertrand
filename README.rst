@@ -24,11 +24,11 @@ What pdcast does
 *  **First-class support for missing values and mixed-type data**: ``pdcast``
    implements a separate data type for missing values, and can naturally
    process composite vectors via a split-apply-combine strategy.
-*  **Data compression and third-party compatibility**: ``pdcast`` bridges the
-   gap between dynamically-typed Python and statically-typed extensions,
-   allowing users to losslessly compress data into more efficient
-   representations and export them to other libraries for increased
-   performance.
+*  **Data compression**: ``pdcast`` can losslessly compress data into a more
+   efficient representation, reducing memory usage and increasing performance.
+*  **Compatibility with third-party libraries**: ``pdcast`` bridges the gap
+   between dynamically-typed Python and statically-typed extension libraries,
+   allowing users to optimize their code without sacrificing flexibility.
 
 Features
 --------

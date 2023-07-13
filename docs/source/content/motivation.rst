@@ -714,7 +714,7 @@ Next we expose it to Python using our choice of interface.
     .. tab:: benchmarks
 
         If we benchmark these three implementations alongside an
-        equivalently Python version, we can compare their relative performance:
+        equivalent Python version, we can compare their relative performance:
 
         .. code-block:: python
 
@@ -757,8 +757,8 @@ Next we expose it to Python using our choice of interface.
         faster than Python, but not by as much as we might expect.  The core
         limitation here is that we're storing our data in Python
         :class:`lists <python:list>`, which are not the most efficient
-        representation we could be using.  If we switched to numpy
-        :class:`arrays <numpy.ndarray>` instead, we could get much better
+        representation we could be using.  If we switch to numpy
+        :class:`arrays <numpy.ndarray>` instead, we can get much better
         performance:
 
         .. code-block:: python
@@ -769,7 +769,9 @@ Next we expose it to Python using our choice of interface.
             timeit(lambda: sum_numba.sum_ints(x), number=1000)  # 0.03180096599680837
 
         This simple step yields a staggering 25x speedup over the previous
-        numba implementation, and a 50x speedup over base Python.
+        numba implementation, and a 50x speedup over base Python.  The same is
+        possible in Cython by using :class:`arrays <numpy.ndarray>` in
+        conjunction with :ref:`typed memoryviews <cython:memoryviews>`.
 
         .. warning::
 
@@ -780,7 +782,7 @@ Next we expose it to Python using our choice of interface.
             .. code-block:: python
 
                 x = list(range(10**5))
-                timeit.timeit(lambda: sum(x), number=1000)  # 0.16240401699906215
+                timeit(lambda: sum(x), number=1000)  # 0.16240401699906215
 
             It turns out that - at least on Python lists - the built-in
             :func:`sum() <python:sum>` function handily beats all of our
