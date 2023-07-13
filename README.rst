@@ -220,7 +220,6 @@ they know and love.
       *  On CentOS, run: ``sudo yum install python3-devel``.
       *  On Fedora, run: ``sudo dnf install python3-devel``.
 
-
 Usage
 -----
 ``pdcast`` combines its advanced features to implement its own super-charged
@@ -361,9 +360,7 @@ includes by default.
 .. 
    Documentation
    -------------
-   Detailed API documentation is hosted on readthedocs.
-
-   .. TODO: add hyperlink once documentation goes live
+   Detailed documentation is hosted on readthedocs.
 
 License
 -------

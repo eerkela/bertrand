@@ -13,7 +13,7 @@ help:
 
 install:
 # 	build and compile cython elements
-	@${PYTHON} setup.py build_ext --inplace
+	@${PYTHON} setup.py build_ext --inplace -j 4
 
 # 	build documentation
 	@cd docs/ && $(MAKE) html

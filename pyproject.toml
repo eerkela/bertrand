@@ -3,10 +3,14 @@ requires = ["setuptools", "wheel", "cython >= 3.0.0b1", "numpy"]
 build-backend = "setuptools.build_meta:__legacy__"
 
 
+[tool.setuptools.packages.find]
+include = ["pdcast", "pdcast.*"]
+
+
 [project]
 name = "pdcast"
-version = "0.0.1"
-description = "Pandas data types made easy"
+version = "0.7.0"
+description = "flexible type extensions for pandas"
 readme = "README.rst"
 authors = [
     { name="Eric Erkela", email="eerkela42@gmail.com" }
@@ -19,10 +23,15 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 keywords = [
+    "numpy",
     "pandas",
     "extension",
     "type",
+    "dtype",
+    "type check",
+    "type system",
     "conversion",
+    "compression",
     "dispatch",
 ]
 dependencies = [
@@ -51,4 +60,5 @@ dev = [
 
 [project.urls]
 "Homepage" = "https://github.com/eerkela/pdcast"
+# "Documentation" = "<link to readthedocs>"
 "Issue Tracker" = "https://github.com/eerkela/pdcast/issues"
