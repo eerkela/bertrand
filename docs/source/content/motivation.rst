@@ -167,7 +167,8 @@ but we can also avoid the extra runtime checks that are required to catch them
 in the first place.  This can greatly enhance our confidence in the codebase,
 which becomes increasingly important as it grows in size and complexity.
 
-.. note::
+.. admonition:: A note on Rust
+    :class: dropdown, toggle-shown
 
     `Rust <https://www.rust-lang.org/>`_ takes this form of static analysis to
     the next level by implementing an invasive compiler that can detect a wide
@@ -308,7 +309,8 @@ languages over Python, especially for numeric computations.
 
     Credit: `Niklas Heer <https://github.com/niklas-heer/speed-comparison>`_
 
-.. note::
+.. admonition:: A note on concurrency
+    :class: dropdown, toggle-shown
 
     These disparities become even more pronounced when `parallelism
     <https://en.wikipedia.org/wiki/Parallel_computing>`_ is introduced.  This
@@ -431,27 +433,28 @@ check to include numpy's integer types as well:
     >>> sum_ints(np.array([1, 2, 3]))
     6
 
-This is already starting to get messy and we haven't even considered the
-complicated relationships that inheritance can create in instances such as
-these.  Consider :class:`bools <python:bool>`, which inherit from
-:class:`int <python:int>` and therefore pass our type check:
+Our code is already starting to get messy and we haven't even considered the
+other complicated relationships that inheritance can create for us.  Consider
+:class:`bools <python:bool>`, which inherit from :class:`int <python:int>` and
+therefore pass our type check:
 
 .. doctest::
 
     >>> sum_ints([True, False])
     1
 
-This might not be what we want, but there is no way to prevent it without
-writing a separate check for :class:`bools <python:bool>` specifically.  While
-we're at it, we should add a check to make sure that our input is actually a
-:class:`list <python:list>`, and that it isn't empty.  By now, however, we can
-see the problem with this approach: the more we try to make our code type-safe,
-the more we need to rely on manual checks, and the more we rely on manual
-checks, the more obscure and brittle our code becomes.  This is a vicious cycle
-that can quickly spiral out of control, and it is one of the biggest reasons
-why Python is not considered a type-safe language by default.  Python's answer
-to this is `duck typing <https://en.wikipedia.org/wiki/Duck_typing>`_, but as
-we will see, this is not always sufficient.
+We might not want this, but there is no way to prevent it without writing a
+separate check for :class:`bools <python:bool>` specifically.  While we're at
+it, we should add another check to make sure that our input is actually a
+:class:`list <python:list>` or 1D numpy :class:`array <numpy.ndarray>`, and
+that it isn't empty.  By now, however, we can see the problem with this
+approach: the more we try to make our code type-safe, the more we need to rely
+on manual checks, and the more we rely on manual checks, the more obscure and
+brittle our code becomes.  This is a vicious cycle that can quickly spiral out
+of control, and it is one of the biggest reasons why Python is not considered a
+type-safe language by default.  Python's answer to this is `duck typing
+<https://en.wikipedia.org/wiki/Duck_typing>`_, but as we will see, this is not
+always sufficient.
 
 ..
     Probably the most significant ramifications of dynamic typing are in error
@@ -533,39 +536,49 @@ function as the basis for our operation.  What if we wanted to use a different
 function instead, like one written in C?  Here are a few examples of how we
 might do that.
 
+First we need to write the C function that we want to invoke:
+
+.. code-block:: c
+
+    // sum.c
+    int sum_ints_c(int *arr, int arr_length) {
+        int total = 0;
+        for (int i = 0; i < arr_length; i++) {
+            total += arr[i];
+        }
+        return total;
+    }
+
+Next, we can expose it to Python using one of the interfaces mentioned above.
+
 .. tabs::
 
     .. tab:: ctypes
 
-        First we need to write the C function that we want to invoke:
-
-        .. code-block:: c
-
-            // sum.c
-            int sum_ints_c(int *arr, int arr_length) {
-                int total = 0;
-                for (int i = 0; i < arr_length; i++) {
-                    total += arr[i];
-                }
-                return total;
-            }
-
-        Next we need to compile it into a shared library.  This process differs 
-        somewhat based on operating system, but on Linux we can do it like this:
+        Before we can use the function in :mod:`ctypes <python:ctypes>`, we
+        need to compile it into a shared library.  This process differs
+        somewhat based on operating system, but in Linux we can do it like
+        this:
 
         .. code-block:: bash
 
             $ gcc -shared -fPIC -o libsum.so sum.c
 
-        Windows is much the same except that we need to use a ``.dll`` extension
-        instead of ``.so``.
+        Windows is much the same except that we need to use a ``.dll``
+        extension instead of ``.so``.
 
         .. code-block:: bash
 
             $ gcc -shared -o libsum.dll sum.c
 
-        Finally, we can use :mod:`ctypes <python:ctypes>` to load the library and call
-        the function:
+        And Mac is similar, using ``.dylib`` instead of ``.so`` or ``.dll``.
+
+        .. code-block:: bash
+
+            $ gcc -dynamiclib -o libsum.dylib sum.c
+
+        Now we can load the library using :mod:`ctypes <python:ctypes>` and
+        define a Python wrapper for our function:
 
         .. code-block:: python
 
@@ -593,15 +606,23 @@ might do that.
             # The Python wrapper can now be used like any other function
             sum_ints([1, 2, 3, 4, 5])  # returns 15
 
-        This is a fairly complicated process, and it's easy to make mistakes along the
-        way.
+        This is a fairly complicated process, and it's easy to make mistakes
+        along the way.
 
     .. tab:: Cython
 
-        Cython simplifies it somewhat by allowing us to link directly to the C
-        source code, rather than building it ourselves and linking it manually.  To do
-        so, we need to create a Cython implementation file (``sum_cython.pyx``) that
-        imports the C source code (``sum.c``) and exposes the function we want to use:
+        Cython simplifies things somewhat by allowing us to link directly to
+        the C source code rather than building it ourselves and linking it
+        manually.  In fact, Cython can do this for *any* C library (including
+        the `standard library
+        <https://en.wikipedia.org/wiki/C_standard_library>`_), not just the
+        ones we write ourselves.  If you have an existing C library that you'd
+        like to interface with, Cython makes it easy to do so.
+
+        In our case, we just want to use the C function we wrote above.  To do
+        this, we need to create a Cython implementation file
+        (``sum_cython.pyx``) that imports the C source code (``sum.c``) and
+        exposes the function we want to use:
 
         .. code-block:: python
 
@@ -614,7 +635,7 @@ might do that.
 
             def sum_ints(values: List[int]) -> int:
                 cdef int[:] arr = array("i", values)  # typecode "i" is equivalent to ctypes.c_int
-                return sum_ints_c(&arr[0], len(values))
+                return sum_ints_c(&arr[0], arr.shape[0])
 
             sum_ints([1, 2, 3, 4, 5])  # returns 15
 
@@ -634,12 +655,35 @@ might do that.
 
             sum_ints([1, 2, 3, 4, 5])  # returns 15
 
+        .. note::
+
+            Cython also supports an alternate syntax for defining C functions
+            that is similar to Python's built-in language style.  This is an
+            equivalent implementation of the ``sum_ints()`` function using this
+            syntax:
+
+            .. code-block:: python
+
+                cpdef int sum_ints(list values):
+                    cdef int[:] arr = array("i", values)
+                    cdef int arr_length = arr.shape[0]
+                    cdef int total = 0
+                    cdef int i
+
+                    for i in range(arr_length):
+                        total += arr[i]
+                    return total
+
+            Both of them perform the same in practice, but the second one
+            avoids the need to write separate C code.
+
     .. tab:: numba
 
-        Numba makes this process even simpler by allowing us to write the C function
-        directly in Python, and then compiling it automatically `whenever it is
-        requested <https://en.wikipedia.org/wiki/Just-in-time_compilation>`_.  This
-        way, we don't even need the wrapper function:
+        Numba makes this process even simpler by allowing us to write the C
+        function directly in Python, and then compiling it automatically
+        `whenever it is requested
+        <https://en.wikipedia.org/wiki/Just-in-time_compilation>`_.  This way,
+        we don't even need the wrapper function or any complicated interfaces:
 
         .. code-block:: python
 
@@ -657,25 +701,37 @@ might do that.
 
             sum_ints(List([1, 2, 3, 4, 5]))  # returns 15
 
+        .. note::
+
+            Note the use of a :class:`numba.typed.List` instead of a regular
+            Python list.  This is because Numba needs to know the exact type of
+            the list elements in order to correctly compile the function.  If
+            we used a regular Python list instead, Numba would fall back to the
+            Python interpreter and the function would not be compiled.
+
+            Normally, this isn't a problem because Numba is most often used in
+            conjunction with numpy :class:`arrays <numpy.ndarray>`, which
+            provide this information automatically.
+
 If we benchmark these three implementations, we can compare their relative
 performance:
 
 .. code-block:: python
 
     # benchmark.py
+    from timeit import timeit
     import numba
     import sum_ctypes
     import sum_cython
     import sum_numba
-    import timeit
 
     x = list(range(10**5))
     y = numba.typed.List(x)
 
     results = {
-        "ctypes": timeit.timeit(lambda: sum_ctypes.sum_ints(x), number=1000),   # 4.011803085999418
-        "cython": timeit.timeit(lambda: sum_cython.sum_ints(x), number=1000),   # 0.8762848040023528
-        "numba": timeit.timeit(lambda: sum_numba.sum_ints(y), number=1000),     # 0.7847791439999128
+        "ctypes": timeit(lambda: sum_ctypes.sum_ints(x), number=1000),   # 4.011803085999418
+        "cython": timeit(lambda: sum_cython.sum_ints(x), number=1000),   # 0.8762848040023528
+        "numba": timeit(lambda: sum_numba.sum_ints(y), number=1000),     # 0.7847791439999128
     }
 
 As we can see, the Cython and Numba implementations are both significantly
@@ -690,6 +746,7 @@ other hand, can compile the wrapper together with the function and optimize
 both as a single unit.
 
 .. warning::
+    :class: dropdown, toggle-shown
 
     Now that we've seen how to use Cython and Numba to speed up our code, let's
     compare them with the built-in Python solution that we started with:

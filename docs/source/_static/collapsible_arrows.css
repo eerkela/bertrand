@@ -1,0 +1,10 @@
+
+/* custom styling for collapsible admonition buttons */
+button.toggle-button {
+    color: white;
+}
+
+/* custom styling for collapsible container buttons */
+.toggle-button summary {
+    color: white;
+}
