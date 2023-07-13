@@ -505,38 +505,36 @@ always sufficient.
 
 Interoperability
 ^^^^^^^^^^^^^^^^
-So what can we do to address these issues?  We could simply ditch Python and
-use a statically typed language like C from the ground up, but this would be
-throwing the baby out with the bathwater.  Python is a powerful language with
-unique features and a rich ecosystem of libraries and tools.  It is the
+So what can we do to address these issues?  Well, we could simply ditch Python
+and use a statically typed language like C from the ground up, but this would
+be throwing the baby out with the bathwater.  Python is a powerful language
+with unique features and a rich ecosystem of libraries and tools.  It is the
 language of choice for many scientists and engineers, and consistently ranks
 among the `most popular programming languages
 <https://octoverse.github.com/2022/top-programming-languages>`_ in the world,
-and for good reason.  Writing C is extremely error-prone, and requires a level
+and for good reason.  Writing C is extremely error-prone and requires a level
 of expertise that is its own kind of deterrent.  In the time it takes to
 rewrite our code in C, we could have written a dozen new features in Python,
 despite all its shortcomings.
 
-Instead, we could try a `"Python as glue"
+Instead, we could try a more nuanced, `"Python as glue"
 <https://numpy.org/doc/stable/user/c-info.python-as-glue.html>`_ approach,
 where we write our performance-critical code in C and then call it from Python
 using a `foreign function interface
 <https://en.wikipedia.org/wiki/Foreign_function_interface>`_.  Python has
 several tools for this, including the built-in :mod:`ctypes <python:ctypes>`
-and :mod:`subprocess <python:subprocess>` modules, as well as external
-libraries like `numba <https://numba.pydata.org/>`_ and `Cython
-<https://cython.org/>`_, which can directly interface with C.  In fact, numpy
-does this internally for many of its core functions, which are written in C and
-then exposed to Python via Cython.  This is a powerful technique that can
-virtually eliminate Python's relative performance issues, but it also comes
-with its own set of unique challenges.
+module as well as external libraries like `Cython <https://cython.org/>`_ and
+`numba <https://numba.pydata.org/>`_.  In fact, numpy does this internally for
+many of its core functions, which are written in C and then exposed to Python
+via Cython.  This is an extremely powerful technique that can virtually
+eliminate Python's relative performance issues, but like anything else, it
+comes with its own set of unique challenges to consider.
 
-In the previous example, we used the built-in :func:`sum() <python:sum>`
-function as the basis for our operation.  What if we wanted to use a different
-function instead, like one written in C?  Here are a few examples of how we
-might do that.
+Suppose we were to revisit the ``sum_ints()`` example from earlier.  This time,
+however, we've decided to write the function in C and call it from Python using
+one of the aforementioned interfaces.  Here's how we might do that:
 
-First we need to write the C function that we want to invoke:
+First we need to write the C function that we want to invoke.
 
 .. code-block:: c
 
@@ -549,7 +547,7 @@ First we need to write the C function that we want to invoke:
         return total;
     }
 
-Next, we can expose it to Python using one of the interfaces mentioned above.
+Next we expose it to Python using our choice of interface.
 
 .. tabs::
 
@@ -713,58 +711,62 @@ Next, we can expose it to Python using one of the interfaces mentioned above.
             conjunction with numpy :class:`arrays <numpy.ndarray>`, which
             provide this information automatically.
 
-If we benchmark these three implementations, we can compare their relative
-performance:
+    .. tab:: benchmarks
 
-.. code-block:: python
+        If we benchmark these three implementations, we can compare their
+        relative performance:
 
-    # benchmark.py
-    from timeit import timeit
-    import numba
-    import sum_ctypes
-    import sum_cython
-    import sum_numba
+        .. code-block:: python
 
-    x = list(range(10**5))
-    y = numba.typed.List(x)
+            # benchmark.py
+            from timeit import timeit
+            import numba
+            import sum_ctypes
+            import sum_cython
+            import sum_numba
 
-    results = {
-        "ctypes": timeit(lambda: sum_ctypes.sum_ints(x), number=1000),   # 4.011803085999418
-        "cython": timeit(lambda: sum_cython.sum_ints(x), number=1000),   # 0.8762848040023528
-        "numba": timeit(lambda: sum_numba.sum_ints(y), number=1000),     # 0.7847791439999128
-    }
+            x = list(range(10**5))
+            y = numba.typed.List(x)
 
-As we can see, the Cython and Numba implementations are both significantly
-faster than the :mod:`ctypes <python:ctypes>` version.  This is because 
-:mod:`ctypes <python:ctypes>` provides an *interactive* wrapper around the C
-library, which limits the amount of optimization it can perform.  The C
-function itself is correctly compiled into native machine code, but the wrapper
-is not, nor are any of the conversions it must perform to translate inputs
-between Python and C.  Instead, the wrapper is interpreted at runtime, which
-incurs the full cost of the Python interpreter.  Cython and Numba, on the
-other hand, can compile the wrapper together with the function and optimize
-both as a single unit.
+            results = {
+                "ctypes": timeit(lambda: sum_ctypes.sum_ints(x), number=1000),   # 4.011803085999418
+                "cython": timeit(lambda: sum_cython.sum_ints(x), number=1000),   # 0.8762848040023528
+                "numba": timeit(lambda: sum_numba.sum_ints(y), number=1000),     # 0.7847791439999128
+            }
 
-.. warning::
-    :class: dropdown, toggle-shown
+        As we can see, the Cython and Numba implementations are both
+        significantly faster than the :mod:`ctypes <python:ctypes>` version.
+        This is because :mod:`ctypes <python:ctypes>` creates an *interactive*
+        wrapper around the C library, which limits the amount of optimization
+        it can perform.  The C function itself is correctly compiled into
+        native machine code, but the wrapper is not, nor are any of the
+        internals it needs to translate data between Python and C.  Instead,
+        the wrapper is interpreted at runtime, which incurs the full cost of
+        the Python interpreter at every step of the process.  Cython and Numba,
+        on the other hand, can compile the wrapper together with the function
+        and optimize both as a single unit.
 
-    Now that we've seen how to use Cython and Numba to speed up our code, let's
-    compare them with the built-in Python solution that we started with:
+        .. warning::
 
-    .. code-block:: python
+            Now that we've seen how to use Cython and Numba to speed up our
+            code, let's compare them with the built-in Python solution that we
+            started with:
 
-        x = list(range(10**5))
-        timeit.timeit(lambda: sum(x), number=1000)  # 0.16240401699906215
+            .. code-block:: python
 
-    It turns out our original answer was actually faster than any of the
-    "optimized" versions we've written so far!  This is a cautionary tale for
-    this kind of optimization.  Built-in solutions are already highly optimized
-    for their specific use-case and are almost certainly going to be faster
-    than any naive implementation we're likely to write.  They should always be
-    preferred where possible, and custom solutions should only be used if
-    there's a compelling reason to do so.  As always, we should benchmark our
-    code before and after optimization to ensure that we're actually improving
-    performance.
+                x = list(range(10**5))
+                timeit.timeit(lambda: sum(x), number=1000)  # 0.16240401699906215
+
+            It turns out our original answer was actually faster than any of
+            the "optimized" versions we've written so far!  This is a
+            cautionary tale for this kind of optimization.  Built-in solutions
+            are already highly optimized for their specific use-case and are
+            almost certainly going to be faster than any naive implementation
+            we're likely to write.  They should always be preferred where
+            possible, and custom solutions should only be used if there's a
+            compelling reason to do so.  As always, we should benchmark our
+            code before and after optimization to ensure that we're actually
+            improving performance.
 
 There's still one additional complication that we haven't discussed yet.  If we
 take a look at the values that are returned by each of our implementations, we

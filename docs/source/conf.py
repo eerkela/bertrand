@@ -50,8 +50,8 @@ sphinx_tabs_valid_builders = [
 ]
 
 # config for sphinx-togglebutton
-togglebutton_hint = ""  # hide hint text for collapsible sections
-# togglebutton_hint_hide = ""  # hide hint text for collapsed sections
+togglebutton_hint = "Click to show"  # hint text for collapsible sections
+togglebutton_hint_hide = "Click to hide"  # hint text for collapsed sections
 togglebutton_open_on_print = True  # open all collapsible sections during print
 
 

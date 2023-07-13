@@ -1,10 +1,19 @@
 
-/* custom styling for collapsible admonition buttons */
+/* admonition toggle button styling */
 button.toggle-button {
     color: white;
 }
 
-/* custom styling for collapsible container buttons */
+
+/* container toggle button styling */
 .toggle-button summary {
     color: white;
+}
+
+
+/* toggle text positioning */
+.toggle-button::before {
+    vertical-align: top;
+    position: relative;
+    top: 4px;
 }
