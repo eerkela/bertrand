@@ -713,42 +713,67 @@ Next we expose it to Python using our choice of interface.
 
     .. tab:: benchmarks
 
-        If we benchmark these three implementations, we can compare their
-        relative performance:
+        If we benchmark these three implementations alongside an
+        equivalently Python version, we can compare their relative performance:
 
         .. code-block:: python
 
             # benchmark.py
-            from timeit import timeit
             import numba
             import sum_ctypes
             import sum_cython
             import sum_numba
+            from timeit import timeit
+            from typing import List
 
             x = list(range(10**5))
             y = numba.typed.List(x)
 
+            def sum_ints(values: List[int]) -> int:
+                total = 0
+                for value in values:
+                    total += value
+                return total
+
             results = {
+                "python": timeit(lambda: sum_ints(x), number=1000),              # 1.639120161999017
                 "ctypes": timeit(lambda: sum_ctypes.sum_ints(x), number=1000),   # 4.011803085999418
                 "cython": timeit(lambda: sum_cython.sum_ints(x), number=1000),   # 0.8762848040023528
                 "numba": timeit(lambda: sum_numba.sum_ints(y), number=1000),     # 0.7847791439999128
             }
 
-        As we can see, the Cython and Numba implementations are both
-        significantly faster than the :mod:`ctypes <python:ctypes>` version.
-        This is because :mod:`ctypes <python:ctypes>` creates an *interactive*
-        wrapper around the C library, which limits the amount of optimization
-        it can perform.  The C function itself is correctly compiled into
-        native machine code, but the wrapper is not, nor are any of the
-        internals it needs to translate data between Python and C.  Instead,
-        the wrapper is interpreted at runtime, which incurs the full cost of
-        the Python interpreter at every step of the process.  Cython and Numba,
-        on the other hand, can compile the wrapper together with the function
-        and optimize both as a single unit.
+        As we can see, the :mod:`ctypes <python:ctypes>` version is actually
+        even slower than base Python for this kind of workload.  This is
+        because :mod:`ctypes <python:ctypes>` creates an *interactive* wrapper
+        around the C library, which incurs significant overhead and limits the
+        amount of optimization that can be performed.  The C function itself is
+        correctly compiled into native machine code, but the wrapper is not,
+        nor are any of the internals it needs to translate data between Python
+        and C.  These internals, it turns out, can be quite expensive, limiting
+        the usefulness of :mod:`ctypes <python:ctypes>` for performance tuning.
+
+        Cython and Numba, on the other hand, can compile the wrapper together
+        with the function and optimize both as a single unit.  This makes them
+        faster than Python, but not by as much as we might expect.  The core
+        limitation here is that we're storing our data in Python
+        :class:`lists <python:list>`, which are not the most efficient
+        representation we could be using.  If we switched to numpy
+        :class:`arrays <numpy.ndarray>` instead, we could get much better
+        performance:
+
+        .. code-block:: python
+
+            import numpy as np
+
+            x = np.arange(10**5)
+            timeit(lambda: sum_numba.sum_ints(x), number=1000)  # 0.03180096599680837
+
+        This simple step yields a staggering 25x speedup over the previous
+        numba implementation, and a 50x speedup over base Python.
 
         .. warning::
 
-            Now that we've seen how to use Cython and Numba to speed up our
+            Now that we've seen how to use Cython and Numba to optimize our
             code, let's compare them with the built-in Python solution that we
             started with:
 
@@ -757,16 +782,16 @@ Next we expose it to Python using our choice of interface.
                 x = list(range(10**5))
                 timeit.timeit(lambda: sum(x), number=1000)  # 0.16240401699906215
 
-            It turns out our original answer was actually faster than any of
-            the "optimized" versions we've written so far!  This is a
-            cautionary tale for this kind of optimization.  Built-in solutions
-            are already highly optimized for their specific use-case and are
-            almost certainly going to be faster than any naive implementation
-            we're likely to write.  They should always be preferred where
-            possible, and custom solutions should only be used if there's a
-            compelling reason to do so.  As always, we should benchmark our
-            code before and after optimization to ensure that we're actually
-            improving performance.
+            It turns out that - at least on Python lists - the built-in
+            :func:`sum() <python:sum>` function handily beats all of our
+            "optimized" extensions.  This is a cautionary tale for this kind of
+            performance tuning.  Built-in solutions are already highly
+            optimized for their specific use-case and are almost certainly
+            going to be faster than any naive implementation we're likely to
+            write.  They should always be preferred where possible, and custom
+            solutions should only be used if there's a compelling reason to do
+            so.  As always, we should benchmark our code before and after
+            optimization to ensure that we're actually improving performance.
 
 There's still one additional complication that we haven't discussed yet.  If we
 take a look at the values that are returned by each of our implementations, we
