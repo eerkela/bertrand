@@ -25,5 +25,4 @@ setup(
     ),
     include_dirs=[numpy.get_include()],
     zip_safe=False,
-    packages=find_packages(include=["pdcast", "pdcast.*"]),
 )

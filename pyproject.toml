@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta:__legacy__"
 
 
 [tool.setuptools.packages.find]
-include = ["pdcast", "pdcast.*"]
+include = ["pdcast*"]
 
 
 [project]
