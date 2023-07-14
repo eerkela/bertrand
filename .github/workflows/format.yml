@@ -1,0 +1,26 @@
+name: Check formatting
+
+on:
+    workflow_dispatch:
+    pull_request:
+    push:
+        branches:
+            - main
+
+jobs:
+    black:
+        name: Format with black
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v2
+            - name: Set up Python 3.7
+              uses: actions/setup-python@v2
+              with:
+                  python-version: 3.7
+            - name: Install black
+              run: pip install black
+            - name: Run black
+              # This will fail the action with a non-zero exit code if black
+              # finds any formatting errors.  The output of the action will
+              # include a colored diff of the recommended formatting changes.
+              run: black --check --diff --color .
