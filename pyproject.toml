@@ -109,7 +109,28 @@ push = true
 before-all = "choco install visualstudio2022buildtools"  # C/C++ build tools
 
 [tool.pylint]
-extension-pkg-allow-list = "pdcast"  # force load Cython extensions
+extension-pkg-allow-list = "pdcast"  # load Cython extensions
+load-plugins = ["pylint.extensions.docparams"]
+accept-no-param-doc = false          # force function parameters to be documented
+accept-no-return-doc = false         # force function return values to be documented
+accept-no-raise-doc = false          # force exceptions to be documented
+accept-no-yields-doc = false         # force generator yields to be documented
+output-format = "colorized"
+suggestion-mode = true
+jobs = 0
 
 [tool.mypy]
-disallow-untyped-defs = true
+allow_untyped_globals = false        # force globals to be typed
+disallow_untyped_defs = true         # force function signatures to be typed
+disallow_any_generics = true         # force generic containers to be typed
+strict_optional = true               # force Nones to be explicitly typed
+warn_redundant_casts = true          # warn if typing.cast() is unnecessary
+warn_unused_ignores = true           # warn on unnecessary # type: ignore comments
+warn_no_return = true                # warn on functions with no return branch
+warn_unreachable = true              # warn on unreachable code after type analysis
+pretty = true                        # add source context to error messages
+color-output = true                  # colorize error messages
+error-summary = true                 # print a short summary for each error
+
+[tool.black]
+line-length = 88

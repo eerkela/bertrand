@@ -19,5 +19,4 @@ jobs:
             - name: Install pylint
               run: pip install pylint
             - name: Lint with pylint
-              run: pylint --score **/*.py
-
+              run: pylint --reports=true pdcast/**/*.py

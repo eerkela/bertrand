@@ -19,4 +19,4 @@ jobs:
             - name: Install mypy
               run: pip install mypy
             - name: Lint with mypy
-              run: mypy --pretty **/*.py
+              run: mypy pdcast/**/*.py

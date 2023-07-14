@@ -51,7 +51,7 @@ from .base import Arguments, FunctionDecorator, Signature
 
 
 def dispatch(
-    *args,
+    *args: str,
     drop_na: bool = True,
     fill_na: bool = True,
     rectify: bool = False,
