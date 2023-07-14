@@ -64,3 +64,7 @@ del object
 del sparse
 del string
 del timedelta
+
+
+# version number (handled by bumpver)
+__version__ = "0.5.0"
