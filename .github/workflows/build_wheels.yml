@@ -1,6 +1,6 @@
 name: Build wheels
 
-TODO: uncomment to enable scheduled builds
+# TODO: uncomment to enable scheduled builds
 on:
   workflow_dispatch:
   pull_request:
