@@ -65,4 +65,4 @@ dev = [
 
 
 [tool.cibuildwheel.windows]
-before-all = "choco install visualstudio2022buildtools --package-parameters '--includeRecommended --includeOptional'"
+before-all = "choco install visualstudio2022buildtools"
