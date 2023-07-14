@@ -56,7 +56,7 @@ def dispatch(
     fill_na: bool = True,
     rectify: bool = False,
     cache_size: int = 128
-) -> Callable:
+) -> DispatchFunc:
     """A decorator that allows a Python function to dispatch to multiple
     implementations based on the type of one or more of its arguments.
 

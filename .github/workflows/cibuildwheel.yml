@@ -1,6 +1,5 @@
-name: Build wheels
+name: cibuildwheel
 
-# TODO: uncomment to enable scheduled builds
 on:
   workflow_dispatch:
   pull_request:

@@ -3,7 +3,11 @@
 
 pdcast - flexible type extensions for pandas
 ============================================
-.. BADGES
+.. CI BADGES
+
+.. latest cibuildwheel report
+.. image:: https://github.com/eerkela/pdcast/actions/workflows/cibuildwheel.yml/badge.svg
+   :target: https://github.com/eerkela/pdcast/actions/workflows/cibuildwheel.yml
 
 .. latest pylint report
 .. image:: https://github.com/eerkela/pdcast/actions/workflows/pylint.yml/badge.svg
