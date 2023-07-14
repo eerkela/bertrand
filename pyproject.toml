@@ -21,6 +21,8 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 keywords = [
+    "python",
+    "cython",
     "numpy",
     "pandas",
     "extension",
@@ -73,4 +75,3 @@ push = false
 
 [tool.cibuildwheel.windows]
 before-all = "choco install visualstudio2022buildtools"  # C build tools
-
