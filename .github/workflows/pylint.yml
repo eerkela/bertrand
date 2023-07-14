@@ -1,0 +1,23 @@
+name: Pylint
+
+on:
+    workflow_dispatch:
+    pull_request:
+    push:
+        branches:
+            - main
+
+jobs:
+    pylint:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v2
+            - name: Set up Python 3.7
+              uses: actions/setup-python@v2
+              with:
+                  python-version: 3.7
+            - name: Install pylint
+              run: pip install pylint
+            - name: Lint with pylint
+              run: pylint --score **/*.py
+

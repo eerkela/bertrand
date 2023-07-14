@@ -78,7 +78,9 @@ requires-python = ">=3.7"
 dev = [
     "bumpver",
     "cibuildwheel",
+    "mypy",
     "pyarrow",
+    "pylint",
     "pytest",
     "sphinx",
     "sphinx_rtd_theme",
@@ -105,3 +107,9 @@ push = true
 
 [tool.cibuildwheel.windows]
 before-all = "choco install visualstudio2022buildtools"  # C/C++ build tools
+
+[tool.pylint]
+extension-pkg-allow-list = "pdcast"  # force load Cython extensions
+
+[tool.mypy]
+disallow-untyped-defs = true

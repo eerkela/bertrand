@@ -3,6 +3,20 @@
 
 pdcast - flexible type extensions for pandas
 ============================================
+.. BADGES
+
+.. latest pylint report
+.. image:: https://github.com/eerkela/pdcast/actions/workflows/pylint.yml/badge.svg
+   :target: https://github.com/eerkela/pdcast/actions/workflows/pylint.yml
+
+.. latest mypy report
+.. image:: https://github.com/eerkela/pdcast/actions/workflows/mypy.yml/badge.svg
+   :target: https://github.com/eerkela/pdcast/actions/workflows/mypy.yml
+
+.. latest black format report
+.. image:: https://github.com/eerkela/pdcast/actions/workflows/black.yml/badge.svg
+   :target: https://github.com/eerkela/pdcast/actions/workflows/black.yml
+
 ``pdcast`` enhances the numpy/pandas typing infrastructure, allowing users to
 write powerful, modular extensions for arbitrary data.
 

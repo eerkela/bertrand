@@ -1,4 +1,4 @@
-name: Check formatting
+name: Black
 
 on:
     workflow_dispatch:
@@ -9,7 +9,6 @@ on:
 
 jobs:
     black:
-        name: Format with black
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v2
