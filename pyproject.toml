@@ -42,7 +42,7 @@ dependencies = [
     "regex",
     "tzlocal",
 ]
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 
 
 [project.optional-dependencies]
@@ -62,3 +62,7 @@ dev = [
 "Homepage" = "https://github.com/eerkela/pdcast"
 # "Documentation" = "<link to readthedocs>"
 "Issue Tracker" = "https://github.com/eerkela/pdcast/issues"
+
+
+[tool.cibuildwheel.windows]
+before-all = "choco install visualstudio2022buildtools --package-parameters '--includeRecommended --includeOptional'"

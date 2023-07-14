@@ -1,5 +1,5 @@
 from os import cpu_count
-from setuptools import Extension, find_packages, setup
+from setuptools import Extension, setup
 
 from Cython.Build import cythonize
 import numpy

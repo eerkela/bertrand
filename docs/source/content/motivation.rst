@@ -743,10 +743,10 @@ Next we expose it to Python using our choice of interface.
             }
 
         As we can see, the :mod:`ctypes <python:ctypes>` version is actually
-        even slower than base Python for this kind of workload.  This is
-        because :mod:`ctypes <python:ctypes>` creates an *interactive* wrapper
-        around the C library, which incurs significant overhead and limits the
-        amount of optimization that can be performed.  The C function itself is
+        slower than base Python for this kind of workload.  This is because
+        :mod:`ctypes <python:ctypes>` creates an *interactive* wrapper around
+        the C library, which incurs significant overhead and limits the amount
+        of optimization that can be performed.  The C function itself is
         correctly compiled into native machine code, but the wrapper is not,
         nor are any of the internals it needs to translate data between Python
         and C.  These internals, it turns out, can be quite expensive, limiting
@@ -795,13 +795,15 @@ Next we expose it to Python using our choice of interface.
             so.  As always, we should benchmark our code before and after
             optimization to ensure that we're actually improving performance.
 
-There's still one additional complication that we haven't discussed yet.  If we
-take a look at the values that are returned by each of our implementations, we
-might notice a discrepancy:
+If we take a look at the values that are returned by each of the above
+implementations, we might notice a discrepancy:
 
 .. code-block:: python
 
     import numba
+    import sum_ctypes
+    import sum_cython
+    import sum_numba
 
     x = list(range(10**5))
     y = numba.typed.List(x)
@@ -811,12 +813,12 @@ might notice a discrepancy:
     sum_numba.sum_ints(y)    # 704982704
     sum(x)                   # 4999950000
 
-All of our custom implementations overflow!  This is because the C integer type
-we used to represent the sum is only 32 bits wide, meaning it can only
-represent values up to ``2**32 - 1``, which is less than the sum we are trying
-to compute.  The built-in Python function, on the other hand, uses a
-variable-length integer type that can represent arbitrarily large values
-without overflowing.
+The built-in solution returns a different value than the other three.  This is
+because the integer type we used to represent the sum is only 32 bits wide,
+meaning it can only represent values up to ``2**32 - 1``, which is less than 
+the sum we are trying to compute.  The :func:`sum() <python:sum>` function, on
+the other hand, uses built-in Python integers, which are variable-length and
+can represent arbitrarily large values without overflowing.
 
 .. figure:: /images/motivation/Integer_Data_Formats.svg
     :align: center
@@ -826,7 +828,9 @@ without overflowing.
 This is a common problem when working with C libraries.
 
 
-.. TODO: end this section by mentioning numpy
+.. TODO: talk about variable sizing within the implementation itself, and then
+    talk about it in regards to inputs.  These are two separate complications,
+    which need to be addressed independently.
 
 
 Most Python objects have no direct C equivalent, and must be translated into a
@@ -844,6 +848,11 @@ represent arbitrarily large values without overflow.  This means that any
 integer we pass from Python to C must be translated into a C integer of the
 appropriate size, and vice versa.  This brings us back to the type-safety
 problems we were trying to avoid in the first place.
+
+
+.. TODO: end this section by briefly mentioning numpy as a way to interop with
+    C without having to write custom algorithms.  The next section explores
+    this in more detail and explains the limitations of doing so.
 
 
 
