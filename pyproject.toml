@@ -7,7 +7,7 @@ include = ["pdcast*"]
 
 [project]
 name = "pdcast"
-version = "0.7.0"
+version = "0.5.1"
 description = "flexible type extensions for pandas"
 readme = "README.rst"
 authors = [
@@ -60,7 +60,7 @@ dev = [
 "Issue Tracker" = "https://github.com/eerkela/pdcast/issues"
 
 [tool.bumpver]
-current_version = "0.5.0"
+current_version = "0.5.1"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 commit = true
