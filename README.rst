@@ -1,25 +1,43 @@
 .. NOTE: whenever a change is made to this file, make sure to update the
 .. start and end lines of index.rst to allow doctests to run.
 
-pdcast - flexible type extensions for pandas
-============================================
 .. CI BADGES
 
+.. latest PyPI version
+.. |current_version| image:: https://img.shields.io/pypi/v/bertrand
+   :alt: PyPI version
+   :target: https://pypi.org/project/bertrand/
+
+.. supported Python versions
+.. |requires_python| image:: https://img.shields.io/badge/python-3.7%2B-blue
+   :alt: Supported Python versions
+   :target: https://pypi.org/project/bertrand/
+
+.. TODO: add tests pass/fail status + coverage report when applicable
+
 .. latest cibuildwheel report
-.. image:: https://github.com/eerkela/pdcast/actions/workflows/cibuildwheel.yml/badge.svg
+.. |cibuildwheel| image:: https://github.com/eerkela/pdcast/actions/workflows/cibuildwheel.yml/badge.svg
+   :alt: PyPI wheels
    :target: https://github.com/eerkela/pdcast/actions/workflows/cibuildwheel.yml
 
 .. latest pylint report
-.. image:: https://github.com/eerkela/pdcast/actions/workflows/pylint.yml/badge.svg
+.. |pylint| image:: https://github.com/eerkela/pdcast/actions/workflows/pylint.yml/badge.svg
+   :alt: Pylint report
    :target: https://github.com/eerkela/pdcast/actions/workflows/pylint.yml
 
 .. latest mypy report
-.. image:: https://github.com/eerkela/pdcast/actions/workflows/mypy.yml/badge.svg
+.. |mypy| image:: https://github.com/eerkela/pdcast/actions/workflows/mypy.yml/badge.svg
+   :alt: Mypy report
    :target: https://github.com/eerkela/pdcast/actions/workflows/mypy.yml
 
 .. latest black format report
-.. image:: https://github.com/eerkela/pdcast/actions/workflows/black.yml/badge.svg
+.. |black| image:: https://github.com/eerkela/pdcast/actions/workflows/black.yml/badge.svg
+   :alt: Black format
    :target: https://github.com/eerkela/pdcast/actions/workflows/black.yml
+
+pdcast - flexible type extensions for pandas
+============================================
+|current_version| |requires_python| |cibuildwheel| |pylint| |mypy| |black|
 
 ``pdcast`` enhances the numpy/pandas typing infrastructure, allowing users to
 write powerful, modular extensions for arbitrary data.
