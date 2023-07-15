@@ -20,25 +20,37 @@ construct_object_dtype()
 construct_array_type()
     A factory for ``ObjectArray`` definitions.
 """
+# pylint: disable=unused-argument
+from __future__ import annotations
 from collections import Counter
 import numbers
 import sys
-from typing import Any, Iterable, Iterator, NoReturn
+from typing import Any, Iterable, Iterator, Literal, NoReturn
 
-cimport cython
-cimport numpy as np
 import numpy as np
 import pandas as pd
-import pandas.core.algorithms as algorithms
 from pandas.api.extensions import register_extension_dtype
 from pandas.core.arrays import ExtensionArray, PandasArray
 from pandas.core.dtypes.base import ExtensionDtype
-from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
+from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries  # type: ignore
 
-from pdcast.util.type_hints import array_like, dtype_like, type_specifier
+from pdcast.util.type_hints import array_like, dtype_like
+
+
+# TODO: merge this with the equivalent stub
 
 
 # TODO: run these through pandas test suite to see if anything is broken.
+# -> need to implement _accumulate()
+
+
+# TODO: use a classmethod to inject the ScalarType into the array definition rather
+# than using a private attribute.  Maybe do the same with the corresponding dtype,
+# although these have to stay unique for each ScalarType.  We can then just implement
+# everything in the main definition and prevent lint errors.
+
+# Now that we're in pure python, we can dynamically compute __doc__ strings based on
+# the associated ScalarType.  This should be done for both the dtype and array
 
 
 ######################
@@ -47,10 +59,10 @@ from pdcast.util.type_hints import array_like, dtype_like, type_specifier
 
 
 def construct_object_dtype(
-    pdcast_type,
+    pdcast_type: Any,
     is_boolean: bool,
     is_numeric: bool,
-    kind: str = "O",
+    kind: valid_kinds = "O",
     nullable: bool = True,
     common_dtype: dtype_like | None = None
 ) -> ObjectDtype:
@@ -118,7 +130,7 @@ def construct_object_dtype(
     return _ObjectDtype()
 
 
-def construct_array_type(pdcast_type) -> type:
+def construct_array_type(pdcast_type: Any) -> type[ObjectArray]:
     """Create a new ExtensionArray definition to store objects of the given
     type.
     """
@@ -128,7 +140,7 @@ def construct_array_type(pdcast_type) -> type:
     )
 
     class _ObjectArray(ObjectArray):
-        
+
         def __init__(self, *args, **kwargs):
             self._pdcast_type = pdcast_type
             super().__init__(*args, **kwargs)
@@ -141,6 +153,12 @@ def construct_array_type(pdcast_type) -> type:
 #######################
 ####    PRIVATE    ####
 #######################
+
+
+# pylint: disable=invalid-name
+boolean_array = np.ndarray[np.bool_, np.dtype[np.bool_]]
+valid_kinds = Literal['b', 'i', 'u', 'f', 'c', 'm', 'M', 'O', 'S', 'U', 'V']
+
 
 
 class ObjectDtype(ExtensionDtype):
@@ -158,7 +176,7 @@ class ObjectDtype(ExtensionDtype):
         # require use of construct_object_dtype() factory
         if not hasattr(self, "_pdcast_type"):
             raise NotImplementedError(
-                f"ObjectDtype must have an associated ScalarType"
+                "ObjectDtype must have an associated ScalarType"
             )
 
     @classmethod
@@ -244,23 +262,25 @@ class ObjectArray(ExtensionArray):
     """
 
     __array_priority__: int = 1000  # this is used in pandas test code
+    data: np.ndarray[Any, np.dtype[Any]]
+    _data: np.ndarray[Any, np.dtype[Any]]
+    _items: np.ndarray[Any, np.dtype[Any]]
 
     def __init__(
         self,
         values: Iterable[Any],
         dtype: dtype_like | None = None,
-        copy: bool = False
+        copy: bool = False,
     ):
         # NOTE: this does NOT coerce inputs; that's handled by cast() itself
-        self._data = np.asarray(values, dtype=object)
 
         # aliases for common attributes to ensure pandas support
-        self._items = self.data = self._data
+        self.data = self._data = self._items = np.asarray(values, dtype=object)
 
         # require use of construct_array_type() factory
         if not hasattr(self, "_pdcast_type"):
             raise NotImplementedError(
-                f"ObjectArray must have an associated ScalarType"
+                "ObjectArray must have an associated ScalarType"
             )
 
     ############################
@@ -271,7 +291,7 @@ class ObjectArray(ExtensionArray):
     def _from_sequence(
         cls,
         scalars: Iterable[Any],
-        dtype: dtype_like | Non = None,
+        dtype: dtype_like | None = None,
         copy: bool = False
     ) -> ObjectArray:
         """Construct a new ExtensionArray from a sequence of scalars.
@@ -302,7 +322,7 @@ class ObjectArray(ExtensionArray):
 
     @classmethod
     def _from_factorized(
-        cls, values: np.ndarray, original: ExtensionArray
+        cls, values: np.ndarray[np.int64, np.dtype[np.int64]], original: ExtensionArray
     ) -> ObjectArray:
         """Reconstruct an ExtensionArray after factorization.
 
@@ -333,7 +353,7 @@ class ObjectArray(ExtensionArray):
         -------
         ExtensionArray
         """
-        return cls(np.concatenate([x._data for x in to_concat]))
+        return cls(np.concatenate([x.data for x in to_concat]))
 
     ##########################
     ####    ATTRIBUTES    ####
@@ -385,9 +405,9 @@ class ObjectArray(ExtensionArray):
         returned array don't need to be modified to sort correctly.
         """
         # Note: this is used in `ExtensionArray.argsort/argmin/argmax`.
-        return self._data
+        return self.data
 
-    def _values_for_factorize(self) -> tuple:
+    def _values_for_factorize(self) -> tuple[np.ndarray[Any, np.dtype[Any]], Any]:
         """Return an array and missing value suitable for factorization.
 
         Returns
@@ -406,7 +426,7 @@ class ObjectArray(ExtensionArray):
         The values returned by this method are also used in
         :func:`pandas.util.hash_pandas_object`.
         """
-        return self._data, self.dtype.na_value
+        return self.data, self.dtype.na_value
 
     def _reduce(self, name: str, skipna: bool = True, **kwargs: Any) -> Any:
         """Return a scalar result of performing the reduction operation.
@@ -465,7 +485,7 @@ class ObjectArray(ExtensionArray):
         """
         # pandas unboxes these so we don't need to implement them ourselves
         if any(
-            isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame))
+            isinstance(other, (ABCSeries, ABCIndex, ABCDataFrame))  # type: ignore
             for other in inputs
         ):
             return NotImplemented
@@ -479,9 +499,7 @@ class ObjectArray(ExtensionArray):
         if not all(isinstance(t, array_like + scalar_like) for t in inputs):
             return NotImplemented
 
-        inputs = tuple(
-            x._data if isinstance(x, ExtensionArray) else x for x in inputs
-        )
+        inputs = tuple(x.data if isinstance(x, ExtensionArray) else x for x in inputs)
         result = getattr(ufunc, method)(*inputs, **kwargs)
 
         def reconstruct(x):
@@ -502,7 +520,7 @@ class ObjectArray(ExtensionArray):
         """
         import pyarrow
 
-        return pyarrow.array(self._data, type=type)
+        return pyarrow.array(self.data, type=type)
 
     def __from_arrow__(self, array: Any) -> ObjectArray:
         """Convert a pyarrow array into a pandas ExtensionArray.
@@ -543,13 +561,13 @@ class ObjectArray(ExtensionArray):
 
         if isinstance(dtype, ExtensionDtype):
             cls = dtype.construct_array_type()
-            return cls._from_sequence(self._data, dtype=dtype, copy=copy)
+            return cls._from_sequence(self.data, dtype=dtype, copy=copy)
 
-        return self._data.astype(dtype=dtype, copy=copy)
+        return self.data.astype(dtype=dtype, copy=copy)
 
-    def isna(self) -> np.ndarray:
+    def isna(self) -> boolean_array:
         """Detect missing values from the array."""
-        return pd.isna(self._data)
+        return pd.isna(self.data)
 
     def take(
         self,
@@ -633,7 +651,7 @@ class ObjectArray(ExtensionArray):
         """
         from pandas.core.algorithms import take
 
-        data = self._data
+        data = self.data
         if allow_fill and fill_value is None:
             fill_value = self.dtype.na_value
 
@@ -652,7 +670,7 @@ class ObjectArray(ExtensionArray):
         -------
         ExtensionArray
         """
-        return type(self)(self._data.copy())
+        return type(self)(self.data.copy())
 
     ###########################
     ####    NEW METHODS    ####
@@ -667,7 +685,7 @@ class ObjectArray(ExtensionArray):
         """Default round implementation.  This simply passes through to
         np.round().
         """
-        return self._from_sequence(self._data.round(*args, **kwargs))
+        return self._from_sequence(self.data.round(*args, **kwargs))
 
     def value_counts(self, dropna: bool = True) -> pd.Series:
         """Returns a Series containing counts of each unique value.
@@ -687,7 +705,7 @@ class ObjectArray(ExtensionArray):
         """
         # compute counts without nans
         mask = self.isna()
-        counts = Counter(self._data[~mask])
+        counts = Counter(self.data[~mask])
         result = pd.Series(
             counts.values(),
             index=pd.Index(list(counts.keys()), dtype=self.dtype)
@@ -711,7 +729,7 @@ class ObjectArray(ExtensionArray):
         """Implement the :func:`abs() <python:abs>` function for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
-        return rectify(abs(self._data), self._pdcast_type)
+        return rectify(abs(self.data), self._pdcast_type)
 
     def __neg__(self) -> ObjectArray:
         """Implement the unary negative operator ``-`` for
@@ -719,14 +737,14 @@ class ObjectArray(ExtensionArray):
         """
         if self.dtype._is_boolean:
             return self.__invert__()
-    
-        return rectify(-self._data, self._pdcast_type)
+
+        return rectify(-self.data, self._pdcast_type)
 
     def __pos__(self) -> ObjectArray:
         """Implement the unary positive operator ``+`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
-        return rectify(+self._data, self._pdcast_type)
+        return rectify(+self.data, self._pdcast_type)
 
     def __invert__(self) -> ObjectArray:
         """Implement the unary inversion operator ``~`` for
@@ -735,174 +753,174 @@ class ObjectArray(ExtensionArray):
         if self.dtype._is_boolean:
             return self.__xor__(True)
 
-        return rectify(~self._data, self._pdcast_type)
+        return rectify(~self.data, self._pdcast_type)
 
     ################################
     ####    BINARY OPERATORS    ####
     ################################
 
-    def __and__(self, other: Any) -> ObjectArray:
+    def __and__(self, other: Any) -> ExtensionArray:
         """Implement the binary AND operator ``&`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(self._data & np.asarray(other), self._pdcast_type)
+        return rectify(self.data & np.asarray(other), self._pdcast_type)
 
-    def __or__(self, other: Any) -> ObjectArray:
+    def __or__(self, other: Any) -> ExtensionArray:
         """Implement the binary OR operator ``|`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(self._data & np.asarray(other), self._pdcast_type)
+        return rectify(self.data & np.asarray(other), self._pdcast_type)
 
-    def __xor__(self, other: Any) -> ObjectArray:
+    def __xor__(self, other: Any) -> ExtensionArray:
         """Implement the binary XOR operator ``^`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(self._data & np.asarray(other), self._pdcast_type)
+        return rectify(self.data & np.asarray(other), self._pdcast_type)
 
-    def __rshift__(self, other: Any) -> ObjectArray:
+    def __rshift__(self, other: Any) -> ExtensionArray:
         """Implement the binary right-shift operator ``>>`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(self._data & np.asarray(other), self._pdcast_type)
+        return rectify(self.data & np.asarray(other), self._pdcast_type)
 
-    def __lshift__(self, other: Any) -> ObjectArray:
+    def __lshift__(self, other: Any) -> ExtensionArray:
         """Implement the binary left-shift operator ``<<`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(self._data & np.asarray(other), self._pdcast_type)
+        return rectify(self.data & np.asarray(other), self._pdcast_type)
 
     ########################################
     ####    REVERSE BINARY OPERATORS    ####
     ########################################
 
-    def __rand__(self, other: Any) -> ObjectArray:
+    def __rand__(self, other: Any) -> ExtensionArray:
         """Implement the reverse binary AND operator ``&`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(np.asarray(other) & self._data, self._pdcast_type)
+        return rectify(np.asarray(other) & self.data, self._pdcast_type)
 
-    def __ror__(self, other: Any) -> ObjectArray:
+    def __ror__(self, other: Any) -> ExtensionArray:
         """Implement the reverse binary OR operator ``|`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(np.asarray(other) | self._data, self._pdcast_type)
+        return rectify(np.asarray(other) | self.data, self._pdcast_type)
 
-    def __rxor__(self, other: Any) -> ObjectArray:
+    def __rxor__(self, other: Any) -> ExtensionArray:
         """Implement the reverse binary XOR operator ``^`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(np.asarray(other) ^ self._data, self._pdcast_type)
+        return rectify(np.asarray(other) ^ self.data, self._pdcast_type)
 
-    def __rrshift__(self, other: Any) -> ObjectArray:
+    def __rrshift__(self, other: Any) -> ExtensionArray:
         """Implement the reverse binary right-shift operator ``>>`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(np.asarray(other) >> self._data, self._pdcast_type)
+        return rectify(np.asarray(other) >> self.data, self._pdcast_type)
 
-    def __rlshift__(self, other: Any) -> ObjectArray:
+    def __rlshift__(self, other: Any) -> ExtensionArray:
         """Implement the reverse binary left-shift operator ``<<`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(np.asarray(other) << self._data, self._pdcast_type)
+        return rectify(np.asarray(other) << self.data, self._pdcast_type)
 
     #########################################
     ####    IN-PLACE BINARY OPERATORS    ####
     #########################################
 
-    def __iand__(self, other: Any) -> ObjectArray:
+    def __iand__(self, other: Any) -> ExtensionArray:
         """Implement the in-place binary AND operator ``&=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data &= np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data &= np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
-    def __ior__(self, other: Any) -> ObjectArray:
+    def __ior__(self, other: Any) -> ExtensionArray:
         """Implement the in-place binary OR operator ``|=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data |= np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data |= np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
-    def __ixor__(self, other: Any) -> ObjectArray:
+    def __ixor__(self, other: Any) -> ExtensionArray:
         """Implement the in-place binary XOR operator ``^=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data ^= np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data ^= np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
-    def __irshift__(self, other: Any) -> ObjectArray:
+    def __irshift__(self, other: Any) -> ExtensionArray:
         """Implement the in-place binary right-shift operator ``>>=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data >>= np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data >>= np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
-    def __ilshift__(self, other: Any) -> ObjectArray:
+    def __ilshift__(self, other: Any) -> ExtensionArray:
         """Implement the in-place binary left-shift operator ``<<=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data <<= np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data <<= np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
     ##############################
     ####    MATH OPERATORS    ####
@@ -911,99 +929,99 @@ class ObjectArray(ExtensionArray):
     # NOTE: math operators can change an array's type in unexpected ways, so
     # we always follow up with a detect_type call to rectify the result.
 
-    def __add__(self, other: Any) -> ObjectArray:
+    def __add__(self, other: Any) -> ExtensionArray:
         """Implement the addition operator ``+`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(self._data + np.asarray(other), self._pdcast_type)
+        return rectify(self.data + np.asarray(other), self._pdcast_type)
 
-    def __sub__(self, other: Any) -> ObjectArray:
+    def __sub__(self, other: Any) -> ExtensionArray:
         """Implement the subtraction operator ``-`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(self._data - np.asarray(other), self._pdcast_type)
+        return rectify(self.data - np.asarray(other), self._pdcast_type)
 
-    def __mul__(self, other: Any) -> ObjectArray:
+    def __mul__(self, other: Any) -> ExtensionArray:
         """Implement the multiplication operator ``*`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(self._data * np.asarray(other), self._pdcast_type)
+        return rectify(self.data * np.asarray(other), self._pdcast_type)
 
-    def __matmul__(self, other: Any) -> ObjectArray:
+    def __matmul__(self, other: Any) -> ExtensionArray:
         """Implement the matrix multiplication operator ``@`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(self._data @ np.asarray(other), self._pdcast_type)
+        return rectify(self.data @ np.asarray(other), self._pdcast_type)
 
-    def __truediv__(self, other: Any) -> ObjectArray:
+    def __truediv__(self, other: Any) -> ExtensionArray:
         """Implement the true division operator ``/`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(self._data / np.asarray(other), self._pdcast_type)
+        return rectify(self.data / np.asarray(other), self._pdcast_type)
 
-    def __floordiv__(self, other: Any) -> ObjectArray:
+    def __floordiv__(self, other: Any) -> ExtensionArray:
         """Implement the floor division operator ``//`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(self._data // np.asarray(other), self._pdcast_type)
+        return rectify(self.data // np.asarray(other), self._pdcast_type)
 
-    def __mod__(self, other: Any) -> ObjectArray:
+    def __mod__(self, other: Any) -> ExtensionArray:
         """Implement the modulo operator ``%`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(self._data % np.asarray(other), self._pdcast_type)
+        return rectify(self.data % np.asarray(other), self._pdcast_type)
 
-    def __divmod__(self, other: Any) -> ObjectArray:
+    def __divmod__(self, other: Any) -> ExtensionArray:
         """Implement the :func:`divmod() <python:divmod>` function for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
         return rectify(
-            divmod(self._data, np.asarray(other)),
+            divmod(self.data, np.asarray(other)),
             self._pdcast_type
         )
 
-    def __pow__(self, other: Any, mod: Any | None = None) -> ObjectArray:
+    def __pow__(self, other: Any, mod: Any | None = None) -> ExtensionArray:
         """Implement the exponentiation operator ``**`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
         return rectify(
-            pow(self._data, np.asarray(other), mod),
+            pow(self.data, np.asarray(other), mod),
             self._pdcast_type
         )
 
@@ -1011,99 +1029,99 @@ class ObjectArray(ExtensionArray):
     ####    REVERSE MATH OPERATORS    ####
     ######################################
 
-    def __radd__(self, other: Any) -> ObjectArray:
+    def __radd__(self, other: Any) -> ExtensionArray:
         """Implement the reverse addition operator ``+`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(np.asarray(other) + self._data, self._pdcast_type)
+        return rectify(np.asarray(other) + self.data, self._pdcast_type)
 
-    def __rsub__(self, other: Any) -> ObjectArray:
+    def __rsub__(self, other: Any) -> ExtensionArray:
         """Implement the reverse subtraction operator ``-`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(np.asarray(other) - self._data, self._pdcast_type)
+        return rectify(np.asarray(other) - self.data, self._pdcast_type)
 
-    def __rmul__(self, other: Any) -> ObjectArray:
+    def __rmul__(self, other: Any) -> ExtensionArray:
         """Implement the reverse multiplication operator ``*`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(np.asarray(other) * self._data, self._pdcast_type)
+        return rectify(np.asarray(other) * self.data, self._pdcast_type)
 
-    def __rmatmul__(self, other: Any) -> ObjectArray:
+    def __rmatmul__(self, other: Any) -> ExtensionArray:
         """Implement the reverse matrix multiplication operator ``@`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(np.asarray(other) @ self._data, self._pdcast_type)
+        return rectify(np.asarray(other) @ self.data, self._pdcast_type)
 
-    def __rtruediv__(self, other: Any) -> ObjectArray:
+    def __rtruediv__(self, other: Any) -> ExtensionArray:
         """Implement the reverse true division operator ``/`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(np.asarray(other) / self._data, self._pdcast_type)
+        return rectify(np.asarray(other) / self.data, self._pdcast_type)
 
-    def __rfloordiv__(self, other: Any) -> ObjectArray:
+    def __rfloordiv__(self, other: Any) -> ExtensionArray:
         """Implement the reverse floor division operator ``//`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(np.asarray(other) // self._data, self._pdcast_type)
+        return rectify(np.asarray(other) // self.data, self._pdcast_type)
 
-    def __rmod__(self, other: Any) -> ObjectArray:
+    def __rmod__(self, other: Any) -> ExtensionArray:
         """Implement the reverse modulo operator ``%`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return rectify(np.asarray(other) % self._data, self._pdcast_type)
+        return rectify(np.asarray(other) % self.data, self._pdcast_type)
 
-    def __rdivmod__(self, other: Any) -> ObjectArray:
+    def __rdivmod__(self, other: Any) -> ExtensionArray:
         """Implement the reverse :func:`divmod() <python:divmod>` function for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
         return rectify(
-            divmod(np.asarray(other), self._data),
+            divmod(np.asarray(other), self.data),
             self._pdcast_type
         )
 
-    def __rpow__(self, other: Any, mod: Any | None = None) -> ObjectArray:
+    def __rpow__(self, other: Any, mod: Any | None = None) -> ExtensionArray:
         """Implement the reverse exponentiation operator ``**`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
         return rectify(
-            pow(np.asarray(other), self._data, mod),
+            pow(np.asarray(other), self.data, mod),
             self._pdcast_type
         )
 
@@ -1111,157 +1129,157 @@ class ObjectArray(ExtensionArray):
     ####    IN-PLACE MATH OPERATORS    ####
     #######################################
 
-    def __iadd__(self, other: Any) -> ObjectArray:
+    def __iadd__(self, other: Any) -> ExtensionArray:
         """Implement the in-place addition operator ``+=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data += np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data += np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
-    def __isub__(self, other: Any) -> ObjectArray:
+    def __isub__(self, other: Any) -> ExtensionArray:
         """Implement the in-place subtraction operator ``-=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data -= np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data -= np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
-    def __imul__(self, other: Any) -> ObjectArray:
+    def __imul__(self, other: Any) -> ExtensionArray:
         """Implement the in-place multiplication operator ``*=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data *= np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data *= np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
-    def __imatmul__(self, other: Any) -> ObjectArray:
+    def __imatmul__(self, other: Any) -> ExtensionArray:
         """Implement the in-place matrix multiplication operator ``@=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data @= np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data @= np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
-    def __itruediv__(self, other: Any) -> ObjectArray:
+    def __itruediv__(self, other: Any) -> ExtensionArray:
         """Implement the in-place true division operator ``/=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data /= np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data /= np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
-    def __ifloordiv__(self, other: Any) -> ObjectArray:
+    def __ifloordiv__(self, other: Any) -> ExtensionArray:
         """Implement the in-place floor division operator ``//=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data //= np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data //= np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
-    def __imod__(self, other: Any) -> ObjectArray:
+    def __imod__(self, other: Any) -> ExtensionArray:
         """Implement the in-place modulo operator ``%=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data %= np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data %= np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
-    def __ipow__(self, other: Any, mod: Any | None = None) -> ObjectArray:
+    def __ipow__(self, other: Any, mod: Any | None = None) -> ExtensionArray:
         """Implement the in-place exponentiation operator ``**=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        self._data **= np.asarray(other)
-        return rectify(self._data, self._pdcast_type)
+        self.data **= np.asarray(other)
+        return rectify(self.data, self._pdcast_type)
 
     ####################################
     ####    COMPARISON OPERATORS    ####
     ####################################
 
-    def __lt__(self, other: Any) -> np.ndarray:
+    def __lt__(self, other: Any) -> boolean_array:
         """Implement the less-than operator ``<`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return self._data < other
+        return self.data < other
 
-    def __le__(self, other: Any) -> np.ndarray:
+    def __le__(self, other: Any) -> boolean_array:
         """Implement the less-than-or-equal-to operator ``<=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return self._data <= other
+        return self.data <= other
 
-    def __eq__(self, other: Any) -> np.ndarray:
+    def __eq__(self, other: Any) -> boolean_array:  # type: ignore
         """Implement the equality operator ``==`` (elementwise) for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return self._data == other
+        return self.data == other
 
-    def __ne__(self, other: Any) -> np.ndarray:
+    def __ne__(self, other: Any) -> boolean_array:  # type: ignore
         """Implement the inequality operator ``!=`` (elementwise) for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return self._data != other
+        return self.data != other
 
-    def __gt__(self, other: Any) -> np.ndarray:
+    def __gt__(self, other: Any) -> boolean_array:
         """Implement the greater-than operator ``>`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return self._data > other
+        return self.data > other
 
-    def __ge__(self, other: Any) -> np.ndarray:
+    def __ge__(self, other: Any) -> boolean_array:
         """Implement the greater-than-or-equal-to operator ``>=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
         # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
+        if isinstance(other, (ABCSeries, ABCIndex)):  # type: ignore
             return NotImplemented
 
-        return self._data >= other
+        return self.data >= other
 
     #################################
     ####    CONTAINER METHODS    ####
@@ -1295,8 +1313,8 @@ class ObjectArray(ExtensionArray):
         to the values where ``key`` is True.
         """
         if isinstance(key, numbers.Integral):
-            return self._data[key]
-        return self._from_sequence(self._data[key])
+            return self.data[key]
+        return self._from_sequence(self.data[key])
 
     def __setitem__(self, key: Any, value: Any) -> None:
         """Set one or more values inplace.
@@ -1327,7 +1345,7 @@ class ObjectArray(ExtensionArray):
         else:
             value = convert.cast(value, self._pdcast_type)[0]
 
-        self._data[key] = value
+        self.data[key] = value
 
     def __delitem__(self, key: Any) -> None:
         """Delete one or more values inplace.
@@ -1335,11 +1353,11 @@ class ObjectArray(ExtensionArray):
         This always raises an error since numpy does not support deleting
         elements from an array.
         """
-        del self._data[key]
+        del self.data[key]
 
     def __iter__(self) -> Iterator[Any]:
         """Iterate over elements of the array."""
-        return iter(self._data)
+        return iter(self.data)
 
     def __len__(self) -> int:
         """Length of this array
@@ -1348,16 +1366,16 @@ class ObjectArray(ExtensionArray):
         -------
         length : int
         """
-        return len(self._data)
+        return len(self.data)
 
     def __contains__(self, other: Any) -> bool:
         """Implement the ``in`` keyword for membership tests on
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
-        return other in self._data
+        return other in self.data
 
 
-def rectify(arr: np.ndarray, orig_dtype) -> ExtensionArray:
+def rectify(arr: np.ndarray[Any, np.dtype[Any]], orig_dtype) -> ExtensionArray:
     """Rectify the result of a math operation to the detected type of the
     first element.
 
