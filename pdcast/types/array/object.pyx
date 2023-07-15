@@ -23,7 +23,7 @@ construct_array_type()
 from collections import Counter
 import numbers
 import sys
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator, NoReturn
 
 cimport cython
 cimport numpy as np
@@ -35,7 +35,10 @@ from pandas.core.arrays import ExtensionArray, PandasArray
 from pandas.core.dtypes.base import ExtensionDtype
 from pandas.core.dtypes.generic import ABCDataFrame, ABCIndex, ABCSeries
 
-from pdcast.util.type_hints import type_specifier
+from pdcast.util.type_hints import array_like, dtype_like, type_specifier
+
+
+# TODO: run these through pandas test suite to see if anything is broken.
 
 
 ######################
@@ -49,8 +52,8 @@ def construct_object_dtype(
     is_numeric: bool,
     kind: str = "O",
     nullable: bool = True,
-    common_dtype: np.dtype | ExtensionDtype = None
-) -> ExtensionDtype:
+    common_dtype: dtype_like | None = None
+) -> ObjectDtype:
     """Construct a new pandas ``ExtensionDtype`` to refer to elements
     of this type.
 
@@ -85,7 +88,7 @@ def construct_object_dtype(
             """
             return construct_array_type(pdcast_type)
 
-        def _get_common_dtype(self, dtypes: list):
+        def _get_common_dtype(self, dtypes: list) -> dtype_like | None:
             """Return the common dtype, if one exists.
 
             Used in `find_common_type` implementation. This is for example used
@@ -115,9 +118,7 @@ def construct_object_dtype(
     return _ObjectDtype()
 
 
-def construct_array_type(
-    pdcast_type,
-) -> ExtensionArray:
+def construct_array_type(pdcast_type) -> type:
     """Create a new ExtensionArray definition to store objects of the given
     type.
     """
@@ -161,7 +162,7 @@ class ObjectDtype(ExtensionDtype):
             )
 
     @classmethod
-    def construct_from_string(cls: type, string: str) -> ExtensionDtype:
+    def construct_from_string(cls, string: str) -> NoReturn:
         """Construct this type from a string.
 
         This is useful mainly for data types that accept parameters.
@@ -242,9 +243,14 @@ class ObjectArray(ExtensionArray):
     slightly more performant in some cases.
     """
 
-    __array_priority__ = 1000  # this is used in pandas test code
+    __array_priority__: int = 1000  # this is used in pandas test code
 
-    def __init__(self, values, dtype=None, copy=False):
+    def __init__(
+        self,
+        values: Iterable[Any],
+        dtype: dtype_like | None = None,
+        copy: bool = False
+    ):
         # NOTE: this does NOT coerce inputs; that's handled by cast() itself
         self._data = np.asarray(values, dtype=object)
 
@@ -262,7 +268,12 @@ class ObjectArray(ExtensionArray):
     ############################
 
     @classmethod
-    def _from_sequence(cls, scalars, dtype=None, copy=False):
+    def _from_sequence(
+        cls,
+        scalars: Iterable[Any],
+        dtype: dtype_like | Non = None,
+        copy: bool = False
+    ) -> ObjectArray:
         """Construct a new ExtensionArray from a sequence of scalars.
 
         Parameters
@@ -290,7 +301,9 @@ class ObjectArray(ExtensionArray):
         return cls(scalars, dtype=dtype, copy=copy)
 
     @classmethod
-    def _from_factorized(cls, values, original):
+    def _from_factorized(
+        cls, values: np.ndarray, original: ExtensionArray
+    ) -> ObjectArray:
         """Reconstruct an ExtensionArray after factorization.
 
         Parameters
@@ -308,12 +321,13 @@ class ObjectArray(ExtensionArray):
         return cls(values, dtype=original.dtype)
 
     @classmethod
-    def _concat_same_type(cls, to_concat):
+    def _concat_same_type(cls, to_concat: Iterable[ExtensionArray]) -> ObjectArray:
         """Concatenate multiple array of this dtype.
 
         Parameters
         ----------
-        to_concat : sequence of this type
+        to_concat : Iterable[ExtensionArray]
+            sequence of this type
 
         Returns
         -------
@@ -394,7 +408,7 @@ class ObjectArray(ExtensionArray):
         """
         return self._data, self.dtype.na_value
 
-    def _reduce(self, name, skipna=True, **kwargs):
+    def _reduce(self, name: str, skipna: bool = True, **kwargs: Any) -> Any:
         """Return a scalar result of performing the reduction operation.
 
         Parameters
@@ -439,7 +453,9 @@ class ObjectArray(ExtensionArray):
             )
         return op(axis=0)
 
-    def __array_ufunc__(self, ufunc: np.ufunc, method: str, *inputs, **kwargs):
+    def __array_ufunc__(
+        self, ufunc: np.ufunc, method: str, *inputs: Any, **kwargs: Any
+    ) -> ObjectArray:
         """Allows ObjectArrays to utilize numpy ufuncs natively, without
         being coerced to ``dtype: object``.
 
@@ -477,7 +493,7 @@ class ObjectArray(ExtensionArray):
             return tuple(reconstruct(x) for x in result)
         return reconstruct(result)
 
-    def __arrow_array__(self, type=None):
+    def __arrow_array__(self, type: dtype_like | None = None) -> Any:
         """Convert the underlying array values into a pyarrow Array.
 
         This method ensures that pyarrow knowns how to convert the specific
@@ -488,7 +504,7 @@ class ObjectArray(ExtensionArray):
 
         return pyarrow.array(self._data, type=type)
 
-    def __from_arrow__(self, array) -> ExtensionArray:
+    def __from_arrow__(self, array: Any) -> ObjectArray:
         """Convert a pyarrow array into a pandas ExtensionArray.
 
         This method controls the conversion back from pyarrow to a pandas
@@ -502,7 +518,7 @@ class ObjectArray(ExtensionArray):
     ####    PUBLIC    ####
     ######################
 
-    def astype(self, dtype, copy: bool = True):
+    def astype(self, dtype: dtype_like, copy: bool = True) -> array_like:
         """Cast to a NumPy array or ExtensionArray with 'dtype'.
 
         Parameters
@@ -531,11 +547,16 @@ class ObjectArray(ExtensionArray):
 
         return self._data.astype(dtype=dtype, copy=copy)
 
-    def isna(self):
+    def isna(self) -> np.ndarray:
         """Detect missing values from the array."""
         return pd.isna(self._data)
 
-    def take(self, indexer, allow_fill=False, fill_value=None):
+    def take(
+        self,
+        indices: Iterable[int],
+        allow_fill: bool = False,
+        fill_value: Any | None = None
+    ) -> ObjectArray:
         """Take elements from an array.
 
         Parameters
@@ -618,13 +639,13 @@ class ObjectArray(ExtensionArray):
 
         result = take(
             data,
-            indexer,
+            indices,
             fill_value=fill_value,
             allow_fill=allow_fill
         )
         return self._from_sequence(result, dtype=self.dtype)
 
-    def copy(self):
+    def copy(self) -> ObjectArray:
         """Return a copy of the array.
 
         Returns
@@ -637,10 +658,12 @@ class ObjectArray(ExtensionArray):
     ####    NEW METHODS    ####
     ###########################
 
+    # TODO: implement unique()?  Is this necessary?
+
     # NOTE: these are not defined in the base ExtensionArray class, but are
     # called in several pandas operations.
 
-    def round(self, *args, **kwargs) -> ExtensionArray:
+    def round(self, *args: Any, **kwargs: Any) -> ObjectArray:
         """Default round implementation.  This simply passes through to
         np.round().
         """
@@ -971,7 +994,7 @@ class ObjectArray(ExtensionArray):
             self._pdcast_type
         )
 
-    def __pow__(self, other: Any, mod: Any = None) -> ObjectArray:
+    def __pow__(self, other: Any, mod: Any | None = None) -> ObjectArray:
         """Implement the exponentiation operator ``**`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
@@ -1071,7 +1094,7 @@ class ObjectArray(ExtensionArray):
             self._pdcast_type
         )
 
-    def __rpow__(self, other: Any, mod: Any = None) -> ObjectArray:
+    def __rpow__(self, other: Any, mod: Any | None = None) -> ObjectArray:
         """Implement the reverse exponentiation operator ``**`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
@@ -1165,7 +1188,7 @@ class ObjectArray(ExtensionArray):
         self._data %= np.asarray(other)
         return rectify(self._data, self._pdcast_type)
 
-    def __ipow__(self, other: Any, mod: Any = None) -> ObjectArray:
+    def __ipow__(self, other: Any, mod: Any | None = None) -> ObjectArray:
         """Implement the in-place exponentiation operator ``**=`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
         """
@@ -1220,16 +1243,6 @@ class ObjectArray(ExtensionArray):
 
         return self._data != other
 
-    def __ge__(self, other: Any) -> np.ndarray:
-        """Implement the greater-than-or-equal-to operator ``>=`` for
-        :class:`ObjectArrays <pdcast.ObjectArray>`.
-        """
-        # NOTE: pandas recommends that we not handle these cases ourselves
-        if isinstance(other, (ABCSeries, ABCIndex)):
-            return NotImplemented
-
-        return self._data >= other
-
     def __gt__(self, other: Any) -> np.ndarray:
         """Implement the greater-than operator ``>`` for
         :class:`ObjectArrays <pdcast.ObjectArray>`.
@@ -1239,6 +1252,16 @@ class ObjectArray(ExtensionArray):
             return NotImplemented
 
         return self._data > other
+
+    def __ge__(self, other: Any) -> np.ndarray:
+        """Implement the greater-than-or-equal-to operator ``>=`` for
+        :class:`ObjectArrays <pdcast.ObjectArray>`.
+        """
+        # NOTE: pandas recommends that we not handle these cases ourselves
+        if isinstance(other, (ABCSeries, ABCIndex)):
+            return NotImplemented
+
+        return self._data >= other
 
     #################################
     ####    CONTAINER METHODS    ####

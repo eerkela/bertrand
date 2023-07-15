@@ -85,6 +85,7 @@ dev = [
     "cibuildwheel",
     "cython >= 3.0.0b3",
     "mypy",
+    "pandas-stubs",
     "pyarrow",
     "pylint",
     "pytest",
@@ -92,6 +93,10 @@ dev = [
     "sphinx_rtd_theme",
     "sphinx-tabs",
     "sphinx-togglebutton",
+    "types-python-dateutil",
+    "types-pytz",
+    "types-regex",
+    "types-tzlocal",
 ]
 
 [project.urls]
