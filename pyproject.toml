@@ -115,7 +115,7 @@ push = true
 before-all = "choco install visualstudio2022buildtools"  # C/C++ build tools
 
 [tool.pylint]
-ignore-paths = ["**/*.pyi"]          # ignore type stubs
+ignore-patterns = [".*\\.pyi"]       # ignore type stubs
 disable = ["too-many-lines"]         # disable max line length for modules
 extension-pkg-allow-list = "pdcast"  # load Cython extensions
 load-plugins = ["pylint.extensions.docparams"]
