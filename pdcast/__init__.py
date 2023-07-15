@@ -51,19 +51,19 @@ from .check import typecheck
 
 
 # importing * from types also masks module names, which can be troublesome
-del array
-del base
-del boolean
-del categorical
+del array         # type: ignore
+del base          # type: ignore
+del boolean       # type: ignore
+del categorical   # type: ignore
 del complex
-del datetime
-del decimal
+del datetime      # type: ignore
+del decimal       # type: ignore
 del float
-del integer
+del integer       # type: ignore
 del object
-del sparse
-del string
-del timedelta
+del sparse        # type: ignore
+del string        # type: ignore
+del timedelta     # type: ignore
 
 
 # version number (handled by bumpver)

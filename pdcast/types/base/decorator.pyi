@@ -1,7 +1,7 @@
 """Mypy stubs for pdcast/types/base/decorator.pyx"""
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Iterator, Mapping
 
-import pandas as pd
+import pandas as pd  # type: ignore
 
 from pdcast.types import ScalarType, VectorType
 from pdcast.util.type_hints import array_like, dtype_like, type_specifier
@@ -60,19 +60,3 @@ class DecoratorType(VectorType):
         ...
     def __lt__(self, other: type_specifier) -> bool: ...
     def __gt__(self, other: type_specifier) -> bool: ...
-
-
-class AbstractType(ScalarType):
-    @classmethod
-    def default(
-        cls, concretion: type | None = ..., *, warn: bool = ...
-    ) -> Callable[[type], type]: ...
-    @classmethod
-    def implementation(
-        cls, backend: str, validate: bool = ...
-    ) -> Callable[[type], type]: ...
-    @classmethod
-    def subtype(
-        cls, subtype: type | None = ..., *, validate: bool = ...
-    ) -> Callable[[type], type]: ...
-

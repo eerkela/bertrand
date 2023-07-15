@@ -1,5 +1,5 @@
 """Mypy stubs for pdcast/types/base/scalar.pyx"""
-from typing import Any, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from pdcast.types import CompositeType, ScalarType, VectorType
 from pdcast.util.type_hints import dtype_like, array_like, type_specifier
@@ -90,6 +90,29 @@ class ScalarType(VectorType):
     def is_leaf(self) -> bool: ...
     @property
     def leaves(self) -> CompositeType: ...
-    
 
+    ###############################
+    ####    UPCAST/DOWNCAST    ####
+    ###############################
+
+    @property
+    def larger(self) -> Iterator[ScalarType]: ...
+    @property
+    def smaller(self) -> Iterator[ScalarType]: ...
+    def __lt__(self, other: type_specifier) -> bool: ...
+
+
+class AbstractType(ScalarType):
+    @classmethod
+    def default(
+        cls, concretion: type | None = ..., *, warn: bool = ...
+    ) -> Callable[[type], type]: ...
+    @classmethod
+    def implementation(
+        cls, backend: str, validate: bool = ...
+    ) -> Callable[[type], type]: ...
+    @classmethod
+    def subtype(
+        cls, subtype: type | None = ..., *, validate: bool = ...
+    ) -> Callable[[type], type]: ...
 

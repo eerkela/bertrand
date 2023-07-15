@@ -4,7 +4,7 @@ type system.
 import numpy as np
 import pandas as pd
 
-from .base cimport ScalarType, AbstractType, CompositeType
+from .base cimport ScalarType, AbstractType
 from .base import register
 
 

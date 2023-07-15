@@ -49,7 +49,7 @@ class PandasTimestampType(ScalarType):
     itemsize = 8
     na_value = pd.NaT
 
-    def __init__(self, tz: datetime.tzinfo | str = None):
+    def __init__(self, tz: datetime.tzinfo | str | None = None):
         self.min = pd.Timestamp.min.value
         self.max = pd.Timestamp.max.value
 
