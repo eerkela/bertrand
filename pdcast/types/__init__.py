@@ -85,10 +85,11 @@ except ImportError:
 
 
 # global objects
-registry = Type.registry
+registry: TypeRegistry = Type.registry
 
 
 # ``<`` and ``>`` operator overrides
+# pylint: disable=no-member
 registry.priority.update([
     (SparseType, CategoricalType),
 ])

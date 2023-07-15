@@ -9,15 +9,18 @@ from typing import Any, Iterable
 
 cimport cython
 cimport numpy as np
+
 import numpy as np
 import pandas as pd
 
+from pdcast cimport types
+from pdcast.util.vector cimport as_array
+
+from pdcast import types
 from pdcast.decorators.attachable import attachable
 from pdcast.resolve import resolve_type
-from pdcast import types
-from pdcast cimport types
 from pdcast.types.array import ObjectDtype
-from pdcast.util.vector cimport as_array
+from pdcast.util.type_hints import array_like
 
 
 ######################
@@ -129,7 +132,7 @@ cdef class ArrayDetector(Detector):
     """A factory that constructs types using an array's .dtype protocol.
     """
 
-    def __init__(self, data: Iterable, drop_na: bool):
+    def __init__(self, data: array_like, drop_na: bool):
         super().__init__()
         self.data = data
         self.drop_na = drop_na
@@ -184,7 +187,7 @@ cdef class ElementWiseDetector(Detector):
     vector.
     """
 
-    def __init__(self, data: Iterable, drop_na: bool):
+    def __init__(self, data: Iterable[Any], drop_na: bool):
         super().__init__()
 
         data = as_array(data)

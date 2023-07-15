@@ -152,7 +152,7 @@ class catch_errors(FunctionDecorator):
 def cast(
     series: Any,
     dtype: type_specifier | None = None,
-    **unused
+    **unused: Any,
 ) -> pd.Series | pd.DataFrame:
     """Cast arbitrary data to the specified data type.
 
@@ -190,10 +190,10 @@ def cast(
 
     for before in getattr(series_type, "decorators", ()):
         series = before.inverse_transform(series)
-        return cast(series, dtype, **kwargs)
+        return cast(series, dtype, **unused)
 
     for before in getattr(dtype, "decorators", ()):
-        series = cast(series, dtype.wrapped, **kwargs)
+        series = cast(series, dtype.wrapped, **unused)
         return before.transform(series)
 
     raise NotImplementedError(

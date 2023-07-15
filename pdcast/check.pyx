@@ -15,7 +15,7 @@ from pdcast.util.type_hints import type_specifier
 @attachable
 def typecheck(
     data: Any,
-    dtype: type_specifier ,
+    target: type_specifier,
     ignore_decorators: bool = False
 ) -> bool:
     """Check whether example data contains elements of a specified type.
@@ -25,7 +25,7 @@ def typecheck(
     data : Any
         The example data whose type will be checked.  This can be in any format
         recognized by :func:`detect_type`.
-    dtype : type specifier
+    target : type specifier
         The type to compare against.  This can be in any format accepted by
         :func:`resolve_type`.
     ignore_decorators : bool, default False
@@ -44,7 +44,7 @@ def typecheck(
     Raises
     ------
     ValueError
-        If ``dtype`` could not be :func:`resolved <ressolve_type>`.
+        If ``target`` could not be :func:`resolved <ressolve_type>`.
 
     See Also
     --------
@@ -53,12 +53,12 @@ def typecheck(
     # DataFrame (columnwise) case
     if isinstance(data, pd.DataFrame):
         columns = data.columns
-        if isinstance(dtype, dict):
-            bad = [col for col in dtype if col not in columns]
+        if isinstance(target, dict):
+            bad = [col for col in target if col not in columns]
             if bad:
                 raise ValueError(f"column not found: {repr(bad)}")
         else:
-            dtype = dict.fromkeys(columns, dtype)
+            target = dict.fromkeys(columns, target)
 
         # pass each column individually
         return all(
@@ -67,11 +67,11 @@ def typecheck(
                 typespec,
                 ignore_decorators=ignore_decorators
             )
-            for col, typespec in dtype.items()
+            for col, typespec in target.items()
         )
 
     cdef CompositeType data_type = CompositeType(detect_type(data))
-    cdef CompositeType target_type = resolve_type([dtype])
+    cdef CompositeType target_type = resolve_type([target])
 
     # strip decrators if directed
     if ignore_decorators:

@@ -14,14 +14,15 @@ function through the ``register_alias()``, ``remove_alias()``, and
 import regex as re  # alternate (PCRE-style) python regex engine
 
 cimport numpy as np
+
 import numpy as np
 import pandas as pd
 
-from pdcast import types
 from pdcast cimport types
-from pdcast.types.array import ObjectDtype
 
-from pdcast.util.type_hints import type_specifier
+from pdcast import types
+from pdcast.types.array import ObjectDtype
+from pdcast.util.type_hints import dtype_like, type_specifier
 
 
 #####################
@@ -29,13 +30,13 @@ from pdcast.util.type_hints import type_specifier
 #####################
 
 
-def resolve_type(typespec: type_specifier) -> types.Type:
+def resolve_type(target: type_specifier) -> types.Type:
     """Interpret types from manual
     :ref:`type specifiers <resolve_type.type_specifiers>`.
 
     Arguments
     ---------
-    typespec : type specifier
+    target : type specifier
         The :ref:`type specifier <resolve_type.type_specifiers>` to resolve.
 
     Returns
@@ -59,32 +60,40 @@ def resolve_type(typespec: type_specifier) -> types.Type:
         :ref:`type specification mini-language <resolve_type.mini_language>`.
     """
     # trivial case
-    if isinstance(typespec, types.Type):
-        return typespec
+    if isinstance(target, types.Type):
+        return target
 
-    # build factory
-    if isinstance(typespec, type):
-        if issubclass(typespec, types.VectorType):
-            if typespec not in types.registry:
-                raise invalid_specifier(typespec)
-            return types.registry[typespec]
+    # 1) class object
+    if isinstance(target, type):
+        # special case for types of type objects
+        if issubclass(target, types.VectorType):
+            if target not in types.registry:
+                raise invalid_specifier(target)
+            return types.registry[target]
 
-        factory = ClassResolver(typespec)
+        # delegate to factory
+        factory = ClassResolver(target)
 
-    elif isinstance(typespec, str):
-        factory = StringResolver(typespec)
+    # 2) string (type specification mini-language)
+    elif isinstance(target, str):
+        factory = StringResolver(target)
 
-    elif isinstance(typespec, (np.dtype, pd.api.extensions.ExtensionDtype)):
-        if isinstance(typespec, ObjectDtype):
-            return typespec._pdcast_type
+    # 3) numpy/pandas dtype
+    elif isinstance(target, (np.dtype, pd.api.extensions.ExtensionDtype)):
+        # special case for internal ObjectDtypes
+        if isinstance(target, ObjectDtype):
+            return target._pdcast_type
 
-        factory = DtypeResolver(typespec)
+        # delegate to factory
+        factory = DtypeResolver(target)
 
-    elif hasattr(typespec, "__iter__"):
-        return types.CompositeType(resolve_type(x) for x in typespec)
+    # 4) iterable containing any of the above
+    elif hasattr(target, "__iter__"):
+        return types.CompositeType(resolve_type(x) for x in target)
 
+    # 5) error
     else:
-        raise invalid_specifier(typespec)
+        raise invalid_specifier(target)
 
     # execute factory
     return factory()
@@ -95,9 +104,9 @@ def resolve_type(typespec: type_specifier) -> types.Type:
 #######################
 
 
-cdef Exception invalid_specifier(object typespec):
+cdef Exception invalid_specifier(object target):
     """Standardized exception for invalid type specifiers."""
-    return ValueError(f"invalid specifier: {repr(typespec)}")
+    return ValueError(f"invalid specifier: {repr(target)}")
 
 
 cdef dict na_strings = {
@@ -152,14 +161,14 @@ cdef class Resolver:
     def __init__(self):
         self.aliases = dict(types.registry.aliases)
 
-    def __call__(self, typespec: type_specifier) -> types.Type:
+    def __call__(self) -> types.Type:
         raise NotImplementedError(f"{type(self)} does not implement __call__")
 
 
 cdef class ClassResolver(Resolver):
     """A factory that constructs types from Python class objects."""
 
-    def __init__(self, type specifier):
+    def __init__(self, specifier: type):
         super().__init__()
         self.specifier = specifier
 
@@ -173,7 +182,7 @@ cdef class ClassResolver(Resolver):
 cdef class DtypeResolver(Resolver):
     """A factory that constructs types from numpy/pandas dtype objects."""
 
-    def __init__(self, object specifier):
+    def __init__(self, specifier: dtype_like):
         super().__init__()
         self.specifier = specifier
 
@@ -189,7 +198,7 @@ cdef class StringResolver(Resolver):
     mini-language.
     """
 
-    def __init__(self, str specifier):
+    def __init__(self, specifier: str):
         super().__init__()
 
         # strip leading/trailing whitespace

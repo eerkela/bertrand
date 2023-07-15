@@ -5,6 +5,9 @@ build-backend = "setuptools.build_meta:__legacy__"
 [tool.setuptools.packages.find]
 include = ["pdcast*"]
 
+[tool.setuptools.package-data]
+pdcast = ["py.typed"]
+
 [project]
 name = "pdcast"
 version = "0.5.1"
@@ -15,6 +18,7 @@ authors = [
 readme = "README.rst"
 license = { file = "LICENSE"}
 classifiers = [
+    "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
     "Programming Language :: Cython",
     "License :: OSI Approved :: MIT License",
@@ -111,7 +115,8 @@ push = true
 before-all = "choco install visualstudio2022buildtools"  # C/C++ build tools
 
 [tool.pylint]
-disable = ["too-many-lines"]
+ignore-paths = ["**/*.pyi"]          # ignore type stubs
+disable = ["too-many-lines"]         # disable max line length for modules
 extension-pkg-allow-list = "pdcast"  # load Cython extensions
 load-plugins = ["pylint.extensions.docparams"]
 accept-no-param-doc = false          # force function parameters to be documented
@@ -132,8 +137,8 @@ warn_unused_ignores = true           # warn on unnecessary # type: ignore commen
 warn_no_return = true                # warn on functions with no return branch
 warn_unreachable = true              # warn on unreachable code after type analysis
 pretty = true                        # add source context to error messages
-color-output = true                  # colorize error messages
-error-summary = true                 # print a short summary for each error
+color_output = true                  # colorize error messages
+error_summary = true                 # print a short summary for each error
 
 [tool.black]
 line-length = 88
