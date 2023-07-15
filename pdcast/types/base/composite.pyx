@@ -1,6 +1,8 @@
 """This module describes a ``CompositeType`` object, which can be used to
 group types into a set-like container.
 """
+from typing import Iterator
+
 cimport numpy as np
 import numpy as np
 
@@ -330,14 +332,14 @@ cdef class CompositeType(Type):
     ####    SET INTERFACE    ####
     #############################
 
-    def add(self, typespec: type_specifier) -> None:
+    def add(self, other: type_specifier) -> None:
         """Add a type to the composite.
 
         This is equivalent to :meth:`set.add() <python:set.add>`.
 
         Parameters
         ----------
-        typespec : type_specifier
+        other : type_specifier
             The type to add.  This can be in any format recognized by
             :func:`resolve_type() <pdcast.resolve_type>`.
 
@@ -354,21 +356,20 @@ cdef class CompositeType(Type):
             >>> composite   # doctest: +SKIP
             CompositeType({int, float, complex, bool})
         """
-        cdef CompositeType other
+        cdef CompositeType resolved = resolve_type([other])
         cdef VectorType typ
 
-        other = resolve_type([typespec])
-        self.types.update(typ for typ in other)
+        self.types.update(typ for typ in resolved)
         self.forget_index()
 
-    def remove(self, typespec: type_specifier) -> None:
+    def remove(self, other: type_specifier) -> None:
         """Remove a type from the composite.
 
         This is equivalent to :meth:`set.remove() <python:set.remove>`.
 
         Parameters
         ----------
-        typespec : type_specifier
+        other : type_specifier
             The type to remove.  This can be in any format recognized by
             :func:`resolve_type() <pdcast.resolve_type>`, and may reference
             an implicit type in this composite's shared hierarchy.
@@ -403,24 +404,24 @@ cdef class CompositeType(Type):
                 ...
             KeyError: 'bool'
         """
-        cdef CompositeType other = resolve_type([typespec])
+        cdef CompositeType resolved = resolve_type([other])
 
-        if not self.contains(other):
-            raise KeyError(typespec)
+        if not self.contains(resolved):
+            raise KeyError(other)
 
-        cdef CompositeType result = self - other
+        cdef CompositeType result = self - resolved
 
         self.types = result.types
         self.forget_index()
 
-    def discard(self, typespec: type_specifier) -> None:
+    def discard(self, other: type_specifier) -> None:
         """Remove a type specifier from the composite if it is present.
 
         This is equivalent to :meth:`set.discard() <python:set.discard>`.
 
         Parameters
         ----------
-        typespec : type_specifier
+        other : type_specifier
             The type to remove.  This can be in any format recognized by
             :func:`resolve_type() <pdcast.resolve_type>`, and may reference
             an implicit type in this composite's shared hierarchy.
@@ -447,7 +448,7 @@ cdef class CompositeType(Type):
             >>> composite.discard("bool")   # not present
         """
         try:
-            self.remove(typespec)
+            self.remove(other)
         except KeyError:
             pass
 
@@ -1477,9 +1478,9 @@ cdef class CompositeType(Type):
         """
         return resolve_type(other).contains(self)
 
-    ####################
-    ####    MISC    ####
-    ####################
+    ###############################
+    ####    SPECIAL METHODS    ####
+    ###############################
 
     def __bool__(self) -> bool:
         """Check if this :class:`CompositeType <pdcast.CompositeType>` is empty.
@@ -1528,7 +1529,7 @@ cdef class CompositeType(Type):
         """
         return self.contains(other)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[VectorType]:
         """Iterate through a :class:`CompositeType <pdcast.CompositeType>`.
 
         Returns
@@ -1546,7 +1547,7 @@ cdef class CompositeType(Type):
         """
         return iter(self.types)
 
-    def __len__(self):
+    def __len__(self) -> int:
         """Return the number of types in the composite.
 
         Returns
@@ -1568,9 +1569,8 @@ cdef class CompositeType(Type):
         cdef str slugs = ", ".join(str(x) for x in self.types)
         return f"{type(self).__name__}({{{slugs}}})"
 
-    def __str__(self) -> str:
-        cdef str slugs = ", ".join(str(x) for x in self.types)
-        return f"{{{slugs}}}"
+    def __str__(self) -> str: 
+        return f"{{{', '.join(str(x) for x in self.types)}}}"
 
 
 #######################

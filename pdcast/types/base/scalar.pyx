@@ -1098,12 +1098,12 @@ cdef class ScalarType(VectorType):
         """
         yield from ()
 
-    def __lt__(self, other: VectorType) -> bool:
+    def __lt__(self, other: type_specifier) -> bool:
         """Sort types according to their priority and representable range.
 
         Parameters
         ----------
-        other : VectorType
+        other : type_specifier
             Another type to compare against.
 
         Returns
@@ -1157,6 +1157,8 @@ cdef class ScalarType(VectorType):
             >>> NumpyUInt64Type < PythonIntegerType
             True
         """
+        other = resolve_type(other)
+
         # decorator special case - recur with wrapped type
         if isinstance(other, DecoratorType):
             return other.wrapped is not None and self < other.wrapped
@@ -1180,12 +1182,12 @@ cdef class ScalarType(VectorType):
 
         return features(self) < features(other)
 
-    def __gt__(self, other: VectorType) -> bool:
+    def __gt__(self, other: type_specifier) -> bool:
         """Sort types by their priority and representable range.
 
         Parameters
         ----------
-        other : VectorType
+        other : type_specifier
             Another type to compare against.
 
         Returns
@@ -1208,6 +1210,8 @@ cdef class ScalarType(VectorType):
         :attr:`TypeRegistry.priority <pdcast.TypeRegistry.priority>` table,
         then it will be used for both operators.
         """
+        other = resolve_type(other)
+
         # decorator special case - recur with wrapped type
         if isinstance(other, DecoratorType):
             return other.wrapped is None or self > other.wrapped
@@ -1479,7 +1483,12 @@ cdef class AbstractType(ScalarType):
     ##########################
 
     @classmethod
-    def default(cls, concretion: type = None, *, warn: bool = True):
+    def default(
+        cls,
+        concretion: type = None,
+        *,
+        warn: bool = True
+    ) -> Callable[[type], type] | type:
         """A class decorator that assigns a particular concretion of this type
         as its default value.
 
@@ -1557,7 +1566,11 @@ cdef class AbstractType(ScalarType):
         return decorator
 
     @classmethod
-    def implementation(cls, backend: str, validate: bool = True):
+    def implementation(
+        cls,
+        backend: str,
+        validate: bool = True
+    ) -> Callable[[type], type]:
         """A class decorator that registers a type definition as an
         implementation of this type.
 
@@ -1656,7 +1669,12 @@ cdef class AbstractType(ScalarType):
         return decorator
 
     @classmethod
-    def subtype(cls, subtype: type = None, *, validate: bool = True):
+    def subtype(
+        cls,
+        subtype: type = None,
+        *,
+        validate: bool = True
+    ) -> Callable[[type], type]  | type:
         """A class decorator that registers a type definition as a subtype of
         this type.
 

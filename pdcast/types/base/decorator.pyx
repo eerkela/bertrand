@@ -127,7 +127,7 @@ cdef class DecoratorType(VectorType):
         self,
         dtype: dtype_like,
         array: array_like | None = None
-    ) -> Type:
+    ) -> DecoratorType:
         """Construct a :class:`DecoratorType <pdcast.DecoratorType>` from a
         numpy/pandas :class:`dtype <numpy.dtype>`\ /\
         :class:`ExtensionDtype <pandas.api.extensions.ExtensionDtype>` object.
@@ -146,7 +146,7 @@ cdef class DecoratorType(VectorType):
 
         Returns
         -------
-        Type
+        DecoratorType
             An instance of the associated type.
 
         See Also
@@ -213,7 +213,7 @@ cdef class DecoratorType(VectorType):
 
         return self  # if the type is parametrized, call self() directly
 
-    def replace(self, **kwargs) -> DecoratorType:
+    def replace(self, **kwargs: Any) -> DecoratorType:
         """Return a modified copy of a type with the values specified in
         ``**kwargs``.
 
@@ -618,7 +618,7 @@ cdef class DecoratorType(VectorType):
     ####    OVERRIDDEN    ####
     ##########################
 
-    _cache_size: int  = 128
+    _cache_size: int = 128
 
     @property
     def implementations(self):
@@ -781,12 +781,12 @@ cdef class DecoratorType(VectorType):
         # wrap directly
         return self.instances((wrapped, ) + args, kwargs)
 
-    def __lt__(self, other: VectorType) -> bool:
+    def __lt__(self, other: type_specifier) -> bool:
         """Sort types according to their priority and representable range.
 
         Parameters
         ----------
-        other : VectorType
+        other : type_specifier
             Another type to compare against.
 
         Returns
@@ -874,6 +874,8 @@ cdef class DecoratorType(VectorType):
             >>> SparseType(BooleanType) < CategoricalType
             False
         """
+        other = resolve.resolve_type(other)
+
         # special case for decorators with no wrapped type
         if self.wrapped is None:
             # comparison type is another decorator
@@ -899,12 +901,12 @@ cdef class DecoratorType(VectorType):
         # delegate to wrapped type
         return self.wrapped < other
 
-    def __gt__(self, other: VectorType) -> bool:
+    def __gt__(self, other: type_specifier) -> bool:
         """Sort types according to their priority and representable range.
 
         Parameters
         ----------
-        other : VectorType
+        other : type_specifier
             Another type to compare against.
 
         Returns
@@ -936,6 +938,8 @@ cdef class DecoratorType(VectorType):
         :attr:`TypeRegistry.priority <pdcast.TypeRegistry.priority>` table,
         then it will be used for both operators.
         """
+        other = resolve.resolve_type(other)
+
         # special case for decorators with no wrapped type
         if self.wrapped is None:
             # comparison type is another decorator

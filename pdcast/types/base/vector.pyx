@@ -48,7 +48,7 @@ cdef class VectorType(Type):
     _cache_size: int = 0
     _base_instance: VectorType = None
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any):
         super().__init__()
         self._kwargs = kwargs
 
@@ -65,7 +65,7 @@ cdef class VectorType(Type):
     ##############################
 
     @classmethod
-    def set_encoder(cls, ArgumentEncoder encoder) -> None:
+    def set_encoder(cls, encoder: ArgumentEncoder) -> None:
         """Inject a custom ArgumentEncoder to generate string identifiers for
         instances of this type.
 
@@ -335,7 +335,7 @@ cdef class VectorType(Type):
 
         Returns
         -------
-        Iterator
+        Iterator[DecoratorType]
             A generator expression that yields each decorator in order.
 
         See Also
@@ -403,7 +403,7 @@ cdef class VectorType(Type):
             )
             raise AttributeError(err_msg) from err
 
-    def __setattr__(self, str name, object value) -> None:
+    def __setattr__(self, name: str, value: Any) -> None:
         """Make :class:`VectorTypes <pdcast.VectorType>` read-only.
 
         Parameters
@@ -526,7 +526,7 @@ cdef class VectorType(Type):
         """
         return self
 
-    def replace(self, **kwargs) -> VectorType:
+    def replace(self, **kwargs: Any) -> VectorType:
         """Return a modified copy of a type with the values specified in
         ``**kwargs``.
 
@@ -661,6 +661,17 @@ cdef class VectorType(Type):
         """
         return self._hash
 
+    def __eq__(self, other: type_specifier) -> bool:
+        """Compare two types for equality.
+
+        The comparison type can be in any format recognized by
+        :func:`resolve_type() <pdcast.resolve_type>`.
+        """
+        from pdcast.resolve import resolve_type
+
+        other = resolve_type(other)
+        return isinstance(other, VectorType) and hash(self) == hash(other)
+
     def __str__(self) -> str:
         """Return this type's string identifier.
 
@@ -689,17 +700,6 @@ cdef class VectorType(Type):
             {'int[numpy]': NumpyIntegerType()}
         """
         return self._slug
-
-    def __eq__(self, other: type_specifier) -> bool:
-        """Compare two types for equality.
-
-        The comparison type can be in any format recognized by
-        :func:`resolve_type() <pdcast.resolve_type>`.
-        """
-        from pdcast.resolve import resolve_type
-
-        other = resolve_type(other)
-        return isinstance(other, VectorType) and hash(self) == hash(other)
 
     def __repr__(self) -> str:
         sig = ", ".join(f"{k}={repr(v)}" for k, v in self.kwargs.items())
@@ -750,12 +750,12 @@ cdef class ArgumentEncoder:
         return f"{self.name}[{', '.join(ordered.values())}]"
 
 
-cdef class BackendEncoder:
+cdef class BackendEncoder(ArgumentEncoder):
     """A ArgumentEncoder that automatically appends a type's backend specifier as
     the first parameter of the returned slug.
     """
 
-    def __init__(self, str backend):
+    def __init__(self, backend: str):
         self.backend = backend
 
     @cython.wraparound(False)
@@ -816,19 +816,19 @@ cdef class FlyweightFactory(InstanceFactory):
         """Private method to manually add a key to the flyweight cache."""
         self.cache[key] = value
 
-    def keys(self):
+    def keys(self) -> Iterator[str]:
         """Dict-like ``keys()`` indexer."""
         return self.cache.keys()
 
-    def values(self):
+    def values(self) -> Iterator[VectorType]:
         """Dict-like ``values()`` indexer."""
         return self.cache.values()
 
-    def items(self):
+    def items(self) -> Iterator[tuple[str, VectorType]]:
         """Dict-like ``items()`` indexer."""
         return self.cache.items()
 
-    def __call__(self, tuple args, dict kwargs) -> VectorType:
+    def __call__(self, args: tuple, kwargs: dict) -> VectorType:
         """Retrieve a previous instance or generate a new one according to the
         flyweight pattern.
         """
@@ -842,11 +842,11 @@ cdef class FlyweightFactory(InstanceFactory):
             self.cache[slug] = instance
         return instance
 
-    def __contains__(self, str key) -> bool:
+    def __contains__(self, key: str) -> bool:
         """Check if the given identifier corresponds to a cached instance."""
         return key in self.cache
 
-    def __getitem__(self, str key) -> VectorType:
+    def __getitem__(self, key: str) -> VectorType:
         """Get an instance by its identifier."""
         return self.cache[key]
 
@@ -854,7 +854,7 @@ cdef class FlyweightFactory(InstanceFactory):
         """Get the total number of cached instances."""
         return len(self.cache)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[str]:
         """Iterate through the cached identifiers."""
         return iter(self.cache)
 

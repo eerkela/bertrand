@@ -4,7 +4,7 @@ types and the relationships between them.
 import inspect
 import regex as re  # using alternate regex
 from types import MappingProxyType
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 import numpy as np
 import pandas as pd
@@ -21,7 +21,11 @@ from .scalar cimport AbstractType, ScalarType
 ######################
 
 
-def register(class_: type = None, *, cond: bool = True):
+def register(
+    class_: type = None,
+    *,
+    cond: bool = True
+) -> Callable[[type], VectorType | type]:
     """Register a :class:`VectorType <pdcast.VectorType>` subclass, adding it
     to the shared :class:`registry <pdcast.TypeRegistry>`.
 
@@ -55,7 +59,7 @@ def register(class_: type = None, *, cond: bool = True):
     :func:`resolve_type <pdcast.resolve_type>`.  No other decorators should be
     placed above it.
     """
-    def register_decorator(cls: type) -> type | VectorType:
+    def register_decorator(cls: type) -> VectorType | type:
         """Add the type to the registry and instantiate it."""
         if not issubclass(cls, VectorType):
             raise TypeError(
@@ -280,7 +284,7 @@ cdef class TypeRegistry:
         """
         return self._hash
 
-    def flush(self):
+    def flush(self) -> None:
         """Reset the registry's current hash, invalidating every
         :class:`CacheValue <pdcast.CacheValue>`.
 
@@ -729,7 +733,7 @@ cdef class TypeRegistry:
             return typ
         return result
 
-    def get_implementations(self, typ: AbstractType) -> MappingProxyType:
+    def get_implementations(self, typ: AbstractType) -> Mapping[str, ScalarType]:
         """Get a map of backend specifiers to the registered implementations
         associated for an :class:`AbstractType <pdcast.AbstractType>`.
 
@@ -935,7 +939,7 @@ cdef class TypeRegistry:
     ####    SPECIAL METHODS    ####
     ###############################
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[VectorType]:
         """Iterate through the registered types.
 
         Examples
@@ -959,7 +963,7 @@ cdef class TypeRegistry:
         """
         return len(self.instances)
 
-    def __contains__(self, val) -> bool:
+    def __contains__(self, typ: VectorType | type) -> bool:
         """Check if a type is in the registry.
 
         Examples
@@ -969,11 +973,11 @@ cdef class TypeRegistry:
             >>> BooleanType in registry
             True
         """
-        if not isinstance(val, type):
-            val = type(val)
-        return val in self.instances
+        if not isinstance(typ, type):
+            typ = type(typ)
+        return typ in self.instances
 
-    def __getitem__(self, val) -> VectorType:
+    def __getitem__(self, typ: VectorType | type) -> VectorType:
         """Get the base instance for a given type if it is registered.
 
         Examples
@@ -983,9 +987,9 @@ cdef class TypeRegistry:
             >>> registry[BooleanType]
             BooleanType()
         """
-        if not isinstance(val, type):
-            val = type(val)
-        return self.instances[val]
+        if not isinstance(typ, type):
+            typ = type(typ)
+        return self.instances[typ]
 
     def __str__(self) -> str:
         return str(set(self.instances.values()))
@@ -1438,7 +1442,7 @@ cdef class AliasManager:
     :func:`resolve_type() <pdcast.resolve_type>` at runtime.
     """
 
-    def __init__(self, Type instance):
+    def __init__(self, instance: Type):
         self.instance = instance
         self.aliases = set()
         self.pinned = False
@@ -1707,9 +1711,9 @@ cdef class AliasManager:
 
         return alias
 
-    #############################
-    ####    MAGIC METHODS    ####
-    #############################
+    ###############################
+    ####    SPECIAL METHODS    ####
+    ###############################
 
     def __bool__(self) -> bool:
         return bool(self.aliases)
@@ -1720,13 +1724,13 @@ cdef class AliasManager:
     def __contains__(self, alias: type_specifier) -> bool:
         return alias in self.aliases
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[type_specifier]:
         return iter(self.aliases)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return str(self.aliases)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"{type(self).__name__}({self.aliases})"
 
 
@@ -1876,14 +1880,14 @@ cdef class PrioritySet(set):
 
     def update(
         self,
-        other: Iterable[Tuple[object, object]]
+        *others: Iterable[Tuple[Any, Any]]
     ) -> None:
         """Update the set with a collection of edges.
 
         Parameters
         ----------
-        other : Iterable
-            A collection of pairs of types ``(A, B)`` where ``A < B``.
+        *others : Iterable[Tuple[Any, Any]]
+            Any number of collections of pairs of types ``(A, B)`` where ``A < B``.
 
         See Also
         --------
@@ -1901,19 +1905,20 @@ cdef class PrioritySet(set):
             >>> edges  # doctest: +SKIP
             PrioritySet({(<class 'pdcast.types.integer.IntegerType'>, <class 'pdcast.types.float.FloatType'>), (<class 'pdcast.types.boolean.BooleanType'>, <class 'pdcast.types.complex.ComplexType'>)})
         """
-        for item in other:
-            self.add(item)
+        for other in others:
+            for item in other:
+                self.add(item)
 
     def intersection_update(
         self,
-        other: Iterable[Tuple[object, object]
-    ]) -> None:
+        *others: Iterable[Tuple[Any, Any]]
+    ) -> None:
         """Update the set with the intersection of itself and another.
 
         Parameters
         ----------
-        other : Iterable
-            A collection of pairs of types ``(A, B)`` where ``A < B``.
+        *others : Iterable[Tuple[Any, Any]]
+            Any number of collections of pairs of types ``(A, B)`` where ``A < B``.
 
         See Also
         --------
@@ -1935,21 +1940,22 @@ cdef class PrioritySet(set):
             >>> edges
             PrioritySet({(<class 'pdcast.types.integer.IntegerType'>, <class 'pdcast.types.float.FloatType'>)})
         """
-        other = set(self._get_types(item) for item in other)
-        for item in self:
-            if item not in other:
-                self.remove(item)
+        for other in others:
+            other = set(self._get_types(item) for item in other)
+            for item in self:
+                if item not in other:
+                    self.remove(item)
 
     def difference_update(
         self,
-        other: Iterable[Tuple[object, object]]
+        *others: Iterable[Tuple[Any, Any]]
     ) -> None:
         """Remove a collection of edges from the set.
 
         Parameters
         ----------
-        other : Iterable
-            A collection of pairs of types ``(A, B)`` where ``A < B``.
+        *others : Iterable[Tuple[Any, Any]]
+            Any number of collections of pairs of types ``(A, B)`` where ``A < B``.
 
         See Also
         --------
@@ -1971,13 +1977,14 @@ cdef class PrioritySet(set):
             >>> edges
             PrioritySet({(<class 'pdcast.types.boolean.BooleanType'>, <class 'pdcast.types.complex.ComplexType'>)})
         """
-        other = set(self._get_types(item) for item in other)
-        for item in other:
-            self.discard(item)
+        for other in others:
+            other = set(self._get_types(item) for item in other)
+            for item in other:
+                self.discard(item)
 
     def symmetric_difference_update(
         self,
-        other: Iterable[Tuple[object, object]]
+        other: Iterable[Tuple[Any, Any]]
     ) -> None:
         """Update the set with the symmetric difference of itself and another.
 
@@ -2013,22 +2020,22 @@ cdef class PrioritySet(set):
             else:
                 self.add(item)
 
-    def __ior__(self, other: Iterable[Tuple[object, object]]) -> PrioritySet:
+    def __ior__(self, other: Iterable[Tuple[Any, Any]]) -> PrioritySet:
         """Update the set with the union of itself and another."""
         self.update(other)
         return self
 
-    def __iand__(self, other: Iterable[Tuple[object, object]]) -> PrioritySet:
+    def __iand__(self, other: Iterable[Tuple[Any, Any]]) -> PrioritySet:
         """Update the set with the intersection of itself and another."""
         self.intersection_update(other)
         return self
 
-    def __isub__(self, other: Iterable[Tuple[object, object]]) -> PrioritySet:
+    def __isub__(self, other: Iterable[Tuple[Any, Any]]) -> PrioritySet:
         """Remove a collection of pairs from the set."""
         self.difference_update(other)
         return self
 
-    def __ixor__(self, other: Iterable[Tuple[object, object]]) -> PrioritySet:
+    def __ixor__(self, other: Iterable[Tuple[Any, Any]]) -> PrioritySet:
         """Update the set with the symmetric difference of itself and another.
         """
         self.symmetric_difference_update(other)
