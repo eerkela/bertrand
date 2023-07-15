@@ -76,8 +76,10 @@ requires-python = ">=3.7"
 
 [project.optional-dependencies]
 dev = [
+    "black",
     "bumpver",
     "cibuildwheel",
+    "cython >= 3.0.0b3",
     "mypy",
     "pyarrow",
     "pylint",
@@ -109,6 +111,7 @@ push = true
 before-all = "choco install visualstudio2022buildtools"  # C/C++ build tools
 
 [tool.pylint]
+disable = ["too-many-lines"]
 extension-pkg-allow-list = "pdcast"  # load Cython extensions
 load-plugins = ["pylint.extensions.docparams"]
 accept-no-param-doc = false          # force function parameters to be documented

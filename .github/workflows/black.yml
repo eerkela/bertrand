@@ -11,15 +11,16 @@ jobs:
   black:
     runs-on: ubuntu-latest
     steps:
-        - uses: actions/checkout@v3
-        - name: Set up Python 3.10
-          uses: actions/setup-python@v2
-          with:
-              python-version: "3.10"
-        - name: Install black
-          run: pip install black
-        - name: Format with black
-          # This will fail the action with a non-zero exit code if black
-          # finds any formatting errors.  The output of the action will
-          # include a colored diff of the recommended formatting changes.
-          run: black --check --diff --color .
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v2
+        with:
+            python-version: "3.10"
+      - name: Install black
+        run: pip install black
+      - name: Format with black
+        # This will fail the action with a non-zero exit code if black
+        # finds any formatting errors.  The output of the action will
+        # include a colored diff of the recommended formatting changes.
+        run: black --check --diff --color .

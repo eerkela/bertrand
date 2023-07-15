@@ -11,16 +11,17 @@ jobs:
   pylint:
     runs-on: ubuntu-latest
     steps:
-        - uses: actions/checkout@v3
-        - name: Set up Python 3.10
-          uses: actions/setup-python@v2
-          with:
-              python-version: "3.10"
-        - name: Install dependencies
-          run: |
-            pip install --upgrade pip
-            pip install .[dev]
-        - name: Build extensions
-          run: make install
-        - name: Lint with pylint
-          run: pylint --reports=true pdcast/**/*.py
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v2
+        with:
+            python-version: "3.10"
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install .[dev]
+      - name: Build extensions
+        run: make install
+      - name: Lint with pylint
+        run: pylint --reports=true pdcast/**/*.py
