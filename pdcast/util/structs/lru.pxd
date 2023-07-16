@@ -1,8 +1,8 @@
 
 cdef class LRUDict(dict):
     cdef readonly:
-        unsigned short maxsize
-        list priority
+        unsigned int maxsize
+        list order
 
     cdef void move_to_end(self, key)
     cdef void purge(self)

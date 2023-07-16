@@ -71,3 +71,10 @@ cdef class Tolerance:
 
     def __str__(self) -> str:
         return f"{self.real}+{self.imag}j"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Tolerance):
+            return NotImplemented
+
+        return self.real == other.real and self.imag == other.imag
+
