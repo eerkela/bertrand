@@ -5,6 +5,7 @@ from typing import Any, Iterable, NoReturn
 
 from .list cimport HashedList, ListNode
 
+
 # NOTE: this is not currently used anywhere, but it is a simple and useful data
 # structure that could maybe be used in the future.
 
