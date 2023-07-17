@@ -3,6 +3,7 @@ representations.
 """
 
 
+# TODO: deprecate this function in favor of full regex matching
 cpdef char boolean_match(
     str val,
     dict lookup,

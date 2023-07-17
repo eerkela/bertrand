@@ -1,13 +1,15 @@
 """This module contains a doubly-linked list that can be used to represent
 a precedence order during sort operations.
 """
-from typing import Any, Iterable
+from typing import Any, Iterable, NoReturn
+
+from .list cimport HashedList, ListNode
 
 # NOTE: this is not currently used anywhere, but it is a simple and useful data
 # structure that could maybe be used in the future.
 
 
-cdef class PriorityList:
+cdef class PriorityList(HashedList):
     """A doubly-linked list whose elements can be rearranged to represent a
     a precedence order during sort operations.
 
@@ -33,59 +35,7 @@ cdef class PriorityList:
         PriorityList([1, 3, 2])
     """
 
-    def __init__(self, items: Iterable = None):
-        self.head = None
-        self.tail = None
-        self.items = {}
-        if items is not None:
-            for item in items:
-                self.append(item)
-
-    cdef void append(self, object item):
-        """Add an item to the list.
-
-        This method is inaccessible from Python.
-        """
-        node = PriorityNode(item)
-        self.items[item] = node
-        if self.head is None:
-            self.head = node
-            self.tail = node
-        else:
-            self.tail.next = node
-            node.prev = self.tail
-            self.tail = node
-
-    cdef void remove(self, object item):
-        """Remove an item from the list.
-
-        This method is inaccessible from Python.
-        """
-        node = self.items[item]
-
-        if node.prev is None:
-            self.head = node.next
-        else:
-            node.prev.next = node.prev
-
-        if node.next is None:
-            self.tail = node.prev
-        else:
-            node.next.prev = node.next
-
-        del self.items[item]
-
-    cdef int normalize_index(self, int index):
-        """Allow negative indexing and enforcing boundschecking."""
-        if index < 0:
-            index = index + len(self)
-
-        if not 0 <= index < len(self):
-            raise IndexError("list index out of range")
-
-        return index
-
-    def index(self, item: Any) -> int:
+    def index(self, item: Any, start: int = 0, stop: int = -1) -> int:
         """Get the index of an item within the list.
 
         Examples
@@ -96,14 +46,10 @@ cdef class PriorityList:
             >>> foo.index(2)
             1
         """
-        for idx, typ in enumerate(self):
-            if item == typ:
-                return idx
-
-        raise ValueError(f"{repr(item)} is not contained in the list")
+        return super().index(item, start, stop)
 
     def move_up(self, item: Any) -> None:
-        """Move an item up one level in priority.
+        """Move an item one index toward the front of the list.
 
         Examples
         --------
@@ -114,27 +60,32 @@ cdef class PriorityList:
             >>> foo
             PriorityList([2, 1, 3])
         """
-        node = self.items[item]
-        prv = node.prev
-        if prv is not None:
-            node.prev = prv.prev
+        # get node
+        node = self.nodes[item]
 
+        # do nothing if item is already at the front of the list
+        curr = node.prev
+        if curr is not None:
+            # curr.prev <-> node
+            node.prev = curr.prev
             if node.prev is None:
                 self.head = node
             else:
                 node.prev.next = node
 
+            # curr <-> node.next
+            curr.next = node.next
             if node.next is None:
-                self.tail = prv
+                self.tail = curr
             else:
-                node.next.prev = prv
+                node.next.prev = curr
 
-            prv.next = node.next
-            node.next = prv
-            prv.prev = node
+            # node <-> curr
+            node.next = curr
+            curr.prev = node
 
     def move_down(self, item: Any) -> None:
-        """Move an item down one level in priority.
+        """Move an item one index toward the back of the list.
 
         Examples
         --------
@@ -145,24 +96,29 @@ cdef class PriorityList:
             >>> foo
             PriorityList([1, 3, 2])
         """
-        node = self.items[item]
-        nxt = node.next
-        if nxt is not None:
-            node.next = nxt.next
+        # get node
+        node = self.nodes[item]
 
+        # do nothing if item is already at the back of the list
+        curr = node.next
+        if curr is not None:
+            # node <-> curr.next
+            node.next = curr.next
             if node.next is None:
                 self.tail = node
             else:
                 node.next.prev = node
 
+            # curr.prev <-> node
+            curr.prev = node.prev
             if node.prev is None:
-                self.head = nxt
+                self.head = curr
             else:
-                node.prev.next = nxt
+                node.prev.next = curr
 
-            nxt.prev = node.prev
-            node.prev = nxt
-            nxt.next = node
+            # curr <-> node
+            node.prev = curr
+            curr.next = node
 
     def move(self, item: Any, index: int) -> None:
         """Move an item to the specified index.
@@ -180,8 +136,15 @@ cdef class PriorityList:
             >>> foo
             PriorityList([1, 3, 2])
         """
+        # NOTE: there's probably a more efficient way of doing this using the
+        # _node_at_index() helper method.  This would avoid doing pointer
+        # arithmetic for every index between the current and target indices,
+        # and would instead do only a single substitution.  If this data
+        # structure is ever used for real, this should be implemented, but it's
+        # fine for now.
+
         curr_index = self.index(item)
-        index = self.normalize_index(index)
+        index = self._normalize_index(index)
 
         node = self.items[item]
         if index < curr_index:
@@ -191,64 +154,21 @@ cdef class PriorityList:
             for _ in range(index - curr_index):
                 self.move_down(item)
 
-    def __len__(self) -> int:
-        """Get the total number of items in the list."""
-        return len(self.items)
+    ###############################
+    ####    SPECIAL METHODS    ####
+    ###############################
 
-    def __iter__(self):
-        """Iterate through the list items in order."""
-        node = self.head
-        while node is not None:
-            yield node.item
-            node = node.next
+    # NOTE: unless we override these methods, they will be accessible from
+    # Python, meaning that the list will not be strictly read-only.
 
-    def __reversed__(self):
-        """Iterate through the list in reverse order."""
-        node = self.tail
-        while node is not None:
-            yield node.item
-            node = node.prev
+    def __setitem__(self, key: int | slice, item: Any) -> NoReturn:
+        raise TypeError("cannot set items in a PriorityList")
 
-    def __bool__(self) -> bool:
-        """Treat empty lists as boolean False."""
-        return bool(self.items)
+    def __delitem__(self, key: int | slice) -> NoReturn:
+        raise TypeError("cannot delete items from a PriorityList")
 
-    def __contains__(self, item: Any) -> bool:
-        """Check if the item is contained in the list."""
-        return item in self.items
+    def __iadd__(self, other: Iterable[Hashable]) -> NoReturn:
+        raise TypeError("cannot add items to a PriorityList")
 
-    def __getitem__(self, key: Any):
-        """Index into the list using standard syntax."""
-        # support slicing
-        if isinstance(key, slice):
-            start, stop, step = key.indices(len(self))
-            return PriorityList(self[i] for i in range(start, stop, step))
-
-        key = self.normalize_index(key)
-
-        # count from nearest end
-        if key < len(self) // 2:
-            node = self.head
-            for _ in range(key):
-                node = node.next
-        else:
-            node = self.tail
-            for _ in range(len(self) - key - 1):
-                node = node.prev
-
-        return node.item
-
-    def __str__(self):
-        return str(list(self))
-
-    def __repr__(self):
-        return f"{type(self).__name__}({list(self)})"
-
-
-cdef class PriorityNode:
-    """A node containing an individual element of a PriorityList."""
-
-    def __init__(self, object item):
-        self.item = item
-        self.next = None
-        self.prev = None
+    def __imul__(self, repeat: int) -> NoReturn:
+        raise TypeError("cannot add items a PriorityList")

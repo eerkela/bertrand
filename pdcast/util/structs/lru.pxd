@@ -1,8 +1,9 @@
+from .list cimport HashedList
+
 
 cdef class LRUDict(dict):
     cdef readonly:
-        unsigned int maxsize
-        list order
+        long long maxsize
+        HashedList order
 
-    cdef void move_to_end(self, key)
     cdef void purge(self)

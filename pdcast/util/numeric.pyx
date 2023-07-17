@@ -49,10 +49,6 @@ cpdef object boundscheck(
         A series whose elements fit within the range of the specified type.
         In most cases, this will be the original series, but if overflow is
         detected and errors="coerce", then it may be a subset of the original.
-    dtype : ScalarType
-        A type that fits the observed range of the series.  In most cases,
-        this will be the original data type, but if overflow is detected
-        and the type is upcastable, then it may be larger.
 
     Raises
     ------

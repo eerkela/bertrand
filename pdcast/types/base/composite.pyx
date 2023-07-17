@@ -1565,13 +1565,12 @@ cdef class CompositeType(Type):
         """
         return len(self.types)
 
-    def __repr__(self) -> str:
-        cdef str slugs = ", ".join(str(x) for x in self.types)
-        return f"{type(self).__name__}({{{slugs}}})"
-
     def __str__(self) -> str: 
         return f"{{{', '.join(str(x) for x in self.types)}}}"
 
+    def __repr__(self) -> str:
+        cdef str slugs = ", ".join(str(x) for x in self.types)
+        return f"{type(self).__name__}({{{slugs}}})"
 
 #######################
 ####    PRIVATE    ####

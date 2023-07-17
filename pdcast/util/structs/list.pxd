@@ -1,9 +1,18 @@
 
+cdef class ListNode:
+    cdef readonly:
+        ListNode next
+        ListNode prev
+        object value
+
+
 cdef class LinkedList:
+    cdef:
+        long long size
+
     cdef readonly:
         ListNode head
         ListNode tail
-        dict items
 
     cdef LinkedList copy(self)
     cdef void append(self, object item)
@@ -18,6 +27,7 @@ cdef class LinkedList:
         long long start = *,
         long long stop = *
     )
+    cdef void sort(self)
     cdef void rotate(self, long long steps = *)
     cdef void reverse(self)
     cdef void remove(self, object item)
@@ -27,17 +37,17 @@ cdef class LinkedList:
     cdef object popright(self)
     cdef ListNode _node_at_index(self, long long index)
     cdef long long _normalize_index(self, long long index)
-    cdef (long long, long long) get_slice_direction(
+    cdef (long long, long long) _get_slice_direction(
         self,
         long long start,
         long long stop,
         long long step,
     )
+    cdef ListNode _split(self, ListNode head, long long length)
+    cdef tuple _merge(self, ListNode left, ListNode right, ListNode temp)
     cdef void _drop_node(self, ListNode node)
 
 
-cdef class ListNode:
+cdef class HashedList(LinkedList):
     cdef readonly:
-        ListNode next
-        ListNode prev
-        object item
+        dict nodes

@@ -7,56 +7,62 @@ LRUDict
     A dictionary subclass that evicts the least recently used key when its
     length exceeds a fixed value.
 """
-from typing import Any
+from typing import Any, Hashable
 
 cimport cython
+
+from .list cimport HashedList
 
 
 cdef object no_default = object()
 
 
-# TODO: use a doubly-linked list for the order register.  This makes
-# move_to_end() as fast as possible, since we only have to iterate through the
-# list once.  It also makes purge() faster, since we can just chop off the
-# remaining nodes after the first bad one we find.
-# -> use a HashedList for this.
-
-
 cdef class LRUDict(dict):
-    """A fixed-size dictionary subclass implementing the Least Recently Used
-    (LRU) caching strategy.
+    """A fixed-size dictionary implementing a Least Recently Used (LRU) caching
+    strategy.
 
     Parameters
     ----------
     *args, **kwargs:
         Arbitrary arguments to pass to the standard :class:`dict() <python:dict>`
         constructor.
-    maxsize: uint32, default 128
+    maxsize: int64, default 128
         The maximum number of keys to hold in cache.  If inserting a key would
         cause the dictionary to overflow past this length, then the least
         recently used keys are evicted according to their position in the
-        order register.
+        order register.  If this is negative, then the dictionary has no fixed
+        size and will never purge its elements.
 
-
-
-
-    order : list
-        A list of all the keys that are present in the underlying dictionary,
-        which keeps track of the order in which they were inserted/requested.
-        The least recent entries are at the start of the list, and the most
-        recent ones are at the end.
+    Notes
+    -----
+    This is a subclass of the standard :class:`dict() <python:dict>` to make it
+    as compatible as possible with existing code.
+    
+    Since dictionaries are generally not ordered, these objects maintain a
+    separate register that keeps track of the order in which keys have been
+    accessed.  This is implemented as a doubly-linked list that is backed with
+    a hash table for fast lookups.  This allows constant-time access to each
+    of the keys within the register, as well as constant-time insertion and
+    deletion of keys from either end.  Performance is thus comparable to the
+    standard :class:`dict() <python:dict>`, with negligible overhead in most
+    cases.
     """
 
-    def __init__(self, *args, unsigned int maxsize = 128, **kwargs):
+    def __init__(
+        self,
+        *args,
+        long long maxsize = 128,
+        **kwargs
+    ):
         super().__init__(*args, **kwargs)
         self.maxsize = maxsize
-        self.order = list(self)
+        self.order = HashedList(self)
 
     ##################################
     ####    DICTIONARY METHODS    ####
     ##################################
 
-    def get(self, key: Any, default: Any | None = None) -> Any:
+    def get(self, key: Hashable, default: Any | None = None) -> Any:
         """Get a value from the dictionary and update its position in the order
         register if it is present, else return ``default``.
 
@@ -84,7 +90,7 @@ cdef class LRUDict(dict):
         except KeyError:
             return default
 
-    def setdefault(self, key: Any, default: Any = None) -> Any:
+    def setdefault(self, key: Hashable, default: Any = None) -> Any:
         """Get a value from the dictionary and update its position in the order
         register if it is present, else insert it with the default value.
 
@@ -114,7 +120,7 @@ cdef class LRUDict(dict):
             self[key] = default
             return default
 
-    def update(self, other: Any = None, **kwargs: Any) -> None:
+    def update(self, other: Any = None, /, **kwargs: Any) -> None:
         """Insert the key/value pairs from ``other`` into the dictionary and
         update their positions in the order register.
 
@@ -139,15 +145,17 @@ cdef class LRUDict(dict):
         If ``other`` is :data:`None <python:None>` and no ``kwargs`` are
         supplied, then this method does nothing.
         """
+        cdef object key, val
+
         # insert mapping first
-        for k, v in dict(other).items():
-            self[k] = v
+        for key, val in dict(other).items():
+            self[key] = val
 
         # kwargs go higher in order register
-        for k, v in kwargs.items():
-            self[k] = v
+        for key, val in kwargs.items():
+            self[key] = val
 
-    def pop(self, key: Any, default: Any = no_default) -> Any:
+    def pop(self, key: Hashable, default: Any = no_default) -> Any:
         """Remove a key from the dictionary if it is present and return its
         value, else return ``default``.
 
@@ -176,9 +184,10 @@ cdef class LRUDict(dict):
         method, except that it also removes the key from the order register.
         """
         try:
-            value = super().__getitem__(key)
-            del self[key]
+            value = super(type(self), self).pop(key)  # pop val from dictionary
+            self.order.remove(key)  # remove from order register - O(1)
             return value
+
         except KeyError as err:
             if default is no_default:
                 raise err
@@ -199,8 +208,8 @@ cdef class LRUDict(dict):
         This method emulates the standard :meth:`dict.popitem() <python:dict.popitem>`
         method, except that it also removes the key from the order register.
         """
-        key, value = super().popitem()
-        self.order.remove(key)
+        key, value = super(type(self), self).popitem()  # pop item from dict
+        self.order.remove(key)  # remove from order register - O(1)
         return (key, value)
 
     def clear(self) -> None:
@@ -211,7 +220,7 @@ cdef class LRUDict(dict):
         This method emulates the standard :meth:`dict.clear() <python:dict.clear>`
         method, except that it also clears entries from the order register.
         """
-        super().clear()
+        super(type(self), self).clear()
         self.order.clear()
 
     def copy(self) -> LRUDict:
@@ -228,10 +237,18 @@ cdef class LRUDict(dict):
         This method emulates the standard :meth:`dict.copy() <python:dict.copy>`
         method, except that it also copies the order register.
         """
-        # get a list of item tuples and sort to match order register
-        keyfunc = lambda item: self.order.index(item[0])
-        reordered = dict(sorted(self.items(), key=keyfunc))
-        return LRUDict(reordered, maxsize=self.maxsize)
+        cdef list ordered = []
+        cdef object key
+        cdef tuple item
+
+        # NOTE: we always extract the new dictionary in order so that the new
+        # register matches the original 
+
+        for key in self.order:
+            item = (key, super(type(self), self).__getitem__(key))
+            ordered.append(item)
+
+        return LRUDict(ordered, maxsize=self.maxsize)
 
     ###########################
     ####    NEW METHODS    ####
@@ -250,77 +267,60 @@ cdef class LRUDict(dict):
         If the order of the dictionary is important to you, then this method
         will manually sort it to match the order register.
         """
-        # get a list of item tuples and sort to match priority register
-        keyfunc = lambda item: self.priority.index(item[0])
-        reordered = sorted(self.items(), key=keyfunc)
+        cdef list ordered = []
+        cdef object key, val
+        cdef tuple item
 
-        # clear original dictionary and replace items in new order
-        super().clear()
-        for (k, v) in reordered:
-            super().__setitem__(k, v)
+        # NOTE: what we're doing here is extracting each key from the
+        # dictionary according to its position in the order register, then
+        # clearing the dictionary and re-inserting each item.  This doesn't
+        # modify the order register in any way, just the underlying dictionary.
+
+        # extract items in order
+        for key in self.order:
+            item = (key, super(type(self), self).__getitem__(key))
+            ordered.append(item)
+
+        # clear original dictionary
+        super(type(self), self).clear()
+
+        # re-insert items in order
+        for key, val in ordered:
+            super().__setitem__(key, val)
 
     #######################
     ####    PRIVATE    ####
     #######################
 
-    @cython.boundscheck(False)
-    @cython.wraparound(False)
-    cdef void move_to_end(self, object key):
-        """Move the specified key to the top of the order register.
-
-        Parameters
-        ----------
-        key: Any
-            The key to move.
-
-        Notes
-        -----
-        This is a private method that is only accessible within Cython.  It is
-        not exposed to Python.
-        """
-        cdef unsigned int size = len(self) - 1
-        cdef unsigned int index
-
-        # NOTE: as an optimization, we always count from the right side of the
-        # order register (most recent) rather than the left (least recent).
-        # This favors the most recent keys, which are more likely to be
-        # accessed repeatedly.
-
-        for index in range(size, -1, -1):
-            if self.order[index] == key:
-                break
-
-        # if key is already at the top of the register, do nothing
-        if index != size:
-            self.order.append(self.order.pop(index))
-
-    @cython.boundscheck(False)
-    @cython.wraparound(False)
     cdef void purge(self):
         """Remove overflowing keys according to their position in the order
         register.
 
         Notes
         -----
-        This is a private method that is only accessible within Cython.  It is
-        not exposed to Python.
+        This is a private method that is only accessible from within Cython.
+        It is not exposed to Python.
         """
-        cdef unsigned int length = len(self)
-        cdef unsigned int overflowing
-        cdef unsigned int i
+        cdef long long length = len(self)
+        cdef long long to_purge, i
         cdef object key
 
-        if self.maxsize is not None and length > self.maxsize:
-            overflowing = length - self.maxsize
-            for i in range(overflowing):
-                key = self.order.pop(0)
-                super(LRUDict, self).pop(key)
+        # NOTE: the order register is stored from most to least recent, so all
+        # we need to do to is pop from the rightmost end until we're no longer
+        # overflowing.
+
+        # only purge if maxsize is positive and we're overflowing
+        if self.maxsize >= 0 and length > self.maxsize:
+            to_purge = length - self.maxsize
+            for i in range(to_purge):
+                key = self.order.popright()  # O(1) due to linked list
+                dict.__delitem__(self, key)
 
     ###############################
     ####    SPECIAL METHODS    ####
     ###############################
 
-    def __getitem__(self, key: Any) -> Any:
+    def __getitem__(self, key: Hashable) -> Any:
         """Get a value from the dictionary and update its position in the order
         register.
 
@@ -345,11 +345,17 @@ cdef class LRUDict(dict):
         :meth:`dict.__getitem__() <python:dict.__getitem__>` method, except
         that it also updates the order register.
         """
-        value = super().__getitem__(key)  # retrieve item from dict
-        self.move_to_end(key)  # update LRU order
+        # retrieve item from dict
+        cdef object value = super(type(self), self).__getitem__(key)
+
+        # only update order register if key is not already at the top
+        if key != self.order.head.value:
+            self.order.remove(key)  # O(1) due to hash table
+            self.order.appendleft(key)  # O(1) due to linked list
+
         return value
 
-    def __setitem__(self, key: Any, value: Any) -> None:
+    def __setitem__(self, key: Hashable, value: Any) -> None:
         """Insert a key/value pair into the dictionary and update its position
         in the order register.
 
@@ -367,14 +373,20 @@ cdef class LRUDict(dict):
         that it also updates the order register and purges overflowing keys if
         necessary.
         """
-        super().__setitem__(key, value)  # set item in dict
-        if key in self.order:
-            self.move_to_end(key)  # move key to highest order
-        else:
-            self.order.append(key)  # add key as highest order
-            self.purge()  # purge low order key(s) if above maxsize
+        # set item in dict
+        super().__setitem__(key, value)
 
-    def __delitem__(self, key: Any) -> None:
+        # update order register
+        if key not in self.order:  # O(1) due to hash table
+            self.order.appendleft(key)  # O(1) due to linked list
+            self.purge()
+
+        # only update order register if key is not already at the top
+        elif key != self.order.head.value:
+            self.order.remove(key)  # O(1) due to hash table
+            self.order.appendleft(key)  # O(1) due to linked list
+
+    def __delitem__(self, key: Hashable) -> None:
         """Remove a key from the dictionary and order register.
 
         Parameters
@@ -394,4 +406,4 @@ cdef class LRUDict(dict):
         that it also removes the key from the order register.
         """
         super().__delitem__(key)
-        self.order.remove(key)
+        self.order.remove(key)  # O(1) due to hash table
