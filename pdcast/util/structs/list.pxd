@@ -1,16 +1,18 @@
 
 cdef class ListNode:
     cdef readonly:
+        object value
+
+    cdef public:
         ListNode next
         ListNode prev
-        object value
 
 
 cdef class LinkedList:
     cdef:
         long long size
 
-    cdef readonly:
+    cdef public:
         ListNode head
         ListNode tail
 

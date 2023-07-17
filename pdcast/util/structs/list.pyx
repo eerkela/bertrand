@@ -23,14 +23,34 @@ from typing import Any, Hashable, Iterable, Iterator
 # a subclass of Hashable, and if not, raise an error.
 
 
-# TODO: test cases: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-#   [1:4:1] -> [1, 2, 3]
-#   [6:9:1] -> [6, 7, 8]
-#   [8:5:-1] -> [8, 7, 6]  # error
-#   [3:0:-1] -> [3, 2, 1]  # error
+# TODO: __getitem__ and __delitem__ are now correct for slices, but
+# __setitem__ is not.
+# -> impossible slices are handled differently for this method.
+
+# If you assign an iterable into a slice of length 0, it will insert the
+# values into the list at the specified index, extending it.
+
+# p = list(range(10))
+# p[5:5] = [15, 15, 15]
+# print(p)  # [0, 1, 2, 3, 4, 15, 15, 15, 5, 6, 7, 8, 9]
+
+
 
 # TODO: testing in general consists of comparing the output of this class's
 # methods to the built-in `list` object.
+
+
+# TODO: slice tester:
+
+# r = lambda: random.randrange(-20, 20)
+
+# def test():
+#     start, stop, step = (r(), r(), r())
+#     s1 = l[start:stop:step]
+#     s2 = p[start:stop:step]
+#     assert list(s1) == s2, f"{repr(s1)} != {s2}   <- {':'.join([str(x) for x in (start, stop, step)])}"
+
+
 
 
 cdef class ListNode:
@@ -606,38 +626,61 @@ cdef class LinkedList:
         cdef LinkedList result
         cdef long long start, stop, step, i
         cdef long long index, end_index
+        cdef bint reverse
 
         # support slicing
         if isinstance(key, slice):
             # create a new LinkedList to hold the slice
             result = type(self)()
 
-            # determine direction of traversal to avoid backtracking
+            # get bounds of slice
             start, stop, step = key.indices(self.size)
+            if (start > stop and step > 0) or (start < stop and step < 0):
+                return result  # Python returns an empty list in this case
+
+            # determine direction of traversal to avoid backtracking
             index, end_index = self._get_slice_direction(start, stop, step)
 
             # get first node in slice, counting from nearest end
             node = self._node_at_index(index)
 
+            # determine whether to reverse the slice due to sign of step
+            reverse = step < 0
+            step = abs(step)  # drop sign
+
             # forward traversal
             if end_index >= index:
-                while node is not None and index != end_index:
-                    result.append(node.value)
-                    for i in range(step):  # jump according to step size
+                while node is not None and index < end_index:
+                    if reverse:
+                        result.appendleft(node.value)
+                    else:
+                        result.append(node.value)
+
+                    # jump according to step size
+                    for i in range(step):
                         if node is None:
                             break
                         node = node.next
-                    index += step  # increment index
+
+                    # increment index
+                    index += step
 
             # backward traversal
             else:
-                while node is not None and index != end_index:
-                    result.appendleft(node.value)
-                    for i in range(step):  # jump according to step size
+                while node is not None and index > end_index:
+                    if reverse:
+                        result.append(node.value)
+                    else:
+                        result.appendleft(node.value)
+
+                    # jump according to step size
+                    for i in range(step):
                         if node is None:
                             break
                         node = node.prev
-                    index -= step  # decrement index
+
+                    # decrement index
+                    index -= step
 
             return result
 
@@ -797,8 +840,12 @@ cdef class LinkedList:
 
         # support slicing
         if isinstance(key, slice):
-            # determine direction of traversal to avoid backtracking
+            # get bounds of slice
             start, stop, step = key.indices(len(self))
+            if (start > stop and step > 0) or (start < stop and step < 0):
+                return  # Python does nothing in this case
+
+            # determine direction of traversal to avoid backtracking
             index, end_index = self._get_slice_direction(start, stop, step)
 
             # get first node in slice, counting from nearest end
@@ -809,8 +856,9 @@ cdef class LinkedList:
             staged = list()
 
             # forward traversal
+            step = abs(step)  # drop sign
             if end_index >= index:
-                while node is not None and index != end_index:
+                while node is not None and index < end_index:
                     staged.append(node)
                     for i in range(step):  # jump according to step size
                         if node is None:
@@ -820,7 +868,7 @@ cdef class LinkedList:
 
             # backward traversal
             else:
-                while node is not None and index != end_index:
+                while node is not None and index > end_index:
                     staged.append(node)
                     for i in range(step):  # jump according to step size
                         if node is None:
@@ -1534,7 +1582,7 @@ cdef class HashedList(LinkedList):
 
     def __init__(self, items: Iterable[Hashable] | None = None):
         self.nodes = {}
-        super(type(self), self).__init__(items)
+        LinkedList.__init__(self, items)
 
     ######################
     ####    APPEND    ####

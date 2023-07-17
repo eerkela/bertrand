@@ -47,7 +47,7 @@ cdef class PriorityList(HashedList):
             >>> foo.index(2)
             1
         """
-        return super().index(item, start, stop)
+        return HashedList.index(self, item, start, stop)
 
     def move_up(self, item: Any) -> None:
         """Move an item one index toward the front of the list.
@@ -147,7 +147,7 @@ cdef class PriorityList(HashedList):
         curr_index = self.index(item)
         index = self._normalize_index(index)
 
-        node = self.items[item]
+        node = self.nodes[item]
         if index < curr_index:
             for _ in range(curr_index - index):
                 self.move_up(item)
