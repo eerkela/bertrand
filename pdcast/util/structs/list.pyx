@@ -3,19 +3,34 @@ can be subclassed to add additional functionality.
 """
 from typing import Any, Hashable, Iterable, Iterator
 
+from cpython.ref cimport PyObject
+from libc.stdlib cimport malloc, free
 
-# TODO: it is actually possible to store a *reference* to a python object in
-# a cdef struct, it just can't be the literal object itself.  This means we
-# can implement ListNode as a struct, but we need to manually manage its
-# memory and reference counts.  This is annoying but doable.
 
-# If we want the nodes to be accessible from Python, we would need to create a
-# separate cython wrapper (a cdef class) that exposes the internal struct
-# attributes.  This is again annoying but doable.
+cdef extern from "Python.h":
+    void Py_INCREF(PyObject* obj) nogil
+    void Py_DECREF(PyObject* obj) nogil
 
-# If we do this, then the _merge algorithm should return a C tuple of node
-# structs rather than a Python tuple of ListNode objects.  This avoids
-# unnecessary overhead from Python object creation.
+
+# TODO: we have a double free() when assigning head.next = None
+# -> double free() calls __dealloc__ *before* the free() in .next
+# This might be because we allocate a new ListNode and destroy it immediately
+# after the assignment.  This 
+
+
+# head = ListNode(1)
+# head.next = ListNode(2)
+# head.next = None  # frees 2 twice
+
+# TODO: I'm also not sure if __delitem__() is freeing nodes correctly.
+
+
+
+# _merge should maybe return a C tuple of node structs rather than a Python
+# tuple of ListNode objects.  This avoids unnecessary overhead from Python
+# object interaction.
+
+
 
 
 # TODO: implement class_getitem for mypy hints, just like list[].
@@ -50,7 +65,131 @@ from typing import Any, Hashable, Iterable, Iterator
 #     s2 = p[start:stop:step]
 #     assert list(s1) == s2, f"{repr(s1)} != {s2}   <- {':'.join([str(x) for x in (start, stop, step)])}"
 
+# there seems to be a bug with negative step sizes that are larger than the
+# length of the list.
 
+
+
+cdef bint DEBUG = True
+
+
+
+def get_list(n):
+    head = ListNode(1)
+    curr = head
+    for i in range(2, n + 1):
+        curr.next = ListNode(i)
+        curr.next.prev = curr
+        curr = curr.next
+    return head, curr
+
+
+
+# TODO: this breaks if the lists are doubly-linked rather than singly-linked
+# for some reason.  It seems like more than one reference is maintained
+
+
+
+cdef inline void decref(ListNodeStruct* c_struct):
+    # decrement internal reference counter
+    c_struct.ref_count -= 1
+
+    # early return if not free()-able
+    if c_struct.ref_count != 0:
+        return
+
+    # free() struct and decrement Python refcount
+    cdef ListNodeStruct* forward = c_struct.next
+    cdef ListNodeStruct* backward = c_struct.prev
+    cdef ListNodeStruct* temp
+
+    if DEBUG:
+        print(f"    -> freeing {<object>c_struct.value}")
+
+    # nullify references to avoid dangling pointers
+    if c_struct.next is not NULL:
+        c_struct.next.prev = NULL
+        c_struct.next = NULL
+    if c_struct.prev is not NULL:
+        c_struct.prev.next = NULL
+        c_struct.prev = NULL
+
+    # decrement Python refcount
+    Py_DECREF(c_struct.value)
+
+    # free struct
+    free(c_struct)
+
+    # NOTE: Whenever we remove a struct, we implicitly remove a reference to
+    # both of its neighbors.  This can lead to memory leaks if we remove a node
+    # from the middle of the list, since the neighbors will never be freed.  To
+    # solve this, we emit a wave front that propagates outwards from the
+    # removed node, decrementing the refcount of each node it encounters and
+    # freeing them if necessary.  We stop at the first node in either direction
+    # with a refcount > 1, since this means that it is still being referenced
+    # elsewhere.
+
+    cdef bint delete_forward = True
+    cdef bint delete_backward = True
+
+    # if either direction does not lead to a referenced node, then we delete
+    # in that direction.  Otherwise, we preserve the list
+
+    temp = forward
+    while temp is not NULL:
+        if temp.ref_count > 1:
+            delete_forward = False
+            break
+        temp = temp.next
+
+    temp = backward
+    while temp is not NULL:
+        if temp.ref_count > 1:
+            delete_backward = False
+            break
+        temp = temp.prev
+
+    # delete orphaned nodes in the forward direction
+    if delete_forward:
+        while forward is not NULL:
+            # remember next node
+            temp = forward.next
+
+            if DEBUG:
+                print(f"    -> freeing {<object>forward.value}")
+
+            # nullify pointers
+            if forward.next is not NULL:
+                forward.next.prev = NULL
+                forward.next = NULL
+
+            # free struct
+            Py_DECREF(forward.value)
+            free(forward)
+
+            # advance to next node
+            forward = temp
+
+    # delete orphaned nodes in the backward direction
+    if delete_backward:
+        while backward is not NULL:
+            # remember next node
+            temp = backward.prev
+
+            if DEBUG:
+                print(f"    -> freeing {<object>backward.value}")
+
+            # nullify pointers
+            if backward.prev is not NULL:
+                backward.prev.next = NULL
+                backward.prev = NULL
+
+            # free struct
+            Py_DECREF(backward.value)
+            free(backward)
+
+            # advance to next node
+            backward = temp
 
 
 cdef class ListNode:
@@ -60,32 +199,170 @@ cdef class ListNode:
     ----------
     item : object
         The item to store in the node.
+    allocate : bool, default True
+        Indicates whether to allocate a new struct for this node.  If this is
+        set to ``False``, then the ListNode will be initialized with a NULL
+        struct pointer, which can be manually assigned later.  This allows us
+        to wrap a pre-existing struct and dynamically expose it to Python.
 
     Attributes
     ----------
-    value : object
-        The item stored in the node.
-    next : ListNode
-        The next node in the list.
     prev : ListNode
         The previous node in the list.
+    struct : ListNodeStruct*
+        A pointer to the underlying C struct, or ``NULL`` if
+        ``allocate=False``.  This is not exposed to Python, and can only be
+        accessed from Cython or equivalent C code.
 
     Notes
     -----
-    The only reason why this isn't a ``cdef packed struct`` is because it
-    contains a generic Python object, which is not allowed in structs.  If a
-    subclass of LinkedList is created that only stores a specific
-    (C-compatible) type of item, this can be changed to a struct for a slight
-    performance boost.
+    In order to optimize performance as much as possible, :class:`LinkedLists`
+    don't actually store full Python objects in their nodes, even if they are
+    implemented in Cython.  Instead, each node is implemented as a pure C
+    struct that is packed in memory as a contiguous block.  These structs
+    contain the information necessary to form the list, including pointers to
+    the next and previous nodes, as well as a ``PyObject*`` pointer to the
+    actual value being stored.  This makes the list extremely efficient, but
+    also means that the nodes cannot be accessed directly from Python.
 
-    Note that if this is converted to a struct, memory would need to be handled
-    manually, just like in C.
+    This class solves that problem by creating a thin wrapper around a struct,
+    which temporarily exposes its attributes to Python.  This struct can be
+    allocated either during initialization (``allocate=True``), or later, by
+    assigning a pre-existing struct pointer to the ``c_struct`` attribute.
+    Keep in mind that the underlying struct itself is not exposed to Python,
+    and consequently, the user is responsible for manually managing its memory
+    and reference counts.  This is highly error-prone and can only be performed
+    from within Cython or equivalent CPython code.  If you never want to worry
+    about calling :func:`malloc()` or :func:`free()`, just set
+    ``allocate=True`` and it will be handled internally.
     """
 
-    def __init__(self, object item):
-        self.value = item
-        self.next = None
-        self.prev = None
+    def __cinit__(self, object value = None, bint allocate = True):
+        if allocate:
+            if DEBUG:
+                print(f"malloc: {value}")
+
+            # allocate a new struct
+            self.c_struct = <ListNodeStruct*>malloc(sizeof(ListNodeStruct))
+            if self.c_struct is NULL:  # malloc() failed to allocate new block
+                raise MemoryError()
+
+            # store PyObject reference
+            self.c_struct.value = <PyObject*>value
+            self.c_struct.next = NULL
+            self.c_struct.prev = NULL
+
+            # increment reference counters
+            Py_INCREF(self.c_struct.value)  # underlying object
+            self.c_struct.ref_count = 1  # struct has its own refcount
+        else:
+            self.c_struct = NULL  # to be assigned later
+
+    @property
+    def value(self) -> Any:
+        """The object being stored in the node."""
+        return <object>self.c_struct.value
+
+    @property
+    def next(self) -> "ListNode":
+        """The next node in the list."""
+        if self.c_struct.next is NULL:
+            return None
+
+        # NOTE: we automatically wrap the next struct in a ListNode object
+        # during attribute access.  This allows us to iterate through the list
+        # just like normal, even though the nodes themselves are pure C.
+
+        # NOTE: using __new__ + __cinit__ bypasses __init__ entirely
+        cdef ListNode node = ListNode.__new__(ListNode, allocate=False)
+        node.c_struct = self.c_struct.next
+        node.c_struct.ref_count += 1  # increment refcount of next struct
+        return node
+
+    @next.setter
+    def next(self, ListNode node) -> None:
+        cdef ListNodeStruct* existing = self.c_struct.next
+
+        # assign new node
+        if node is None:
+            self.c_struct.next = NULL
+        elif node is self:
+            raise ValueError("cannot assign node to itself")
+        else:
+            node.c_struct.ref_count += 1
+            self.c_struct.next = <ListNodeStruct*> node.c_struct
+
+        # manage memory if we're replacing an existing node
+        if existing is not NULL:
+            decref(existing)
+
+    @next.deleter
+    def next(self) -> None:
+        """Delete the next node in the list."""
+        cdef ListNodeStruct* existing = self.c_struct.next
+
+        # nullify pointer
+        self.c_struct.next = NULL
+
+        # manage memory if we're replacing an existing node
+        if existing is not NULL:
+            decref(existing)
+
+    @property
+    def prev(self) -> "ListNode":
+        """The previous node in the list."""
+        if self.c_struct.prev is NULL:
+            return None
+
+        # NOTE: we automatically wrap the previous struct in a ListNode object
+        # during attribute access.  This allows us to iterate through the list
+        # just like normal, even though the nodes themselves are pure C.
+
+        # NOTE: using __new__ + __cinit__ bypasses __init__ entirely
+        cdef ListNode node = ListNode.__new__(ListNode, allocate=False)
+        node.c_struct = self.c_struct.prev
+        node.c_struct.ref_count += 1  # increment refcount of prev struct
+        return node
+
+    @prev.setter
+    def prev(self, ListNode node) -> None:
+        cdef ListNodeStruct* existing = self.c_struct.prev
+
+        # assign new node
+        if node is None:
+            self.c_struct.prev = NULL
+        elif node is self:
+            raise ValueError("cannot assign node to itself")
+        else:
+            node.c_struct.ref_count += 1
+            self.c_struct.prev = <ListNodeStruct*> node.c_struct
+
+        # manage memory if we're replacing an existing node
+        if existing is not NULL:
+            decref(existing)
+
+    @prev.deleter
+    def prev(self) -> None:
+        cdef ListNodeStruct* existing = self.c_struct.prev
+
+        # nullify pointer
+        self.c_struct.prev = NULL
+
+        # manage memory if we're replacing an existing node
+        if existing is not NULL:
+            decref(existing)
+
+    def __dealloc__(self) -> None:
+        """Handle reference counting for the underlying struct."""
+        if DEBUG:
+            print(f"deallocating ListNode({self.value})")
+
+        if self.c_struct is not NULL:
+            decref(self.c_struct)
+
+
+# TODO: LinkedList should operate on ListNodeStructs directly, rather than
+# creating full ListNodes.  Only head and tail are stored as ListNodes.
 
 
 cdef class LinkedList:
@@ -161,16 +438,7 @@ cdef class LinkedList:
         cdef ListNode node = ListNode(item)
 
         # append to end of list
-        if self.head is None:
-            self.head = node
-            self.tail = node
-        else:
-            self.tail.next = node
-            node.prev = self.tail
-            self.tail = node
-
-        # increment size
-        self.size += 1
+        self._add_node(node, self.tail, None)
 
     cdef void appendleft(self, object item):
         """Add an item to the beginning of the list.
@@ -190,16 +458,7 @@ cdef class LinkedList:
         cdef ListNode node = ListNode(item)
 
         # append to beginning of list
-        if self.head is None:
-            self.head = node
-            self.tail = node
-        else:
-            self.head.prev = node
-            node.next = self.head
-            self.head = node
-
-        # increment size
-        self.size += 1
+        self._add_node(node, None, self.head)
 
     cdef void insert(self, object item, long long index):
         """Insert an item at the specified index.
@@ -239,13 +498,7 @@ cdef class LinkedList:
                 curr = curr.next
 
             # insert before current node
-            node.next = curr
-            node.prev = curr.prev
-            curr.prev = node
-            if node.prev is None:
-                self.head = node
-            else:
-                node.prev.next = node
+            self._add_node(node, curr.prev, curr)
 
         else:
             # iterate backwards from tail
@@ -254,16 +507,7 @@ cdef class LinkedList:
                 curr = curr.prev
 
             # insert after current node
-            node.prev = curr
-            node.next = curr.next
-            curr.next = node
-            if node.next is None:
-                self.tail = node
-            else:
-                node.next.prev = node
-
-        # increment size
-        self.size += 1
+            self._add_node(node, curr, curr.next)
 
     cdef void extend(self, object items):
         """Add multiple items to the end of the list.
@@ -878,13 +1122,13 @@ cdef class LinkedList:
 
             # delete all staged nodes
             for node in staged:
-                self._drop_node(node)
+                self._remove_node(node)
 
         # index directly
         else:
             key = self._normalize_index(key)
             node = self._node_at_index(key)
-            self._drop_node(node)
+            self._remove_node(node)
 
     ######################
     ####    REMOVE    ####
@@ -911,7 +1155,7 @@ cdef class LinkedList:
 
         while node is not None:
             if node.value == item:
-                self._drop_node(node)
+                self._remove_node(node)
                 break
             node = node.next
 
@@ -965,7 +1209,7 @@ cdef class LinkedList:
         cdef ListNode node = self._node_at_index(index)
 
         # drop node and return its contents
-        self._drop_node(node)
+        self._remove_node(node)
         return node.value
 
     cdef object popleft(self):
@@ -994,7 +1238,7 @@ cdef class LinkedList:
         cdef ListNode node = self.head
 
         # drop node and return its contents
-        self._drop_node(node)
+        self._remove_node(node)
         return node.value
 
     cdef object popright(self):
@@ -1023,7 +1267,7 @@ cdef class LinkedList:
         cdef ListNode node = self.tail
 
         # drop node and return its contents
-        self._drop_node(node)
+        self._remove_node(node)
         return node.value
 
     ###########################
@@ -1195,6 +1439,68 @@ cdef class LinkedList:
     #######################
     ####    PRIVATE    ####
     #######################
+
+    cdef void _add_node(self, ListNode node, ListNode prev, ListNode next):
+        """Add a node to the list.
+
+        Parameters
+        ----------
+        node : ListNode
+            The node to add to the list.
+        prev : ListNode
+            The node that should precede the new node in the list.
+        next : ListNode
+            The node that should follow the new node in the list.
+
+        Notes
+        -----
+        This is a simple helper method for doing the pointer arithmetic of
+        adding a node, since it's used in multiple places.
+        """
+        # prev <-> node
+        node.prev = prev
+        if prev is None:
+            self.head = node
+        else:
+            prev.next = node
+
+        # node <-> next
+        node.next = next
+        if next is None:
+            self.tail = node
+        else:
+            next.prev = node
+
+        # increment size
+        self.size += 1
+
+    cdef void _remove_node(self, ListNode node):
+        """Remove a node from the list.
+
+        Parameters
+        ----------
+        node : ListNode
+            The node to remove from the list.
+
+        Notes
+        -----
+        This is a simple helper method for doing the pointer arithmetic of
+        removing a node, since it's used in multiple places.
+        """
+        # prev -> next
+        if node.prev is None:
+            self.head = node.next
+        else:
+            node.prev.next = node.next
+
+        # prev <- next
+        if node.next is None:
+            self.tail = node.prev
+        else:
+            node.next.prev = node.prev
+
+        # decrement size
+        self.size -= 1
 
     cdef ListNode _node_at_index(self, long long index):
         """Get the node at the specified index.
@@ -1409,33 +1715,6 @@ cdef class LinkedList:
 
         # return the proper head and tail of the merged list
         return (temp.next, tail)  # remove temporary head
-
-    cdef void _drop_node(self, ListNode node):
-        """Remove a node from the list.
-
-        Parameters
-        ----------
-        node : ListNode
-            The node to remove from the list.
-
-        Notes
-        -----
-        This is a simple helper method for doing the pointer arithmetic of
-        removing a node, since it's used in multiple places.
-        """
-        self.size -= 1
-
-        # prev -> next
-        if node.prev is None:
-            self.head = node.next
-        else:
-            node.prev.next = node.next
-
-        # prev <- next
-        if node.next is None:
-            self.tail = node.prev
-        else:
-            node.next.prev = node.prev
 
     ###############################
     ####    SPECIAL METHODS    ####
@@ -2051,7 +2330,7 @@ cdef class HashedList(LinkedList):
             raise ValueError(f"{repr(item)} is not contained in the list")
 
         # handle pointer arithmetic
-        self._drop_node(node)
+        self._remove_node(node)
 
     cdef void clear(self):
         """Remove all items from the list.
@@ -2067,7 +2346,7 @@ cdef class HashedList(LinkedList):
     ####    PRIVATE    ####
     #######################
 
-    cdef void _drop_node(self, ListNode node):
+    cdef void _remove_node(self, ListNode node):
         """Remove a node from the list.
 
         Parameters
@@ -2080,7 +2359,7 @@ cdef class HashedList(LinkedList):
         This is a simple helper method for doing the pointer arithmetic of
         removing a node, since it's used in multiple places.
         """
-        LinkedList._drop_node(self, node)
+        LinkedList._remove_node(self, node)
 
         # remove from hash map
         del self.nodes[node.value]

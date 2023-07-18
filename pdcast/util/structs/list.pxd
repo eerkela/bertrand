@@ -1,11 +1,16 @@
+from cpython.ref cimport PyObject
+
+
+cdef packed struct ListNodeStruct:
+    PyObject* value
+    ListNodeStruct* next
+    ListNodeStruct* prev
+    size_t ref_count  # we need a manual refcounter to avoid dangling pointers
+
 
 cdef class ListNode:
-    cdef readonly:
-        object value
-
-    cdef public:
-        ListNode next
-        ListNode prev
+    cdef:
+        ListNodeStruct* c_struct
 
 
 cdef class LinkedList:
@@ -37,6 +42,8 @@ cdef class LinkedList:
     cdef object pop(self, long long index = *)
     cdef object popleft(self)
     cdef object popright(self)
+    cdef void _add_node(self, ListNode node, ListNode prev, ListNode next)
+    cdef void _remove_node(self, ListNode node)
     cdef ListNode _node_at_index(self, long long index)
     cdef long long _normalize_index(self, long long index)
     cdef (long long, long long) _get_slice_direction(
@@ -47,7 +54,6 @@ cdef class LinkedList:
     )
     cdef ListNode _split(self, ListNode head, long long length)
     cdef tuple _merge(self, ListNode left, ListNode right, ListNode temp)
-    cdef void _drop_node(self, ListNode node)
 
 
 cdef class HashedList(LinkedList):

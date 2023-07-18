@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel", "cython >= 3.0.0b1", "numpy"]
+requires = ["setuptools", "wheel", "cython >= 3.0.0", "numpy"]
 build-backend = "setuptools.build_meta:__legacy__"
 
 [tool.setuptools.packages.find]
@@ -83,7 +83,7 @@ dev = [
     "black",
     "bumpver",
     "cibuildwheel",
-    "cython >= 3.0.0b3",
+    "cython >= 3.0.0",
     "mypy",
     "pandas-stubs",
     "pyarrow",
