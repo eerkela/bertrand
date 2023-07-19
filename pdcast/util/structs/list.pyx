@@ -3,6 +3,7 @@ can be subclassed to add additional functionality.
 """
 from typing import Any, Hashable, Iterable, Iterator
 
+from cython cimport freelist
 from cpython.ref cimport PyObject
 from libc.stdlib cimport malloc, free
 
@@ -12,22 +13,46 @@ cdef extern from "Python.h":
     void Py_DECREF(PyObject* obj) nogil
 
 
-# TODO: we have a double free() when assigning head.next = None
-# -> double free() calls __dealloc__ *before* the free() in .next
-# This might be because we allocate a new ListNode and destroy it immediately
-# after the assignment.  This 
+
+# TODO: nodes that are created from node_from_struct() have different reference
+# counting semantics compared to those created through the ListNode() constructor.
+# They increment the refcount of the underlying struct rather than taking ownership
+# directly.  This means you can delete the ListNode without freeing the underlying
+# memory, which is what we expect for interior nodes.  The difficulty comes when we
+# delete the head or tail, which should directly own their structs.  In that case,
+# we need to figure out a more efficient way to handle the memory management.
 
 
-# head = ListNode(1)
-# head.next = ListNode(2)
-# head.next = None  # frees 2 twice
-
-# TODO: I'm also not sure if __delitem__() is freeing nodes correctly.
-
+# In its current form, get_list() produces a list where every node except the
+# tail has a refcount of 1.  This means that if we delete the tail, nothing
+# happens.  However, if we delete the head, we automatically free its memory
+# and orphan the other nodes.
 
 
-# _merge should maybe return a C tuple of node structs rather than a Python
-# tuple of ListNode objects.  This avoids unnecessary overhead from Python
+# One way to solve this might be to set an ``owner`` attribute on each node
+# which tells the struct to decrement its refcount twice when it's deallocated.
+
+
+
+
+# Eventually, when we move on to implementing a HashedList, we'll need to
+# figure out how to map objects to their respective structs.  One way of doing
+# this is to use a std::unordered_map from python hashes to ListStructs.
+
+# -> hash collision is handled by chaining, so we can just use a standard
+# linked list to store the collisions, or a std::vector.
+
+# -> we can hash by calling the `PyObject_Hash()` C function, and can compare
+# objects using the `PyObject_RichCompareBool()` C function.  Both can raise
+# errors, so we need to check its output for -1.
+
+
+
+
+
+
+# _merge should return a C tuple of node structs rather than a Python tuple
+# of ListNode objects.  This avoids unnecessary overhead from Python
 # object interaction.
 
 
@@ -70,6 +95,8 @@ cdef extern from "Python.h":
 
 
 
+# DEBUG = TRUE adds print statements for memory allocation/deallocation to help
+# identify memory leaks.
 cdef bint DEBUG = True
 
 
@@ -79,18 +106,176 @@ def get_list(n):
     curr = head
     for i in range(2, n + 1):
         curr.next = ListNode(i)
-        curr.next.prev = curr
         curr = curr.next
-    return head, curr
+
+    return head
 
 
 
-# TODO: this breaks if the lists are doubly-linked rather than singly-linked
-# for some reason.  It seems like more than one reference is maintained
+
+def iter_linked(head):
+    curr = head
+    while curr is not None:
+        curr = curr.next
+
+
+def iter_python(pylist):
+    for _ in pylist:
+        pass
+
+
+cpdef void fast_iter(ListNode head):
+    cdef ListStruct* curr = head.c_struct
+
+    while curr is not NULL:
+        curr = curr.next
+
+
+def benchmark():
+    from timeit import timeit
+
+    head = get_list(10**3)
+    pylist = list(range(10**3))
+
+    return {
+        "linked list (python)": timeit(lambda: iter_linked(head), number=10**4),
+        "python list": timeit(lambda: iter_python(pylist), number=10**4),
+        "linked list (cython)": timeit(lambda: fast_iter(head), number=10**4),
+    }
 
 
 
-cdef inline void decref(ListNodeStruct* c_struct):
+
+
+cdef inline ListStruct* allocate_struct(PyObject* value):
+    """Allocate a new struct to hold the referenced object.
+
+    Parameters
+    ----------
+    value : PyObject*
+        A reference to a Python object to use as the value of the returned
+        struct.  This method handles incrementing reference counters for the
+        object.
+
+    Returns
+    -------
+    ListStruct*
+        A reference to the allocated struct.
+
+    Raises
+    ------
+    MemoryError
+        If ``malloc()`` fails to allocate a new block to hold the struct.  This
+        only happens when the system runs out of memory.
+
+    Notes
+    -----
+    Every :class:`ListStruct` is allocated with a reference count of 1,
+    indicating that it owns the underlying Python object.  The struct will not
+    be freed until this counter reaches 0, at which point it will decrement the
+    refcount of the underlying object and allow it to be garbage collected.
+
+    A :class:`ListStruct`'s reference counter is incremented whenever a
+    :class:`ListNode` is constructed around it and decremented whenever one is
+    destroyed.  This is net neutral, and will never cause the struct to be
+    freed on its own.  However, if a struct is removed from a list, then its
+    reference counter will be decremented manually, and it will be freed when
+    the counter reaches 0.  This might not occur immediately, but as soon as
+    the last :class:`ListNode` that references the struct is collected by the
+    ordinary Python garbage collector, then the underlying struct will be freed
+    along with any other orphaned nodes that are connected to it.  Whenever
+    this occurs, the refcount of the referenced object(s) will also be
+    decremented, allowing them to be garbage collected in turn.
+    """
+    if DEBUG:
+        print(f"    -> malloc: {<object>value}")
+
+    # allocate a new struct
+    cdef ListStruct* c_struct = <ListStruct*>malloc(sizeof(ListStruct))
+    if c_struct is NULL:  # malloc() failed to allocate new block
+        raise MemoryError()
+
+    # handle refcounters
+    Py_INCREF(value)
+    c_struct.ref_count = 1
+
+    # initialize struct
+    c_struct.value = value
+    c_struct.next = NULL
+    c_struct.prev = NULL
+
+    # return reference to new struct
+    return c_struct
+
+
+cdef inline void incref(ListStruct* c_struct):
+    """Increment a struct's reference counter, as well as that of the
+    underlying Python object.
+
+    Parameters
+    ----------
+    c_struct : ListStruct*
+        A pointer to the struct to increment.
+
+    Notes
+    -----
+    Every :class:`ListStruct` is allocated with a reference count of 1,
+    indicating that it owns the underlying Python object.  The struct will not
+    be freed until this counter reaches 0, at which point it will decrement the
+    refcount of the underlying object and allow it to be garbage collected.
+
+    A :class:`ListStruct`'s reference counter is incremented whenever a
+    :class:`ListNode` is constructed around it and decremented whenever one is
+    destroyed.  This is net neutral, and will never cause the struct to be
+    freed on its own.  However, if a struct is removed from a list, then its
+    reference counter will be decremented manually, and it will be freed when
+    the counter reaches 0.  This might not occur immediately, but as soon as
+    the last :class:`ListNode` that references the struct is collected by the
+    ordinary Python garbage collector, then the underlying struct will be freed
+    along with any other orphaned nodes that are connected to it.  Whenever
+    this occurs, the refcount of the referenced object(s) will also be
+    decremented, allowing them to be garbage collected in turn.
+    """
+    if DEBUG:
+        print(f"incref: {<object>c_struct.value}")
+
+    Py_INCREF(c_struct.value)  # underlying Python object refcount
+    c_struct.ref_count += 1  # internal struct refcount
+
+
+cdef inline void decref(ListStruct* c_struct):
+    """Decrement a struct's reference counter, as well as that of the
+    underlying Python object.
+
+    If the counter reaches zero, the struct is freed.
+
+    Parameters
+    ----------
+    c_struct : ListStruct*
+        A pointer to the struct to decrement.
+
+    Notes
+    -----
+    Every :class:`ListStruct` is allocated with a reference count of 1,
+    indicating that it owns the underlying Python object.  The struct will not
+    be freed until this counter reaches 0, at which point it will decrement the
+    refcount of the underlying object and allow it to be garbage collected.
+
+    A :class:`ListStruct`'s reference counter is incremented whenever a
+    :class:`ListNode` is constructed around it and decremented whenever one is
+    destroyed.  This is net neutral, and will never cause the struct to be
+    freed on its own.  However, if a struct is removed from a list, then its
+    reference counter will be decremented manually, and it will be freed when
+    the counter reaches 0.  This might not occur immediately, but as soon as
+    the last :class:`ListNode` that references the struct is collected by the
+    ordinary Python garbage collector, then the underlying struct will be freed
+    along with any other orphaned nodes that are connected to it.  Whenever
+    this occurs, the refcount of the referenced object(s) will also be
+    decremented, allowing them to be garbage collected in turn.
+    """
+    if DEBUG:
+        print(f"decref: {<object>c_struct.value}")
+
     # decrement internal reference counter
     c_struct.ref_count -= 1
 
@@ -99,12 +284,12 @@ cdef inline void decref(ListNodeStruct* c_struct):
         return
 
     # free() struct and decrement Python refcount
-    cdef ListNodeStruct* forward = c_struct.next
-    cdef ListNodeStruct* backward = c_struct.prev
-    cdef ListNodeStruct* temp
+    cdef ListStruct* forward = c_struct.next
+    cdef ListStruct* backward = c_struct.prev
+    cdef ListStruct* temp
 
     if DEBUG:
-        print(f"    -> freeing {<object>c_struct.value}")
+        print(f"    -> free: {<object>c_struct.value}")
 
     # nullify references to avoid dangling pointers
     if c_struct.next is not NULL:
@@ -114,27 +299,23 @@ cdef inline void decref(ListNodeStruct* c_struct):
         c_struct.prev.next = NULL
         c_struct.prev = NULL
 
-    # decrement Python refcount
-    Py_DECREF(c_struct.value)
-
-    # free struct
-    free(c_struct)
+    Py_DECREF(c_struct.value)  # decrement Python refcount
+    free(c_struct)  # free struct
 
     # NOTE: Whenever we remove a struct, we implicitly remove a reference to
     # both of its neighbors.  This can lead to memory leaks if we remove a node
-    # from the middle of the list, since the neighbors will never be freed.  To
-    # solve this, we emit a wave front that propagates outwards from the
-    # removed node, decrementing the refcount of each node it encounters and
-    # freeing them if necessary.  We stop at the first node in either direction
-    # with a refcount > 1, since this means that it is still being referenced
-    # elsewhere.
+    # from the middle of the list, since the neighbors will become inaccessible
+    # and cannot be freed.  To solve this, we emit a wave that propagates
+    # outwards from the removed node in both directions, searching for a node
+    # with refcount > 1 in that direction.  If one is found, we preserve all
+    # the nodes in that direction, as they are still reachable via the
+    # referenced node.  Otherwise, we can safely free them, as they would
+    # become orphaned by the removal.
 
     cdef bint delete_forward = True
     cdef bint delete_backward = True
 
-    # if either direction does not lead to a referenced node, then we delete
-    # in that direction.  Otherwise, we preserve the list
-
+    # search forward
     temp = forward
     while temp is not NULL:
         if temp.ref_count > 1:
@@ -142,6 +323,7 @@ cdef inline void decref(ListNodeStruct* c_struct):
             break
         temp = temp.next
 
+    # search backward
     temp = backward
     while temp is not NULL:
         if temp.ref_count > 1:
@@ -156,12 +338,10 @@ cdef inline void decref(ListNodeStruct* c_struct):
             temp = forward.next
 
             if DEBUG:
-                print(f"    -> freeing {<object>forward.value}")
+                print(f"    -> free: {<object>forward.value}")
 
-            # nullify pointers
-            if forward.next is not NULL:
-                forward.next.prev = NULL
-                forward.next = NULL
+            # NOTE: we don't need to nullify pointers here since we're
+            # deleting all the way to the end of the list.
 
             # free struct
             Py_DECREF(forward.value)
@@ -177,12 +357,10 @@ cdef inline void decref(ListNodeStruct* c_struct):
             temp = backward.prev
 
             if DEBUG:
-                print(f"    -> freeing {<object>backward.value}")
+                print(f"    -> free: {<object>backward.value}")
 
-            # nullify pointers
-            if backward.prev is not NULL:
-                backward.prev.next = NULL
-                backward.prev = NULL
+            # NOTE: we don't need to nullify pointers here since we're
+            # deleting all the way to the end of the list.
 
             # free struct
             Py_DECREF(backward.value)
@@ -192,27 +370,59 @@ cdef inline void decref(ListNodeStruct* c_struct):
             backward = temp
 
 
+cdef inline ListNode node_from_struct(ListStruct* c_struct):
+    """Factory function to create a :class:`ListNode` from an existing
+    ``ListStruct*`` pointer.
+
+    Parameters
+    ----------
+    c_struct : ListStruct*
+        A pointer to the underlying C struct.  This method will handle
+        incrementing reference counters for the struct and its contents.
+
+    Returns
+    -------
+    ListNode
+        A new :class:`ListNode` object that wraps the specified struct.
+
+    Notes
+    -----
+    This function is used to construct a :class:`ListNode` around an existing
+    struct.  This is necessary because the structs themselves are implemented
+    in pure C and are not normally exposed to Python.  To address this, we
+    automatically construct a new wrapper every time we access a node's
+    :attr:`next <ListNode.next>` and/or :attr:`prev <ListNode.prev>`
+    attributes, allowing us to interact with the list normally at the Python
+    level.
+    
+    This makes the C implementation virtually transparent to the user while
+    simultaneously providing the performance benefits of a low level language
+    like C.  All the ordinary :class:`LinkedList` methods are thus free to
+    operate on the underlying structs directly, without sacrificing the
+    flexibility and convenience of a native Python interface.
+    """
+    # NOTE: using __new__ + __cinit__ bypasses __init__ entirely
+    cdef ListNode node = ListNode.__new__(ListNode)
+
+    incref(c_struct)  # increment refcount of struct + underlying PyObject
+    node.c_struct = c_struct  # point to existing struct
+    return node
+
+
+@freelist(256)
 cdef class ListNode:
     """A node containing an individual element of a LinkedList.
 
     Parameters
     ----------
-    item : object
-        The item to store in the node.
-    allocate : bool, default True
-        Indicates whether to allocate a new struct for this node.  If this is
-        set to ``False``, then the ListNode will be initialized with a NULL
-        struct pointer, which can be manually assigned later.  This allows us
-        to wrap a pre-existing struct and dynamically expose it to Python.
+    value : object
+        The object to store in the node.
 
     Attributes
     ----------
-    prev : ListNode
-        The previous node in the list.
-    struct : ListNodeStruct*
-        A pointer to the underlying C struct, or ``NULL`` if
-        ``allocate=False``.  This is not exposed to Python, and can only be
-        accessed from Cython or equivalent C code.
+    struct : ListStruct*
+        A pointer to the underlying C struct.  This is not exposed to Python,
+        and can only be accessed from Cython.
 
     Notes
     -----
@@ -220,48 +430,42 @@ cdef class ListNode:
     don't actually store full Python objects in their nodes, even if they are
     implemented in Cython.  Instead, each node is implemented as a pure C
     struct that is packed in memory as a contiguous block.  These structs
-    contain the information necessary to form the list, including pointers to
-    the next and previous nodes, as well as a ``PyObject*`` pointer to the
+    contain all the information necessary to form the list, including pointers
+    to the next and previous nodes, as well as a ``PyObject*`` pointer to the
     actual value being stored.  This makes the list extremely efficient, but
-    also means that the nodes cannot be accessed directly from Python.
+    also means the nodes themselves are inaccessible to Python code.
 
     This class solves that problem by creating a thin wrapper around a struct,
-    which temporarily exposes its attributes to Python.  This struct can be
-    allocated either during initialization (``allocate=True``), or later, by
-    assigning a pre-existing struct pointer to the ``c_struct`` attribute.
-    Keep in mind that the underlying struct itself is not exposed to Python,
-    and consequently, the user is responsible for manually managing its memory
-    and reference counts.  This is highly error-prone and can only be performed
-    from within Cython or equivalent CPython code.  If you never want to worry
-    about calling :func:`malloc()` or :func:`free()`, just set
-    ``allocate=True`` and it will be handled internally.
+    which temporarily exposes its attributes to Python.  This allows us to
+    manipulate the list just like normal, even though the nodes themselves are
+    pure C.  The wrapper also handles reference counting for the struct and its
+    contents, ensuring that memory is freed whenever a struct is orphaned or
+    destroyed.
     """
 
-    def __cinit__(self, object value = None, bint allocate = True):
-        if allocate:
-            if DEBUG:
-                print(f"malloc: {value}")
+    def __init__(self, object value):
+        # NOTE: node_from_struct() uses a combination of `__cinit__()` and
+        # `__new__()` to bypass this method and speed up instantiation.
+        if DEBUG:
+            print(f"construct: ListNode({<object>value})")
 
-            # allocate a new struct
-            self.c_struct = <ListNodeStruct*>malloc(sizeof(ListNodeStruct))
-            if self.c_struct is NULL:  # malloc() failed to allocate new block
-                raise MemoryError()
+        self.c_struct = allocate_struct(<PyObject*>value)
 
-            # store PyObject reference
-            self.c_struct.value = <PyObject*>value
-            self.c_struct.next = NULL
-            self.c_struct.prev = NULL
+    def __dealloc__(self) -> None:
+        if DEBUG:
+            print(f"destroy: ListNode({self.value})")
 
-            # increment reference counters
-            Py_INCREF(self.c_struct.value)  # underlying object
-            self.c_struct.ref_count = 1  # struct has its own refcount
-        else:
-            self.c_struct = NULL  # to be assigned later
+        if self.c_struct is not NULL:
+            decref(self.c_struct)
+
+    ################################
+    ####    STRUCT INTERFACE    ####
+    ################################
 
     @property
     def value(self) -> Any:
         """The object being stored in the node."""
-        return <object>self.c_struct.value
+        return <object>self.c_struct.value  # Python handles refcount for us
 
     @property
     def next(self) -> "ListNode":
@@ -272,40 +476,45 @@ cdef class ListNode:
         # NOTE: we automatically wrap the next struct in a ListNode object
         # during attribute access.  This allows us to iterate through the list
         # just like normal, even though the nodes themselves are pure C.
-
-        # NOTE: using __new__ + __cinit__ bypasses __init__ entirely
-        cdef ListNode node = ListNode.__new__(ListNode, allocate=False)
-        node.c_struct = self.c_struct.next
-        node.c_struct.ref_count += 1  # increment refcount of next struct
-        return node
+        return node_from_struct(self.c_struct.next)
 
     @next.setter
     def next(self, ListNode node) -> None:
-        cdef ListNodeStruct* existing = self.c_struct.next
+        """Set the next node in the list."""
+        # prevent self-referential nodes
+        if node is self:
+            raise ValueError("cannot assign node to itself")
+
+        cdef ListStruct* existing = self.c_struct.next
+
+        # early return if new node is identical to existing
+        if node.c_struct is existing:
+            return
 
         # assign new node
         if node is None:
             self.c_struct.next = NULL
-        elif node is self:
-            raise ValueError("cannot assign node to itself")
         else:
-            node.c_struct.ref_count += 1
-            self.c_struct.next = <ListNodeStruct*> node.c_struct
+            incref(node.c_struct)
+            self.c_struct.next = node.c_struct
+            node.c_struct.prev = self.c_struct
 
         # manage memory if we're replacing an existing node
         if existing is not NULL:
+            existing.prev = NULL  # nullify pointer
             decref(existing)
 
     @next.deleter
     def next(self) -> None:
         """Delete the next node in the list."""
-        cdef ListNodeStruct* existing = self.c_struct.next
+        cdef ListStruct* existing = self.c_struct.next
 
         # nullify pointer
         self.c_struct.next = NULL
 
         # manage memory if we're replacing an existing node
         if existing is not NULL:
+            existing.prev = NULL  # nullify pointer
             decref(existing)
 
     @property
@@ -317,51 +526,69 @@ cdef class ListNode:
         # NOTE: we automatically wrap the previous struct in a ListNode object
         # during attribute access.  This allows us to iterate through the list
         # just like normal, even though the nodes themselves are pure C.
-
-        # NOTE: using __new__ + __cinit__ bypasses __init__ entirely
-        cdef ListNode node = ListNode.__new__(ListNode, allocate=False)
-        node.c_struct = self.c_struct.prev
-        node.c_struct.ref_count += 1  # increment refcount of prev struct
-        return node
+        return node_from_struct(self.c_struct.prev)
 
     @prev.setter
     def prev(self, ListNode node) -> None:
-        cdef ListNodeStruct* existing = self.c_struct.prev
+        """Set the previous node in the list."""
+        # prevent self-referential nodes
+        if node is self:
+            raise ValueError("cannot assign node to itself")
+
+        cdef ListStruct* existing = self.c_struct.prev
+
+        # early return if new node is identical to existing
+        if node.c_struct is existing:
+            return
 
         # assign new node
         if node is None:
             self.c_struct.prev = NULL
-        elif node is self:
-            raise ValueError("cannot assign node to itself")
         else:
-            node.c_struct.ref_count += 1
-            self.c_struct.prev = <ListNodeStruct*> node.c_struct
+            incref(node.c_struct)
+            self.c_struct.prev = node.c_struct
+            node.c_struct.next = self.c_struct
 
         # manage memory if we're replacing an existing node
         if existing is not NULL:
+            existing.next = NULL  # nullify pointer
             decref(existing)
 
     @prev.deleter
     def prev(self) -> None:
-        cdef ListNodeStruct* existing = self.c_struct.prev
+        """Delete the previous node in the list."""
+        cdef ListStruct* existing = self.c_struct.prev
 
         # nullify pointer
         self.c_struct.prev = NULL
 
         # manage memory if we're replacing an existing node
         if existing is not NULL:
+            existing.next = NULL  # nullify pointer
             decref(existing)
 
-    def __dealloc__(self) -> None:
-        """Handle reference counting for the underlying struct."""
-        if DEBUG:
-            print(f"deallocating ListNode({self.value})")
+    ##################################
+    ####    REFERENCE COUNTING    ####
+    ##################################
 
-        if self.c_struct is not NULL:
-            decref(self.c_struct)
+    @property
+    def owner(self) -> bool:
+        """Indicates whether this :class:`ListNode` owns the underlying struct.
+
+        Returns
+        -------
+        bool
+            ``True`` if the struct will be freed when the node is destroyed,
+            ``False`` otherwise.
+
+        Notes
+        -----
+        This is mostly for testing and debugging purposes.
+        """
+        return self.c_struct.ref_count == 1
 
 
-# TODO: LinkedList should operate on ListNodeStructs directly, rather than
+# TODO: LinkedList should operate on ListStructs directly, rather than
 # creating full ListNodes.  Only head and tail are stored as ListNodes.
 
 

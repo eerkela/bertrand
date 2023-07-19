@@ -1,16 +1,22 @@
 from cpython.ref cimport PyObject
 
 
-cdef packed struct ListNodeStruct:
+cdef packed struct ListStruct:
     PyObject* value
-    ListNodeStruct* next
-    ListNodeStruct* prev
+    ListStruct* next
+    ListStruct* prev
     size_t ref_count  # we need a manual refcounter to avoid dangling pointers
+
+
+cdef ListStruct* allocate_struct(PyObject* value)
+cdef void incref(ListStruct* c_struct)
+cdef void decref(ListStruct* c_struct)
+cdef ListNode node_from_struct(ListStruct* c_struct)
 
 
 cdef class ListNode:
     cdef:
-        ListNodeStruct* c_struct
+        ListStruct* c_struct
 
 
 cdef class LinkedList:
