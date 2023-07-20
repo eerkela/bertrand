@@ -1,31 +1,27 @@
+"""Cython headers for pdcast/util/structs/list.pyx"""
 from cpython.ref cimport PyObject
 
-
-cdef packed struct ListStruct:
-    PyObject* value
-    ListStruct* next
-    ListStruct* prev
-    size_t ref_count  # we need a manual refcounter to avoid dangling pointers
+from .base cimport ListNode, ListTable
 
 
-cdef ListStruct* allocate_struct(PyObject* value)
-cdef void incref(ListStruct* c_struct)
-cdef void decref(ListStruct* c_struct)
-cdef ListNode node_from_struct(ListStruct* c_struct)
+cdef NodeWrapper node_from_struct(ListNode* c_struct)
 
 
-cdef class ListNode:
+#######################
+####    CLASSES    ####
+#######################
+
+
+cdef class NodeWrapper:
     cdef:
-        ListStruct* c_struct
+        ListNode* c_struct
 
 
 cdef class LinkedList:
     cdef:
+        ListNode* _head
+        ListNode* _tail
         long long size
-
-    cdef public:
-        ListNode head
-        ListNode tail
 
     cdef LinkedList copy(self)
     cdef void append(self, object item)
@@ -48,9 +44,9 @@ cdef class LinkedList:
     cdef object pop(self, long long index = *)
     cdef object popleft(self)
     cdef object popright(self)
-    cdef void _add_node(self, ListNode node, ListNode prev, ListNode next)
-    cdef void _remove_node(self, ListNode node)
-    cdef ListNode _node_at_index(self, long long index)
+    cdef void _add_struct(self, ListNode* prev, ListNode* curr, ListNode* next)
+    cdef void _remove_struct(self, ListNode* curr)
+    cdef ListNode* _struct_at_index(self, long long index)
     cdef long long _normalize_index(self, long long index)
     cdef (long long, long long) _get_slice_direction(
         self,
@@ -58,10 +54,15 @@ cdef class LinkedList:
         long long stop,
         long long step,
     )
-    cdef ListNode _split(self, ListNode head, long long length)
-    cdef tuple _merge(self, ListNode left, ListNode right, ListNode temp)
+    cdef ListNode* _split(self, ListNode* head, long long length)
+    cdef (ListNode*, ListNode*) _merge(
+        self,
+        ListNode* left,
+        ListNode* right,
+        ListNode* temp
+    )
 
 
 cdef class HashedList(LinkedList):
-    cdef readonly:
-        dict nodes
+    cdef:
+        ListTable* table
