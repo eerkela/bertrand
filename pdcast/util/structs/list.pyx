@@ -20,6 +20,21 @@ cdef extern from "Python.h":
 
 
 
+# TODO: we could completely abandon reference counting and just allocate/
+# deallocate nodes entirely through the LinkedList interface instead.  This
+# would decrease memory usage and probably improve performance at the cost of
+# not being able to use nodes outside of a list.
+
+# -> Can still write Cython methods that interact with the LinkedList directly.
+# The head and tail pointers are exposed to Cython, so we can still do whatever
+# we want with them.  We just can't use them from Python.
+
+
+
+
+
+
+
 # TODO: nodes that are created from node_from_struct() have different reference
 # counting semantics compared to those created through the ListNode() constructor.
 # They increment the refcount of the underlying struct rather than taking ownership
@@ -133,35 +148,35 @@ cdef extern from "Python.h":
 
 
 
-def iter_linked(head):
-    curr = head
-    while curr is not None:
-        curr = curr.next
+# def iter_linked(head):
+#     curr = head
+#     while curr is not None:
+#         curr = curr.next
 
 
-def iter_python(pylist):
-    for _ in pylist:
-        pass
+# def iter_python(pylist):
+#     for _ in pylist:
+#         pass
 
 
-cpdef void fast_iter(ListNode head):
-    cdef ListStruct* curr = head.c_struct
+# cpdef void fast_iter(ListNode head):
+#     cdef ListNode* curr = head.node
+# 
+#     while curr is not NULL:
+#         curr = curr.next
 
-    while curr is not NULL:
-        curr = curr.next
 
-
-def benchmark():
-    from timeit import timeit
-
-    head = get_list(10**3)
-    pylist = list(range(10**3))
-
-    return {
-        "linked list (python)": timeit(lambda: iter_linked(head), number=10**4),
-        "python list": timeit(lambda: iter_python(pylist), number=10**4),
-        "linked list (cython)": timeit(lambda: fast_iter(head), number=10**4),
-    }
+# def benchmark():
+#     from timeit import timeit
+# 
+#     head = get_list(10**3)
+#     pylist = list(range(10**3))
+# 
+#     return {
+#         "linked list (python)": timeit(lambda: iter_linked(head), number=10**4),
+#         "python list": timeit(lambda: iter_python(pylist), number=10**4),
+#         "linked list (cython)": timeit(lambda: fast_iter(head), number=10**4),
+#     }
 
 
 
@@ -444,62 +459,20 @@ cdef class LinkedList:
             self.extend(items)
 
     def __cinit__(self):
-        self._head = NULL
-        self._tail = NULL
+        self.head = NULL
+        self.tail = NULL
         self.size = 0
-
-    #############################
-    ####    PYTHON ACCESS    ####
-    #############################
-
-    # NOTE: Each node in a LinkedList is implemented as a pure C struct that
-    # is normally inaccessible to Python.  To allow users to access the list
-    # normally, we automatically wrap each struct as we encounter it, creating
-    # a thin wrapper that exposes its attributes to Python.
-
-    @property
-    def head(self) -> ListNode:
-        """A Python-accessible reference to the first node in the list.
-
-        Returns
-        -------
-        ListNode
-            A wrapper around a :class:`ListStruct` that exposes its attributes
-            to Python.
-
-        Notes
-        -----
-        This is a read-only attribute.  To modify the list, use the normal
-        list interface instead.
-        """
-        if self._head is NULL:
-            return None
-
-        return node_from_struct(self._head)
-
-    @property
-    def tail(self) -> ListNode:
-        """A Python-accessible reference to the last node in the list.
-
-        Returns
-        -------
-        ListNode
-            A wrapper around a :class:`ListStruct` that exposes its attributes
-            to Python.
-
-        Notes
-        -----
-        This is a read-only attribute.  To modify the list, use the normal
-        list interface instead.
-        """
-        if self._tail is NULL:
-            return None
-
-        return node_from_struct(self._tail)
 
     ######################
     ####    APPEND    ####
     ######################
+
+    # TODO: because the nodes are of different kinds, we can't use the same
+    # allocation strategy.  Maybe this gets moved into the _add_node() helper,
+    # which should be the only thing subclasses actually need to override.
+    # -> not entirely, since LRUDict needs access to a second argument.  We
+    # should stick with the current strategy, and just inline as much as
+    # possible for optimization.
 
     cdef LinkedList copy(self):
         """Create a shallow copy of the list.
@@ -527,10 +500,10 @@ cdef class LinkedList:
         -----
         Appends are O(1) for both ends of the list.
         """
-        cdef ListStruct* curr = allocate_struct(<PyObject*>item)
+        cdef Node* curr = allocate_node(<PyObject*>item)
 
         # append to end of list
-        self._add_struct(self._tail, curr, NULL)
+        self._add_node(self.tail, curr, NULL)
 
     cdef void appendleft(self, object item):
         """Add an item to the beginning of the list.
@@ -550,7 +523,7 @@ cdef class LinkedList:
         cdef ListStruct* curr = allocate_struct(<PyObject*>item)
 
         # append to beginning of list
-        self._add_struct(NULL, curr, self._head)
+        self._add_struct(NULL, curr, self.head)
 
     cdef void insert(self, object item, long long index):
         """Insert an item at the specified index.
@@ -584,7 +557,7 @@ cdef class LinkedList:
         # insert struct at specified index, starting from nearest end
         if index <= len(self) // 2:
             # iterate forwards from head
-            curr = self._head
+            curr = self.head
             for i in range(index):
                 curr = curr.next
 
@@ -593,7 +566,7 @@ cdef class LinkedList:
 
         else:
             # iterate backwards from tail
-            curr = self._tail
+            curr = self.tail
             for i in range(len(self) - index - 1):
                 curr = curr.prev
 
@@ -752,7 +725,7 @@ cdef class LinkedList:
         Counting is O(n).
         """
         cdef PyObject* borrowed = <PyObject*>item  # borrowed reference
-        cdef ListStruct* c_struct = self._head
+        cdef ListStruct* c_struct = self.head
         cdef long long count = 0
         cdef int comp
 
@@ -800,7 +773,7 @@ cdef class LinkedList:
         Indexing is O(n) on average.
         """
         cdef PyObject* borrowed = <PyObject*>item  # borrowed reference
-        cdef ListStruct* c_struct = self._head
+        cdef ListStruct* c_struct = self.head
         cdef long long index = 0
         cdef int comp
 
@@ -842,7 +815,7 @@ cdef class LinkedList:
         extra memory overhead required to handle recursive stack frames.
         """
         # trivial case: empty list
-        if self._head is NULL:
+        if self.head is NULL:
             return
 
         # NOTE: as a refresher, the general merge sort algorithm is as follows:
@@ -863,7 +836,7 @@ cdef class LinkedList:
 
         # merge pairs of sublists of increasing size, starting at length 1
         while length < self.size:
-            curr = self._head  # left to right
+            curr = self.head  # left to right
 
             # divide and conquer
             while curr:
@@ -877,7 +850,7 @@ cdef class LinkedList:
 
                 # if this is our first merge, set the head of the new list
                 if tail is NULL:
-                    self._head = sub_head
+                    self.head = sub_head
                 else:
                     # link the merged sublist to the previous one
                     tail.next = sub_head
@@ -935,7 +908,7 @@ cdef class LinkedList:
         -----
         Reversing a :class:`LinkedList` is O(n).
         """
-        cdef ListStruct* c_struct = self._head
+        cdef ListStruct* c_struct = self.head
 
         # swap all prev and next pointers
         while c_struct is not NULL:
@@ -943,7 +916,7 @@ cdef class LinkedList:
             c_struct = c_struct.prev  # next is now prev
 
         # swap head and tail
-        self._head, self._tail = self._tail, self._head
+        self.head, self.tail = self.tail, self.head
 
     def __getitem__(self, key: int | slice) -> Any:
         """Index the list for a particular item or slice.
@@ -1023,9 +996,9 @@ cdef class LinkedList:
             if end_index >= index:
                 while curr is not NULL and index < end_index:
                     if reverse:
-                        result._add_struct(NULL, curr, self._head)  # appendleft
+                        result._add_struct(NULL, curr, self.head)  # appendleft
                     else:
-                        result._add_struct(self._tail, curr, NULL)  # append
+                        result._add_struct(self.tail, curr, NULL)  # append
 
                     # jump according to step size
                     for i in range(step):
@@ -1040,9 +1013,9 @@ cdef class LinkedList:
             else:
                 while curr is not NULL and index > end_index:
                     if reverse:
-                        result._add_struct(self._tail, curr, NULL)  # append
+                        result._add_struct(self.tail, curr, NULL)  # append
                     else:
-                        result._add_struct(NULL, curr, self._head)  # appendleft
+                        result._add_struct(NULL, curr, self.head)  # appendleft
 
                     # jump according to step size
                     for i in range(step):
@@ -1278,7 +1251,7 @@ cdef class LinkedList:
         Removals are O(n) on average.
         """
         cdef PyObject* borrowed = <PyObject*>item  # borrowed reference
-        cdef ListStruct* c_struct = self._head
+        cdef ListStruct* c_struct = self.head
         cdef int comp
 
         # we iterate entirely at the C level for maximum performance
@@ -1316,8 +1289,8 @@ cdef class LinkedList:
         raise NotImplementedError("clear() currently results in memory leaks")
 
         # TODO: revisit this with more advanced garbage collection
-        self._head = NULL
-        self._tail = NULL
+        self.head = NULL
+        self.tail = NULL
         self.size = 0
 
     cdef object pop(self, long long index = -1):
@@ -1379,11 +1352,11 @@ cdef class LinkedList:
         avoids the overhead of handling indices and is thus more efficient in
         the specific case of removing the first item.
         """
-        if self._head is NULL:
+        if self.head is NULL:
             raise IndexError("pop from empty list")
 
         # no need to handle indices, just skip straight to head
-        cdef ListStruct* c_struct = self._head
+        cdef ListStruct* c_struct = self.head
         cdef object value = <object>c_struct.value  # owned reference
 
         # NOTE: it's important we store an owned reference to the value before
@@ -1413,11 +1386,11 @@ cdef class LinkedList:
         avoids the overhead of handling indices and is thus more efficient in
         the specific case of removing the last item.
         """
-        if self._tail is NULL:
+        if self.tail is NULL:
             raise IndexError("pop from empty list")
 
         # no need to handle indices, just skip straight to tail
-        cdef ListStruct* c_struct = self._tail
+        cdef ListStruct* c_struct = self.tail
         cdef object value = <object>c_struct.value  # owned reference
 
         # NOTE: it's important we store an owned reference to the value before
@@ -1457,7 +1430,7 @@ cdef class LinkedList:
             return NotImplemented
 
         cdef LinkedList other_list = <LinkedList>other  # cast to C type
-        cdef ListStruct* a = self._head
+        cdef ListStruct* a = self.head
         cdef ListStruct* b = other_list._head
 
         # compare elements at each index
@@ -1508,7 +1481,7 @@ cdef class LinkedList:
             return NotImplemented
 
         cdef LinkedList other_list = <LinkedList>other  # cast to C type
-        cdef ListStruct* a = self._head
+        cdef ListStruct* a = self.head
         cdef ListStruct* b = other_list._head
 
         # compare elements at each index
@@ -1561,7 +1534,7 @@ cdef class LinkedList:
         if self.size != other_list.size:
             return False
 
-        cdef ListStruct* a = self._head
+        cdef ListStruct* a = self.head
         cdef ListStruct* b = other_list._head
 
         # compare elements at each index
@@ -1606,7 +1579,7 @@ cdef class LinkedList:
             return NotImplemented
 
         cdef LinkedList other_list = <LinkedList>other  # cast to C type
-        cdef ListStruct* a = self._head
+        cdef ListStruct* a = self.head
         cdef ListStruct* b = other_list._head
 
         # compare elements at each index
@@ -1658,7 +1631,7 @@ cdef class LinkedList:
             return NotImplemented
 
         cdef LinkedList other_list = <LinkedList>other  # cast to C type
-        cdef ListStruct* a = self._head
+        cdef ListStruct* a = self.head
         cdef ListStruct* b = other_list._head
 
         # compare elements at each index
@@ -1708,14 +1681,14 @@ cdef class LinkedList:
         # prev <-> curr
         curr.prev = prev
         if prev is NULL:
-            self._head = curr
+            self.head = curr
         else:
             prev.next = curr
 
         # curr <-> next
         curr.next = next
         if next is NULL:
-            self._tail = curr
+            self.tail = curr
         else:
             next.prev = curr
 
@@ -1738,13 +1711,13 @@ cdef class LinkedList:
         """
         # prev <-> next
         if curr.prev is NULL:
-            self._head = curr.next
+            self.head = curr.next
         else:
             curr.prev.next = curr.next
 
         # prev <-> next
         if curr.next is NULL:
-            self._tail = curr.prev
+            self.tail = curr.prev
         else:
             curr.next.prev = curr.prev
 
@@ -1778,13 +1751,13 @@ cdef class LinkedList:
 
         # count forwards from head
         if index <= self.size // 2:
-            curr = self._head
+            curr = self.head
             for i in range(index):
                 curr = curr.next
 
         # count backwards from tail
         else:
-            curr = self._tail
+            curr = self.tail
             for i in range(self.size - index - 1):
                 curr = curr.prev
 
@@ -2001,7 +1974,7 @@ cdef class LinkedList:
         -----
         Iterating through a :class:`LinkedList` is O(n) on average.
         """
-        cdef ListStruct* curr = self._head
+        cdef ListStruct* curr = self.head
 
         # NOTE: we iterate entirely at the C level for maximum performance
 
@@ -2021,7 +1994,7 @@ cdef class LinkedList:
         -----
         Iterating through a :class:`LinkedList` is O(n) on average.
         """
-        cdef ListStruct* curr = self._tail
+        cdef ListStruct* curr = self.tail
 
         while curr is not NULL:
             yield <object>curr.value  # yield owned reference

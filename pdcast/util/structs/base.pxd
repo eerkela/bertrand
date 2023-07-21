@@ -56,20 +56,20 @@ cdef packed struct DictNode:
 
 
 # fused type that describes any kind of linked list-compatible struct type
-cdef typedef fused ListNode:
+ctypedef fused ListNode:
     Node
     HashNode
     DictNode
 
 
 # fused type that describes all ListNodes that maintain a hash value
-cdef typedef fused HashableNode:
+ctypedef fused HashableNode:
     HashNode
     DictNode
 
 
 # hash map that looks up structs by their underlying value
-cdef typedef fused FlatTable:
+cdef struct FlatTable:
     HashNode** lookup     # array of HashNode references
     HashNode* tombstone   # sentinel for a value that was removed from the table
     size_t tombstone_count  # counts the number of tombstones in table
@@ -92,7 +92,7 @@ cdef struct DictTable:
 
 
 # fused type that describes any kind of hash map-compatible struct type
-cdef typedef fused ListTable:
+ctypedef fused ListTable:
     FlatTable
     DictTable
 

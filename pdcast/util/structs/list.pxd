@@ -12,11 +12,6 @@ cdef NodeWrapper node_from_struct(ListNode* c_struct)
 #######################
 
 
-cdef class NodeWrapper:
-    cdef:
-        ListNode* c_struct
-
-
 cdef class LinkedList:
     cdef:
         ListNode* _head

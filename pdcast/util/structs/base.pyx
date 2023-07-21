@@ -310,6 +310,33 @@ cdef inline DictNode* allocate_dict_node(PyObject* value, PyObject* mapped):
     return node
 
 
+cdef inline void free_node(ListNode* node):
+    """Delete a ``ListNode`` and decrement the reference counter of its
+    underlying Python object.
+
+    Parameters
+    ----------
+    node : ListNode*
+        A pointer to the node to free.
+
+
+    """
+    if DEBUG:
+        print(f"    -> free: {<object>node.value}")
+
+    # nullify references to avoid dangling pointers
+    if node.next is not NULL:
+        node.next.prev = NULL
+        node.next = NULL
+    if node.prev is not NULL:
+        node.prev.next = NULL
+        node.prev = NULL
+
+    Py_DECREF(node.value)  # decrement Python refcount
+    free(node)  # free node
+
+
+
 cdef inline void incref(ListNode* node):
     """Increment a node's reference counter, as well as that of the underlying
     Python object.
