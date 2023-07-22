@@ -1,7 +1,7 @@
 """Cython headers for pdcast/util/structs/list/hashed.pyx"""
 from cpython.ref cimport PyObject
 
-from .base cimport LinkedList, ListNode
+from .base cimport LinkedList
 
 
 #######################
@@ -38,7 +38,7 @@ cdef class HashedList(LinkedList):
         HashNode* head
         HashNode* tail
 
-    cdef HashNode* _allocate_node(PyObject* value)
+    cdef HashNode* _allocate_node(self, PyObject* value)
     cdef void _free_node(self, HashNode* node)
     cdef void _link_node(self, HashNode* prev, HashNode* curr, HashNode* next)
     cdef void _unlink_node(self, HashNode* curr)
@@ -58,4 +58,4 @@ cdef class HashedList(LinkedList):
     )
     cdef void _resize_table(self)
     cdef void _clear_tombstones(self)
-    cdef HashNode* _search_node(self, PyObject* key)
+    cdef HashNode* _search(self, PyObject* key)

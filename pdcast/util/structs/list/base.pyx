@@ -51,8 +51,11 @@ cdef class LinkedList:
     """
 
     def __init__(self, items: Iterable[Any] | None = None):
+        cdef PyObject* other_list
+
         if items is not None:
-            self._extend(items)
+            other_list = <PyObject*>items
+            self._extend(other_list)
 
     def __cinit__(self):
         self.size = 0
@@ -238,8 +241,44 @@ cdef class LinkedList:
         """Remove all items from the list in-place."""
         raise NotImplementedError()
 
-    cdef void _sort(self):
-        """Sort the list in-place."""
+    cdef void _sort(self, PyObject* key = NULL, bint reverse = False):
+        """Sort the list in-place.
+
+        Parameters
+        ----------
+        key : Callable[[Any], Any], optional
+            A function that takes an item from the list and returns a value to
+            use for sorting.  If this is ``None``, then the items will be
+            compared directly.  The default is ``None``.
+        reverse : bool, optional
+            Indicates whether to sort the list in descending order.  The
+            default is ``False``, which sorts in ascending order.
+
+        Notes
+        -----
+        Sorting is O(n log n) on average, using an iterative merge sort
+        algorithm that avoids recursion.  The sort is stable, meaning that the
+        relative order of elements that compare equal will not change, and it
+        is performed in-place for minimal memory overhead.
+
+        If a ``key`` function is provided, then the keys will be computed once
+        and reused for all iterations of the sorting algorithm.  Otherwise,
+        each element will be compared directly using the ``<`` operator.  If
+        ``reverse=True``, then the value of the comparison will be inverted
+        (i.e. ``not a < b``).
+
+        One quirk of this implementation is how it handles errors.  By default,
+        if a comparison throws an exception, then the sort will be aborted and
+        the list will be left in a partially-sorted state.  This is consistent
+        with the behavior of Python's built-in
+        :meth:`list.sort() <python:list.sort>` method.  However, when a ``key``
+        function is provided, we actually end up sorting an auxiliary list of
+        ``(key, value)`` pairs, which is then reflected in the original list.
+        This means that if a comparison throws an exception, the original list
+        will not be changed.  This holds even if the ``key`` is a simple
+        identity function (``lambda x: x``), which opens up the possibility of
+        anticipating errors and handling them gracefully.
+        """
         raise NotImplementedError()
 
     cdef void _reverse(self):
@@ -313,7 +352,7 @@ cdef class LinkedList:
         """
         raise NotImplementedError()
 
-    def __setitem__(self, key: int | slice, value: Any) -> None:
+    def __setitem__(self, key: int | slice, value: object) -> None:
         """Set the value of an item or slice in the list.
 
         Parameters
@@ -385,7 +424,7 @@ cdef class LinkedList:
         """
         raise NotImplementedError()
 
-    def __contains__(self, item: Any) -> bool:
+    def __contains__(self, item: object) -> bool:
         """Check if the item is contained in the list.
 
         Parameters
@@ -440,7 +479,7 @@ cdef class LinkedList:
         :class:`collections.deque <python:collections.deque>` class.
         """
         cdef bint shift_right = steps > 0
-        cdef size_t i
+        cdef ssize_t i
 
         # avoid inconsistencies related to sign
         steps = abs(steps)
@@ -479,7 +518,7 @@ cdef class LinkedList:
             index += self.size
 
         # check bounds
-        if not 0 <= index < self.size:
+        if not 0 <= index < (<long>self.size):
             raise IndexError("list index out of range")
 
         return index
@@ -502,8 +541,9 @@ cdef class LinkedList:
         Concatenation is O(n), where `n` is the length of the other list.
         """
         cdef LinkedList result = self._copy()
+        cdef PyObject* other_list = <PyObject*>other
 
-        result.extend(other)
+        result._extend(other_list)
         return result
 
     def __iadd__(self, other: Iterable[Any]) -> "LinkedList":
@@ -523,7 +563,9 @@ cdef class LinkedList:
         -----
         Concatenation is O(m), where `m` is the length of the ``other`` list.
         """
-        self._extend(other)
+        cdef PyObject* other_list = <PyObject*>other
+
+        self._extend(other_list)
         return self
 
     def __mul__(self, repeat: int) -> "LinkedList":
@@ -545,10 +587,12 @@ cdef class LinkedList:
         Repetition is O(n * repeat).
         """
         cdef LinkedList result = self._copy()
+        cdef LinkedList temp
         cdef size_t i
 
-        for i in range(repeat):
-            result.extend(self._copy())
+        for i in range(<size_t>repeat):
+            temp = self._copy()
+            result._extend(<PyObject*>temp)
         return result
 
     def __imul__(self, repeat: int) -> "LinkedList":
@@ -571,11 +615,11 @@ cdef class LinkedList:
         cdef LinkedList original = self._copy()
         cdef size_t i
 
-        for i in range(repeat):
-            self._extend(original)
+        for i in range(<size_t>repeat):
+            self._extend(<PyObject*>original)
         return self
 
-    def __lt__(self, other: Any) -> bool:
+    def __lt__(self, other: object) -> bool:
         """Check if this list is lexographically less than another list.
 
         Parameters
@@ -609,7 +653,7 @@ cdef class LinkedList:
         # if all elements are equal, the shorter list is smaller
         return self.size < other.size
 
-    def __le__(self, other: Any) -> bool:
+    def __le__(self, other: object) -> bool:
         """Check if this list is lexographically less than or equal to another
         list.
 
@@ -644,7 +688,7 @@ cdef class LinkedList:
         # if all elements are equal, the shorter list is smaller
         return self.size <= other.size
 
-    def __eq__(self, other: Any) -> bool:
+    def __eq__(self, other: object) -> bool:
         """Compare two lists for equality.
 
         Parameters
@@ -665,12 +709,12 @@ cdef class LinkedList:
         if not isinstance(other, type(self)):
             return NotImplemented
 
-        if self.size != other_list.size:
+        if self.size != <size_t>len(other):
             return False
 
         return all(a == b for a, b in zip(self, other))
 
-    def __gt__(self, other: Any) -> bool:
+    def __gt__(self, other: object) -> bool:
         """Check if this list is lexographically greater than another list.
 
         Parameters
@@ -704,7 +748,7 @@ cdef class LinkedList:
         # if all elements are equal, the longer list is greater
         return self.size > other.size
 
-    def __ge__(self, other: Any) -> bool:
+    def __ge__(self, other: object) -> bool:
         """Check if this list is lexographically greater than or equal to
         another list.
 
@@ -771,7 +815,7 @@ cdef class LinkedList:
         -----
         Collecting the items for this method is O(n).
         """
-        return f"[{', '.join(iter(self))}]"
+        return f"[{', '.join(str(item) for item in self)}]"
 
     def __repr__(self):
         """Return an annotated string representation of the list.
@@ -785,13 +829,13 @@ cdef class LinkedList:
         -----
         Collecting the items for this method is O(n).
         """
-        return f"{type(self).__name__}([{', '.join(iter(self))}])"
+        return f"{type(self).__name__}([{', '.join(repr(item) for item in self)}])"
 
     ###############################
     ####    PYTHON WRAPPERS    ####
     ###############################
 
-    def append(self, item: Any) -> None:
+    def append(self, item: object) -> None:
         """Add an item to the end of the list.
 
         Parameters
@@ -803,9 +847,9 @@ cdef class LinkedList:
         -----
         Appends are O(1) for both ends of the list.
         """
-        self._append(item)
+        self._append(<PyObject*>item)
 
-    def appendleft(self, item: Any) -> None:
+    def appendleft(self, item: object) -> None:
         """Add an item to the beginning of the list.
 
         Parameters
@@ -820,9 +864,9 @@ cdef class LinkedList:
         This method is consistent with the standard library's
         :class:`collections.deque <python:collections.deque>` class.
         """
-        self._appendleft(item)
+        self._appendleft(<PyObject*>item)
 
-    def insert(self, item: Any, index: int) -> None:
+    def insert(self, item: object, index: int) -> None:
         """Insert an item at the specified index.
 
         Parameters
@@ -843,9 +887,9 @@ cdef class LinkedList:
         -----
         Inserts are O(n) on average.
         """
-        self._insert(item, index)
+        self._insert(<PyObject*>item, index)
 
-    def extend(self, items: Iterable[Any]) -> None:
+    def extend(self, items: Iterable[object]) -> None:
         """Add multiple items to the end of the list.
 
         Parameters
@@ -857,9 +901,9 @@ cdef class LinkedList:
         -----
         Extends are O(m), where `m` is the length of ``items``.
         """
-        self._extend(items)
+        self._extend(<PyObject*>items)
 
-    def extendleft(self, items: Iterable[Any]) -> None:
+    def extendleft(self, items: Iterable[object]) -> None:
         """Add multiple items to the beginning of the list.
 
         Parameters
@@ -876,9 +920,9 @@ cdef class LinkedList:
         that class, the series of left appends results in reversing the order
         of elements in ``items``.
         """
-        self._extendleft(items)
+        self._extendleft(<PyObject*>items)
 
-    def index(self, item: Any, start: int = 0, stop: int = -1) -> int:
+    def index(self, item: object, start: int = 0, stop: int = -1) -> int:
         """Get the index of an item within the list.
 
         Parameters
@@ -900,9 +944,9 @@ cdef class LinkedList:
         -----
         Indexing is O(n) on average.
         """
-        return self._index(item, start, stop)
+        return self._index(<PyObject*>item, start, stop)
 
-    def count(self, item: Any) -> int:
+    def count(self, item: object) -> int:
         """Count the number of occurrences of an item in the list.
 
         Parameters
@@ -919,9 +963,9 @@ cdef class LinkedList:
         -----
         Counting is O(n).
         """
-        return self._count(item)
+        return self._count(<PyObject*>item)
 
-    def remove(self, item: Any) -> None:
+    def remove(self, item: object) -> None:
         """Remove an item from the list.
 
         Parameters
@@ -938,9 +982,9 @@ cdef class LinkedList:
         -----
         Removals are O(n) on average.
         """
-        self._remove(item)
+        self._remove(<PyObject*>item)
 
-    def pop(self, index: int = -1) -> Any:
+    def pop(self, index: int = -1) -> object:
         """Remove and return the item at the specified index.
 
         Parameters
@@ -967,7 +1011,7 @@ cdef class LinkedList:
         """
         return <object>self._pop(index)  # this returns ownership to Python
 
-    def popleft(self) -> Any:
+    def popleft(self) -> object:
         """Remove and return the first item in the list.
 
         Returns
@@ -988,7 +1032,7 @@ cdef class LinkedList:
         """
         return <object>self._popleft()  # this returns ownership to Python
 
-    def popright(self) -> Any:
+    def popright(self) -> object:
         """Remove and return the last item in the list.
 
         Returns
@@ -1023,17 +1067,48 @@ cdef class LinkedList:
         """
         self._clear()
 
-    def sort(self) -> None:
+    def sort(self, *, key: object = None, reverse: bool = False) -> None:
         """Sort the list in-place.
+
+        Parameters
+        ----------
+        key : Callable[[Any], Any], optional
+            A function that takes an item from the list and returns a value to
+            use for sorting.  If this is ``None``, then the items will be
+            compared directly.  The default is ``None``.
+        reverse : bool, optional
+            Indicates whether to sort the list in descending order.  The
+            default is ``False``, which sorts in ascending order.
 
         Notes
         -----
-        Sorting is O(n log n) on average.
-        
-        This method uses an iterative merge sort algorithm that avoids the
-        extra memory overhead required to handle recursive stack frames.
+        Sorting is O(n log n) on average, using an iterative merge sort
+        algorithm that avoids recursion.  The sort is stable, meaning that the
+        relative order of elements that compare equal will not change, and it
+        is performed in-place for minimal memory overhead.
+
+        If a ``key`` function is provided, then the keys will be computed once
+        and reused for all iterations of the sorting algorithm.  Otherwise,
+        each element will be compared directly using the ``<`` operator.  If
+        ``reverse=True``, then the value of the comparison will be inverted
+        (i.e. ``not a < b``).
+
+        One quirk of this implementation is in how it handles errors.  By
+        default, if a comparison throws an exception, then the sort will be
+        aborted and the list will be left in a partially-sorted state.  This is
+        consistent with the behavior of Python's built-in
+        :meth:`list.sort() <python:list.sort>` method.  However, when a ``key``
+        function is provided, we actually end up sorting an auxiliary list of
+        ``(key, value)`` pairs, which is then reflected in the original list.
+        This means that if a comparison throws an exception, the original list
+        will not be changed.  This is true even if the ``key`` is a simple
+        identity function (``lambda x: x``), which opens up the possibility of
+        anticipating errors and handling them gracefully.
         """
-        self._sort()
+        if key is None:
+            self._sort(NULL, reverse)
+        else:
+            self._sort(<PyObject*>key, reverse)
 
     def reverse(self) -> None:
         """Reverse the order of the list in-place.
@@ -1045,7 +1120,7 @@ cdef class LinkedList:
         self._reverse()
 
 
-    def copy(self) -> "LinkedList":
+    def copy(self) -> LinkedList:
         """Create a shallow copy of the list.
 
         Returns

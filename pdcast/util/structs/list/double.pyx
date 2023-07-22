@@ -9,10 +9,13 @@ from libc.stdlib cimport malloc, free
 from .base cimport DEBUG, raise_exception
 
 cdef extern from "Python.h":
-    int Py_EQ
+    void Py_INCREF(PyObject* obj)
+    void Py_DECREF(PyObject* obj)
+    PyObject* PyErr_Occurred()
+    void PyErr_Clear()
+    int Py_EQ, Py_LT
     int PyObject_RichCompareBool(PyObject* obj1, PyObject* obj2, int opid)
-    int Py_INCREF(PyObject* obj)
-    int Py_DECREF(PyObject* obj)
+    PyObject* PyObject_CallFunctionObjArgs(PyObject* callable, ...)
     PyObject* PyObject_GetIter(PyObject* obj)
     PyObject* PyIter_Next(PyObject* obj)
 
@@ -50,6 +53,7 @@ cdef extern from "Python.h":
 
 
 # TODO: rename ListNode -> DoubleNode to distinguish from future SingleNode
+
 
 
 #######################
@@ -170,7 +174,7 @@ cdef class DoublyLinkedList(LinkedList):
         if norm_index <= self.size // 2:
             # iterate forwards from head
             curr = self.head
-            for i in range(index):
+            for i in range(norm_index):
                 curr = curr.next
 
             # insert before current node
@@ -299,7 +303,7 @@ cdef class DoublyLinkedList(LinkedList):
         # skip to `start`
         for index in range(norm_start):
             if node is NULL:  # hit end of list
-                raise ValueError(f"{repr(item)} is not in list")
+                raise ValueError(f"{repr(<object>item)} is not in list")
             node = node.next
 
         # iterate until `stop`
@@ -317,7 +321,7 @@ cdef class DoublyLinkedList(LinkedList):
             node = node.next
             index += 1
 
-        raise ValueError(f"{repr(item)} is not in list")
+        raise ValueError(f"{repr(<object>item)} is not in list")
 
     cdef size_t _count(self, PyObject* item):
         """Count the number of occurrences of an item in the list.
@@ -392,7 +396,7 @@ cdef class DoublyLinkedList(LinkedList):
             # advance to next node
             node = node.next
 
-        raise ValueError(f"{repr(item)} is not in list")
+        raise ValueError(f"{repr(<object>item)} is not in list")
 
     cdef PyObject* _pop(self, long index = -1):
         """Remove and return the item at the specified index.
@@ -522,76 +526,231 @@ cdef class DoublyLinkedList(LinkedList):
 
         # free all nodes
         while node is not NULL:
-            temp = node.next
-            free_node(node)
-            node = temp
+            temp = node
+            node = node.next
+            self._free_node(temp)
 
         # avoid dangling pointers
         self.head = NULL
         self.tail = NULL
         self.size = 0
 
-    cdef void _sort(self):
+    cdef void _sort(self, PyObject* key = NULL, bint reverse = False):
         """Sort the list in-place.
+
+        Parameters
+        ----------
+        key : Callable[[Any], Any], optional
+            A function that takes an item from the list and returns a value to
+            use for sorting.  If this is ``None``, then the items will be
+            compared directly.  The default is ``None``.
+        reverse : bool, optional
+            Indicates whether to sort the list in descending order.  The
+            default is ``False``, which sorts in ascending order.
 
         Notes
         -----
-        Sorting is O(n log n) on average.
-        
-        This method uses an iterative merge sort algorithm that avoids the
-        extra memory overhead required to handle recursive stack frames.
+        Sorting is O(n log n) on average, using an iterative merge sort
+        algorithm that avoids recursion.  The sort is stable, meaning that the
+        relative order of elements that compare equal will not change, and it
+        is performed in-place for minimal memory overhead.
+
+        If a ``key`` function is provided, then the keys will be computed once
+        and reused for all iterations of the sorting algorithm.  Otherwise,
+        each element will be compared directly using the ``<`` operator.  If
+        ``reverse=True``, then the value of the comparison will be inverted
+        (i.e. ``not a < b``).
+
+        One quirk of this implementation is how it handles errors.  By default,
+        if a comparison throws an exception, then the sort will be aborted and
+        the list will be left in a partially-sorted state.  This is consistent
+        with the behavior of Python's built-in
+        :meth:`list.sort() <python:list.sort>` method.  However, when a ``key``
+        function is provided, we actually end up sorting an auxiliary list of
+        ``(key, value)`` pairs, which is then reflected in the original list.
+        This means that if a comparison throws an exception, the original list
+        will not be changed.  This holds even if the ``key`` is a simple
+        identity function (``lambda x: x``), which opens up the possibility of
+        anticipating errors and handling them gracefully.
         """
         # trivial case: empty list
         if self.head is NULL:
+            return
+
+        # if a key func is given, decorate the list and sort by key
+        if key is not NULL:
+            # NOTE: this uses the exact same algorithm under the hood, but
+            # because we're decorating the list, we have to use completely
+            # different type hints.  This is a limitation of using pure C for
+            # the heavy lifting.
+            self._sort_decorated(key, reverse)
             return
 
         # NOTE: as a refresher, the general merge sort algorithm is as follows:
         #   1) divide the list into sublists of length 1 (bottom-up)
         #   2) sort pairs of elements from left to right and merge
         #   3) double the length of the sublists and repeat step 2
+        cdef ListNode* head = NULL  # head of merged list
+        cdef ListNode* tail = NULL  # tail of merged list
+        cdef ListNode* curr = self.head
+        cdef ListNode* sub_left     # left sublist
+        cdef ListNode* sub_right    # right sublist
+        cdef ListNode* sub_head     # head of merged sublist
+        cdef ListNode* sub_tail     # tail of merged sublist
+        cdef size_t length = 1      # length of each sublist for this iteration
+
+        if DEBUG:
+            print("    -> malloc: temp node")
 
         # NOTE: allocating `temp` outside of _merge() allows us to avoid
-        # creating a new head every time we merge two sublists.
-        cdef ListNode* curr
-        cdef ListNode* tail
-        cdef ListNode* left
-        cdef ListNode* right
-        cdef ListNode* sub_head
-        cdef ListNode* sub_tail
-        cdef size_t length = 1
-
-        # allocate a temporary node to anchor sublists
+        # creating a new one every time we merge two sublists.
         cdef ListNode* temp = <ListNode*>malloc(sizeof(ListNode))
         if temp is NULL:  # malloc() failed to allocate a new block
             raise MemoryError()
 
         # merge pairs of sublists of increasing size, starting at length 1
-        while length < self.size:
-            curr = self.head  # left to right
+        while length <= self.size:
+            # reset head and tail of merged list
+            head = NULL
+            tail = NULL
 
             # divide and conquer
-            while curr:
+            while curr is not NULL:
                 # split the linked list into two sublists of size `length`
-                left = curr
-                right = self._split(left, length)
-                curr = self._split(right, length)
+                sub_left = curr
+                sub_right = self._split(sub_left, length)
+                curr = self._split(sub_right, length)
 
-                # merge the two sublists, maintaining sorted order
-                sub_head, sub_tail = self._merge(left, right, temp)
+                # merge the two sublists in sorted order
+                try:
+                    sub_head, sub_tail = self._merge(
+                        sub_left, sub_right, temp, reverse
+                    )
+                except:
+                    self._recover_list(head, tail, sub_left, sub_right, curr)
+                    free(temp)  # clean up temporary node
+                    if DEBUG:
+                        print("    -> free: temp node")
+                    raise  # propagate error
 
-                # if this is our first merge, set the head of the new list
+                # if this is our first merge, set the head of the merged list
                 if tail is NULL:
-                    self.head = sub_head
-                else:
-                    # link the merged sublist to the previous one
+                    head = sub_head
+                else:  # link the merged sublist to the previous one
                     tail.next = sub_head
                     sub_head.prev = tail
 
-                # set tail of new list
+                # set tail of merged list and move to next pair
                 tail = sub_tail
 
-            # double the length of the sublists for the next iteration
+            # update head of the list for the next iteration
+            curr = head
+
+            # double the length of the sublists and repeat
             length *= 2
+
+        # set head and tail of sorted list
+        self.head = head
+        self.tail = tail
+
+        if DEBUG:
+            print("    -> free: temp node")
+
+        # clean up temporary node
+        free(temp)
+
+    cdef void _sort_decorated(self, PyObject* key, bint reverse):
+        """Helper method to sort a list when a key function is involved.
+
+        This uses the same algorithm as _sort(), but precomputes all keys so
+        they can be reused during comparison.
+        """
+        cdef KeyNode* decorated_head
+        cdef KeyNode* decorated_tail
+
+        # decorate all nodes in list
+        decorated_head, decorated_tail = self._decorate(key)
+
+        # NOTE: we proceed identically to normal sort() algorithm
+        cdef KeyNode* head = NULL  # head of merged list
+        cdef KeyNode* tail = NULL  # tail of merged list
+        cdef KeyNode* curr = decorated_head
+        cdef KeyNode* sub_left     # left sublist
+        cdef KeyNode* sub_right    # right sublist
+        cdef KeyNode* sub_head     # head of merged sublist
+        cdef KeyNode* sub_tail     # tail of merged sublist
+        cdef size_t length = 1      # length of each sublist for this iteration
+        cdef size_t freed_nodes
+
+        if DEBUG:
+            print("    -> malloc: temp node")
+
+        cdef KeyNode* temp = <KeyNode*>malloc(sizeof(KeyNode))
+        if temp is NULL:  # malloc() failed to allocate a new block
+            freed_nodes = self._free_decorated(decorated_head)
+            if DEBUG:
+                print(f"    -> cleaned up {freed_nodes} temporary nodes")
+            raise MemoryError()
+
+        # merge pairs of sublists of increasing size, starting at length 1
+        while length <= self.size:
+            # reset head and tail of merged list
+            head = NULL
+            tail = NULL
+
+            # divide and conquer
+            while curr is not NULL:
+                # NOTE: we have to call separate versions of the _split() and
+                # _merge() methods that are designed to work with KeyNodes.
+                # Just like this method, they are identical to their normal
+                # counterparts, just using different struct types.
+
+                # split the linked list into two sublists of size `length`
+                sub_left = curr
+                sub_right = self._split_decorated(sub_left, length)
+                curr = self._split_decorated(sub_right, length)
+
+                # merge the two sublists in sorted order
+                try:
+                    sub_head, sub_tail = self._merge_decorated(
+                        sub_left, sub_right, temp, reverse
+                    )
+                except:
+                    free(temp)
+                    freed_nodes = 1
+                    freed_nodes += self._free_decorated(head)
+                    freed_nodes += self._free_decorated(sub_left)
+                    freed_nodes += self._free_decorated(sub_right)
+                    freed_nodes += self._free_decorated(curr)
+                    if DEBUG:
+                        print(f"    -> cleaned up {freed_nodes} temporary nodes")
+                    raise  # propagate error
+
+                # if this is our first merge, set the head of the merged list
+                if tail is NULL:
+                    head = sub_head
+                else:  # link the merged sublist to the previous one
+                    tail.next = sub_head
+                    sub_head.prev = tail
+
+                # set tail of merged list and move to next pair
+                tail = sub_tail
+
+            # update head of the list for the next iteration
+            curr = head
+
+            # double the length of the sublists and repeat
+            length *= 2
+
+        # NOTE: we now have a sorted list of KeyNodes, but we need to reflect
+        # the changes in the original list.  We do this by iterating through
+        # the decorated list, reassigning the undecorated pointers to match.
+        # For efficiency, we delete the KeyNodes in the same loop, allowing us
+        # to avoid a second iteration.
+        self.head, self.tail = self._undecorate(head)
+
+        if DEBUG:
+            print("    -> free: temp node")
 
         # clean up temporary node
         free(temp)
@@ -689,9 +848,9 @@ cdef class DoublyLinkedList(LinkedList):
         a single iteration and stops as soon as the slice is complete.
         """
         cdef ListNode* curr
-        cdef size_t start, stop, index, end_index, i  # for slicing
         cdef ssize_t step
-        cdef LinkedList result  # to hold final slice
+        cdef size_t start, stop, norm_step, index, end_index, i
+        cdef LinkedList result
         cdef bint reverse
 
         # support slicing
@@ -703,11 +862,11 @@ cdef class DoublyLinkedList(LinkedList):
             start, stop, step = key.indices(self.size)
             if (start > stop and step > 0) or (start < stop and step < 0):
                 return result  # Python returns an empty list in this case
+            norm_step = abs(step)  # drop sign
 
             # determine direction of traversal to avoid backtracking
             index, end_index = self._get_slice_direction(start, stop, step)
             reverse = step < 0  # append to slice in reverse order
-            step = abs(step)  # drop sign
 
             # get first node in slice, counting from nearest end
             curr = self._node_at_index(index)
@@ -716,35 +875,35 @@ cdef class DoublyLinkedList(LinkedList):
             if end_index >= index:
                 while curr is not NULL and index < end_index:
                     if reverse:
-                        result.appendleft(curr.value)  # appendleft
+                        result._appendleft(curr.value)  # appendleft
                     else:
-                        result.append(curr.value)  # append
+                        result._append(curr.value)  # append
 
                     # jump according to step size
-                    for i in range(step):
+                    for i in range(norm_step):
                         if curr is NULL:
                             break
                         curr = curr.next
 
                     # increment index
-                    index += step
+                    index += norm_step
 
             # backward traversal
             else:
                 while curr is not NULL and index > end_index:
                     if reverse:
-                        result.append(curr.value)  # append
+                        result._append(curr.value)  # append
                     else:
-                        result.appendleft(curr.value)  # appendleft
+                        result._appendleft(curr.value)  # appendleft
 
                     # jump according to step size
-                    for i in range(step):
+                    for i in range(norm_step):
                         if curr is NULL:
                             break
                         curr = curr.prev
 
                     # decrement index
-                    index -= step
+                    index -= norm_step
 
             return result
 
@@ -792,18 +951,19 @@ cdef class DoublyLinkedList(LinkedList):
         complete.
         """
         cdef ListNode* curr
-        cdef size_t start, stop, slice_size, index, end_index, i  # for slicing
         cdef ssize_t step
+        cdef size_t start, stop, norm_step, slice_size, index, end_index, i
         cdef object value_iterator, val  # kept at Python level for simplicity
 
         # support slicing
         if isinstance(key, slice):
             # get indices of slice
             start, stop, step = key.indices(self.size)
+            norm_step = abs(step)  # drop sign
 
             # check length of value matches length of slice
-            slice_size = abs(stop - start) // abs(1 if step == 0 else abs(step))
-            if not hasattr(value, "__iter__") or len(value) != slice_size:
+            slice_size = abs(stop - start) // (1 if step == 0 else norm_step)
+            if not hasattr(value, "__iter__") or <size_t>len(value) != slice_size:
                 raise ValueError(
                     f"attempt to assign sequence of size {len(value)} to slice "
                     f"of size {slice_size}"
@@ -824,11 +984,11 @@ cdef class DoublyLinkedList(LinkedList):
                     Py_INCREF(<PyObject*>val)
                     Py_DECREF(curr.value)
                     curr.value = <PyObject*>val
-                    for i in range(step):  # jump according to step size
+                    for i in range(norm_step):  # jump according to step size
                         if curr is NULL:
                             break
                         curr = curr.next
-                    index += step  # increment index
+                    index += norm_step  # increment index
 
             # backward traversal
             else:
@@ -838,11 +998,11 @@ cdef class DoublyLinkedList(LinkedList):
                     Py_INCREF(<PyObject*>val)
                     Py_DECREF(curr.value)
                     curr.value = <PyObject*>val
-                    for i in range(step):  # jump according to step size
+                    for i in range(norm_step):  # jump according to step size
                         if curr is NULL:
                             break
                         curr = curr.prev
-                    index -= step  # decrement index
+                    index -= norm_step  # decrement index
 
         # index directly
         else:
@@ -884,7 +1044,7 @@ cdef class DoublyLinkedList(LinkedList):
         complete.
         """
         cdef ListNode* curr
-        cdef size_t start, stop, adjusted_step, index, end_index, i  # for slicing
+        cdef size_t start, stop, norm_step, small_step, index, end_index, i
         cdef ssize_t step
         cdef ListNode* temp  # temporary node for deletion
 
@@ -894,11 +1054,11 @@ cdef class DoublyLinkedList(LinkedList):
             start, stop, step = key.indices(self.size)
             if (start > stop and step > 0) or (start < stop and step < 0):
                 return  # Python does nothing in this case
+            norm_step = abs(step)  # drop sign
+            small_step = norm_step - 1  # we implicitly advance by one at each step
 
             # determine direction of traversal to avoid backtracking
             index, end_index = self._get_slice_direction(start, stop, step)
-            step = abs(step)  # drop sign
-            adjusted_step = step - 1  # we implicitly advance by one at each step
 
             # get first node in slice, counting from nearest end
             curr = self._node_at_index(index)
@@ -910,11 +1070,11 @@ cdef class DoublyLinkedList(LinkedList):
                     curr = curr.next
                     self._unlink_node(temp)
                     self._free_node(temp)
-                    for i in range(adjusted_step):  # jump according to step size
+                    for i in range(small_step):  # jump according to step size
                         if curr is NULL:
                             break
                         curr = curr.next
-                    index += step  # index tracks with end_index to maintain condition
+                    index += norm_step  # tracks with end_index to maintain condition
 
             # backward traversal
             else:
@@ -923,11 +1083,11 @@ cdef class DoublyLinkedList(LinkedList):
                     curr = curr.prev
                     self._unlink_node(temp)
                     self._free_node(temp)
-                    for i in range(adjusted_step):  # jump according to step size
+                    for i in range(small_step):  # jump according to step size
                         if curr is NULL:
                             break
                         curr = curr.prev
-                    index -= step  # index tracks with end_index to maintain condition
+                    index -= norm_step  # tracks with end_index to maintain condition
 
         # index directly
         else:
@@ -953,7 +1113,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Membership checks are O(n) on average.
         """
-        cdef ListNode* curr
+        cdef ListNode* curr = self.head
         cdef PyObject* borrowed = <PyObject*>item  # borrowed reference
 
         # we iterate entirely at the C level for maximum performance
@@ -976,7 +1136,7 @@ cdef class DoublyLinkedList(LinkedList):
     ####    PRIVATE    ####
     #######################
 
-    cdef ListNode* _allocate_node(PyObject* value):
+    cdef ListNode* _allocate_node(self, PyObject* value):
         """Allocate a new node and set its value.
 
         Parameters
@@ -992,7 +1152,8 @@ cdef class DoublyLinkedList(LinkedList):
         Notes
         -----
         This method handles the memory allocation and reference counting for
-        each node, which can be tricky.
+        each node, which can be tricky.  It should always be followed up with a
+        call to :meth:`_link_node()` to add the node to the list.
         """
         if DEBUG:
             print(f"    -> malloc: {<object>value}")
@@ -1201,52 +1362,220 @@ cdef class DoublyLinkedList(LinkedList):
         # return as C tuple
         return (index, end_index)
 
-    cdef ListNode* _split(self, ListNode* head, size_t length):
+
+    ############################
+    ####    SORT HELPERS    ####
+    ############################
+
+    # NOTE: due to C limitations, we have to use completely different type
+    # hints for the keyed sort methods, which means we have to duplicate some
+    # code.  The algorithm is fundamentally the same in each case, but when
+    # we're dealing with decorated nodes, we have to make sure to free them if
+    # anything goes wrong.  This complexity is one of the trade-offs of using
+    # pure C for the heavy lifting.
+
+    cdef (KeyNode*, KeyNode*) _decorate(self, PyObject* key):
+        """Decorate all nodes in the list using the specified key function.
+
+        Parameters
+        ----------
+        key : Callable[[Any], Any]
+            A function that takes an item from the list and returns a value to
+            use for sorting.
+
+        Returns
+        -------
+        head : KeyNode*
+            The head of the decorated list.
+        tail : KeyNode*
+            The tail of the decorated list.
+        """
+        cdef ListNode* undecorated = self.head
+        cdef KeyNode* head = NULL
+        cdef KeyNode* tail = NULL
+        cdef KeyNode* prev = NULL
+        cdef KeyNode* decorated
+        cdef PyObject* key_value
+        cdef size_t freed_nodes
+
+        while undecorated is not NULL:
+            # C API equivalent of key(undecorated.value)
+            key_value = PyObject_CallFunctionObjArgs(key, undecorated.value, NULL)
+            if key_value is NULL:  # key() failed
+                try:
+                    raise_exception()
+                except:
+                    freed_nodes = self._free_decorated(head)  # clean up
+                    if DEBUG:
+                        print(f"    -> cleaned up {freed_nodes} temporary nodes")
+                    raise  # propagate original error
+
+            if DEBUG:
+                print(f"    -> malloc: {<object>key_value}")
+
+            # allocate a new KeyNode
+            decorated = <KeyNode*>malloc(sizeof(KeyNode))
+            if decorated is NULL:  # malloc() failed to allocate a new block
+                freed_nodes = self._free_decorated(head)  # clean up
+                if DEBUG:
+                    print(f"    -> cleaned up {freed_nodes} temporary nodes")
+                raise MemoryError()
+
+            # initalize node
+            decorated.node = undecorated
+            decorated.key = key_value
+
+            # update links
+            tail = decorated
+            decorated.next = NULL  # we set this in the next iteration
+            decorated.prev = prev  # prev <-> decorated
+            if prev is not NULL:
+                prev.next = decorated
+            else:
+                head = decorated  # set head on first iteration
+
+            # advance to next node
+            prev = decorated
+            undecorated = undecorated.next
+
+        return (head, tail)
+
+    cdef (ListNode*, ListNode*) _undecorate(self, KeyNode* head):
+        """Rearrange all nodes in the list to match their decorated ``KeyNode`` 
+        counterparts, and then remove each decorator
+
+        Parameters
+        ----------
+        head : KeyNode*
+            The head of the decorated list.
+
+        Returns
+        -------
+        head : ListNode*
+            The head of the undecorated list.
+        tail : ListNode*
+            The tail of the undecorated list.
+        """
+        cdef KeyNode* next_decorated
+        cdef ListNode* undecorated
+        cdef ListNode* prev = NULL
+        cdef ListNode* sorted_head = NULL
+
+        # NOTE: we free decorators as we go in order to avoid iterating over
+        # the list twice.
+
+        while head is not NULL:
+            next_decorated = head.next  # save next decorated node
+            undecorated = head.node
+
+            # prev <-> undecorated
+            undecorated.prev = prev
+            if prev is not NULL:
+                prev.next = undecorated
+
+            # undecorated <-> next
+            if next_decorated is not NULL:
+                undecorated.next = next_decorated.node
+            else:
+                undecorated.next = NULL
+
+            # update sorted_head
+            if sorted_head is NULL:
+                sorted_head = undecorated
+
+            if DEBUG:
+                print(f"    -> free: {<object>head.key}")
+
+            # release reference on key
+            Py_DECREF(head.key)
+
+            # free decorator
+            free(head)
+
+            # advance to next node
+            prev = undecorated
+            head = next_decorated
+
+        # return head and tail of sorted list
+        return (sorted_head, prev)  # prev always points to the sorted tail
+
+    cdef ListNode* _split(self, ListNode* curr, size_t length):
         """Split a linked list into sublists of the specified length.
 
         Parameters
         ----------
-        head : ListNode*
-            The head of the list to split.
+        curr : ListNode*
+            The starting node to begin counting from.
         length : size_t
-            The maximum length of each split.  This method will walk forward
-            from ``head`` by this many nodes and then split the list.
+            The number of nodes to extract.  This method will walk forward from
+            ``curr`` by this many steps and then split the list at that
+            location.
 
         Returns
         -------
         ListNode*
-            The head of the next sublist.
+            The node that comes after the last extracted node in the split.
+            If ``length`` exceeds the number of nodes left in the list, this
+            will be ``NULL``.
 
         Notes
         -----
         This method is O(length).  It just iterates forward ``length`` times
         and then splits the list at that point.
         """
-        cdef ListNode* split
+        cdef ListNode* result
         cdef size_t i
 
-        # walk `length` nodes forward from `head`
+        # walk forward `length` nodes from `curr`
         for i in range(length - 1):
-            if head is NULL:
+            if curr is NULL:
                 break
-            head = head.next
+            curr = curr.next
 
-        # if we've reached the end of the list, there's nothing to split
-        if head is NULL:
+        # if we've reached the end of the list, there's nothing left to split
+        if curr is NULL:
             return NULL
 
         # otherwise, split the list
-        split = head.next
-        head.next = NULL
-        if split is not NULL:
-            split.prev = NULL
-        return split
+        result = curr.next
+        curr.next = NULL
+        if result is not NULL:
+            result.prev = NULL
+        return result
+
+    cdef KeyNode* _split_decorated(self, KeyNode* curr, size_t length):
+        """Helper method to split a linked list when a key function is
+        involved.
+
+        This uses the same algorithm as ``_split()``, but operates on
+        decorated ``KeyNodes`` rather than ``ListNodes``.
+        """
+        cdef KeyNode* result
+        cdef size_t i
+
+        # walk forward `length` nodes from `curr`
+        for i in range(length - 1):
+            if curr is NULL:
+                break
+            curr = curr.next
+
+        # if we've reached the end of the list, there's nothing left to split
+        if curr is NULL:
+            return NULL
+
+        # otherwise, split the list
+        result = curr.next
+        curr.next = NULL
+        if result is not NULL:
+            result.prev = NULL
+        return result
 
     cdef (ListNode*, ListNode*) _merge(
         self,
         ListNode* left,
         ListNode* right,
-        ListNode* temp
+        ListNode* temp,
+        bint reverse,
     ):
         """Merge two sorted linked lists into a single sorted list.
 
@@ -1273,13 +1602,19 @@ cdef class DoublyLinkedList(LinkedList):
         This is a standard implementation of the divide-and-conquer merge
         algorithm.  It is O(l) where `l` is the length of the longer list.
         """
-        cdef ListNode* curr = temp
-        cdef ListNode* tail
+        cdef ListNode* curr = temp  # temporary head of merged list
+        cdef ListNode* tail         # tail of merged list
+        cdef int comp
 
-        # iterate through sublists until one is empty
-        while left and right:
-            # only append the smaller of the two nodes
-            if left.value < right.value:
+        # iterate through left and right sublists until one is empty
+        while left is not NULL and right is not NULL:
+            # C API equivalent of the < operator
+            comp = PyObject_RichCompareBool(left.value, right.value, Py_LT)
+            if comp == -1:  # < failed
+                raise_exception()  # propagate error back to _sort()
+
+            # append the smaller of the two candidates to merged list
+            if comp ^ reverse:  # [not] left < right
                 curr.next = left
                 left.prev = curr
                 left = left.next
@@ -1292,7 +1627,7 @@ cdef class DoublyLinkedList(LinkedList):
             curr = curr.next
 
         # append the remaining nodes
-        tail = left if right is NULL else right
+        tail = right if left is NULL else left
         curr.next = tail
         tail.prev = curr
 
@@ -1301,9 +1636,158 @@ cdef class DoublyLinkedList(LinkedList):
             tail = tail.next
 
         # unlink temporary head
-        curr = temp.next
+        curr = temp.next  # curr becomes new head of merged list
         curr.prev = NULL
         temp.next = NULL
 
         # return the proper head and tail of the merged list
-        return (curr, tail)  # remove temporary head
+        return (curr, tail)
+
+    cdef (KeyNode*, KeyNode*) _merge_decorated(
+        self,
+        KeyNode* left,
+        KeyNode* right,
+        KeyNode* temp,
+        bint reverse,
+    ):
+        """Helper method to merge two sorted linked lists when a key function
+        is involved.
+
+        This uses the same algorithm as ``_merge()``, but operates on
+        decorated ``KeyNodes`` rather than ``ListNodes``, and uses the
+        pre-computed key values during comparisons.
+        """
+        cdef KeyNode* curr = temp  # temporary head of merged list
+        cdef KeyNode* tail         # tail of merged list
+        cdef int comp
+
+        # iterate through left and right sublists until one is empty
+        while left is not NULL and right is not NULL:
+            # NOTE: we use the pre-computed keys rather than the direct values
+
+            # C API equivalent of the < operator
+            comp = PyObject_RichCompareBool(left.key, right.key, Py_LT)
+            if comp == -1:  # < failed
+                raise_exception()  # propagate error back to _sort_decorated()
+
+            # append the smaller of the two candidates to merged list
+            if comp ^ reverse:  # [not] left < right
+                curr.next = left
+                left.prev = curr
+                left = left.next
+            else:
+                curr.next = right
+                right.prev = curr
+                right = right.next
+
+            # advance to next node
+            curr = curr.next
+
+        # append the remaining nodes
+        tail = right if left is NULL else left
+        curr.next = tail
+        tail.prev = curr
+
+        # advance tail to end of merged list
+        while tail.next is not NULL:
+            tail = tail.next
+
+        # unlink temporary head
+        curr = temp.next  # curr becomes new head of merged list
+        curr.prev = NULL
+        temp.next = NULL
+
+        # return the proper head and tail of the merged list
+        return (curr, tail)
+
+    cdef void _recover_list(
+        self,
+        ListNode* head,
+        ListNode* tail,
+        ListNode* sub_left,
+        ListNode* sub_right,
+        ListNode* curr,
+    ):
+        """Helper method for recovering a list if an error occurs in the middle
+        of an in-place ``sort()`` operation.
+
+        Parameters
+        ----------
+        head : ListNode*
+            The head of the sorted portion.
+        tail : ListNode*
+            The tail of the sorted portion.
+        sub_left : ListNode*
+            The head of the next sublist to merge.
+        sub_right : ListNode*
+            The head of the subsequent sublist to merge.
+        curr : ListNode*
+            The head of the unsorted portion of the list.
+
+        Notes
+        -----
+        This method basically undoes a single `_split()` operation.  Given a
+        partially-sorted list, it will merge the two sublists back into the
+        original list in their current order, and then set the head and tail
+        pointers to the proper values.  That way, the list is at least in a
+        consistent state and can be garbage collected properly.
+        """
+        # link tail -> left
+        if tail is not NULL:
+            tail.next = sub_left
+
+        # link tail <- left
+        if sub_left is not NULL:
+            sub_left.prev = tail
+            while tail.next is not NULL:  # advance tail to end of sublist
+                tail = tail.next
+            tail.next = sub_right  # link left -> right
+
+        # link left <- right
+        if sub_right is not NULL:
+            sub_right.prev = tail
+            while tail.next is not NULL:  # advance tail to end of sublist
+                tail = tail.next
+            tail.next = curr  # link right -> curr
+
+        # link right <- curr
+        if curr is not NULL:
+            curr.prev = tail
+            while tail.next is not NULL:  # advance tail to end of list
+                tail = tail.next
+
+        # update head and tail pointers
+        self.head = head
+        self.tail = tail
+
+    cdef size_t _free_decorated(self, KeyNode* head):
+        """This method is called when an error occurs during a keyed ``sort()``
+        operation to clean up any ``KeyNodes`` that have been created.
+
+        Parameters
+        ----------
+        head : KeyNode*
+            The head of the decorated list.  We iterate through the list and
+            free all nodes starting from here.
+
+        Returns
+        -------
+        size_t
+            The number of nodes that were freed.
+
+        Notes
+        -----
+        This leaves the underlying list unchanged.
+        """
+        cdef KeyNode* carry
+        cdef size_t count = 0
+
+        # delete decorated list
+        while head is not NULL:
+            carry = head.next
+            free(head)
+            head = carry
+            count += 1
+
+        return count
+

@@ -6,7 +6,7 @@ from libc.stdlib cimport malloc, calloc, free
 from libcpp.unordered_set cimport unordered_set
 from libcpp.vector cimport vector
 
-from .base cimport DEBUG, ListNode, ListTable, raise_exception
+from .base cimport DEBUG, raise_exception
 
 cdef extern from "Python.h":
     int Py_EQ
@@ -15,6 +15,57 @@ cdef extern from "Python.h":
     int Py_INCREF(PyObject* obj)
     int Py_DECREF(PyObject* obj)
     PyObject* PyErr_Occurred()
+
+
+# HashMap could be spun off into its own C++ class to support templating.  This
+# would have to go in a separate header file though.
+
+# cdef extern from "hashmap.h":
+#     cdef cppclass HashMap[T]:
+#         pass  # declare all methods here
+# 
+#     # declare specific instantiations of the generic class
+#     cdef cppclass IntMap "HashMap<int>":
+#         pass
+#     cdef cppclass DoubleMap "HashMap<double>":
+#         pass
+
+# we can then use the HashMap class like so:
+#     cdef IntMap map = new IntMap()
+#     cdef DoubleMap map = new DoubleMap()
+
+
+# the actual C++ file would contain something along the lines of:
+
+#     template <typename T>
+#     class HashMap {
+#         private:
+#             T** table;
+#             T* tombstone;
+#             size_t size;
+#             size_t occupied;
+#             size_t tombstones;
+#             size_t exponent;
+#             size_t prime;
+#         public:
+#             HashMap() {
+#                 table = <T**>calloc(INITIAL_TABLE_SIZE, sizeof(T*));
+#                 ...
+#             }
+#             ~HashMap() { ... }  # destructor
+#             void insert(T* value) { ... }
+#             void remove(T* value) { ... }
+#             T* search(T value) { ... }
+#             ...
+
+
+# I can maybe also implement a C struct to hold a key to the table.  This would
+# have two fields, a `PyObject*` and a `Py_hash_t`, which could be assigned
+# before looking up the value in the table.  This would allow us to pre-compute
+# hashes for values that are already in the table, which would save us a call
+# to `PyObject_Hash()`.  This could maybe be a C++ class that overrides the
+# hash and equality operators, which could make lookups easier and potentially
+# make it compatible with a `std::unordered_map`-based approach.
 
 
 #########################
@@ -76,9 +127,9 @@ cdef class HashedList(LinkedList):
 
     Attributes
     ----------
-    head : ListNode
+    head : HashNode
         The first node in the list.
-    tail : ListNode
+    tail : HashNode
         The last node in the list.
     items : dict
         A dictionary mapping items to their corresponding nodes for fast access.
@@ -96,10 +147,10 @@ cdef class HashedList(LinkedList):
 
     def __cinit__(self):
         if DEBUG:
-            print(f"    -> malloc: ListTable({INITIAL_TABLE_SIZE}})")
+            print(f"    -> malloc: ListTable({INITIAL_TABLE_SIZE})")
 
         # allocate table struct
-        cdef NodeTable* table = <NodeTable*>malloc(sizeof(NodeTable))
+        cdef ListTable* table = <ListTable*>malloc(sizeof(ListTable))
         if table is NULL:  # malloc() failed to allocate a new block
             raise MemoryError()
 
@@ -119,29 +170,31 @@ cdef class HashedList(LinkedList):
         table.tombstones = 0
         table.exponent = 0
         table.prime = PRIMES[0]
-
-        # assign to self
         self.table = table
+
+        # set head/tail
+        self.head = NULL
+        self.tail = NULL
 
     def __dealloc__(self):
         if DEBUG:
-            print(f"    -> free: NodeTable({self.table.size})")
+            print(f"    -> free: ListTable({self.table.size})")
 
         self._clear()  # free all nodes
         free(self.table.map)  # free hash map
         free(self.table.tombstone)  # free tombstone value
         free(self.table)  # free table struct
 
-    ######################
-    ####    APPEND    ####
-    ######################
+    ########################
+    ####    CONCRETE    ####
+    ########################
 
-    cdef void append(self, object item):
+    cdef void _append(self, PyObject* item):
         """Add an item to the end of the list.
 
         Parameters
         ----------
-        item : object
+        item : PyObject*
             The item to add to the list.
 
         Raises
@@ -155,18 +208,17 @@ cdef class HashedList(LinkedList):
         -----
         Appends are O(1) for both ends of the list.
         """
-        # check if item is already present
-        if self.__contains__(item):
-            raise ValueError(f"list elements must be unique: {repr(item)}")
+        cdef HashNode* node = self._allocate_node(item)
 
-        LinkedList.append(self, item)  # calls overloaded _allocate_node()
+        # append to end of list
+        self._link_node(self.tail, node, NULL)
 
-    cdef void appendleft(self, object item):
+    cdef void _appendleft(self, PyObject* item):
         """Add an item to the beginning of the list.
 
         Parameters
         ----------
-        item : object
+        item : PyObject*
             The item to add to the list.
 
         Raises
@@ -183,18 +235,17 @@ cdef class HashedList(LinkedList):
         This method is consistent with the standard library's
         :class:`collections.deque <python:collections.deque>` class.
         """
-        # check if item is already present
-        if self.__contains__(item):
-            raise ValueError(f"list elements must be unique: {repr(item)}")
+        cdef HashNode* node = self._allocate_node(item)
 
-        LinkedList.appendleft(self, item)  # calls overloaded _allocate_node()
+        # append to beginning of list
+        self._link_node(NULL, node, self.head)
 
-    cdef void insert(self, object item, long long index):
+    cdef void _insert(self, PyObject* item, long index):
         """Insert an item at the specified index.
 
         Parameters
         ----------
-        item : object
+        item : PyObject*
             The item to add to the list.
         index : int64
             The index at which to insert the item.  This can be negative,
@@ -220,14 +271,14 @@ cdef class HashedList(LinkedList):
 
         LinkedList.insert(self, item, index)  # calls overloaded _allocate_node()
 
-    cdef void insert_after(self, object sentinel, object item):
+    cdef void _insertafter(self, PyObject* sentinel, PyObject* item):
         """Insert an item immediately after the specified sentinel.
 
         Parameters
         ----------
-        sentinel : object
+        sentinel : PyObject*
             The value after which to insert the new value.
-        item : object
+        item : PyObject*
             The value to insert into the list.
 
         Raises
@@ -238,33 +289,26 @@ cdef class HashedList(LinkedList):
             If the value is not hashable.
         ValueError
             If the value is already contained in the list.
-
-        Notes
-        -----
-        Value-based inserts are O(1) thanks to the hash map of contained items.
-
-        This is significantly faster than an `index()` lookup followed by an
-        `insert()` call, which would be O(2n) on average.
         """
         # look up sentinel node
-        cdef HashableNode* curr = self._search_node(sentinel)
+        cdef HashNode* curr = self._search_node(sentinel)
 
         # check sentinel exists
         if curr is NULL:
             raise KeyError(f"{repr(sentinel)} is not contained in the list")
 
         # allocate and link new node
-        cdef HashableNode* node = self._allocate_node(<PyObject*>item)
+        cdef HashNode* node = self._allocate_node(<PyObject*>item)
         self._link_node(curr, node, curr.next)
 
-    cdef void insert_before(self, object sentinel, object item):
+    cdef void _insertbefore(self, PyObject* sentinel, PyObject* item):
         """Insert an item immediately before the specified sentinel.
 
         Parameters
         ----------
-        sentinel : object
+        sentinel : PyObject*
             The value before which to insert the new value.
-        item : object
+        item : PyObject*
             The value to insert into the list.
 
         Raises
@@ -275,26 +319,19 @@ cdef class HashedList(LinkedList):
             If the value is not hashable.
         ValueError
             If the value is already contained in the list.
-
-        Notes
-        -----
-        Value-based inserts are O(1) thanks to the hash map of contained items.
-
-        This is significantly faster than an `index()` lookup followed by an
-        `insert()` call, which would be O(2n) on average.
         """
         # look up sentinel node
-        cdef HashableNode* curr = self._search_node(sentinel)
+        cdef HashNode* curr = self._search_node(sentinel)
 
         # check sentinel exists
         if curr is NULL:
             raise KeyError(f"{repr(sentinel)} is not contained in the list")
 
         # allocate and link new node
-        cdef HashableNode* node = self._allocate_node(<PyObject*>item)
+        cdef HashNode* node = self._allocate_node(<PyObject*>item)
         self._link_node(curr.prev, node, curr)
 
-    cdef void extend(self, object items):
+    cdef void _extend(self, PyObject* items):
         """Add a sequence of items to the end of the list.
 
         Parameters
@@ -316,8 +353,33 @@ cdef class HashedList(LinkedList):
         # NOTE: we stage the items in a temporary list first so we can
         # guarantee that they are all unique and hashable.
 
-        cdef HashableNode* temp =  
+        # TODO: probably the best strategy is to just allocate a new node for
+        # each value within a try/except block and link them together into their
+        # own list.  Then we just append that list to the end of the current
+        # one.  This automatically checks for uniqueness/hashability for us,
+        # and avoids us having to iterate through the list twice.
 
+    cdef void _extendleft(self, PyObject* items):
+        """Add a sequence of items to the end of the list.
+
+        Parameters
+        ----------
+        items : Iterable[Hashable]
+            The values to add to the list.
+
+        Raises
+        ------
+        TypeError
+            If any values are not hashable.
+        ValueError
+            If any values are already contained in the list.
+
+        Notes
+        -----
+        Extends are O(m), where `m` is the length of ``items``.
+        """
+        # NOTE: we stage the items in a temporary list first so we can
+        # guarantee that they are all unique and hashable.
 
         # TODO: probably the best strategy is to just allocate a new node for
         # each value within a try/except block and link them together into their
@@ -326,13 +388,12 @@ cdef class HashedList(LinkedList):
         # and avoids us having to iterate through the list twice.
 
 
-
-    cdef void extend_after(self, object sentinel, object other):
+    cdef void _extendafter(self, PyObject* sentinel, PyObject* other):
         """Insert a sequence of items immediately after the specified sentinel.
 
         Parameters
         ----------
-        sentinel : object
+        sentinel : PyObject*
             The value after which to insert the new values.
         other : Iterable[Hashable]
             The values to insert into the list.
@@ -345,17 +406,9 @@ cdef class HashedList(LinkedList):
             If any values are not hashable.
         ValueError
             If any values are already contained in the list.
-
-        Notes
-        -----
-        Thanks to the hash map of contained items, value-based inserts are
-        O(1).
-
-        This is significantly faster than an `index()` lookup followed by a
-        slice injection, which would be O(2n + m) on average.
         """
         # look up sentinel node
-        cdef HashableNode* curr = self._search_node(sentinel)
+        cdef HashNode* curr = self._search_node(sentinel)
 
         # check sentinel exists
         if curr is NULL:
@@ -364,106 +417,44 @@ cdef class HashedList(LinkedList):
         # NOTE: we stage the items in a temporary list first so we can guarantee
         # that they are all unique before inserting them into the list
 
-
-    def __mul__(self, repeat: int) -> "HashedList":
-        """Repeat the list a specified number of times.
+    cdef void _extendbefore(self, PyObject* sentinel, PyObject* other):
+        """Insert a sequence of items immediately before the specified sentinel.
 
         Parameters
         ----------
-        repeat : int
-            The number of times to repeat the list.
-
-        Returns
-        -------
-        LinkedList
-            A new list containing successive copies of this list, repeated the
-            given number of times.  Due to the uniqueness constraint, this will
-            always be either an empty list or a copy of this list.
+        sentinel : PyObject*
+            The value before which to insert the new values.
+        other : Iterable[Hashable]
+            The values to insert into the list.  Note that this method
+            implicitly reverses the order of the elements.
 
         Raises
         ------
+        KeyError
+            If the sentinel is not contained in the list.
+        TypeError
+            If any values are not hashable.
         ValueError
-            If `repeat` is not 0 or 1.
-
-        Notes
-        -----
-        Due to the uniqueness constraint, repetition is always O(1) for
-        :class:`HashedLists`.
+            If any values are already contained in the list.
         """
-        if repeat == 0:
-            return type(self)()
-        if repeat == 1:
-            return self.copy()
+        # look up sentinel node
+        cdef HashNode* curr = self._search_node(sentinel)
 
-        raise ValueError("repetition count must be 0 or 1")
+        # check sentinel exists
+        if curr is NULL:
+            raise KeyError(f"{repr(sentinel)} is not contained in the list")
 
-    def __imul__(self, repeat: int) -> "HashedList":
-        """Repeat the list a specified number of times in-place.
+    # removebefore/removeafter?
+    # clearbefore/clearafter?
+    # popbefore/popafter?
+    # move/moveup/movedown/movebefore/moveafter?
 
-        Parameters
-        ----------
-        repeat : int
-            The number of times to repeat the list.
-
-        Returns
-        -------
-        LinkedList
-            This list, repeated the given number of times.  Due to the
-            uniqueness constraint, this will always be either an empty list or
-            the list itself.
-
-        Raises
-        ------
-        ValueError
-            If `repeat` is not 0 or 1.
-
-        Notes
-        -----
-        Due to the uniqueness constraint, repetition is always O(1) for
-        :class:`HashedLists`.
-        """
-        if repeat == 0:
-            self.clear()
-        elif repeat != 1:
-            raise ValueError("repetition count must be 0 or 1")
-
-        return self
-
-    #####################
-    ####    INDEX    ####
-    #####################
-
-    cdef long long count(self, object item):
-        """Count the number of occurrences of an item in the list.
-
-        Parameters
-        ----------
-        item : object
-            The item to count.
-
-        Returns
-        -------
-        int64
-            The number of occurrences of the item in the list.
-
-        Notes
-        -----
-        Due to the uniqueness constraint, this method is equivalent to a
-        simple :meth:`LinkedList.__contains__` check.
-        """
-        return <long long>(self.__contains__(item))
-
-    cdef long long index(
-        self,
-        object item,
-        long long start = 0,
-        long long stop = -1
-    ):
+    cdef size_t index(self, PyObject* item, long start = 0, long stop = -1):
         """Get the index of an item within the list.
 
         Parameters
         ----------
-        item : object
+        item : PyObject*
             The item to search for.
 
         Returns
@@ -480,11 +471,333 @@ cdef class HashedList(LinkedList):
         -----
         Indexing is O(n) on average.
         """
-        # the hash map allows us to do O(1) membership checks
-        if not self.__contains__(item):
+        # look up item in hash map
+        cdef HashNode* node = self._search(item)
+
+        # check if node was found
+        if node is NULL:
             raise ValueError(f"{repr(item)} is not contained in the list")
 
-        return LinkedList.index(self, item, start, stop)
+        # normalize start/stop indices
+        cdef size_t norm_start = self._normalize_index(start)
+        cdef size_t norm_stop = self._normalize_index(stop)
+
+        # count backwards to the start of the list
+        cdef size_t index = 0
+
+        while node is not NULL and index < norm_stop:
+            node = node.prev
+            index += 1
+
+        # check if match was found in range
+        if not norm_start <= index < norm_stop:
+            raise ValueError(f"{repr(item)} is not contained in the list")
+
+        return index
+
+    cdef size_t count(self, PyObject* item):
+        """Count the number of occurrences of an item in the list.
+
+        Parameters
+        ----------
+        item : PyObject*
+            The item to count.
+
+        Returns
+        -------
+        int64
+            The number of occurrences of the item in the list.
+
+        Notes
+        -----
+        Due to the uniqueness constraint, this method is equivalent to a
+        simple :meth:`LinkedList.__contains__` check.
+        """
+        return self._search(item) is not NULL
+
+    cdef void _remove(self, PyObject* item):
+        """Remove an item from the list.
+
+        Parameters
+        ----------
+        item : PyObject*
+            The item to remove from the list.
+
+        Raises
+        ------
+        ValueError
+            If the item is not contained in the list.
+
+        Notes
+        -----
+        Removals are O(1) due to the presence of the hash map.
+        """
+        cdef HashNode* node = self._search(item)
+
+        if node is NULL:
+            raise ValueError(f"{repr(item)} is not contained in the list")
+
+        self._unlink_node(node)
+        self._free_node(node)
+
+    cdef PyObject* _pop(self, long index = -1):
+        """Remove and return the item at the specified index.
+
+        Parameters
+        ----------
+        index : long int, optional
+            The index of the item to remove.  If this is negative, it will be
+            translated to a positive index by counting backwards from the end
+            of the list.  The default is ``-1``, which removes the last item.
+
+        Returns
+        -------
+        PyObject*
+            The item that was removed from the list.
+
+        Raises
+        ------
+        IndexError
+            If the index is out of bounds.
+
+        Notes
+        -----
+        Pops are O(1) if ``index`` points to either of the list's ends, and
+        O(n) otherwise.
+        """
+        # allow negative indexing + check bounds
+        cdef size_t norm_index = self._normalize_index(index)
+
+        # get node at index
+        cdef HashNode* node = self._node_at_index(norm_index)
+        cdef PyObject* value = node.value
+
+        # we have to increment the reference counter of the popped object to
+        # ensure it isn't garbage collected when we free the node.
+        Py_INCREF(value)
+
+        # drop node and return contents
+        self._unlink_node(node)
+        self._free_node(node)
+        return value
+
+    cdef PyObject* _popleft(self):
+        """Remove and return the first item in the list.
+
+        Returns
+        -------
+        PyObject*
+            The item that was removed from the list.
+
+        Raises
+        ------
+        IndexError
+            If the list is empty.
+
+        Notes
+        -----
+        This is equivalent to :meth:`LinkedList.pop` with ``index=0``, but it
+        avoids the overhead of handling indices and is thus more efficient in
+        the specific case of removing the first item.
+        """
+        if self.head is NULL:
+            raise IndexError("pop from empty list")
+
+        # no need to handle indices, just skip straight to head
+        cdef HashNode* node = self.head
+        cdef PyObject* value = node.value
+
+        # we have to increment the reference counter of the popped object to
+        # ensure it isn't garbage collected when we free the node.
+        Py_INCREF(value)
+
+        # drop node and return contents
+        self._unlink_node(node)
+        self._free_node(node)
+        return value
+
+    cdef PyObject* _popright(self):
+        """Remove and return the last item in the list.
+
+        Returns
+        -------
+        PyObject*
+            The item that was removed from the list.
+
+        Raises
+        ------
+        IndexError
+            If the list is empty.
+
+        Notes
+        -----
+        This is equivalent to :meth:`LinkedList.pop` with ``index=-1``, but it
+        avoids the overhead of handling indices and is thus more efficient in
+        the specific case of removing the last item.
+        """
+        if self.tail is NULL:
+            raise IndexError("pop from empty list")
+
+        # no need to handle indices, just skip straight to tail
+        cdef HashNode* node = self.tail
+        cdef PyObject* value = node.value
+
+        # we have to increment the reference counter of the popped object to
+        # ensure it isn't garbage collected when we free the node.
+        Py_INCREF(value)
+
+        # drop node and return contents
+        self._unlink_node(node)
+        self._free_node(node)
+        return value
+
+    cdef void _clear(self):
+        """Remove all items from the list.
+
+        Notes
+        -----
+        This method is O(1).
+        """
+        cdef HashNode* node = self.head
+        cdef HashNode* temp
+
+        # free all nodes
+        while node is not NULL:
+            temp = node
+            node = node.next
+            self._free_node(temp)
+
+        # TODO: maybe inline the tombstone thing.  Rather than iterating
+        # through the list, we could just iterate through the hash map and
+        # free the nodes as we go.
+
+        # take the opportunity to clear out tombstones
+        self._clear_tombstones()
+
+        # avoid dangling pointers
+        self.head = NULL
+        self.tail = NULL
+        self.size = 0
+
+    cdef void _sort(self):
+        """Sort the list in-place.
+
+        Notes
+        -----
+        Sorting is O(n log n) on average.
+        
+        This method uses an iterative merge sort algorithm that avoids the
+        extra memory overhead required to handle recursive stack frames.
+        """
+        # trivial case: empty list
+        if self.head is NULL:
+            return
+
+        # NOTE: as a refresher, the general merge sort algorithm is as follows:
+        #   1) divide the list into sublists of length 1 (bottom-up)
+        #   2) sort pairs of elements from left to right and merge
+        #   3) double the length of the sublists and repeat step 2
+
+        # NOTE: allocating `temp` outside of _merge() allows us to avoid
+        # creating a new head every time we merge two sublists.
+        cdef HashNode* curr
+        cdef HashNode* tail
+        cdef HashNode* left
+        cdef HashNode* right
+        cdef HashNode* sub_head
+        cdef HashNode* sub_tail
+        cdef size_t length = 1
+
+        # allocate a temporary node to anchor sublists
+        cdef HashNode* temp = <HashNode*>malloc(sizeof(HashNode))
+        if temp is NULL:  # malloc() failed to allocate a new block
+            raise MemoryError()
+
+        # merge pairs of sublists of increasing size, starting at length 1
+        while length < self.size:
+            curr = self.head  # left to right
+
+            # divide and conquer
+            while curr:
+                # split the linked list into two sublists of size `length`
+                left = curr
+                right = self._split(left, length)
+                curr = self._split(right, length)
+
+                # merge the two sublists, maintaining sorted order
+                sub_head, sub_tail = self._merge(left, right, temp)
+
+                # if this is our first merge, set the head of the new list
+                if tail is NULL:
+                    self.head = sub_head
+                else:
+                    # link the merged sublist to the previous one
+                    tail.next = sub_head
+                    sub_head.prev = tail
+
+                # set tail of new list
+                tail = sub_tail
+
+            # double the length of the sublists for the next iteration
+            length *= 2
+
+        # clean up temporary node
+        free(temp)
+
+    cdef void _reverse(self):
+        """Reverse the order of the list in-place.
+
+        Notes
+        -----
+        Reversing a :class:`LinkedList` is O(n).
+        """
+        cdef HashNode* node = self.head
+
+        # swap all prev and next pointers
+        while node is not NULL:
+            node.prev, node.next = node.next, node.prev
+            node = node.prev  # next is now prev
+
+        # swap head and tail
+        self.head, self.tail = self.tail, self.head
+
+    def __iter__(self) -> Iterator[Any]:
+        """Iterate through the list items in order.
+
+        Yields
+        ------
+        Any
+            The next item in the list.
+
+        Notes
+        -----
+        Iterating through a :class:`LinkedList` is O(n) on average.
+        """
+        cdef HashNode* curr = self.head
+
+        while curr is not NULL:
+            Py_INCREF(curr.value)
+            yield <object>curr.value  # this returns ownership to Python
+            curr = curr.next
+
+    def __reversed__(self) -> Iterator[Any]:
+        """Iterate through the list in reverse order.
+
+        Yields
+        ------
+        Any
+            The next item in the list.
+
+        Notes
+        -----
+        Iterating through a :class:`LinkedList` is O(n) on average.
+        """
+        cdef HashNode* curr = self.tail
+
+        while curr is not NULL:
+            Py_INCREF(curr.value)
+            yield <object>curr.value  # this returns ownership to Python
+            curr = curr.prev
 
     def __setitem__(self, key: int | slice, value: Hashable) -> None:
         """Set the value of an item or slice in the list.
@@ -495,7 +808,7 @@ cdef class HashedList(LinkedList):
             The index or slice to set in the list.  This can be negative,
             following the same convention as Python's standard
             :class:`list <python:list>`.
-        value : object
+        value : PyObject*
             The value or values to set at the specified index or slice.  If
             ``key`` is a slice, then ``value`` must be an iterable of the same
             length.
@@ -536,10 +849,9 @@ cdef class HashedList(LinkedList):
             4) descending, stop closer to head than start is to tail
                 -> forwards from head
         """
-        cdef ListNode* curr
-        cdef long long slice_size
-        cdef long long start, stop, step, i
-        cdef long long index, end_index
+        cdef HashNode* curr
+        cdef size_t start, stop, slice_size, index, end_index, i
+        cdef ssize_t step
         cdef unordered_set[PyObject*] replaced_items
         cdef vector[Pair] staged
         cdef Pair p  # for iterating over `staged`
@@ -626,8 +938,8 @@ cdef class HashedList(LinkedList):
             for old_item in replaced_items:
                 del self.nodes[old_item]
             for p in staged:
-                replace_value(<ListNode*>p.first, <PyObject*>p.second)
-                self.nodes[<PyObject*>p.second] = <ListNode*>p.first
+                replace_value(<HashNode*>p.first, <PyObject*>p.second)
+                self.nodes[<PyObject*>p.second] = <HashNode*>p.first
 
         # index directly
         else:
@@ -643,53 +955,30 @@ cdef class HashedList(LinkedList):
             replace_value(curr, value)
             self.nodes[value] = curr
 
-    ######################
-    ####    REMOVE    ####
-    ######################
-
-    cdef void remove(self, object item):
-        """Remove an item from the list.
+    def __contains__(self, item: Hashable) -> bool:
+        """Check if the item is contained in the list.
 
         Parameters
         ----------
         item : object
-            The item to remove from the list.
+            The item to search for.
 
-        Raises
-        ------
-        ValueError
-            If the item is not contained in the list.
-
-        Notes
-        -----
-        Removals are O(1) due to the presence of the hash map.
-        """
-        cdef ListNode* curr
-
-        # check if item is present in hash map
-        try:
-            curr = self.nodes[item]
-        except KeyError:
-            raise ValueError(f"{repr(item)} is not contained in the list")
-
-        # handle pointer arithmetic
-        self._remove_struct(curr)
-
-    cdef void clear(self):
-        """Remove all items from the list.
+        Returns
+        -------
+        bool
+            Indicates whether the item is contained in the list.
 
         Notes
         -----
-        This method is O(1).
+        This method is O(1) due to the hash map of contained items.
         """
-        LinkedList.clear(self)
-        self.nodes.clear()  # clear the hash map
+        return self._search_node(<PyObject*>item) is not NULL
 
     #######################
     ####    PRIVATE    ####
     #######################
 
-    cdef ListNode* _allocate_node(PyObject* value):
+    cdef HashNode* _allocate_node(self, PyObject* value):
         """Allocate a new node and set its value.
 
         Parameters
@@ -700,7 +989,7 @@ cdef class HashedList(LinkedList):
 
         Returns
         -------
-        ListNode*
+        HashNode*
             The newly allocated node.
 
         Raises
@@ -713,7 +1002,7 @@ cdef class HashedList(LinkedList):
         Notes
         -----
         This method automatically adds the new node to this list's hash map.
-        It should always be followed with a call to :meth:`_link_node()` to
+        It should always be followed up with a call to :meth:`_link_node()` to
         add the node to the list.
         """
         cdef ListTable* table = self.table
@@ -726,13 +1015,12 @@ cdef class HashedList(LinkedList):
         # check if item is already present
         cdef size_t index = hash_val % table.size
         cdef size_t step = table.prime - (hash_val % table.prime)
-        cdef HashableNode* curr = table.map[index]
+        cdef HashNode* curr = table.map[index]
         cdef int comp
 
         # search table
         while curr is not NULL:
-            # skip over tombstones
-            if candidate is not table.tombstone:
+            if candidate is not table.tombstone:  # skip over tombstones
                 # C API equivalent of the == operator
                 comp = PyObject_RichCompareBool(curr.value, value, Py_EQ)
                 if comp == -1:  # == failed
@@ -769,12 +1057,12 @@ cdef class HashedList(LinkedList):
         # return reference to new node
         return node
 
-    cdef void _free_node(self, HashableNode* node):
+    cdef void _free_node(self, HashNode* node):
         """Free a node and decrement the reference count of its value.
 
         Parameters
         ----------
-        node : HashableNode*
+        node : HashNode*
             The node to free.
 
         Notes
@@ -792,13 +1080,12 @@ cdef class HashedList(LinkedList):
         # get index in hash map
         cdef size_t index = node.hash % table.size
         cdef size_t step = table.prime - (node.hash % table.prime)  # double hash
-        cdef HashableNode* curr = table.map[index]
+        cdef HashNode* curr = table.map[index]
         cdef int comp
 
         # find node
         while curr is not NULL:
-            # skip over tombstones
-            if curr is not table.tombstone:
+            if curr is not table.tombstone:  # skip over tombstones
                 # C API equivalent of the == operator
                 comp = PyObject_RichCompareBool(curr.value, node.value, Py_EQ)
                 if comp == -1:  # == failed
@@ -826,6 +1113,331 @@ cdef class HashedList(LinkedList):
         Py_DECREF(node.value)
         free(node)
 
+
+    cdef void _link_node(self, HashNode* prev, HashNode* curr, HashNode* next):
+        """Add a node to the list.
+
+        Parameters
+        ----------
+        prev : HashNode*
+            The node that should precede the new node in the list.
+        curr : HashNode*
+            The node to add to the list.
+        next : HashNode*
+            The node that should follow the new node in the list.
+
+        Notes
+        -----
+        This is a helper method for doing the pointer arithmetic of adding a
+        node to the list, since it's used in multiple places.
+        """
+        # prev <-> curr
+        curr.prev = prev
+        if prev is NULL:
+            self.head = curr
+        else:
+            prev.next = curr
+
+        # curr <-> next
+        curr.next = next
+        if next is NULL:
+            self.tail = curr
+        else:
+            next.prev = curr
+
+        # increment size
+        self.size += 1
+
+    cdef void _unlink_node(self, HashNode* curr):
+        """Remove a node from the list.
+
+        Parameters
+        ----------
+        curr : HashNode*
+            The node to remove from the list.
+
+        Notes
+        -----
+        This is a helper method for doing the pointer arithmetic of removing a
+        node, as well as handling reference counts and freeing the underlying
+        memory.
+        """
+        # prev <-> next
+        if curr.prev is NULL:
+            self.head = curr.next
+        else:
+            curr.prev.next = curr.next
+
+        # prev <-> next
+        if curr.next is NULL:
+            self.tail = curr.prev
+        else:
+            curr.next.prev = curr.prev
+
+        # decrement size
+        self.size -= 1
+
+    cdef HashNode* _node_at_index(self, size_t index):
+        """Get the node at the specified index.
+
+        Parameters
+        ----------
+        index : size_t
+            The index of the node to retrieve.  This should always be passed
+            through :meth:`LinkedList._normalize_index` first.
+
+        Returns
+        -------
+        HashNode*
+            The node at the specified index.
+
+        Notes
+        -----
+        This method is O(n) on average.  As an optimization, it always iterates
+        from the nearest end of the list.
+        """
+        cdef HashNode* curr
+        cdef size_t i
+
+        # count forwards from head
+        if index <= self.size // 2:
+            curr = self.head
+            for i in range(index):
+                curr = curr.next
+
+        # count backwards from tail
+        else:
+            curr = self.tail
+            for i in range(self.size - index - 1):
+                curr = curr.prev
+
+        return curr
+
+    cdef (size_t, size_t) _get_slice_direction(
+        self,
+        size_t start,
+        size_t stop,
+        ssize_t step,
+    ):
+        """Determine the direction in which to traverse a slice so as to
+        minimize total iterations.
+
+        Parameters
+        ----------
+        start : size_t
+            The start index of the slice.
+        stop : size_t
+            The stop index of the slice.
+        step : size_t
+            The step size of the slice.
+
+        Returns
+        -------
+        index : size_t
+            The index at which to begin iterating.
+        end_index : size_t
+            The index at which to stop iterating.
+
+        Notes
+        -----
+        Slicing is optimized to always begin iterating from the end nearest to
+        a slice boundary, and to never backtrack.  This is done by checking
+        whether the slice is ascending (step > 0) or descending, and whether
+        the start or stop index is closer to its respective end.  This gives
+        the following cases:
+
+            1) slice is ascending, `start` closer to head than `stop` is to tail
+                -> iterate forwards from head to `stop`
+            2) slice is ascending, `stop` closer to tail than `start` is to head
+                -> iterate backwards from tail to `start`
+            3) slice is descending, `start` closer to tail than `stop` is to head
+                -> iterate backwards from tail to `stop`
+            4) slice is descending, `stop` closer to head than `start` is to tail
+                -> iterate forwards from head to `start`
+
+        The final direction of traversal is determined by comparing the
+        indices returned by this method.  If ``end_index >= index``, then the
+        slice should be traversed in the forward direction, starting from
+        ``index``.  Otherwise, it should be iterated over in reverse to avoid
+        backtracking, again starting from ``index``.
+        """
+        cdef size_t index, end_index
+
+        # determine direction of traversal
+        if (
+            step > 0 and start <= self.size - stop or   # 1)
+            step < 0 and self.size - start <= stop      # 4)
+        ):
+            index = start
+            end_index = stop
+        else:
+            if step > 0:                                # 2)
+                index = stop - 1
+                end_index = start - 1
+            else:                                       # 3)
+                index = stop + 1
+                end_index = start + 1
+
+        # return as C tuple
+        return (index, end_index)
+
+    cdef HashNode* _split(self, HashNode* head, size_t length):
+        """Split a linked list into sublists of the specified length.
+
+        Parameters
+        ----------
+        head : HashNode*
+            The head of the list to split.
+        length : size_t
+            The maximum length of each split.  This method will walk forward
+            from ``head`` by this many nodes and then split the list.
+
+        Returns
+        -------
+        HashNode*
+            The head of the next sublist.
+
+        Notes
+        -----
+        This method is O(length).  It just iterates forward ``length`` times
+        and then splits the list at that point.
+        """
+        cdef HashNode* split
+        cdef size_t i
+
+        # walk `length` nodes forward from `head`
+        for i in range(length - 1):
+            if head is NULL:
+                break
+            head = head.next
+
+        # if we've reached the end of the list, there's nothing to split
+        if head is NULL:
+            return NULL
+
+        # otherwise, split the list
+        split = head.next
+        head.next = NULL
+        if split is not NULL:
+            split.prev = NULL
+        return split
+
+    cdef (HashNode*, HashNode*) _merge(
+        self,
+        HashNode* left,
+        HashNode* right,
+        HashNode* temp
+    ):
+        """Merge two sorted linked lists into a single sorted list.
+
+        Parameters
+        ----------
+        left : HashNode*
+            The head of the first sorted list.
+        right : HashNode*
+            The head of the second sorted list.
+        temp : HashNode*
+            A temporary node to use as the head of the merged list.  As an
+            optimization, this is allocated once and then passed as a parameter
+            rather than creating a new one every time this method is called.
+
+        Returns
+        -------
+        head : HashNode*
+            The head of the merged list.
+        tail : HashNode*
+            The tail of the merged list.
+
+        Notes
+        -----
+        This is a standard implementation of the divide-and-conquer merge
+        algorithm.  It is O(l) where `l` is the length of the longer list.
+        """
+        cdef HashNode* curr = temp
+        cdef HashNode* tail
+
+        # iterate through sublists until one is empty
+        while left and right:
+            # only append the smaller of the two nodes
+            if left.value < right.value:
+                curr.next = left
+                left.prev = curr
+                left = left.next
+            else:
+                curr.next = right
+                right.prev = curr
+                right = right.next
+
+            # advance to next node
+            curr = curr.next
+
+        # append the remaining nodes
+        tail = left if right is NULL else right
+        curr.next = tail
+        tail.prev = curr
+
+        # advance tail to end of merged list
+        while tail.next is not NULL:
+            tail = tail.next
+
+        # unlink temporary head
+        curr = temp.next
+        curr.prev = NULL
+        temp.next = NULL
+
+        # return the proper head and tail of the merged list
+        return (curr, tail)  # remove temporary head
+
+    cdef HashNode* _search_node(self, PyObject* key):
+        """Search the hash table for a node with the given value.
+
+        Parameters
+        ----------
+        key : PyObject*
+            The value to search for.
+
+        Returns
+        -------
+        HashNode*
+            A reference to the node with the given value, or ``NULL`` if it is
+            not present.
+
+        Notes
+        -----
+        This method is used to translate between Python objects and their
+        associated nodes, which are implemented as pure C structs.
+        """
+        cdef ListTable* table = self.table
+
+        # C API equivalent of the hash() function
+        cdef Py_hash_t hash_val = PyObject_Hash(key)
+        if hash_val == -1:  # hash() failed
+            raise_exception()
+
+        # get index in hash table
+        cdef size_t index = hash_val % table.size
+        cdef size_t step = table.prime - (hash_val % table.prime)  # double hash
+        cdef HashNode* curr = table.map[index]
+        cdef int comp
+
+        # find node
+        while candidate is not NULL:
+            if candidate is not table.tombstone:  # skip over tombstones
+                # C API equivalent of the == operator
+                comp = PyObject_RichCompareBool(key, candidate.value, Py_EQ)
+                if comp == -1:  # == failed
+                    raise_exception()
+
+                # return node if equal
+                if comp == 1:
+                    return candidate
+
+            # advance to next slot
+            index = (index + step) % table.size
+            candidate = table.map[index]
+
+        return NULL
+
     cdef void _resize_table(self):
         """Resize the hash table and rehash its contents.
 
@@ -836,9 +1448,7 @@ cdef class HashedList(LinkedList):
         tombstones it encounters.
         """
         cdef ListTable* table = self.table
-
-        # remember old values
-        cdef HashableNode** old_map = table.map
+        cdef HashNode** old_map = table.map
         cdef size_t old_size = table.size
 
         # update table parameters
@@ -850,17 +1460,12 @@ cdef class HashedList(LinkedList):
             print(f"    -> malloc: ListTable({table.size})")
 
         # allocate new hash map
-        if ListTable is NodeTable:
-            table.map = <HashNode**>calloc(table.size, sizeof(HashNode*))
-        elif ListTable is DictTable:
-            table.map = <DictNode**>calloc(table.size, sizeof(DictNode*))
-
-        # check if calloc() failed to allocate a new block
-        if table.map is NULL:
+        table.map = <HashNode**>calloc(table.size, sizeof(HashNode*))
+        if table.map is NULL:  # calloc() failed to allocate a new block
             raise MemoryError()
 
         cdef size_t index, new_index, step
-        cdef HashableNode* curr
+        cdef HashNode* curr
 
         # rehash values and remove tombstones
         for index in range(old_size):
@@ -902,25 +1507,18 @@ cdef class HashedList(LinkedList):
         tombstones from the table and rehashes its contents in-place.
         """
         cdef ListTable* table = self.table
-
-        # remember old table
-        cdef HashableNode** old_map = table.map
+        cdef HashNode** old_map = table.map
 
         if DEBUG:
             print(f"    -> malloc: ListTable({table.size})    <- tombstones")
 
         # allocate new hash map
-        if ListTable is NodeTable:
-            table.map = <HashNode**>calloc(table.size, sizeof(HashNode*))
-        elif ListTable is DictTable:
-            table.map = <DictNode**>calloc(table.size, sizeof(DictNode*))
-
-        # check if calloc() failed to allocate a new block
-        if table.map is NULL:
+        table.map = <HashNode**>calloc(table.size, sizeof(HashNode*))
+        if table.map is NULL:  # calloc() failed to allocate a new block
             raise MemoryError()
 
         cdef size_t index, new_index, step
-        cdef HashableNode* curr
+        cdef HashNode* curr
 
         # rehash values and remove tombstones
         for index in range(table.size):
@@ -948,78 +1546,189 @@ cdef class HashedList(LinkedList):
         # free old hash map
         free(old_map)
 
-    cdef HashableNode* _search_node(self, PyObject* key):
-        """Search the hash table for a node with the given value.
+    ##########################
+    ####    OVERRIDDEN    ####
+    ##########################
+
+    def insertafter(self, sentinel: Any, item: Any) -> None:
+        """Insert an item immediately after the specified sentinel.
 
         Parameters
         ----------
-        key : PyObject*
-            The value to search for.
+        sentinel : Any
+            The value after which to insert the new value.
+        item : Any
+            The value to insert into the list.
 
-        Returns
-        -------
-        HashableNode*
-            A reference to the node with the given value, or ``NULL`` if it is
-            not present.
+        Raises
+        ------
+        KeyError
+            If the sentinel is not contained in the list.
+        TypeError
+            If the value is not hashable.
+        ValueError
+            If the value is already contained in the list.
 
         Notes
         -----
-        This method is used to translate between Python objects and their
-        associated nodes, which are implemented as pure C structs.
+        Value-based inserts are O(1) thanks to the internal item map.
+
+        This method is significantly faster than an :meth:`index() <HashedList.index>`
+        lookup followed by an :meth:`insert() <HashedList.insert>` call, which
+        would be O(2n) on average.
         """
-        cdef ListTable* table = self.table
+        self._insertafter(<PyObject*>sentinel, <PyObject*>item)
 
-        # C API equivalent of the hash() function
-        cdef Py_hash_t hash_val = PyObject_Hash(key)
-        if hash_val == -1:  # hash() failed
-            raise_exception()
-
-        # get index in hash table
-        cdef size_t index = hash_val % table.size
-        cdef size_t step = table.prime - (hash_val % table.prime)  # double hash
-        cdef HashableNode* curr = table.map[index]
-        cdef int comp
-
-        # find node
-        while candidate is not NULL:
-            # skip over tombstones
-            if candidate is not table.tombstone:
-                # C API equivalent of the == operator
-                comp = PyObject_RichCompareBool(key, candidate.value, Py_EQ)
-                if comp == -1:  # == failed
-                    raise_exception()
-
-                # return node if equal
-                if comp == 1:
-                    return candidate
-
-            # advance to next slot
-            index = (index + step) % table.size
-            candidate = table.map[index]
-
-        return NULL
-
-
-    ###############################
-    ####    SPECIAL METHODS    ####
-    ###############################
-
-    def __contains__(self, item: Hashable) -> bool:
-        """Check if the item is contained in the list.
+    def insertbefore(self, sentinel: Any, item: Any) -> None:
+        """Insert an item immediately before the specified sentinel.
 
         Parameters
         ----------
-        item : object
-            The item to search for.
+        sentinel : PyObject*
+            The value before which to insert the new value.
+        item : PyObject*
+            The value to insert into the list.
 
-        Returns
-        -------
-        bool
-            Indicates whether the item is contained in the list.
+        Raises
+        ------
+        KeyError
+            If the sentinel is not contained in the list.
+        TypeError
+            If the value is not hashable.
+        ValueError
+            If the value is already contained in the list.
 
         Notes
         -----
-        This method is O(1) due to the hash map of contained items.
-        """
-        return self._search_node(<PyObject*>item) is not NULL
+        Value-based inserts are O(1) thanks to the internal item map.
 
+        This method is significantly faster than an :meth:`index() <HashedList.index>`
+        lookup followed by an :meth:`insert() <HashedList.insert>` call, which
+        would be O(2n) on average.
+        """
+        self._insertbefore(<PyObject*>sentinel, <PyObject*>item)
+
+    def extendafter(self, sentinel: Any, other: Iterable[Hashable]) -> None:
+        """Insert a sequence of items immediately after the specified sentinel.
+
+        Parameters
+        ----------
+        sentinel : PyObject*
+            The value after which to insert the new values.
+        other : Iterable[Hashable]
+            The values to insert into the list.
+
+        Raises
+        ------
+        KeyError
+            If the sentinel is not contained in the list.
+        TypeError
+            If any values are not hashable.
+        ValueError
+            If any values are already contained in the list.
+
+        Notes
+        -----
+        Thanks to the internal item map, value-based inserts are O(m), where
+        `m` is the length of ``other``.
+
+        This method is significantly faster than an :meth:`index() <HashedList.index>`
+        lookup followed by a slice assignment, which would be O(2n + m) on
+        average.
+        """
+        self._extendafter(<PyObject*>sentinel, <PyObject*>other)
+
+    def extendbefore(self, sentinel: Any, item: Any):
+        """Insert a sequence of items immediately before the specified sentinel.
+
+        Parameters
+        ----------
+        sentinel : PyObject*
+            The value before which to insert the new values.
+        other : Iterable[Hashable]
+            The values to insert into the list.  Note that this method
+            implicitly reverses the order of the elements.
+
+        Raises
+        ------
+        KeyError
+            If the sentinel is not contained in the list.
+        TypeError
+            If any values are not hashable.
+        ValueError
+            If any values are already contained in the list.
+
+        Notes
+        -----
+        Thanks to the internal item map, value-based inserts are O(m), where
+        `m` is the length of ``other``.
+
+        This method is significantly faster than an :meth:`index() <HashedList.index>`
+        lookup followed by a slice assignment, which would be O(2n + m) on
+        average.
+        """
+        self._extendbefore(self, <PyObject*>sentinel, <PyObject*>other)
+
+    def __mul__(self, repeat: int) -> "HashedList":
+        """Repeat the list a specified number of times.
+
+        Parameters
+        ----------
+        repeat : int
+            The number of times to repeat the list.
+
+        Returns
+        -------
+        LinkedList
+            A new list containing successive copies of this list, repeated the
+            given number of times.  Due to the uniqueness constraint, this will
+            always be either an empty list or a copy of this list.
+
+        Raises
+        ------
+        ValueError
+            If `repeat` is not 0 or 1.
+
+        Notes
+        -----
+        Due to the uniqueness constraint, repetition is always O(1) for
+        :class:`HashedLists`.
+        """
+        if repeat == 0:
+            return type(self)()
+        if repeat == 1:
+            return self.copy()
+
+        raise ValueError("repetition count must be 0 or 1")
+
+    def __imul__(self, repeat: int) -> "HashedList":
+        """Repeat the list a specified number of times in-place.
+
+        Parameters
+        ----------
+        repeat : int
+            The number of times to repeat the list.
+
+        Returns
+        -------
+        LinkedList
+            This list, repeated the given number of times.  Due to the
+            uniqueness constraint, this will always be either an empty list or
+            the list itself.
+
+        Raises
+        ------
+        ValueError
+            If `repeat` is not 0 or 1.
+
+        Notes
+        -----
+        Due to the uniqueness constraint, repetition is always O(1) for
+        :class:`HashedLists`.
+        """
+        if repeat == 0:
+            self.clear()
+        elif repeat != 1:
+            raise ValueError("repetition count must be 0 or 1")
+
+        return self
