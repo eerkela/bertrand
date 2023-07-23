@@ -20,6 +20,11 @@ cdef extern from "Python.h":
     PyObject* PyIter_Next(PyObject* obj)
 
 
+# TODO: the problem with __getitem__ seems to be that when the step size is
+# larger than the size of the slice and we're iterating backwards, it will just
+# return the first item closest to the tail, rather than closest to the head.
+
+
 # TODO: __getitem__ and __delitem__ are now correct for slices, but
 # __setitem__ is not.
 # -> impossible slices are handled differently for this method.
@@ -37,15 +42,28 @@ cdef extern from "Python.h":
 # methods to the built-in `list` object.
 
 
-# TODO: slice tester:
+# slice tester:
+d = DoublyLinkedList(range(20))
+l = list(range(20))
 
-# r = lambda: random.randrange(-20, 20)
 
-# def test():
-#     start, stop, step = (r(), r(), r())
-#     s1 = l[start:stop:step]
-#     s2 = p[start:stop:step]
-#     assert list(s1) == s2, f"{repr(s1)} != {s2}   <- {':'.join([str(x) for x in (start, stop, step)])}"
+def slice_test(d: DoublyLinkedList, l: list):
+    import random
+    r = lambda low, high: random.randrange(low, high)
+
+    offset = len(d) - int(0.25 * len(d)) + 1
+    b = len(d) + offset
+    a, b = -offset, len(d) + offset
+    start, stop, step = r(a, b), r(a, b), r(-b, b)
+    if not step:
+        return
+
+    s1 = d[start:stop:step]
+    s2 = l[start:stop:step]
+
+    assert list(s1) == s2, (
+        f"{repr(s1)} != {s2}   <- {':'.join([str(x) for x in (start, stop, step)])}"
+    )
 
 # there seems to be a bug with negative step sizes that are larger than the
 # length of the list.
@@ -65,7 +83,8 @@ cdef class DoublyLinkedList(LinkedList):
     """A pure Cython implementation of a doubly-linked list data structure.
 
     This is a drop-in replacement for a standard Python
-    :class:`list <python:list>` or :class:`deque <python:collections.deque>`.
+    :class:`list <python:list>` or :class:`deque <python:collections.deque>`,
+    with comparable performance.
 
     Parameters
     ----------
@@ -78,19 +97,16 @@ cdef class DoublyLinkedList(LinkedList):
         The first node in the list.  This is a pure C struct and is not
         normally accessible from Python.
     tail : ListNode
-        The last node in the list.  This is a pure C struct and is not
-        normally accessible from Python.
+        The last node in the list, with the same restrictions as ``head``.
 
     Notes
     -----
     This structure behaves similarly to a
     :class:`collections.deque <python:collections.deque>` object, but is
-    implemented as a doubly-linked list instead of a ring buffer.  It is
-    implemented in pure Cython to maximize performance, and is not intended to
-    be used directly from Python.  None of its attributes or methods (besides
-    the constructor and special methods) are accessible from a non-Cython
-    context.  If you want to use it from Python, you should first write a
-    Cython wrapper that exposes the desired functionality.
+    implemented as a standard list instead of a list of arrays.
+
+    It is implemented in pure Cython to maximize performance, and generally
+    performs on par with the built-in :class:`list <python:list>` type.
     """
 
     def __cinit__(self):
@@ -98,7 +114,7 @@ cdef class DoublyLinkedList(LinkedList):
         self.tail = NULL
 
     def __dealloc__(self):
-        self._clear()  # free all nodes
+        self._clear()  # free all nodes and avoid dangling pointers
 
     ########################
     ####    CONCRETE    ####
@@ -564,14 +580,14 @@ cdef class DoublyLinkedList(LinkedList):
         One quirk of this implementation is how it handles errors.  By default,
         if a comparison throws an exception, then the sort will be aborted and
         the list will be left in a partially-sorted state.  This is consistent
-        with the behavior of Python's built-in
-        :meth:`list.sort() <python:list.sort>` method.  However, when a ``key``
-        function is provided, we actually end up sorting an auxiliary list of
-        ``(key, value)`` pairs, which is then reflected in the original list.
-        This means that if a comparison throws an exception, the original list
-        will not be changed.  This holds even if the ``key`` is a simple
-        identity function (``lambda x: x``), which opens up the possibility of
-        anticipating errors and handling them gracefully.
+        with the behavior of Python's built-in :meth:`list.sort() <python:list.sort>`
+        method.  However, when a ``key`` function is provided, we actually end
+        up sorting an auxiliary list of ``(key, value)`` pairs, which is then
+        reflected in the original list.  This means that if a comparison throws
+        an exception, the original list will not be changed.  This holds even
+        if the ``key`` is a simple identity function (``lambda x: x``), which
+        opens up the possibility of anticipating errors and handling them
+        gracefully.
         """
         # trivial case: empty list
         if self.head is NULL:
@@ -663,12 +679,15 @@ cdef class DoublyLinkedList(LinkedList):
         """Helper method to sort a list when a key function is involved.
 
         This uses the same algorithm as _sort(), but precomputes all keys so
-        they can be reused during comparison.
+        that they can be reused during comparison.  These are stored directly
+        on ``KeyNode`` decorators that maintain references to the original
+        nodes.  We then sort the ``KeyNodes`` like normal and reflect the
+        changes back to the original list.
         """
         cdef KeyNode* decorated_head
         cdef KeyNode* decorated_tail
 
-        # decorate all nodes in list
+        # precompute keys
         decorated_head, decorated_tail = self._decorate(key)
 
         # NOTE: we proceed identically to normal sort() algorithm
@@ -880,13 +899,11 @@ cdef class DoublyLinkedList(LinkedList):
                         result._append(curr.value)  # append
 
                     # jump according to step size
+                    index += norm_step  # increment index
                     for i in range(norm_step):
                         if curr is NULL:
                             break
                         curr = curr.next
-
-                    # increment index
-                    index += norm_step
 
             # backward traversal
             else:
@@ -897,13 +914,11 @@ cdef class DoublyLinkedList(LinkedList):
                         result._appendleft(curr.value)  # appendleft
 
                     # jump according to step size
+                    index -= norm_step  # decrement index
                     for i in range(norm_step):
                         if curr is NULL:
                             break
                         curr = curr.prev
-
-                    # decrement index
-                    index -= norm_step
 
             return result
 
@@ -1258,6 +1273,10 @@ cdef class DoublyLinkedList(LinkedList):
         # decrement size
         self.size -= 1
 
+    #############################
+    ####    INDEX HELPERS    ####
+    #############################
+
     cdef ListNode* _node_at_index(self, size_t index):
         """Get the node at the specified index.
 
@@ -1343,25 +1362,30 @@ cdef class DoublyLinkedList(LinkedList):
         backtracking, again starting from ``index``.
         """
         cdef size_t index, end_index
+        cdef size_t norm_step = abs(step)
 
         # determine direction of traversal
-        if (
-            step > 0 and start <= self.size - stop or   # 1)
-            step < 0 and self.size - start <= stop      # 4)
-        ):
-            index = start
-            end_index = stop
-        else:
-            if step > 0:                                # 2)
-                index = stop - 1
+        if step > 0:
+            if start <= self.size - stop:           # 1) start from head
+                print("1")
+                index = start
+                end_index = stop
+            else:                                   # 2) start from tail
+                print("2")
+                index = stop - norm_step
                 end_index = start - 1
-            else:                                       # 3)
-                index = stop + 1
-                end_index = start + 1
+        else:
+            if stop > self.size - start:            # 3) start from tail 
+                print("3")
+                index = stop - norm_step
+                end_index = start - 1
+            else:                                   # 4) start from head
+                print("4")
+                index = stop - norm_step
+                end_index = start - 1
 
         # return as C tuple
         return (index, end_index)
-
 
     ############################
     ####    SORT HELPERS    ####
@@ -1441,8 +1465,8 @@ cdef class DoublyLinkedList(LinkedList):
         return (head, tail)
 
     cdef (ListNode*, ListNode*) _undecorate(self, KeyNode* head):
-        """Rearrange all nodes in the list to match their decorated ``KeyNode`` 
-        counterparts, and then remove each decorator
+        """Rearrange all nodes in the list to match their positions in the
+        decorated list and remove each decorator
 
         Parameters
         ----------
@@ -1486,7 +1510,7 @@ cdef class DoublyLinkedList(LinkedList):
             if DEBUG:
                 print(f"    -> free: {<object>head.key}")
 
-            # release reference on key
+            # release reference on precomputed key
             Py_DECREF(head.key)
 
             # free decorator
@@ -1589,6 +1613,8 @@ cdef class DoublyLinkedList(LinkedList):
             A temporary node to use as the head of the merged list.  As an
             optimization, this is allocated once and then passed as a parameter
             rather than creating a new one every time this method is called.
+        reverse : bool
+            Indicates whether to invert the relationship between each element.
 
         Returns
         -------
@@ -1790,4 +1816,3 @@ cdef class DoublyLinkedList(LinkedList):
             count += 1
 
         return count
-

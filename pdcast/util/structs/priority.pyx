@@ -10,7 +10,7 @@ from .list cimport HashedList, ListNode
 # structure that could maybe be used in the future.
 
 
-cdef class PriorityList(HashedList):
+cdef class PriorityList:
     """A doubly-linked list whose elements can be rearranged to represent a
     a precedence order during sort operations.
 
@@ -36,6 +36,16 @@ cdef class PriorityList(HashedList):
         PriorityList([1, 3, 2])
     """
 
+    def __init__(self, items: Iterable[Hashable]) -> None:
+        """Initialize a PriorityList.
+
+        Parameters
+        ----------
+        items : iterable
+            The items to add to the list.
+        """
+        self.list = HashedList(items)
+
     def index(self, item: Any, start: int = 0, stop: int = -1) -> int:
         """Get the index of an item within the list.
 
@@ -47,7 +57,7 @@ cdef class PriorityList(HashedList):
             >>> foo.index(2)
             1
         """
-        return HashedList.index(self, item, start, stop)
+        return self.list.index(self, item, start, stop)
 
     def move_up(self, item: Any) -> None:
         """Move an item one index toward the front of the list.

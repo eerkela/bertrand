@@ -23,6 +23,147 @@ from pdcast.types.array import ObjectDtype
 from pdcast.util.type_hints import array_like
 
 
+# TODO: there's more room for optimization if we drop the detect_type() loop
+# further into C.  This way, we can work with raw `PyObject*` and
+# `PyTypeObject*` pointers rather than the full, reference counted types, and
+# can use C/C++ data structures rather than the Python equivalents.
+
+# -> The types we store in the registry.aliases dictionary could be broken off
+# as direct `PyTypeObject*` pointers, which would be faster to look up than
+# Python type()s.  This would require a custom dictionary implementation, but
+# we already basically have one in the HashedList's ListTable.
+
+# As far as hash functions go, we might even be able to use the direct memory
+# address of the `PyTypeObject*` pointer itself.  This would just cast the
+# pointer to a `uintptr_t` and proceed as normal.  This would have 0 overhead,
+# and would cut out a call to the Python API.  In the event of a hash collision,
+# we just compare the full memory addresses and proceed as normal.
+
+# We would have to briefly cast the scalar `PyObject*` back to a Python object
+# when we pass to ScalarType.from_scalar(), but this is a small price to pay
+# for the speedup.
+
+
+
+# TODO: there's also potentially a way to increase the speed of flyweight
+# lookups by casting to a C string and using a C string hash function.
+
+    # from libcpp.string cimport string
+    # from libcpp.functional cimport hash
+
+    # cdef string key = slug.encode()  # encode Python string to bytes, then to C string
+    # cdef hash[string] hash_func
+    # cdef unsigned long hash_value = hash_func(key)
+
+# This could potentially be faster than looking up the Python string directly.
+# We would still probabluy need to handle hash collisions, but this shouldn't
+# be too terrible.
+
+
+
+
+
+# ME:
+
+# Ok here's what I'm thinking.  I have a system that maps `type` objects to a
+# collection of Cython classes, which represent an abstract type system with
+# support for runtime type detection from example data.  What actually happens
+# is we are supplied a (potentially iterable) example value, and then detect
+# its type at the scalar level.  If the example is iterable, we then repeat at
+# the next index and so on.
+
+# The operation that is performed at each index goes as follows:
+
+# 1. Call `type()` on the scalar value.
+# 2. Look the type up in a dictionary, which maps the type to a corresponding
+#    extension class.
+# 3. Instantiate the class by passing the example into a special constructor
+#    for extra parsing.  Each class can override this method to extract extra
+#    data from the object at the scalar level.
+# 4. Store the constructed object in a set containing each unique value and
+#    append it to a run-length-encoded list.  If the next value maps to an
+#    identical object, then we just increment its counter and skip the set
+#    operation.
+
+# This process happens at every single index of the input iterable, so I want
+# it to be as fast as possible.  Currently, each step is implemented in a tight
+# cython loop and allows me to parse a list of 1 million python integers in
+# about 0.07 seconds on my machine.  This is a good start, but I'm trying to
+# see if I can increase performance even further by offloading more of the core
+# loop functions to cythonized C or C++.
+
+# I'm thinking about replacing my current hash table lookup with a
+# `std::unordered_map` which holds `PyTypeObject*` references directly.  These
+# map to the cython classes just like normal, but now that lookup happens
+# entirely at the C level.  I can then just use a borrowed `PyObject*`
+# reference to the example scalar, and replace the `type()` call with the
+# `Py_Type()` C function.  For point #3, I can pass the object reference back
+# to the Python space briefly by casting it to `<object>` so the special
+# constructor can manipulate it like normal.  Finally, I can record the results
+# in a `std::unordered_set` of the final objects as well as a `std::vector` of
+# `Pairs`, which would be structs containing the run-length-encoded objects and
+# their counts.  I could then cast the vector directly to a Cython typed
+# memoryview of `Pairs`, and then from there to a no-copy numpy array using
+# `np.asarray()`.  The final array would have a structured dtype with two
+# columns to represent the run-length-encoded results.  I then convert the
+# `std::unordered_set` into a normal Python `set` to represent the unique
+# results.
+
+# What do you think of this plan?
+
+
+# GPT4:
+
+# The plan to optimize your processing loop using Cython and C++ functionality
+# seems sound and could potentially lead to significant speed improvements. Let
+# me break down my thoughts on each of your steps:
+
+# 1. Replacing Python's type() call with the Py_Type() C function: This should
+# be faster as you'll be working at the C level. The benefit might not be huge,
+# but every little bit helps.
+# 2. Using std::unordered_map with PyTypeObject* keys: This should be faster
+# than Python's built-in dictionary for the same reasons, as std::unordered_map
+# is implemented in efficient, compiled C++ code. One thing to keep in mind is
+# how the hash function and comparison function for PyTypeObject* pointers are
+# implemented, as this could affect performance.
+# 3. Passing object references back to Python space: This shouldn't have much
+# impact on performance and seems like a necessary step if you need to do some
+# Python-level manipulations.
+# 4. Storing results in a std::unordered_set and std::vector: Both of these
+# data structures are typically more efficient than their Python counterparts,
+# so this should help speed things up. In particular, std::vector is known to
+# be very efficient in terms of memory usage and access times, so using it for
+# storing your pairs of objects and counts is a good choice.
+# 5. Converting std::vector to a Cython typed memoryview and then to a NumPy
+# array: This is a great way to create a no-copy array, and the conversion
+# should be relatively fast.
+# 6. Converting std::unordered_set to a Python set: This might be a bit slow
+# depending on the size of the set, but it's likely unavoidable if you need to
+# return a Python set.
+
+# Overall, I think your plan to move more of your computation to the C/C++
+# level is a good one and could significantly speed up your code. You've
+# identified some good opportunities for optimization and chosen appropriate
+# data structures and functions. Just keep in mind that you'll need to handle
+# reference counting properly when working with PyTypeObject* and PyObject*
+# pointers to avoid memory leaks or crashes.
+
+
+
+
+# casting a std::vector directly to a numpy array:
+
+# cdef struct MyStruct:
+#    PyObject* value
+#    size_t count
+
+# dtype = np.dtype([("value": object), ("count": np.int64)])
+
+# cdef vector[MyStruct] vec = ...
+# cdef MyStruct[:, :] memview = <MyStruct[:, :]>vec.data()
+# cdef np.ndarray arr = np.asarray(memview, dtype=dtype)
+
+
 ######################
 ####    PUBLIC    ####
 ######################

@@ -9,7 +9,7 @@ in linked list-based data structures.
 
 # DEBUG = TRUE adds print statements for memory allocation/deallocation to help
 # identify memory leaks.
-cdef const bint DEBUG = True
+cdef const bint DEBUG = False
 
 
 #######################
