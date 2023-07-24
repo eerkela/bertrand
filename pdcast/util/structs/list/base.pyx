@@ -517,8 +517,10 @@ cdef class LinkedList:
         if index < 0:
             index += self.size
 
+        cdef long size = <long>self.size
+
         # check bounds
-        if not 0 <= index < (<long>self.size):
+        if not 0 <= index < size:
             raise IndexError("list index out of range")
 
         return index

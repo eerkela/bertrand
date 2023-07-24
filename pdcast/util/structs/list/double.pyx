@@ -867,8 +867,8 @@ cdef class DoublyLinkedList(LinkedList):
         a single iteration and stops as soon as the slice is complete.
         """
         cdef ListNode* curr
-        cdef ssize_t step
-        cdef size_t start, stop, norm_step, index, end_index, i
+        cdef object start, stop, step  # Python integers make things easier
+        cdef size_t index, end_index, abs_step, i
         cdef LinkedList result
         cdef bint reverse
 
@@ -877,48 +877,52 @@ cdef class DoublyLinkedList(LinkedList):
             # create a new LinkedList to hold the slice
             result = type(self)()
 
-            # get bounds of slice
+            # NOTE: Python slices are normally half-open.  This complicates our
+            # optimization strategy because we can't treat the slices symmetrically
+            # in both directions.  To account for this, we convert the slice into
+            # a closed interval so we're free to iterate in either direction.
             start, stop, step = key.indices(self.size)
-            if (start > stop and step > 0) or (start < stop and step < 0):
-                return result  # Python returns an empty list in this case
-            norm_step = abs(step)  # drop sign
+            stop -= (stop - start) % step or step  # make stop inclusive
+            if (step > 0 and stop < start) or (step < 0 and start < stop):
+                return result  # Python returns an empty list in these cases
 
             # determine direction of traversal to avoid backtracking
             index, end_index = self._get_slice_direction(start, stop, step)
             reverse = step < 0  # append to slice in reverse order
+            abs_step = abs(step)
 
             # get first node in slice, counting from nearest end
             curr = self._node_at_index(index)
 
             # forward traversal
-            if end_index >= index:
-                while curr is not NULL and index < end_index:
+            if index <= end_index:
+                while curr is not NULL and index <= end_index:
                     if reverse:
                         result._appendleft(curr.value)  # appendleft
                     else:
                         result._append(curr.value)  # append
 
                     # jump according to step size
-                    index += norm_step  # increment index
-                    for i in range(norm_step):
+                    index += abs_step  # increment index
+                    for i in range(abs_step):
+                        curr = curr.next
                         if curr is NULL:
                             break
-                        curr = curr.next
 
             # backward traversal
             else:
-                while curr is not NULL and index > end_index:
+                while curr is not NULL and index >= end_index:
                     if reverse:
                         result._append(curr.value)  # append
                     else:
                         result._appendleft(curr.value)  # appendleft
 
                     # jump according to step size
-                    index -= norm_step  # decrement index
-                    for i in range(norm_step):
+                    index -= abs_step  # decrement index
+                    for i in range(abs_step):
+                        curr = curr.prev
                         if curr is NULL:
                             break
-                        curr = curr.prev
 
             return result
 
@@ -966,19 +970,24 @@ cdef class DoublyLinkedList(LinkedList):
         complete.
         """
         cdef ListNode* curr
-        cdef ssize_t step
-        cdef size_t start, stop, norm_step, slice_size, index, end_index, i
+        cdef object start, stop, step, slice_size  # Python integers make things easier
+        cdef size_t abs_step, index, end_index, i
         cdef object value_iterator, val  # kept at Python level for simplicity
+
+        # TODO: handle impossible slices
 
         # support slicing
         if isinstance(key, slice):
-            # get indices of slice
+            # NOTE: Python slices are normally half-open.  This complicates our
+            # optimization strategy because we can't treat the slices symmetrically
+            # in both directions.  To account for this, we convert the slice into
+            # a closed interval so we're free to iterate in either direction.
             start, stop, step = key.indices(self.size)
-            norm_step = abs(step)  # drop sign
+            abs_step = abs(step)  # drop sign
 
             # check length of value matches length of slice
-            slice_size = abs(stop - start) // (1 if step == 0 else norm_step)
-            if not hasattr(value, "__iter__") or <size_t>len(value) != slice_size:
+            slice_size = abs(stop - start) // (1 if step == 0 else abs_step)
+            if not hasattr(value, "__iter__") or len(value) != slice_size:
                 raise ValueError(
                     f"attempt to assign sequence of size {len(value)} to slice "
                     f"of size {slice_size}"
@@ -999,11 +1008,11 @@ cdef class DoublyLinkedList(LinkedList):
                     Py_INCREF(<PyObject*>val)
                     Py_DECREF(curr.value)
                     curr.value = <PyObject*>val
-                    for i in range(norm_step):  # jump according to step size
+                    for i in range(abs_step):  # jump according to step size
                         if curr is NULL:
                             break
                         curr = curr.next
-                    index += norm_step  # increment index
+                    index += abs_step  # increment index
 
             # backward traversal
             else:
@@ -1013,11 +1022,11 @@ cdef class DoublyLinkedList(LinkedList):
                     Py_INCREF(<PyObject*>val)
                     Py_DECREF(curr.value)
                     curr.value = <PyObject*>val
-                    for i in range(norm_step):  # jump according to step size
+                    for i in range(abs_step):  # jump according to step size
                         if curr is NULL:
                             break
                         curr = curr.prev
-                    index -= norm_step  # decrement index
+                    index -= abs_step  # decrement index
 
         # index directly
         else:
@@ -1059,50 +1068,58 @@ cdef class DoublyLinkedList(LinkedList):
         complete.
         """
         cdef ListNode* curr
-        cdef size_t start, stop, norm_step, small_step, index, end_index, i
-        cdef ssize_t step
+        cdef object start, stop, step  # Python integers make things easier
+        cdef size_t abs_step, small_step, index, end_index, i
         cdef ListNode* temp  # temporary node for deletion
 
         # support slicing
         if isinstance(key, slice):
-            # get bounds of slice
+            # NOTE: Python slices are normally half-open.  This complicates our
+            # optimization strategy because we can't treat the slices symmetrically
+            # in both directions.  To account for this, we convert the slice into
+            # a closed interval so we're free to iterate in either direction.
             start, stop, step = key.indices(self.size)
+            stop -= (stop - start) % step or step  # make stop inclusive
             if (start > stop and step > 0) or (start < stop and step < 0):
                 return  # Python does nothing in this case
-            norm_step = abs(step)  # drop sign
-            small_step = norm_step - 1  # we implicitly advance by one at each step
 
             # determine direction of traversal to avoid backtracking
             index, end_index = self._get_slice_direction(start, stop, step)
+            abs_step = abs(step)
+            small_step = abs_step - 1  # we implicitly advance by one at each step
 
             # get first node in slice, counting from nearest end
             curr = self._node_at_index(index)
 
             # forward traversal
-            if end_index >= index:
-                while curr is not NULL and index < end_index:
+            if index <= end_index:
+                while curr is not NULL and index <= end_index:
                     temp = curr
                     curr = curr.next
                     self._unlink_node(temp)
                     self._free_node(temp)
-                    for i in range(small_step):  # jump according to step size
+
+                    # jump according to step size
+                    index += abs_step  # tracks with end_index to maintain condition
+                    for i in range(small_step):
+                        curr = curr.next
                         if curr is NULL:
                             break
-                        curr = curr.next
-                    index += norm_step  # tracks with end_index to maintain condition
 
             # backward traversal
             else:
-                while curr is not NULL and index > end_index:
+                while curr is not NULL and index >= end_index:
                     temp = curr
                     curr = curr.prev
                     self._unlink_node(temp)
                     self._free_node(temp)
-                    for i in range(small_step):  # jump according to step size
+
+                    # jump according to step size
+                    index -= abs_step  # tracks with end_index to maintain condition
+                    for i in range(small_step):
+                        curr = curr.prev
                         if curr is NULL:
                             break
-                        curr = curr.prev
-                    index -= norm_step  # tracks with end_index to maintain condition
 
         # index directly
         else:
@@ -1299,14 +1316,18 @@ cdef class DoublyLinkedList(LinkedList):
         cdef ListNode* curr
         cdef size_t i
 
+        # print(f"index: {index}")
+
         # count forwards from head
         if index <= self.size // 2:
+            # print("forward")
             curr = self.head
             for i in range(index):
                 curr = curr.next
 
         # count backwards from tail
         else:
+            # print("backward")
             curr = self.tail
             for i in range(self.size - index - 1):
                 curr = curr.prev
@@ -1325,18 +1346,18 @@ cdef class DoublyLinkedList(LinkedList):
         Parameters
         ----------
         start : size_t
-            The start index of the slice.
+            The start index of the slice (inclusive).
         stop : size_t
-            The stop index of the slice.
-        step : size_t
+            The stop index of the slice (inclusive).
+        step : ssize_t
             The step size of the slice.
 
         Returns
         -------
         index : size_t
-            The index at which to begin iterating.
+            The index at which to begin iterating (inclusive).
         end_index : size_t
-            The index at which to stop iterating.
+            The index at which to stop iterating (inclusive).
 
         Notes
         -----
@@ -1361,28 +1382,27 @@ cdef class DoublyLinkedList(LinkedList):
         ``index``.  Otherwise, it should be iterated over in reverse to avoid
         backtracking, again starting from ``index``.
         """
-        cdef size_t index, end_index
-        cdef size_t norm_step = abs(step)
+        cdef size_t distance_from_head, distance_from_tail, index, end_index
 
         # determine direction of traversal
         if step > 0:
-            if start <= self.size - stop:           # 1) start from head
-                print("1")
+            distance_from_head = start
+            distance_from_tail = self.size - stop
+            if distance_from_head <= distance_from_tail:    # 1) start from head
                 index = start
                 end_index = stop
-            else:                                   # 2) start from tail
-                print("2")
-                index = stop - norm_step
-                end_index = start - 1
+            else:                                           # 2) start from tail
+                index = stop
+                end_index = start
         else:
-            if stop > self.size - start:            # 3) start from tail 
-                print("3")
-                index = stop - norm_step
-                end_index = start - 1
-            else:                                   # 4) start from head
-                print("4")
-                index = stop - norm_step
-                end_index = start - 1
+            distance_from_head = stop
+            distance_from_tail = self.size - start
+            if distance_from_tail <= distance_from_head:    # 3) start from tail 
+                index = start
+                end_index = stop
+            else:                                           # 4) start from head
+                index = stop
+                end_index = start
 
         # return as C tuple
         return (index, end_index)
