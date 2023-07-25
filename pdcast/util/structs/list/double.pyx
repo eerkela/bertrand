@@ -20,58 +20,7 @@ cdef extern from "Python.h":
     PyObject* PyIter_Next(PyObject* obj)
 
 
-# TODO: the problem with __getitem__ seems to be that when the step size is
-# larger than the size of the slice and we're iterating backwards, it will just
-# return the first item closest to the tail, rather than closest to the head.
-
-
-# TODO: __getitem__ and __delitem__ are now correct for slices, but
-# __setitem__ is not.
-# -> impossible slices are handled differently for this method.
-
-# If you assign an iterable into a slice of length 0, it will insert the
-# values into the list at the specified index, extending it.
-
-# p = list(range(10))
-# p[5:5] = [15, 15, 15]
-# print(p)  # [0, 1, 2, 3, 4, 15, 15, 15, 5, 6, 7, 8, 9]
-
-
-
-# TODO: testing in general consists of comparing the output of this class's
-# methods to the built-in `list` object.
-
-
-# slice tester:
-d = DoublyLinkedList(range(20))
-l = list(range(20))
-
-
-def slice_test(d: DoublyLinkedList, l: list):
-    import random
-    r = lambda low, high: random.randrange(low, high)
-
-    offset = len(d) - int(0.25 * len(d)) + 1
-    b = len(d) + offset
-    a, b = -offset, len(d) + offset
-    start, stop, step = r(a, b), r(a, b), r(-b, b)
-    if not step:
-        return
-
-    s1 = d[start:stop:step]
-    s2 = l[start:stop:step]
-
-    assert list(s1) == s2, (
-        f"{repr(s1)} != {s2}   <- {':'.join([str(x) for x in (start, stop, step)])}"
-    )
-
-# there seems to be a bug with negative step sizes that are larger than the
-# length of the list.
-
-
-
 # TODO: rename ListNode -> DoubleNode to distinguish from future SingleNode
-
 
 
 #######################
@@ -867,7 +816,7 @@ cdef class DoublyLinkedList(LinkedList):
         a single iteration and stops as soon as the slice is complete.
         """
         cdef ListNode* curr
-        cdef object start, stop, step  # Python integers make things easier
+        cdef object start, stop, step  # kept at Python level
         cdef size_t index, end_index, abs_step, i
         cdef LinkedList result
         cdef bint reverse
@@ -969,72 +918,120 @@ cdef class DoublyLinkedList(LinkedList):
         values in a single iteration and stops as soon as the slice is
         complete.
         """
+        cdef ListNode* node
         cdef ListNode* curr
-        cdef object start, stop, step, slice_size  # Python integers make things easier
+        cdef object start, stop, step, expected_size  # kept at Python level
         cdef size_t abs_step, index, end_index, i
-        cdef object value_iterator, val  # kept at Python level for simplicity
-
-        # TODO: handle impossible slices
+        cdef object value_iter, val
 
         # support slicing
         if isinstance(key, slice):
+            value_iter = iter(value)  # check input is iterable
+
             # NOTE: Python slices are normally half-open.  This complicates our
             # optimization strategy because we can't treat the slices symmetrically
             # in both directions.  To account for this, we convert the slice into
             # a closed interval so we're free to iterate in either direction.
             start, stop, step = key.indices(self.size)
-            abs_step = abs(step)  # drop sign
 
-            # check length of value matches length of slice
-            slice_size = abs(stop - start) // (1 if step == 0 else abs_step)
-            if not hasattr(value, "__iter__") or len(value) != slice_size:
-                raise ValueError(
-                    f"attempt to assign sequence of size {len(value)} to slice "
-                    f"of size {slice_size}"
+            # Python allows assignment to empty/improper slices iff step == 1
+            if step == 1:
+                self.__delitem__(key)  # delete previous values
+
+                # handle edge cases
+                if start == 0:  # assignment at beginning of list
+                    val = next(value_iter)
+                    curr = self._allocate_node(<PyObject*>val)
+                    self._link_node(NULL, curr, self.head)
+                elif start == self.size:  # assignment at end of list
+                    val = next(value_iter)
+                    curr = self._allocate_node(<PyObject*>val)
+                    self._link_node(self.tail, curr, NULL)
+                else:  # assignment in middle of list
+                    curr = self._node_at_index(start - 1)
+
+                # insert all values at current index
+                for val in value_iter:
+                    node = self._allocate_node(<PyObject*>val)
+                    self._link_node(curr, node, curr.next)
+                    curr = node
+
+                return  # early return
+
+            # proceed as normal
+            abs_step = abs(step)
+            stop -= (stop - start) % step or step  # make stop inclusive
+            expected_size = 1 + abs(stop - start) // abs_step
+            if (
+                (step > 0 and stop < start) or
+                (step < 0 and start < stop) or
+                len(value) != expected_size
+            ):
+                raise IndexError(
+                    f"attempt to assign sequence of size {len(value)} to "
+                    f"extended slice of size {expected_size}"
                 )
 
             # determine direction of traversal to avoid backtracking
             index, end_index = self._get_slice_direction(start, stop, step)
+            # reverse = step < 0
 
             # get first node in slice, counting from nearest end
             curr = self._node_at_index(index)
 
             # forward traversal
-            value_iterator = iter(value)
-            if end_index >= index:
-                for val in value_iterator:
-                    if curr is NULL or index >= end_index:
-                        break
+            if index <= end_index:
+                if step < 0:
+                    value_iter = reversed(value)
+                while curr is not NULL and index <= end_index:
+                    val = next(value_iter)
                     Py_INCREF(<PyObject*>val)
                     Py_DECREF(curr.value)
                     curr.value = <PyObject*>val
-                    for i in range(abs_step):  # jump according to step size
+                    # node = self._allocate_node(<PyObject*>val)
+                    # self._link_node(curr.prev, node, curr.next)
+                    # self._free_node(curr)
+                    # curr = node
+
+                    # jump according to step size
+                    index += abs_step  # increment index
+                    for i in range(abs_step):
+                        curr = curr.next
                         if curr is NULL:
                             break
-                        curr = curr.next
-                    index += abs_step  # increment index
 
             # backward traversal
             else:
-                for val in reversed(list(value_iterator)):
-                    if curr is NULL or index == end_index:
-                        break
+                if step > 0:
+                    value_iter = reversed(value)
+                while curr is not NULL and index >= end_index:
+                    val = next(value_iter)
                     Py_INCREF(<PyObject*>val)
                     Py_DECREF(curr.value)
                     curr.value = <PyObject*>val
-                    for i in range(abs_step):  # jump according to step size
+                    # node = self._allocate_node(<PyObject*>val)
+                    # self._link_node(curr.prev, node, curr.next)
+                    # self._free_node(curr)
+                    # curr = node
+
+                    # jump according to step size
+                    index -= abs_step  # decrement index
+                    for i in range(abs_step):
+                        curr = curr.prev
                         if curr is NULL:
                             break
-                        curr = curr.prev
-                    index -= abs_step  # decrement index
+
+            return
 
         # index directly
-        else:
-            key = self._normalize_index(key)
-            curr = self._node_at_index(key)
-            Py_INCREF(<PyObject*>value)
-            Py_DECREF(curr.value)
-            curr.value = <PyObject*>value
+        key = self._normalize_index(key)
+        curr = self._node_at_index(key)
+        Py_INCREF(<PyObject*>value)
+        Py_DECREF(curr.value)
+        curr.value = <PyObject*>value
+        # node = self._allocate_node(<PyObject*>value)
+        # self._link_node(curr.prev, node, curr.next)
+        # self._free_node(curr)
 
     def __delitem__(self, key: int | slice) -> None:
         """Delete an item or slice from the list.
@@ -1068,7 +1065,7 @@ cdef class DoublyLinkedList(LinkedList):
         complete.
         """
         cdef ListNode* curr
-        cdef object start, stop, step  # Python integers make things easier
+        cdef object start, stop, step  # kept at Python level
         cdef size_t abs_step, small_step, index, end_index, i
         cdef ListNode* temp  # temporary node for deletion
 
@@ -1241,7 +1238,7 @@ cdef class DoublyLinkedList(LinkedList):
 
         Notes
         -----
-        This is a helper method for doing the pointer arithmetic of adding a
+        This is a helper method for doing the pointer manipulations of adding a
         node to the list, since it's used in multiple places.
         """
         # prev <-> curr
@@ -1271,8 +1268,8 @@ cdef class DoublyLinkedList(LinkedList):
 
         Notes
         -----
-        This is a helper method for doing the pointer arithmetic of removing a
-        node, as well as handling reference counts and freeing the underlying
+        This is a helper method for doing the pointer manipulations of removing
+        a node, as well as handling reference counts and freeing the underlying
         memory.
         """
         # prev <-> next
@@ -1316,18 +1313,14 @@ cdef class DoublyLinkedList(LinkedList):
         cdef ListNode* curr
         cdef size_t i
 
-        # print(f"index: {index}")
-
         # count forwards from head
         if index <= self.size // 2:
-            # print("forward")
             curr = self.head
             for i in range(index):
                 curr = curr.next
 
         # count backwards from tail
         else:
-            # print("backward")
             curr = self.tail
             for i in range(self.size - index - 1):
                 curr = curr.prev
@@ -1836,3 +1829,68 @@ cdef class DoublyLinkedList(LinkedList):
             count += 1
 
         return count
+
+
+#####################
+####    TESTS    ####
+#####################
+
+
+# TODO: migrate these to pytest.  In general, testing consists of comparing
+# the output from this data structure to the built-in list.
+
+
+def test_doubly_linked_list_getitem_slice():
+    l = list(range(20))
+    d = DoublyLinkedList(l)
+
+    import random
+    r = lambda low, high: random.randrange(low, high)
+
+    offset = len(d) - int(0.25 * len(d)) + 1
+    a, b = -offset, len(d) + offset
+    start, stop, step = r(a, b), r(a, b), r(-b, b)
+    if not step:
+        return
+
+    s1 = d[start:stop:step]
+    s2 = l[start:stop:step]
+
+    assert list(s1) == s2, (
+        f"{repr(s1)} != {s2}   <- {':'.join([str(x) for x in (start, stop, step)])}"
+    )
+
+
+def test_doubly_linked_list_setitem_slice():
+    l = list(range(20))
+    d = DoublyLinkedList(l)
+
+    import random
+    r = lambda low, high: random.randrange(low, high)
+
+    offset = len(d) - int(0.25 * len(d)) + 1
+    a, b = -offset, len(d) + offset
+    start, stop, step = r(a, b), r(a, b), r(-b, b)
+    if not step:
+        return
+
+    start, stop, step = slice(start, stop, step).indices(len(d))
+    stop -= (stop - start) % step or step  # make stop inclusive
+    expected_size = 1 + abs(stop - start) // abs(step)
+    if (step > 0 and stop < start) or (step < 0 and start < stop):
+        return
+
+    assign = [r(100, 200) for _ in range(expected_size)]
+
+    if step > 0:
+        stop += 1
+    else:
+        stop -= 1
+
+    d[start:stop:step] = assign
+    l[start:stop:step] = assign
+
+    assert list(d) == l, (
+        f"{repr(d)} != {l}   <- {':'.join([str(x) for x in (start, stop, step)])}"
+        f"    {assign}"
+    )
