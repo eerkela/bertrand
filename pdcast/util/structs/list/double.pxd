@@ -37,6 +37,9 @@ cdef class DoublyLinkedList(LinkedList):
     cdef void _free_node(self, ListNode* node)
     cdef void _link_node(self, ListNode* prev, ListNode* curr, ListNode* next)
     cdef void _unlink_node(self, ListNode* curr)
+    cdef (ListNode*, ListNode*, size_t) _stage_nodes(
+        self, PyObject* items, bint reverse
+    )
     cdef ListNode* _node_at_index(self, size_t index)
     cdef (size_t, size_t) _get_slice_direction(
         self,

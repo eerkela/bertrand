@@ -35,6 +35,7 @@ cdef struct ListTable:
 
 cdef class HashedList(LinkedList):
     cdef:
+        ListTable table
         HashNode* head
         HashNode* tail
 

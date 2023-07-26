@@ -285,6 +285,10 @@ cdef class LinkedList:
         """Reverse the order of the list in-place."""
         raise NotImplementedError()
 
+    cdef size_t _nbytes(self):
+        """Get the total number of bytes used by the list."""
+        raise NotImplementedError()
+
     def __iter__(self) -> Iterator[Any]:
         """Iterate through the list items in order.
 
@@ -1154,6 +1158,18 @@ cdef class LinkedList:
         :class:`collections.deque <python:collections.deque>` class.
         """
         self._rotate(steps)
+
+    @property
+    def nbytes(self) -> int:
+        """The total memory consumption of the list in bytes.
+
+        Returns
+        -------
+        int
+            The total number of bytes consumed by the list, including all its
+            nodes (but not their values).
+        """
+        return self._nbytes()
 
 
 ####################

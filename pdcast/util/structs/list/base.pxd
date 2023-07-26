@@ -32,6 +32,7 @@ cdef class LinkedList:
     cdef void _clear(self)
     cdef void _sort(self, PyObject* key = *, bint reverse = *)
     cdef void _reverse(self)
+    cdef size_t _nbytes(self)
     cdef LinkedList _copy(self)
     cdef void _rotate(self, ssize_t steps = *)
     cdef size_t _normalize_index(self, long index)

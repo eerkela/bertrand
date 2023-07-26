@@ -10,7 +10,7 @@ import numpy
 extensions = [
     Extension(
         "*",
-        ["pdcast/**/*.pyx"],
+        sources=["pdcast/**/*.pyx"],
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
     ),
 ]

@@ -20,9 +20,6 @@ cdef extern from "Python.h":
     PyObject* PyIter_Next(PyObject* obj)
 
 
-# TODO: rename ListNode -> DoubleNode to distinguish from future SingleNode
-
-
 #######################
 ####    CLASSES    ####
 #######################
@@ -166,31 +163,25 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Extends are O(m), where `m` is the length of ``items``.
         """
-        # C API equivalent of iter(items)
-        cdef PyObject* iterator = PyObject_GetIter(items)
-        if iterator is NULL:
-            raise_exception()
+        cdef ListNode* staged_head
+        cdef ListNode* staged_tail
+        cdef size_t count
 
-        # NOTE: this is equivalent to
-        #   for item in items:
-        #       self._append(item)
+        # NOTE: we stage the items in a temporary list to ensure we don't
+        # modify the original if we encounter any errors
+        staged_head, staged_tail, count = self._stage_nodes(items, False)
+        if staged_head is NULL:
+            return
 
-        cdef PyObject* item
-
-        # iterate over items
-        while True:
-            item = PyIter_Next(iterator)
-            if item is NULL:  # end of iterator or error
-                if PyErr_Occurred():  # release references and raise error
-                    Py_DECREF(item)
-                    Py_DECREF(iterator)
-                    raise_exception()
-                break
-
-            self._append(item)  # append item to list
-            Py_DECREF(item)  # release reference to item
-
-        Py_DECREF(iterator)  # release reference to iterator
+        # append staged items to end of list
+        self.size += count
+        if self.tail is NULL:
+            self.head = staged_head
+            self.tail = staged_tail
+        else:
+            self.tail.next = staged_head
+            staged_head.prev = self.tail
+            self.tail = staged_tail
 
     cdef void _extendleft(self, PyObject* items):
         """Add multiple items to the beginning of the list.
@@ -209,31 +200,25 @@ cdef class DoublyLinkedList(LinkedList):
         that class, the series of left appends results in reversing the order
         of elements in ``items``.
         """
-        # C API equivalent of iter(items)
-        cdef PyObject* iterator = PyObject_GetIter(items)
-        if iterator is NULL:
-            raise_exception()
+        cdef ListNode* staged_head
+        cdef ListNode* staged_tail
+        cdef size_t count
 
-        # NOTE: this is equivalent to
-        #   for item in items:
-        #       self._appendleft(item)
+        # NOTE: we stage the items in a temporary list to ensure we don't
+        # modify the original if we encounter any errors
+        staged_head, staged_tail, count = self._stage_nodes(items, True)
+        if staged_head is NULL:
+            return
 
-        cdef PyObject* item
-
-        # iterate over items
-        while True:
-            item = PyIter_Next(iterator)
-            if item is NULL:  # end of iterator or error
-                if PyErr_Occurred():  # release references and raise error
-                    Py_DECREF(item)
-                    Py_DECREF(iterator)
-                    raise_exception()
-                break
-
-            self._appendleft(item)  # append item to list
-            Py_DECREF(item)  # release reference to item
-
-        Py_DECREF(iterator)  # release reference to iterator
+        # append staged items to beginning of list
+        self.size += count
+        if self.head is NULL:
+            self.head = staged_head
+            self.tail = staged_tail
+        else:
+            self.head.prev = staged_tail
+            staged_tail.next = self.head
+            self.head = staged_head
 
     cdef size_t _index(self, PyObject* item, long start = 0, long stop = -1):
         """Get the index of an item within the list.
@@ -740,6 +725,10 @@ cdef class DoublyLinkedList(LinkedList):
         # swap head and tail
         self.head, self.tail = self.tail, self.head
 
+    cdef size_t _nbytes(self):
+        """Get the total number of bytes used by the list."""
+        return sizeof(self) + self.size * sizeof(ListNode)
+
     def __iter__(self) -> Iterator[Any]:
         """Iterate through the list items in order.
 
@@ -815,10 +804,10 @@ cdef class DoublyLinkedList(LinkedList):
         a slice boundary, and to never backtrack.  It collects all values in
         a single iteration and stops as soon as the slice is complete.
         """
+        cdef LinkedList result
         cdef ListNode* curr
         cdef object start, stop, step  # kept at Python level
         cdef size_t index, end_index, abs_step, i
-        cdef LinkedList result
         cdef bint reverse
 
         # support slicing
@@ -974,7 +963,6 @@ cdef class DoublyLinkedList(LinkedList):
 
             # determine direction of traversal to avoid backtracking
             index, end_index = self._get_slice_direction(start, stop, step)
-            # reverse = step < 0
 
             # get first node in slice, counting from nearest end
             curr = self._node_at_index(index)
@@ -1286,6 +1274,80 @@ cdef class DoublyLinkedList(LinkedList):
 
         # decrement size
         self.size -= 1
+
+    cdef (ListNode*, ListNode*, size_t) _stage_nodes(
+        self, PyObject* items, bint reverse
+    ):
+        """Stage a sequence of nodes for insertion into the list.
+
+        Parameters
+        ----------
+        items : PyObject*
+            An iterable of items to insert into the list.
+        reverse : bool
+            Indicates whether to reverse the order of the items during staging.
+
+        Returns
+        -------
+        head : ListNode*
+            The head of the staged list (or NULL if no values are staged).
+        tail : ListNode*
+            The tail of the staged list (or NULL if no values are staged).
+        count : size_t
+            The number of nodes in the staged list.
+        """
+        # C API equivalent of iter(items)
+        cdef PyObject* iterator = PyObject_GetIter(items)  # generates a reference
+        if iterator is NULL:
+            raise_exception()
+
+        # NOTE: we stage the items in a temporary list to ensure we don't
+        # modify the original if we encounter any errors
+        cdef ListNode* staged_head = NULL
+        cdef ListNode* staged_tail = NULL
+        cdef ListNode* node
+        cdef PyObject* item
+        cdef size_t count = 0
+
+        # iterate over items (equivalent to `for item in iterator`)
+        while True:
+            item = PyIter_Next(iterator)  # generates a reference
+            if item is NULL:  # end of iterator or error
+                if PyErr_Occurred():
+                    Py_DECREF(item)
+                    Py_DECREF(iterator)
+                    while staged_head is not NULL:  # clean up staged items
+                        node = staged_head
+                        staged_head = staged_head.next
+                        Py_DECREF(node.value)
+                        free(node)
+                    raise_exception()  # propagate error
+                break
+
+            # allocate new node
+            node = self._allocate_node(item)
+
+            # link to staged list
+            if reverse:  # insert at front
+                if staged_tail is NULL:
+                    staged_tail = node
+                else:
+                    staged_head.prev = node
+                    node.next = staged_head
+                staged_head = node
+            else:  # insert at end
+                if staged_head is NULL:
+                    staged_head = node
+                else:
+                    staged_tail.next = node
+                    node.prev = staged_tail
+                staged_tail = node
+
+            count += 1  # increment count
+            Py_DECREF(item)  # release reference on item
+
+        Py_DECREF(iterator)  # release reference on iterator
+        return (staged_head, staged_tail, count)
 
     #############################
     ####    INDEX HELPERS    ####
