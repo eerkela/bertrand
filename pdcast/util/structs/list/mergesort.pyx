@@ -5,7 +5,8 @@ from cpython.ref cimport PyObject
 from libc.stdlib cimport malloc, free
 
 from .base cimport (
-    DEBUG, ListNode, SingleNode, DoubleNode, HashNode, DictNode, raise_exception
+    DEBUG, ListNode, SingleNode, DoubleNode, HashNode, DictNode,
+    Pair, raise_exception
 )
 
 
@@ -14,43 +15,42 @@ from .base cimport (
 ######################
 
 
-cdef Pair* sort(SortNode* head, SortNode* tail, size_t size, bint reverse = False):
-    """Sort the list in-place.
+cdef Pair* merge_sort(
+    SortNode* head,
+    SortNode* tail,
+    size_t size,
+    bint reverse = False,
+):
+    """Sort a list by value.
 
     Parameters
     ----------
-    key : Callable[[Any], Any], optional
-        A function that takes an item from the list and returns a value to
-        use for sorting.  If this is not given, then the items will be
-        compared directly.
+    head : SortNode*
+        The head of the unsorted list.  This can be any of the standard node
+        types or one of their decorated equivalents.  The same algorithm is
+        applied either way.
+    tail : SortNode*
+        The tail of the unsorted list.  This must be of the same type as
+        ``head``.
+    size : size_t
+        The overall length of the list.
     reverse : bool, optional
         Indicates whether to sort the list in descending order.  The
         default is ``False``, which sorts in ascending order.
 
+    Returns
+    -------
+    Pair
+        A simple ``Pair`` struct that holds two items as ``void*`` pointers.
+        ``Pair.first`` represents the head of the sorted list, while
+        ``Pair.second`` represents the tail.  These must be typecast to the
+        expected node type before they can be used.  Don't forget to ``free()``
+        the resulting struct!
+
     Notes
     -----
-    Sorting is O(n log n) on average, using an iterative merge sort
-    algorithm that avoids recursion.  The sort is stable, meaning that the
-    relative order of elements that compare equal will not change, and it
-    is performed in-place for minimal memory overhead.
-
-    If a ``key`` function is provided, then the keys will be computed once
-    and reused for all iterations of the sorting algorithm.  Otherwise,
-    each element will be compared directly using the ``<`` operator.  If
-    ``reverse=True``, then the value of the comparison will be inverted
-    (i.e. ``not a < b``).
-
-    One quirk of this implementation is how it handles errors.  By default,
-    if a comparison throws an exception, then the sort will be aborted and
-    the list will be left in a partially-sorted state.  This is consistent
-    with the behavior of Python's built-in :meth:`list.sort() <python:list.sort>`
-    method.  However, when a ``key`` function is provided, we actually end
-    up sorting an auxiliary list of ``(key, value)`` pairs, which is then
-    reflected in the original list.  This means that if a comparison throws
-    an exception, the original list will not be changed.  This holds even
-    if the ``key`` is a simple identity function (``lambda x: x``), which
-    opens up the possibility of anticipating errors and handling them
-    gracefully.
+    The only reason why this doesn't return a normal C tuple is because fused
+    types don't support them.
     """
     cdef SortNode* sorted_head = NULL  # head of sorted list
     cdef SortNode* sorted_tail = NULL  # tail of sorted list
@@ -60,8 +60,9 @@ cdef Pair* sort(SortNode* head, SortNode* tail, size_t size, bint reverse = Fals
     cdef SortNode* sub_head     # head of merged sublist
     cdef SortNode* sub_tail     # tail of merged sublist
     cdef size_t length = 1      # length of each sublist for this iteration
+    cdef Pair* pair             # temporary Pair tuple
     cdef size_t freed_nodes     # number of nodes freed in case of error
-    cdef Pair* merged           # result of merge() operation
+    cdef SortError sort_err     # exception to raise if error occurs
 
     if DEBUG:
         print("    -> malloc: temp node")
@@ -80,8 +81,6 @@ cdef Pair* sort(SortNode* head, SortNode* tail, size_t size, bint reverse = Fals
     #   1) divide the list into sublists of length 1 (bottom-up)
     #   2) sort pairs of elements from left to right and merge
     #   3) double the length of the sublists and repeat step 2
-
-    # merge pairs of sublists of increasing size, starting at length 1
     while length <= size:
         # reset head and tail of sorted list
         sorted_head = NULL
@@ -96,27 +95,37 @@ cdef Pair* sort(SortNode* head, SortNode* tail, size_t size, bint reverse = Fals
 
             # merge the two sublists in sorted order
             try:
-                merged = merge(sub_left, sub_right, temp, reverse)
-                sub_head = <SortNode*>merged.first
-                sub_tail = <SortNode*>merged.second
-                free(merged)  # clean up temporary Pair
-            except:
-                # recover_list(sorted_head, sorted_tail, sub_left, sub_right, curr)  # TODO: call this in parent sort() method
+                pair = merge(sub_left, sub_right, temp, reverse)
+                sub_head = <SortNode*>pair.first
+                sub_tail = <SortNode*>pair.second
+                free(pair)  # clean up temporary Pair
+            except Exception as err:  # an error occurred during comparison
+                sort_err = SortError()
+                sort_err.original = err
+
+                # if sort is keyed, just delete all decorated nodes
                 if SortNode in KeyedNode:
-                    free(temp)
-                    freed_ndoes = 1
+                    freed_nodes = 1  # temp node
                     freed_nodes += free_decorated(sorted_head)
                     freed_nodes += free_decorated(sub_left)
                     freed_nodes += free_decorated(sub_right)
                     freed_nodes += free_decorated(curr)
+                    sort_err.head = NULL  # no cleanup necessary
+                    sort_err.tail = NULL
                     if DEBUG:
                         print(f"    -> cleaned up {freed_nodes} temporary nodes")
                 else:
+                    pair = recover_list(
+                        sorted_head, sorted_tail, sub_left, sub_right, curr
+                    )
+                    sort_err.head = pair.first   # head of partially-sorted list
+                    sort_err.tail = pair.second  # tail of partially-sorted list
+                    free(pair)
                     if DEBUG:
                         print("    -> free: temp node")
-                    free(temp)  # clean up temporary node
 
-                raise  # propagate error
+                free(temp)
+                raise sort_err  # propagate error
 
             # if this is our first merge, set the head of the merged list
             if sorted_tail is NULL:
@@ -218,10 +227,6 @@ cdef (KeyedSingleNode*, KeyedSingleNode*) decorate_single(
         decorated_tail = decorated
         undecorated = undecorated.next
 
-    if DEBUG:
-        print(f"    -> malloc: ListPair")
-
-    # return a new ListPair
     return (decorated_head, decorated_tail)
 
 
@@ -296,10 +301,6 @@ cdef (KeyedDoubleNode*, KeyedDoubleNode*) decorate_double(
         decorated_tail = decorated
         undecorated = undecorated.next
 
-    if DEBUG:
-        print(f"    -> malloc: ListPair")
-
-    # return a new ListPair
     return (decorated_head, decorated_tail)
 
 
@@ -374,10 +375,6 @@ cdef (KeyedHashNode*, KeyedHashNode*) decorate_hash(
         decorated_tail = decorated
         undecorated = undecorated.next
 
-    if DEBUG:
-        print(f"    -> malloc: ListPair")
-
-    # return a new ListPair
     return (decorated_head, decorated_tail)
 
 
@@ -452,14 +449,10 @@ cdef (KeyedDictNode*, KeyedDictNode*) decorate_dict(
         decorated_tail = decorated
         undecorated = undecorated.next
 
-    if DEBUG:
-        print(f"    -> malloc: ListPair")
-
-    # return a new ListPair
     return (decorated_head, decorated_tail)
 
 
-cdef (SingleNode*, SingleNode*) undecorate_single(self, KeyedSingleNode* head):
+cdef (SingleNode*, SingleNode*) undecorate_single(KeyedSingleNode* head):
     """Rearrange all nodes in the list to match their positions in the
     decorated list and remove each decorator
 
@@ -517,7 +510,7 @@ cdef (SingleNode*, SingleNode*) undecorate_single(self, KeyedSingleNode* head):
     return (sorted_head, sorted_tail)
 
 
-cdef (DoubleNode*, DoubleNode*) undecorate_double(self, KeyedDoubleNode* head):
+cdef (DoubleNode*, DoubleNode*) undecorate_double(KeyedDoubleNode* head):
     """Rearrange all nodes in the list to match their positions in the
     decorated list and remove each decorator
 
@@ -576,7 +569,7 @@ cdef (DoubleNode*, DoubleNode*) undecorate_double(self, KeyedDoubleNode* head):
     return (sorted_head, sorted_tail)
 
 
-cdef (HashNode*, HashNode*) undecorate_hash(self, KeyedHashNode* head):
+cdef (HashNode*, HashNode*) undecorate_hash(KeyedHashNode* head):
     """Rearrange all nodes in the list to match their positions in the
     decorated list and remove each decorator
 
@@ -635,7 +628,7 @@ cdef (HashNode*, HashNode*) undecorate_hash(self, KeyedHashNode* head):
     return (sorted_head, sorted_tail)
 
 
-cdef (DictNode*, DictNode*) undecorate_dict(self, KeyedDictNode* head):
+cdef (DictNode*, DictNode*) undecorate_dict(KeyedDictNode* head):
     """Rearrange all nodes in the list to match their positions in the
     decorated list and remove each decorator
 
@@ -853,7 +846,6 @@ cdef Pair* merge(SortNode* left, SortNode* right, SortNode* temp, bint reverse):
     result.first = curr
     result.second = tail
     return result
-
 
 cdef Pair* recover_list(
     SortNode* head,

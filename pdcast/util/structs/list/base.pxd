@@ -1,4 +1,16 @@
+"""Cython headers for pdcast/util/structs/list/base.pyx"""
 from cpython.ref cimport PyObject
+
+cdef extern from "Python.h":
+    void Py_INCREF(PyObject* obj)
+    void Py_DECREF(PyObject* obj)
+    PyObject* PyErr_Occurred()
+    void PyErr_Clear()
+    int Py_EQ, Py_LT
+    int PyObject_RichCompareBool(PyObject* obj1, PyObject* obj2, int opid)
+    PyObject* PyObject_CallFunctionObjArgs(PyObject* callable, ...)
+    PyObject* PyObject_GetIter(PyObject* obj)
+    PyObject* PyIter_Next(PyObject* obj)
 
 
 #########################
@@ -12,6 +24,11 @@ cdef bint DEBUG
 #######################
 ####    STRUCTS    ####
 #######################
+
+
+cdef packed struct Pair:
+    void* first
+    void* second
 
 
 cdef packed struct SingleNode:

@@ -1,13 +1,12 @@
 """Cython headers for pdcast/util/structs/list/mergesort.pyx"""
 from cpython.ref cimport PyObject
 
-from .base cimport SingleNode, DoubleNode, HashNode, DictNode
+from .base cimport SingleNode, DoubleNode, HashNode, DictNode, Pair
 
 cdef extern from "Python.h":
     void Py_INCREF(PyObject* obj)
     void Py_DECREF(PyObject* obj)
     PyObject* PyErr_Occurred()
-    void PyErr_Clear()
     int Py_EQ, Py_LT
     int PyObject_RichCompareBool(PyObject* obj1, PyObject* obj2, int opid)
     PyObject* PyObject_CallFunctionObjArgs(PyObject* callable, ...)
@@ -18,11 +17,6 @@ cdef extern from "Python.h":
 #######################
 ####    STRUCTS    ####
 #######################
-
-
-cdef packed struct Pair:
-    void* first
-    void* second
 
 
 cdef packed struct KeyedSingleNode:
@@ -52,18 +46,18 @@ cdef packed struct KeyedDictNode:
     KeyedDictNode* prev
 
 
-ctypedef fused KeyedNode:
+ctypedef fused SortNode:
+    SingleNode
+    DoubleNode
+    HashNode
+    DictNode
     KeyedSingleNode
     KeyedDoubleNode
     KeyedHashNode
     KeyedDictNode
 
 
-ctypedef fused SortNode:
-    SingleNode
-    DoubleNode
-    HashNode
-    DictNode
+ctypedef fused KeyedNode:
     KeyedSingleNode
     KeyedDoubleNode
     KeyedHashNode
@@ -79,11 +73,25 @@ ctypedef fused HasPrev:
     KeyedDictNode
 
 
+#######################
+####    CLASSES    ####
+#######################
+
+
+cdef class SortError(Exception):
+    """Exception raised when an error occurs during a sort operation."""
+    cdef:
+        Exception original  # original exception that was raised
+        void* head          # to recover the list
+        void* tail          # to recover the list
+
+
 ######################
 ####    PUBLIC    ####
 ######################
 
 
+cdef Pair* merge_sort(SortNode* head, SortNode* tail, size_t size, bint reverse = *)
 cdef (KeyedSingleNode*, KeyedSingleNode*) decorate_single(
     SingleNode* head,
     SingleNode* tail,
@@ -104,7 +112,7 @@ cdef (KeyedDictNode*, KeyedDictNode*) decorate_dict(
     DictNode* tail,
     PyObject* key,
 )
-cdef (SingleNode*, SingleNode*) undecorate_single(self, KeyedSingleNode* head)
-cdef (DoubleNode*, DoubleNode*) undecorate_double(self, KeyedDoubleNode* head)
-cdef (HashNode*, HashNode*) undecorate_hash(self, KeyedHashNode* head)
-cdef (DictNode*, DictNode*) undecorate_dict(self, KeyedDictNode* head)
+cdef (SingleNode*, SingleNode*) undecorate_single(KeyedSingleNode* head)
+cdef (DoubleNode*, DoubleNode*) undecorate_double(KeyedDoubleNode* head)
+cdef (HashNode*, HashNode*) undecorate_hash(KeyedHashNode* head)
+cdef (DictNode*, DictNode*) undecorate_dict(KeyedDictNode* head)
