@@ -1,11 +1,12 @@
-
+"""This module contains a pure C/Cython implementation of a doubly-linked list
+that uses a hash map to support fast lookups by value.
+"""
 from typing import Hashable, Iterable
 
-from cpython.ref cimport PyObject
 from libc.stdlib cimport malloc, calloc, free
 
 from .base cimport DEBUG, HashNode, Pair, raise_exception
-from .mergesort cimport (
+from .sort cimport (
     KeyedHashNode, SortError, merge_sort, decorate_hash, undecorate_hash
 )
 

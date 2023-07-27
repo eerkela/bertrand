@@ -5,7 +5,6 @@ cdef extern from "Python.h":
     void Py_INCREF(PyObject* obj)
     void Py_DECREF(PyObject* obj)
     PyObject* PyErr_Occurred()
-    void PyErr_Clear()
     int Py_EQ, Py_LT
     int PyObject_RichCompareBool(PyObject* obj1, PyObject* obj2, int opid)
     PyObject* PyObject_CallFunctionObjArgs(PyObject* callable, ...)
@@ -37,9 +36,9 @@ cdef packed struct SingleNode:
 
 
 cdef packed struct DoubleNode:
-    PyObject* value   # reference to underlying Python object
-    DoubleNode* next    # reference to the next node in the list
-    DoubleNode* prev    # reference to the previous node in the list
+    PyObject* value
+    DoubleNode* next
+    DoubleNode* prev
 
 
 cdef packed struct HashNode:
@@ -60,6 +59,17 @@ cdef packed struct DictNode:
 ctypedef fused ListNode:
     SingleNode
     DoubleNode
+    HashNode
+    DictNode
+
+
+ctypedef fused HasPrev:
+    DoubleNode
+    HashNode
+    DictNode
+
+
+ctypedef fused IsUnique:
     HashNode
     DictNode
 

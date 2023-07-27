@@ -1,12 +1,10 @@
 """This module contains a templated merge sort algorithm for sorting linked
 list data structures.
 """
-from cpython.ref cimport PyObject
 from libc.stdlib cimport malloc, free
 
 from .base cimport (
-    DEBUG, ListNode, SingleNode, DoubleNode, HashNode, DictNode,
-    Pair, raise_exception
+    DEBUG, ListNode, SingleNode, DoubleNode, HashNode, DictNode, Pair, raise_exception
 )
 
 
