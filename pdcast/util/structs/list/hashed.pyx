@@ -3,14 +3,6 @@ that uses a hash map to support fast lookups by value.
 """
 from typing import Hashable, Iterable
 
-from libc.stdlib cimport malloc, calloc, free
-
-from .base cimport DEBUG, HashNode, Pair, raise_exception
-from .sort cimport (
-    KeyedHashNode, SortError, merge_sort, decorate_hash, undecorate_hash
-)
-
-
 
 # HashMap could be spun off into its own C++ class to support templating.  This
 # would have to go in a separate header file though.
@@ -288,7 +280,7 @@ cdef class HashedList(LinkedList):
         Integer-based inserts are O(n) on average.
         """
         # allow negative indexing + check bounds
-        cdef size_t norm_index = self._normalize_index(index)
+        cdef size_t norm_index = normalize_index(index, self.size)
 
         # allocate new node
         cdef HashNode* node = self._allocate_node(item)
@@ -632,8 +624,8 @@ cdef class HashedList(LinkedList):
             )
 
         # normalize start/stop indices
-        cdef size_t norm_start = self._normalize_index(start)
-        cdef size_t norm_stop = self._normalize_index(stop)
+        cdef size_t norm_start = normalize_index(start, self.size)
+        cdef size_t norm_stop = normalize_index(stop, self.size)
         cdef size_t index = 0
 
         # count backwards to the start of the list
@@ -668,7 +660,7 @@ cdef class HashedList(LinkedList):
             If the index is out of bounds.
         """        
         # normalize index
-        cdef size_t norm_index = self._normalize_index(index)
+        cdef size_t norm_index = normalize_index(index, self.size)
 
         # look up item in hash map
         cdef HashNode* node = self._search(item)
@@ -930,8 +922,10 @@ cdef class HashedList(LinkedList):
         O(n) otherwise.
         """
         # normalize index and get corresponding node
-        cdef size_t norm_index = self._normalize_index(index)
-        cdef HashNode* node = self._node_at_index(norm_index)
+        cdef size_t norm_index = normalize_index(index, self.size)
+        cdef HashNode* node = node_at_index(
+            norm_index, self.head, self.tail, self.size
+        )
         cdef PyObject* value = node.value
 
         # we have to increment the reference counter of the popped object to
@@ -1261,12 +1255,19 @@ cdef class HashedList(LinkedList):
                 return result  # Python returns an empty list in these cases
 
             # determine direction of traversal to avoid backtracking
-            index, end_index = self._get_slice_direction(start, stop, step)
+            index, end_index = get_slice_direction(
+                <size_t>start,
+                <size_t>stop,
+                <ssize_t>step,
+                self.head,
+                self.tail,
+                self.size,
+            )
             reverse = step < 0  # append to slice in reverse order
             abs_step = abs(step)
 
             # get first node in slice, counting from nearest end
-            curr = self._node_at_index(index)
+            curr = node_at_index(index, self.head, self.tail, self.size)
 
             # forward traversal
             if index <= end_index:
@@ -1301,8 +1302,8 @@ cdef class HashedList(LinkedList):
             return result
 
         # index directly
-        key = self._normalize_index(key)
-        curr = self._node_at_index(key)
+        index = normalize_index(key, self.size)
+        curr = node_at_index(index, self.head, self.tail, self.size)
         Py_INCREF(curr.value)
         return <object>curr.value  # this returns ownership to Python
 
@@ -1376,7 +1377,12 @@ cdef class HashedList(LinkedList):
                     curr = self._allocate_node(<PyObject*>val)
                     self._link_node(self.tail, curr, NULL)
                 else:  # assignment in middle of list
-                    curr = self._node_at_index(start - 1)
+                    curr = node_at_index(
+                        <size_t>(start - 1),
+                        self.head,
+                        self.tail,
+                        self.size
+                    )
 
                 # insert all values at current index
                 for val in value_iter:
@@ -1401,10 +1407,17 @@ cdef class HashedList(LinkedList):
                 )
 
             # determine direction of traversal to avoid backtracking
-            index, end_index = self._get_slice_direction(start, stop, step)
+            index, end_index = get_slice_direction(
+                <size_t>start,
+                <size_t>stop,
+                <ssize_t>step,
+                self.head,
+                self.tail,
+                self.size,
+            )
 
             # get first node in slice, counting from nearest end
-            curr = self._node_at_index(index)
+            curr = node_at_index(index, self.head, self.tail, self.size)
 
             # forward traversal
             if index <= end_index:
@@ -1451,8 +1464,8 @@ cdef class HashedList(LinkedList):
             return
 
         # index directly
-        key = self._normalize_index(key)
-        curr = self._node_at_index(key)
+        index = normalize_index(key, self.size)
+        curr = node_at_index(index, self.head, self.tail, self.size)
         Py_INCREF(<PyObject*>value)
         Py_DECREF(curr.value)
         curr.value = <PyObject*>value
@@ -1508,12 +1521,19 @@ cdef class HashedList(LinkedList):
                 return  # Python does nothing in this case
 
             # determine direction of traversal to avoid backtracking
-            index, end_index = self._get_slice_direction(start, stop, step)
+            index, end_index = get_slice_direction(
+                <size_t>start,
+                <size_t>stop,
+                <ssize_t>step,
+                self.head,
+                self.tail,
+                self.size,
+            )
             abs_step = abs(step)
             small_step = abs_step - 1  # we implicitly advance by one at each step
 
             # get first node in slice, counting from nearest end
-            curr = self._node_at_index(index)
+            curr = node_at_index(index, self.head, self.tail, self.size)
 
             # forward traversal
             if index <= end_index:
@@ -1549,8 +1569,8 @@ cdef class HashedList(LinkedList):
 
         # index directly
         else:
-            key = self._normalize_index(key)
-            curr = self._node_at_index(key)
+            index = normalize_index(key, self.size)
+            curr = node_at_index(index, self.head, self.tail, self.size)
             self._unlink_node(curr)
             self._forget_node(curr)
             self._free_node(curr)
@@ -1805,8 +1825,6 @@ cdef class HashedList(LinkedList):
         It should always be followed up with a call to :meth:`_link_node()` to
         add the node to the list.
         """
-        cdef ListTable* table = self.table
-
         # C API equivalent of the hash() function
         cdef Py_hash_t hash_val = PyObject_Hash(value)
         if hash_val == -1:  # hash() failed
@@ -2011,114 +2029,6 @@ cdef class HashedList(LinkedList):
 
         Py_DECREF(iterator)  # release reference on iterator
         return (staged_head, staged_tail, count)
-
-    #############################
-    ####    INDEX HELPERS    ####
-    #############################
-
-    cdef HashNode* _node_at_index(self, size_t index):
-        """Get the node at the specified index.
-
-        Parameters
-        ----------
-        index : size_t
-            The index of the node to retrieve.  This should always be passed
-            through :meth:`LinkedList._normalize_index` first.
-
-        Returns
-        -------
-        HashNode*
-            The node at the specified index.
-
-        Notes
-        -----
-        This method is O(n) on average.  As an optimization, it always iterates
-        from the nearest end of the list.
-        """
-        cdef HashNode* curr
-        cdef size_t i
-
-        # count forwards from head
-        if index <= self.size // 2:
-            curr = self.head
-            for i in range(index):
-                curr = curr.next
-
-        # count backwards from tail
-        else:
-            curr = self.tail
-            for i in range(self.size - index - 1):
-                curr = curr.prev
-
-        return curr
-
-    cdef (size_t, size_t) _get_slice_direction(
-        self,
-        size_t start,
-        size_t stop,
-        ssize_t step,
-    ):
-        """Determine the direction in which to traverse a slice so as to
-        minimize total iterations.
-
-        Parameters
-        ----------
-        start : size_t
-            The start index of the slice.
-        stop : size_t
-            The stop index of the slice.
-        step : size_t
-            The step size of the slice.
-
-        Returns
-        -------
-        index : size_t
-            The index at which to begin iterating.
-        end_index : size_t
-            The index at which to stop iterating.
-
-        Notes
-        -----
-        Slicing is optimized to always begin iterating from the end nearest to
-        a slice boundary, and to never backtrack.  This is done by checking
-        whether the slice is ascending (step > 0) or descending, and whether
-        the start or stop index is closer to its respective end.  This gives
-        the following cases:
-
-            1) slice is ascending, `start` closer to head than `stop` is to tail
-                -> iterate forwards from head to `stop`
-            2) slice is ascending, `stop` closer to tail than `start` is to head
-                -> iterate backwards from tail to `start`
-            3) slice is descending, `start` closer to tail than `stop` is to head
-                -> iterate backwards from tail to `stop`
-            4) slice is descending, `stop` closer to head than `start` is to tail
-                -> iterate forwards from head to `start`
-
-        The final direction of traversal is determined by comparing the
-        indices returned by this method.  If ``end_index >= index``, then the
-        slice should be traversed in the forward direction, starting from
-        ``index``.  Otherwise, it should be iterated over in reverse to avoid
-        backtracking, again starting from ``index``.
-        """
-        cdef size_t index, end_index
-
-        # determine direction of traversal
-        if (
-            step > 0 and start <= self.size - stop or   # 1)
-            step < 0 and self.size - start <= stop      # 4)
-        ):
-            index = start
-            end_index = stop
-        else:
-            if step > 0:                                # 2)
-                index = stop - 1
-                end_index = start - 1
-            else:                                       # 3)
-                index = stop + 1
-                end_index = start + 1
-
-        # return as C tuple
-        return (index, end_index)
 
     ##############################
     ####    LOOKUP HELPERS    ####

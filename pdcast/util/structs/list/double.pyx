@@ -2,17 +2,6 @@
 """
 from typing import Any, Iterable, Iterator
 
-from cpython.ref cimport PyObject
-from libc.stdlib cimport malloc, free
-
-from .base cimport (
-    DEBUG, DoubleNode, Pair, raise_exception, Py_INCREF, Py_DECREF, PyErr_Occurred,
-    Py_EQ, PyObject_RichCompareBool, PyObject_GetIter, PyIter_Next
-)
-from .sort cimport (
-    KeyedDoubleNode, SortError, merge_sort, decorate_double, undecorate_double
-)
-
 
 # TODO: free_node, link_node, unlink_node, stage_nodes can all be templated
 # using fused types
@@ -134,7 +123,7 @@ cdef class DoublyLinkedList(LinkedList):
         Inserts are O(n) on average.
         """
         # allow negative indexing + check bounds
-        cdef size_t norm_index = self._normalize_index(index)
+        cdef size_t norm_index = normalize_index(index, self.size)
 
         # allocate new node
         cdef DoubleNode* node = self._allocate_node(item)
@@ -256,8 +245,8 @@ cdef class DoublyLinkedList(LinkedList):
         cdef int comp
 
         # normalize start/stop indices
-        cdef size_t norm_start = self._normalize_index(start)
-        cdef size_t norm_stop = self._normalize_index(stop)
+        cdef size_t norm_start = normalize_index(start, self.size)
+        cdef size_t norm_stop = normalize_index(stop, self.size)
 
         # skip to `start`
         for index in range(norm_start):
@@ -383,10 +372,15 @@ cdef class DoublyLinkedList(LinkedList):
         O(n) otherwise.
         """
         # allow negative indexing + check bounds
-        cdef size_t norm_index = self._normalize_index(index)
+        cdef size_t norm_index = normalize_index(index, self.size)
 
         # get node at index
-        cdef DoubleNode* node = self._node_at_index(norm_index)
+        cdef DoubleNode* node = node_at_index(
+            norm_index,
+            self.head,
+            self.tail,
+            self.size
+        )
         cdef PyObject* value = node.value
 
         # we have to increment the reference counter of the popped object to
@@ -682,16 +676,25 @@ cdef class DoublyLinkedList(LinkedList):
                 return result  # Python returns an empty list in these cases
 
             # determine direction of traversal to avoid backtracking
-            index, end_index = self._get_slice_direction(start, stop, step)
+            index, end_index = get_slice_direction(
+                <size_t>start,
+                <size_t>stop,
+                <ssize_t>step,
+                self.head,
+                self.tail,
+                self.size,
+            )
             reverse = step < 0  # append to slice in reverse order
             abs_step = abs(step)
 
             # get first node in slice, counting from nearest end
-            curr = self._node_at_index(index)
+            curr = node_at_index(index, self.head, self.tail, self.size)
 
             # forward traversal
             if index <= end_index:
                 while curr is not NULL and index <= end_index:
+                    # TODO: just copy the node and link it manually.  This
+                    # avoids rehashing nodes in the case of HashNodes.
                     if reverse:
                         result._appendleft(curr.value)  # appendleft
                     else:
@@ -707,6 +710,8 @@ cdef class DoublyLinkedList(LinkedList):
             # backward traversal
             else:
                 while curr is not NULL and index >= end_index:
+                    # TODO: just copy the node and link it manually.  This
+                    # avoids rehashing nodes in the case of HashNodes.
                     if reverse:
                         result._append(curr.value)  # append
                     else:
@@ -722,8 +727,8 @@ cdef class DoublyLinkedList(LinkedList):
             return result
 
         # index directly
-        key = self._normalize_index(key)
-        curr = self._node_at_index(key)
+        index = normalize_index(key, self.size)
+        curr = node_at_index(index, self.head, self.tail, self.size)
         Py_INCREF(curr.value)
         return <object>curr.value  # this returns ownership to Python
 
@@ -794,7 +799,12 @@ cdef class DoublyLinkedList(LinkedList):
                     curr = self._allocate_node(<PyObject*>val)
                     self._link_node(self.tail, curr, NULL)
                 else:  # assignment in middle of list
-                    curr = self._node_at_index(start - 1)
+                    curr = node_at_index(
+                        <size_t>(start - 1),
+                        self.head,
+                        self.tail,
+                        self.size
+                    )
 
                 # insert all values at current index
                 for val in value_iter:
@@ -819,10 +829,17 @@ cdef class DoublyLinkedList(LinkedList):
                 )
 
             # determine direction of traversal to avoid backtracking
-            index, end_index = self._get_slice_direction(start, stop, step)
+            index, end_index = get_slice_direction(
+                <size_t>start,
+                <size_t>stop,
+                <ssize_t>step,
+                self.head,
+                self.tail,
+                self.size,
+            )
 
             # get first node in slice, counting from nearest end
-            curr = self._node_at_index(index)
+            curr = node_at_index(index, self.head, self.tail, self.size)
 
             # forward traversal
             if index <= end_index:
@@ -869,8 +886,8 @@ cdef class DoublyLinkedList(LinkedList):
             return
 
         # index directly
-        key = self._normalize_index(key)
-        curr = self._node_at_index(key)
+        index = normalize_index(key, self.size)
+        curr = node_at_index(index, self.head, self.tail, self.size)
         Py_INCREF(<PyObject*>value)
         Py_DECREF(curr.value)
         curr.value = <PyObject*>value
@@ -926,12 +943,19 @@ cdef class DoublyLinkedList(LinkedList):
                 return  # Python does nothing in this case
 
             # determine direction of traversal to avoid backtracking
-            index, end_index = self._get_slice_direction(start, stop, step)
+            index, end_index = get_slice_direction(
+                <size_t>start,
+                <size_t>stop,
+                <ssize_t>step,
+                self.head,
+                self.tail,
+                self.size,
+            )
             abs_step = abs(step)
             small_step = abs_step - 1  # we implicitly advance by one at each step
 
             # get first node in slice, counting from nearest end
-            curr = self._node_at_index(index)
+            curr = node_at_index(index, self.head, self.tail, self.size)
 
             # forward traversal
             if index <= end_index:
@@ -965,8 +989,8 @@ cdef class DoublyLinkedList(LinkedList):
 
         # index directly
         else:
-            key = self._normalize_index(key)
-            curr = self._node_at_index(key)
+            index = normalize_index(key, self.size)
+            curr = node_at_index(index, self.head, self.tail, self.size)
             self._unlink_node(curr)
             self._free_node(curr)
 
@@ -1205,119 +1229,6 @@ cdef class DoublyLinkedList(LinkedList):
 
         Py_DECREF(iterator)  # release reference on iterator
         return (staged_head, staged_tail, count)
-
-    #############################
-    ####    INDEX HELPERS    ####
-    #############################
-
-    cdef DoubleNode* _node_at_index(self, size_t index):
-        """Get the node at the specified index.
-
-        Parameters
-        ----------
-        index : size_t
-            The index of the node to retrieve.  This should always be passed
-            through :meth:`LinkedList._normalize_index` first.
-
-        Returns
-        -------
-        DoubleNode*
-            The node at the specified index.
-
-        Notes
-        -----
-        This method is O(n) on average.  As an optimization, it always iterates
-        from the nearest end of the list.
-        """
-        cdef DoubleNode* curr
-        cdef size_t i
-
-        # count forwards from head
-        if index <= self.size // 2:
-            curr = self.head
-            for i in range(index):
-                curr = curr.next
-
-        # count backwards from tail
-        else:
-            curr = self.tail
-            for i in range(self.size - index - 1):
-                curr = curr.prev
-
-        return curr
-
-    cdef (size_t, size_t) _get_slice_direction(
-        self,
-        size_t start,
-        size_t stop,
-        ssize_t step,
-    ):
-        """Determine the direction in which to traverse a slice so as to
-        minimize total iterations.
-
-        Parameters
-        ----------
-        start : size_t
-            The start index of the slice (inclusive).
-        stop : size_t
-            The stop index of the slice (inclusive).
-        step : ssize_t
-            The step size of the slice.
-
-        Returns
-        -------
-        index : size_t
-            The index at which to begin iterating (inclusive).
-        end_index : size_t
-            The index at which to stop iterating (inclusive).
-
-        Notes
-        -----
-        Slicing is optimized to always begin iterating from the end nearest to
-        a slice boundary, and to never backtrack.  This is done by checking
-        whether the slice is ascending (step > 0) or descending, and whether
-        the start or stop index is closer to its respective end.  This gives
-        the following cases:
-
-            1) slice is ascending, `start` closer to head than `stop` is to tail
-                -> iterate forwards from head to `stop`
-            2) slice is ascending, `stop` closer to tail than `start` is to head
-                -> iterate backwards from tail to `start`
-            3) slice is descending, `start` closer to tail than `stop` is to head
-                -> iterate backwards from tail to `stop`
-            4) slice is descending, `stop` closer to head than `start` is to tail
-                -> iterate forwards from head to `start`
-
-        The final direction of traversal is determined by comparing the
-        indices returned by this method.  If ``end_index >= index``, then the
-        slice should be traversed in the forward direction, starting from
-        ``index``.  Otherwise, it should be iterated over in reverse to avoid
-        backtracking, again starting from ``index``.
-        """
-        cdef size_t distance_from_head, distance_from_tail, index, end_index
-
-        # determine direction of traversal
-        if step > 0:
-            distance_from_head = start
-            distance_from_tail = self.size - stop
-            if distance_from_head <= distance_from_tail:    # 1) start from head
-                index = start
-                end_index = stop
-            else:                                           # 2) start from tail
-                index = stop
-                end_index = start
-        else:
-            distance_from_head = stop
-            distance_from_tail = self.size - start
-            if distance_from_tail <= distance_from_head:    # 3) start from tail 
-                index = start
-                end_index = stop
-            else:                                           # 4) start from head
-                index = stop
-                end_index = start
-
-        # return as C tuple
-        return (index, end_index)
 
 
 #####################

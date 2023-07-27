@@ -1,17 +1,11 @@
-"""Cython headers for pdcast/util/structs/list/mergesort.pyx"""
+"""Cython headers for pdcast/util/structs/list/sort.pyx"""
 from cpython.ref cimport PyObject
+from libc.stdlib cimport malloc, free
 
-from .base cimport SingleNode, DoubleNode, HashNode, DictNode, Pair
-
-cdef extern from "Python.h":
-    void Py_INCREF(PyObject* obj)
-    void Py_DECREF(PyObject* obj)
-    PyObject* PyErr_Occurred()
-    int Py_EQ, Py_LT
-    int PyObject_RichCompareBool(PyObject* obj1, PyObject* obj2, int opid)
-    PyObject* PyObject_CallFunctionObjArgs(PyObject* callable, ...)
-    PyObject* PyObject_GetIter(PyObject* obj)
-    PyObject* PyIter_Next(PyObject* obj)
+from .base cimport (
+    DEBUG, ListNode, SingleNode, DoubleNode, HashNode, DictNode, Pair, raise_exception,
+    Py_DECREF, Py_LT, PyObject_RichCompareBool, PyObject_CallFunctionObjArgs
+)
 
 
 #######################

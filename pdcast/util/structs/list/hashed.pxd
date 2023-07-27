@@ -1,18 +1,15 @@
 """Cython headers for pdcast/util/structs/list/hashed.pyx"""
 from cpython.ref cimport PyObject
+from libc.stdlib cimport malloc, calloc, free
 
-from .base cimport LinkedList, HashNode
-
-cdef extern from "Python.h":
-    void Py_INCREF(PyObject* obj)
-    void Py_DECREF(PyObject* obj)
-    PyObject* PyErr_Occurred()
-    int Py_EQ, Py_LT
-    Py_hash_t PyObject_Hash(PyObject* obj)
-    int PyObject_RichCompareBool(PyObject* obj1, PyObject* obj2, int opid)
-    PyObject* PyObject_CallFunctionObjArgs(PyObject* callable, ...)
-    PyObject* PyObject_GetIter(PyObject* obj)
-    PyObject* PyIter_Next(PyObject* obj)
+from .base cimport (
+    DEBUG, LinkedList, HashNode, Pair, normalize_index, get_slice_direction,
+    node_at_index, raise_exception, Py_INCREF, Py_DECREF, PyErr_Occurred, Py_EQ,
+    PyObject_Hash, PyObject_RichCompareBool, PyObject_GetIter, PyIter_Next
+)
+from .sort cimport (
+    KeyedHashNode, SortError, merge_sort, decorate_hash, undecorate_hash
+)
 
 
 #########################
@@ -67,13 +64,6 @@ cdef class HashedList(LinkedList):
     cdef void _unlink_node(self, HashNode* curr)
     cdef (HashNode*, HashNode*, size_t) _stage_nodes(
         self, PyObject* items, bint reverse, set override = *
-    )
-    cdef HashNode* _node_at_index(self, size_t index)
-    cdef (size_t, size_t) _get_slice_direction(
-        self,
-        size_t start,
-        size_t stop,
-        ssize_t step,
     )
     cdef void _remember_node(self, HashNode* node)
     cdef void _forget_node(self, HashNode* node)

@@ -1,12 +1,6 @@
-"""This module contains a templated merge sort algorithm for sorting linked
-list data structures.
+"""This module contains a templated merge sort algorithm for linked list data
+structures.
 """
-from libc.stdlib cimport malloc, free
-
-from .base cimport (
-    DEBUG, ListNode, SingleNode, DoubleNode, HashNode, DictNode, Pair, raise_exception
-)
-
 
 ######################
 ####    PUBLIC    ####
@@ -42,8 +36,8 @@ cdef Pair* merge_sort(
         A simple ``Pair`` struct that holds two items as ``void*`` pointers.
         ``Pair.first`` represents the head of the sorted list, while
         ``Pair.second`` represents the tail.  These must be typecast to the
-        expected node type before they can be used.  Don't forget to ``free()``
-        the resulting struct!
+        expected node type before they can be used.  Don't forget to free the
+        returned struct when you're done with it!
 
     Notes
     -----

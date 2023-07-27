@@ -1,6 +1,9 @@
 """This module contains pure C structs, constants, and type definitions for use
 in linked list-based data structures.
 """
+from cpython.ref cimport PyObject
+from libc.stdlib cimport malloc, free
+
 
 #########################
 ####    CONSTANTS    ####
@@ -10,6 +13,360 @@ in linked list-based data structures.
 # DEBUG = TRUE adds print statements for memory allocation/deallocation to help
 # identify memory leaks.
 cdef const bint DEBUG = True
+
+
+#########################
+####    FUNCTIONS    ####
+#########################
+
+
+cdef inline SingleNode* allocate_single_node(PyObject* value):
+    """Allocate a new node and set its value.
+
+    Parameters
+    ----------
+    value : PyObject*
+        The value to set for the node.
+
+    Returns
+    -------
+    SingleNode*
+        The newly allocated node.
+    """
+    if DEBUG:
+        print(f"    -> malloc: {<object>value}")
+
+    # allocate node
+    cdef SingleNode* node = <SingleNode*>malloc(sizeof(SingleNode))
+    if node is NULL:  # malloc() failed to allocate a new block
+        raise MemoryError()
+
+    # increment refcount of underlying Python object
+    Py_INCREF(value)
+
+    # initialize
+    node.value = value
+    node.next = NULL
+    return node
+
+
+cdef inline DoubleNode* allocate_double_node(PyObject* value):
+    """Allocate a new node and set its value.
+
+    Parameters
+    ----------
+    value : PyObject*
+        The value to set for the node.
+
+    Returns
+    -------
+    DoubleNode*
+        The newly allocated node.
+    """
+    if DEBUG:
+        print(f"    -> malloc: {<object>value}")
+
+    # allocate node
+    cdef DoubleNode* node = <DoubleNode*>malloc(sizeof(DoubleNode))
+    if node is NULL:  # malloc() failed to allocate a new block
+        raise MemoryError()
+
+    # increment refcount of underlying Python object
+    Py_INCREF(value)
+
+    # initialize
+    node.value = value
+    node.next = NULL
+    node.prev = NULL
+    return node
+
+cdef inline HashNode* allocate_hash_node(PyObject* value):
+    """Allocate a new node and set its value.
+
+    Parameters
+    ----------
+    value : PyObject*
+        The value to set for the node.
+
+    Returns
+    -------
+    HashNode*
+        The newly allocated node.
+    """
+    # C API equivalent of the hash() function
+    cdef Py_hash_t hash_val = PyObject_Hash(value)
+    if hash_val == -1:  # hash() failed
+        raise_exception()
+
+    if DEBUG:
+        print(f"    -> malloc: {<object>value}")
+
+    # allocate new node
+    cdef HashNode* node = <HashNode*>malloc(sizeof(HashNode))
+    if node is NULL:
+        raise MemoryError()
+
+    # increment refcount of underlying Python object
+    Py_INCREF(value)
+
+    # initialize node
+    node.value = value
+    node.hash = hash_val
+    node.next = NULL
+    node.prev = NULL
+    return node
+
+
+cdef inline DictNode* allocate_dict_node(PyObject* value, PyObject* mapped):
+    """Allocate a new node and set its value.
+
+    Parameters
+    ----------
+    value : PyObject*
+        The value to set for the node.
+
+    Returns
+    -------
+    DictNode*
+        The newly allocated node.
+    """
+    # C API equivalent of the hash() function
+    cdef Py_hash_t hash_val = PyObject_Hash(value)
+    if hash_val == -1:  # hash() failed
+        raise_exception()
+
+    if DEBUG:
+        print(f"    -> malloc: {<object>value}")
+
+    # allocate new node
+    cdef DictNode* node = <DictNode*>malloc(sizeof(DictNode))
+    if node is NULL:
+        raise MemoryError()
+
+    # increment refcount of underlying Python objects
+    Py_INCREF(value)
+    Py_INCREF(mapped)
+
+    # initialize node
+    node.value = value
+    node.mapped = mapped
+    node.hash = hash_val
+    node.next = NULL
+    node.prev = NULL
+    return node
+
+
+cdef inline void free_node(ListNode* node):
+    """Free a node and decrement the reference count of its value.
+
+    Parameters
+    ----------
+    node : DoubleNode*
+        The node to free.
+
+    Notes
+    -----
+    The node must be unlinked from the list before calling this method.
+    Any remaining references to it will become dangling pointers.
+    """
+    if DEBUG:
+        print(f"    -> free: {<object>node.value}")
+
+    # nullify pointers
+    node.next = NULL
+    if ListNode in HasPrev:
+        node.prev = NULL
+
+    # decrement refcount of underlying Python object(s)
+    Py_DECREF(node.value)
+    if ListNode is DictNode:
+        Py_DECREF(node.mapped)
+
+    free(node)
+
+
+cdef inline size_t normalize_index(long index, size_t size):
+    """Allow negative indexing and check if the result is within bounds.
+
+    Parameters
+    ----------
+    index : long int
+        The index to normalize.  If this is negative, it will be translated to
+        a positive index by counting backwards from the end of the list.
+    size : size_t
+        The overall size of the list.
+
+    Returns
+    -------
+    size_t
+        The normalized index.
+
+    Raises
+    ------
+    IndexError
+        If the index is out of bounds.
+    """
+    # allow negative indexing
+    if index < 0:
+        index += size
+
+    # check bounds
+    if not 0 <= index < (<long long>size):
+        raise IndexError("list index out of range")
+
+    return <size_t>index
+
+
+cdef (size_t, size_t) get_slice_direction(
+    size_t start,
+    size_t stop,
+    ssize_t step,
+    ListNode* head,
+    ListNode* tail,
+    size_t size,
+):
+    """Determine the direction in which to traverse a slice so as to minimize
+    total iterations.
+
+    Parameters
+    ----------
+    start : size_t
+        The start index of the slice (inclusive).
+    stop : size_t
+        The stop index of the slice (inclusive).
+    step : ssize_t
+        The step size of the slice.
+    head : ListNode*
+        The head of the list to slice.
+    tail : ListNode*
+        The tail of the list to slice.
+    size : size_t
+        The overall size of the list.
+
+    Returns
+    -------
+    index : size_t
+        The index at which to begin iterating (inclusive).
+    end_index : size_t
+        The index at which to stop iterating (inclusive).
+
+    Notes
+    -----
+    Slicing is optimized to always begin iterating from the end nearest to a
+    slice boundary, and to never backtrack.  This is done by checking whether
+    the slice is ascending (step > 0) or descending, and whether the start or
+    stop index is closer to its respective end.  This gives the following
+    cases:
+
+        1) slice is ascending, `start` closer to head than `stop` is to tail
+            -> iterate forwards from head to `stop`
+        2) slice is ascending, `stop` closer to tail than `start` is to head
+            -> iterate backwards from tail to `start`
+        3) slice is descending, `start` closer to tail than `stop` is to head
+            -> iterate backwards from tail to `stop`
+        4) slice is descending, `stop` closer to head than `start` is to tail
+            -> iterate forwards from head to `start`
+
+    The final direction of traversal is determined by comparing the indices
+    returned by this method.  If ``end_index >= index``, then the slice should
+    be traversed in the forward direction, starting from ``index``.  Otherwise,
+    it should be iterated over in reverse to avoid backtracking, again starting
+    from ``index``.
+    """
+    cdef size_t distance_from_head, distance_from_tail, index, end_index
+
+    if step > 0:  # slice is ascending
+        distance_from_head = start
+        distance_from_tail = size - stop
+
+        # if list is doubly-linked, check if stop is closer to tail
+        if ListNode in HasPrev and distance_from_tail < distance_from_head:
+            index = stop
+            end_index = start
+
+        # otherwise, iterate from head
+        else:
+            index = start
+            end_index = stop
+
+    else:  # slice is descending
+        distance_from_head = stop
+        distance_from_tail = size - start
+
+        # if list is doubly-linked, check if start is closer to tail
+        if ListNode in HasPrev and distance_from_tail <= distance_from_head:
+            index = start
+            end_index = stop
+
+        # otherwise, iterate from head
+        else:
+            index = stop
+            end_index = start
+
+    # return as C tuple
+    return (index, end_index)
+
+
+cdef inline ListNode* node_at_index(
+    size_t index, ListNode* head, ListNode* tail, size_t size
+):
+    """Get the node at the specified index.
+
+    Parameters
+    ----------
+    index : size_t
+        The index of the node to retrieve.  This should always be passed
+        through :func:`normalize_index` first.
+    head : ListNode*
+        The head of the list to search.
+    tail : ListNode*
+        The tail of the list to search.
+    size : size_t
+        The overall size of the list.
+
+    Returns
+    -------
+    ListNode*
+        The node at the specified index.
+
+    Notes
+    -----
+    This method is O(n) on average.  If the list is doubly-linked, it will
+    iterate from the nearest end.  Otherwise, it iterates from the head.
+    """
+    cdef ListNode* curr
+    cdef size_t i
+
+    # iterate from tail if doubly-linked and closer to end
+    if ListNode in HasPrev and index > size // 2:
+        curr = tail
+        for i in range(size - index - 1):
+            curr = curr.prev
+
+    # iterate from head
+    else:
+        curr = head
+        for i in range(index):
+            curr = curr.next
+
+    return curr
+
+
+cdef void raise_exception() except *:
+    """If the python interpreter is currently storing an exception, raise it.
+
+    Notes
+    -----
+    Interacting with the Python C API can sometimes result in errors that are
+    encoded in the function's output and checked by the `PyErr_Occurred()`
+    interpreter flag.  This function can be called whenever this occurs in
+    order to force that error to be raised as normal.
+    """
+    # Since we're using the except * Cython syntax, the error handler will be
+    # invoked every time this function is called.  This means we don't have to
+    # do anything here, just return void and let the built-in machinery do
+    # all the work
+    return
 
 
 #######################
@@ -497,37 +854,6 @@ cdef class LinkedList:
         else:
             for i in range(steps):
                 self._append(self._popleft())
-
-    cdef size_t _normalize_index(self, long index):
-        """Allow negative indexing and check if the result is within bounds.
-
-        Parameters
-        ----------
-        index : long int
-            The index to normalize.  If this is negative, it will be translated
-            to a positive index by counting backwards from the end of the list.
-
-        Returns
-        -------
-        size_t
-            The normalized index.
-
-        Raises
-        ------
-        IndexError
-            If the index is out of bounds.
-        """
-        # allow negative indexing
-        if index < 0:
-            index += self.size
-
-        cdef long size = <long>self.size
-
-        # check bounds
-        if not 0 <= index < size:
-            raise IndexError("list index out of range")
-
-        return index
 
     def __add__(self, other: Iterable[Any]) -> "LinkedList":
         """Concatenate two lists.
@@ -1170,25 +1496,3 @@ cdef class LinkedList:
             nodes (but not their values).
         """
         return self._nbytes()
-
-
-####################
-####    MISC    ####
-####################
-
-
-cdef void raise_exception() except *:
-    """If the python interpreter is currently storing an exception, raise it.
-
-    Notes
-    -----
-    Interacting with the Python C API can sometimes result in errors that are
-    encoded in the function's output and checked by the `PyErr_Occurred()`
-    interpreter flag.  This function can be called whenever this occurs in
-    order to force that error to be raised as normal.
-    """
-    # Since we're using the except * Cython syntax, the error handler will be
-    # invoked every time this function is called.  This means we don't have to
-    # do anything here, just return void and let the built-in machinery do
-    # all the work
-    return

@@ -1,8 +1,15 @@
 """Cython headers for pdcast/util/structs/list/double.pyx"""
 from cpython.ref cimport PyObject
+from libc.stdlib cimport malloc, free
 
-from .base cimport LinkedList, DoubleNode
-
+from .base cimport (
+    DEBUG, LinkedList, DoubleNode, Pair, normalize_index, get_slice_direction,
+    node_at_index, raise_exception, Py_INCREF, Py_DECREF, PyErr_Occurred, Py_EQ,
+    PyObject_RichCompareBool, PyObject_GetIter, PyIter_Next
+)
+from .sort cimport (
+    KeyedDoubleNode, SortError, merge_sort, decorate_double, undecorate_double
+)
 
 #######################
 ####    CLASSES    ####
@@ -20,11 +27,4 @@ cdef class DoublyLinkedList(LinkedList):
     cdef void _unlink_node(self, DoubleNode* curr)
     cdef (DoubleNode*, DoubleNode*, size_t) _stage_nodes(
         self, PyObject* items, bint reverse
-    )
-    cdef DoubleNode* _node_at_index(self, size_t index)
-    cdef (size_t, size_t) _get_slice_direction(
-        self,
-        size_t start,
-        size_t stop,
-        ssize_t step,
     )

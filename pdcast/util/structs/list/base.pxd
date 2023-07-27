@@ -7,6 +7,7 @@ cdef extern from "Python.h":
     PyObject* PyErr_Occurred()
     int Py_EQ, Py_LT
     int PyObject_RichCompareBool(PyObject* obj1, PyObject* obj2, int opid)
+    Py_hash_t PyObject_Hash(PyObject* obj)
     PyObject* PyObject_CallFunctionObjArgs(PyObject* callable, ...)
     PyObject* PyObject_GetIter(PyObject* obj)
     PyObject* PyIter_Next(PyObject* obj)
@@ -28,6 +29,12 @@ cdef bint DEBUG
 cdef packed struct Pair:
     void* first
     void* second
+
+
+cdef packed struct ListView:
+    void* head
+    void* tail
+    size_t size
 
 
 cdef packed struct SingleNode:
@@ -69,9 +76,34 @@ ctypedef fused HasPrev:
     DictNode
 
 
-ctypedef fused IsUnique:
+ctypedef fused Unique:
     HashNode
     DictNode
+
+
+#########################
+####    FUNCTIONS    ####
+#########################
+
+
+cdef SingleNode* allocate_single_node(PyObject* value)
+cdef DoubleNode* allocate_double_node(PyObject* value)
+cdef HashNode* allocate_hash_node(PyObject* value)
+cdef DictNode* allocate_dict_node(PyObject* value, PyObject* mapped)
+cdef void free_node(ListNode* node)
+cdef size_t normalize_index(long index, size_t size)
+cdef (size_t, size_t) get_slice_direction(
+    size_t start,
+    size_t stop,
+    ssize_t step,
+    ListNode* head,
+    ListNode* tail,
+    size_t size,
+)
+cdef ListNode* node_at_index(
+    size_t index, ListNode* head, ListNode* tail, size_t size
+)
+cdef void raise_exception() except *
 
 
 #######################
@@ -100,13 +132,3 @@ cdef class LinkedList:
     cdef size_t _nbytes(self)
     cdef LinkedList _copy(self)
     cdef void _rotate(self, ssize_t steps = *)
-    cdef size_t _normalize_index(self, long index)
-
-
-#########################
-####    FUNCTIONS    ####
-#########################
-
-
-cdef void raise_exception() except *
-
