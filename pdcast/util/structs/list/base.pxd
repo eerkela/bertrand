@@ -10,6 +10,44 @@ cdef bint DEBUG
 
 
 #######################
+####    STRUCTS    ####
+#######################
+
+
+cdef packed struct SingleNode:
+    PyObject* value
+    SingleNode* next
+
+
+cdef packed struct DoubleNode:
+    PyObject* value   # reference to underlying Python object
+    DoubleNode* next    # reference to the next node in the list
+    DoubleNode* prev    # reference to the previous node in the list
+
+
+cdef packed struct HashNode:
+    PyObject* value
+    Py_hash_t hash
+    HashNode* next
+    HashNode* prev
+
+
+cdef packed struct DictNode:
+    PyObject* value
+    PyObject* mapped
+    Py_hash_t hash
+    DictNode* next
+    DictNode* prev
+
+
+ctypedef fused ListNode:
+    SingleNode
+    DoubleNode
+    HashNode
+    DictNode
+
+
+#######################
 ####    CLASSES    ####
 #######################
 

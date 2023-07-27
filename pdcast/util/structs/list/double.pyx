@@ -464,12 +464,7 @@ cdef class DoublyLinkedList(LinkedList):
 
         Notes
         -----
-        Clearing a list is O(1).
-        
-        Due to the way Python's garbage collector works, we don't actually need
-        to iterate over the list to free it.  The gc can automatically detect
-        reference cycles and free them if the referenced objects cannot be
-        reached from anywhere else in the program.
+        Clearing a list is O(n).
         """
         cdef ListNode* node = self.head
         cdef ListNode* temp
@@ -492,8 +487,8 @@ cdef class DoublyLinkedList(LinkedList):
         ----------
         key : Callable[[Any], Any], optional
             A function that takes an item from the list and returns a value to
-            use for sorting.  If this is ``None``, then the items will be
-            compared directly.  The default is ``None``.
+            use for sorting.  If this is not given, then the items will be
+            compared directly.
         reverse : bool, optional
             Indicates whether to sort the list in descending order.  The
             default is ``False``, which sorts in ascending order.
