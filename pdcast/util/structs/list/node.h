@@ -10,15 +10,8 @@
 #include <Python.h>  // for CPython API
 
 
-/* TODO: maybe split index methods off into a separate ListSlice class
-
-All LinkedLists would be composed of ListView, ListIndexer, and ListSorter
-components.  HashedLists and DictLists would also have a ListTable component.
-
-This way, HashIndexer could be a subclass of ListIndexer, and we could inject
-a ListTable in its constructor for the uniqueness checks.  SingleIndexer would
-override the get_slice() and node_at_index() methods to always iterate from the
-head.
+/* TODO: set_slice() should be overridden by HashView and DictView to take an
+additional argument for the ListTable.
 */
 
 
@@ -47,7 +40,10 @@ struct SingleNode {
     SingleNode* next;
 
     /*static freelist constructor.*/
-    inline static SingleNode* allocate(std::queue<SingleNode*>& freelist, PyObject* value) {
+    inline static SingleNode* allocate(
+        std::queue<SingleNode*>& freelist,
+        PyObject* value
+    ) {
         SingleNode* node;
 
         // pop from free list if possible, else allocate a new node
@@ -69,7 +65,10 @@ struct SingleNode {
     }
 
     /*static freelist destructor.*/
-    inline static void deallocate(std::queue<SingleNode*>& freelist, SingleNode* node) {
+    inline static void deallocate(
+        std::queue<SingleNode*>& freelist,
+        SingleNode* node
+    ) {
         Py_DECREF(node->value);
         if (freelist.size() <= FREELIST_SIZE) {
             freelist.push(node);
@@ -78,8 +77,20 @@ struct SingleNode {
         }
     }
 
+    /*copy constructor.*/
+    inline static SingleNode* copy(
+        std::queue<SingleNode*>& freelist,
+        SingleNode* node
+    ) {
+        return allocate(freelist, node->value);
+    }
+
     /*Link the node to its neighbors to form a singly-linked list.*/
-    inline static void link(SingleNode* prev, SingleNode* curr, SingleNode* next) {
+    inline static void link(
+        SingleNode* prev,
+        SingleNode* curr,
+        SingleNode* next
+    ) {
         if (prev != NULL) {
             prev->next = curr;
         }
@@ -87,7 +98,11 @@ struct SingleNode {
     }
 
     /*Unlink the node from its neighbors.*/
-    inline static void unlink(SingleNode* prev, SingleNode* curr, SingleNode* next) {
+    inline static void unlink(
+        SingleNode* prev,
+        SingleNode* curr,
+        SingleNode* next
+    ) {
         if (prev != NULL) {
             prev->next = next;
         }
@@ -103,7 +118,10 @@ struct DoubleNode {
     DoubleNode* prev;
 
     /*static freelist constructor.*/
-    inline static DoubleNode* allocate(std::queue<DoubleNode*>& freelist, PyObject* value) {
+    inline static DoubleNode* allocate(
+        std::queue<DoubleNode*>& freelist,
+        PyObject* value
+    ) {
         DoubleNode* node;
         
         // pop from free list if possible, else allocate a new node
@@ -126,7 +144,10 @@ struct DoubleNode {
     }
 
     /*static freelist destructor.*/
-    inline static void deallocate(std::queue<DoubleNode*>& freelist, DoubleNode* node) {
+    inline static void deallocate(
+        std::queue<DoubleNode*>& freelist,
+        DoubleNode* node
+    ) {
         Py_DECREF(node->value);
         if (freelist.size() <= FREELIST_SIZE) {
             freelist.push(node);
@@ -135,8 +156,20 @@ struct DoubleNode {
         }
     }
 
+    /*copy constructor.*/
+    inline static DoubleNode* copy(
+        std::queue<DoubleNode*>& freelist,
+        DoubleNode* node
+    ) {
+        return allocate(freelist, node->value);
+    }
+
     /*Link the node to its neighbors to form a doubly-linked list.*/
-    inline static void link(DoubleNode* prev, DoubleNode* curr, DoubleNode* next) {
+    inline static void link(
+        DoubleNode* prev,
+        DoubleNode* curr,
+        DoubleNode* next
+    ) {
         if (prev != NULL) {
             prev->next = curr;
         }
@@ -148,7 +181,11 @@ struct DoubleNode {
     }
 
     /*Unlink the node from its neighbors.*/
-    inline static void unlink(DoubleNode* prev, DoubleNode* curr, DoubleNode* next) {
+    inline static void unlink(
+        DoubleNode* prev,
+        DoubleNode* curr,
+        DoubleNode* next
+    ) {
         if (prev != NULL) {
             prev->next = next;
         }
@@ -166,7 +203,10 @@ struct HashNode {
     HashNode* prev;
 
     /*static freelist constructor.*/
-    inline static HashNode* allocate(std::queue<HashNode*>& freelist, PyObject* value) {        
+    inline static HashNode* allocate(
+        std::queue<HashNode*>& freelist,
+        PyObject* value
+    ) {        
         HashNode* node;
 
         // C API equivalent of the hash() function
@@ -196,7 +236,10 @@ struct HashNode {
     }
 
     /*static freelist destructor.*/
-    inline static void deallocate(std::queue<HashNode*>& freelist, HashNode* node) {
+    inline static void deallocate(
+        std::queue<HashNode*>& freelist,
+        HashNode* node
+    ) {
         Py_DECREF(node->value);
         if (freelist.size() <= FREELIST_SIZE) {
             freelist.push(node);
@@ -205,8 +248,40 @@ struct HashNode {
         }
     }
 
+    /*copy constructor.*/
+    inline static HashNode* copy(
+        std::queue<HashNode*>& freelist,
+        HashNode* node
+    ) {
+        // reuse the old node's hash value
+        HashNode* new_node;
+
+        // pop from free list if possible, else allocate a new node
+        if (freelist.empty()) {
+            new_node = (HashNode*)malloc(sizeof(HashNode));
+            if (new_node == NULL) {
+                throw std::bad_alloc();
+            }
+        } else {
+            new_node = freelist.front();
+            freelist.pop();
+        }
+
+        // initialize node
+        Py_INCREF(node->value);
+        new_node->value = node->value;
+        new_node->hash = node->hash;
+        new_node->next = NULL;
+        new_node->prev = NULL;
+        return new_node;
+    }
+
     /*Link the node to its neighbors to form a doubly-linked list.*/
-    inline static void link(HashNode* prev, HashNode* curr, HashNode* next) {
+    inline static void link(
+        HashNode* prev,
+        HashNode* curr,
+        HashNode* next
+    ) {
         if (prev != NULL) {
             prev->next = curr;
         }
@@ -218,7 +293,11 @@ struct HashNode {
     }
 
     /*Unlink the node from its neighbors.*/
-    inline static void unlink(HashNode* prev, HashNode* curr, HashNode* next) {
+    inline static void unlink(
+        HashNode* prev,
+        HashNode* curr,
+        HashNode* next
+    ) {
         if (prev != NULL) {
             prev->next = next;
         }
@@ -272,7 +351,10 @@ struct DictNode {
     }
 
     /*static freelist destructor.*/
-    inline static void deallocate(std::queue<DictNode*>& freelist, DictNode* node) {
+    inline static void deallocate(
+        std::queue<DictNode*>& freelist,
+        DictNode* node
+    ) {
         Py_DECREF(node->value);
         if (freelist.size() <= FREELIST_SIZE) {
             freelist.push(node);
@@ -281,8 +363,41 @@ struct DictNode {
         }
     }
 
+    /*copy constructor.*/
+    inline static DictNode* copy(
+        std::queue<DictNode*>& freelist,
+        DictNode* node
+    ) {
+        // reuse the old node's hash and mapped value
+        DictNode* new_node;
+
+        // pop from free list if possible, else allocate a new node
+        if (freelist.empty()) {
+            new_node = (DictNode*)malloc(sizeof(DictNode));
+            if (new_node == NULL) {
+                throw std::bad_alloc();
+            }
+        } else {
+            new_node = freelist.front();
+            freelist.pop();
+        }
+
+        // initialize node
+        Py_INCREF(node->value);
+        new_node->value = node->value;
+        new_node->hash = node->hash;
+        new_node->mapped = node->mapped;
+        new_node->next = NULL;
+        new_node->prev = NULL;
+        return new_node;
+    }
+
     /*Link the node to its neighbors to form a doubly-linked list.*/
-    inline static void link(DictNode* prev, DictNode* curr, DictNode* next) {
+    inline static void link(
+        DictNode* prev,
+        DictNode* curr,
+        DictNode* next
+    ) {
         if (prev != NULL) {
             prev->next = curr;
         }
@@ -294,7 +409,11 @@ struct DictNode {
     }
 
     /*Unlink the node from its neighbors.*/
-    inline static void unlink(DictNode* prev, DictNode* curr, DictNode* next) {
+    inline static void unlink(
+        DictNode* prev,
+        DictNode* curr,
+        DictNode* next
+    ) {
         if (prev != NULL) {
             prev->next = next;
         }
@@ -354,7 +473,7 @@ public:
     }
 
     /*Allocate a new node for the list.*/
-    T* allocate(PyObject* value) {
+    inline T* allocate(PyObject* value) {
         PyObject* python_repr;
         const char* c_repr;
 
@@ -371,7 +490,7 @@ public:
     }
 
     /*Deallocate a node from the list.*/
-    void deallocate(T* node) {
+    inline void deallocate(T* node) {
         PyObject* python_repr;
         const char* c_repr;
 
@@ -451,7 +570,7 @@ public:
     }
 
     /*Clear the list.*/
-    void clear() {
+    inline void clear() {
         T* curr = head;
         T* next;
         while (curr != NULL) {
@@ -465,12 +584,12 @@ public:
     }
 
     /*Return the size of the freelist.*/
-    unsigned char freelist_size() {
+    inline unsigned char freelist_size() {
         return freelist.size();
     }
 
     /*Link a node to its neighbors to form a linked list.*/
-    void link(T* prev, T* curr, T* next) {
+    inline void link(T* prev, T* curr, T* next) {
         T::link(prev, curr, next);
         if (prev == NULL) {
             head = curr;
@@ -482,7 +601,7 @@ public:
     }
 
     /*Unlink a node from its neighbors.*/
-    void unlink(T* prev, T* curr, T* next) {
+    inline void unlink(T* prev, T* curr, T* next) {
         T::unlink(prev, curr, next);
         if (prev == NULL) {
             head = next;
@@ -570,13 +689,180 @@ public:
 
     /*Extract a slice from a linked list.*/
     ListView<T> get_slice(size_t start, size_t stop, ssize_t step) {
-        return NULL;
+        ListView<T>* slice = new ListView<T>();
+        std::pair<size_t, size_t> index;
+
+        // determine direction of traversal to avoid backtracking
+        index = get_slice_direction(start, stop, step);
+        bool descending = (step < 0);
+        size_t abs_step = (size_t)abs(step);
+
+        // get first node in slice
+        T* curr = node_at_index(index.first);
+        T* copy;
+
+        // copy all nodes in slice
+        if (index.first <= index.second) {  // forward traversal
+            while (curr != NULL && index.first <= index.second) {
+                // TODO: catch bad_alloc
+                copy = T::copy(slice->freelist, curr);
+                if (descending) {
+                    slice->link(NULL, copy, slice->head);
+                } else {
+                    slice->link(slice->tail, copy, NULL);
+                }
+
+                // jump according to step size
+                index.first += abs_step;
+                for (size_t i = 0; i < abs_step; i++) {
+                    curr = curr->next;
+                    if (curr == NULL) {
+                        break;
+                    }
+                }
+            }
+        } else {  // backward traversal
+            while (curr != NULL && index.first >= index.second) {
+                // TODO: catch bad_alloc
+                copy = T::copy(slice->freelist, curr);
+                if (descending) {
+                    slice->link(slice->tail, copy, NULL);
+                } else {
+                    slice->link(NULL, copy, slice->head);
+                }
+
+                // jump according to step size
+                index.first -= abs_step;
+                for (size_t i = 0; i < abs_step; i++) {
+                    curr = curr->prev;
+                    if (curr == NULL) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        return slice;
     }
 
     /*Set a slice within a linked list.*/
+    int set_slice(size_t start, size_t stop, ssize_t step, PyObject* iterator) {
+        size_t abs_step = (size_t)abs(step);
+        std::pair<size_t, size_t> index;
 
+        // determine direction of traversal to avoid backtracking
+        index = get_slice_direction(start, stop, step);
+
+        // get first node in slice
+        T* curr = node_at_index(index.first);
+
+        // NOTE: we assume that the iterator is properly reversed if we are
+        // traversing the slice opposite to `step`
+
+        // assign to slice
+        if (index.first <= index.second) {
+            while (curr != NULL and index.first <= index.second) {
+                // C API equivalent of next(iterator)
+                PyObject* item = PyIter_Next(iterator);
+                if (item == NULL) { // end of iterator or error
+                    if (PyErr_Occurred()) {
+                        Py_DECREF(item);
+                        return -1;  // raise exception
+                    }
+                    break;
+                }
+
+                // assign to node (INCREF is handled by PyIter_Next())
+                Py_DECREF(curr->value);
+                curr->value = item;
+
+                // jump according to step size
+                index.first += abs_step;
+                for (size_t i = 0; i < abs_step; i++) {
+                    curr = curr->next;
+                    if (curr == NULL) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            while (curr != NULL and index.first >= index.second) {
+                // C API equivalent of next(iterator)
+                PyObject* item = PyIter_Next(iterator);
+                if (item == NULL) { // end of iterator or error
+                    if (PyErr_Occurred()) {
+                        Py_DECREF(item);
+                        return -1;  // raise exception
+                    }
+                    break;
+                }
+
+                // assign to node (INCREF is handled by PyIter_Next())
+                Py_DECREF(curr->value);
+                curr->value = item;
+
+                // jump according to step size
+                index.first -= abs_step;
+                for (size_t i = 0; i < abs_step; i++) {
+                    curr = curr->prev;
+                    if (curr == NULL) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        return 0;  // return 0 on success
+    }
 
     /*Delete a slice within a linked list.*/
+    void delete_slice(size_t start, size_t stop, ssize_t step) {
+        std::pair<size_t, size_t> index;
+
+        // determine direction of traversal to avoid backtracking
+        index = get_slice_direction(start, stop, step);
+        size_t abs_step = (size_t)abs(step);
+        size_t small_step = abs_step - 1;  // we jump by 1 whenever we delete a node
+
+        // get first node in slice
+        T* curr = node_at_index(index.first);
+        T* temp;
+
+        // delete all nodes in slice
+        if (index.first <= index.second) {  // forward traversal
+            while (curr != NULL && index.first <= index.second) {
+                temp = curr->next;
+                unlink(curr->prev, curr, curr->next);
+                deallocate(curr);
+                curr = temp;
+
+                // jump according to step size
+                index.first += abs_step;
+                for (size_t i = 0; i < small_step; i++) {
+                    curr = curr->next;
+                    if (curr == NULL) {
+                        break;
+                    }
+                }
+            }
+        } else {  // backward traversal
+            while (curr != NULL && index.first >= index.second) {
+                temp = curr->prev;
+                unlink(curr->prev, curr, curr->next);
+                deallocate(curr);
+                curr = temp;
+
+                // jump according to step size
+                index.first -= abs_step;
+                for (size_t i = 0; i < small_step; i++) {
+                    curr = curr->prev;
+                    if (curr == NULL) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
 };
 

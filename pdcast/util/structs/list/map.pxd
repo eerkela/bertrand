@@ -2,6 +2,7 @@
 from cpython.ref cimport PyObject
 from libcpp.stack cimport stack
 from libcpp.unordered_set cimport unordered_set
+from libcpp.utility cimport pair
 
 
 cdef extern from "node.h":
@@ -41,6 +42,20 @@ cdef extern from "node.h":
         void link(T* prev, T* curr, T* next)
         void unlink(T* prev, T* curr, T* next)
         size_t normalize_index(long long index)
+        pair[size_t, size_t] get_slice_direction(
+            size_t start,
+            size_t stop,
+            ssize_t step
+        )
+        T* node_at_index(size_t index)
+        ListView[T]* get_slice(size_t start, size_t stop, ssize_t step) except +
+        int set_slice(
+            size_t start,
+            size_t stop,
+            ssize_t step,
+            PyObject* iterator
+        ) except -1
+        void delete_slice(size_t start, size_t stop, ssize_t step)
 
     cdef cppclass HashView[T]:
         T* head
@@ -59,6 +74,20 @@ cdef extern from "node.h":
         void link(T* prev, T* curr, T* next)
         void unlink(T* prev, T* curr, T* next)
         size_t normalize_index(long long index)
+        pair[size_t, size_t] get_slice_direction(
+            size_t start,
+            size_t stop,
+            ssize_t step
+        )
+        T* node_at_index(size_t index)
+        ListView[T]* get_slice(size_t start, size_t stop, ssize_t step) except +
+        int set_slice(
+            size_t start,
+            size_t stop,
+            ssize_t step,
+            PyObject* iterator
+        ) except -1
+        void delete_slice(size_t start, size_t stop, ssize_t step)
 
     cdef cppclass DictView[T]:
         T* head
@@ -77,3 +106,17 @@ cdef extern from "node.h":
         void link(T* prev, T* curr, T* next)
         void unlink(T* prev, T* curr, T* next)
         size_t normalize_index(long long index)
+        pair[size_t, size_t] get_slice_direction(
+            size_t start,
+            size_t stop,
+            ssize_t step
+        )
+        T* node_at_index(size_t index)
+        ListView[T]* get_slice(size_t start, size_t stop, ssize_t step) except +
+        int set_slice(
+            size_t start,
+            size_t stop,
+            ssize_t step,
+            PyObject* iterator
+        ) except -1
+        void delete_slice(size_t start, size_t stop, ssize_t step)
