@@ -13,6 +13,7 @@ __pycache__/
 *.c
 *.cpp
 *.so
+# !pdcast/util/structs/list/node.cpp
 
 # Distribution / packaging
 .Python
