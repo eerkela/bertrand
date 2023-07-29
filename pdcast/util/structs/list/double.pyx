@@ -76,7 +76,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Appends are O(1) for both ends of the list.
         """
-        cdef DoubleNode* node = self._allocate_node(item)
+        cdef DoubleNode* node = allocate_double_node(item)
 
         # append to end of list
         self._link_node(self.tail, node, NULL)
@@ -96,7 +96,7 @@ cdef class DoublyLinkedList(LinkedList):
         This method is consistent with the standard library's
         :class:`collections.deque <python:collections.deque>` class.
         """
-        cdef DoubleNode* node = self._allocate_node(item)
+        cdef DoubleNode* node = allocate_double_node(item)
 
         # append to beginning of list
         self._link_node(NULL, node, self.head)
@@ -126,7 +126,7 @@ cdef class DoublyLinkedList(LinkedList):
         cdef size_t norm_index = normalize_index(index, self.size)
 
         # allocate new node
-        cdef DoubleNode* node = self._allocate_node(item)
+        cdef DoubleNode* node = allocate_double_node(item)
         cdef DoubleNode* curr
         cdef size_t i
 
@@ -338,7 +338,7 @@ cdef class DoublyLinkedList(LinkedList):
             # remove if equal
             if comp == 1:
                 self._unlink_node(node)
-                self._free_node(node)
+                free_node(node)
                 return
 
             # advance to next node
@@ -389,7 +389,7 @@ cdef class DoublyLinkedList(LinkedList):
 
         # drop node and return contents
         self._unlink_node(node)
-        self._free_node(node)
+        free_node(node)
         return value
 
     cdef PyObject* _popleft(self):
@@ -424,7 +424,7 @@ cdef class DoublyLinkedList(LinkedList):
 
         # drop node and return contents
         self._unlink_node(node)
-        self._free_node(node)
+        free_node(node)
         return value
 
     cdef PyObject* _popright(self):
@@ -459,7 +459,7 @@ cdef class DoublyLinkedList(LinkedList):
 
         # drop node and return contents
         self._unlink_node(node)
-        self._free_node(node)
+        free_node(node)
         return value
 
     cdef void _clear(self):
@@ -476,7 +476,7 @@ cdef class DoublyLinkedList(LinkedList):
         while node is not NULL:
             temp = node
             node = node.next
-            self._free_node(temp)
+            free_node(temp)
 
         # avoid dangling pointers
         self.head = NULL
@@ -792,11 +792,11 @@ cdef class DoublyLinkedList(LinkedList):
                 # handle edge cases
                 if start == 0:  # assignment at beginning of list
                     val = next(value_iter)
-                    curr = self._allocate_node(<PyObject*>val)
+                    curr = allocate_double_node(<PyObject*>val)
                     self._link_node(NULL, curr, self.head)
                 elif start == self.size:  # assignment at end of list
                     val = next(value_iter)
-                    curr = self._allocate_node(<PyObject*>val)
+                    curr = allocate_double_node(<PyObject*>val)
                     self._link_node(self.tail, curr, NULL)
                 else:  # assignment in middle of list
                     curr = node_at_index(
@@ -808,7 +808,7 @@ cdef class DoublyLinkedList(LinkedList):
 
                 # insert all values at current index
                 for val in value_iter:
-                    node = self._allocate_node(<PyObject*>val)
+                    node = allocate_double_node(<PyObject*>val)
                     self._link_node(curr, node, curr.next)
                     curr = node
 
@@ -850,9 +850,9 @@ cdef class DoublyLinkedList(LinkedList):
                     Py_INCREF(<PyObject*>val)
                     Py_DECREF(curr.value)
                     curr.value = <PyObject*>val
-                    # node = self._allocate_node(<PyObject*>val)
+                    # node = allocate_double_node(<PyObject*>val)
                     # self._link_node(curr.prev, node, curr.next)
-                    # self._free_node(curr)
+                    # free_node(curr)
                     # curr = node
 
                     # jump according to step size
@@ -871,9 +871,9 @@ cdef class DoublyLinkedList(LinkedList):
                     Py_INCREF(<PyObject*>val)
                     Py_DECREF(curr.value)
                     curr.value = <PyObject*>val
-                    # node = self._allocate_node(<PyObject*>val)
+                    # node = allocate_double_node(<PyObject*>val)
                     # self._link_node(curr.prev, node, curr.next)
-                    # self._free_node(curr)
+                    # free_node(curr)
                     # curr = node
 
                     # jump according to step size
@@ -891,9 +891,9 @@ cdef class DoublyLinkedList(LinkedList):
         Py_INCREF(<PyObject*>value)
         Py_DECREF(curr.value)
         curr.value = <PyObject*>value
-        # node = self._allocate_node(<PyObject*>value)
+        # node = allocate_double_node(<PyObject*>value)
         # self._link_node(curr.prev, node, curr.next)
-        # self._free_node(curr)
+        # free_node(curr)
 
     def __delitem__(self, key: int | slice) -> None:
         """Delete an item or slice from the list.
@@ -963,7 +963,7 @@ cdef class DoublyLinkedList(LinkedList):
                     temp = curr
                     curr = curr.next
                     self._unlink_node(temp)
-                    self._free_node(temp)
+                    free_node(temp)
 
                     # jump according to step size
                     index += abs_step  # tracks with end_index to maintain condition
@@ -978,7 +978,7 @@ cdef class DoublyLinkedList(LinkedList):
                     temp = curr
                     curr = curr.prev
                     self._unlink_node(temp)
-                    self._free_node(temp)
+                    free_node(temp)
 
                     # jump according to step size
                     index -= abs_step  # tracks with end_index to maintain condition
@@ -992,7 +992,7 @@ cdef class DoublyLinkedList(LinkedList):
             index = normalize_index(key, self.size)
             curr = node_at_index(index, self.head, self.tail, self.size)
             self._unlink_node(curr)
-            self._free_node(curr)
+            free_node(curr)
 
     def __contains__(self, item: Any) -> bool:
         """Check if the item is contained in the list.
@@ -1033,65 +1033,6 @@ cdef class DoublyLinkedList(LinkedList):
     #######################
     ####    PRIVATE    ####
     #######################
-
-    cdef DoubleNode* _allocate_node(self, PyObject* value):
-        """Allocate a new node and set its value.
-
-        Parameters
-        ----------
-        value : PyObject*
-            The value to set for the node.
-
-        Returns
-        -------
-        DoubleNode*
-            The newly allocated node.
-
-        Notes
-        -----
-        This method handles the memory allocation and reference counting for
-        each node, which can be tricky.  It should always be followed up with a
-        call to :meth:`_link_node()` to add the node to the list.
-        """
-        if DEBUG:
-            print(f"    -> malloc: {<object>value}")
-
-        # allocate node
-        cdef DoubleNode* node = <DoubleNode*>malloc(sizeof(DoubleNode))
-        if node is NULL:  # malloc() failed to allocate a new block
-            raise MemoryError()
-
-        # increment reference count of underlying Python object
-        Py_INCREF(value)
-
-        # initialize
-        node.value = value
-        node.next = NULL
-        node.prev = NULL
-        return node
-
-    cdef void _free_node(self, DoubleNode* node):
-        """Free a node and decrement the reference count of its value.
-
-        Parameters
-        ----------
-        node : DoubleNode*
-            The node to free.
-
-        Notes
-        -----
-        The node must be unlinked from the list before calling this method.
-        Any remaining references to it will become dangling pointers.
-        """
-        if DEBUG:
-            print(f"    -> free: {<object>node.value}")
-
-        # nullify pointers
-        node.next = NULL
-        node.prev = NULL
-
-        Py_DECREF(node.value)  # decrement refcount of underlying Python object
-        free(node)  # free node
 
     cdef void _link_node(self, DoubleNode* prev, DoubleNode* curr, DoubleNode* next):
         """Add a node to the list.
@@ -1206,7 +1147,7 @@ cdef class DoublyLinkedList(LinkedList):
                 break
 
             # allocate new node
-            node = self._allocate_node(item)
+            node = allocate_double_node(item)
 
             # link to staged list
             if reverse:  # insert at front

@@ -3,39 +3,26 @@ from cpython.ref cimport PyObject
 from libc.stdlib cimport malloc, calloc, free
 
 from .base cimport (
-    DEBUG, LinkedList, HashNode, Pair, normalize_index, get_slice_direction,
-    node_at_index, raise_exception, Py_INCREF, Py_DECREF, PyErr_Occurred, Py_EQ,
-    PyObject_Hash, PyObject_RichCompareBool, PyObject_GetIter, PyIter_Next
+    DEBUG, LinkedList, HashNode, Pair, allocate_hash_node, free_node, normalize_index,
+    get_slice_direction, node_at_index, raise_exception, Py_INCREF, Py_DECREF,
+    PyErr_Occurred, Py_EQ, PyObject_Hash, PyObject_RichCompareBool, PyObject_GetIter,
+    PyIter_Next
 )
 from .sort cimport (
     KeyedHashNode, SortError, merge_sort, decorate_hash, undecorate_hash
 )
 
-
-#########################
-####    CONSTANTS    ####
-#########################
-
-
-cdef size_t INITIAL_TABLE_SIZE
-cdef float MAX_LOAD_FACTOR
-cdef float MAX_TOMBSTONES
-cdef size_t[29] PRIMES
-
-
-#######################
-####    STRUCTS    ####
-#######################
-
-
-cdef struct ListTable:
-    HashNode** map        # array of HashNode references
-    HashNode* tombstone   # sentinel for a value that was removed from the table
-    size_t tombstones     # counts the number of tombstones in table
-    size_t size           # total number of slots in table
-    size_t occupied       # counts number of occupied slots in table (incl.tombstones)
-    size_t exponent       # log2(size) - log2(INITIAL_TABLE_SIZE)
-    size_t prime          # prime number used for double hashing
+cdef extern from "table.h":
+    cdef cppclass ListTable[T]:
+        ListTable() except +
+        int remember(T* node) except -1
+        int forget(T* node) except -1
+        void clear() except +
+        T* search(PyObject* value) except? NULL
+        T* search_node(T* node) except? NULL
+        void resize(unsigned char new_exponent) except +
+        void clear_tombstones() except +
+        size_t nbytes()
 
 
 #######################
@@ -45,7 +32,7 @@ cdef struct ListTable:
 
 cdef class HashedList(LinkedList):
     cdef:
-        ListTable* table
+        ListTable[HashNode]* table
         HashNode* head
         HashNode* tail
 
@@ -58,16 +45,8 @@ cdef class HashedList(LinkedList):
     cdef void _moveafter(self, PyObject* sentinel, PyObject* item)
     cdef void _movebefore(self, PyObject* sentinel, PyObject* item)
     cdef void _move(self, PyObject* item, long index)
-    cdef HashNode* _allocate_node(self, PyObject* value)
-    cdef void _free_node(self, HashNode* node)
     cdef void _link_node(self, HashNode* prev, HashNode* curr, HashNode* next)
     cdef void _unlink_node(self, HashNode* curr)
     cdef (HashNode*, HashNode*, size_t) _stage_nodes(
         self, PyObject* items, bint reverse, set override = *
     )
-    cdef void _remember_node(self, HashNode* node)
-    cdef void _forget_node(self, HashNode* node)
-    cdef HashNode* _search(self, PyObject* key)
-    cdef HashNode* _search_node(self, HashNode* node)
-    cdef void _resize_table(self)
-    cdef void _clear_tombstones(self)
