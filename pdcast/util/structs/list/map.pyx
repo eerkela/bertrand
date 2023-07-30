@@ -1,11 +1,11 @@
 
 
 
-l = [1, 2, 3]
-cdef ListView[DoubleNode]* parent = new ListView[DoubleNode]()
-cdef ListView[DoubleNode]* child = parent.stage(<PyObject*>l)
+cdef ListView[DoubleNode]* view = new ListView[DoubleNode]()
 
-print(child.normalize_index(-1))
 
-del child
-del parent
+for val in [1, 2, 3, 4, 5]:
+    view.link(view.tail, view.allocate(<PyObject*> val), NULL)
+
+
+del view

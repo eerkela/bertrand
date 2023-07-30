@@ -12,10 +12,6 @@ from .sort cimport (
     KeyedDoubleNode, SortError, merge_sort, decorate_double, undecorate_double
 )
 
-#######################
-####    CLASSES    ####
-#######################
-
 
 cdef class DoublyLinkedList(LinkedList):
     cdef:

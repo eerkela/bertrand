@@ -3,21 +3,6 @@
 from typing import Any, Iterable, Iterator
 
 
-# TODO: free_node, link_node, unlink_node, stage_nodes can all be templated
-# using fused types
-
-
-# TODO: index helpers should be templated using fused types.
-# -> index.pyx
-
-# extract_slice(head, tail, slice)
-# set_slice(head, tail, slice, value)
-# delete_slice(head, tail, slice)
-# get_slice_direction(start, stop, step)
-# normalize_index(index, size)
-# node_at_index(index, head, tail, size)
-
-
 #######################
 ####    CLASSES    ####
 #######################
