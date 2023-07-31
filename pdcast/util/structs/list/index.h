@@ -8,6 +8,16 @@
 #include <unordered_set>
 
 
+
+// TODO: rename this file to ops.h.  It implements a bunch of mixin classes
+// that are used to implement the various public methods of the list.
+
+// IntegerIndex/MapIndex are two mixins that control the behavior of __getitem__()
+// __setitem__() and __delitem__().
+
+
+
+
 // TODO: all of these go in a separate object that receives a ListView in
 // its constructor.  This handles all the indexing operations for the
 // eventual LinkedList.  These are used to implement the __getitem__,
@@ -108,6 +118,209 @@ public:
         this->view = view;
     }
 
+
+    // TupleOps<T> takes in a ListView<T> in its constructor.  This
+
+
+    // TODO: all of these should be implemented in the Cython wrappers
+    // directly.  The ListView is just a stripped down core of the list, whose
+    // public interface is completely defined by Cython.  This way, the
+    // ListViews can be interchangeable, and the Cython wrappers can specialize
+    // them as needed.
+
+    // You could, for instance, create a SingleView around a list of
+    // DoubleNodes
+
+
+    // /*Append an item to the end of the list.*/
+    // inline void append(PyObject* item) {
+    //     link(tail, allocate(item), NULL);
+    // }
+
+    // /*Append an item to the beginning of the list.*/
+    // inline void appendleft(PyObject* item) {
+    //     link(NULL, allocate(item), head);
+    // }
+
+    // /*Extend the list with a sequence of items.*/
+    // void extend(PyObject* iterable) {
+    //     ListView<T>* staged = stage(iterable);
+    //     if (staged == NULL) {
+    //         return;  // raise exception
+    //     }
+
+    //     // trivial case: empty iterable
+    //     if (staged->head == NULL) {
+    //         return;
+    //     }
+
+    //     // link the staged nodes to the list
+    //     T::link(tail, staged->head, staged->head->next);
+    //     if (head == NULL) {
+    //         head = staged->head;
+    //     }
+    //     tail = staged->tail;
+    //     size += staged->size;
+    // }
+
+    // /*Extend the list to the left.*/
+    // void extendleft(PyObject* iterable) {
+    //     ListView<T>* staged = stage(iterable, true);  // reverse order
+    //     if (staged == NULL) {
+    //         return;  // raise exception
+    //     }
+
+    //     // trivial case: empty iterable
+    //     if (staged->head == NULL) {
+    //         return;
+    //     }
+
+    //     // link the staged nodes to the list
+    //     if (head == NULL) {
+    //         T::link(staged->tail, head, NULL);
+    //     } else {
+    //         T::link(staged->tail, head, head->next);
+    //     }
+    //     head = staged->head;
+    //     if (tail == NULL) {
+    //         tail = staged->tail;
+    //     }
+    //     size += staged->size;
+    // }
+
+    // // TODO: check if index bounds are correct.  Do they include the last item
+    // // in the list?
+
+    // /*Get the index of an item within the list.*/
+    // size_t index(PyObject* item, long long start = 0, long long stop = -1) {
+    //     T* curr = head;
+    //     size_t i = 0;
+    //     size_t norm_start = normalize_index(start);
+    //     size_t norm_stop = normalize_index(stop);
+
+    //     // skip to start index
+    //     for (i; i < norm_start; i++) {
+    //         if (curr == NULL) {
+    //             throw std::out_of_range("list index out of range");
+    //         }
+    //         curr = curr->next;
+    //     }
+
+    //     int comp;
+
+    //     // search until we hit stop index
+    //     while (curr != NULL && i < norm_stop) {
+    //         // C API equivalent of the == operator
+    //         comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
+    //         if (comp == -1) {  // comparison raised an exception
+    //             return MAX_SIZE_T;
+    //         } else if (comp == 1) {  // found a match
+    //             return index;
+    //         }
+    
+    //         // advance to next node
+    //         curr = curr->next;
+    //         i++;
+    //     }
+
+    //     // item not found
+    //     PyObject* python_repr = PyObject_Repr(item);
+    //     const char* c_repr = PyUnicode_AsUTF8(python_repr);
+    //     Py_DECREF(python_repr);
+    //     PyErr_Format(PyExc_ValueError, "%s is not in list", c_repr);
+    //     return MAX_SIZE_T;
+    // }
+
+    // /*Count the number of occurrences of an item within the list.*/
+    // size_t count(PyObject* item, long long start = 0, long long stop = -1) {
+    //     T* curr = head;
+    //     size_t i = 0;
+    //     size_t observed = 0;
+    //     size_t norm_start = normalize_index(start);
+    //     size_t norm_stop = normalize_index(stop);
+
+    //     // skip to start index
+    //     for (i; i < norm_start; i++) {
+    //         if (curr == NULL) {
+    //             return observed;
+    //         }
+    //         curr = curr->next;
+    //     }
+
+    //     int comp;
+
+    //     // search until we hit stop index
+    //     while (curr != NULL && i < norm_stop) {
+    //         // C API equivalent of the == operator
+    //         comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
+    //         if (comp == -1) {  // comparison raised an exception
+    //             return MAX_SIZE_T;
+    //         } else if (comp == 1) {  // found a match
+    //             count++;
+    //         }
+    
+    //         // advance to next node
+    //         curr = curr->next;
+    //         i++;
+    //     }
+
+    //     return observed;
+    // }
+
+    // /*Remove an item from the list.*/
+    // int remove(PyObject* item) {
+    //     T* curr = head;
+    //     T* prev = NULL;  // shadows curr
+    //     int comp;
+
+    //     // remove first occurrence of item
+    //     while (curr != NULL) {
+    //         // C API equivalent of the == operator
+    //         comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
+    //         if (comp == -1) {  // comparison raised an exception
+    //             return -1;
+    //         } else if (comp == 1) {  // found a match
+    //             unlink(prev, curr, curr->next);
+    //             deallocate(curr);
+    //             return 0;
+    //         }
+
+    //         // advance to next node
+    //         prev = curr
+    //         curr = curr->next;
+    //     }
+
+    //     // item not found
+    //     PyObject* python_repr = PyObject_Repr(item);
+    //     const char* c_repr = PyUnicode_AsUTF8(python_repr);
+    //     Py_DECREF(python_repr);
+    //     PyErr_Format(PyExc_ValueError, "%s is not in list", c_repr);
+    //     return -1;
+    // }
+
+    // /*Check if the list contains a given item.*/
+    // inline int contains(PyObject* item) {
+    //     T* curr = head;
+    //     int comp;
+
+    //     // search until we hit stop index
+    //     while (curr != NULL) {
+    //         // C API equivalent of the == operator
+    //         comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
+    //         if (comp == -1) {  // comparison raised an exception
+    //             return -1;
+    //         } else if (comp == 1) {  // found a match
+    //             return 1;
+    //         }
+    
+    //         // advance to next node
+    //         curr = curr->next;
+    //     }
+
+    //     return 0;
+    // }
+
+
     /*Insert an item at the given index.*/    
     void insert(PyObject* item, long long index) {
         size_t norm_index = normalize_index(index);
@@ -131,75 +344,6 @@ public:
             }
             view->link(curr, node, curr->next);  // link after current node
         }
-    }
-
-    /*Extend the list with a sequence of items.*/
-    void extend(PyObject* iterable) {
-        ViewType<NodeType>* staged = stage(iterable);
-        if (staged == NULL) {
-            return;  // raise exception
-        }
-
-        // trivial case: empty iterable
-        if (staged->head == NULL) {
-            return;
-        }
-
-        // link the staged nodes to the list
-        view->link(view->tail, staged->head, staged->head->next);
-        view->tail = staged->tail;
-        view->size += staged->size;
-    }
-
-    /*Extend the list to the left.*/
-    void extendleft(PyObject* iterable) {
-        ViewType<NodeType>* staged = stage(iterable, true);
-        if (staged == NULL) {
-            return;  // raise exception
-        }
-
-        // trivial case: empty iterable
-        if (staged->head == NULL) {
-            return;
-        }
-
-        // link the staged nodes to the list
-        if (view->head == NULL) {
-            view->link(staged->tail, view->head, NULL);
-        } else {
-            view->link(staged->tail, view->head, view->head->next);
-        }
-        view->head = staged->head;
-        view->size += staged->size;
-    }
-
-    /*Remove an item from the list.*/
-    int remove(PyObject* item) {
-        NodeType* curr = view->head;
-        int comp;
-
-        // remove first occurrence of item
-        while (curr != NULL) {
-            // C API equivalent of the == operator
-            comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
-            if (comp == -1) {  // comparison raised an exception
-                return -1;
-            } else if (comp == 1) {  // found a match
-                view->unlink(curr->prev, curr, curr->next);
-                view->deallocate(curr);
-                return 0;
-            }
-
-            // advance to next node
-            curr = curr->next;
-        }
-
-        // item not found
-        PyObject* python_repr = PyObject_Repr(item);
-        const char* c_repr = PyUnicode_AsUTF8(python_repr);
-        Py_DECREF(python_repr);
-        PyErr_Format(PyExc_ValueError, "%s is not in list", c_repr);
-        return -1;
     }
 
     /*Pop an item at the given index and return its value.*/

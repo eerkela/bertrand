@@ -13,14 +13,54 @@
 /////////////////////////
 
 
-/*DEBUG = TRUE adds print statements for memory allocation/deallocation to help
-identify memory leaks.*/
+/* DEBUG = TRUE adds print statements for memory allocation/deallocation to help
+identify memory leaks. */
 const bool DEBUG = true;
 
 
 /* For efficient memory management, every ListView maintains its own freelist
-of deallocated nodes, which can be reused for repeated allocation.*/
-const unsigned int FREELIST_SIZE = 16;
+of deallocated nodes, which can be reused for repeated allocation. */
+const unsigned int FREELIST_SIZE = 32;
+
+/* Some ListViews use hash tables for fast access to each element.  These
+parameters control the growth and hashing behavior of each table. */
+const size_t INITIAL_TABLE_CAPACITY = 16;  // initial size of hash table
+const float MAX_LOAD_FACTOR = 0.7;  // grow if load factor exceeds threshold
+const float MIN_LOAD_FACTOR = 0.2;  // shrink if load factor drops below threshold
+const float MAX_TOMBSTONES = 0.2;  // clear tombstones if threshold is exceeded
+const size_t PRIMES[29] = {  // prime numbers to use for double hashing
+    // HASH PRIME   // TABLE SIZE               // AI AUTOCOMPLETE
+    13,             // 16 (2**4)                13
+    23,             // 32 (2**5)                23
+    47,             // 64 (2**6)                53
+    97,             // 128 (2**7)               97
+    181,            // 256 (2**8)               193
+    359,            // 512 (2**9)               389
+    719,            // 1024 (2**10)             769
+    1439,           // 2048 (2**11)             1543
+    2879,           // 4096 (2**12)             3079
+    5737,           // 8192 (2**13)             6151
+    11471,          // 16384 (2**14)            12289
+    22943,          // 32768 (2**15)            24593
+    45887,          // 65536 (2**16)            49157
+    91753,          // 131072 (2**17)           98317
+    183503,         // 262144 (2**18)           196613
+    367007,         // 524288 (2**19)           393241
+    734017,         // 1048576 (2**20)          786433
+    1468079,        // 2097152 (2**21)          1572869
+    2936023,        // 4194304 (2**22)          3145739
+    5872033,        // 8388608 (2**23)          6291469
+    11744063,       // 16777216 (2**24)         12582917
+    23488103,       // 33554432 (2**25)         25165843
+    46976221,       // 67108864 (2**26)         50331653
+    93952427,       // 134217728 (2**27)        100663319
+    187904861,      // 268435456 (2**28)        201326611
+    375809639,      // 536870912 (2**29)        402653189
+    751619321,      // 1073741824 (2**30)       805306457
+    1503238603,     // 2147483648 (2**31)       1610612741
+    3006477127,     // 4294967296 (2**32)       3221225473
+    // NOTE: HASH PRIME is the first prime number larger than 0.7 * TABLE_SIZE
+};
 
 
 /////////////////////
@@ -28,14 +68,10 @@ const unsigned int FREELIST_SIZE = 16;
 /////////////////////
 
 
-// TODO: no need for anything more than SingleNode, DoubleNode, hashed equivalents
-// Views add the hash table + freelist + operations.
-
-
 struct Node {
     PyObject* value;
 
-    /*Hash the underlying value.*/
+    /* Hash the underlying value. */
     inline static Py_hash_t hash(Node node) {
         // C API equivalent of the hash() function
         return PyObject_Hash(value);
@@ -47,7 +83,7 @@ struct Node {
 struct SingleNode : public Node {
     SingleNode* next;
 
-    /*Freelist constructor.*/
+    /* Freelist constructor. */
     inline static SingleNode* allocate(
         std::queue<SingleNode*>& freelist,
         PyObject* value
@@ -72,7 +108,7 @@ struct SingleNode : public Node {
         return node;
     }
 
-    /*Freelist destructor.*/
+    /* Freelist destructor. */
     inline static void deallocate(
         std::queue<SingleNode*>& freelist,
         SingleNode* node
@@ -85,7 +121,7 @@ struct SingleNode : public Node {
         }
     }
 
-    /*Copy constructor.*/
+    /* Copy constructor. */
     inline static SingleNode* copy(
         std::queue<SingleNode*>& freelist,
         SingleNode* node
@@ -93,7 +129,7 @@ struct SingleNode : public Node {
         return allocate(freelist, node->value);
     }
 
-    /*Link the node to its neighbors to form a singly-linked list.*/
+    /* Link the node to its neighbors to form a singly-linked list. */
     inline static void link(
         SingleNode* prev,
         SingleNode* curr,
@@ -105,7 +141,7 @@ struct SingleNode : public Node {
         curr->next = next;
     }
 
-    /*Unlink the node from its neighbors.*/
+    /* Unlink the node from its neighbors. */
     inline static void unlink(
         SingleNode* prev,
         SingleNode* curr,
@@ -124,7 +160,7 @@ struct DoubleNode : public Node {
     DoubleNode* next;
     DoubleNode* prev;
 
-    /*static freelist constructor.*/
+    /* Freelist constructor. */
     inline static DoubleNode* allocate(
         std::queue<DoubleNode*>& freelist,
         PyObject* value
@@ -150,7 +186,7 @@ struct DoubleNode : public Node {
         return node;
     }
 
-    /*static freelist destructor.*/
+    /* Freelist destructor. */
     inline static void deallocate(
         std::queue<DoubleNode*>& freelist,
         DoubleNode* node
@@ -163,7 +199,7 @@ struct DoubleNode : public Node {
         }
     }
 
-    /*copy constructor.*/
+    /* Copy constructor. */
     inline static DoubleNode* copy(
         std::queue<DoubleNode*>& freelist,
         DoubleNode* node
@@ -171,7 +207,7 @@ struct DoubleNode : public Node {
         return allocate(freelist, node->value);
     }
 
-    /*Link the node to its neighbors to form a doubly-linked list.*/
+    /* Link the node to its neighbors to form a doubly-linked list. */
     inline static void link(
         DoubleNode* prev,
         DoubleNode* curr,
@@ -187,7 +223,7 @@ struct DoubleNode : public Node {
         }
     }
 
-    /*Unlink the node from its neighbors.*/
+    /* Unlink the node from its neighbors. */
     inline static void unlink(
         DoubleNode* prev,
         DoubleNode* curr,
@@ -203,95 +239,25 @@ struct DoubleNode : public Node {
 };
 
 
-struct Hashed {
+struct HashNode : public DoubleNode {
     Py_hash_t _hash;
 
-    /*Return the pre-computed hash.*/
-    inline static Py_hash_t hash(HashNode* node) {
-        return node->_hash;
-    }
-}
-
-
-struct HashedSingleNode : public Hashed, public SingleNode {
-    /*Freelist constructor.*/
-    inline static HashedSingleNode* allocate(
-        std::queue<HashedSingleNode*>& freelist,
-        PyObject* value
-    ) {
-        // C API equivalent of the hash() function
-        Py_hash_t hash = PyObject_Hash(value);
-        if (hash == -1 && PyErr_Occurred()) {
-            return NULL;
-        }
-
-        HashedSingleNode* node;
-
-        // pop from free list if possible, else allocate a new node
-        if (freelist.empty()) {
-            node = (HashedSingleNode*)malloc(sizeof(HashedSingleNode));
-            if (node == NULL) {
-                throw std::bad_alloc();
-            }
-        } else {
-            node = freelist.front();
-            freelist.pop();
-        }
-
-        // initialize node
-        Py_INCREF(value);
-        node->value = value;
-        node->hash = hash;
-        node->next = NULL;
-        return node;
-    }
-
-    /*Copy constructor.*/
-    inline static HashedSingleNode* copy(
-        std::queue<HashedSingleNode*>& freelist,
-        HashedSingleNode* node
-    ) {
-        HashedSingleNode* new_node;
-
-        // pop from free list if possible, else allocate a new node
-        if (freelist.empty()) {
-            new_node = (HashedSingleNode*)malloc(sizeof(HashedSingleNode));
-            if (new_node == NULL) {
-                throw std::bad_alloc();
-            }
-        } else {
-            new_node = freelist.front();
-            freelist.pop();
-        }
-
-        // initialize node
-        Py_INCREF(node->value);
-        new_node->value = node->value;
-        new_node->hash = node->hash;  // reuse the old node's hash value
-        new_node->next = NULL;
-        return node;
-    }
-
-};
-
-
-struct HashedDoubleNode : public Hashed, public DoubleNode {
-    /*static freelist constructor.*/
-    inline static HashedDoubleNode* allocate(
-        std::queue<HashedDoubleNode*>& freelist,
+    /* Freelist constructor. */
+    inline static HashNode* allocate(
+        std::queue<HashNode*>& freelist,
         PyObject* value
     ) {        
         // C API equivalent of the hash() function
-        Py_hash_t hash = PyObject_Hash(value);
-        if (hash == -1 && PyErr_Occurred()) {
+        Py_hash_t hash_value = PyObject_Hash(value);
+        if (hash_value == -1 && PyErr_Occurred()) {
             return NULL;
         }
 
-        HashedDoubleNode* node;
+        HashNode* node;
 
         // pop from free list if possible, else allocate a new node
         if (freelist.empty()) {
-            node = (HashedDoubleNode*)malloc(sizeof(HashedDoubleNode));
+            node = (HashNode*)malloc(sizeof(HashNode));
             if (node == NULL) {
                 throw std::bad_alloc();
             }
@@ -303,23 +269,23 @@ struct HashedDoubleNode : public Hashed, public DoubleNode {
         // initialize node
         Py_INCREF(value);
         node->value = value;
-        node->hash = hash;
+        node->_hash = hash_value;
         node->next = NULL;
         node->prev = NULL;
         return node;
     }
 
-    /*copy constructor.*/
-    inline static HashedDoubleNode* copy(
-        std::queue<HashedDoubleNode*>& freelist,
-        HashedDoubleNode* node
+    /* Copy constructor. */
+    inline static HashNode* copy(
+        std::queue<HashNode*>& freelist,
+        HashNode* node
     ) {
         // reuse the old node's hash value
-        HashedDoubleNode* new_node;
+        HashNode* new_node;
 
         // pop from free list if possible, else allocate a new node
         if (freelist.empty()) {
-            new_node = (HashedDoubleNode*)malloc(sizeof(HashedDoubleNode));
+            new_node = (HashNode*)malloc(sizeof(HashNode));
             if (new_node == NULL) {
                 throw std::bad_alloc();
             }
@@ -331,10 +297,15 @@ struct HashedDoubleNode : public Hashed, public DoubleNode {
         // initialize node
         Py_INCREF(node->value);
         new_node->value = node->value;
-        new_node->hash = node->hash;
+        new_node->_hash = node->_hash;  // re-use the pre-computed hash
         new_node->next = NULL;
         new_node->prev = NULL;
         return new_node;
+    }
+
+    /* Return the pre-computed hash. */
+    inline static Py_hash_t hash(HashNode* node) {
+        return node->_hash;
     }
 
 };
@@ -350,7 +321,7 @@ class ListView {
 private:
     std::queue<T*> freelist;
 
-    /*Allow Python-style negative indexing with wraparound.*/
+    /* Allow Python-style negative indexing with wraparound. */
     inline size_t normalize_index(long long index) {
         // wraparound
         if (index < 0) {
@@ -370,7 +341,7 @@ public:
     T* tail;
     size_t size;
 
-    /*Construct an empty ListView.*/
+    /* Construct an empty ListView. */
     ListView() {
         head = NULL;
         tail = NULL;
@@ -378,7 +349,7 @@ public:
         freelist = std::queue<T*>();
     }
 
-    /*Destroy a ListView and free all its nodes.*/
+    /* Destroy a ListView and free all its nodes. */
     ~ListView() {
         T* curr = head;
         T* next;
@@ -403,7 +374,7 @@ public:
         }
     }
 
-    /*Allocate a new node for the list.*/
+    /* Allocate a new node for the list. */
     inline T* allocate(PyObject* value) {
         PyObject* python_repr;
         const char* c_repr;
@@ -420,7 +391,7 @@ public:
         return T::allocate(freelist, value);
     }
 
-    /*Free a node.*/
+    /* Free a node. */
     inline void deallocate(T* node) {
         PyObject* python_repr;
         const char* c_repr;
@@ -437,12 +408,12 @@ public:
         T::deallocate(freelist, node);
     }
 
-    /*Return the size of the freelist.*/
+    /* Return the size of the freelist. */
     inline unsigned char freelist_size() {
         return freelist.size();
     }
 
-    /*Link a node to its neighbors to form a linked list.*/
+    /* Link a node to its neighbors to form a linked list. */
     inline void link(T* prev, T* curr, T* next) {
         T::link(prev, curr, next);
         if (prev == NULL) {
@@ -454,7 +425,7 @@ public:
         size++;
     }
 
-    /*Unlink a node from its neighbors.*/
+    /* Unlink a node from its neighbors. */
     inline void unlink(T* prev, T* curr, T* next) {
         T::unlink(prev, curr, next);
         if (prev == NULL) {
@@ -466,7 +437,7 @@ public:
         size--;
     }
 
-    /*Clear the list.*/
+    /* Clear the list. */
     inline void clear() {
         T* curr = head;
         T* next;
@@ -480,7 +451,7 @@ public:
         size = 0;
     }
 
-    /*Make a shallow copy of the list.*/
+    /* Make a shallow copy of the list. */
     inline ListView<T>* copy() {
         ListView<T>* copied = new ListView<T>();
         T* old_node = head;
@@ -503,23 +474,7 @@ public:
         return copied;
     }
 
-    // TODO: all of these should be implemented in the Cython wrappers
-    // directly.  The ListView is just a stripped down core of the list, whose
-    // public interface is completely defined by Cython.
-
-
-
-    // /*Append an item to the end of the list.*/
-    // inline void append(PyObject* item) {
-    //     link(tail, allocate(item), NULL);
-    // }
-
-    // /*Append an item to the beginning of the list.*/
-    // inline void appendleft(PyObject* item) {
-    //     link(NULL, allocate(item), head);
-    // }
-
-    /*Stage a new View of nodes to be added to the list.*/
+    /* Stage a new View of nodes to be added to the list. */
     static ListView<T>* stage(PyObject* iterable, bool reverse = false) {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
@@ -571,191 +526,65 @@ public:
         return staged;
     }
 
-    // /*Extend the list with a sequence of items.*/
-    // void extend(PyObject* iterable) {
-    //     ListView<T>* staged = stage(iterable);
-    //     if (staged == NULL) {
-    //         return;  // raise exception
-    //     }
-
-    //     // trivial case: empty iterable
-    //     if (staged->head == NULL) {
-    //         return;
-    //     }
-
-    //     // link the staged nodes to the list
-    //     T::link(tail, staged->head, staged->head->next);
-    //     if (head == NULL) {
-    //         head = staged->head;
-    //     }
-    //     tail = staged->tail;
-    //     size += staged->size;
-    // }
-
-    // /*Extend the list to the left.*/
-    // void extendleft(PyObject* iterable) {
-    //     ListView<T>* staged = stage(iterable, true);  // reverse order
-    //     if (staged == NULL) {
-    //         return;  // raise exception
-    //     }
-
-    //     // trivial case: empty iterable
-    //     if (staged->head == NULL) {
-    //         return;
-    //     }
-
-    //     // link the staged nodes to the list
-    //     if (head == NULL) {
-    //         T::link(staged->tail, head, NULL);
-    //     } else {
-    //         T::link(staged->tail, head, head->next);
-    //     }
-    //     head = staged->head;
-    //     if (tail == NULL) {
-    //         tail = staged->tail;
-    //     }
-    //     size += staged->size;
-    // }
-
-    // // TODO: check if index bounds are correct.  Do they include the last item
-    // // in the list?
-
-    // /*Get the index of an item within the list.*/
-    // size_t index(PyObject* item, long long start = 0, long long stop = -1) {
-    //     T* curr = head;
-    //     size_t i = 0;
-    //     size_t norm_start = normalize_index(start);
-    //     size_t norm_stop = normalize_index(stop);
-
-    //     // skip to start index
-    //     for (i; i < norm_start; i++) {
-    //         if (curr == NULL) {
-    //             throw std::out_of_range("list index out of range");
-    //         }
-    //         curr = curr->next;
-    //     }
-
-    //     int comp;
-
-    //     // search until we hit stop index
-    //     while (curr != NULL && i < norm_stop) {
-    //         // C API equivalent of the == operator
-    //         comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
-    //         if (comp == -1) {  // comparison raised an exception
-    //             return MAX_SIZE_T;
-    //         } else if (comp == 1) {  // found a match
-    //             return index;
-    //         }
-    
-    //         // advance to next node
-    //         curr = curr->next;
-    //         i++;
-    //     }
-
-    //     // item not found
-    //     PyObject* python_repr = PyObject_Repr(item);
-    //     const char* c_repr = PyUnicode_AsUTF8(python_repr);
-    //     Py_DECREF(python_repr);
-    //     PyErr_Format(PyExc_ValueError, "%s is not in list", c_repr);
-    //     return MAX_SIZE_T;
-    // }
-
-    // /*Count the number of occurrences of an item within the list.*/
-    // size_t count(PyObject* item, long long start = 0, long long stop = -1) {
-    //     T* curr = head;
-    //     size_t i = 0;
-    //     size_t observed = 0;
-    //     size_t norm_start = normalize_index(start);
-    //     size_t norm_stop = normalize_index(stop);
-
-    //     // skip to start index
-    //     for (i; i < norm_start; i++) {
-    //         if (curr == NULL) {
-    //             return observed;
-    //         }
-    //         curr = curr->next;
-    //     }
-
-    //     int comp;
-
-    //     // search until we hit stop index
-    //     while (curr != NULL && i < norm_stop) {
-    //         // C API equivalent of the == operator
-    //         comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
-    //         if (comp == -1) {  // comparison raised an exception
-    //             return MAX_SIZE_T;
-    //         } else if (comp == 1) {  // found a match
-    //             count++;
-    //         }
-    
-    //         // advance to next node
-    //         curr = curr->next;
-    //         i++;
-    //     }
-
-    //     return observed;
-    // }
-
-    // /*Remove an item from the list.*/
-    // int remove(PyObject* item) {
-    //     T* curr = head;
-    //     T* prev = NULL;  // shadows curr
-    //     int comp;
-
-    //     // remove first occurrence of item
-    //     while (curr != NULL) {
-    //         // C API equivalent of the == operator
-    //         comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
-    //         if (comp == -1) {  // comparison raised an exception
-    //             return -1;
-    //         } else if (comp == 1) {  // found a match
-    //             unlink(prev, curr, curr->next);
-    //             deallocate(curr);
-    //             return 0;
-    //         }
-
-    //         // advance to next node
-    //         prev = curr
-    //         curr = curr->next;
-    //     }
-
-    //     // item not found
-    //     PyObject* python_repr = PyObject_Repr(item);
-    //     const char* c_repr = PyUnicode_AsUTF8(python_repr);
-    //     Py_DECREF(python_repr);
-    //     PyErr_Format(PyExc_ValueError, "%s is not in list", c_repr);
-    //     return -1;
-    // }
-
-    // /*Check if the list contains a given item.*/
-    // inline int contains(PyObject* item) {
-    //     T* curr = head;
-    //     int comp;
-
-    //     // search until we hit stop index
-    //     while (curr != NULL) {
-    //         // C API equivalent of the == operator
-    //         comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
-    //         if (comp == -1) {  // comparison raised an exception
-    //             return -1;
-    //         } else if (comp == 1) {  // found a match
-    //             return 1;
-    //         }
-    
-    //         // advance to next node
-    //         curr = curr->next;
-    //     }
-
-    //     return 0;
-    // }
+    /* Get the total memory consumed by the ListView (in bytes). */
+    inline size_t nbytes() {
+        size_t total = sizeof(ListView<T>);
+        total += freelist.size() * (sizeof(T) + sizeof(T*));
+        total += size * sizeof(T);
+        return total;
+    }
 
 };
 
 
 template <typename T>
-class DictView : public ListView<T> {
+class SetView : public ListView<T> {
+private:
+    T** table;                  // hash table
+    T* tombstone;               // sentinel value for removed nodes
+    size_t capacity;            // total number of slots in the table
+    size_t occupied;            // number of occupied slots (incl. tombstones)
+    size_t tombstones;          // number of tombstones
+    unsigned char exponent;     // log2(capacity) - log2(INITIAL_TABLE_CAPACITY)
+    size_t prime;               // prime number used for double hashing
+
 public:
-    ~DictView() {
+    /* Construct an empty SetView. */
+    SetView() {
+        // initialize list
+        this->head = NULL;
+        this->tail = NULL;
+        this->size = 0;
+        this->freelist = std::queue<T*>();
+
+        if (DEBUG) {
+            printf("    -> malloc: HashTable(%lu)\n", INITIAL_TABLE_CAPACITY);
+        }
+
+        // initialize hash table
+        this->table = (T**)calloc(INITIAL_TABLE_CAPACITY, sizeof(T*));
+        if (table == NULL) {
+            throw std::bad_alloc();
+        }
+
+        // initialize tombstone
+        this->tombstone = (T*)malloc(sizeof(T));
+        if (tombstone == NULL) {
+            free(table);
+            throw std::bad_alloc();
+        }
+
+        // initialize table parameters
+        this->capacity = INITIAL_TABLE_CAPACITY;
+        this->occupied = 0;
+        this->tombstones = 0;
+        this->exponent = 0;
+        this->prime = PRIMES[this->exponent];
+    }
+
+    /* Destroy a SetView and free all its resources. */
+    ~SetView() {
+        // free all nodes
         T* curr = this->head;
         T* next;
         while (curr != NULL) {
@@ -765,23 +594,88 @@ public:
             free(curr);
             curr = next;
         }
-    }
 
-    T* allocate(PyObject* value, PyObject* mapped) {
-        PyObject* python_repr;
-        const char* c_repr;
-
-        // print allocation message if DEBUG=TRUE
         if (DEBUG) {
-            python_repr = PyObject_Repr(value);
-            c_repr = PyUnicode_AsUTF8(python_repr);
-            Py_DECREF(python_repr);
-            printf("    -> malloc: %s\n", c_repr);
+            printf("    -> free: HashTable(%lu)\n", this->capacity);
         }
 
-        // delegate to node-specific allocator
-        return T::allocate(this->freelist, value, mapped);
+        // free hash table
+        free(this->table);
+        free(this->tombstone);
     }
+
+    /* Disabled copy/move constructors.  These are dangerous because we're
+    managing memory manually in the constructor/destructor. */
+    SetView(const SetView& other) = delete;         // copy constructor
+    SetView& operator=(const SetView&) = delete;    // copy assignment
+    SetView(SetView&&) = delete;                    // move constructor
+    SetView& operator=(SetView&&) = delete;         // move assignment
+
+    /* Link a node to its neighbors to form a linked list. */
+    inline void link(T* prev, T* curr, T* next) {
+        // resize if necessary
+        if (occupied > size * MAX_LOAD_FACTOR) {
+            resize(exponent + 1);
+        }
+
+        // get index and step for double hashing
+        Py_hash_t hash_val = curr->hash();
+        size_t index = hash_val % size;
+        size_t step = prime - (hash_val % prime);
+        T* lookup = table[index];
+        int comp;
+
+        // search table
+        while (lookup != NULL) {
+            if (lookup != tombstone) {
+                // CPython API equivalent of == operator
+                comp = PyObject_RichCompareBool(lookup->value, node->value, Py_EQ);
+                if (comp == -1) {  // error occurred during ==
+                    return -1;
+                } else if (comp == 1) {  // value already present
+                    PyErr_SetString(PyExc_ValueError, "Value already present");
+                    return -1;
+                }
+            }
+
+            // advance to next slot
+            index = (index + step) % size;
+            lookup = table[index];
+        }
+
+        // insert value
+        table[index] = curr;
+        occupied++;
+
+        // link node to neighbors
+        T::link(prev, curr, next);
+
+        // update head/tail pointers
+        if (prev == NULL) {
+            head = curr;
+        }
+        if (next == NULL) {
+            tail = curr;
+        }
+
+        // increment size
+        size++;
+    }
+
+
+    // TODO: the only new method that this class adds is search() and maybe
+    // clear_tombstones().
+
+    // search(T* node) {}
+    // search(PyObject* value) {}
+
+    // TODO: have to override clear() to reset the size of the hash table,
+    // stage() to account for non-unique values in the iterable.
+
+
+
+
+
 };
 
 
