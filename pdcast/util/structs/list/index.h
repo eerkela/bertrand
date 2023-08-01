@@ -53,6 +53,21 @@ class ListOps {
 private:
     ViewType<NodeType>* view;
 
+    /* Allow Python-style negative indexing with wraparound. */
+    inline size_t normalize_index(long long index) {
+        // wraparound
+        if (index < 0) {
+            index += view->size;
+        }
+
+        // boundscheck
+        if (index < 0 || index >= (long long)view->size) {
+            throw std::out_of_range("list index out of range");
+        }
+
+        return (size_t)index;
+    }
+
     /*Get the direction to traverse a slice to minimize iterations and avoid
     backtracking.*/
     inline std::pair<size_t, size_t> get_slice_direction(
