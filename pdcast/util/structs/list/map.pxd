@@ -16,18 +16,18 @@ cdef extern from "node.h":
         DoubleNode* next
         DoubleNode* prev
 
-    struct HashNode:
+    cdef cppclass Hashed[T]:
         PyObject* value
         Py_hash_t hash
-        HashNode* next
-        HashNode* prev
+        T* next
+        T* prev
 
-    struct DictNode:
+    cdef cppclass Mapped[T]:
         PyObject* value
         PyObject* mapped
         Py_hash_t hash
-        DictNode* next
-        DictNode* prev
+        T* next
+        T* prev
 
     cdef cppclass ListView[T]:
         T* head
@@ -36,59 +36,46 @@ cdef extern from "node.h":
         ListView() except +
         T* allocate(PyObject* value) except +
         void deallocate(T* node)
-        void clear()
         unsigned char freelist_size()
         void link(T* prev, T* curr, T* next)
         void unlink(T* prev, T* curr, T* next)
+        void clear()
+        ListView[T]* copy() except +
+        ListView[T]* stage(PyObject* iterable, bint reverse = False) except NULL
+        size_t nbytes()
+
+    cdef cppclass SetView[T]:
+        Hashed[T]* head
+        Hashed[T]* tail
+        size_t size
+        SetView() except +
+        Hashed[T]* allocate(PyObject* value, PyObject* mapped) except +
+        void deallocate(Hashed[T]* node)
+        unsigned char freelist_size()
+        void link(Hashed[T]* prev, Hashed[T]* curr, Hashed[T]* next) except +*
+        void unlink(Hashed[T]* prev, Hashed[T]* curr, Hashed[T]* next) except *
+        void clear() except +
+        SetView[T]* copy() except +
+        SetView[T]* stage(PyObject* iterable, bint reverse = False) except NULL
+        Hashed[T]* search(PyObject* value) except? NULL
+        Hashed[T]* search(Hashed[T]* value) except? NULL
+        void clear_tombstones() except +
+        size_t nbytes()
 
     cdef cppclass DictView[T]:
-        T* head
-        T* tail
+        Mapped[T]* head
+        Mapped[T]* tail
         size_t size
         DictView() except +
-        T* allocate(PyObject* value, PyObject* mapped) except +
-        void deallocate(T* node)
-        void clear()
+        Mapped[T]* allocate(PyObject* value, PyObject* mapped) except +
+        void deallocate(Mapped[T]* node)
         unsigned char freelist_size()
-        void link(T* prev, T* curr, T* next)
-        void unlink(T* prev, T* curr, T* next)
-
-
-
-
-
-# TODO: Cython can't handle nested templates like what we're trying to do here.
-# Instead, we can define a typedef in the C++ code itself and then use that
-# directly.
-
-
-# template <typename T>
-# using ListViewOps = ListOps<ListView, T>;
-
-
-# cdef extern from "index.h":
-#     cdef cppclass ListOps[ViewType, NodeType]:
-#         size_t normalize_index(long long index)
-#         pair[size_t, size_t] get_slice_direction(
-#             size_t start,
-#             size_t stop,
-#             ssize_t step
-#         )
-#         NodeType* node_at_index(size_t index)
-#         ViewType[NodeType]* stage(
-#             PyObject* iterable,
-#             bint reverse = False,
-#             unordered_set[NodeType]* override = NULL
-#         ) except NULL
-#         ViewType[NodeType]* get_slice(
-#             size_t start,
-#             size_t stop,
-#             ssize_t step
-#         ) except +
-#         int set_slice(
-#             size_t start,
-#             size_t stop,
-#             ssize_t step,
-#             PyObject* iterator
-#         ) except -1
-#         void delete_slice(size_t start, size_t stop, ssize_t step)
+        void link(Mapped[T]* prev, Mapped[T]* curr, Mapped[T]* next) except +*
+        void unlink(Mapped[T]* prev, Mapped[T]* curr, Mapped[T]* next) except *
+        void clear() except +
+        DictView[T]* copy() except +
+        DictView[T]* stage(PyObject* iterable, bint reverse = False) except NULL
+        Mapped[T]* search(PyObject* value) except? NULL
+        Mapped[T]* search(Mapped[T]* value) except? NULL
+        void clear_tombstones() except +
+        size_t nbytes()

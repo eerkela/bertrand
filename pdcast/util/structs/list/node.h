@@ -5,7 +5,17 @@
 #include <cstddef>  // for size_t
 #include <queue>  // for std::queue
 #include <Python.h>  // for CPython API
-#include <unordered_set>  // for std::unordered_set
+
+
+// TODO: SetView/DictView.stage() do not check for blacklists.  Instead, when
+// we add value to the list, we check if `link()` raises an error.  If it does,
+// we throw away all the values we've added so far.  This is the most efficient
+// way to do it, it just requires extra bookkeeping on our end.
+
+// extend() and extendleft() are easy.  We just maintain a reference to the
+// previous head/tail of the list.  If an error is encountered, we just
+// retrace our steps back to the original configuration.
+
 
 
 /////////////////////////
@@ -21,6 +31,7 @@ const bool DEBUG = true;
 /* For efficient memory management, every View maintains its own freelist of
 deallocated nodes that can be reused for fast allocation. */
 const unsigned int FREELIST_SIZE = 32;
+
 
 /* Some ListViews use hash tables for fast access to each element.  These
 parameters control the growth and hashing behavior of each table. */
@@ -269,6 +280,19 @@ struct Hashed : public NodeType {
         node->hash = PyObject_Hash(value);
     }
 
+    /* Free a node and add it to the freelist. */
+    inline static void deallocate(
+        std::queue<Hashed<NodeType>*>& freelist,
+        Hashed<NodeType>* node
+    ) {
+        Py_DECREF(node->value);
+        if (freelist.size() <= FREELIST_SIZE) {
+            freelist.push(node);
+        } else {
+            free(node);
+        }
+    }
+
     /* Copy constructor. */
     inline static Hashed<NodeType>* copy(
         std::queue<Hashed<NodeType>*>& freelist,
@@ -299,6 +323,7 @@ struct Hashed : public NodeType {
 
 template <typename NodeType>
 struct Mapped : public NodeType {
+    Py_hash_t hash;
     PyObject* mapped;
 
     /* Freelist constructor. */
@@ -341,8 +366,13 @@ struct Mapped : public NodeType {
         std::queue<Mapped<NodeType>*>& freelist,
         Mapped<NodeType>* node
     ) {
+        Py_DECREF(node->value);
         Py_DECREF(node->mapped);
-        NodeType::deallocate(freelist, node);
+        if (freelist.size() <= FREELIST_SIZE) {
+            freelist.push(node);
+        } else {
+            free(node);
+        }
     }
 
     /* Copy constructor. */
@@ -370,6 +400,332 @@ struct Mapped : public NodeType {
         Py_INCREF(node->mapped);
         new_node->mapped = node->mapped;  // copy mapped value
         return new_node;
+    }
+
+};
+
+
+/////////////////////
+////    TABLE    ////
+/////////////////////
+
+
+/* HashTables allow O(1) lookup for elements within SetViews and DictViews. */
+template <typename T>
+class HashTable {
+private:
+    T* table;               // array of pointers to nodes
+    T tombstone;            // sentinel value for deleted nodes
+    size_t capacity;        // size of table
+    size_t occupied;        // number of occupied slots (incl. tombstones)
+    size_t tombstones;      // number of tombstones
+    unsigned char exponent; // log2(capacity) - log2(INITIAL_TABLE_SIZE)
+    size_t prime;           // prime number used for double hashing
+
+    /* Resize the hash table and replace its contents. */
+    void resize(unsigned char new_exponent) {
+        T* old_table = table;
+        size_t old_capacity = capacity;
+        size_t new_capacity = 1 << new_exponent;
+
+        if (DEBUG) {
+            printf("    -> malloc: HashTable(%lu)\n", new_capacity);
+        }
+
+        // allocate new table
+        table = (T*)calloc(new_capacity, sizeof(T));
+        if (table == NULL) {
+            throw std::bad_alloc();
+        }
+
+        // update table parameters
+        capacity = new_capacity;
+        exponent = new_exponent;
+        prime = PRIMES[new_exponent];
+
+        size_t new_index, step;
+        T lookup;
+
+        // rehash old table and clear tombstones
+        for (size_t old_index = 0; old_index < old_capacity; old_index++) {
+            lookup = old_table[old_index];
+            if (lookup != NULL && lookup != tombstone) {  // insert into new table
+                // NOTE: we don't need to check for errors because we already
+                // know that the old table is valid.
+                new_index = lookup->hash % new_capacity;
+                step = prime - (lookup->hash % prime);
+                while (table[new_index] != NULL) {
+                    new_index = (new_index + step) % new_capacity;
+                }
+                table[new_index] = lookup;
+            }
+        }
+
+        // reset tombstone count
+        occupied -= tombstones;
+        tombstones = 0;
+
+        // free old table
+        if (DEBUG) {
+            printf("    -> free: HashTable(%lu)\n", old_capacity);
+        }
+        free(old_table);
+    }
+
+public:
+
+    /* Disabled copy/move constructors.  These are dangerous because we're
+    managing memory manually. */
+    HashTable(const HashTable& other) = delete;         // copy constructor
+    HashTable& operator=(const HashTable&) = delete;    // copy assignment
+    HashTable(HashTable&&) = delete;                    // move constructor
+    HashTable& operator=(HashTable&&) = delete;         // move assignment
+
+    /* Constructor. */
+    HashTable() {
+        if (DEBUG) {
+            printf("    -> malloc: HashTable(%lu)\n", INITIAL_TABLE_CAPACITY);
+        }
+
+        // initialize hash table
+        table = (T*)calloc(INITIAL_TABLE_CAPACITY, sizeof(T));
+        if (table == NULL) {
+            throw std::bad_alloc();
+        }
+
+        // initialize tombstone
+        tombstone = (T)malloc(sizeof(T));
+        if (tombstone == NULL) {
+            free(table);
+            throw std::bad_alloc();
+        }
+
+        // initialize table parameters
+        capacity = INITIAL_TABLE_CAPACITY;
+        occupied = 0;
+        tombstones = 0;
+        exponent = 0;
+        prime = PRIMES[exponent];
+    }
+
+    /* Destructor.*/
+    ~HashTable() {
+        if (DEBUG) {
+            printf("    -> free: HashTable(%lu)\n", capacity);
+        }
+        free(table);
+        free(tombstone);
+    }
+
+    /* Add a node to the hash map for direct access. */
+    void remember(T node) {
+        // resize if necessary
+        if (occupied > capacity * MAX_LOAD_FACTOR) {
+            resize(exponent + 1);
+        }
+
+        // get index and step for double hashing
+        size_t index = node->hash % capacity;
+        size_t step = prime - (node->hash % prime);
+        T lookup = table[index];
+        int comp;
+
+        // search table
+        while (lookup != NULL) {
+            if (lookup != tombstone) {
+                // CPython API equivalent of == operator
+                comp = PyObject_RichCompareBool(lookup->value, node->value, Py_EQ);
+                if (comp == -1) {  // error occurred during ==
+                    return;
+                } else if (comp == 1) {  // value already present
+                    PyErr_SetString(PyExc_ValueError, "Value already present");
+                    return;
+                }
+            }
+
+            // advance to next slot
+            index = (index + step) % capacity;
+            lookup = table[index];
+        }
+
+        // insert value
+        table[index] = node;
+        occupied++;
+    }
+
+    /* Remove a node from the hash map. */
+    void forget(T node) {
+        // get index and step for double hashing
+        size_t index = node->hash % capacity;
+        size_t step = prime - (node->hash % prime);
+        T lookup = table[index];
+        int comp;
+        size_t n = occupied - tombstones;
+
+        // search table
+        while (lookup != NULL) {
+            if (lookup != tombstone) {
+                // CPython API equivalent of == operator
+                comp = PyObject_RichCompareBool(lookup->value, node->value, Py_EQ);
+                if (comp == -1) {  // error occurred during ==
+                    return;
+                } else if (comp == 1) {  // value found
+                    table[index] = tombstone;
+                    tombstones++;
+                    n--;
+                    if (exponent > 0 && n < capacity * MIN_LOAD_FACTOR) {
+                        resize(exponent - 1);
+                    } else if (tombstones > capacity * MAX_TOMBSTONES) {
+                        clear_tombstones();
+                    }
+                    return;
+                }
+            }
+
+            // advance to next slot
+            index = (index + step) % capacity;
+            lookup = table[index];
+        }
+
+        // value not found
+        PyErr_Format(PyExc_ValueError, "Value not found: %R", node->value);
+    }
+
+    /* Clear the hash table and reset it to its initial state. */
+    void clear() {
+        // free old table
+        if (DEBUG) {
+            printf("    -> free: HashTable(%lu)\n", capacity);
+        }
+        free(table);
+
+        // allocate new table
+        if (DEBUG) {
+            printf("    -> malloc: HashTable(%lu)\n", INITIAL_TABLE_CAPACITY);
+        }
+        table = (T*)calloc(INITIAL_TABLE_CAPACITY, sizeof(T));
+        if (table == NULL) {
+            throw std::bad_alloc();
+        }
+
+        // reset table parameters
+        capacity = INITIAL_TABLE_CAPACITY;
+        occupied = 0;
+        tombstones = 0;
+        exponent = 0;
+        prime = PRIMES[exponent];
+    }
+
+    /* Search for a node in the hash map by value. */
+    T search(PyObject* value) {
+        // CPython API equivalent of hash(value)
+        Py_hash_t hash = PyObject_Hash(value);
+        if (hash == -1 && PyErr_Occurred()) {  // error occurred during hash()
+            return NULL;
+        }
+
+        // get index and step for double hashing
+        size_t index = hash % capacity;
+        size_t step = prime - (hash % prime);
+        T lookup = table[index];
+        int comp;
+
+        // search table
+        while (lookup != NULL) {
+            if (lookup != tombstone) {
+                // CPython API equivalent of == operator
+                comp = PyObject_RichCompareBool(lookup->value, value, Py_EQ);
+                if (comp == -1) {  // error occurred during ==
+                    return NULL;
+                } else if (comp == 1) {  // value found
+                    return lookup;
+                }
+            }
+
+            // advance to next slot
+            index = (index + step) % capacity;
+            lookup = table[index];
+        }
+
+        // value not found
+        return NULL;
+    }
+
+    /* Search for a node directly. */
+    T search(T value) {
+        // reuse the node's pre-computed hash
+        size_t index = value->hash % capacity;
+        size_t step = prime - (value->hash % prime);
+        T lookup = table[index];
+        int comp;
+
+        // search table
+        while (lookup != NULL) {
+            if (lookup != tombstone) {
+                // CPython API equivalent of == operator
+                comp = PyObject_RichCompareBool(lookup->value, value->value, Py_EQ);
+                if (comp == -1) {  // error occurred during ==
+                    return NULL;
+                } else if (comp == 1) {  // value found
+                    return lookup;
+                }
+            }
+
+            // advance to next slot
+            index = (index + step) % capacity;
+            lookup = table[index];
+        }
+
+        // value was not found
+        return NULL;
+    }
+
+    /* Clear tombstones from the hash table. */
+    void clear_tombstones() {
+        T* old_table = table;
+
+        if (DEBUG) {
+            printf("    -> malloc: HashTable(%lu)\n", capacity);
+        }
+
+        // allocate new hash table
+        table = (T*)calloc(capacity, sizeof(T));
+        if (table == NULL) {
+            throw std::bad_alloc();
+        }
+
+        size_t new_index, step;
+        T lookup;
+
+        // rehash old table and remove tombstones
+        for (size_t old_index = 0; old_index < capacity; old_index++) {
+            lookup = old_table[old_index];
+            if (lookup != NULL && lookup != tombstone) {
+                // NOTE: we don't need to check for errors because we already
+                // know that the old table is valid.
+                new_index = lookup->hash % capacity;
+                step = prime - (lookup->hash % prime);
+                while (table[new_index] != NULL) {
+                    new_index = (new_index + step) % capacity;
+                }
+                table[new_index] = lookup;
+            }
+        }
+
+        // reset tombstone count
+        occupied -= tombstones;
+        tombstones = 0;
+
+        // free old table
+        if (DEBUG) {
+            printf("    -> free: HashTable(%lu)\n", capacity);
+        }
+        free(old_table);
+    }
+
+    /*Get the total amount of memory consumed by the hash table.*/
+    size_t nbytes() {
+        return sizeof(HashTable<T>);
     }
 
 };
@@ -498,12 +854,26 @@ public:
     /* Make a shallow copy of the list. */
     inline ListView<T>* copy() {
         ListView<T>* copied = new ListView<T>();
+        if (copied == NULL) {
+            throw std::bad_alloc();
+        }
+
         T* old_node = head;
         T* new_node = NULL;
         T* prev = NULL;
+        PyObject* python_repr;
+        const char* c_repr;
 
         // copy each node in list
         while (old_node != NULL) {
+            // print allocation message if DEBUG=TRUE
+            if (DEBUG) {
+                python_repr = PyObject_Repr(old_node->value);
+                c_repr = PyUnicode_AsUTF8(python_repr);
+                Py_DECREF(python_repr);
+                printf("    -> malloc: %s\n", c_repr);
+            }
+
             new_node = T::copy(freelist, old_node);
             copied->link(prev, new_node, NULL);
             prev = new_node;
@@ -523,6 +893,11 @@ public:
         }
 
         ListView<T>* staged = new ListView<T>();
+        if (staged == NULL) {
+            Py_DECREF(iterator);
+            PyErr_NoMemory();
+            return NULL;
+        }
 
         T* node;
         PyObject* item;
@@ -582,64 +957,7 @@ template <typename T>
 class SetView {
 private:
     std::queue<Hashed<T>*> freelist;
-    Hashed<T>** table;          // hash table
-    Hashed<T>* tombstone;       // sentinel value for removed nodes
-    size_t capacity;            // total number of slots in the table
-    size_t occupied;            // number of occupied slots (incl. tombstones)
-    size_t tombstones;          // number of tombstones
-    unsigned char exponent;     // log2(capacity) - log2(INITIAL_TABLE_CAPACITY)
-    size_t prime;               // prime number used for double hashing
-
-    /* Resize the hash table and replace its contents. */
-    void resize(unsigned char new_exponent) {
-        Hashed<T>** old_table = table;
-        size_t old_capacity = capacity;
-        size_t new_capacity = 1 << new_exponent;
-
-        if (DEBUG) {
-            printf("    -> malloc: HashTable(%lu)\n", new_capacity);
-        }
-
-        // allocate new table
-        table = (Hashed<T>**)calloc(new_capacity, sizeof(Hashed<T>*));
-        if (table == NULL) {
-            throw std::bad_alloc();
-        }
-
-        // update table parameters
-        capacity = new_capacity;
-        exponent = new_exponent;
-        prime = PRIMES[new_exponent];
-
-        size_t new_index, step;
-        Hashed<T>* lookup;
-
-        // rehash old table and clear tombstones
-        for (size_t old_index = 0; old_index < old_capacity; old_index++) {
-            lookup = old_table[old_index];
-            if (lookup != NULL && lookup != tombstone) {
-                // insert into new table
-                // NOTE: we don't need to check for errors because we already
-                // know that the old table is valid.
-                new_index = lookup->hash % new_capacity;
-                step = prime - (lookup->hash % prime);
-                while (table[new_index] != NULL) {
-                    new_index = (new_index + step) % new_capacity;
-                }
-                table[new_index] = lookup;
-            }
-        }
-
-        // reset tombstone count
-        occupied -= tombstones;
-        tombstones = 0;
-
-        // free old table
-        if (DEBUG) {
-            printf("    -> free: HashTable(%lu)\n", old_capacity);
-        }
-        free(old_table);
-    }
+    HashTable<Hashed<T>*>* table;
 
 public:
     Hashed<T>* head;
@@ -661,29 +979,11 @@ public:
         size = 0;
         freelist = std::queue<Hashed<T>*>();
 
-        if (DEBUG) {
-            printf("    -> malloc: HashTable(%lu)\n", INITIAL_TABLE_CAPACITY);
-        }
-
         // initialize hash table
-        table = (Hashed<T>**)calloc(INITIAL_TABLE_CAPACITY, sizeof(Hashed<T>*));
+        table = new HashTable<Hashed<T>*>();
         if (table == NULL) {
             throw std::bad_alloc();
         }
-
-        // initialize tombstone
-        tombstone = (Hashed<T>*)malloc(sizeof(T));
-        if (tombstone == NULL) {
-            free(table);
-            throw std::bad_alloc();
-        }
-
-        // initialize table parameters
-        capacity = INITIAL_TABLE_CAPACITY;
-        occupied = 0;
-        tombstones = 0;
-        exponent = 0;
-        prime = PRIMES[exponent];
     }
 
     /* Destroy a SetView and free all its resources. */
@@ -692,18 +992,13 @@ public:
         Hashed<T>* curr = head;
         Hashed<T>* next;
         while (curr != NULL) {
-            next = curr->next;
+            next = (Hashed<T>*)curr->next;
             deallocate(curr);
             curr = next;
         }
 
-        if (DEBUG) {
-            printf("    -> free: HashTable(%lu)\n", capacity);
-        }
-
         // free hash table
-        free(table);
-        free(tombstone);
+        delete table;
     }
 
     /* Allocate a new node for the list. */
@@ -747,38 +1042,11 @@ public:
 
     /* Link a node to its neighbors to form a linked list. */
     inline void link(Hashed<T>* prev, Hashed<T>* curr, Hashed<T>* next) {
-        // resize if table exceeds max load factor
-        if (occupied > capacity * MAX_LOAD_FACTOR) {
-            resize(exponent + 1);
+        // add node to hash table
+        table->remember(curr);
+        if (PyErr_Occurred()) {
+            return;
         }
-
-        // get index and step for double hashing
-        size_t index = curr->hash % capacity;
-        size_t step = prime - (curr->hash % prime);
-        Hashed<T>* lookup = table[index];
-        int comp;
-
-        // search table
-        while (lookup != NULL) {
-            if (lookup != tombstone) {
-                // CPython API equivalent of == operator
-                comp = PyObject_RichCompareBool(lookup->value, curr->value, Py_EQ);
-                if (comp == -1) {  // error occurred during ==
-                    return;
-                } else if (comp == 1) {  // value already present
-                    PyErr_SetString(PyExc_ValueError, "Value already present");
-                    return;
-                }
-            }
-
-            // advance to next slot
-            index = (index + step) % capacity;
-            lookup = table[index];
-        }
-
-        // insert value
-        table[index] = curr;
-        occupied++;
 
         // link node to neighbors
         Hashed<T>::link(prev, curr, next);
@@ -797,46 +1065,9 @@ public:
 
     /* Unlink a node from its neighbors. */
     inline void unlink(Hashed<T>* prev, Hashed<T>* curr, Hashed<T>* next) {
-        // resize if table falls below min load factor
-        if (occupied < capacity * MIN_LOAD_FACTOR) {
-            resize(exponent - 1);
-        }
-
-        // get index and step for double hashing
-        size_t index = curr->hash % capacity;
-        size_t step = prime - (curr->hash % prime);
-        Hashed<T>* lookup = table[index];
-        int comp;
-        size_t n = occupied - tombstones;
-
-        // search table
-        while (lookup != NULL) {
-            if (lookup != tombstone) {
-                // CPython API equivalent of == operator
-                comp = PyObject_RichCompareBool(lookup->value, curr->value, Py_EQ);
-                if (comp == -1) {  // error occurred during ==
-                    return;
-                } else if (comp == 1) {  // value found
-                    table[index] = tombstone;
-                    tombstones++;
-                    n--;
-                    if (exponent > 0 && n < capacity * MIN_LOAD_FACTOR) {
-                        resize(exponent - 1);
-                    } else if (tombstones > capacity * MAX_TOMBSTONES) {
-                        clear_tombstones();
-                    }
-                    break;
-                }
-            }
-
-            // advance to next slot
-            index = (index + step) % capacity;
-            lookup = table[index];
-        }
-
-        // value was not found
-        if (lookup == NULL) {
-            PyErr_SetString(PyExc_ValueError, "Value not found");
+        // remove node from hash table
+        table->forget(curr);
+        if (PyErr_Occurred()) {
             return;
         }
 
@@ -856,31 +1087,9 @@ public:
     }
 
     /* Clear the list and reset the associated hash table. */
-    void clear() {
-        // free old table
-        if (DEBUG) {
-            printf("    -> free: HashTable(%lu)\n", capacity);
-        }
-        free(table);
-
-        // allocate new table
-        if (DEBUG) {
-            printf("    -> malloc: HashTable(%lu)\n", INITIAL_TABLE_CAPACITY);
-        }
-        table = (Hashed<T>**)calloc(INITIAL_TABLE_CAPACITY, sizeof(Hashed<T>*));
-        if (table == NULL) {
-            throw std::bad_alloc();
-        }
-
-        // reset table parameters
-        capacity = INITIAL_TABLE_CAPACITY;
-        occupied = 0;
-        tombstones = 0;
-        exponent = 0;
-        prime = PRIMES[exponent];
-
-        // clear list
-        ListView<T>::clear();
+    inline void clear() {
+        table->clear();  // clear hash table
+        ListView<T>::clear();  // clear list
     }
 
     /* Make a shallow copy of the list. */
@@ -889,9 +1098,19 @@ public:
         Hashed<T>* old_node = head;
         Hashed<T>* new_node = NULL;
         Hashed<T>* prev = NULL;
+        PyObject* python_repr;
+        const char* c_repr;
 
         // copy each node in list
         while (old_node != NULL) {
+            // print allocation message if DEBUG=TRUE
+            if (DEBUG) {
+                python_repr = PyObject_Repr(old_node->value);
+                c_repr = PyUnicode_AsUTF8(python_repr);
+                Py_DECREF(python_repr);
+                printf("    -> malloc: %s\n", c_repr);
+            }
+
             new_node = Hashed<T>::copy(freelist, old_node);
             copied->link(prev, new_node, NULL);
             prev = new_node;
@@ -911,6 +1130,11 @@ public:
         }
 
         SetView<T>* staged = new SetView<T>();
+        if (staged == NULL) {
+            Py_DECREF(iterator);
+            PyErr_NoMemory();
+            return NULL;
+        }
 
         Hashed<T>* node;
         PyObject* item;
@@ -937,8 +1161,6 @@ public:
             } else {
                 staged->link(staged->tail, node, NULL);
             }
-
-            // check for error during linking
             if (PyErr_Occurred()) {
                 Py_DECREF(item);
                 Py_DECREF(iterator);
@@ -958,110 +1180,18 @@ public:
     }
 
     /* Search for a node by its value. */
-    Hashed<T>* search(PyObject* value) {
-        // CPython API equivalent of hash(value)
-        Py_hash_t hash = PyObject_Hash(value);
-        if (hash == -1 && PyErr_Occurred()) {
-            return NULL;
-        }
-
-        // get index and step for double hashing
-        size_t index = hash % capacity;
-        size_t step = prime - (hash % prime);
-        Hashed<T>* lookup = table[index];
-        int comp;
-
-        // search table
-        while (lookup != NULL) {
-            if (lookup != tombstone) {
-                // CPython API equivalent of == operator
-                comp = PyObject_RichCompareBool(lookup->value, value, Py_EQ);
-                if (comp == -1) {  // error occurred during ==
-                    return NULL;
-                } else if (comp == 1) {  // value found
-                    return lookup;
-                }
-            }
-
-            // advance to next slot
-            index = (index + step) % capacity;
-            lookup = table[index];
-        }
-
-        // value was not found
-        return NULL;
+    inline Hashed<T>* search(PyObject* value) {
+        return table->search(value);
     }
 
     /* Search for a node by its value. */
-    Hashed<T>* search(Hashed<T>* value) {
-        // reuse the node's pre-computed hash
-        size_t index = value->hash % capacity;
-        size_t step = prime - (value->hash % prime);
-        Hashed<T>* lookup = table[index];
-        int comp;
-
-        // search table
-        while (lookup != NULL) {
-            if (lookup != tombstone) {
-                // CPython API equivalent of == operator
-                comp = PyObject_RichCompareBool(lookup->value, value->value, Py_EQ);
-                if (comp == -1) {  // error occurred during ==
-                    return NULL;
-                } else if (comp == 1) {  // value found
-                    return lookup;
-                }
-            }
-
-            // advance to next slot
-            index = (index + step) % capacity;
-            lookup = table[index];
-        }
-
-        // value was not found
-        return NULL;
+    inline Hashed<T>* search(Hashed<T>* value) {
+        return table->search(value);
     }
 
     /* Clear all tombstones from the hash table. */
-    void clear_tombstones() {
-        Hashed<T>** old_table = table;
-
-        if (DEBUG) {
-            printf("    -> malloc: HashTable(%lu)\n", capacity);
-        }
-
-        // allocate new hash table
-        table = (Hashed<T>**)calloc(capacity, sizeof(Hashed<T>*));
-        if (table == NULL) {
-            throw std::bad_alloc();
-        }
-
-        size_t new_index, step;
-        Hashed<T>* lookup;
-
-        // rehash old table and remove tombstones
-        for (size_t old_index = 0; old_index < capacity; old_index++) {
-            lookup = old_table[old_index];
-            if (lookup != NULL && lookup != tombstone) {
-                // NOTE: we don't need to check for errors because we already
-                // know that the old table is valid.
-                new_index = lookup->hash % capacity;
-                step = prime - (lookup->hash % prime);
-                while (table[new_index] != NULL) {
-                    new_index = (new_index + step) % capacity;
-                }
-                table[new_index] = lookup;
-            }
-        }
-
-        // reset tombstone count
-        occupied -= tombstones;
-        tombstones = 0;
-
-        // free old table
-        if (DEBUG) {
-            printf("    -> free: HashTable(%lu)\n", capacity);
-        }
-        free(old_table);
+    inline void clear_tombstones() {
+        table->clear_tombstones();
     }
 
     /* Get the total amount of memory consumed by the hash table.
@@ -1069,8 +1199,9 @@ public:
     NOTE: this is a lower bound and does not include the control structure of
     the `std::queue` freelist.  The actual memory usage is always slightly
     higher than is reported here. */
-    size_t nbytes() {
+    inline size_t nbytes() {
         size_t total = sizeof(SetView<T>);  // SetView object
+        total += table->nbytes();  // hash table
         total += size * sizeof(Hashed<T>);  // contents of set
         total += sizeof(freelist);  // freelist queue
         total += freelist.size() * (sizeof(Hashed<T>) + sizeof(Hashed<T>*));
@@ -1084,64 +1215,7 @@ template <typename T>
 class DictView {
 private:
     std::queue<Mapped<T>*> freelist;
-    Mapped<T>** table;          // hash table
-    Mapped<T>* tombstone;       // sentinel value for removed nodes
-    size_t capacity;            // total number of slots in the table
-    size_t occupied;            // number of occupied slots (incl. tombstones)
-    size_t tombstones;          // number of tombstones
-    unsigned char exponent;     // log2(capacity) - log2(INITIAL_TABLE_CAPACITY)
-    size_t prime;               // prime number used for double hashing
-
-    /* Resize the hash table and replace its contents. */
-    void resize(unsigned char new_exponent) {
-        Mapped<T>** old_table = table;
-        size_t old_capacity = capacity;
-        size_t new_capacity = 1 << new_exponent;
-
-        if (DEBUG) {
-            printf("    -> malloc: DictTable(%lu)\n", new_capacity);
-        }
-
-        // allocate new table
-        table = (Mapped<T>**)calloc(new_capacity, sizeof(Mapped<T>*));
-        if (table == NULL) {
-            throw std::bad_alloc();
-        }
-
-        // update table parameters
-        capacity = new_capacity;
-        exponent = new_exponent;
-        prime = PRIMES[new_exponent];
-
-        size_t new_index, step;
-        Mapped<T>* lookup;
-
-        // rehash old table and clear tombstones
-        for (size_t old_index = 0; old_index < old_capacity; old_index++) {
-            lookup = old_table[old_index];
-            if (lookup != NULL && lookup != tombstone) {
-                // insert into new table
-                // NOTE: we don't need to check for errors because we already
-                // know that the old table is valid.
-                new_index = lookup->hash % new_capacity;
-                step = prime - (lookup->hash % prime);
-                while (table[new_index] != NULL) {
-                    new_index = (new_index + step) % new_capacity;
-                }
-                table[new_index] = lookup;
-            }
-        }
-
-        // reset tombstone count
-        occupied -= tombstones;
-        tombstones = 0;
-
-        // free old table
-        if (DEBUG) {
-            printf("    -> free: DictTable(%lu)\n", old_capacity);
-        }
-        free(old_table);
-    }
+    HashTable<Mapped<T>*>* table;
 
 public:
     Mapped<T>* head;
@@ -1163,29 +1237,11 @@ public:
         size = 0;
         freelist = std::queue<Mapped<T>*>();
 
-        if (DEBUG) {
-            printf("    -> malloc: DictTable(%lu)\n", INITIAL_TABLE_CAPACITY);
-        }
-
         // initialize hash table
-        table = (Mapped<T>**)calloc(INITIAL_TABLE_CAPACITY, sizeof(Mapped<T>*));
+        table = new HashTable<Mapped<T>*>();
         if (table == NULL) {
             throw std::bad_alloc();
         }
-
-        // initialize tombstone
-        tombstone = (Mapped<T>*)malloc(sizeof(T));
-        if (tombstone == NULL) {
-            free(table);
-            throw std::bad_alloc();
-        }
-
-        // initialize table parameters
-        capacity = INITIAL_TABLE_CAPACITY;
-        occupied = 0;
-        tombstones = 0;
-        exponent = 0;
-        prime = PRIMES[exponent];
     }
 
     /* Destroy a DictView and free all its resources. */
@@ -1194,18 +1250,13 @@ public:
         Mapped<T>* curr = head;
         Mapped<T>* next;
         while (curr != NULL) {
-            next = curr->next;
+            next = (Mapped<T>*)curr->next;
             deallocate(curr);
             curr = next;
         }
 
-        if (DEBUG) {
-            printf("    -> free: DictTable(%lu)\n", capacity);
-        }
-
         // free hash table
-        free(table);
-        free(tombstone);
+        delete table;
     }
 
     /* Allocate a new node for the list. */
@@ -1249,38 +1300,11 @@ public:
 
     /* Link a node to its neighbors to form a linked list. */
     inline void link(Mapped<T>* prev, Mapped<T>* curr, Mapped<T>* next) {
-        // resize if table exceeds max load factor
-        if (occupied > capacity * MAX_LOAD_FACTOR) {
-            resize(exponent + 1);
+        // add node to hash table
+        table->remember(curr);
+        if (PyErr_Occurred()) {
+            return;
         }
-
-        // get index and step for double hashing
-        size_t index = curr->hash % capacity;
-        size_t step = prime - (curr->hash % prime);
-        Mapped<T>* lookup = table[index];
-        int comp;
-
-        // search table
-        while (lookup != NULL) {
-            if (lookup != tombstone) {
-                // CPython API equivalent of == operator
-                comp = PyObject_RichCompareBool(lookup->value, curr->value, Py_EQ);
-                if (comp == -1) {  // error occurred during ==
-                    return;
-                } else if (comp == 1) {  // value already present
-                    PyErr_SetString(PyExc_ValueError, "Value already present");
-                    return;
-                }
-            }
-
-            // advance to next slot
-            index = (index + step) % capacity;
-            lookup = table[index];
-        }
-
-        // insert value
-        table[index] = curr;
-        occupied++;
 
         // link node to neighbors
         Mapped<T>::link(prev, curr, next);
@@ -1299,46 +1323,9 @@ public:
 
     /* Unlink a node from its neighbors. */
     inline void unlink(Mapped<T>* prev, Mapped<T>* curr, Mapped<T>* next) {
-        // resize if table falls below min load factor
-        if (occupied < capacity * MIN_LOAD_FACTOR) {
-            resize(exponent - 1);
-        }
-
-        // get index and step for double hashing
-        size_t index = curr->hash % capacity;
-        size_t step = prime - (curr->hash % prime);
-        Mapped<T>* lookup = table[index];
-        int comp;
-        size_t n = occupied - tombstones;
-
-        // search table
-        while (lookup != NULL) {
-            if (lookup != tombstone) {
-                // CPython API equivalent of == operator
-                comp = PyObject_RichCompareBool(lookup->value, curr->value, Py_EQ);
-                if (comp == -1) {  // error occurred during ==
-                    return;
-                } else if (comp == 1) {  // value found
-                    table[index] = tombstone;
-                    tombstones++;
-                    n--;
-                    if (exponent > 0 && n < capacity * MIN_LOAD_FACTOR) {
-                        resize(exponent - 1);
-                    } else if (tombstones > capacity * MAX_TOMBSTONES) {
-                        clear_tombstones();
-                    }
-                    break;
-                }
-            }
-
-            // advance to next slot
-            index = (index + step) % capacity;
-            lookup = table[index];
-        }
-
-        // value was not found
-        if (lookup == NULL) {
-            PyErr_SetString(PyExc_ValueError, "Value not found");
+        // remove node from hash table
+        table->forget(curr);
+        if (PyErr_Occurred()) {
             return;
         }
 
@@ -1358,31 +1345,9 @@ public:
     }
 
     /* Clear the list and reset the associated hash table. */
-    void clear() {
-        // free old table
-        if (DEBUG) {
-            printf("    -> free: DictTable(%lu)\n", capacity);
-        }
-        free(table);
-
-        // allocate new table
-        if (DEBUG) {
-            printf("    -> malloc: DictTable(%lu)\n", INITIAL_TABLE_CAPACITY);
-        }
-        table = (Mapped<T>**)calloc(INITIAL_TABLE_CAPACITY, sizeof(Mapped<T>*));
-        if (table == NULL) {
-            throw std::bad_alloc();
-        }
-
-        // reset table parameters
-        capacity = INITIAL_TABLE_CAPACITY;
-        occupied = 0;
-        tombstones = 0;
-        exponent = 0;
-        prime = PRIMES[exponent];
-
-        // clear list
-        ListView<T>::clear();
+    inline void clear() {
+        table->clear();  // clear hash table
+        ListView<T>::clear();  // clear list
     }
 
     /* Make a shallow copy of the list. */
@@ -1391,9 +1356,19 @@ public:
         Mapped<T>* old_node = head;
         Mapped<T>* new_node = NULL;
         Mapped<T>* prev = NULL;
+        PyObject* python_repr;
+        const char* c_repr;
 
         // copy each node in list
         while (old_node != NULL) {
+            // print allocation message if DEBUG=TRUE
+            if (DEBUG) {
+                python_repr = PyObject_Repr(old_node->value);
+                c_repr = PyUnicode_AsUTF8(python_repr);
+                Py_DECREF(python_repr);
+                printf("    -> malloc: %s\n", c_repr);
+            }
+
             new_node = Mapped<T>::copy(freelist, old_node);
             copied->link(prev, new_node, NULL);
             prev = new_node;
@@ -1404,14 +1379,8 @@ public:
         return copied;
     }
 
-    // TODO: interpret tuples as key-value pairs
-
     /* Stage a new DictView of nodes from an input iterable. */
-    static DictView<T>* stage(
-        PyObject* iterable,
-        bool reverse = false,
-        std::unordered_set<PyObject*>* blacklist = NULL  // TODO: this should be a Python set
-    ) {
+    static DictView<T>* stage(PyObject* iterable, bool reverse = false) {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
         if (iterator == NULL) {
@@ -1419,9 +1388,16 @@ public:
         }
 
         DictView<T>* staged = new DictView<T>();
+        if (staged == NULL) {
+            Py_DECREF(iterator);
+            PyErr_NoMemory();
+            return NULL;
+        }
 
         Mapped<T>* node;
         PyObject* item;
+        PyObject* key;
+        PyObject* value;
 
         while (true) {
             // C API equivalent of next(iterator)
@@ -1433,14 +1409,24 @@ public:
                     delete staged;
                     return NULL;  // raise exception
                 }
-                break;
+                break;  // end of iterator
             }
 
-            // if (PyTuple_Check(item)) {
-            //     if (PyTuple_Size(item) == 2) {
+            // Check that the item is a tuple of size 2 (key-value pair)
+            if (!PyTuple_Check(item) || PyTuple_Size(item) != 2) {
+                PyErr_Format(
+                    PyExc_TypeError, "Expected tuple of size 2, got %R", item
+                );
+                Py_DECREF(item);
+                Py_DECREF(iterator);
+                delete staged;
+                return NULL;  // raise exception
+            }
 
-            // allocate a new node
-            node = staged->allocate(item);
+            // extract key and value and allocate a new node
+            key = PyTuple_GetItem(item, 0);
+            value = PyTuple_GetItem(item, 1);
+            node = staged->allocate(key, value);
 
             // link the node to the staged list
             if (reverse) {
@@ -1448,8 +1434,6 @@ public:
             } else {
                 staged->link(staged->tail, node, NULL);
             }
-
-            // check for error during linking
             if (PyErr_Occurred()) {
                 Py_DECREF(item);
                 Py_DECREF(iterator);
@@ -1469,110 +1453,18 @@ public:
     }
 
     /* Search for a node by its value. */
-    Mapped<T>* search(PyObject* value) {
-        // CPython API equivalent of hash(value)
-        Py_hash_t hash = PyObject_Hash(value);
-        if (hash == -1 && PyErr_Occurred()) {
-            return NULL;
-        }
-
-        // get index and step for double hashing
-        size_t index = hash % capacity;
-        size_t step = prime - (hash % prime);
-        Mapped<T>* lookup = table[index];
-        int comp;
-
-        // search table
-        while (lookup != NULL) {
-            if (lookup != tombstone) {
-                // CPython API equivalent of == operator
-                comp = PyObject_RichCompareBool(lookup->value, value, Py_EQ);
-                if (comp == -1) {  // error occurred during ==
-                    return NULL;
-                } else if (comp == 1) {  // value found
-                    return lookup;
-                }
-            }
-
-            // advance to next slot
-            index = (index + step) % capacity;
-            lookup = table[index];
-        }
-
-        // value was not found
-        return NULL;
-    }   
+    inline Mapped<T>* search(PyObject* value) {
+        return table->search(value);
+    }
 
     /* Search for a node by its value. */
-    Mapped<T>* search(Mapped<T>* value) {
-        // reuse the node's pre-computed hash
-        size_t index = value->hash % capacity;
-        size_t step = prime - (value->hash % prime);
-        Mapped<T>* lookup = table[index];
-        int comp;
-
-        // search table
-        while (lookup != NULL) {
-            if (lookup != tombstone) {
-                // CPython API equivalent of == operator
-                comp = PyObject_RichCompareBool(lookup->value, value->value, Py_EQ);
-                if (comp == -1) {  // error occurred during ==
-                    return NULL;
-                } else if (comp == 1) {  // value found
-                    return lookup;
-                }
-            }
-
-            // advance to next slot
-            index = (index + step) % capacity;
-            lookup = table[index];
-        }
-
-        // value was not found
-        return NULL;
+    inline Mapped<T>* search(Mapped<T>* value) {
+        return table->search(value);
     }
 
     /* Clear all tombstones from the hash table. */
-    void clear_tombstones() {
-        Mapped<T>** old_table = table;
-
-        if (DEBUG) {
-            printf("    -> malloc: DictTable(%lu)\n", capacity);
-        }
-
-        // allocate new hash table
-        table = (Mapped<T>**)calloc(capacity, sizeof(Mapped<T>*));
-        if (table == NULL) {
-            throw std::bad_alloc();
-        }
-
-        size_t new_index, step;
-        Mapped<T>* lookup;
-
-        // rehash old table and remove tombstones
-        for (size_t old_index = 0; old_index < capacity; old_index++) {
-            lookup = old_table[old_index];
-            if (lookup != NULL && lookup != tombstone) {
-                // NOTE: we don't need to check for errors because we already
-                // know that the old table is valid.
-                new_index = lookup->hash % capacity;
-                step = prime - (lookup->hash % prime);
-                while (table[new_index] != NULL) {
-                    new_index = (new_index + step) % capacity;
-                }
-                table[new_index] = lookup;
-            }
-        }
-
-        // reset tombstone count
-        occupied -= tombstones;
-        tombstones = 0;
-
-        // free old table
-        if (DEBUG) {
-            printf("    -> free: DictTable(%lu)\n", capacity);
-        }
-        free(old_table);
+    inline void clear_tombstones() {
+        table->clear_tombstones();
     }
 
     /* Get the total amount of memory consumed by the hash table.
@@ -1580,9 +1472,10 @@ public:
     NOTE: this is a lower bound and does not include the control structure of
     the `std::queue` freelist.  The actual memory usage is always slightly
     higher than is reported here. */
-    size_t nbytes() {
+    inline size_t nbytes() {
         size_t total = sizeof(SetView<T>);  // SetView object
-        total += size * sizeof(Mapped<T>);  // contents of set
+        total += table->nbytes();  // hash table
+        total += size * sizeof(Mapped<T>);  // contents of dictionary
         total += sizeof(freelist);  // freelist queue
         total += freelist.size() * (sizeof(Mapped<T>) + sizeof(Mapped<T>*));
         return total;

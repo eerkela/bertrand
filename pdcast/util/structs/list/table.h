@@ -50,13 +50,13 @@ node that is stored within the list.
 template <typename T>
 class ListTable {
 private:
-    T** table;          // array of pointers to nodes
-    T* tombstone;       // sentinel value for deleted nodes
-    size_t size;        // size of table
-    size_t occupied;    // number of occupied slots (incl. tombstones)
-    size_t tombstones;  // number of tombstones
-    unsigned char exponent;    // log2(size) - log2(INITIAL_TABLE_SIZE)
-    size_t prime;       // prime number used for double hashing
+    T** table;              // array of pointers to nodes
+    T* tombstone;           // sentinel value for deleted nodes
+    size_t capacity;        // size of table
+    size_t occupied;        // number of occupied slots (incl. tombstones)
+    size_t tombstones;      // number of tombstones
+    unsigned char exponent; // log2(capacity) - log2(INITIAL_TABLE_SIZE)
+    size_t prime;           // prime number used for double hashing
 
 public:
     /*Constructor.
@@ -75,7 +75,7 @@ public:
         if (!tombstone) {
             throw std::bad_alloc();  // C++ equivalent of MemoryError
         }
-        size = INITIAL_TABLE_SIZE;
+        capacity = INITIAL_TABLE_SIZE;
         occupied = 0;
         tombstones = 0;
         exponent = 0;
@@ -85,7 +85,7 @@ public:
     /*Destructor.  Always call this during Cython `__dealloc__()`.*/
     ~ListTable() {
         // if DEBUG
-        printf("    -> free: ListTable(%lu)\n", size);
+        printf("    -> free: ListTable(%lu)\n", capacity);
         free(table);
         free(tombstone);
     };
@@ -105,12 +105,12 @@ public:
     */
     int remember(T* node) {
         // resize if necessary
-        if (occupied > size * MAX_LOAD_FACTOR) {
+        if (occupied > capacity * MAX_LOAD_FACTOR) {
             resize(exponent + 1);
         }
 
         // get index and step for double hashing
-        size_t index = node->hash % size;
+        size_t index = node->hash % capacity;
         size_t step = prime - (node->hash % prime);
         T* curr = table[index];
         int comp;
@@ -129,7 +129,7 @@ public:
             }
 
             // advance to next slot
-            index = (index + step) % size;
+            index = (index + step) % capacity;
             curr = table[index];
         }
 
@@ -146,7 +146,7 @@ public:
     */
     int forget(T* node) {
         // get index and step for double hashing
-        size_t index = node->hash % size;
+        size_t index = node->hash % capacity;
         size_t step = prime - (node->hash % prime);
         T* curr = table[index];
         int comp;
@@ -161,9 +161,9 @@ public:
                 } else if (comp == 1) {  // value found
                     table[index] = tombstone;
                     tombstones++;
-                    if (exponent > 0 && occupied - tombstones < size * MIN_LOAD_FACTOR) {
+                    if (exponent > 0 && occupied - tombstones < capacity * MIN_LOAD_FACTOR) {
                         resize(exponent - 1);
-                    } else if (tombstones > size * MAX_TOMBSTONES) {
+                    } else if (tombstones > capacity * MAX_TOMBSTONES) {
                         clear_tombstones();
                     }
                     return 0;
@@ -171,7 +171,7 @@ public:
             }
 
             // advance to next slot
-            index = (index + step) % size;
+            index = (index + step) % capacity;
             curr = table[index];
         }
 
@@ -186,7 +186,7 @@ public:
     */
     void clear() {
         // if DEBUG
-        printf("    -> free: ListTable(%lu)\n", size);
+        printf("    -> free: ListTable(%lu)\n", capacity);
         free(table);
         // if DEBUG
         printf("    -> malloc: ListTable(%lu)\n", INITIAL_TABLE_SIZE);
@@ -194,7 +194,7 @@ public:
         if (!table) {
             throw std::bad_alloc();  // C++ equivalent of MemoryError
         }
-        size = INITIAL_TABLE_SIZE;
+        capacity = INITIAL_TABLE_SIZE;
         occupied = 0;
         tombstones = 0;
         exponent = 0;
@@ -215,7 +215,7 @@ public:
         }
 
         // get index and step for double hashing
-        size_t index = hash % size;
+        size_t index = hash % capacity;
         size_t step = prime - (hash % prime);
         T* curr = table[index];
         int comp;
@@ -233,7 +233,7 @@ public:
             }
 
             // advance to next slot
-            index = (index + step) % size;
+            index = (index + step) % capacity;
             curr = table[index];
         }
 
@@ -249,7 +249,7 @@ public:
     */
     T* search_node(T* node) {
         // get index and step for double hashing
-        size_t index = node->hash % size;
+        size_t index = node->hash % capacity;
         size_t step = prime - (node->hash % prime);
         T* curr = table[index];
         int comp;
@@ -267,7 +267,7 @@ public:
             }
 
             // advance to next slot
-            index = (index + step) % size;
+            index = (index + step) % capacity;
             curr = table[index];
         }
 
@@ -281,7 +281,7 @@ public:
     */
     void resize(unsigned char new_exponent) {
         T** old_table = table;
-        size_t old_size = size;
+        size_t old_size = capacity;
         size_t new_size = 1 << new_exponent;
 
         // if DEBUG
@@ -294,7 +294,7 @@ public:
         }
 
         // update table parameters
-        size = new_size;
+        capacity = new_size;
         exponent = new_exponent;
         prime = PRIMES[new_exponent];
 
@@ -334,10 +334,10 @@ public:
         T** old_table = table;
 
         // if DEBUG
-        printf("    -> malloc: ListTable(%lu)\n", size);
+        printf("    -> malloc: ListTable(%lu)\n", capacity);
 
         // allocate new hash table
-        table = (T**)calloc(size, sizeof(T*));
+        table = (T**)calloc(capacity, sizeof(T*));
         if (!table) {
             throw std::bad_alloc();  // C++ equivalent of MemoryError
         }
@@ -346,15 +346,15 @@ public:
         T* curr;
 
         // rehash old table and remove tombstones
-        for (size_t i = 0; i < size; i++) {
+        for (size_t i = 0; i < capacity; i++) {
             curr = old_table[i];
             if (curr != NULL && curr != tombstone) {
                 // NOTE: we don't need to check for errors because we already
                 // know that the old table is valid.
-                new_index = curr->hash % size;
+                new_index = curr->hash % capacity;
                 step = prime - (curr->hash % prime);
                 while (table[new_index] != NULL) {
-                    new_index = (new_index + step) % size;
+                    new_index = (new_index + step) % capacity;
                 }
                 table[new_index] = curr;
             }
@@ -366,7 +366,7 @@ public:
 
         // free old table
         // if DEBUG
-        printf("    -> free: ListTable(%lu)\n", size);
+        printf("    -> free: ListTable(%lu)\n", capacity);
         free(old_table);
     }
 
@@ -374,7 +374,7 @@ public:
     size_t nbytes() {
         size_t total = sizeof(table);
         total += sizeof(tombstone);
-        total += sizeof(size);
+        total += sizeof(capacity);
         total += sizeof(occupied);
         total += sizeof(tombstones);
         total += sizeof(exponent);
