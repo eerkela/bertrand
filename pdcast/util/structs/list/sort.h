@@ -5,8 +5,59 @@
 
 
 #include <cstddef>  // for size_t
+#include <queue>  // for std::queue
 #include <Python.h>  // for CPython API
 #include <node.h>  // for node definitions, views, etc.
+
+
+///////////////////////
+////    STRUCTS    ////
+///////////////////////
+
+
+template <typename T>
+struct Keyed : public T {
+    // NOTE: since we mask the node's original value with the precomputed key,
+    // we can use the exact same algorithm as we would for an undecorated list.
+    T* node;
+
+    /* Constructor. */
+    inline static Keyed<T>* allocate(T* node, PyObject* key) {
+        // CPython API equivalent of `key(node.value)`
+        PyObject* key_value = PyObject_CallFunctionObjArgs(key, node->value, NULL);
+        if (key_value == NULL) {
+            return NULL;  // propagate the error
+        }
+
+        // allocate a new decorator
+        Keyed<T>* keyed = (Keyed<T>*)malloc(sizeof(Keyed<T>));
+        if (keyed == NULL) {
+            Py_DECREF(key_value);  // release reference on precomputed key
+            PyErr_NoMemory();
+            return NULL;  // propagate the error
+        }
+
+        // initialize the keyed decorator
+        T::initialize(keyed, key_value);
+        keyed->node = node;
+        return keyed;
+    }
+
+    /* Destructor. */
+    inline static void deallocate(Keyed<T>* keyed) {
+        Py_DECREF(keyed->value);  // release reference on precomputed key
+        free(keyed);
+    }
+
+    /* Overloaded destructor for use from ListView. */
+    inline static void deallocate(
+        std::queue<Keyed<T>*>& freelist,
+        Keyed<T>* keyed
+    ) {
+        deallocate(keyed);
+    }
+
+};
 
 
 //////////////////////
@@ -53,44 +104,6 @@ void sort(ListView<NodeType>* view, PyObject* key = NULL, bool reverse = false) 
 ///////////////////////
 
 
-template <typename T>
-struct Keyed : public T {
-    // NOTE: since we mask the node's original value with the precomputed key,
-    // we can use the exact same algorithm as we would for an undecorated list.
-    PyObject* value;
-    T* node;
-
-    /* Constructor. */
-    inline static Keyed<T>* allocate(PyObject* key, T* node) {
-        // CPython API equivalent of `key(node.value)`
-        PyObject* key_value = PyObject_CallFunctionObjArgs(key, node->value, NULL);
-        if (key_value == NULL) {
-            return NULL;  // propagate the error
-        }
-
-        // allocate a new decorator
-        Keyed<T>* keyed = (Keyed<T>*)malloc(sizeof(Keyed<T>));
-        if (keyed == NULL) {
-            Py_DECREF(key_value);  // release reference on precomputed key
-            PyErr_NoMemory();
-            return NULL;  // propagate the error
-        }
-
-        // initialize the keyed decorator
-        T::initialize(keyed, key_value);
-        keyed->node = node;
-        return keyed;
-    }
-
-    /* Destructor. */
-    inline static void deallocate(Keyed<T>* keyed) {
-        Py_DECREF(keyed->value);  // release reference on precomputed key
-        free(keyed);
-    }
-
-};
-
-
 /* Decorate a linked list with the specified key function. */
 template <typename NodeType>
 ListView<Keyed<NodeType>>* decorate(ListView<NodeType>* view, PyObject* key) {
@@ -103,12 +116,11 @@ ListView<Keyed<NodeType>>* decorate(ListView<NodeType>* view, PyObject* key) {
 
     NodeType* node = view->head;
     Keyed<NodeType>* keyed;
-    PyObject* key_value;
 
     // iterate through the list and decorate each node with the precomputed key
     while (node != NULL) {
         // initialize a new keyed decorator
-        keyed = Keyed<NodeType>::allocate(key, node);
+        keyed = Keyed<NodeType>::allocate(node, key);
         if (keyed == NULL) {
             delete decorated;  // free the decorated list
             return NULL;  // propagate the error
@@ -130,7 +142,7 @@ ListView<Keyed<NodeType>>* decorate(ListView<NodeType>* view, PyObject* key) {
 template <typename NodeType>
 std::pair<NodeType*, NodeType*> undecorate(ListView<Keyed<NodeType>>* view) {
     // allocate a pair to hold the head and tail of the undecorated list
-    std::pair<NodeType*, NodeType*> sorted = std::make_pair(NULL, NULL);
+    std::pair<NodeType*, NodeType*> sorted = std::make_pair(nullptr, nullptr);
     Keyed<NodeType>* keyed = view->head;
     Keyed<NodeType>* next_keyed;
     NodeType* node = NULL;
@@ -146,7 +158,7 @@ std::pair<NodeType*, NodeType*> undecorate(ListView<Keyed<NodeType>>* view) {
         if (sorted.first == NULL) {
             sorted.first = node;
         } else {
-            NodeType::join(sorted.second, node);
+            NodeType::link(sorted.second, node, NULL);
         }
         sorted.second = node;  // set tail of undecorated list
 
@@ -154,7 +166,11 @@ std::pair<NodeType*, NodeType*> undecorate(ListView<Keyed<NodeType>>* view) {
         Keyed<NodeType>::deallocate(keyed);  // free the keyed decorator
         keyed = next_keyed;
     }
-    delete view;  // free the decorated ListView
+
+    // free the decorated list
+    view->head = NULL;
+    view->tail = NULL;
+    delete view;
 
     // return head/tail of undecorated list
     return sorted;
@@ -185,9 +201,9 @@ void merge_sort(ListView<NodeType>* view, bool reverse) {
     // pairs are used to keep track of the sublists that are used in each
     // iteration of the merge step.
     std::pair<NodeType*, NodeType*> unsorted = std::make_pair(view->head, view->tail);
-    std::pair<NodeType*, NodeType*> sorted = std::make_pair(NULL, NULL);
-    std::pair<NodeType*, NodeType*> left = std::make_pair(NULL, NULL);
-    std::pair<NodeType*, NodeType*> right = std::make_pair(NULL, NULL);
+    std::pair<NodeType*, NodeType*> sorted = std::make_pair(nullptr, nullptr);
+    std::pair<NodeType*, NodeType*> left = std::make_pair(nullptr, nullptr);
+    std::pair<NodeType*, NodeType*> right = std::make_pair(nullptr, nullptr);
     std::pair<NodeType*, NodeType*> merged;
 
     // NOTE: as a refresher, the general merge sort algorithm is as follows:
@@ -205,12 +221,12 @@ void merge_sort(ListView<NodeType>* view, bool reverse) {
             // split the list into two sublists of size `length`
             left.first = unsorted.first;
             left.second = walk(left.first, length - 1);
-            right.first = left.second->next;  // may be NULL
+            right.first = (NodeType*)left.second->next;  // may be NULL
             right.second = walk(right.first, length - 1);
             if (right.second == NULL) {
                 unsorted.first = NULL;
             } else {
-                unsorted.first = right.second->next;
+                unsorted.first = (NodeType*)right.second->next;
             }
 
             // unlink the sublists from the original list
@@ -297,7 +313,7 @@ std::pair<NodeType*, NodeType*> merge(
         // CPython API equivalent of `left.value < right.value`
         comp = PyObject_RichCompareBool(left.first->value, right.first->value, Py_LT);
         if (comp == -1) {
-            return std::make_pair(NULL, NULL);  // propagate the error
+            return std::make_pair(nullptr, nullptr);  // propagate the error
         }
 
         // append the smaller of the two candidates to the merged list
@@ -327,7 +343,7 @@ std::pair<NodeType*, NodeType*> merge(
 
     // unlink temporary head from list and return the proper head and tail of
     // the merged list
-    curr = temp->next;
+    curr = (NodeType*)temp->next;
     NodeType::split(temp, curr);  // `temp` can be reused in the next iteration
     return std::make_pair(curr, tail);
 }

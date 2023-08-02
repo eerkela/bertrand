@@ -802,7 +802,7 @@ public:
 
         // free all nodes
         while (curr != NULL) {
-            next = curr->next;
+            next = (T*)curr->next;
             deallocate(curr);
             curr = next;
         }
@@ -876,7 +876,7 @@ public:
         T* curr = head;
         T* next;
         while (curr != NULL) {
-            next = curr->next;
+            next = (T*)curr->next;
             deallocate(curr);
             curr = next;
         }
@@ -911,7 +911,7 @@ public:
             new_node = T::copy(freelist, old_node);
             copied->link(prev, new_node, NULL);
             prev = new_node;
-            old_node = old_node->next;
+            old_node = (T*)old_node->next;
         }
 
         copied->tail = new_node;  // last node in copied list
@@ -1148,7 +1148,7 @@ public:
             new_node = Hashed<T>::copy(freelist, old_node);
             copied->link(prev, new_node, NULL);
             prev = new_node;
-            old_node = old_node->next;
+            old_node = (Hashed<T>*)old_node->next;
         }
 
         copied->tail = new_node;  // last node in copied list
@@ -1406,7 +1406,7 @@ public:
             new_node = Mapped<T>::copy(freelist, old_node);
             copied->link(prev, new_node, NULL);
             prev = new_node;
-            old_node = old_node->next;
+            old_node = (Mapped<T>*)old_node->next;
         }
 
         copied->tail = new_node;  // last node in copied list

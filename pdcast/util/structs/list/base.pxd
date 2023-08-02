@@ -1,6 +1,8 @@
 """Cython headers for pdcast/util/structs/list/base.pyx"""
 from cpython.ref cimport PyObject
 
+from libcpp.utility cimport pair
+
 cdef extern from "Python.h":
     void Py_INCREF(PyObject* obj)
     void Py_DECREF(PyObject* obj)
@@ -11,7 +13,6 @@ cdef extern from "Python.h":
     PyObject* PyObject_CallFunctionObjArgs(PyObject* callable, ...)
     PyObject* PyObject_GetIter(PyObject* obj)
     PyObject* PyIter_Next(PyObject* obj)
-
 
 cdef extern from "node.h":
     struct SingleNode:
@@ -27,15 +28,15 @@ cdef extern from "node.h":
     cdef cppclass Hashed[T]:
         PyObject* value
         Py_hash_t hash
-        T* next
-        T* prev
+        Hashed[T]* next
+        Hashed[T]* prev
 
     cdef cppclass Mapped[T]:
         PyObject* value
         PyObject* mapped
         Py_hash_t hash
-        T* next
-        T* prev
+        Mapped[T]* next
+        Mapped[T]* prev
 
     cdef cppclass ListView[T]:
         T* head
@@ -87,6 +88,10 @@ cdef extern from "node.h":
         Mapped[T]* search(Mapped[T]* value) except? NULL
         void clear_tombstones() except +
         size_t nbytes()
+
+cdef extern from "sort.h":
+    void sort[T](ListView[T]* view, PyObject* key, bint reverse) except *
+
 
 #########################
 ####    CONSTANTS    ####
