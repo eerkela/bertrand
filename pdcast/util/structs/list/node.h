@@ -157,6 +157,20 @@ struct SingleNode {
         curr->next = NULL;
     }
 
+    /* Break a linked list at the specified nodes. */
+    inline static void split(SingleNode* prev, SingleNode* curr) {
+        if (prev != NULL) {
+            prev->next = NULL;
+        }
+    }
+
+    /* Join the list at the specified nodes. */
+    inline static void join(SingleNode* prev, SingleNode* curr) {
+        if (prev != NULL) {
+            prev->next = curr;
+        }
+    }
+
 };
 
 
@@ -243,6 +257,26 @@ struct DoubleNode {
         }
         if (next != NULL) {
             next->prev = prev;
+        }
+    }
+
+    /* Break a linked list at the specified nodes. */
+    inline static void split(DoubleNode* prev, DoubleNode* curr) {
+        if (prev != NULL) {
+            prev->next = NULL;
+        }
+        if (curr != NULL) {
+            curr->prev = NULL;
+        }
+    }
+
+    /* Join the list at the specified nodes. */
+    inline static void join(DoubleNode* prev, DoubleNode* curr) {
+        if (prev != NULL) {
+            prev->next = curr;
+        }
+        if (curr != NULL) {
+            curr->prev = prev;
         }
     }
 };
@@ -724,7 +758,7 @@ public:
     }
 
     /*Get the total amount of memory consumed by the hash table.*/
-    size_t nbytes() {
+    inline size_t nbytes() {
         return sizeof(HashTable<T>);
     }
 

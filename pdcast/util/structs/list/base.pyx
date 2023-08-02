@@ -1,18 +1,9 @@
+# distutils: language = c++
 """This module contains pure C structs, constants, and type definitions for use
 in linked list-based data structures.
 """
 from cpython.ref cimport PyObject
 from libc.stdlib cimport malloc, free
-
-
-#########################
-####    CONSTANTS    ####
-#########################
-
-
-# DEBUG = TRUE adds print statements for memory allocation/deallocation to help
-# identify memory leaks.
-cdef const bint DEBUG = True
 
 
 #########################
@@ -414,9 +405,6 @@ cdef class LinkedList:
             other_list = <PyObject*>items
             self._extend(other_list)
 
-    def __cinit__(self):
-        self.size = 0
-
     ########################
     ####    ABSTRACT    ####
     ########################
@@ -645,6 +633,16 @@ cdef class LinkedList:
     cdef size_t _nbytes(self):
         """Get the total number of bytes used by the list."""
         raise NotImplementedError()
+
+    def __len__(self) -> int:
+        """Get the total number of items in the list.
+
+        Returns
+        -------
+        int
+            The number of items in the list.
+        """
+        return NotImplementedError()
 
     def __iter__(self) -> Iterator[Any]:
         """Iterate through the list items in order.
@@ -983,7 +981,7 @@ cdef class LinkedList:
                 return False
 
         # if all elements are equal, the shorter list is smaller
-        return self.size < other.size
+        return len(self) < len(other)
 
     def __le__(self, other: object) -> bool:
         """Check if this list is lexographically less than or equal to another
@@ -1018,7 +1016,7 @@ cdef class LinkedList:
                 return False
 
         # if all elements are equal, the shorter list is smaller
-        return self.size <= other.size
+        return len(self) <= len(other)
 
     def __eq__(self, other: object) -> bool:
         """Compare two lists for equality.
@@ -1041,7 +1039,7 @@ cdef class LinkedList:
         if not isinstance(other, type(self)):
             return NotImplemented
 
-        if self.size != <size_t>len(other):
+        if len(self) != len(other):
             return False
 
         return all(a == b for a, b in zip(self, other))
@@ -1078,7 +1076,7 @@ cdef class LinkedList:
                 return False
 
         # if all elements are equal, the longer list is greater
-        return self.size > other.size
+        return len(self) > len(other)
 
     def __ge__(self, other: object) -> bool:
         """Check if this list is lexographically greater than or equal to
@@ -1113,17 +1111,7 @@ cdef class LinkedList:
                 return False
 
         # if all elements are equal, the longer list is greater
-        return self.size >= other.size
-
-    def __len__(self) -> int:
-        """Get the total number of items in the list.
-
-        Returns
-        -------
-        int
-            The number of items in the list.
-        """
-        return self.size
+        return len(self) >= len(other)
 
     def __bool__(self) -> bool:
         """Treat empty lists as Falsy in boolean logic.
@@ -1133,7 +1121,7 @@ cdef class LinkedList:
         bool
             Indicates whether the list is empty.
         """
-        return bool(self.size)
+        return bool(len(self))
 
     def __str__(self):
         """Return a standard string representation of the list.
