@@ -1,3 +1,4 @@
+# distutils: language = c++
 """This module contains a pure C/Cython implementation of a doubly-linked list.
 """
 from typing import Any, Iterable, Iterator
@@ -39,11 +40,10 @@ cdef class DoublyLinkedList(LinkedList):
     """
 
     def __cinit__(self):
-        self.head = NULL
-        self.tail = NULL
+        self.view = new ListView[DoubleNode]()
 
     def __dealloc__(self):
-        self._clear()  # free all nodes and avoid dangling pointers
+        del self.view
 
     ########################
     ####    CONCRETE    ####
@@ -61,10 +61,8 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Appends are O(1) for both ends of the list.
         """
-        cdef DoubleNode* node = allocate_double_node(item)
-
-        # append to end of list
-        self._link_node(self.tail, node, NULL)
+        # append to tail of list
+        self.view.link(self.view.tail, self.view.allocate(item), NULL)
 
     cdef void _appendleft(self, PyObject* item):
         """Add an item to the beginning of the list.
@@ -81,10 +79,8 @@ cdef class DoublyLinkedList(LinkedList):
         This method is consistent with the standard library's
         :class:`collections.deque <python:collections.deque>` class.
         """
-        cdef DoubleNode* node = allocate_double_node(item)
-
-        # append to beginning of list
-        self._link_node(NULL, node, self.head)
+        # append to head of list
+        self.view.link(NULL, self.view.allocate(item), self.view.head)
 
     cdef void _insert(self, PyObject* item, long index):
         """Insert an item at the specified index.
@@ -108,17 +104,17 @@ cdef class DoublyLinkedList(LinkedList):
         Inserts are O(n) on average.
         """
         # allow negative indexing + check bounds
-        cdef size_t norm_index = normalize_index(index, self.size)
+        cdef size_t norm_index = normalize_index(index, self.view.size)
 
         # allocate new node
-        cdef DoubleNode* node = allocate_double_node(item)
+        cdef DoubleNode* node = self.view.allocate(item)
         cdef DoubleNode* curr
         cdef size_t i
 
         # insert node at specified index, starting from nearest end
-        if norm_index <= self.size // 2:
+        if norm_index <= self.view.size // 2:
             # iterate forwards from head
-            curr = self.head
+            curr = self.view.head
             for i in range(norm_index):
                 curr = curr.next
 
@@ -506,43 +502,7 @@ cdef class DoublyLinkedList(LinkedList):
         opens up the possibility of anticipating errors and handling them
         gracefully.
         """
-        # trivial case: empty list
-        if self.head is NULL:
-            return
-
-        cdef KeyedDoubleNode* decorated_head
-        cdef KeyedDoubleNode* decorated_tail
-        cdef Pair* pair
-        cdef SortError sort_err
-
-        # if a key func is given, decorate the list and sort by key
-        if key is not NULL:
-            decorated_head, decorated_tail = decorate_double(
-                self.head, self.tail, key
-            )
-            try:
-                pair = merge_sort(decorated_head, decorated_tail, self.size, reverse)
-                self.head, self.tail = undecorate_double(<KeyedDoubleNode*>pair.first)
-                free(pair)
-            except SortError as err:
-                # NOTE: no cleanup necessary for decorated sort
-                sort_err = <SortError>err
-                raise sort_err.original
-            return
-
-        # otherwise, sort the list directly
-        try:
-            pair = merge_sort(self.head, self.tail, self.size, reverse)
-            self.head = <DoubleNode*>pair.first
-            self.tail = <DoubleNode*>pair.second
-            free(pair)
-        except SortError as err:
-            # NOTE: we have to manually reassign the head and tail of the list
-            # to avoid memory leaks.
-            sort_err = <SortError>err
-            self.head = <DoubleNode*>sort_err.head
-            self.tail = <DoubleNode*>sort_err.tail
-            raise sort_err.original  # raise original exception
+        sort(self.view, key, reverse)
 
     cdef void _reverse(self):
         """Reverse the order of the list in-place.
@@ -1014,147 +974,6 @@ cdef class DoublyLinkedList(LinkedList):
             curr = curr.next
 
         return False
-
-    #######################
-    ####    PRIVATE    ####
-    #######################
-
-    cdef void _link_node(self, DoubleNode* prev, DoubleNode* curr, DoubleNode* next):
-        """Add a node to the list.
-
-        Parameters
-        ----------
-        prev : DoubleNode*
-            The node that should precede the new node in the list.
-        curr : DoubleNode*
-            The node to add to the list.
-        next : DoubleNode*
-            The node that should follow the new node in the list.
-
-        Notes
-        -----
-        This is a helper method for doing the pointer manipulations of adding a
-        node to the list, since it's used in multiple places.
-        """
-        # prev <-> curr
-        curr.prev = prev
-        if prev is NULL:
-            self.head = curr
-        else:
-            prev.next = curr
-
-        # curr <-> next
-        curr.next = next
-        if next is NULL:
-            self.tail = curr
-        else:
-            next.prev = curr
-
-        # increment size
-        self.size += 1
-
-    cdef void _unlink_node(self, DoubleNode* curr):
-        """Remove a node from the list.
-
-        Parameters
-        ----------
-        curr : DoubleNode*
-            The node to remove from the list.
-
-        Notes
-        -----
-        This is a helper method for doing the pointer manipulations of removing
-        a node, as well as handling reference counts and freeing the underlying
-        memory.
-        """
-        # prev <-> next
-        if curr.prev is NULL:
-            self.head = curr.next
-        else:
-            curr.prev.next = curr.next
-
-        # prev <-> next
-        if curr.next is NULL:
-            self.tail = curr.prev
-        else:
-            curr.next.prev = curr.prev
-
-        # decrement size
-        self.size -= 1
-
-    cdef (DoubleNode*, DoubleNode*, size_t) _stage_nodes(
-        self, PyObject* items, bint reverse
-    ):
-        """Stage a sequence of nodes for insertion into the list.
-
-        Parameters
-        ----------
-        items : PyObject*
-            An iterable of items to insert into the list.
-        reverse : bool
-            Indicates whether to reverse the order of the items during staging.
-
-        Returns
-        -------
-        head : DoubleNode*
-            The head of the staged list (or NULL if no values are staged).
-        tail : DoubleNode*
-            The tail of the staged list (or NULL if no values are staged).
-        count : size_t
-            The number of nodes in the staged list.
-        """
-        # C API equivalent of iter(items)
-        cdef PyObject* iterator = PyObject_GetIter(items)  # generates a reference
-        if iterator is NULL:
-            raise_exception()
-
-        # NOTE: we stage the items in a temporary list to ensure we don't
-        # modify the original if we encounter any errors
-        cdef DoubleNode* staged_head = NULL
-        cdef DoubleNode* staged_tail = NULL
-        cdef DoubleNode* node
-        cdef PyObject* item
-        cdef size_t count = 0
-
-        # iterate over items (equivalent to `for item in iterator`)
-        while True:
-            item = PyIter_Next(iterator)  # generates a reference
-            if item is NULL:  # end of iterator or error
-                if PyErr_Occurred():
-                    Py_DECREF(item)
-                    Py_DECREF(iterator)
-                    while staged_head is not NULL:  # clean up staged items
-                        node = staged_head
-                        staged_head = staged_head.next
-                        Py_DECREF(node.value)
-                        free(node)
-                    raise_exception()  # propagate error
-                break
-
-            # allocate new node
-            node = allocate_double_node(item)
-
-            # link to staged list
-            if reverse:  # insert at front
-                if staged_tail is NULL:
-                    staged_tail = node
-                else:
-                    staged_head.prev = node
-                    node.next = staged_head
-                staged_head = node
-            else:  # insert at end
-                if staged_head is NULL:
-                    staged_head = node
-                else:
-                    staged_tail.next = node
-                    node.prev = staged_tail
-                staged_tail = node
-
-            count += 1  # increment count
-            Py_DECREF(item)  # release reference on item
-
-        Py_DECREF(iterator)  # release reference on iterator
-        return (staged_head, staged_tail, count)
 
 
 #####################

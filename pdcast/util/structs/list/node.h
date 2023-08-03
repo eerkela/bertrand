@@ -17,7 +17,6 @@
 // retrace our steps back to the original configuration.
 
 
-
 /////////////////////////
 ////    CONSTANTS    ////
 /////////////////////////
@@ -1293,7 +1292,7 @@ public:
         delete table;
     }
 
-    /* Allocate a new node for the list. */
+    /* Allocate a new node for the dictionary. */
     inline Mapped<T>* allocate(PyObject* value, PyObject* mapped) {
         PyObject* python_repr;
         const char* c_repr;
@@ -1308,6 +1307,20 @@ public:
 
         // delegate to node-specific allocator
         return Mapped<T>::allocate(freelist, value, mapped);
+    }
+
+    /* Allocate a new node from a key-value pair. */
+    inline Mapped<T>* allocate(PyObject* value) {
+        // Check that the item is a tuple of size 2 (key-value pair)
+        if (!PyTuple_Check(value) || PyTuple_Size(value) != 2) {
+            PyErr_Format(PyExc_TypeError, "Expected tuple of size 2, got %R", value);
+            return NULL;  // raise exception
+        }
+
+        // extract key and value and allocate a new node
+        PyObject* key = PyTuple_GetItem(value, 0);
+        value = PyTuple_GetItem(value, 1);
+        allocate(key, value);  // pass to 2-argument overload
     }
 
     /* Free a node. */

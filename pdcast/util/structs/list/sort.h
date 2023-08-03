@@ -65,6 +65,7 @@ struct Keyed : public T {
 //////////////////////
 
 
+/* Sort a ListView in-place. */
 template <typename NodeType>
 void sort(ListView<NodeType>* view, PyObject* key = NULL, bool reverse = false) {
     // trivial case: empty list
@@ -96,6 +97,48 @@ void sort(ListView<NodeType>* view, PyObject* key = NULL, bool reverse = false) 
     std::pair<NodeType*, NodeType*> sorted = undecorate(key_view);
     view->head = sorted.first;
     view->tail = sorted.second;
+}
+
+
+/* Sort a SetView in-place. */
+template <typename NodeType>
+void sort(SetView<NodeType>* view, PyObject* key = NULL, bool reverse = false) {
+    // cast SetView to ListView
+    ListView<NodeType>* list_view = new ListView<NodeType>();
+    if (list_view == NULL) {
+        PyErr_NoMemory();
+        return;
+    }
+    list_view->head = view->head;
+    list_view->tail = view->tail;
+    list_view->size = view->size;
+
+    // sort the ListView
+    sort(list_view, key, reverse);  // updates SetView in-place
+
+    // free the ListView
+    free(list_view);  // avoids calling destructor on nodes
+}
+
+
+/* Sort a DictView in-place. */
+template <typename NodeType>
+void sort(DictView<NodeType>* view, PyObject* key = NULL, bool reverse = false) {
+    // cast DictView to ListView
+    ListView<NodeType>* list_view = new ListView<NodeType>();
+    if (list_view == NULL) {
+        PyErr_NoMemory();
+        return;
+    }
+    list_view->head = view->head;
+    list_view->tail = view->tail;
+    list_view->size = view->size;
+
+    // sort the ListView
+    sort(list_view, key, reverse);  // updates DictView in-place
+
+    // free the ListView
+    free(list_view);  // avoids calling destructor on nodes
 }
 
 
