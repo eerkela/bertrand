@@ -125,7 +125,7 @@ namespace SinglyLinked {
         }
 
         // else, find index of item
-        size_t idx = index(view, item);
+        size_t idx = SinglyLinked::index(view, item);
         if (idx >= start && idx < stop) {
             return 1;
         }

@@ -1,4 +1,4 @@
-"""Cython headers for pdcast/util/structs/list/reverse.h"""
+"""Cython headers for pdcast/util/structs/list/reverse.h (`SinglyLinked` namespace)."""
 from .view cimport ListView, SetView, DictView
 
 cdef extern from "reverse.h" namespace "SinglyLinked":

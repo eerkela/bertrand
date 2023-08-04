@@ -4,9 +4,9 @@
 from typing import Any, Iterable, Iterator
 
 
-#######################
-####    CLASSES    ####
-#######################
+####################
+####    LIST    ####
+####################
 
 
 cdef class DoublyLinkedList(LinkedList):
@@ -23,20 +23,31 @@ cdef class DoublyLinkedList(LinkedList):
 
     Attributes
     ----------
-    head : DoubleNode
-        The first node in the list.  This is a pure C struct and is not
-        normally accessible from Python.
-    tail : DoubleNode
-        The last node in the list, with the same restrictions as ``head``.
+    view : ListView[DoubleNode]*
+        The underlying view of the list.  This is a pointer to a C++ object
+        that tracks the list's head and tail pointers and manages memory for
+        each of its nodes.  It is not intended to be accessed by the user, and
+        manipulating it directly it can result in memory leaks and/or undefined
+        behavior.  Thorough inspection of the C++ header files is recommended
+        before attempting to access this attribute.
 
     Notes
     -----
-    This structure behaves similarly to a
+    This data structure behaves similarly to a
     :class:`collections.deque <python:collections.deque>` object, but is
-    implemented as a standard list instead of a list of arrays.
+    implemented as a standard doubly-linked list instead of a list of arrays.
 
-    It is implemented in pure Cython to maximize performance, and generally
-    performs on par with the built-in :class:`list <python:list>` type.
+    The list is implemented in pure C++ to maximize performance, which is
+    generally on par with the standard library.  This implementation retains
+    all the usual tradeoffs of linked lists vs arrays (e.g. O(n) indexing vs
+    O(1) appends), but is highly optimized and reduces compromises as much as
+    possible.
+
+    .. warning::
+
+        The list is not thread-safe.  If you need to use it in a multithreaded
+        context, you should use a :class:`threading.Lock` to synchronize
+        access.
     """
 
     def __cinit__(self):
@@ -255,26 +266,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Removals are O(n) on average.
         """
-        cdef DoubleNode* node = self.head
-        cdef int comp
-
-        # remove first node that matches item
-        while node is not NULL:
-            # C API equivalent of the == operator
-            comp = PyObject_RichCompareBool(node.value, item, Py_EQ)
-            if comp == -1:  # == failed
-                raise_exception()
-
-            # remove if equal
-            if comp == 1:
-                self._unlink_node(node)
-                free_node(node)
-                return
-
-            # advance to next node
-            node = node.next
-
-        raise ValueError(f"{repr(<object>item)} is not in list")
+        remove(self.view, item)  # from remove.h
 
     cdef PyObject* _pop(self, long index = -1):
         """Remove and return the item at the specified index.
@@ -488,12 +480,12 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Iterating through a :class:`LinkedList` is O(n) on average.
         """
-        cdef DoubleNode* curr = self.head
+        cdef DoubleNode* curr = self.view.head
 
         while curr is not NULL:
             Py_INCREF(curr.value)
             yield <object>curr.value  # this returns ownership to Python
-            curr = curr.next
+            curr = <DoubleNode*>curr.next
 
     def __reversed__(self) -> Iterator[Any]:
         """Iterate through the list in reverse order.
@@ -507,12 +499,12 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Iterating through a :class:`LinkedList` is O(n) on average.
         """
-        cdef DoubleNode* curr = self.tail
+        cdef DoubleNode* curr = self.view.tail
 
         while curr is not NULL:
             Py_INCREF(curr.value)
             yield <object>curr.value  # this returns ownership to Python
-            curr = curr.prev
+            curr = <DoubleNode*>curr.prev
 
     def __getitem__(self, key: int | slice) -> Any:
         """Index the list for a particular item or slice.
@@ -907,7 +899,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Membership checks are O(n) on average.
         """
-        return contains(self.view, <PyObject*>item)  # from contains.h
+        return bool(contains(self.view, <PyObject*>item))  # from contains.h
 
 
 #####################

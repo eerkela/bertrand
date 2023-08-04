@@ -20,7 +20,7 @@ namespace SinglyLinked {
         NodeType* next;
         NodeType* prev = NULL;
 
-        // swap all next/prev pointers
+        // swap all next pointers
         while (curr != NULL) {
             next = curr->next;
             curr->next = prev;
@@ -41,7 +41,7 @@ namespace SinglyLinked {
         Hashed<NodeType>* next;
         Hashed<NodeType>* prev = NULL;
 
-        // swap all next/prev pointers
+        // swap all next pointers
         while (curr != NULL) {
             next = (Hashed<NodeType>*)curr->next;
             curr->next = prev;
@@ -62,7 +62,7 @@ namespace SinglyLinked {
         Mapped<NodeType>* next;
         Mapped<NodeType>* prev = NULL;
 
-        // swap all next/prev pointers
+        // swap all next pointers
         while (curr != NULL) {
             next = (Mapped<NodeType>*)curr->next;
             curr->next = prev;

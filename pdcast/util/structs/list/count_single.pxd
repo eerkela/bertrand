@@ -1,4 +1,4 @@
-"""Cython headers for pdcast/util/structs/list/extend.h (`SinglyLinked` namespace)"""
+"""Cython headers for pdcast/util/structs/list/count.h (`SinglyLinked` namespace)"""
 from cpython.ref cimport PyObject
 
 from .node cimport ListView, SetView, DictView
