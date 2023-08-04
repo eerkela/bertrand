@@ -61,8 +61,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Appends are O(1) for both ends of the list.
         """
-        # append to tail of list
-        self.view.link(self.view.tail, self.view.allocate(item), NULL)
+        append(self.view, item)  # from append.h
 
     cdef void _appendleft(self, PyObject* item):
         """Add an item to the beginning of the list.
@@ -79,8 +78,7 @@ cdef class DoublyLinkedList(LinkedList):
         This method is consistent with the standard library's
         :class:`collections.deque <python:collections.deque>` class.
         """
-        # append to head of list
-        self.view.link(NULL, self.view.allocate(item), self.view.head)
+        appendleft(self.view, item)  # from append.h
 
     cdef void _insert(self, PyObject* item, long index):
         """Insert an item at the specified index.
@@ -142,25 +140,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Extends are O(m), where `m` is the length of ``items``.
         """
-        cdef DoubleNode* staged_head
-        cdef DoubleNode* staged_tail
-        cdef size_t count
-
-        # NOTE: we stage the items in a temporary list to ensure we don't
-        # modify the original if we encounter any errors
-        staged_head, staged_tail, count = self._stage_nodes(items, False)
-        if staged_head is NULL:
-            return
-
-        # append staged items to end of list
-        self.size += count
-        if self.tail is NULL:
-            self.head = staged_head
-            self.tail = staged_tail
-        else:
-            self.tail.next = staged_head
-            staged_head.prev = self.tail
-            self.tail = staged_tail
+        extend(self.view, items)  # from extend.h
 
     cdef void _extendleft(self, PyObject* items):
         """Add multiple items to the beginning of the list.
@@ -179,25 +159,7 @@ cdef class DoublyLinkedList(LinkedList):
         that class, the series of left appends results in reversing the order
         of elements in ``items``.
         """
-        cdef DoubleNode* staged_head
-        cdef DoubleNode* staged_tail
-        cdef size_t count
-
-        # NOTE: we stage the items in a temporary list to ensure we don't
-        # modify the original if we encounter any errors
-        staged_head, staged_tail, count = self._stage_nodes(items, True)
-        if staged_head is NULL:
-            return
-
-        # append staged items to beginning of list
-        self.size += count
-        if self.head is NULL:
-            self.head = staged_head
-            self.tail = staged_tail
-        else:
-            self.head.prev = staged_tail
-            staged_tail.next = self.head
-            self.head = staged_head
+        extendleft(self.view, items)  # from extend.h
 
     cdef size_t _index(self, PyObject* item, long start = 0, long stop = -1):
         """Get the index of an item within the list.
@@ -252,7 +214,12 @@ cdef class DoublyLinkedList(LinkedList):
 
         raise ValueError(f"{repr(<object>item)} is not in list")
 
-    cdef size_t _count(self, PyObject* item):
+    cdef size_t _count(
+        self,
+        PyObject* item,
+        long long start = 0,
+        long long stop = -1
+    ):
         """Count the number of occurrences of an item in the list.
 
         Parameters
@@ -269,25 +236,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Counting is O(n).
         """
-        cdef DoubleNode* node = self.head
-        cdef size_t count = 0
-        cdef int comp
-
-        # we iterate entirely at the C level for maximum performance
-        while node is not NULL:
-            # C API equivalent of the == operator
-            comp = PyObject_RichCompareBool(node.value, item, Py_EQ)
-            if comp == -1:  # == failed
-                raise_exception()
-
-            # increment count if equal
-            if comp == 1:
-                count += 1
-
-            # advance to next node
-            node = node.next
-
-        return count
+        return count(self.view, item, start, stop)  # from count.h
 
     cdef void _remove(self, PyObject* item):
         """Remove an item from the list.
@@ -450,19 +399,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Clearing a list is O(n).
         """
-        cdef DoubleNode* node = self.head
-        cdef DoubleNode* temp
-
-        # free all nodes
-        while node is not NULL:
-            temp = node
-            node = node.next
-            free_node(temp)
-
-        # avoid dangling pointers
-        self.head = NULL
-        self.tail = NULL
-        self.size = 0
+        self.view.clear()  # from view.h
 
     cdef void _sort(self, PyObject* key = NULL, bint reverse = False):
         """Sort the list in-place.
@@ -502,7 +439,7 @@ cdef class DoublyLinkedList(LinkedList):
         opens up the possibility of anticipating errors and handling them
         gracefully.
         """
-        sort(self.view, key, reverse)
+        sort(self.view, key, reverse)  # from sort.h
 
     cdef void _reverse(self):
         """Reverse the order of the list in-place.
@@ -511,19 +448,33 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Reversing a :class:`LinkedList` is O(n).
         """
-        cdef DoubleNode* node = self.head
+        reverse(self.view)  # from reverse.h
 
-        # swap all prev and next pointers
-        while node is not NULL:
-            node.prev, node.next = node.next, node.prev
-            node = node.prev  # next is now prev
+    cdef void _rotate(self, ssize_t steps = 1):
+        """Rotate the list to the right by the specified number of steps.
 
-        # swap head and tail
-        self.head, self.tail = self.tail, self.head
+        Parameters
+        ----------
+        steps : ssize_t, optional
+            The number of steps to rotate the list.  If this is positive, the
+            list will be rotated to the right.  If this is negative, the list
+            will be rotated to the left.  The default is ``1``.
+
+        Notes
+        -----
+        Rotations are O(steps).
+
+        This method is consistent with the standard library's
+        :class:`collections.deque <python:collections.deque>` class.
+        """
+        rotate(self.view, steps)  # from rotate.h
 
     cdef size_t _nbytes(self):
         """Get the total number of bytes used by the list."""
-        return sizeof(self) + self.size * sizeof(DoubleNode)
+        import sys
+        cdef size_t total = self.view.nbytes()  # from view.h
+        total += sys.getsizeof(self)  # add size of Python wrapper
+        return total
 
     def __iter__(self) -> Iterator[Any]:
         """Iterate through the list items in order.
@@ -956,24 +907,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Membership checks are O(n) on average.
         """
-        cdef DoubleNode* curr = self.head
-        cdef PyObject* borrowed = <PyObject*>item  # borrowed reference
-
-        # we iterate entirely at the C level for maximum performance
-        while curr is not NULL:
-            # C API equivalent of the == operator
-            comp = PyObject_RichCompareBool(curr.value, borrowed, Py_EQ)
-            if comp == -1:  # == failed
-                raise_exception()
-
-            # remove node if equal
-            if comp == 1:
-                return True
-
-            # advance to next node
-            curr = curr.next
-
-        return False
+        return contains(self.view, <PyObject*>item)  # from contains.h
 
 
 #####################

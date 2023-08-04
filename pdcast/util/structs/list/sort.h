@@ -3,11 +3,10 @@
 #ifndef SORT_H
 #define SORT_H
 
-
 #include <cstddef>  // for size_t
 #include <queue>  // for std::queue
 #include <Python.h>  // for CPython API
-#include <node.h>  // for node definitions, views, etc.
+#include <view.h>  // for views
 
 
 ///////////////////////
@@ -75,29 +74,35 @@ void sort(ListView<NodeType>* view, PyObject* key = NULL, bool reverse = false) 
 
     // if no key function is given, sort the list in-place
     if (key == NULL) {
-        merge_sort(view, reverse);
+        _merge_sort(view, reverse);
         return;
     }
 
     // decorate the list with precomputed keys
-    ListView<Keyed<NodeType>>* key_view = decorate(view, key);
+    ListView<Keyed<NodeType>>* key_view = _decorate(view, key);
     if (key_view == NULL) {
         return;  // propagate the error
     }
 
     // sort the decorated list in-place
     std::pair<Keyed<NodeType>*, Keyed<NodeType>*> key_sorted;
-    merge_sort(key_view, reverse);
+    _merge_sort(key_view, reverse);
     if (PyErr_Occurred()) {  // error during comparison
         delete key_view;  // free the decorated list
         return;  // propagate
     }
 
     // undecorate the list and update the view in-place
-    std::pair<NodeType*, NodeType*> sorted = undecorate(key_view);
+    std::pair<NodeType*, NodeType*> sorted = _undecorate(key_view);
     view->head = sorted.first;
     view->tail = sorted.second;
 }
+
+
+// TODO: might need to modify the node type that these overloads coerce to.
+// The view should maybe be a ListView<Hashed<NodeType>> or
+// ListView<Mapped<NodeType>>.  Of course if it works with the parent types,
+// then that may be more efficient.
 
 
 /* Sort a SetView in-place. */
@@ -149,7 +154,7 @@ void sort(DictView<NodeType>* view, PyObject* key = NULL, bool reverse = false) 
 
 /* Decorate a linked list with the specified key function. */
 template <typename NodeType>
-ListView<Keyed<NodeType>>* decorate(ListView<NodeType>* view, PyObject* key) {
+ListView<Keyed<NodeType>>* _decorate(ListView<NodeType>* view, PyObject* key) {
     // initialize an empty ListView to hold the decorated list
     ListView<Keyed<NodeType>>* decorated = new ListView<Keyed<NodeType>>();
     if (decorated == NULL) {
@@ -183,7 +188,7 @@ ListView<Keyed<NodeType>>* decorate(ListView<NodeType>* view, PyObject* key) {
 
 /* Rearrange a linked list to reflect the changes from a keyed sort operation. */
 template <typename NodeType>
-std::pair<NodeType*, NodeType*> undecorate(ListView<Keyed<NodeType>>* view) {
+std::pair<NodeType*, NodeType*> _undecorate(ListView<Keyed<NodeType>>* view) {
     // allocate a pair to hold the head and tail of the undecorated list
     std::pair<NodeType*, NodeType*> sorted = std::make_pair(nullptr, nullptr);
     Keyed<NodeType>* keyed = view->head;
@@ -222,13 +227,13 @@ std::pair<NodeType*, NodeType*> undecorate(ListView<Keyed<NodeType>>* view) {
 
 /* Sort a linked list in-place using an iterative merge sort algorithm. */
 template <typename NodeType>
-void merge_sort(ListView<NodeType>* view, bool reverse) {
+void _merge_sort(ListView<NodeType>* view, bool reverse) {
     if (DEBUG) {
         printf("    -> malloc: temp node\n");
     }
 
     // NOTE: we need a temporary node to act as the head of the merged sublists.
-    // If we allocate it here, we can pass it to `merge()` as an argument and
+    // If we allocate it here, we can pass it to `_merge()` as an argument and
     // reuse it for every sublist.  This avoids an extra malloc/free cycle in
     // each iteration.
     NodeType* temp = (NodeType*)malloc(sizeof(NodeType));
@@ -263,9 +268,9 @@ void merge_sort(ListView<NodeType>* view, bool reverse) {
         while (unsorted.first != NULL) {
             // split the list into two sublists of size `length`
             left.first = unsorted.first;
-            left.second = walk(left.first, length - 1);
+            left.second = _walk(left.first, length - 1);
             right.first = (NodeType*)left.second->next;  // may be NULL
-            right.second = walk(right.first, length - 1);
+            right.second = _walk(right.first, length - 1);
             if (right.second == NULL) {
                 unsorted.first = NULL;
             } else {
@@ -278,10 +283,10 @@ void merge_sort(ListView<NodeType>* view, bool reverse) {
             NodeType::split(right.second, unsorted.first);  // right <-x-> unsorted
 
             // merge the left and right sublists in sorted order
-            merged = merge(left, right, temp, reverse);
+            merged = _merge(left, right, temp, reverse);
             if (PyErr_Occurred()) {  // error during `<` comparison
                 // undo the splits to recover a coherent list
-                merged = recover(sorted, left, right, unsorted);
+                merged = _recover(sorted, left, right, unsorted);
                 view->head = merged.first;
                 view->tail = merged.second;
                 if (DEBUG) {
@@ -320,7 +325,7 @@ void merge_sort(ListView<NodeType>* view, bool reverse) {
 
 /* Walk along a linked list by the specified number of nodes. */
 template <typename NodeType>
-inline NodeType* walk(NodeType* curr, size_t length) {
+inline NodeType* _walk(NodeType* curr, size_t length) {
     // if we're at the end of the list, there's nothing left to traverse
     if (curr == NULL) {
         return NULL;
@@ -339,7 +344,7 @@ inline NodeType* walk(NodeType* curr, size_t length) {
 
 /* Merge two sublists in sorted order. */
 template <typename NodeType>
-std::pair<NodeType*, NodeType*> merge(
+std::pair<NodeType*, NodeType*> _merge(
     std::pair<NodeType*, NodeType*> left,
     std::pair<NodeType*, NodeType*> right,
     NodeType* temp,
@@ -392,9 +397,9 @@ std::pair<NodeType*, NodeType*> merge(
 }
 
 
-/* Undo the split step in merge_sort() to recover a coherent list in case of error. */
+/* Undo the split step in _merge_sort() to recover a coherent list in case of error. */
 template <typename NodeType>
-std::pair<NodeType*, NodeType*> recover(
+std::pair<NodeType*, NodeType*> _recover(
     std::pair<NodeType*, NodeType*> sorted,
     std::pair<NodeType*, NodeType*> left,
     std::pair<NodeType*, NodeType*> right,

@@ -370,6 +370,11 @@ cdef void raise_exception() except *:
 # a subclass of Hashable, and if not, raise an error.
 
 
+# TODO: with C++ headers, there's no need for a separate Cython layer.  We can
+# just go with pure python methods and thoroughly document them in a single
+# place.
+
+
 cdef class LinkedList:
     """Base class for all linked list data structures.
 
