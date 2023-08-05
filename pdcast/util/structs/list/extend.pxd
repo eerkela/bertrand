@@ -1,9 +1,10 @@
-"""Cython headers for pdcast/util/structs/list/extend.h (`DoublyLinked` namespace)"""
+"""Cython headers for pdcast/util/structs/list/extend.h"""
 from cpython.ref cimport PyObject
 
 from .node cimport ListView, SetView, DictView
 
 cdef extern from "extend.h":
+    # shared
     void extend[NodeType](ListView[NodeType]* view, PyObject* items) except +*
     void extend[NodeType](SetView[NodeType]* view, PyObject* items) except +*
     void extend[NodeType](DictView[NodeType]* view, PyObject* items) except +*
@@ -21,13 +22,25 @@ cdef extern from "extend.h":
         PyObject* items
     ) except +*
 
-cdef extern from "extend.h" namespace "DoublyLinked":
-    void extendbefore[NodeType](
+    # singly-linked
+    void extendbefore_single[NodeType](
         SetView[NodeType*] view,
         PyObject* sentinel,
         PyObject* items
     ) except +*
-    void extendbefore[NodeType](
+    void extendbefore_single[NodeType](
+        DictView[NodeType*] view,
+        PyObject* sentinel,
+        PyObject* items
+    ) except +*
+
+    # doubly-linked
+    void extendbefore_double[NodeType](
+        SetView[NodeType*] view,
+        PyObject* sentinel,
+        PyObject* items
+    ) except +*
+    void extendbefore_double[NodeType](
         DictView[NodeType*] view,
         PyObject* sentinel,
         PyObject* items

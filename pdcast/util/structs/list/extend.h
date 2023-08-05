@@ -96,119 +96,117 @@ inline void extendafter(
 }
 
 
-namespace SinglyLinked {
+// NOTE: due to the singly-linked nature of the list, extendafter() is
+// O(m) while extendbefore() is O(n + m).  This is because we need to
+// traverse the whole list to find the node before the sentinel.
 
-    // NOTE: due to the singly-linked nature of the list, extendafter() is
-    // O(m) while extendbefore() is O(n + m).  This is because we need to
-    // traverse the whole list to find the node before the sentinel.
 
-    /* Insert elements into a set before a given sentinel value. */
-    template <typename NodeType>
-    inline void extendbefore(
-        SetView<NodeType>* view,
-        PyObject* sentinel,
-        PyObject* items
-    ) {
-        // search for sentinel
-        Hashed<NodeType>* right = view->search(sentinel);
-        if (right == NULL) {  // sentinel not found
-            PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
-            return;
-        }
-
-        // iterate from head to find left bound
-        Hashed<NodeType>* left;
-        Hashed<NodeType>* next;
-        if (right == view->head) {
-            left = NULL;
-        } else {
-            left = view->head;
-            next = (Hashed<NodeType>*)left->next;
-            while (next != right) {
-                left = next;
-                next = (Hashed<NodeType>*)next->next;
-            }
-        }
-
-        // insert items between the left and right bounds
-        _extend_right_to_left(view, left, right, items);  // handles errors
+/* Insert elements into a singly-linked set before a given sentinel value. */
+template <typename NodeType>
+inline void extendbefore_single(
+    SetView<NodeType>* view,
+    PyObject* sentinel,
+    PyObject* items
+) {
+    // search for sentinel
+    Hashed<NodeType>* right = view->search(sentinel);
+    if (right == NULL) {  // sentinel not found
+        PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
+        return;
     }
 
-    /* Insert elements into a set before a given sentinel value. */
-    template <typename NodeType>
-    inline void extendbefore(
-        DictView<NodeType>* view,
-        PyObject* sentinel,
-        PyObject* items
-    ) {
-                // search for sentinel
-        Mapped<NodeType>* right = view->search(sentinel);
-        if (right == NULL) {  // sentinel not found
-            PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
-            return;
+    // iterate from head to find left bound
+    Hashed<NodeType>* left;
+    Hashed<NodeType>* next;
+    if (right == view->head) {
+        left = NULL;
+    } else {
+        left = view->head;
+        next = (Hashed<NodeType>*)left->next;
+        while (next != right) {
+            left = next;
+            next = (Hashed<NodeType>*)next->next;
         }
-
-        // iterate from head to find left bound
-        Mapped<NodeType>* left;
-        Mapped<NodeType>* next;
-        if (right == view->head) {
-            left = NULL;
-        } else {
-            left = view->head;
-            next = (Mapped<NodeType>*)left->next;
-            while (next != right) {
-                left = next;
-                next = (Mapped<NodeType>*)next->next;
-            }
-        }
-
-        // insert items between the left and right bounds
-        _extend_right_to_left(view, left, right, items);  // handles errors
     }
 
+    // insert items between the left and right bounds
+    _extend_right_to_left(view, left, right, items);  // handles errors
 }
 
 
-namespace DoublyLinked {
-
-    /* Insert elements into a set after a given sentinel value. */
-    template <typename NodeType>
-    inline void extendbefore(
-        SetView<NodeType>* view,
-        PyObject* sentinel,
-        PyObject* items
-    ) {
-        // search for sentinel
-        Hashed<NodeType>* right = view->search(sentinel);
-        if (right == NULL) {  // sentinel not found
-            PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
-            return;
-        }
-        Hashed<NodeType>* left = (Hashed<NodeType>*)view->prev;  // use prev pointer
-
-        // insert items between the left and right bounds
-        _extend_right_to_left(view, left, right, items);  // handles errors
+/* Insert elements into a singly-linked dictionary before a given sentinel value. */
+template <typename NodeType>
+inline void extendbefore_single(
+    DictView<NodeType>* view,
+    PyObject* sentinel,
+    PyObject* items
+) {
+            // search for sentinel
+    Mapped<NodeType>* right = view->search(sentinel);
+    if (right == NULL) {  // sentinel not found
+        PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
+        return;
     }
 
-    /* Insert elements into a dictionary after a given sentinel value. */
-    template <typename NodeType>
-    inline void extendbefore(
-        SetView<NodeType>* view,
-        PyObject* sentinel,
-        PyObject* items
-    ) {
-        // search for sentinel
-        Mapped<NodeType>* right = view->search(sentinel);
-        if (right == NULL) {  // sentinel not found
-            PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
-            return;
+    // iterate from head to find left bound
+    Mapped<NodeType>* left;
+    Mapped<NodeType>* next;
+    if (right == view->head) {
+        left = NULL;
+    } else {
+        left = view->head;
+        next = (Mapped<NodeType>*)left->next;
+        while (next != right) {
+            left = next;
+            next = (Mapped<NodeType>*)next->next;
         }
-        Mapped<NodeType>* left = (Mapped<NodeType>*)view->prev;  // use prev pointer
-
-        // insert items between the left and right bounds
-        _extend_right_to_left(view, left, right, items);  // handles errors
     }
 
+    // insert items between the left and right bounds
+    _extend_right_to_left(view, left, right, items);  // handles errors
+}
+
+
+// NOTE: doubly-linked lists, on the other hand, can do it in O(m) time.
+
+
+/* Insert elements into a doubly-linked set after a given sentinel value. */
+template <typename NodeType>
+inline void extendbefore_double(
+    SetView<NodeType>* view,
+    PyObject* sentinel,
+    PyObject* items
+) {
+    // search for sentinel
+    Hashed<NodeType>* right = view->search(sentinel);
+    if (right == NULL) {  // sentinel not found
+        PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
+        return;
+    }
+    Hashed<NodeType>* left = (Hashed<NodeType>*)view->prev;  // use prev pointer
+
+    // insert items between the left and right bounds
+    _extend_right_to_left(view, left, right, items);  // handles errors
+}
+
+
+/* Insert elements into a doubly-linked dictionary after a given sentinel value. */
+template <typename NodeType>
+inline void extendbefore_double(
+    SetView<NodeType>* view,
+    PyObject* sentinel,
+    PyObject* items
+) {
+    // search for sentinel
+    Mapped<NodeType>* right = view->search(sentinel);
+    if (right == NULL) {  // sentinel not found
+        PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
+        return;
+    }
+    Mapped<NodeType>* left = (Mapped<NodeType>*)view->prev;  // use prev pointer
+
+    // insert items between the left and right bounds
+    _extend_right_to_left(view, left, right, items);  // handles errors
 }
 
 

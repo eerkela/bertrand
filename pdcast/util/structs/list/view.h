@@ -71,6 +71,58 @@ const size_t PRIMES[29] = {  // prime numbers to use for double hashing
 };
 
 
+/////////////////////////
+////    FUNCTIONS    ////
+/////////////////////////
+
+
+/* Allow Python-style negative indexing with wraparound and boundschecking. */
+inline size_t normalize_index(
+    PyObject* index,
+    size_t size,
+    bool truncate = false
+) {
+    // check that index is a Python integer
+    if (!PyLong_Check(index)) {
+        PyErr_SetString(PyExc_TypeError, "Index must be a Python integer");
+        return MAX_SIZE_T;
+    }
+
+    PyObject* pylong_zero = PyLong_FromSize_t(0);
+    PyObject* pylong_size = PyLong_FromSize_t(size);
+    int index_lt_zero = PyObject_RichCompareBool(index, pylong_zero, Py_LT);
+
+    // wraparound negative indices
+    // if index < 0:
+    //     index += size
+    if (index_lt_zero) {
+        index = PyNumber_Add(index, pylong_size);
+        index_lt_zero = PyObject_RichCompareBool(index, pylong_zero, Py_LT);
+    }
+
+    // boundscheck
+    // if index < 0 or index >= size:
+    //     if truncate:
+    //         if index < 0:
+    //             return 0
+    //         return size - 1
+    //    raise IndexError("list index out of range")
+    if (index_lt_zero || PyObject_RichCompareBool(index, pylong_size, Py_GE)) {
+        if (truncate) {
+            if (index_lt_zero) {
+                return 0;
+            }
+            return size - 1;
+        }
+        PyErr_SetString(PyExc_IndexError, "list index out of range");
+        return MAX_SIZE_T;
+    }
+
+    // return as size_t
+    return PyLong_AsSize_t(index);
+}
+
+
 /////////////////////
 ////    TABLE    ////
 /////////////////////
@@ -404,10 +456,8 @@ public:
 
 template <typename T>
 class ListView {
-private:
-    std::queue<T*> freelist;
-
 public:
+    std::queue<T*> freelist;
     T* head;
     T* tail;
     size_t size;
@@ -532,11 +582,6 @@ public:
         T::deallocate(freelist, node);
     }
 
-    /* Return the size of the freelist. */
-    inline unsigned char freelist_size() {
-        return freelist.size();
-    }
-
     /* Link a node to its neighbors to form a linked list. */
     inline void link(T* prev, T* curr, T* next) {
         T::link(prev, curr, next);
@@ -559,41 +604,6 @@ public:
             tail = prev;
         }
         size--;
-    }
-
-    /* Allow Python-style negative indexing with wraparound and boundschecking. */
-    inline size_t normalize_index(PyObject* index, bool truncate = false) {
-        // check that index is a Python integer
-        if (!PyLong_Check(index)) {
-            PyErr_SetString(PyExc_TypeError, "Index must be a Python integer");
-            return MAX_SIZE_T;
-        }
-
-        PyObject* pylong_zero = PyLong_FromSize_t(0);
-        PyObject* pylong_size = PyLong_FromSize_t(size);
-
-        // wraparound negative indices
-        if (PyObject_RichCompareBool(index, pylong_zero, Py_LT)) {
-            index = PyNumber_Add(index, pylong_size);
-        }
-
-        // boundscheck
-        if (
-            PyObject_RichCompareBool(index, pylong_zero, Py_LT) ||
-            PyObject_RichCompareBool(index, pylong_size, Py_GE)
-        ) {
-            if (truncate) {  // coerce to fit within bounds
-                if (PyObject_RichCompareBool(index, pylong_zero, Py_LT)) {
-                    return 0;
-                }
-                return size - 1;
-            }
-            PyErr_SetString(PyExc_IndexError, "list index out of range");
-            return MAX_SIZE_T;
-        }
-
-        // return as size_t
-        return PyLong_AsSize_t(index);
     }
 
     /* Clear the list. */
@@ -663,10 +673,10 @@ public:
 template <typename T>
 class SetView {
 private:
-    std::queue<Hashed<T>*> freelist;
     HashTable<Hashed<T>*>* table;
 
 public:
+    std::queue<Hashed<T>*> freelist;
     Hashed<T>* head;
     Hashed<T>* tail;
     size_t size;
@@ -806,11 +816,6 @@ public:
         Hashed<T>::deallocate(freelist, node);
     }
 
-    /* Return the size of the freelist. */
-    inline unsigned char freelist_size() {
-        return freelist.size();
-    }
-
     /* Link a node to its neighbors to form a linked list. */
     inline void link(Hashed<T>* prev, Hashed<T>* curr, Hashed<T>* next) {
         // add node to hash table
@@ -855,41 +860,6 @@ public:
 
         // decrement size
         size--;
-    }
-
-    /* Allow Python-style negative indexing with wraparound and boundschecking. */
-    inline size_t normalize_index(PyObject* index, bool truncate = false) {
-        // check that index is a Python integer
-        if (!PyLong_Check(index)) {
-            PyErr_SetString(PyExc_TypeError, "Index must be a Python integer");
-            return MAX_SIZE_T;
-        }
-
-        PyObject* pylong_zero = PyLong_FromSize_t(0);
-        PyObject* pylong_size = PyLong_FromSize_t(size);
-
-        // wraparound negative indices
-        if (PyObject_RichCompareBool(index, pylong_zero, Py_LT)) {
-            index = PyNumber_Add(index, pylong_size);
-        }
-
-        // boundscheck
-        if (
-            PyObject_RichCompareBool(index, pylong_zero, Py_LT) ||
-            PyObject_RichCompareBool(index, pylong_size, Py_GE)
-        ) {
-            if (truncate) {  // coerce to fit within bounds
-                if (PyObject_RichCompareBool(index, pylong_zero, Py_LT)) {
-                    return 0;
-                }
-                return size - 1;
-            }
-            PyErr_SetString(PyExc_IndexError, "list index out of range");
-            return MAX_SIZE_T;
-        }
-
-        // return as size_t
-        return PyLong_AsSize_t(index);
     }
 
     /* Clear the list and reset the associated hash table. */
@@ -962,10 +932,10 @@ public:
 template <typename T>
 class DictView {
 private:
-    std::queue<Mapped<T>*> freelist;
     HashTable<Mapped<T>*>* table;
 
 public:
+    std::queue<Mapped<T>*> freelist;
     Mapped<T>* head;
     Mapped<T>* tail;
     size_t size;
@@ -1121,11 +1091,6 @@ public:
         Mapped<T>::deallocate(freelist, node);
     }
 
-    /* Return the size of the freelist. */
-    inline unsigned char freelist_size() {
-        return freelist.size();
-    }
-
     /* Link a node to its neighbors to form a linked list. */
     inline void link(Mapped<T>* prev, Mapped<T>* curr, Mapped<T>* next) {
         // add node to hash table
@@ -1170,41 +1135,6 @@ public:
 
         // decrement size
         size--;
-    }
-
-    /* Allow Python-style negative indexing with wraparound and boundschecking. */
-    inline size_t normalize_index(PyObject* index, bool truncate = false) {
-        // check that index is a Python integer
-        if (!PyLong_Check(index)) {
-            PyErr_SetString(PyExc_TypeError, "Index must be a Python integer");
-            return MAX_SIZE_T;
-        }
-
-        PyObject* pylong_zero = PyLong_FromSize_t(0);
-        PyObject* pylong_size = PyLong_FromSize_t(size);
-
-        // wraparound negative indices
-        if (PyObject_RichCompareBool(index, pylong_zero, Py_LT)) {
-            index = PyNumber_Add(index, pylong_size);
-        }
-
-        // boundscheck
-        if (
-            PyObject_RichCompareBool(index, pylong_zero, Py_LT) ||
-            PyObject_RichCompareBool(index, pylong_size, Py_GE)
-        ) {
-            if (truncate) {  // coerce to fit within bounds
-                if (PyObject_RichCompareBool(index, pylong_zero, Py_LT)) {
-                    return 0;
-                }
-                return size - 1;
-            }
-            PyErr_SetString(PyExc_IndexError, "list index out of range");
-            return MAX_SIZE_T;
-        }
-
-        // return as size_t
-        return PyLong_AsSize_t(index);
     }
 
     /* Clear the list and reset the associated hash table. */

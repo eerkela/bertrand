@@ -7,6 +7,7 @@
 #include <cmath>  // for abs()
 #include <Python.h>  // for CPython API
 #include <utility>  // for std::pair
+#include <node.h>  // for nodes
 #include <view.h>  // for views
 
 
@@ -15,158 +16,157 @@
 //////////////////////
 
 
-namespace SinglyLinked {
+// NOTE: due to the singly-linked nature of the list, rotating to the left is
+// O(1) while rotating to the right is O(n).  This is because we need to
+// iterate through the entire list in order to find the new tail.
 
-    // NOTE: because the list is singly-linked, rotating to the left is O(1)
-    // while rotating to the right is O(n).  This is because we need to iterate
-    // through the entire list in order to find the new tail.
 
-    /* Rotate a list to the right by the specified number of steps. */
-    template <typename NodeType>
-    inline void rotate(ListView<NodeType>* view, ssize_t steps = 1) {
-        // normalize steps
-        size_t norm_steps = abs(steps) % view->size;
-        if (norm_steps == 0) {  // rotated list is identical to original
-            return;
-        }
-
-        // rotate the list
-        std::pair<NodeType*, NodeType*> bounds = _rotate_single(
-            view->head,
-            view->tail,
-            view->size,
-            steps,
-            norm_steps
-        );
-
-        // update head/tail pointers
-        view->head = bounds.first;
-        view->tail = bounds.second;
+/* Rotate a singly-linked list to the right by the specified number of steps. */
+template <typename NodeType>
+inline void rotate_single(ListView<NodeType>* view, ssize_t steps = 1) {
+    // normalize steps
+    size_t norm_steps = abs(steps) % view->size;
+    if (norm_steps == 0) {  // rotated list is identical to original
+        return;
     }
 
-    /* Rotate a list to the right by the specified number of steps. */
-    template <typename NodeType>
-    void rotate(SetView<NodeType>* view, ssize_t steps = 1) {
-        // normalize steps
-        size_t norm_steps = abs(steps) % view->size;
-        if (norm_steps == 0) {  // rotated list is identical to original
-            return;
-        }
+    // rotate the list
+    std::pair<NodeType*, NodeType*> bounds = _rotate_single(
+        view->head,
+        view->tail,
+        view->size,
+        steps,
+        norm_steps
+    );
 
-        // rotate the list
-        std::pair<Hashed<NodeType>*, Hashed<NodeType>*> bounds = _rotate_single(
-            view->head,
-            view->tail,
-            view->size,
-            steps,
-            norm_steps
-        );
-
-        // update head/tail pointers
-        view->head = bounds.first;
-        view->tail = bounds.second;
-    }
-
-    /* Rotate a list to the right by the specified number of steps. */
-    template <typename NodeType>
-    void rotate(DictView<NodeType>* view, ssize_t steps = 1) {
-        // normalize steps
-        size_t norm_steps = abs(steps) % view->size;
-        if (norm_steps == 0) {  // rotated list is identical to original
-            return;
-        }
-
-        // rotate the list
-        std::pair<Mapped<NodeType>*, Mapped<NodeType>*> bounds = _rotate_single(
-            view->head,
-            view->tail,
-            view->size,
-            steps,
-            norm_steps
-        );
-
-        // update head/tail pointers
-        view->head = bounds.first;
-        view->tail = bounds.second;
-    }
-
+    // update head/tail pointers
+    view->head = bounds.first;
+    view->tail = bounds.second;
 }
 
 
-namespace DoublyLinked {
-
-    // NOTE: these use the same algorithm as the singly-linked variants, but
-    // are slightly faster because we can iterate from either end of the list.
-
-    /* Rotate a list to the right by the specified number of steps. */
-    template <typename NodeType>
-    void rotate(ListView<NodeType>* view, ssize_t steps = 1) {
-        // normalize steps
-        size_t norm_steps = abs(steps) % view->size;
-        if (norm_steps == 0) {  // rotated list is identical to original
-            return;
-        }
-
-        // rotate the list
-        std::pair<NodeType*, NodeType*> bounds = _rotate_double(
-            view->head,
-            view->tail,
-            view->size,
-            steps,
-            norm_steps
-        );
-
-        // update head/tail pointers
-        view->head = bounds.first;
-        view->tail = bounds.second;
+/* Rotate a singly-linked set to the right by the specified number of steps. */
+template <typename NodeType>
+void rotate_single(SetView<NodeType>* view, ssize_t steps = 1) {
+    // normalize steps
+    size_t norm_steps = abs(steps) % view->size;
+    if (norm_steps == 0) {  // rotated list is identical to original
+        return;
     }
 
-    /* Rotate a list to the right by the specified number of steps. */
-    template <typename NodeType>
-    void rotate(SetView<NodeType>* view, ssize_t steps = 1) {
-        // normalize steps
-        size_t norm_steps = abs(steps) % view->size;
-        if (norm_steps == 0) {  // rotated list is identical to original
-            return;
-        }
+    // rotate the list
+    std::pair<Hashed<NodeType>*, Hashed<NodeType>*> bounds = _rotate_single(
+        view->head,
+        view->tail,
+        view->size,
+        steps,
+        norm_steps
+    );
 
-        // rotate the list
-        std::pair<Hashed<NodeType>*, Hashed<NodeType>*> bounds = _rotate_double(
-            view->head,
-            view->tail,
-            view->size,
-            steps,
-            norm_steps
-        );
+    // update head/tail pointers
+    view->head = bounds.first;
+    view->tail = bounds.second;
+}
 
-        // update head/tail pointers
-        view->head = bounds.first;
-        view->tail = bounds.second;
+
+/* Rotate a singly-linked dictionary to the right by the specified number of steps. */
+template <typename NodeType>
+void rotate_single(DictView<NodeType>* view, ssize_t steps = 1) {
+    // normalize steps
+    size_t norm_steps = abs(steps) % view->size;
+    if (norm_steps == 0) {  // rotated list is identical to original
+        return;
     }
 
-    /* Rotate a list to the right by the specified number of steps. */
-    template <typename NodeType>
-    void rotate(DictView<NodeType>* view, ssize_t steps = 1) {
-        // normalize steps
-        size_t norm_steps = abs(steps) % view->size;
-        if (norm_steps == 0) {  // rotated list is identical to original
-            return;
-        }
+    // rotate the list
+    std::pair<Mapped<NodeType>*, Mapped<NodeType>*> bounds = _rotate_single(
+        view->head,
+        view->tail,
+        view->size,
+        steps,
+        norm_steps
+    );
 
-        // rotate the list
-        std::pair<Mapped<NodeType>*, Mapped<NodeType>*> bounds = _rotate_double(
-            view->head,
-            view->tail,
-            view->size,
-            steps,
-            norm_steps
-        );
+    // update head/tail pointers
+    view->head = bounds.first;
+    view->tail = bounds.second;
+}
 
-        // update head/tail pointers
-        view->head = bounds.first;
-        view->tail = bounds.second;
+
+// NOTE: doubly-linked lists use the same algorithm as the singly-linked
+// variants, but are slightly faster because we can iterate from either end of
+// the list.
+
+
+/* Rotate a doubly-linked list to the right by the specified number of steps. */
+template <typename NodeType>
+void rotate_double(ListView<NodeType>* view, ssize_t steps = 1) {
+    // normalize steps
+    size_t norm_steps = abs(steps) % view->size;
+    if (norm_steps == 0) {  // rotated list is identical to original
+        return;
     }
 
+    // rotate the list
+    std::pair<NodeType*, NodeType*> bounds = _rotate_double(
+        view->head,
+        view->tail,
+        view->size,
+        steps,
+        norm_steps
+    );
+
+    // update head/tail pointers
+    view->head = bounds.first;
+    view->tail = bounds.second;
+}
+
+
+/* Rotate a doubly-linked set to the right by the specified number of steps. */
+template <typename NodeType>
+void rotate_double(SetView<NodeType>* view, ssize_t steps = 1) {
+    // normalize steps
+    size_t norm_steps = abs(steps) % view->size;
+    if (norm_steps == 0) {  // rotated list is identical to original
+        return;
+    }
+
+    // rotate the list
+    std::pair<Hashed<NodeType>*, Hashed<NodeType>*> bounds = _rotate_double(
+        view->head,
+        view->tail,
+        view->size,
+        steps,
+        norm_steps
+    );
+
+    // update head/tail pointers
+    view->head = bounds.first;
+    view->tail = bounds.second;
+}
+
+
+/* Rotate a doubly-linked dictionary to the right by the specified number of steps. */
+template <typename NodeType>
+void rotate_double(DictView<NodeType>* view, ssize_t steps = 1) {
+    // normalize steps
+    size_t norm_steps = abs(steps) % view->size;
+    if (norm_steps == 0) {  // rotated list is identical to original
+        return;
+    }
+
+    // rotate the list
+    std::pair<Mapped<NodeType>*, Mapped<NodeType>*> bounds = _rotate_double(
+        view->head,
+        view->tail,
+        view->size,
+        steps,
+        norm_steps
+    );
+
+    // update head/tail pointers
+    view->head = bounds.first;
+    view->tail = bounds.second;
 }
 
 

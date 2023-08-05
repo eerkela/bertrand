@@ -1,20 +1,103 @@
 # distutils: language = c++
 """This module contains a pure C/Cython implementation of a doubly-linked list.
 """
-from typing import Any, Iterable, Iterator
+from typing import Iterable, Iterator
+
+
+cdef void raise_exception() except *:
+    """If the python interpreter is currently storing an exception, raise it.
+
+    Notes
+    -----
+    Interacting with the Python C API can sometimes result in errors that are
+    encoded in the function's output and checked by the `PyErr_Occurred()`
+    interpreter flag.  This function can be called whenever this occurs in
+    order to force that error to be raised as normal.
+    """
+    # Since we're using the except * Cython syntax, the error handler will be
+    # invoked every time this function is called.  This means we don't have to
+    # do anything here, just return void and let the built-in machinery do
+    # all the work
+    return
 
 
 ####################
-####    LIST    ####
+####    BASE    ####
 ####################
+
+
+# TODO: implement class_getitem for mypy hints, just like list[].
+# -> in the case of HashedList, this could check if the contained type is
+# a subclass of Hashable, and if not, raise an error.
+
+
+cdef class LinkedList:
+    """Base class for all linked list data structures.
+
+    Each linked list is a drop-in replacement for a standard Python data
+    structure, and can be used interchangeably in many cases.  The lists
+    themselves are implemented in pure C++ and are optimized for performance
+    wherever possible.
+    """
+
+    __hash__ = None  # mutable containers are not hashable
+
+    def __bool__(self) -> bool:
+        """Treat empty lists as Falsy in boolean logic.
+
+        Returns
+        -------
+        bool
+            Indicates whether the list is empty.
+        """
+        return bool(len(self))
+
+    def __str__(self):
+        """Return a standard string representation of the list.
+
+        Returns
+        -------
+        str
+            A string representation of the list.
+
+        Notes
+        -----
+        Creating a string representation of a list is O(n).
+        """
+        return f"[{', '.join(str(item) for item in self)}]"
+
+    def __repr__(self):
+        """Return an annotated string representation of the list.
+
+        Returns
+        -------
+        str
+            An annotated string representation of the list.
+
+        Notes
+        -----
+        Creating a string representation of a list is O(n).
+        """
+        return f"{type(self).__name__}([{', '.join(repr(item) for item in self)}])"
+
+
+#############################
+####    SINGLY-LINKED    ####
+#############################
+
+
+
+#############################
+####    DOUBLY-LINKED    ####
+#############################
 
 
 cdef class DoublyLinkedList(LinkedList):
     """A pure Cython implementation of a doubly-linked list data structure.
 
     This is a drop-in replacement for a standard Python
-    :class:`list <python:list>` or :class:`deque <python:collections.deque>`,
-    with comparable performance.
+    :class:`list <python:list>` or :class:`deque <python:collections.deque>`
+    object, with comparable performance.
 
     Parameters
     ----------
@@ -29,7 +112,7 @@ cdef class DoublyLinkedList(LinkedList):
         each of its nodes.  It is not intended to be accessed by the user, and
         manipulating it directly it can result in memory leaks and/or undefined
         behavior.  Thorough inspection of the C++ header files is recommended
-        before attempting to access this attribute.
+        before attempting to use this attribute.
 
     Notes
     -----
@@ -38,10 +121,10 @@ cdef class DoublyLinkedList(LinkedList):
     implemented as a standard doubly-linked list instead of a list of arrays.
 
     The list is implemented in pure C++ to maximize performance, which is
-    generally on par with the standard library.  This implementation retains
-    all the usual tradeoffs of linked lists vs arrays (e.g. O(n) indexing vs
-    O(1) appends), but is highly optimized and reduces compromises as much as
-    possible.
+    generally on par with the standard library alternatives.  This
+    implementation retains all the usual tradeoffs of linked lists vs arrays
+    (e.g. O(n) indexing vs O(1) appends), but attempts to minimize compromises
+    as much as possible.
 
     .. warning::
 
@@ -50,11 +133,57 @@ cdef class DoublyLinkedList(LinkedList):
         access.
     """
 
+    def __init__(self, items: Iterable[object] | None = None) -> None:
+        """Initialize the list.
+
+        Parameters
+        ----------
+        items : Iterable[Any], optional
+            An iterable of items to initialize the list.
+        """
+        cdef PyObject* borrowed
+
+        if items is not None:
+            borrowed = <PyObject*>items
+            extend(self.view, borrowed)  # from extend.h
+
     def __cinit__(self):
         self.view = new ListView[DoubleNode]()
 
     def __dealloc__(self):
         del self.view
+
+    @staticmethod
+    cdef DoublyLinkedList from_view(ListView[DoubleNode]* view):
+        """Create a new list from an existing view.
+
+        Parameters
+        ----------
+        view : ListView[DoubleNode]*
+            The view to use for the new list.  This is used as-is, without any
+            copying or modification.
+
+        Returns
+        -------
+        DoublyLinkedList
+            A new list using the specified view.
+
+        Notes
+        -----
+        The new list takes ownership of the view and is responsible for
+        deallocating it when it is garbage collected.  To ensure memory safety,
+        no other objects should retain a reference to the view after this
+        method is called.
+        """
+        # create a new DoublyLinkedList object
+        cdef DoublyLinkedList result = DoublyLinkedList.__new__(DoublyLinkedList)
+
+        # delete the default view and replace it with the specified one
+        del result.view
+        result.view = view
+
+        # return the new list
+        return result
 
     ########################
     ####    CONCRETE    ####
@@ -65,7 +194,7 @@ cdef class DoublyLinkedList(LinkedList):
 
         Parameters
         ----------
-        item : PyObject*
+        item : Any
             The item to add to the list.
 
         Notes
@@ -79,7 +208,7 @@ cdef class DoublyLinkedList(LinkedList):
 
         Parameters
         ----------
-        item : PyObject*
+        item : Any
             The item to add to the list.
 
         Notes
@@ -96,12 +225,12 @@ cdef class DoublyLinkedList(LinkedList):
 
         Parameters
         ----------
-        item : PyObject*
-            The item to add to the list.
-        index : long int
+        index : int
             The index at which to insert the item.  This can be negative,
             following the same convention as Python's standard
             :class:`list <python:list>`.
+        item : Any
+            The item to add to the list.
 
         Raises
         ------
@@ -112,9 +241,9 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Inserts are O(n) on average.
         """
-        cdef size_t norm_index = self.view.normalize_index(index, True)
+        cdef size_t norm_index = normalize_index(index, self.view.size, True)
 
-        insert(self.view, norm_index, <PyObject*>item)  # from insert.h
+        insert_double(self.view, norm_index, <PyObject*>item)  # from insert.h
 
     def extend(self, items: Iterable[object]) -> None:
         """Add multiple items to the end of the list.
@@ -122,7 +251,7 @@ cdef class DoublyLinkedList(LinkedList):
         Parameters
         ----------
         items : Iterable[Any]
-            An iterable of hashable items to add to the list.
+            An iterable of items to add to the list.
 
         Notes
         -----
@@ -136,7 +265,7 @@ cdef class DoublyLinkedList(LinkedList):
         Parameters
         ----------
         items : Iterable[Any]
-            An iterable of hashable items to add to the list.
+            An iterable of items to add to the list.
 
         Notes
         -----
@@ -154,12 +283,12 @@ cdef class DoublyLinkedList(LinkedList):
 
         Parameters
         ----------
-        item : PyObject*
+        item : Any
             The item to search for.
 
         Returns
         -------
-        size_t
+        int
             The index of the item within the list.
 
         Raises
@@ -172,27 +301,27 @@ cdef class DoublyLinkedList(LinkedList):
         Indexing is O(n) on average.
         """
         # allow Python-style negative indexing + bounds checking
-        cdef size_t norm_start = self.view.normalize_index(start, True)
-        cdef size_t norm_stop = self.view.normalize_index(stop, True)
+        cdef size_t norm_start = normalize_index(start, self.view.size, True)
+        cdef size_t norm_stop = normalize_index(stop, self.view.size, True)
 
         # check that start and stop indices are consistent
         if norm_start > norm_stop:
             raise ValueError("start index must be less than or equal to stop index")
 
         # delegate to index.h
-        return index(self.view, <PyObject*>item, norm_start, norm_stop)
+        return index_double(self.view, <PyObject*>item, norm_start, norm_stop)
 
     def count(self, item: object, start: int = 0, stop: int = -1) -> int:
         """Count the number of occurrences of an item in the list.
 
         Parameters
         ----------
-        item : PyObject*
+        item : Any
             The item to count.
 
         Returns
         -------
-        size_t
+        int
             The number of occurrences of the item in the list.
 
         Notes
@@ -200,21 +329,22 @@ cdef class DoublyLinkedList(LinkedList):
         Counting is O(n).
         """
         # allow Python-style negative indexing + bounds checking
-        cdef size_t norm_start = self.view.normalize_index(start, True)
-        cdef size_t norm_stop = self.view.normalize_index(stop, True)
+        cdef size_t norm_start = normalize_index(start, self.view.size, True)
+        cdef size_t norm_stop = normalize_index(stop, self.view.size, True)
 
         # check that start and stop indices are consistent
         if norm_start > norm_stop:
             raise ValueError("start index must be less than or equal to stop index")
 
-        return count(self.view, <PyObject*>item, norm_start, norm_stop)  # from count.h
+        # delegate to count.h
+        return count_double(self.view, <PyObject*>item, norm_start, norm_stop)
 
     def remove(self, item: object) -> None:
         """Remove an item from the list.
 
         Parameters
         ----------
-        item : PyObject*
+        item : Any
             The item to remove from the list.
 
         Raises
@@ -233,14 +363,14 @@ cdef class DoublyLinkedList(LinkedList):
 
         Parameters
         ----------
-        index : long int, optional
+        index : int, optional
             The index of the item to remove.  If this is negative, it will be
             translated to a positive index by counting backwards from the end
             of the list.  The default is ``-1``, which removes the last item.
 
         Returns
         -------
-        PyObject*
+        Any
             The item that was removed from the list.
 
         Raises
@@ -253,39 +383,16 @@ cdef class DoublyLinkedList(LinkedList):
         Pops are O(1) if ``index`` points to either of the list's ends, and
         O(n) otherwise.
         """
-        cdef size_t norm_index = self.view.normalize_index(index, True)
+        cdef size_t norm_index = normalize_index(index, self.view.size, True)
 
-        return <object>pop(self.view, norm_index)  # from pop.h
-
-
-
-        # allow negative indexing + check bounds
-        cdef size_t norm_index = normalize_index(index, self.size)
-
-        # get node at index
-        cdef DoubleNode* node = node_at_index(
-            norm_index,
-            self.head,
-            self.tail,
-            self.size
-        )
-        cdef PyObject* value = node.value
-
-        # we have to increment the reference counter of the popped object to
-        # ensure it isn't garbage collected when we free the node.
-        Py_INCREF(value)
-
-        # drop node and return contents
-        self._unlink_node(node)
-        free_node(node)
-        return value
+        return <object>pop_double(self.view, norm_index)  # from pop.h
 
     def popleft(self) -> object:
         """Remove and return the first item in the list.
 
         Returns
         -------
-        PyObject*
+        Any
             The item that was removed from the list.
 
         Raises
@@ -295,32 +402,18 @@ cdef class DoublyLinkedList(LinkedList):
 
         Notes
         -----
-        This is equivalent to :meth:`LinkedList.pop` with ``index=0``, but it
+        This is equivalent to :meth:`DoublyLinkedList.pop` with ``index=0``, but it
         avoids the overhead of handling indices and is thus more efficient in
         the specific case of removing the first item.
         """
-        if self.head is NULL:
-            raise IndexError("pop from empty list")
-
-        # no need to handle indices, just skip straight to head
-        cdef DoubleNode* node = self.head
-        cdef PyObject* value = node.value
-
-        # we have to increment the reference counter of the popped object to
-        # ensure it isn't garbage collected when we free the node.
-        Py_INCREF(value)
-
-        # drop node and return contents
-        self._unlink_node(node)
-        free_node(node)
-        return value
+        return <object>popleft(self.view)  # from pop.h
 
     def popright(self) -> object:
         """Remove and return the last item in the list.
 
         Returns
         -------
-        PyObject*
+        Any
             The item that was removed from the list.
 
         Raises
@@ -330,25 +423,25 @@ cdef class DoublyLinkedList(LinkedList):
 
         Notes
         -----
-        This is equivalent to :meth:`LinkedList.pop` with ``index=-1``, but it
+        This is equivalent to :meth:`DoublyLinkedList.pop` with ``index=-1``, but it
         avoids the overhead of handling indices and is thus more efficient in
         the specific case of removing the last item.
         """
-        if self.tail is NULL:
-            raise IndexError("pop from empty list")
+        return <object>popright_double(self.view)  # from pop.h
 
-        # no need to handle indices, just skip straight to tail
-        cdef DoubleNode* node = self.tail
-        cdef PyObject* value = node.value
+    def copy(self) -> "DoublyLinkedList":
+        """Create a shallow copy of the list.
 
-        # we have to increment the reference counter of the popped object to
-        # ensure it isn't garbage collected when we free the node.
-        Py_INCREF(value)
+        Returns
+        -------
+        DoublyLinkedList
+            A new list containing the same items as this one.
 
-        # drop node and return contents
-        self._unlink_node(node)
-        free_node(node)
-        return value
+        Notes
+        -----
+        Copying a :class:`DoublyLinkedList` is O(n).
+        """
+        return self.from_view(self.view.copy())  # from view.h
 
     def clear(self) -> None:
         """Remove all items from the list.
@@ -359,7 +452,7 @@ cdef class DoublyLinkedList(LinkedList):
         """
         self.view.clear()  # from view.h
 
-    def sort(self, *, key: Callable = None, reverse: bool = False) -> None:
+    def sort(self, *, key: object = None, reverse: bool = False) -> None:
         """Sort the list in-place.
 
         Parameters
@@ -407,16 +500,16 @@ cdef class DoublyLinkedList(LinkedList):
 
         Notes
         -----
-        Reversing a :class:`LinkedList` is O(n).
+        Reversing a :class:`DoublyLinkedList` is O(n).
         """
-        reverse(self.view)  # from reverse.h
+        reverse_double(self.view)  # from reverse.h
 
     def rotate(self, steps: int = 1) -> None:
         """Rotate the list to the right by the specified number of steps.
 
         Parameters
         ----------
-        steps : ssize_t, optional
+        steps : int, optional
             The number of steps to rotate the list.  If this is positive, the
             list will be rotated to the right.  If this is negative, the list
             will be rotated to the left.  The default is ``1``.
@@ -428,17 +521,34 @@ cdef class DoublyLinkedList(LinkedList):
         This method is consistent with the standard library's
         :class:`collections.deque <python:collections.deque>` class.
         """
-        rotate(self.view, steps)  # from rotate.h
+        rotate_double(self.view, steps)  # from rotate.h
 
     def nbytes(self) -> int:
-        """Get the total number of bytes used by the list."""
+        """The total memory consumption of the list in bytes.
+
+        Returns
+        -------
+        int
+            The total number of bytes consumed by the list, including all its
+            nodes (but not their values).
+        """
         import sys
 
         cdef size_t total = self.view.nbytes()  # from view.h
         total += sys.getsizeof(self)  # add size of Python wrapper
         return total
 
-    def __iter__(self) -> Iterator[Any]:
+    def __len__(self) -> int:
+        """Get the total number of items in the list.
+
+        Returns
+        -------
+        int
+            The number of items in the list.
+        """
+        return self.view.size
+
+    def __iter__(self) -> Iterator[object]:
         """Iterate through the list items in order.
 
         Yields
@@ -448,7 +558,7 @@ cdef class DoublyLinkedList(LinkedList):
 
         Notes
         -----
-        Iterating through a :class:`LinkedList` is O(n) on average.
+        Iterating through a :class:`DoublyLinkedList` is O(n) on average.
         """
         cdef DoubleNode* curr = self.view.head
 
@@ -457,7 +567,7 @@ cdef class DoublyLinkedList(LinkedList):
             yield <object>curr.value  # this returns ownership to Python
             curr = <DoubleNode*>curr.next
 
-    def __reversed__(self) -> Iterator[Any]:
+    def __reversed__(self) -> Iterator[object]:
         """Iterate through the list in reverse order.
 
         Yields
@@ -467,7 +577,7 @@ cdef class DoublyLinkedList(LinkedList):
 
         Notes
         -----
-        Iterating through a :class:`LinkedList` is O(n) on average.
+        Iterating through a :class:`DoublyLinkedList` is O(n) on average.
         """
         cdef DoubleNode* curr = self.view.tail
 
@@ -476,20 +586,20 @@ cdef class DoublyLinkedList(LinkedList):
             yield <object>curr.value  # this returns ownership to Python
             curr = <DoubleNode*>curr.prev
 
-    def __getitem__(self, key: int | slice) -> Any:
+    def __getitem__(self, key: int | slice) -> object | "DoublyLinkedList":
         """Index the list for a particular item or slice.
 
         Parameters
         ----------
-        key : long int or slice
+        key : int or slice
             The index or slice to retrieve from the list.  If this is a slice,
-            the result will be a new :class:`LinkedList` containing the
+            the result will be a new :class:`DoublyLinkedList` containing the
             specified items.  This can be negative, following the same
             convention as Python's standard :class:`list <python:list>`.
 
         Returns
         -------
-        scalar or LinkedList
+        scalar or DoublyLinkedList
             The item or list of items corresponding to the specified index or
             slice.
 
@@ -500,9 +610,9 @@ cdef class DoublyLinkedList(LinkedList):
 
         See Also
         --------
-        LinkedList.__setitem__ :
+        DoublyLinkedList.__setitem__ :
             Set the value of an item or slice in the list.
-        LinkedList.__delitem__ :
+        DoublyLinkedList.__delitem__ :
             Delete an item or slice from the list.
 
         Notes
@@ -510,8 +620,8 @@ cdef class DoublyLinkedList(LinkedList):
         Integer-based indexing is O(n) on average.
 
         Slicing is optimized to always begin iterating from the end nearest to
-        a slice boundary, and to never backtrack.  It collects all values in
-        a single iteration and stops as soon as the slice is complete.
+        a slice boundary, and to never backtrack.  It collects all values in a
+        single iteration and stops as soon as the slice is complete.
         """
         cdef LinkedList result
         cdef DoubleNode* curr
@@ -521,7 +631,7 @@ cdef class DoublyLinkedList(LinkedList):
 
         # support slicing
         if isinstance(key, slice):
-            # create a new LinkedList to hold the slice
+            # create a new DoublyLinkedList to hold the slice
             result = type(self)()
 
             # NOTE: Python slices are normally half-open.  This complicates our
@@ -590,16 +700,16 @@ cdef class DoublyLinkedList(LinkedList):
         Py_INCREF(curr.value)
         return <object>curr.value  # this returns ownership to Python
 
-    def __setitem__(self, key: int | slice, value: Any) -> None:
+    def __setitem__(self, key: int | slice, value: object | Iterable[object]) -> None:
         """Set the value of an item or slice in the list.
 
         Parameters
         ----------
-        key : long int or slice
+        key : int or slice
             The index or slice to set in the list.  This can be negative,
             following the same convention as Python's standard
             :class:`list <python:list>`.
-        value : Any
+        value : Any | Iterable[Any]
             The value or values to set at the specified index or slice.  If
             ``key`` is a slice, then ``value`` must be an iterable of the same
             length.
@@ -613,9 +723,9 @@ cdef class DoublyLinkedList(LinkedList):
 
         See Also
         --------
-        LinkedList.__getitem__ :
+        DoublyLinkedList.__getitem__ :
             Index the list for a particular item or slice.
-        LinkedList.__delitem__ :
+        DoublyLinkedList.__delitem__ :
             Delete an item or slice from the list.
 
         Notes
@@ -758,7 +868,7 @@ cdef class DoublyLinkedList(LinkedList):
 
         Parameters
         ----------
-        key : long int or slice
+        key : int or slice
             The index or slice to delete from the list.  This can be negative,
             following the same convention as Python's standard
             :class:`list <python:list>`.
@@ -770,9 +880,9 @@ cdef class DoublyLinkedList(LinkedList):
 
         See Also
         --------
-        LinkedList.__getitem__ :
+        DoublyLinkedList.__getitem__ :
             Index the list for a particular item or slice.
-        LinkedList.__setitem__ :
+        DoublyLinkedList.__setitem__ :
             Set the value of an item or slice in the list.
 
         Notes
@@ -852,7 +962,7 @@ cdef class DoublyLinkedList(LinkedList):
             self._unlink_node(curr)
             free_node(curr)
 
-    def __contains__(self, item: Any) -> bool:
+    def __contains__(self, item: object) -> bool:
         """Check if the item is contained in the list.
 
         Parameters
@@ -870,6 +980,266 @@ cdef class DoublyLinkedList(LinkedList):
         Membership checks are O(n) on average.
         """
         return bool(contains(self.view, <PyObject*>item))  # from contains.h
+
+    def __add__(self, other: Iterable[object]) -> "DoublyLinkedList":
+        """Concatenate two lists.
+
+        Parameters
+        ----------
+        other : Iterable[Any]
+            The list to concatenate with this one.
+
+        Returns
+        -------
+        DoublyLinkedList
+            A new list containing the items from both lists.
+
+        Notes
+        -----
+        Concatenation is O(n), where `n` is the length of the other list.
+        """
+        cdef DoublyLinkedList result = self.copy()
+        cdef PyObject* other_list = <PyObject*>other
+
+        result._extend(other_list)
+        return result
+
+    def __iadd__(self, other: Iterable[object]) -> "DoublyLinkedList":
+        """Concatenate two lists in-place.
+
+        Parameters
+        ----------
+        other : Iterable[Any]
+            The list to concatenate with this one.
+
+        Returns
+        -------
+        DoublyLinkedList
+            This list, with the items from the other list appended.
+
+        Notes
+        -----
+        Concatenation is O(m), where `m` is the length of the ``other`` list.
+        """
+        cdef PyObject* other_list = <PyObject*>other
+
+        self._extend(other_list)
+        return self
+
+    def __mul__(self, repeat: int) -> "DoublyLinkedList":
+        """Repeat the list a specified number of times.
+
+        Parameters
+        ----------
+        repeat : int
+            The number of times to repeat the list.
+
+        Returns
+        -------
+        DoublyLinkedList
+            A new list containing successive copies of this list, repeated
+            the given number of times.
+
+        Notes
+        -----
+        Repetition is O(n * repeat).
+        """
+        cdef DoublyLinkedList result = self.copy()
+        cdef DoublyLinkedList temp
+        cdef size_t i
+
+        for i in range(<size_t>repeat):
+            temp = self._copy()
+            result._extend(<PyObject*>temp)
+        return result
+
+    def __imul__(self, repeat: int) -> "DoublyLinkedList":
+        """Repeat the list a specified number of times in-place.
+
+        Parameters
+        ----------
+        repeat : int
+            The number of times to repeat the list.
+
+        Returns
+        -------
+        DoublyLinkedList
+            This list, repeated the given number of times.
+
+        Notes
+        -----
+        Repetition is O(n * repeat).
+        """
+        cdef DoublyLinkedList original = self._copy()
+        cdef size_t i
+
+        for i in range(<size_t>repeat):
+            self._extend(<PyObject*>original)
+        return self
+
+    def __lt__(self, other: object) -> bool:
+        """Check if this list is lexographically less than another list.
+
+        Parameters
+        ----------
+        other : Any
+            The object to compare to this list.
+
+        Returns
+        -------
+        bool
+            Indicates whether the elements of this list are less than the
+            elements of the other list.  This is determined lexicographically,
+            meaning that the first pair of unequal elements determines the
+            result.  If all elements are equal, then the shorter list is
+            considered less than the longer list.
+
+        Notes
+        -----
+        Comparisons are O(n).
+        """
+        if not isinstance(other, type(self)):
+            return NotImplemented
+
+        # compare elements in order
+        for a, b in zip(self, other):
+            if a < b:
+                return True
+            elif a > b:
+                return False
+
+        # if all elements are equal, the shorter list is smaller
+        return len(self) < len(other)
+
+    def __le__(self, other: object) -> bool:
+        """Check if this list is lexographically less than or equal to another
+        list.
+
+        Parameters
+        ----------
+        other : Any
+            The object to compare to this list.
+
+        Returns
+        -------
+        bool
+            Indicates whether the elements of this list are less than or equal
+            to the elements of the other list.  This is determined
+            lexicographically, meaning that the first pair of unequal elements
+            determines the result.  If all elements are equal, then the shorter
+            list is considered less than or equal to the longer list.
+
+        Notes
+        -----
+        Comparisons are O(n).
+        """
+        if not isinstance(other, type(self)):
+            return NotImplemented
+
+        # compare elements in order
+        for a, b in zip(self, other):
+            if a < b:
+                return True
+            elif a > b:
+                return False
+
+        # if all elements are equal, the shorter list is smaller
+        return len(self) <= len(other)
+
+    def __eq__(self, other: object) -> bool:
+        """Compare two lists for equality.
+
+        Parameters
+        ----------
+        other : Any
+            The object to compare to this list.
+
+        Returns
+        -------
+        bool
+            Indicates whether the two lists are of compatible types and contain
+            equal items at every index.
+
+        Notes
+        -----
+        Comparisons are O(n).
+        """
+        if not isinstance(other, type(self)):
+            return NotImplemented
+
+        if len(self) != len(other):
+            return False
+
+        return all(a == b for a, b in zip(self, other))
+
+    def __gt__(self, other: object) -> bool:
+        """Check if this list is lexographically greater than another list.
+
+        Parameters
+        ----------
+        other : Any
+            The object to compare to this list.
+
+        Returns
+        -------
+        bool
+            Indicates whether the elements of this list are greater than the
+            elements of the other list.  This is determined lexicographically,
+            meaning that the first pair of unequal elements determines the
+            result.  If all elements are equal, then the longer list is
+            considered greater than the shorter list.
+
+        Notes
+        -----
+        Comparisons are O(n).
+        """
+        if not isinstance(other, type(self)):
+            return NotImplemented
+
+        # compare elements in order
+        for a, b in zip(self, other):
+            if a > b:
+                return True
+            elif a < b:
+                return False
+
+        # if all elements are equal, the longer list is greater
+        return len(self) > len(other)
+
+    def __ge__(self, other: object) -> bool:
+        """Check if this list is lexographically greater than or equal to
+        another list.
+
+        Parameters
+        ----------
+        other : Any
+            The object to compare to this list.
+
+        Returns
+        -------
+        bool
+            Indicates whether the elements of this list are greater than or
+            equal to the elements of the other list.  This is determined
+            lexicographically, meaning that the first pair of unequal elements
+            determines the result.  If all elements are equal, then the longer
+            list is considered greater than or equal to the shorter list.
+
+        Notes
+        -----
+        Comparisons are O(n).
+        """
+        if not isinstance(other, type(self)):
+            return NotImplemented
+
+        # compare elements in order
+        for a, b in zip(self, other):
+            if a > b:
+                return True
+            elif a < b:
+                return False
+
+        # if all elements are equal, the longer list is greater
+        return len(self) >= len(other)
 
 
 #####################
