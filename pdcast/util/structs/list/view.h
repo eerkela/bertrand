@@ -5,6 +5,7 @@
 
 #include <cstddef>  // for size_t
 #include <queue>  // for std::queue
+#include <limits>  // for std::numeric_limits
 #include <Python.h>  // for CPython API
 #include <node.h>  // for Hashed<T>, Mapped<T>
 
@@ -17,6 +18,11 @@
 /* DEBUG = TRUE adds print statements for memory allocation/deallocation to help
 identify memory leaks. */
 const bool DEBUG = true;
+
+
+/* MAX_SIZE_T is used to signal errors in indexing operations where NULL would
+not be a valid return value, and 0 is likely to be valid output. */
+const size_t MAX_SIZE_T = std::numeric_limits<size_t>::max();
 
 
 /* For efficient memory management, every View maintains its own freelist of
@@ -421,6 +427,64 @@ public:
         freelist = std::queue<T*>();
     }
 
+    /* Constrcut a ListView from an input iterable. */
+    ListView(PyObject* iterable, bool reverse = false) {
+        // C API equivalent of iter(iterable)
+        PyObject* iterator = PyObject_GetIter(iterable);
+        if (iterator == NULL) {
+            return NULL;
+        }
+
+        ListView<T>* staged = new ListView<T>();
+        if (staged == NULL) {
+            Py_DECREF(iterator);
+            PyErr_NoMemory();
+            return NULL;
+        }
+
+        T* node;
+        PyObject* item;
+
+        while (true) {
+            // C API equivalent of next(iterator)
+            item = PyIter_Next(iterator);
+            if (item == NULL) { // end of iterator or error
+                if (PyErr_Occurred()) {  // error during next()
+                    Py_DECREF(item);
+                    Py_DECREF(iterator);
+                    delete staged;
+                    return NULL;  // raise exception
+                }
+                break;
+            }
+
+            // allocate a new node
+            node = staged->allocate(item);
+            if (node == NULL) {  // MemoryError()
+                Py_DECREF(item);
+                Py_DECREF(iterator);
+                delete staged;
+                return NULL;  // raise exception
+            }
+
+            // link the node to the staged list
+            if (reverse) {
+                staged->link(NULL, node, staged->head);
+            } else {
+                staged->link(staged->tail, node, NULL);
+            }
+
+            // advance to next item
+            Py_DECREF(item);
+        }
+
+        // release reference on iterator
+        Py_DECREF(iterator);
+
+        // return the staged View
+        return staged;
+    }
+
     /* Destroy a ListView and free all its nodes. */
     ~ListView() {
         T* curr = head;
@@ -497,6 +561,41 @@ public:
         size--;
     }
 
+    /* Allow Python-style negative indexing with wraparound and boundschecking. */
+    inline size_t normalize_index(PyObject* index, bool truncate = false) {
+        // check that index is a Python integer
+        if (!PyLong_Check(index)) {
+            PyErr_SetString(PyExc_TypeError, "Index must be a Python integer");
+            return MAX_SIZE_T;
+        }
+
+        PyObject* pylong_zero = PyLong_FromSize_t(0);
+        PyObject* pylong_size = PyLong_FromSize_t(size);
+
+        // wraparound negative indices
+        if (PyObject_RichCompareBool(index, pylong_zero, Py_LT)) {
+            index = PyNumber_Add(index, pylong_size);
+        }
+
+        // boundscheck
+        if (
+            PyObject_RichCompareBool(index, pylong_zero, Py_LT) ||
+            PyObject_RichCompareBool(index, pylong_size, Py_GE)
+        ) {
+            if (truncate) {  // coerce to fit within bounds
+                if (PyObject_RichCompareBool(index, pylong_zero, Py_LT)) {
+                    return 0;
+                }
+                return size - 1;
+            }
+            PyErr_SetString(PyExc_IndexError, "list index out of range");
+            return MAX_SIZE_T;
+        }
+
+        // return as size_t
+        return PyLong_AsSize_t(index);
+    }
+
     /* Clear the list. */
     inline void clear() {
         T* curr = head;
@@ -542,58 +641,6 @@ public:
 
         copied->tail = new_node;  // last node in copied list
         return copied;
-    }
-
-    /* Stage a new ListView of nodes from an input iterable. */
-    static ListView<T>* stage(PyObject* iterable, bool reverse = false) {
-        // C API equivalent of iter(iterable)
-        PyObject* iterator = PyObject_GetIter(iterable);
-        if (iterator == NULL) {
-            return NULL;
-        }
-
-        ListView<T>* staged = new ListView<T>();
-        if (staged == NULL) {
-            Py_DECREF(iterator);
-            PyErr_NoMemory();
-            return NULL;
-        }
-
-        T* node;
-        PyObject* item;
-
-        while (true) {
-            // C API equivalent of next(iterator)
-            item = PyIter_Next(iterator);
-            if (item == NULL) { // end of iterator or error
-                if (PyErr_Occurred()) {  // error during next()
-                    Py_DECREF(item);
-                    Py_DECREF(iterator);
-                    delete staged;
-                    return NULL;  // raise exception
-                }
-                break;
-            }
-
-            // allocate a new node
-            node = staged->allocate(item);
-
-            // link the node to the staged list
-            if (reverse) {
-                staged->link(NULL, node, staged->head);
-            } else {
-                staged->link(staged->tail, node, NULL);
-            }
-
-            // advance to next item
-            Py_DECREF(item);
-        }
-
-        // release reference on iterator
-        Py_DECREF(iterator);
-
-        // return the staged View
-        return staged;
     }
 
     /* Get the total memory consumed by the ListView (in bytes).
@@ -644,6 +691,70 @@ public:
         if (table == NULL) {
             throw std::bad_alloc();
         }
+    }
+
+    /* Construct a SetView from an input iterable. */
+    SetView(PyObject* iterable, bool reverse = false) {
+        // C API equivalent of iter(iterable)
+        PyObject* iterator = PyObject_GetIter(iterable);
+        if (iterator == NULL) {
+            return NULL;
+        }
+
+        SetView<T>* staged = new SetView<T>();
+        if (staged == NULL) {
+            Py_DECREF(iterator);
+            PyErr_NoMemory();
+            return NULL;
+        }
+
+        Hashed<T>* node;
+        PyObject* item;
+
+        while (true) {
+            // C API equivalent of next(iterator)
+            item = PyIter_Next(iterator);
+            if (item == NULL) { // end of iterator or error
+                if (PyErr_Occurred()) {  // error during next()
+                    Py_DECREF(item);
+                    Py_DECREF(iterator);
+                    delete staged;
+                    return NULL;  // raise exception
+                }
+                break;
+            }
+
+            // allocate a new node
+            node = staged->allocate(item);
+            if (node == NULL) {  // MemoryError() or TypeError() during hash()
+                Py_DECREF(item);
+                Py_DECREF(iterator);
+                delete staged;
+                return NULL;  // raise exception
+            }
+
+            // link the node to the staged list
+            if (reverse) {
+                staged->link(NULL, node, staged->head);
+            } else {
+                staged->link(staged->tail, node, NULL);
+            }
+            if (PyErr_Occurred()) {
+                Py_DECREF(item);
+                Py_DECREF(iterator);
+                delete staged;
+                return NULL;  // raise exception
+            }
+
+            // advance to next item
+            Py_DECREF(item);
+        }
+
+        // release reference on iterator
+        Py_DECREF(iterator);
+
+        // return the staged View
+        return staged;
     }
 
     /* Destroy a SetView and free all its resources. */
@@ -746,6 +857,41 @@ public:
         size--;
     }
 
+    /* Allow Python-style negative indexing with wraparound and boundschecking. */
+    inline size_t normalize_index(PyObject* index, bool truncate = false) {
+        // check that index is a Python integer
+        if (!PyLong_Check(index)) {
+            PyErr_SetString(PyExc_TypeError, "Index must be a Python integer");
+            return MAX_SIZE_T;
+        }
+
+        PyObject* pylong_zero = PyLong_FromSize_t(0);
+        PyObject* pylong_size = PyLong_FromSize_t(size);
+
+        // wraparound negative indices
+        if (PyObject_RichCompareBool(index, pylong_zero, Py_LT)) {
+            index = PyNumber_Add(index, pylong_size);
+        }
+
+        // boundscheck
+        if (
+            PyObject_RichCompareBool(index, pylong_zero, Py_LT) ||
+            PyObject_RichCompareBool(index, pylong_size, Py_GE)
+        ) {
+            if (truncate) {  // coerce to fit within bounds
+                if (PyObject_RichCompareBool(index, pylong_zero, Py_LT)) {
+                    return 0;
+                }
+                return size - 1;
+            }
+            PyErr_SetString(PyExc_IndexError, "list index out of range");
+            return MAX_SIZE_T;
+        }
+
+        // return as size_t
+        return PyLong_AsSize_t(index);
+    }
+
     /* Clear the list and reset the associated hash table. */
     inline void clear() {
         table->clear();  // clear hash table
@@ -779,64 +925,6 @@ public:
 
         copied->tail = new_node;  // last node in copied list
         return copied;
-    }
-
-    /* Stage a new SetView of nodes from an input iterable. */
-    static SetView<T>* stage(PyObject* iterable, bool reverse = false) {
-        // C API equivalent of iter(iterable)
-        PyObject* iterator = PyObject_GetIter(iterable);
-        if (iterator == NULL) {
-            return NULL;
-        }
-
-        SetView<T>* staged = new SetView<T>();
-        if (staged == NULL) {
-            Py_DECREF(iterator);
-            PyErr_NoMemory();
-            return NULL;
-        }
-
-        Hashed<T>* node;
-        PyObject* item;
-
-        while (true) {
-            // C API equivalent of next(iterator)
-            item = PyIter_Next(iterator);
-            if (item == NULL) { // end of iterator or error
-                if (PyErr_Occurred()) {  // error during next()
-                    Py_DECREF(item);
-                    Py_DECREF(iterator);
-                    delete staged;
-                    return NULL;  // raise exception
-                }
-                break;
-            }
-
-            // allocate a new node
-            node = staged->allocate(item);
-
-            // link the node to the staged list
-            if (reverse) {
-                staged->link(NULL, node, staged->head);
-            } else {
-                staged->link(staged->tail, node, NULL);
-            }
-            if (PyErr_Occurred()) {
-                Py_DECREF(item);
-                Py_DECREF(iterator);
-                delete staged;
-                return NULL;  // raise exception
-            }
-
-            // advance to next item
-            Py_DECREF(item);
-        }
-
-        // release reference on iterator
-        Py_DECREF(iterator);
-
-        // return the staged View
-        return staged;
     }
 
     /* Search for a node by its value. */
@@ -902,6 +990,72 @@ public:
         if (table == NULL) {
             throw std::bad_alloc();
         }
+    }
+
+    /* Construct a DictView from an input iterable. */
+    DictView(PyObject* iterable, bool reverse = false) {
+        // C API equivalent of iter(iterable)
+        PyObject* iterator = PyObject_GetIter(iterable);
+        if (iterator == NULL) {
+            return NULL;
+        }
+
+        DictView<T>* staged = new DictView<T>();
+        if (staged == NULL) {
+            Py_DECREF(iterator);
+            PyErr_NoMemory();
+            return NULL;
+        }
+
+        Mapped<T>* node;
+        PyObject* item;
+        PyObject* key;
+        PyObject* value;
+
+        while (true) {
+            // C API equivalent of next(iterator)
+            item = PyIter_Next(iterator);
+            if (item == NULL) { // end of iterator or error
+                if (PyErr_Occurred()) {  // error during next()
+                    Py_DECREF(item);
+                    Py_DECREF(iterator);
+                    delete staged;
+                    return NULL;  // raise exception
+                }
+                break;  // end of iterator
+            }
+
+            // allocate a new node
+            node = staged->allocate(item);
+            if (node == NULL) {  // MemoryError()/TypeError() in hash()/tuple unpacking
+                Py_DECREF(item);
+                Py_DECREF(iterator);
+                delete staged;
+                return NULL;  // raise exception
+            }
+
+            // link the node to the staged list
+            if (reverse) {
+                staged->link(NULL, node, staged->head);
+            } else {
+                staged->link(staged->tail, node, NULL);
+            }
+            if (PyErr_Occurred()) {
+                Py_DECREF(item);
+                Py_DECREF(iterator);
+                delete staged;
+                return NULL;  // raise exception
+            }
+
+            // advance to next item
+            Py_DECREF(item);
+        }
+
+        // release reference on iterator
+        Py_DECREF(iterator);
+
+        // return the staged View
+        return staged;
     }
 
     /* Destroy a DictView and free all its resources. */
@@ -1018,6 +1172,41 @@ public:
         size--;
     }
 
+    /* Allow Python-style negative indexing with wraparound and boundschecking. */
+    inline size_t normalize_index(PyObject* index, bool truncate = false) {
+        // check that index is a Python integer
+        if (!PyLong_Check(index)) {
+            PyErr_SetString(PyExc_TypeError, "Index must be a Python integer");
+            return MAX_SIZE_T;
+        }
+
+        PyObject* pylong_zero = PyLong_FromSize_t(0);
+        PyObject* pylong_size = PyLong_FromSize_t(size);
+
+        // wraparound negative indices
+        if (PyObject_RichCompareBool(index, pylong_zero, Py_LT)) {
+            index = PyNumber_Add(index, pylong_size);
+        }
+
+        // boundscheck
+        if (
+            PyObject_RichCompareBool(index, pylong_zero, Py_LT) ||
+            PyObject_RichCompareBool(index, pylong_size, Py_GE)
+        ) {
+            if (truncate) {  // coerce to fit within bounds
+                if (PyObject_RichCompareBool(index, pylong_zero, Py_LT)) {
+                    return 0;
+                }
+                return size - 1;
+            }
+            PyErr_SetString(PyExc_IndexError, "list index out of range");
+            return MAX_SIZE_T;
+        }
+
+        // return as size_t
+        return PyLong_AsSize_t(index);
+    }
+
     /* Clear the list and reset the associated hash table. */
     inline void clear() {
         table->clear();  // clear hash table
@@ -1051,79 +1240,6 @@ public:
 
         copied->tail = new_node;  // last node in copied list
         return copied;
-    }
-
-    /* Stage a new DictView of nodes from an input iterable. */
-    static DictView<T>* stage(PyObject* iterable, bool reverse = false) {
-        // C API equivalent of iter(iterable)
-        PyObject* iterator = PyObject_GetIter(iterable);
-        if (iterator == NULL) {
-            return NULL;
-        }
-
-        DictView<T>* staged = new DictView<T>();
-        if (staged == NULL) {
-            Py_DECREF(iterator);
-            PyErr_NoMemory();
-            return NULL;
-        }
-
-        Mapped<T>* node;
-        PyObject* item;
-        PyObject* key;
-        PyObject* value;
-
-        while (true) {
-            // C API equivalent of next(iterator)
-            item = PyIter_Next(iterator);
-            if (item == NULL) { // end of iterator or error
-                if (PyErr_Occurred()) {  // error during next()
-                    Py_DECREF(item);
-                    Py_DECREF(iterator);
-                    delete staged;
-                    return NULL;  // raise exception
-                }
-                break;  // end of iterator
-            }
-
-            // Check that the item is a tuple of size 2 (key-value pair)
-            if (!PyTuple_Check(item) || PyTuple_Size(item) != 2) {
-                PyErr_Format(
-                    PyExc_TypeError, "Expected tuple of size 2, got %R", item
-                );
-                Py_DECREF(item);
-                Py_DECREF(iterator);
-                delete staged;
-                return NULL;  // raise exception
-            }
-
-            // extract key and value and allocate a new node
-            key = PyTuple_GetItem(item, 0);
-            value = PyTuple_GetItem(item, 1);
-            node = staged->allocate(key, value);
-
-            // link the node to the staged list
-            if (reverse) {
-                staged->link(NULL, node, staged->head);
-            } else {
-                staged->link(staged->tail, node, NULL);
-            }
-            if (PyErr_Occurred()) {
-                Py_DECREF(item);
-                Py_DECREF(iterator);
-                delete staged;
-                return NULL;  // raise exception
-            }
-
-            // advance to next item
-            Py_DECREF(item);
-        }
-
-        // release reference on iterator
-        Py_DECREF(iterator);
-
-        // return the staged View
-        return staged;
     }
 
     /* Search for a node by its value. */

@@ -10,11 +10,11 @@ from .node cimport DoubleNode
 from .view cimport ListView, SetView, DictView
 from .append cimport append, appendleft
 from .extend_double cimport extend, extendleft
-# from .insert_double cimport insert
+from .insert_double cimport insert
 from .remove_double cimport remove
 # from .pop_double cimport pop, popleft, popright
 from .count_double cimport count
-# from .index_double cimport index
+from .index_double cimport index
 from .contains cimport contains
 from .sort cimport sort
 # from .move_double cimport move, moveforward, movebackward, movebefore, moveafter, move_to_end

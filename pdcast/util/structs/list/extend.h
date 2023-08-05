@@ -227,8 +227,8 @@ void _extend_left_to_right(ViewType<T>* view, U* left, U* right, PyObject* items
     }
 
     // CPython API equivalent of `for item in items:`
-    Hashed<NodeType>* node;
-    Hashed<NodeType>* prev = left;
+    U* node;
+    U* prev = left;
     PyObject* item;
     while (true) {
         item = PyIter_Next(iterator);  // next(iterator)
@@ -278,8 +278,8 @@ void _extend_right_to_left(ViewType<T>* view, U* left, U* right, PyObject* items
     }
 
     // CPython API equivalent of `for item in items:`
-    Hashed<NodeType>* node;
-    Hashed<NodeType>* prev = right;
+    U* node;
+    U* prev = right;
     PyObject* item;
     while (true) {
         item = PyIter_Next(iterator);  // next(iterator)

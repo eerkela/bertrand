@@ -1,27 +1,34 @@
 
+// include guard prevents multiple inclusion
+#ifndef INSERT_H
+#define INSERT_H
+
+#include <cstddef>  // for size_t
+#include <Python.h>  // for CPython API
+#include <node.h>  // for node definitions
+#include <view.h>  // for view definitions
+
+
+//////////////////////
+////    PUBLIC    ////
+//////////////////////
 
 
 namespace SinglyLinked {
 
-    // TODO: specialize for sets and dicts to search item directly.
-    // -> remember to cast curr to Hashed or Mapped whenever we advance to next/prev
-
-    /*Insert an item at the given index.*/
+    /* Insert an item into a list at the given index. */
     template <typename NodeType>
-    void insert(ListView<NodeType>* PyObject* item, long long index) {
-        // normalize index
-        size_t norm_index = normalize_index(index, view->size, true);
-
+    void insert(ListView<NodeType>* view, size_t index, PyObject* item) {
         // allocate a new node
         NodeType* node = view->allocate(item);
-        if (node == NULL) {  // MemoryError() or TypeError() during hash()
+        if (node == NULL) {  // MemoryError()
             return;
         }
 
-        // iterate from head
+        // iterate from head to find junction
         NodeType* curr = view->head;
         NodeType* prev = NULL;  // shadows curr
-        for (size_t i = 0; i < norm_index; i++) {
+        for (size_t i = 0; i < index; i++) {
             prev = curr;
             curr = curr->next;
         }
@@ -30,36 +37,125 @@ namespace SinglyLinked {
         view->link(prev, node, curr);
     }
 
-    // TODO: specialize for sets and dicts to search for item before iterating.
+    /* Insert an item into a set at the given index. */
+    template <typename NodeType>
+    void insert(SetView<NodeType>* view, size_t index, PyObject* item) {
+        // allocate a new node
+        Hashed<NodeType>* node = view->allocate(item);
+        if (node == NULL) {  // MemoryError() or TypeError() during hash()
+            return;
+        }
+
+        // iterate from head to find junction
+        Hashed<NodeType>* curr = view->head;
+        Hashed<NodeType>* prev = NULL;  // shadows curr
+        for (size_t i = 0; i < index; i++) {
+            prev = curr;
+            curr = (Hashed<NodeType>*)curr->next;
+        }
+
+        // insert node
+        view->link(prev, node, curr);
+    }
+
+    /* Insert an item into a dictionary at the given index. */
+    template <typename NodeType>
+    void insert(DictView<NodeType>* view, size_t index, PyObject* item) {
+        // allocate a new node
+        Mapped<NodeType>* node = view->allocate(item);
+        if (node == NULL) {  // MemoryError() or TypeError() during hash()
+            return;
+        }
+
+        // iterate from head to find junction
+        Mapped<NodeType>* curr = view->head;
+        Mapped<NodeType>* prev = NULL;  // shadows curr
+        for (size_t i = 0; i < index; i++) {
+            prev = curr;
+            curr = (Mapped<NodeType>*)curr->next;
+        }
+
+        // insert node
+        view->link(prev, node, curr);
+    }
 
 }
 
 
 namespace DoublyLinked {
 
-    /*Insert an item at the given index.*/
-    template <template <typename> class ViewType, typename NodeType>
-    void insert(ViewType<NodeType>* view, long long index, PyObject* item) {
-        // normalize index
-        size_t norm_index = normalize_index(index, view->size, true);
-
+    /* Insert an item into a list at the given index. */
+    template <typename NodeType>
+    void insert(ListView<NodeType>* view, size_t index, PyObject* item) {
         // if index is closer to head, use singly-linked version
         if (norm_index <= view->size / 2) {
-            return SingleIndex::insert(view, item, index);
+            return SinglyLinked::insert(view, index, item);
         }
 
         // else, start from tail
         NodeType* node = view->allocate(item);
-        if (node == NULL) {  // MemoryError() or TypeError() during hash()
+        if (node == NULL) {  // MemoryError()
             return;
         }
 
         // find node at index
         NodeType* curr = view->tail;
         NodeType* next = NULL;  // shadows curr
-        for (size_t i = view->size - 1; i > norm_index; i--) {
+        for (size_t i = view->size - 1; i > index; i--) {
             next = curr;
             curr = curr->prev;
+        }
+
+        // insert node
+        view->link(curr, node, next);
+    }
+
+    /* Insert an item into a set at the given index. */
+    template <typename NodeType>
+    void insert(SetView<NodeType>* view, size_t index, PyObject* item) {
+        // if index is closer to head, use singly-linked version
+        if (norm_index <= view->size / 2) {
+            return SinglyLinked::insert(view, index, item);
+        }
+
+        // else, start from tail
+        Hashed<NodeType>* node = view->allocate(item);
+        if (node == NULL) {  // MemoryError() or TypeError() during hash()
+            return;
+        }
+
+        // find node at index
+        Hashed<NodeType>* curr = view->tail;
+        Hashed<NodeType>* next = NULL;  // shadows curr
+        for (size_t i = view->size - 1; i > index; i--) {
+            next = curr;
+            curr = (Hashed<NodeType>*)curr->prev;
+        }
+
+        // insert node
+        view->link(curr, node, next);
+    }
+
+    /* Insert an item into a dictionary at the given index. */
+    template <typename NodeType>
+    void insert(DictView<NodeType>* view, size_t index, PyObject* item) {
+        // if index is closer to head, use singly-linked version
+        if (index <= view->size / 2) {
+            return SinglyLinked::insert(view, index, item);
+        }
+
+        // else, start from tail
+        Mapped<NodeType>* node = view->allocate(item);
+        if (node == NULL) {  // MemoryError() or TypeError() during hash()
+            return;
+        }
+
+        // find node at index
+        Mapped<NodeType>* curr = view->tail;
+        Mapped<NodeType>* next = NULL;  // shadows curr
+        for (size_t i = view->size - 1; i > index; i--) {
+            next = curr;
+            curr = (Mapped<NodeType>*)curr->prev;
         }
 
         // insert node
@@ -69,3 +165,4 @@ namespace DoublyLinked {
 }
 
 
+#endif // INSERT_H include guard

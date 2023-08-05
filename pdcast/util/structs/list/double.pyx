@@ -60,7 +60,7 @@ cdef class DoublyLinkedList(LinkedList):
     ####    CONCRETE    ####
     ########################
 
-    cdef void _append(self, PyObject* item):
+    def append(self, item: object) -> None:
         """Add an item to the end of the list.
 
         Parameters
@@ -72,9 +72,9 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Appends are O(1) for both ends of the list.
         """
-        append(self.view, item)  # from append.h
+        append(self.view, <PyObject*>item)  # from append.h
 
-    cdef void _appendleft(self, PyObject* item):
+    def appendleft(self, item: object) -> None:
         """Add an item to the beginning of the list.
 
         Parameters
@@ -89,9 +89,9 @@ cdef class DoublyLinkedList(LinkedList):
         This method is consistent with the standard library's
         :class:`collections.deque <python:collections.deque>` class.
         """
-        appendleft(self.view, item)  # from append.h
+        appendleft(self.view, <PyObject*>item)  # from append.h
 
-    cdef void _insert(self, PyObject* item, long index):
+    def insert(self, index: int, item: object) -> None:
         """Insert an item at the specified index.
 
         Parameters
@@ -112,34 +112,11 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Inserts are O(n) on average.
         """
-        # allow negative indexing + check bounds
-        cdef size_t norm_index = normalize_index(index, self.view.size)
+        cdef size_t norm_index = self.view.normalize_index(index, True)
 
-        # allocate new node
-        cdef DoubleNode* node = self.view.allocate(item)
-        cdef DoubleNode* curr
-        cdef size_t i
+        insert(self.view, norm_index, <PyObject*>item)  # from insert.h
 
-        # insert node at specified index, starting from nearest end
-        if norm_index <= self.view.size // 2:
-            # iterate forwards from head
-            curr = self.view.head
-            for i in range(norm_index):
-                curr = curr.next
-
-            # insert before current node
-            self._link_node(curr.prev, node, curr)
-
-        else:
-            # iterate backwards from tail
-            curr = self.tail
-            for i in range(self.size - norm_index - 1):
-                curr = curr.prev
-
-            # insert after current node
-            self._link_node(curr, node, curr.next)
-
-    cdef void _extend(self, PyObject* items):
+    def extend(self, items: Iterable[object]) -> None:
         """Add multiple items to the end of the list.
 
         Parameters
@@ -151,9 +128,9 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Extends are O(m), where `m` is the length of ``items``.
         """
-        extend(self.view, items)  # from extend.h
+        extend(self.view, <PyObject*>items)  # from extend.h
 
-    cdef void _extendleft(self, PyObject* items):
+    def extendleft(self, items: Iterable[object]) -> None:
         """Add multiple items to the beginning of the list.
 
         Parameters
@@ -170,9 +147,9 @@ cdef class DoublyLinkedList(LinkedList):
         that class, the series of left appends results in reversing the order
         of elements in ``items``.
         """
-        extendleft(self.view, items)  # from extend.h
+        extendleft(self.view, <PyObject*>items)  # from extend.h
 
-    cdef size_t _index(self, PyObject* item, long start = 0, long stop = -1):
+    def index(self, item: object, start: int = 0, stop: int = -1) -> int:
         """Get the index of an item within the list.
 
         Parameters
@@ -194,43 +171,18 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Indexing is O(n) on average.
         """
-        cdef DoubleNode* node = self.head
-        cdef size_t index = 0
-        cdef int comp
+        # allow Python-style negative indexing + bounds checking
+        cdef size_t norm_start = self.view.normalize_index(start, True)
+        cdef size_t norm_stop = self.view.normalize_index(stop, True)
 
-        # normalize start/stop indices
-        cdef size_t norm_start = normalize_index(start, self.size)
-        cdef size_t norm_stop = normalize_index(stop, self.size)
+        # check that start and stop indices are consistent
+        if norm_start > norm_stop:
+            raise ValueError("start index must be less than or equal to stop index")
 
-        # skip to `start`
-        for index in range(norm_start):
-            if node is NULL:  # hit end of list
-                raise ValueError(f"{repr(<object>item)} is not in list")
-            node = node.next
+        # delegate to index.h
+        return index(self.view, <PyObject*>item, norm_start, norm_stop)
 
-        # iterate until `stop`
-        while node is not NULL and index < norm_stop:
-            # C API equivalent of the == operator
-            comp = PyObject_RichCompareBool(node.value, item, Py_EQ)
-            if comp == -1:  # == failed
-                raise_exception()
-    
-            # return index if equal
-            if comp == 1:
-                return index
-
-            # advance to next node
-            node = node.next
-            index += 1
-
-        raise ValueError(f"{repr(<object>item)} is not in list")
-
-    cdef size_t _count(
-        self,
-        PyObject* item,
-        long long start = 0,
-        long long stop = -1
-    ):
+    def count(self, item: object, start: int = 0, stop: int = -1) -> int:
         """Count the number of occurrences of an item in the list.
 
         Parameters
@@ -247,9 +199,17 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Counting is O(n).
         """
-        return count(self.view, item, start, stop)  # from count.h
+        # allow Python-style negative indexing + bounds checking
+        cdef size_t norm_start = self.view.normalize_index(start, True)
+        cdef size_t norm_stop = self.view.normalize_index(stop, True)
 
-    cdef void _remove(self, PyObject* item):
+        # check that start and stop indices are consistent
+        if norm_start > norm_stop:
+            raise ValueError("start index must be less than or equal to stop index")
+
+        return count(self.view, <PyObject*>item, norm_start, norm_stop)  # from count.h
+
+    def remove(self, item: object) -> None:
         """Remove an item from the list.
 
         Parameters
@@ -266,9 +226,9 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Removals are O(n) on average.
         """
-        remove(self.view, item)  # from remove.h
+        remove(self.view, <PyObject*>item)  # from remove.h
 
-    cdef PyObject* _pop(self, long index = -1):
+    def pop(self, index: int = -1) -> object:
         """Remove and return the item at the specified index.
 
         Parameters
@@ -293,6 +253,12 @@ cdef class DoublyLinkedList(LinkedList):
         Pops are O(1) if ``index`` points to either of the list's ends, and
         O(n) otherwise.
         """
+        cdef size_t norm_index = self.view.normalize_index(index, True)
+
+        return <object>pop(self.view, norm_index)  # from pop.h
+
+
+
         # allow negative indexing + check bounds
         cdef size_t norm_index = normalize_index(index, self.size)
 
@@ -314,7 +280,7 @@ cdef class DoublyLinkedList(LinkedList):
         free_node(node)
         return value
 
-    cdef PyObject* _popleft(self):
+    def popleft(self) -> object:
         """Remove and return the first item in the list.
 
         Returns
@@ -349,7 +315,7 @@ cdef class DoublyLinkedList(LinkedList):
         free_node(node)
         return value
 
-    cdef PyObject* _popright(self):
+    def popright(self) -> object:
         """Remove and return the last item in the list.
 
         Returns
@@ -384,7 +350,7 @@ cdef class DoublyLinkedList(LinkedList):
         free_node(node)
         return value
 
-    cdef void _clear(self):
+    def clear(self) -> None:
         """Remove all items from the list.
 
         Notes
@@ -393,7 +359,7 @@ cdef class DoublyLinkedList(LinkedList):
         """
         self.view.clear()  # from view.h
 
-    cdef void _sort(self, PyObject* key = NULL, bint reverse = False):
+    def sort(self, *, key: Callable = None, reverse: bool = False) -> None:
         """Sort the list in-place.
 
         Parameters
@@ -431,9 +397,12 @@ cdef class DoublyLinkedList(LinkedList):
         opens up the possibility of anticipating errors and handling them
         gracefully.
         """
-        sort(self.view, key, reverse)  # from sort.h
+        if key is None:
+            sort(self.view, NULL, reverse)  # from sort.h
+        else:
+            sort(self.view, <PyObject*>key, reverse)  # from sort.h
 
-    cdef void _reverse(self):
+    def reverse(self) -> None:
         """Reverse the order of the list in-place.
 
         Notes
@@ -442,7 +411,7 @@ cdef class DoublyLinkedList(LinkedList):
         """
         reverse(self.view)  # from reverse.h
 
-    cdef void _rotate(self, ssize_t steps = 1):
+    def rotate(self, steps: int = 1) -> None:
         """Rotate the list to the right by the specified number of steps.
 
         Parameters
@@ -461,9 +430,10 @@ cdef class DoublyLinkedList(LinkedList):
         """
         rotate(self.view, steps)  # from rotate.h
 
-    cdef size_t _nbytes(self):
+    def nbytes(self) -> int:
         """Get the total number of bytes used by the list."""
         import sys
+
         cdef size_t total = self.view.nbytes()  # from view.h
         total += sys.getsizeof(self)  # add size of Python wrapper
         return total

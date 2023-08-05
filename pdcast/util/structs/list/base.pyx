@@ -6,6 +6,42 @@ from cpython.ref cimport PyObject
 from libc.stdlib cimport malloc, free
 
 
+cdef inline size_t normalize_index(object index, size_t size, bint truncate = True):
+    """Allow negative indexing and check if the result is within bounds.
+
+    Parameters
+    ----------
+    index : long int
+        The index to normalize.  If this is negative, it will be translated to
+        a positive index by counting backwards from the end of the list.
+    size : size_t
+        The overall size of the list.
+
+    Returns
+    -------
+    size_t
+        The normalized index.
+
+    Raises
+    ------
+    IndexError
+        If the index is out of bounds.
+    """
+    # wraparound
+    if index < 0:
+        index += size
+
+    # boundscheck
+    if not 0 <= index < (<long long>size):
+        if truncate:
+            if index < 0:
+                return 0
+            return size - 1
+        raise IndexError("list index out of range")
+
+    return <size_t>index
+
+
 #########################
 ####    FUNCTIONS    ####
 #########################
