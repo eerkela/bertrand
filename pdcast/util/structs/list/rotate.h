@@ -23,7 +23,7 @@
 
 /* Rotate a singly-linked list to the right by the specified number of steps. */
 template <typename NodeType>
-inline void rotate_single(ListView<NodeType>* view, ssize_t steps = 1) {
+inline void rotate_single(ListView<NodeType>* view, ssize_t steps) {
     // normalize steps
     size_t norm_steps = abs(steps) % view->size;
     if (norm_steps == 0) {  // rotated list is identical to original
@@ -47,7 +47,7 @@ inline void rotate_single(ListView<NodeType>* view, ssize_t steps = 1) {
 
 /* Rotate a singly-linked set to the right by the specified number of steps. */
 template <typename NodeType>
-void rotate_single(SetView<NodeType>* view, ssize_t steps = 1) {
+void rotate_single(SetView<NodeType>* view, ssize_t steps) {
     // normalize steps
     size_t norm_steps = abs(steps) % view->size;
     if (norm_steps == 0) {  // rotated list is identical to original
@@ -71,7 +71,7 @@ void rotate_single(SetView<NodeType>* view, ssize_t steps = 1) {
 
 /* Rotate a singly-linked dictionary to the right by the specified number of steps. */
 template <typename NodeType>
-void rotate_single(DictView<NodeType>* view, ssize_t steps = 1) {
+void rotate_single(DictView<NodeType>* view, ssize_t steps) {
     // normalize steps
     size_t norm_steps = abs(steps) % view->size;
     if (norm_steps == 0) {  // rotated list is identical to original
@@ -100,7 +100,7 @@ void rotate_single(DictView<NodeType>* view, ssize_t steps = 1) {
 
 /* Rotate a doubly-linked list to the right by the specified number of steps. */
 template <typename NodeType>
-void rotate_double(ListView<NodeType>* view, ssize_t steps = 1) {
+void rotate_double(ListView<NodeType>* view, ssize_t steps) {
     // normalize steps
     size_t norm_steps = abs(steps) % view->size;
     if (norm_steps == 0) {  // rotated list is identical to original
@@ -124,7 +124,7 @@ void rotate_double(ListView<NodeType>* view, ssize_t steps = 1) {
 
 /* Rotate a doubly-linked set to the right by the specified number of steps. */
 template <typename NodeType>
-void rotate_double(SetView<NodeType>* view, ssize_t steps = 1) {
+void rotate_double(SetView<NodeType>* view, ssize_t steps) {
     // normalize steps
     size_t norm_steps = abs(steps) % view->size;
     if (norm_steps == 0) {  // rotated list is identical to original
@@ -148,7 +148,7 @@ void rotate_double(SetView<NodeType>* view, ssize_t steps = 1) {
 
 /* Rotate a doubly-linked dictionary to the right by the specified number of steps. */
 template <typename NodeType>
-void rotate_double(DictView<NodeType>* view, ssize_t steps = 1) {
+void rotate_double(DictView<NodeType>* view, ssize_t steps) {
     // normalize steps
     size_t norm_steps = abs(steps) % view->size;
     if (norm_steps == 0) {  // rotated list is identical to original

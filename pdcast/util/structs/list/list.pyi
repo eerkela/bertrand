@@ -1,27 +1,25 @@
 """Mypy stubs for pdcast/util/structs/list.pyx"""
 from __future__ import annotations
 
-from typing import Any, Hashable, Iterable, Iterator
+from typing import Any, ClassVar, Generic, Hashable, Iterable, Iterator, TypeVar
 
 
-class ListNode:
-    value: Any
-    next: ListNode
-    prev: ListNode
+# template type for the contents of a LinkedList
+T = TypeVar("T")
 
 
-class LinkedList:
-    head: ListNode
-    tail: ListNode
+class LinkedList(Generic[T]):
+
+    __hash__: ClassVar[None] = ...  # type: ignore
 
     ######################
     ####    APPEND    ####
     ######################
 
-    def __add__(self, other: Iterable[Any]) -> LinkedList: ...
-    def __iadd__(self, other: Iterable[Any]) -> LinkedList: ...
-    def __mul__(self, repeat: int) -> LinkedList: ...
-    def __imul__(self, repeat: int) -> LinkedList: ...
+    def __add__(self, other: Iterable[Any]) -> LinkedList[T]: ...
+    def __iadd__(self, other: Iterable[Any]) -> LinkedList[T]: ...
+    def __mul__(self, repeat: int) -> LinkedList[T]: ...
+    def __imul__(self, repeat: int) -> LinkedList[T]: ...
 
     #####################
     ####    INDEX    ####
@@ -52,28 +50,3 @@ class LinkedList:
     def __bool__(self) -> bool: ...
     def __str__(self) -> str: ...
     def __repr__(self) -> str: ...
-
-
-class HashedList(LinkedList):
-    nodes: dict[Any, ListNode]
-
-    ######################
-    ####    APPEND    ####
-    ######################
-
-    def __add__(self, other: Iterable[Hashable]) -> HashedList: ...
-    def __iadd__(self, other: Iterable[Hashable]) -> HashedList: ...
-    def __mul__(self, repeat: int) -> HashedList: ...
-    def __imul__(self, repeat: int) -> HashedList: ...
-
-    #####################
-    ####    INDEX    ####
-    #####################
-
-    def __setitem__(self, index: int | slice, value: Hashable) -> None: ...
-
-    ###############################
-    ####    SPECIAL METHODS    ####
-    ###############################
-
-    def __contains__(self, item: Hashable) -> bool: ...

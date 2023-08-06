@@ -79,7 +79,7 @@ inline void extendafter(
 /* Insert elements into a dictionary after a given sentinel value. */
 template <typename NodeType>
 inline void extendafter(
-    SetView<NodeType>* view,
+    DictView<NodeType>* view,
     PyObject* sentinel,
     PyObject* items
 ) {
@@ -193,7 +193,7 @@ inline void extendbefore_double(
 /* Insert elements into a doubly-linked dictionary after a given sentinel value. */
 template <typename NodeType>
 inline void extendbefore_double(
-    SetView<NodeType>* view,
+    DictView<NodeType>* view,
     PyObject* sentinel,
     PyObject* items
 ) {
@@ -235,15 +235,27 @@ void _extend_left_to_right(ViewType<T>* view, U* left, U* right, PyObject* items
         }
 
         // allocate a new node
-        node = view->allocate(item);
-        if (node == NULL) {  // MemoryError() or TypeError() during hash()
+        try {
+            node = view->allocate(item);
+        } catch (const std::bad_alloc& err) {  // memory error during node allocation
+            Py_DECREF(item);
+            PyErr_NoMemory();
+            break;
+        }
+        if (node == NULL) {  // TypeError() during hash() / tuple unpacking
             Py_DECREF(item);
             break;
         }
 
         // insert from left to right
-        view->link(prev, node, right);
-        if (PyErr_Occurred()) {  // ValueError() during link()
+        try {
+            view->link(prev, node, right);
+        } catch (const std::bad_alloc& err) {  // memory error during resize()
+            Py_DECREF(item);
+            PyErr_NoMemory();
+            break;
+        }
+        if (PyErr_Occurred()) {  // ValueError() item is already in list
             Py_DECREF(item);
             break;
         }
@@ -286,15 +298,27 @@ void _extend_right_to_left(ViewType<T>* view, U* left, U* right, PyObject* items
         }
 
         // allocate a new node
-        node = view->allocate(item);
-        if (node == NULL) {  // MemoryError() or TypeError() during hash()
+        try {
+            node = view->allocate(item);
+        } catch (const std::bad_alloc& err) {  // memory error during node allocation
+            Py_DECREF(item);
+            PyErr_NoMemory();
+            break;
+        }
+        if (node == NULL) {  // TypeError() during hash() / tuple unpacking
             Py_DECREF(item);
             break;
         }
 
         // insert from right to left
-        view->link(left, node, prev);
-        if (PyErr_Occurred()) {  // ValueError() during link()
+        try {
+            view->link(left, node, prev);
+        } catch (const std::bad_alloc& err) {  // memory error during resize()
+            Py_DECREF(item);
+            PyErr_NoMemory();
+            break;
+        }
+        if (PyErr_Occurred()) {  // ValueError() item is already in list
             Py_DECREF(item);
             break;
         }

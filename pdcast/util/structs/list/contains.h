@@ -10,13 +10,13 @@
 /* Check if an item is contained within a list. */
 template <typename NodeType>
 inline int contains(ListView<NodeType>* view, PyObject* item) {
-    NodeType* curr = head;
+    NodeType* curr = view->head;
     int comp;
 
     // search until we find the item or hit stop index
     while (curr != NULL) {
         // C API equivalent of the == operator
-        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
+        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
         if (comp == -1) {  // == comparison raised an exception
             return -1;
         } else if (comp == 1) {  // found a match

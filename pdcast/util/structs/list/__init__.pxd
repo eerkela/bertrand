@@ -1,4 +1,3 @@
-# from .base cimport LinkedList
-# from .single cimport SinglyLinkedList
-# from .double cimport DoublyLinkedList, ListNode
-# from .hashed cimport HashedList, HashNode, ListTable
+# from .list cimport LinkedList, SinglyLinkedList, DoublyLinkedList
+# from .set cimport SinglyLinkedSet, DoublyLinkedSet
+# from .dict cimport SinglyLinkedDictionary, DoublyLinkedDictionary

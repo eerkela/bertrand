@@ -1,8 +1,7 @@
 """Cython headers for pdcast/util/structs/list/count.h"""
 from cpython.ref cimport PyObject
 
-from .node cimport ListView, SetView, DictView
-from .view cimport MAX_SIZE_T
+from .view cimport MAX_SIZE_T, ListView, SetView, DictView
 
 cdef extern from "count.h":
     # singly-linked

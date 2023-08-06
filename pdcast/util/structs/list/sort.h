@@ -9,6 +9,10 @@
 #include <view.h>  // for views
 
 
+// TODO: check this for correctness with respect to allocation errors, Keyed
+// initialization, etc.  Also, check that the decorators are freed properly.
+
+
 ///////////////////////
 ////    STRUCTS    ////
 ///////////////////////
@@ -32,12 +36,11 @@ struct Keyed : public T {
         Keyed<T>* keyed = (Keyed<T>*)malloc(sizeof(Keyed<T>));
         if (keyed == NULL) {
             Py_DECREF(key_value);  // release reference on precomputed key
-            PyErr_NoMemory();
-            return NULL;  // propagate the error
+            throw std::bad_alloc();
         }
 
         // initialize the keyed decorator
-        T::initialize(keyed, key_value);
+        T::initialize(keyed, key_value); // TODO: consider the case where initialize expects 2 arguments (Mapped)
         keyed->node = node;
         return keyed;
     }
@@ -66,7 +69,7 @@ struct Keyed : public T {
 
 /* Sort a ListView in-place. */
 template <typename NodeType>
-void sort(ListView<NodeType>* view, PyObject* key = NULL, bool reverse = false) {
+void sort(ListView<NodeType>* view, PyObject* key, bool reverse) {
     // trivial case: empty list
     if (view->size == 0) {
         return;
@@ -107,9 +110,9 @@ void sort(ListView<NodeType>* view, PyObject* key = NULL, bool reverse = false) 
 
 /* Sort a SetView in-place. */
 template <typename NodeType>
-void sort(SetView<NodeType>* view, PyObject* key = NULL, bool reverse = false) {
+void sort(SetView<NodeType>* view, PyObject* key, bool reverse) {
     // cast SetView to ListView
-    ListView<NodeType>* list_view = new ListView<NodeType>();
+    ListView<Hashed<NodeType>>* list_view = new ListView<Hashed<NodeType>>();
     if (list_view == NULL) {
         PyErr_NoMemory();
         return;
@@ -128,9 +131,9 @@ void sort(SetView<NodeType>* view, PyObject* key = NULL, bool reverse = false) {
 
 /* Sort a DictView in-place. */
 template <typename NodeType>
-void sort(DictView<NodeType>* view, PyObject* key = NULL, bool reverse = false) {
+void sort(DictView<NodeType>* view, PyObject* key, bool reverse) {
     // cast DictView to ListView
-    ListView<NodeType>* list_view = new ListView<NodeType>();
+    ListView<Mapped<NodeType>>* list_view = new ListView<Mapped<NodeType>>();
     if (list_view == NULL) {
         PyErr_NoMemory();
         return;

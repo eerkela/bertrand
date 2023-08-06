@@ -1,24 +1,8 @@
 # distutils: language = c++
-"""This module contains a pure C/Cython implementation of a doubly-linked list.
+"""This module contains a pure Cython/C++ implementation of both singly-linked
+and doubly-linked list data structures.
 """
 from typing import Iterable, Iterator
-
-
-cdef void raise_exception() except *:
-    """If the python interpreter is currently storing an exception, raise it.
-
-    Notes
-    -----
-    Interacting with the Python C API can sometimes result in errors that are
-    encoded in the function's output and checked by the `PyErr_Occurred()`
-    interpreter flag.  This function can be called whenever this occurs in
-    order to force that error to be raised as normal.
-    """
-    # Since we're using the except * Cython syntax, the error handler will be
-    # invoked every time this function is called.  This means we don't have to
-    # do anything here, just return void and let the built-in machinery do
-    # all the work
-    return
 
 
 ####################
@@ -34,8 +18,8 @@ cdef void raise_exception() except *:
 cdef class LinkedList:
     """Base class for all linked list data structures.
 
-    Each linked list is a drop-in replacement for a standard Python data
-    structure, and can be used interchangeably in many cases.  The lists
+    Each linked list is a drop-in replacement for a built-in Python data
+    structure, and can be used interchangeably in most cases.  The lists
     themselves are implemented in pure C++ and are optimized for performance
     wherever possible.
     """
@@ -86,6 +70,22 @@ cdef class LinkedList:
 #############################
 
 
+# TODO: SinglyLinkedList inherits:
+# append
+# appendleft
+# contains
+# extend
+# extendleft
+# popleft
+# remove
+# sort
+# __len__
+# __iter__
+# math
+# lexicographic comparisons
+
+# These are not overridden in DoublyLinkedList
+
 
 #############################
 ####    DOUBLY-LINKED    ####
@@ -97,7 +97,7 @@ cdef class DoublyLinkedList(LinkedList):
 
     This is a drop-in replacement for a standard Python
     :class:`list <python:list>` or :class:`deque <python:collections.deque>`
-    object, with comparable performance.
+    object, with generally comparable performance.
 
     Parameters
     ----------
@@ -143,12 +143,11 @@ cdef class DoublyLinkedList(LinkedList):
         """
         cdef PyObject* borrowed
 
-        if items is not None:
+        if items is None:
+            self.view = new ListView[DoubleNode]()
+        else:
             borrowed = <PyObject*>items
-            extend(self.view, borrowed)  # from extend.h
-
-    def __cinit__(self):
-        self.view = new ListView[DoubleNode]()
+            self.view = new ListView[DoubleNode](borrowed)
 
     def __dealloc__(self):
         del self.view
@@ -175,14 +174,8 @@ cdef class DoublyLinkedList(LinkedList):
         no other objects should retain a reference to the view after this
         method is called.
         """
-        # create a new DoublyLinkedList object
         cdef DoublyLinkedList result = DoublyLinkedList.__new__(DoublyLinkedList)
-
-        # delete the default view and replace it with the specified one
-        del result.view
         result.view = view
-
-        # return the new list
         return result
 
     ########################
@@ -623,16 +616,18 @@ cdef class DoublyLinkedList(LinkedList):
         a slice boundary, and to never backtrack.  It collects all values in a
         single iteration and stops as soon as the slice is complete.
         """
-        cdef LinkedList result
-        cdef DoubleNode* curr
+        # cdef LinkedList result
+        # cdef DoubleNode* curr
         cdef object start, stop, step  # kept at Python level
-        cdef size_t index, end_index, abs_step, i
-        cdef bint reverse
+        # cdef size_t index, end_index, abs_step, i
+        # cdef bint reverse
+
+        cdef ListView[DoubleNode]* result
 
         # support slicing
         if isinstance(key, slice):
             # create a new DoublyLinkedList to hold the slice
-            result = type(self)()
+            # result = type(self)()
 
             # NOTE: Python slices are normally half-open.  This complicates our
             # optimization strategy because we can't treat the slices symmetrically
@@ -641,227 +636,246 @@ cdef class DoublyLinkedList(LinkedList):
             start, stop, step = key.indices(self.size)
             stop -= (stop - start) % step or step  # make stop inclusive
             if (step > 0 and stop < start) or (step < 0 and start < stop):
-                return result  # Python returns an empty list in these cases
+                return type(self)()  # Python returns an empty list in these cases
 
-            # determine direction of traversal to avoid backtracking
-            index, end_index = get_slice_direction(
+            result = get_slice_double(
+                self.view,
                 <size_t>start,
                 <size_t>stop,
-                <ssize_t>step,
-                self.head,
-                self.tail,
-                self.size,
+                <ssize_t>step
             )
-            reverse = step < 0  # append to slice in reverse order
-            abs_step = abs(step)
+            return self.from_view(result)
 
-            # get first node in slice, counting from nearest end
-            curr = node_at_index(index, self.head, self.tail, self.size)
+            # # determine direction of traversal to avoid backtracking
+            # index, end_index = get_slice_direction(
+            #     <size_t>start,
+            #     <size_t>stop,
+            #     <ssize_t>step,
+            #     self.head,
+            #     self.tail,
+            #     self.size,
+            # )
+            # reverse = step < 0  # append to slice in reverse order
+            # abs_step = abs(step)
 
-            # forward traversal
-            if index <= end_index:
-                while curr is not NULL and index <= end_index:
-                    # TODO: just copy the node and link it manually.  This
-                    # avoids rehashing nodes in the case of HashNodes.
-                    if reverse:
-                        result._appendleft(curr.value)  # appendleft
-                    else:
-                        result._append(curr.value)  # append
+            # # get first node in slice, counting from nearest end
+            # curr = node_at_index(index, self.head, self.tail, self.size)
 
-                    # jump according to step size
-                    index += abs_step  # increment index
-                    for i in range(abs_step):
-                        curr = curr.next
-                        if curr is NULL:
-                            break
-
-            # backward traversal
-            else:
-                while curr is not NULL and index >= end_index:
-                    # TODO: just copy the node and link it manually.  This
-                    # avoids rehashing nodes in the case of HashNodes.
-                    if reverse:
-                        result._append(curr.value)  # append
-                    else:
-                        result._appendleft(curr.value)  # appendleft
-
-                    # jump according to step size
-                    index -= abs_step  # decrement index
-                    for i in range(abs_step):
-                        curr = curr.prev
-                        if curr is NULL:
-                            break
-
-            return result
+            # # forward traversal
+            # if index <= end_index:
+            #     while curr is not NULL and index <= end_index:
+            #         # TODO: just copy the node and link it manually.  This
+            #         # avoids rehashing nodes in the case of HashNodes.
+            #         if reverse:
+            #             result._appendleft(curr.value)  # appendleft
+            #         else:
+            #             result._append(curr.value)  # append
+            # 
+            #         # jump according to step size
+            #         index += abs_step  # increment index
+            #         for i in range(abs_step):
+            #             curr = curr.next
+            #             if curr is NULL:
+            #                 break
+            # 
+            # # backward traversal
+            # else:
+            #     while curr is not NULL and index >= end_index:
+            #         # TODO: just copy the node and link it manually.  This
+            #         # avoids rehashing nodes in the case of HashNodes.
+            #         if reverse:
+            #             result._append(curr.value)  # append
+            #         else:
+            #             result._appendleft(curr.value)  # appendleft
+            # 
+            #         # jump according to step size
+            #         index -= abs_step  # decrement index
+            #         for i in range(abs_step):
+            #             curr = curr.prev
+            #             if curr is NULL:
+            #                 break
+            # 
+            # return result
 
         # index directly
-        index = normalize_index(key, self.size)
-        curr = node_at_index(index, self.head, self.tail, self.size)
+        cdef size_t i
+        cdef DoubleNode* curr
+        cdef size_t index = normalize_index(key, self.size)
+        if index <= self.size // 2:  # iterate from head
+            curr = self.view.head
+            for i in range(index):
+                curr = <DoubleNode*>curr.next
+        else:  # iterate from tail
+            curr = self.view.tail
+            for i in range(self.size - index - 1):
+                curr = <DoubleNode*>curr.prev
+
+        # curr = node_at_index(index, self.head, self.tail, self.size)
         Py_INCREF(curr.value)
         return <object>curr.value  # this returns ownership to Python
 
-    def __setitem__(self, key: int | slice, value: object | Iterable[object]) -> None:
-        """Set the value of an item or slice in the list.
-
-        Parameters
-        ----------
-        key : int or slice
-            The index or slice to set in the list.  This can be negative,
-            following the same convention as Python's standard
-            :class:`list <python:list>`.
-        value : Any | Iterable[Any]
-            The value or values to set at the specified index or slice.  If
-            ``key`` is a slice, then ``value`` must be an iterable of the same
-            length.
-
-        Raises
-        ------
-        IndexError
-            If the index is out of bounds.
-        ValueError
-            If the length of ``value`` does not match the length of the slice.
-
-        See Also
-        --------
-        DoublyLinkedList.__getitem__ :
-            Index the list for a particular item or slice.
-        DoublyLinkedList.__delitem__ :
-            Delete an item or slice from the list.
-
-        Notes
-        -----
-        Integer-based assignment is O(n) on average.
-
-        Slice assignment is optimized to always begin iterating from the end
-        nearest to a slice boundary, and to never backtrack.  It assigns all
-        values in a single iteration and stops as soon as the slice is
-        complete.
-        """
-        cdef DoubleNode* node
-        cdef DoubleNode* curr
-        cdef object start, stop, step, expected_size  # kept at Python level
-        cdef size_t abs_step, index, end_index, i
-        cdef object value_iter, val
-
-        # support slicing
-        if isinstance(key, slice):
-            value_iter = iter(value)  # check input is iterable
-
-            # NOTE: Python slices are normally half-open.  This complicates our
-            # optimization strategy because we can't treat the slices symmetrically
-            # in both directions.  To account for this, we convert the slice into
-            # a closed interval so we're free to iterate in either direction.
-            start, stop, step = key.indices(self.size)
-
-            # Python allows assignment to empty/improper slices iff step == 1
-            if step == 1:
-                self.__delitem__(key)  # delete previous values
-
-                # handle edge cases
-                if start == 0:  # assignment at beginning of list
-                    val = next(value_iter)
-                    curr = allocate_double_node(<PyObject*>val)
-                    self._link_node(NULL, curr, self.head)
-                elif start == self.size:  # assignment at end of list
-                    val = next(value_iter)
-                    curr = allocate_double_node(<PyObject*>val)
-                    self._link_node(self.tail, curr, NULL)
-                else:  # assignment in middle of list
-                    curr = node_at_index(
-                        <size_t>(start - 1),
-                        self.head,
-                        self.tail,
-                        self.size
-                    )
-
-                # insert all values at current index
-                for val in value_iter:
-                    node = allocate_double_node(<PyObject*>val)
-                    self._link_node(curr, node, curr.next)
-                    curr = node
-
-                return  # early return
-
-            # proceed as normal
-            abs_step = abs(step)
-            stop -= (stop - start) % step or step  # make stop inclusive
-            expected_size = 1 + abs(stop - start) // abs_step
-            if (
-                (step > 0 and stop < start) or
-                (step < 0 and start < stop) or
-                len(value) != expected_size
-            ):
-                raise IndexError(
-                    f"attempt to assign sequence of size {len(value)} to "
-                    f"extended slice of size {expected_size}"
-                )
-
-            # determine direction of traversal to avoid backtracking
-            index, end_index = get_slice_direction(
-                <size_t>start,
-                <size_t>stop,
-                <ssize_t>step,
-                self.head,
-                self.tail,
-                self.size,
-            )
-
-            # get first node in slice, counting from nearest end
-            curr = node_at_index(index, self.head, self.tail, self.size)
-
-            # forward traversal
-            if index <= end_index:
-                if step < 0:
-                    value_iter = reversed(value)
-                while curr is not NULL and index <= end_index:
-                    val = next(value_iter)
-                    Py_INCREF(<PyObject*>val)
-                    Py_DECREF(curr.value)
-                    curr.value = <PyObject*>val
-                    # node = allocate_double_node(<PyObject*>val)
-                    # self._link_node(curr.prev, node, curr.next)
-                    # free_node(curr)
-                    # curr = node
-
-                    # jump according to step size
-                    index += abs_step  # increment index
-                    for i in range(abs_step):
-                        curr = curr.next
-                        if curr is NULL:
-                            break
-
-            # backward traversal
-            else:
-                if step > 0:
-                    value_iter = reversed(value)
-                while curr is not NULL and index >= end_index:
-                    val = next(value_iter)
-                    Py_INCREF(<PyObject*>val)
-                    Py_DECREF(curr.value)
-                    curr.value = <PyObject*>val
-                    # node = allocate_double_node(<PyObject*>val)
-                    # self._link_node(curr.prev, node, curr.next)
-                    # free_node(curr)
-                    # curr = node
-
-                    # jump according to step size
-                    index -= abs_step  # decrement index
-                    for i in range(abs_step):
-                        curr = curr.prev
-                        if curr is NULL:
-                            break
-
-            return
-
-        # index directly
-        index = normalize_index(key, self.size)
-        curr = node_at_index(index, self.head, self.tail, self.size)
-        Py_INCREF(<PyObject*>value)
-        Py_DECREF(curr.value)
-        curr.value = <PyObject*>value
-        # node = allocate_double_node(<PyObject*>value)
-        # self._link_node(curr.prev, node, curr.next)
-        # free_node(curr)
+#     def __setitem__(self, key: int | slice, value: object | Iterable[object]) -> None:
+#         """Set the value of an item or slice in the list.
+# 
+#         Parameters
+#         ----------
+#         key : int or slice
+#             The index or slice to set in the list.  This can be negative,
+#             following the same convention as Python's standard
+#             :class:`list <python:list>`.
+#         value : Any | Iterable[Any]
+#             The value or values to set at the specified index or slice.  If
+#             ``key`` is a slice, then ``value`` must be an iterable of the same
+#             length.
+# 
+#         Raises
+#         ------
+#         IndexError
+#             If the index is out of bounds.
+#         ValueError
+#             If the length of ``value`` does not match the length of the slice.
+# 
+#         See Also
+#         --------
+#         DoublyLinkedList.__getitem__ :
+#             Index the list for a particular item or slice.
+#         DoublyLinkedList.__delitem__ :
+#             Delete an item or slice from the list.
+# 
+#         Notes
+#         -----
+#         Integer-based assignment is O(n) on average.
+# 
+#         Slice assignment is optimized to always begin iterating from the end
+#         nearest to a slice boundary, and to never backtrack.  It assigns all
+#         values in a single iteration and stops as soon as the slice is
+#         complete.
+#         """
+#         cdef DoubleNode* node
+#         cdef DoubleNode* curr
+#         cdef object start, stop, step, expected_size  # kept at Python level
+#         cdef size_t abs_step, index, end_index, i
+#         cdef object value_iter, val
+# 
+#         # support slicing
+#         if isinstance(key, slice):
+#             value_iter = iter(value)  # check input is iterable
+# 
+#             # NOTE: Python slices are normally half-open.  This complicates our
+#             # optimization strategy because we can't treat the slices symmetrically
+#             # in both directions.  To account for this, we convert the slice into
+#             # a closed interval so we're free to iterate in either direction.
+#             start, stop, step = key.indices(self.size)
+# 
+#             # Python allows assignment to empty/improper slices iff step == 1
+#             if step == 1:
+#                 self.__delitem__(key)  # delete previous values
+# 
+#                 # handle edge cases
+#                 if start == 0:  # assignment at beginning of list
+#                     val = next(value_iter)
+#                     curr = allocate_double_node(<PyObject*>val)
+#                     self._link_node(NULL, curr, self.head)
+#                 elif start == self.size:  # assignment at end of list
+#                     val = next(value_iter)
+#                     curr = allocate_double_node(<PyObject*>val)
+#                     self._link_node(self.tail, curr, NULL)
+#                 else:  # assignment in middle of list
+#                     curr = node_at_index(
+#                         <size_t>(start - 1),
+#                         self.head,
+#                         self.tail,
+#                         self.size
+#                     )
+# 
+#                 # insert all values at current index
+#                 for val in value_iter:
+#                     node = allocate_double_node(<PyObject*>val)
+#                     self._link_node(curr, node, curr.next)
+#                     curr = node
+# 
+#                 return  # early return
+# 
+#             # proceed as normal
+#             abs_step = abs(step)
+#             stop -= (stop - start) % step or step  # make stop inclusive
+#             expected_size = 1 + abs(stop - start) // abs_step
+#             if (
+#                 (step > 0 and stop < start) or
+#                 (step < 0 and start < stop) or
+#                 len(value) != expected_size
+#             ):
+#                 raise IndexError(
+#                     f"attempt to assign sequence of size {len(value)} to "
+#                     f"extended slice of size {expected_size}"
+#                 )
+# 
+#             # determine direction of traversal to avoid backtracking
+#             index, end_index = get_slice_direction(
+#                 <size_t>start,
+#                 <size_t>stop,
+#                 <ssize_t>step,
+#                 self.head,
+#                 self.tail,
+#                 self.size,
+#             )
+# 
+#             # get first node in slice, counting from nearest end
+#             curr = node_at_index(index, self.head, self.tail, self.size)
+# 
+#             # forward traversal
+#             if index <= end_index:
+#                 if step < 0:
+#                     value_iter = reversed(value)
+#                 while curr is not NULL and index <= end_index:
+#                     val = next(value_iter)
+#                     Py_INCREF(<PyObject*>val)
+#                     Py_DECREF(curr.value)
+#                     curr.value = <PyObject*>val
+#                     # node = allocate_double_node(<PyObject*>val)
+#                     # self._link_node(curr.prev, node, curr.next)
+#                     # free_node(curr)
+#                     # curr = node
+# 
+#                     # jump according to step size
+#                     index += abs_step  # increment index
+#                     for i in range(abs_step):
+#                         curr = curr.next
+#                         if curr is NULL:
+#                             break
+# 
+#             # backward traversal
+#             else:
+#                 if step > 0:
+#                     value_iter = reversed(value)
+#                 while curr is not NULL and index >= end_index:
+#                     val = next(value_iter)
+#                     Py_INCREF(<PyObject*>val)
+#                     Py_DECREF(curr.value)
+#                     curr.value = <PyObject*>val
+#                     # node = allocate_double_node(<PyObject*>val)
+#                     # self._link_node(curr.prev, node, curr.next)
+#                     # free_node(curr)
+#                     # curr = node
+# 
+#                     # jump according to step size
+#                     index -= abs_step  # decrement index
+#                     for i in range(abs_step):
+#                         curr = curr.prev
+#                         if curr is NULL:
+#                             break
+# 
+#             return
+# 
+#         # index directly
+#         index = normalize_index(key, self.size)
+#         curr = node_at_index(index, self.head, self.tail, self.size)
+#         Py_INCREF(<PyObject*>value)
+#         Py_DECREF(curr.value)
+#         curr.value = <PyObject*>value
+#         # node = allocate_double_node(<PyObject*>value)
+#         # self._link_node(curr.prev, node, curr.next)
+#         # free_node(curr)
 
     def __delitem__(self, key: int | slice) -> None:
         """Delete an item or slice from the list.
@@ -894,10 +908,16 @@ cdef class DoublyLinkedList(LinkedList):
         values in a single iteration and stops as soon as the slice is
         complete.
         """
-        cdef DoubleNode* curr
+        # cdef DoubleNode* curr
         cdef object start, stop, step  # kept at Python level
-        cdef size_t abs_step, small_step, index, end_index, i
-        cdef DoubleNode* temp  # temporary node for deletion
+        # cdef size_t abs_step, small_step, index, end_index, i
+        # cdef DoubleNode* temp  # temporary node for deletion
+
+        cdef ListNode[DoubleNode]* result
+        cdef size_t index, i
+        cdef DoubleNode* curr
+        cdef DoubleNode* prev
+        cdef DoubleNode* next
 
         # support slicing
         if isinstance(key, slice):
@@ -910,57 +930,82 @@ cdef class DoublyLinkedList(LinkedList):
             if (start > stop and step > 0) or (start < stop and step < 0):
                 return  # Python does nothing in this case
 
-            # determine direction of traversal to avoid backtracking
-            index, end_index = get_slice_direction(
+            delete_slice_double(
+                self.view,
                 <size_t>start,
                 <size_t>stop,
-                <ssize_t>step,
-                self.head,
-                self.tail,
-                self.size,
+                <ssize_t>step
             )
-            abs_step = abs(step)
-            small_step = abs_step - 1  # we implicitly advance by one at each step
 
-            # get first node in slice, counting from nearest end
-            curr = node_at_index(index, self.head, self.tail, self.size)
-
-            # forward traversal
-            if index <= end_index:
-                while curr is not NULL and index <= end_index:
-                    temp = curr
-                    curr = curr.next
-                    self._unlink_node(temp)
-                    free_node(temp)
-
-                    # jump according to step size
-                    index += abs_step  # tracks with end_index to maintain condition
-                    for i in range(small_step):
-                        curr = curr.next
-                        if curr is NULL:
-                            break
-
-            # backward traversal
-            else:
-                while curr is not NULL and index >= end_index:
-                    temp = curr
-                    curr = curr.prev
-                    self._unlink_node(temp)
-                    free_node(temp)
-
-                    # jump according to step size
-                    index -= abs_step  # tracks with end_index to maintain condition
-                    for i in range(small_step):
-                        curr = curr.prev
-                        if curr is NULL:
-                            break
+            # # determine direction of traversal to avoid backtracking
+            # index, end_index = get_slice_direction(
+            #     <size_t>start,
+            #     <size_t>stop,
+            #     <ssize_t>step,
+            #     self.head,
+            #     self.tail,
+            #     self.size,
+            # )
+            # abs_step = abs(step)
+            # small_step = abs_step - 1  # we implicitly advance by one at each step
+            # 
+            # # get first node in slice, counting from nearest end
+            # curr = node_at_index(index, self.head, self.tail, self.size)
+            # 
+            # # forward traversal
+            # if index <= end_index:
+            #     while curr is not NULL and index <= end_index:
+            #         temp = curr
+            #         curr = curr.next
+            #         self._unlink_node(temp)
+            #         free_node(temp)
+            # 
+            #         # jump according to step size
+            #         index += abs_step  # tracks with end_index to maintain condition
+            #         for i in range(small_step):
+            #             curr = curr.next
+            #             if curr is NULL:
+            #                 break
+            # 
+            # # backward traversal
+            # else:
+            #     while curr is not NULL and index >= end_index:
+            #         temp = curr
+            #         curr = curr.prev
+            #         self._unlink_node(temp)
+            #         free_node(temp)
+            # 
+            #         # jump according to step size
+            #         index -= abs_step  # tracks with end_index to maintain condition
+            #         for i in range(small_step):
+            #             curr = curr.prev
+            #             if curr is NULL:
+            #                 break
 
         # index directly
         else:
             index = normalize_index(key, self.size)
-            curr = node_at_index(index, self.head, self.tail, self.size)
-            self._unlink_node(curr)
-            free_node(curr)
+            if index <= self.size // 2:  # iterate from head
+                prev = NULL
+                curr = self.view.head
+                for i in range(index):
+                    prev = curr
+                    curr = <DoubleNode*>curr.next
+                next = <DoubleNode*>curr.next
+            else:  # iterate from tail
+                next = NULL
+                curr = self.view.tail
+                for i in range(self.size - index - 1):
+                    next = curr
+                    curr = <DoubleNode*>curr.prev
+                prev = <DoubleNode*>curr.prev
+
+            self.view.unlink(prev, curr, next)
+            self.view.deallocate(curr)
+
+            # curr = node_at_index(index, self.head, self.tail, self.size)
+            # Py_INCREF(curr.value)
+            # return <object>curr.value  # this returns ownership to Python
 
     def __contains__(self, item: object) -> bool:
         """Check if the item is contained in the list.
@@ -1021,9 +1066,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Concatenation is O(m), where `m` is the length of the ``other`` list.
         """
-        cdef PyObject* other_list = <PyObject*>other
-
-        self._extend(other_list)
+        self.extend(other_list)
         return self
 
     def __mul__(self, repeat: int) -> "DoublyLinkedList":
@@ -1070,11 +1113,11 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Repetition is O(n * repeat).
         """
-        cdef DoublyLinkedList original = self._copy()
+        cdef DoublyLinkedList original = self.copy()
         cdef size_t i
 
         for i in range(<size_t>repeat):
-            self._extend(<PyObject*>original)
+            self.extend(original)
         return self
 
     def __lt__(self, other: object) -> bool:

@@ -25,11 +25,6 @@ not be a valid return value, and 0 is likely to be valid output. */
 const size_t MAX_SIZE_T = std::numeric_limits<size_t>::max();
 
 
-/* For efficient memory management, every View maintains its own freelist of
-deallocated nodes that can be reused for fast allocation. */
-const unsigned int FREELIST_SIZE = 32;
-
-
 /* Some ListViews use hash tables for fast access to each element.  These
 parameters control the growth and hashing behavior of each table. */
 const size_t INITIAL_TABLE_CAPACITY = 16;  // initial size of hash table
@@ -80,7 +75,7 @@ const size_t PRIMES[29] = {  // prime numbers to use for double hashing
 inline size_t normalize_index(
     PyObject* index,
     size_t size,
-    bool truncate = false
+    bool truncate
 ) {
     // check that index is a Python integer
     if (!PyLong_Check(index)) {
@@ -95,9 +90,11 @@ inline size_t normalize_index(
     // wraparound negative indices
     // if index < 0:
     //     index += size
+    bool release_index = false;
     if (index_lt_zero) {
         index = PyNumber_Add(index, pylong_size);
         index_lt_zero = PyObject_RichCompareBool(index, pylong_zero, Py_LT);
+        release_index = true;
     }
 
     // boundscheck
@@ -108,6 +105,11 @@ inline size_t normalize_index(
     //         return size - 1
     //    raise IndexError("list index out of range")
     if (index_lt_zero || PyObject_RichCompareBool(index, pylong_size, Py_GE)) {
+        Py_DECREF(pylong_zero);
+        Py_DECREF(pylong_size);
+        if (release_index) {
+            Py_DECREF(index);  // index reference was created by PyNumber_Add()
+        }
         if (truncate) {
             if (index_lt_zero) {
                 return 0;
@@ -116,6 +118,13 @@ inline size_t normalize_index(
         }
         PyErr_SetString(PyExc_IndexError, "list index out of range");
         return MAX_SIZE_T;
+    }
+
+    // release references
+    Py_DECREF(pylong_zero);
+    Py_DECREF(pylong_size);
+    if (release_index) {
+        Py_DECREF(index);  // index reference was created by PyNumber_Add()
     }
 
     // return as size_t
@@ -456,8 +465,55 @@ public:
 
 template <typename T>
 class ListView {
-public:
+private:
     std::queue<T*> freelist;
+
+    /* Initialize an empty ListView. */
+    void init_empty() {
+        head = NULL;
+        tail = NULL;
+        size = 0;
+        freelist = std::queue<T*>();
+    }
+
+    /* Delete the contents of the linked list. */
+    void delete_list() {
+        tail = NULL;
+        size = 0;
+
+        // free all nodes
+        T* next;
+        while (head != NULL) {
+            next = (T*)head->next;
+            deallocate(head);
+            head = next;
+        }
+    }
+
+    /* Delete all the resources that are being consumed by this view. */
+    void delete_view() {
+        // free linked list
+        delete_list();
+
+        // free the contents of the freelist
+        T* node;
+        while (!freelist.empty()) {
+            node = freelist.front();
+            freelist.pop();
+            free(node);
+        }
+    }
+
+    /* Abort the construction of a ListView and free its resources. */
+    void abort(PyObject* iterator, PyObject* item = NULL) {
+        Py_DECREF(iterator);  // release reference on iterator
+        if (item != NULL) {  // release reference on item
+            Py_DECREF(item);
+        }
+        delete_view();  // free the view's manually-allocated resources
+    }
+
+public:
     T* head;
     T* tail;
     size_t size;
@@ -471,57 +527,47 @@ public:
 
     /* Construct an empty ListView. */
     ListView() {
-        head = NULL;
-        tail = NULL;
-        size = 0;
-        freelist = std::queue<T*>();
+        init_empty();
     }
 
-    /* Constrcut a ListView from an input iterable. */
+    /* Construct a ListView from an input iterable. */
     ListView(PyObject* iterable, bool reverse = false) {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
-        if (iterator == NULL) {
-            return NULL;
+        if (iterator == NULL) {  // TypeError()
+            throw std::invalid_argument("Value is not iterable");
         }
 
-        ListView<T>* staged = new ListView<T>();
-        if (staged == NULL) {
-            Py_DECREF(iterator);
-            PyErr_NoMemory();
-            return NULL;
-        }
+        // init empty ListView
+        init_empty();
 
+        // unpack iterator into ListView
         T* node;
         PyObject* item;
-
         while (true) {
             // C API equivalent of next(iterator)
             item = PyIter_Next(iterator);
             if (item == NULL) { // end of iterator or error
                 if (PyErr_Occurred()) {  // error during next()
-                    Py_DECREF(item);
-                    Py_DECREF(iterator);
-                    delete staged;
-                    return NULL;  // raise exception
+                    abort(iterator);
+                    throw std::runtime_error("could not get item from iterator");
                 }
                 break;
             }
 
             // allocate a new node
-            node = staged->allocate(item);
-            if (node == NULL) {  // MemoryError()
-                Py_DECREF(item);
-                Py_DECREF(iterator);
-                delete staged;
-                return NULL;  // raise exception
+            try {
+                node = allocate(item);
+            } catch (const std::bad_alloc& err) {
+                abort(iterator, item);
+                throw err;
             }
 
             // link the node to the staged list
             if (reverse) {
-                staged->link(NULL, node, staged->head);
+                link(NULL, node, head);
             } else {
-                staged->link(staged->tail, node, NULL);
+                link(tail, node, NULL);
             }
 
             // advance to next item
@@ -530,22 +576,11 @@ public:
 
         // release reference on iterator
         Py_DECREF(iterator);
-
-        // return the staged View
-        return staged;
     }
 
     /* Destroy a ListView and free all its nodes. */
     ~ListView() {
-        T* curr = head;
-        T* next;
-
-        // free all nodes
-        while (curr != NULL) {
-            next = (T*)curr->next;
-            deallocate(curr);
-            curr = next;
-        }
+        delete_view();
     }
 
     /* Allocate a new node for the list. */
@@ -608,49 +643,53 @@ public:
 
     /* Clear the list. */
     inline void clear() {
-        T* curr = head;
-        T* next;
-        while (curr != NULL) {
-            next = (T*)curr->next;
-            deallocate(curr);
-            curr = next;
-        }
-        head = NULL;
-        tail = NULL;
-        size = 0;
+        // NOTE: this does not empty the freelist
+        delete_list();  // free linked list
     }
 
     /* Make a shallow copy of the list. */
     inline ListView<T>* copy() {
         ListView<T>* copied = new ListView<T>();
-        if (copied == NULL) {
-            throw std::bad_alloc();
-        }
-
         T* old_node = head;
         T* new_node = NULL;
-        T* prev = NULL;
-        PyObject* python_repr;
-        const char* c_repr;
+        T* new_prev = NULL;
 
         // copy each node in list
         while (old_node != NULL) {
-            // print allocation message if DEBUG=TRUE
-            if (DEBUG) {
-                python_repr = PyObject_Repr(old_node->value);
-                c_repr = PyUnicode_AsUTF8(python_repr);
-                Py_DECREF(python_repr);
-                printf("    -> malloc: %s\n", c_repr);
+            try {
+                new_node = copy(old_node);  // copy node
+            } catch (const std::bad_alloc& err) {  // memory error during copy()
+                delete copied;
+                throw err;
             }
 
-            new_node = T::copy(freelist, old_node);
-            copied->link(prev, new_node, NULL);
-            prev = new_node;
+            // link to tail of copied list
+            copied->link(new_prev, new_node, NULL);
+
+            // advance to next node
+            new_prev = new_node;
             old_node = (T*)old_node->next;
         }
 
-        copied->tail = new_node;  // last node in copied list
+        // return copied list
         return copied;
+    }
+
+    /* Copy a single node in the list. */
+    inline T* copy(T* node) {
+        PyObject* python_repr;
+        const char* c_repr;
+
+        // print allocation message if DEBUG=TRUE
+        if (DEBUG) {
+            python_repr = PyObject_Repr(node->value);
+            c_repr = PyUnicode_AsUTF8(python_repr);
+            Py_DECREF(python_repr);
+            printf("    -> malloc: %s\n", c_repr);
+        }
+
+        // delegate to node-specific copy function
+        return T::copy(freelist, node);
     }
 
     /* Get the total memory consumed by the ListView (in bytes).
@@ -673,10 +712,63 @@ public:
 template <typename T>
 class SetView {
 private:
+    std::queue<Hashed<T>*> freelist;
     HashTable<Hashed<T>*>* table;
 
+    /* Initialize an empty SetView. */
+    void init_empty() {
+        // initialize list
+        head = NULL;
+        tail = NULL;
+        size = 0;
+        freelist = std::queue<Hashed<T>*>();
+
+        // initialize hash table
+        table = new HashTable<Hashed<T>*>();
+    }
+
+    /* Delete the contents of the linked list. */
+    void delete_list() {
+        tail = NULL;
+        size = 0;
+
+        // free all nodes
+        Hashed<T>* next;
+        while (head != NULL) {
+            next = (Hashed<T>*)head->next;
+            deallocate(head);
+            head = next;
+        }
+    }
+
+    /* Delete all the resources that are being consumed by this view. */
+    void delete_view() {
+        // free linked list
+        delete_list();
+
+        // free the contents of the freelist
+        Hashed<T>* node;
+        while (!freelist.empty()) {
+            node = freelist.front();
+            freelist.pop();
+            free(node);
+        }
+
+        // free the hash table
+        delete table;
+        table = NULL;  // avoid dangling pointer
+    }
+
+    /* Abort the construction of a SetView and free its resources. */
+    void abort(PyObject* iterator, PyObject* item = NULL) {
+        Py_DECREF(iterator);  // release reference on iterator
+        if (item != NULL) {  // release reference on item
+            Py_DECREF(item);
+        }
+        delete_view();  // free the view's manually-allocated resources
+    }
+
 public:
-    std::queue<Hashed<T>*> freelist;
     Hashed<T>* head;
     Hashed<T>* tail;
     size_t size;
@@ -690,17 +782,7 @@ public:
 
     /* Construct an empty SetView. */
     SetView() {
-        // initialize list
-        head = NULL;
-        tail = NULL;
-        size = 0;
-        freelist = std::queue<Hashed<T>*>();
-
-        // initialize hash table
-        table = new HashTable<Hashed<T>*>();
-        if (table == NULL) {
-            throw std::bad_alloc();
-        }
+        init_empty();
     }
 
     /* Construct a SetView from an input iterable. */
@@ -708,52 +790,57 @@ public:
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
         if (iterator == NULL) {
-            return NULL;
+            throw std::invalid_argument("Value is not iterable");
         }
 
-        SetView<T>* staged = new SetView<T>();
-        if (staged == NULL) {
+        // init empty SetView
+        try {
+            init_empty();
+        } catch (const std::bad_alloc& err) {
             Py_DECREF(iterator);
-            PyErr_NoMemory();
-            return NULL;
+            throw err;
         }
 
+        // unpack iterator into SetView
         Hashed<T>* node;
         PyObject* item;
-
         while (true) {
             // C API equivalent of next(iterator)
             item = PyIter_Next(iterator);
             if (item == NULL) { // end of iterator or error
                 if (PyErr_Occurred()) {  // error during next()
-                    Py_DECREF(item);
-                    Py_DECREF(iterator);
-                    delete staged;
-                    return NULL;  // raise exception
+                    abort(iterator);
+                    throw std::runtime_error("could not get item from iterator");
                 }
                 break;
             }
 
             // allocate a new node
-            node = staged->allocate(item);
-            if (node == NULL) {  // MemoryError() or TypeError() during hash()
-                Py_DECREF(item);
-                Py_DECREF(iterator);
-                delete staged;
-                return NULL;  // raise exception
+            try {
+                node = allocate(item);
+            } catch (const std::bad_alloc& err) {
+                abort(iterator, item);
+                throw err;
+            }
+            if (PyErr_Occurred()) {  // TypeError(): value is not hashable
+                abort(iterator, item);
+                throw std::runtime_error("value is not hashable");
             }
 
             // link the node to the staged list
-            if (reverse) {
-                staged->link(NULL, node, staged->head);
-            } else {
-                staged->link(staged->tail, node, NULL);
+            try {
+                if (reverse) {
+                    link(NULL, node, head);
+                } else {
+                    link(tail, node, NULL);
+                }
+            } catch (const std::bad_alloc& err) {  // memory error during resize()
+                abort(iterator, item);
+                throw err;
             }
-            if (PyErr_Occurred()) {
-                Py_DECREF(item);
-                Py_DECREF(iterator);
-                delete staged;
-                return NULL;  // raise exception
+            if (PyErr_Occurred()) {  // ValueError(): item is already contained in set
+                abort(iterator, item);
+                throw std::runtime_error("item is already contained in set");
             }
 
             // advance to next item
@@ -762,24 +849,11 @@ public:
 
         // release reference on iterator
         Py_DECREF(iterator);
-
-        // return the staged View
-        return staged;
     }
 
     /* Destroy a SetView and free all its resources. */
     ~SetView() {
-        // free all nodes
-        Hashed<T>* curr = head;
-        Hashed<T>* next;
-        while (curr != NULL) {
-            next = (Hashed<T>*)curr->next;
-            deallocate(curr);
-            curr = next;
-        }
-
-        // free hash table
-        delete table;
+        delete_view();
     }
 
     /* Allocate a new node for the list. */
@@ -864,37 +938,59 @@ public:
 
     /* Clear the list and reset the associated hash table. */
     inline void clear() {
-        table->clear();  // clear hash table
-        ListView<T>::clear();  // clear list
+        // NOTE: this does not empty the freelist
+        delete_list();  // free linked list
+        table->clear();  // reset hash table to initial size
     }
 
-    /* Make a shallow copy of the list. */
+    /* Make a shallow copy of the entire list. */
     inline SetView<T>* copy() {
         SetView<T>* copied = new SetView<T>();
         Hashed<T>* old_node = head;
         Hashed<T>* new_node = NULL;
-        Hashed<T>* prev = NULL;
-        PyObject* python_repr;
-        const char* c_repr;
+        Hashed<T>* new_prev = NULL;
 
         // copy each node in list
         while (old_node != NULL) {
-            // print allocation message if DEBUG=TRUE
-            if (DEBUG) {
-                python_repr = PyObject_Repr(old_node->value);
-                c_repr = PyUnicode_AsUTF8(python_repr);
-                Py_DECREF(python_repr);
-                printf("    -> malloc: %s\n", c_repr);
+            try {
+                new_node = copy(old_node);  // copy node
+            } catch (const std::bad_alloc& err) {  // memory error during copy()
+                delete copied;
+                throw err;
             }
 
-            new_node = Hashed<T>::copy(freelist, old_node);
-            copied->link(prev, new_node, NULL);
-            prev = new_node;
+            // link to tail of copied list
+            try {
+                copied->link(new_prev, new_node, NULL);
+            } catch (const std::bad_alloc& err) {  // error during resize()
+                delete copied;
+                throw err;
+            }
+
+            // advance to next node
+            new_prev = new_node;
             old_node = (Hashed<T>*)old_node->next;
         }
 
-        copied->tail = new_node;  // last node in copied list
+        // return copied view
         return copied;
+    }
+
+    /* Copy a single node in the list. */
+    inline Hashed<T>* copy(Hashed<T>* node) {
+        PyObject* python_repr;
+        const char* c_repr;
+
+        // print allocation message if DEBUG=TRUE
+        if (DEBUG) {
+            python_repr = PyObject_Repr(node->value);
+            c_repr = PyUnicode_AsUTF8(python_repr);
+            Py_DECREF(python_repr);
+            printf("    -> malloc: %s\n", c_repr);
+        }
+
+        // delegate to node-specific copy function
+        return Hashed<T>::copy(freelist, node);
     }
 
     /* Search for a node by its value. */
@@ -932,10 +1028,63 @@ public:
 template <typename T>
 class DictView {
 private:
+    std::queue<Mapped<T>*> freelist;
     HashTable<Mapped<T>*>* table;
 
+    /* Initialize an empty DictView. */
+    void init_empty() {
+        // initialize list
+        head = NULL;
+        tail = NULL;
+        size = 0;
+        freelist = std::queue<Mapped<T>*>();
+
+        // initialize hash table
+        table = new HashTable<Mapped<T>*>();
+    }
+
+    /* Delete the contents of the linked list. */
+    void delete_list() {
+        tail = NULL;
+        size = 0;
+
+        // free all nodes
+        Mapped<T>* next;
+        while (head != NULL) {
+            next = (Mapped<T>*)head->next;
+            deallocate(head);
+            head = next;
+        }
+    }
+
+    /* Delete all the resources that are being consumed by this view. */
+    void delete_view() {
+        // free linked list
+        delete_list();
+
+        // free the contents of the freelist
+        Mapped<T>* node;
+        while (!freelist.empty()) {
+            node = freelist.front();
+            freelist.pop();
+            free(node);
+        }
+
+        // free the hash table
+        delete table;
+        table = NULL;  // avoid dangling pointer
+    }
+
+    /* Abort the construction of a DictView and free its resources. */
+    void abort(PyObject* iterator, PyObject* item = NULL) {
+        Py_DECREF(iterator);  // release reference on iterator
+        if (item != NULL) {  // release reference on item
+            Py_DECREF(item);
+        }
+        delete_view();  // free the view's manually-allocated resources
+    }
+
 public:
-    std::queue<Mapped<T>*> freelist;
     Mapped<T>* head;
     Mapped<T>* tail;
     size_t size;
@@ -949,17 +1098,7 @@ public:
 
     /* Construct an empty DictView. */
     DictView() {
-        // initialize list
-        head = NULL;
-        tail = NULL;
-        size = 0;
-        freelist = std::queue<Mapped<T>*>();
-
-        // initialize hash table
-        table = new HashTable<Mapped<T>*>();
-        if (table == NULL) {
-            throw std::bad_alloc();
-        }
+        init_empty();
     }
 
     /* Construct a DictView from an input iterable. */
@@ -967,54 +1106,57 @@ public:
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
         if (iterator == NULL) {
-            return NULL;
+            throw std::invalid_argument("Value is not iterable");
         }
 
-        DictView<T>* staged = new DictView<T>();
-        if (staged == NULL) {
+        // init empty DictView
+        try {
+            init_empty();
+        } catch (const std::bad_alloc& err) {
             Py_DECREF(iterator);
-            PyErr_NoMemory();
-            return NULL;
+            throw err;
         }
 
+        // unpack iterator into DictView
         Mapped<T>* node;
         PyObject* item;
-        PyObject* key;
-        PyObject* value;
-
         while (true) {
             // C API equivalent of next(iterator)
             item = PyIter_Next(iterator);
             if (item == NULL) { // end of iterator or error
                 if (PyErr_Occurred()) {  // error during next()
-                    Py_DECREF(item);
-                    Py_DECREF(iterator);
-                    delete staged;
-                    return NULL;  // raise exception
+                    abort(iterator);
+                    throw std::runtime_error("could not get item from iterator");
                 }
                 break;  // end of iterator
             }
 
             // allocate a new node
-            node = staged->allocate(item);
-            if (node == NULL) {  // MemoryError()/TypeError() in hash()/tuple unpacking
-                Py_DECREF(item);
-                Py_DECREF(iterator);
-                delete staged;
-                return NULL;  // raise exception
+            try {
+                node = allocate(item);
+            } catch (const std::bad_alloc& err) {
+                abort(iterator, item);
+                throw err;
+            }
+            if (PyErr_Occurred()) {  // TypeError(): not hashable or tuple of size 2
+                abort(iterator, item);
+                throw std::runtime_error("value is not hashable or tuple of size 2");
             }
 
             // link the node to the staged list
-            if (reverse) {
-                staged->link(NULL, node, staged->head);
-            } else {
-                staged->link(staged->tail, node, NULL);
+            try {
+                if (reverse) {
+                    link(NULL, node, head);
+                } else {
+                    link(tail, node, NULL);
+                }
+            } catch (const std::bad_alloc& err) {  // memory error during resize()
+                abort(iterator, item);
+                throw err;
             }
-            if (PyErr_Occurred()) {
-                Py_DECREF(item);
-                Py_DECREF(iterator);
-                delete staged;
-                return NULL;  // raise exception
+            if (PyErr_Occurred()) {  // ValueError(): item is already contained in dict
+                abort(iterator, item);
+                throw std::runtime_error("item is already contained in dictionary");
             }
 
             // advance to next item
@@ -1023,24 +1165,11 @@ public:
 
         // release reference on iterator
         Py_DECREF(iterator);
-
-        // return the staged View
-        return staged;
     }
 
     /* Destroy a DictView and free all its resources. */
     ~DictView() {
-        // free all nodes
-        Mapped<T>* curr = head;
-        Mapped<T>* next;
-        while (curr != NULL) {
-            next = (Mapped<T>*)curr->next;
-            deallocate(curr);
-            curr = next;
-        }
-
-        // free hash table
-        delete table;
+        delete_list();
     }
 
     /* Allocate a new node for the dictionary. */
@@ -1139,8 +1268,8 @@ public:
 
     /* Clear the list and reset the associated hash table. */
     inline void clear() {
+        delete_list();  // clear linked list
         table->clear();  // clear hash table
-        ListView<T>::clear();  // clear list
     }
 
     /* Make a shallow copy of the list. */
@@ -1148,28 +1277,49 @@ public:
         DictView<T>* copied = new DictView<T>();
         Mapped<T>* old_node = head;
         Mapped<T>* new_node = NULL;
-        Mapped<T>* prev = NULL;
-        PyObject* python_repr;
-        const char* c_repr;
+        Mapped<T>* new_prev = NULL;
 
         // copy each node in list
         while (old_node != NULL) {
-            // print allocation message if DEBUG=TRUE
-            if (DEBUG) {
-                python_repr = PyObject_Repr(old_node->value);
-                c_repr = PyUnicode_AsUTF8(python_repr);
-                Py_DECREF(python_repr);
-                printf("    -> malloc: %s\n", c_repr);
+            try {
+                new_node = copy(old_node);  // copy node
+            } catch (const std::bad_alloc& err) {  // memory error during copy()
+                delete copied;
+                throw err;
             }
 
-            new_node = Mapped<T>::copy(freelist, old_node);
-            copied->link(prev, new_node, NULL);
-            prev = new_node;
+            // link to tail of copied list
+            try {
+                copied->link(new_prev, new_node, NULL);
+            } catch (const std::bad_alloc& err) {  // error during resize()
+                delete copied;
+                throw err;
+            }
+
+            // advance to next node
+            new_prev = new_node;
             old_node = (Mapped<T>*)old_node->next;
         }
 
-        copied->tail = new_node;  // last node in copied list
+        // return copied view
         return copied;
+    }
+
+    /* Copy a single node in the list. */
+    inline Mapped<T>* copy(Mapped<T>* node) {
+        PyObject* python_repr;
+        const char* c_repr;
+
+        // print allocation message if DEBUG=TRUE
+        if (DEBUG) {
+            python_repr = PyObject_Repr(node->value);
+            c_repr = PyUnicode_AsUTF8(python_repr);
+            Py_DECREF(python_repr);
+            printf("    -> malloc: %s\n", c_repr);
+        }
+
+        // delegate to node-specific copy function
+        return Mapped<T>::copy(freelist, node);
     }
 
     /* Search for a node by its value. */

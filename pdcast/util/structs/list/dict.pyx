@@ -21,14 +21,14 @@
 
 
 
-cdef object iterable = [3, 5, 2, 6, 1, 4]
-cdef ListView[SingleNode]* view
-view = view.stage(<PyObject*>iterable)
+# cdef object iterable = [3, 5, 2, 6, 1, 4]
+# cdef ListView[SingleNode]* view
+# view = view.stage(<PyObject*>iterable)
 
 
-key = lambda x: x
-sort(view, <PyObject*>key, False)
+# key = lambda x: x
+# sort(view, <PyObject*>key, False)
 
 
-del view
+# del view
 

@@ -6,6 +6,16 @@
 #include <Python.h>  // for CPython API
 
 
+/////////////////////////
+////    CONSTANTS    ////
+/////////////////////////
+
+
+/* For efficient memory management, every View maintains its own freelist of
+deallocated nodes that can be reused for fast allocation. */
+const unsigned int FREELIST_SIZE = 32;
+
+
 /////////////////////
 ////    NODES    ////
 /////////////////////

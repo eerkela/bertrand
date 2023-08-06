@@ -1,4 +1,3 @@
-# from .base import LinkedList
-# from .single import SinglyLinkedList
-# from .double import DoublyLinkedList
-# from .hashed import HashedList
+# from .list import LinkedList, SinglyLinkedList, DoublyLinkedList
+# from .set import SinglyLinkedSet, DoublyLinkedSet
+# from .dict import SinglyLinkedDictionary, DoublyLinkedDictionary

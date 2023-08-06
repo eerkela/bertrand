@@ -14,7 +14,7 @@
 
 /* Count the number of occurrences of an item within a singly-linked list. */
 template <typename NodeType>
-size_t count_single(
+inline size_t count_single(
     ListView<NodeType>* view,
     PyObject* item,
     size_t start,
@@ -32,11 +32,11 @@ size_t count_single(
     size_t observed = 0;
     while (idx < stop) {
         // C API equivalent of the == operator
-        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
+        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
         if (comp == -1) {  // comparison raised an exception
             return MAX_SIZE_T;
         } else if (comp == 1) {  // found a match
-            count++;
+            observed++;
         }
 
         // advance to next node
@@ -50,78 +50,32 @@ size_t count_single(
 
 /* Count the number of occurrences of an item within a singly-linked set. */
 template <typename NodeType>
-size_t count_single(
+inline size_t count_single(
     SetView<NodeType>* view,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
-    // check if item is in set
-    Hashed<NodeType>* node = view->search(item);
-    if (node == NULL) {
-        return 0;
-    }
-
-    // if range includes all items, return 1
-    if (start == 0 && stop == view->size - 1) {
-        return 1;
-    }
-
-    // else, find index of item
-    Mapped<NodeType>* curr = view->head;
-    size_t idx = 0;
-    while (curr != node && idx < stop) {
-        curr = (Mapped<NodeType>*)curr->next;
-        idx++;
-    }
-
-    // check if index is in range
-    if (idx >= start && idx < stop) {
-        return 1;
-    }
-    return 0;
+    return _count_set(view, view->head, item, start, stop);
 }
 
 
 /* Count the number of occurrences of an item within a singly-linked set. */
 template <typename NodeType>
-size_t count_single(
+inline size_t count_single(
     DictView<NodeType>* view,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
-    // check if item is in set
-    Mapped<NodeType>* node = view->search(item);
-    if (node == NULL) {
-        return 0;
-    }
-
-    // if range includes all items, return 1
-    if (start == 0 && stop == view->size - 1) {
-        return 1;
-    }
-
-    // else, find index of item
-    Mapped<NodeType>* curr = view->head;
-    size_t idx = 0;
-    while (curr != node && idx < stop) {
-        curr = (Mapped<NodeType>*)curr->next;
-        idx++;
-    }
-
-    // check if index is in range
-    if (idx >= start && idx < stop) {
-        return 1;
-    }
-    return 0;
+    return _count_set(view, view->head, item, start, stop);
 }
 
 
 /* Count the number of occurrences of an item within a doubly-linked list. */
-template <template <typename> class ViewType, typename NodeType>
-size_t count_double(
-    ViewType<NodeType>* view,
+template <typename NodeType>
+inline size_t count_double(
+    ListView<NodeType>* view,
     PyObject* item,
     size_t start,
     size_t stop
@@ -143,7 +97,7 @@ size_t count_double(
     size_t observed = 0;
     while (i >= start) {
         // C API equivalent of the == operator
-        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
+        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
         if (comp == -1) {  // comparison raised an exception
             return MAX_SIZE_T;
         } else if (comp == 1) {  // found a match
@@ -162,48 +116,43 @@ size_t count_double(
 
 /* Count the number of occurrences of an item within a doubly-linked set. */
 template <typename NodeType>
-size_t count_double(
+inline size_t count_double(
     SetView<NodeType>* view,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
-    // check if item is in set
-    Hashed<NodeType>* node = view->search(item);
-    if (node == NULL) {
-        return 0;
-    }
-
-    // if range includes all items, return 1
-    if (start == 0 && stop == view->size - 1) {
-        return 1;
-    }
-
-    // else, count backwards to find index
-    size_t idx = 0;
-    while (node != NULL && idx < stop) {
-        node = (Mapped<NodeType>*)node->prev;
-        idx++;
-    }
-
-    // check if index is in range
-    if (idx >= start && idx < stop) {
-        return 1;
-    }
-    return 0;
+    return _count_set(view, view->head, item, start, stop);
 }
 
 
 /* Count the number of occurrences of a key within a doubly-linked dictionary. */
 template <typename NodeType>
-size_t count_double(
+inline size_t count_double(
     DictView<NodeType>* view,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
-    // check if item is in set
-    Mapped<NodeType>* node = view->search(item);
+    return _count_set(view, view->head, item, start, stop);
+}
+
+
+///////////////////////
+////    PRIVATE    ////
+///////////////////////
+
+
+/* Count the number of occurrences of an item within a set-like list. */
+template <template <typename> class ViewType, typename T, typename U>
+inline size_t _count_set(
+    ViewType<T>* view,
+    U* head, PyObject* item,
+    size_t start,
+    size_t stop
+) {
+    // check if item is contained in view
+    U* node = view->search(item);
     if (node == NULL) {
         return 0;
     }
@@ -213,10 +162,11 @@ size_t count_double(
         return 1;
     }
 
-    // else, count backwards to find index
+    // else, find index of item
+    U* curr = view->head;
     size_t idx = 0;
-    while (node != NULL && idx < stop) {
-        node = (Mapped<NodeType>*)node->prev;
+    while (curr != node && idx < stop) {
+        curr = (U*)curr->next;
         idx++;
     }
 
