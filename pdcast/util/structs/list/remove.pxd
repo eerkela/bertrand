@@ -1,7 +1,7 @@
 """Cython headers for pdcast/util/structs/list/remove.h (`SinglyLinked` namespace)."""
 from cpython.ref cimport PyObject
 
-from .node cimport ListView, SetView, DictView
+from .view cimport ListView, SetView, DictView
 
 cdef extern from "remove.h":
     # shared

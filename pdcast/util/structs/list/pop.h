@@ -14,51 +14,6 @@
 //////////////////////
 
 
-/* Pop an item from the beginning of a list. */
-template <typename NodeType>
-inline PyObject* popleft(ListView<NodeType>* view) {
-    if (view->size == 0) {
-        PyErr_SetString(PyExc_IndexError, "pop from empty list");
-        return NULL;
-    }
-
-    // destroy node and return its value
-    NodeType* head = view->head;
-    NodeType* next = head->next;
-    return _drop_node(view, NULL, head, next);
-}
-
-
-/* Pop an item from the beginning of a set. */
-template <typename NodeType>
-inline PyObject* popleft(SetView<NodeType>* view) {
-    if (view->size == 0) {
-        PyErr_SetString(PyExc_IndexError, "pop from empty set");
-        return NULL;
-    }
-
-    // destroy node and return its value
-    Hashed<NodeType>* head = view->head;
-    Hashed<NodeType>* next = (Hashed<NodeType>*)head->next;
-    return _drop_node(view, NULL, head, next);
-}
-
-
-/* Pop an item from the beginning of a dictionary. */
-template <typename NodeType>
-inline PyObject* popleft(DictView<NodeType>* view) {
-    if (view->size == 0) {
-        PyErr_SetString(PyExc_IndexError, "pop from empty dictionary");
-        return NULL;
-    }
-
-    // destroy node and return its value
-    Mapped<NodeType>* head = view->head;
-    Mapped<NodeType>* next = (Mapped<NodeType>*)head->next;
-    return _drop_node(view, NULL, head, next);
-}
-
-
 // NOTE: due to the singly-linked nature of the list, popping from the
 // front of the list is O(1) while popping from the back is O(n). This
 // is because we need to traverse the entire list to find the node that
@@ -77,7 +32,7 @@ inline PyObject* pop_single(ListView<NodeType>* view, size_t index) {
     }
 
     // destroy node and return its value
-    return _drop_node(view, prev, curr, curr->next);
+    return _pop_node(view, prev, curr, curr->next);
 }
 
 
@@ -93,7 +48,7 @@ inline PyObject* pop_single(SetView<NodeType>* view, size_t index) {
     }
 
     // destroy node and return its value
-    return _drop_node(view, prev, curr, curr->next);
+    return _pop_node(view, prev, curr, curr->next);
 }
 
 
@@ -109,7 +64,7 @@ inline PyObject* pop_single(DictView<NodeType>* view, size_t index) {
     }
 
     // destroy node and return its value
-    return _drop_node(view, prev, curr, curr->next);
+    return _pop_node(view, prev, curr, curr->next);
 }
 
 
@@ -139,70 +94,7 @@ inline PyObject* pop_single(
     }
 
     // destroy node and return its value
-    return _drop_node(view, prev, curr, curr->next);
-}
-
-
-/* Pop an item from the end of a singly-linked list. */
-template <typename NodeType>
-inline PyObject* popright_single(ListView<NodeType>* view) {
-    if (view->size == 0) {
-        PyErr_SetString(PyExc_IndexError, "pop from empty list");
-        return NULL;
-    }
-
-    // iterate from head
-    NodeType* curr = view->head;
-    NodeType* prev = NULL;  // shadows curr
-    while (curr != view->tail) {
-        prev = curr;
-        curr = curr->next;
-    }
-
-    // destroy node and return its value
-    return _drop_node(view, prev, curr, NULL);
-}
-
-
-/* Pop an item from the end of a singly-linked set. */
-template <typename NodeType>
-inline PyObject* popright_single(SetView<NodeType>* view) {
-    if (view->size == 0) {
-        PyErr_SetString(PyExc_IndexError, "pop from empty set");
-        return NULL;
-    }
-
-    // iterate from head
-    Hashed<NodeType>* curr = view->head;
-    Hashed<NodeType>* prev = NULL;  // shadows curr
-    while (curr != view->tail) {
-        prev = curr;
-        curr = (Hashed<NodeType>*)curr->next;
-    }
-
-    // destroy node and return its value
-    return _drop_node(view, prev, curr, NULL);
-}
-
-
-/* Pop an item from the end of a singly-linked dictionary. */
-template <typename NodeType>
-inline PyObject* popright_single(DictView<NodeType>* view) {
-    if (view->size == 0) {
-        PyErr_SetString(PyExc_IndexError, "pop from empty dictionary");
-        return NULL;
-    }
-
-    // iterate from head
-    Mapped<NodeType>* curr = view->head;
-    Mapped<NodeType>* prev = NULL;  // shadows curr
-    while (curr != view->tail) {
-        prev = curr;
-        curr = (Mapped<NodeType>*)curr->next;
-    }
-
-    // destroy node and return its value
-    return _drop_node(view, prev, curr, NULL);
+    return _pop_node(view, prev, curr, curr->next);
 }
 
 
@@ -225,7 +117,7 @@ inline PyObject* pop_double(ListView<NodeType>* view, size_t index) {
     }
 
     // destroy node and return its value
-    return _drop_node(view, curr->prev, curr, curr->next);
+    return _pop_node(view, curr->prev, curr, curr->next);
 }
 
 
@@ -244,7 +136,7 @@ inline PyObject* pop_double(SetView<NodeType>* view, size_t index) {
     }
 
     // destroy node and return its value
-    return _drop_node(view, curr->prev, curr, curr->next);
+    return _pop_node(view, curr->prev, curr, curr->next);
 }
 
 
@@ -263,7 +155,7 @@ inline PyObject* pop_double(DictView<NodeType>* view, size_t index) {
     }
 
     // destroy node and return its value
-    return _drop_node(view, curr->prev, curr, curr->next);
+    return _pop_node(view, curr->prev, curr, curr->next);
 }
 
 
@@ -285,7 +177,115 @@ inline PyObject* pop_double(
     }
 
     // destroy node and return its value
-    return _drop_node(view, curr->prev, curr, curr->next);
+    return _pop_node(view, curr->prev, curr, curr->next);
+}
+
+
+/* Pop an item from the beginning of a list. */
+template <typename NodeType>
+inline PyObject* popleft(ListView<NodeType>* view) {
+    if (view->size == 0) {
+        PyErr_SetString(PyExc_IndexError, "pop from empty list");
+        return NULL;
+    }
+
+    // destroy node and return its value
+    NodeType* head = view->head;
+    NodeType* next = head->next;
+    return _pop_node(view, NULL, head, next);
+}
+
+
+/* Pop an item from the beginning of a set. */
+template <typename NodeType>
+inline PyObject* popleft(SetView<NodeType>* view) {
+    if (view->size == 0) {
+        PyErr_SetString(PyExc_IndexError, "pop from empty set");
+        return NULL;
+    }
+
+    // destroy node and return its value
+    Hashed<NodeType>* head = view->head;
+    Hashed<NodeType>* next = (Hashed<NodeType>*)head->next;
+    return _pop_node(view, NULL, head, next);
+}
+
+
+/* Pop an item from the beginning of a dictionary. */
+template <typename NodeType>
+inline PyObject* popleft(DictView<NodeType>* view) {
+    if (view->size == 0) {
+        PyErr_SetString(PyExc_IndexError, "pop from empty dictionary");
+        return NULL;
+    }
+
+    // destroy node and return its value
+    Mapped<NodeType>* head = view->head;
+    Mapped<NodeType>* next = (Mapped<NodeType>*)head->next;
+    return _pop_node(view, NULL, head, next);
+}
+
+
+/* Pop an item from the end of a singly-linked list. */
+template <typename NodeType>
+inline PyObject* popright_single(ListView<NodeType>* view) {
+    if (view->size == 0) {
+        PyErr_SetString(PyExc_IndexError, "pop from empty list");
+        return NULL;
+    }
+
+    // iterate from head
+    NodeType* curr = view->head;
+    NodeType* prev = NULL;  // shadows curr
+    while (curr != view->tail) {
+        prev = curr;
+        curr = curr->next;
+    }
+
+    // destroy node and return its value
+    return _pop_node(view, prev, curr, NULL);
+}
+
+
+/* Pop an item from the end of a singly-linked set. */
+template <typename NodeType>
+inline PyObject* popright_single(SetView<NodeType>* view) {
+    if (view->size == 0) {
+        PyErr_SetString(PyExc_IndexError, "pop from empty set");
+        return NULL;
+    }
+
+    // iterate from head
+    Hashed<NodeType>* curr = view->head;
+    Hashed<NodeType>* prev = NULL;  // shadows curr
+    while (curr != view->tail) {
+        prev = curr;
+        curr = (Hashed<NodeType>*)curr->next;
+    }
+
+    // destroy node and return its value
+    return _pop_node(view, prev, curr, NULL);
+}
+
+
+/* Pop an item from the end of a singly-linked dictionary. */
+template <typename NodeType>
+inline PyObject* popright_single(DictView<NodeType>* view) {
+    if (view->size == 0) {
+        PyErr_SetString(PyExc_IndexError, "pop from empty dictionary");
+        return NULL;
+    }
+
+    // iterate from head
+    Mapped<NodeType>* curr = view->head;
+    Mapped<NodeType>* prev = NULL;  // shadows curr
+    while (curr != view->tail) {
+        prev = curr;
+        curr = (Mapped<NodeType>*)curr->next;
+    }
+
+    // destroy node and return its value
+    return _pop_node(view, prev, curr, NULL);
 }
 
 
@@ -300,7 +300,7 @@ inline PyObject* popright_double(ListView<NodeType>* view) {
     // destroy node and return its value
     NodeType* curr = view->tail;
     NodeType* prev = curr->prev;
-    return _drop_node(view, prev, curr, NULL);
+    return _pop_node(view, prev, curr, NULL);
 }
 
 
@@ -315,7 +315,7 @@ inline PyObject* popright_double(SetView<NodeType>* view) {
     // destroy node and return its value
     Hashed<NodeType>* curr = view->tail;
     Hashed<NodeType>* prev = (Hashed<NodeType>*)curr->prev;
-    return _drop_node(view, prev, curr, NULL);
+    return _pop_node(view, prev, curr, NULL);
 }
 
 
@@ -330,7 +330,7 @@ inline PyObject* popright_double(DictView<NodeType>* view) {
     // destroy node and return its value
     Mapped<NodeType>* curr = view->tail;
     Mapped<NodeType>* prev = (Mapped<NodeType>*)curr->prev;
-    return _drop_node(view, prev, curr, NULL);
+    return _pop_node(view, prev, curr, NULL);
 }
 
 
@@ -341,7 +341,7 @@ inline PyObject* popright_double(DictView<NodeType>* view) {
 
 /* Unlink and remove a node and return its value. */
 template <template <typename> class ViewType, typename NodeType>
-inline PyObject* _drop_node(
+inline PyObject* _pop_node(
     ViewType<NodeType>* view,
     NodeType* prev,
     NodeType* curr,

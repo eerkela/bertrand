@@ -147,11 +147,12 @@ inline size_t count_double(
 template <template <typename> class ViewType, typename T, typename U>
 inline size_t _count_set(
     ViewType<T>* view,
-    U* head, PyObject* item,
+    U* head,
+    PyObject* item,
     size_t start,
     size_t stop
 ) {
-    // check if item is contained in view
+    // check if item is contained in set
     U* node = view->search(item);
     if (node == NULL) {
         return 0;

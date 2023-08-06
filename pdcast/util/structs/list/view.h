@@ -823,6 +823,14 @@ public:
                 throw err;
             }
             if (PyErr_Occurred()) {  // TypeError(): value is not hashable
+                // NOTE: this print statement is for QoL in debugging.  Nothing
+                // has actually been allocated yet, so we don't really free.
+                if (DEBUG) {
+                    PyObject* python_repr = PyObject_Repr(item);
+                    const char* c_repr = PyUnicode_AsUTF8(python_repr);
+                    Py_DECREF(python_repr);
+                    printf("    -> free: %s\n", c_repr);
+                }
                 abort(iterator, item);
                 throw std::runtime_error("value is not hashable");
             }
@@ -835,10 +843,12 @@ public:
                     link(tail, node, NULL);
                 }
             } catch (const std::bad_alloc& err) {  // memory error during resize()
+                deallocate(node);  // NOTE: if DEBUG, prints messages before abort()
                 abort(iterator, item);
                 throw err;
             }
             if (PyErr_Occurred()) {  // ValueError(): item is already contained in set
+                deallocate(node);
                 abort(iterator, item);
                 throw std::runtime_error("item is already contained in set");
             }
@@ -1139,6 +1149,14 @@ public:
                 throw err;
             }
             if (PyErr_Occurred()) {  // TypeError(): not hashable or tuple of size 2
+                // NOTE: this print statement is for QoL in debugging.  Nothing
+                // has actually been allocated yet, so we don't really free.
+                if (DEBUG) {
+                    PyObject* python_repr = PyObject_Repr(item);
+                    const char* c_repr = PyUnicode_AsUTF8(python_repr);
+                    Py_DECREF(python_repr);
+                    printf("    -> free: %s\n", c_repr);
+                }
                 abort(iterator, item);
                 throw std::runtime_error("value is not hashable or tuple of size 2");
             }
@@ -1151,10 +1169,12 @@ public:
                     link(tail, node, NULL);
                 }
             } catch (const std::bad_alloc& err) {  // memory error during resize()
+                deallocate(node);  // NOTE: if DEBUG, prints messages before abort()
                 abort(iterator, item);
                 throw err;
             }
             if (PyErr_Occurred()) {  // ValueError(): item is already contained in dict
+                deallocate(node);
                 abort(iterator, item);
                 throw std::runtime_error("item is already contained in dictionary");
             }
@@ -1193,14 +1213,18 @@ public:
     inline Mapped<T>* allocate(PyObject* value) {
         // Check that the item is a tuple of size 2 (key-value pair)
         if (!PyTuple_Check(value) || PyTuple_Size(value) != 2) {
-            PyErr_Format(PyExc_TypeError, "Expected tuple of size 2, got %R", value);
+            PyErr_Format(
+                PyExc_TypeError,
+                "Expected tuple of size 2 (key, value), not: %R",
+                value
+            );
             return NULL;  // raise exception
         }
 
         // extract key and value and allocate a new node
         PyObject* key = PyTuple_GetItem(value, 0);
         value = PyTuple_GetItem(value, 1);
-        allocate(key, value);  // pass to 2-argument overload
+        return allocate(key, value);  // pass to 2-argument overload
     }
 
     /* Free a node. */

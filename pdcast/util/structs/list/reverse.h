@@ -10,129 +10,88 @@
 /* Reverse a singly-linked list in-place. */
 template <typename NodeType>
 inline void reverse_single(ListView<NodeType>* view) {
-    NodeType* curr = view->head;
-    NodeType* next;
-    NodeType* prev = NULL;
-
-    // swap all next pointers
-    while (curr != NULL) {
-        next = curr->next;
-        curr->next = prev;
-        prev = curr;
-        curr = next;
-    }
-
-    // swap head/tail pointers
-    curr = view->head;
-    view->head = view->tail;
-    view->tail = curr;
+    _reverse_next(view, view->head);
 }
 
 
 /* Reverse a singly-linked set in-place. */
 template <typename NodeType>
 inline void reverse_single(SetView<NodeType>* view) {
-    Hashed<NodeType>* curr = view->head;
-    Hashed<NodeType>* next;
-    Hashed<NodeType>* prev = NULL;
-
-    // swap all next pointers
-    while (curr != NULL) {
-        next = (Hashed<NodeType>*)curr->next;
-        curr->next = prev;
-        prev = curr;
-        curr = next;
-    }
-
-    // swap head/tail pointers
-    curr = view->head;
-    view->head = view->tail;
-    view->tail = curr;
+    _reverse_next(view, view->head);
 }
 
 
 /* Reverse a singly-linked dictionary in-place. */
 template <typename NodeType>
 inline void reverse_single(DictView<NodeType>* view) {
-    Mapped<NodeType>* curr = view->head;
-    Mapped<NodeType>* next;
-    Mapped<NodeType>* prev = NULL;
-
-    // swap all next pointers
-    while (curr != NULL) {
-        next = (Mapped<NodeType>*)curr->next;
-        curr->next = prev;
-        prev = curr;
-        curr = next;
-    }
-
-    // swap head/tail pointers
-    curr = view->head;
-    view->head = view->tail;
-    view->tail = curr;
+    _reverse_next(view, view->head);
 }
 
 
 /* Reverse a doubly-linked list in-place. */
 template <typename NodeType>
 inline void reverse_double(ListView<NodeType>* view) {
-    NodeType* curr = view->head;
-    NodeType* next;
-
-    // swap all next/prev pointers
-    while (curr != NULL) {
-        next = curr->next;
-        curr->next = curr->prev;
-        curr->prev = next;
-        curr = next;
-    }
-
-    // swap head/tail pointers
-    curr = view->head;
-    view->head = view->tail;
-    view->tail = curr;
+    _reverse_next_prev(view, view->head);
 }
 
 
 /* Reverse a doubly-linked set in-place. */
 template <typename NodeType>
 inline void reverse_double(SetView<NodeType>* view) {
-    Hashed<NodeType>* curr = view->head;
-    Hashed<NodeType>* next;
-
-    // swap all next/prev pointers
-    while (curr != NULL) {
-        next = (Hashed<NodeType>*)curr->next;
-        curr->next = (Hashed<NodeType>*)curr->prev;
-        curr->prev = next;
-        curr = next;
-    }
-
-    // swap head/tail pointers
-    curr = view->head;
-    view->head = view->tail;
-    view->tail = curr;
+    _reverse_next_prev(view, view->head);
 }
 
 
 /* Reverse a doubly-linked dictionary in-place. */
 template <typename NodeType>
 inline void reverse_double(DictView<NodeType>* view) {
-    Mapped<NodeType>* curr = view->head;
-    Mapped<NodeType>* next;
+    _reverse_next_prev(view, view->head);
+}
+
+
+///////////////////////
+////    PRIVATE    ////
+///////////////////////
+
+
+/* Reverse the `next` pointer of every node in a list. */
+template <template <typename> class ViewType, typename T, typename U>
+inline void _reverse_next(ViewType<T>* view, U* head) {
+    U* curr = head;
+    U* next;
+    U* prev = NULL;
+
+    // swap all next pointers
+    while (curr != NULL) {
+        next = (U*)curr->next;
+        curr->next = prev;
+        prev = curr;
+        curr = next;
+    }
+
+    // swap head/tail pointers
+    view->head = view->tail;
+    view->tail = head;
+}
+
+
+/* Reverse the `next` and `prev` pointers of every node in a list. */
+template <template <typename> class ViewType, typename T, typename U>
+inline void _reverse_next_prev(ViewType<T>* view, U* head) {
+    U* curr = head;
+    U* next;
 
     // swap all next/prev pointers
     while (curr != NULL) {
-        next = (Mapped<NodeType>*)curr->next;
-        curr->next = (Mapped<NodeType>*)curr->prev;
+        next = (U*)curr->next;
+        curr->next = (U*)curr->prev;
         curr->prev = next;
         curr = next;
     }
 
     // swap head/tail pointers
-    curr = view->head;
     view->head = view->tail;
-    view->tail = curr;
+    view->tail = head;
 }
 
 

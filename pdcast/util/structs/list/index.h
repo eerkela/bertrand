@@ -9,7 +9,9 @@
 #include <view.h>  // for view definitions
 
 
-// NOTE: we don't need to check for NULL due to view->normalize_index()
+//////////////////////
+////    PUBLIC    ////
+//////////////////////
 
 
 /* Get the index of an item within a singly-linked list. */
@@ -21,9 +23,9 @@ inline size_t index_single(
     size_t stop
 ) {
     // skip to start index
-    NodeType* curr = head;
+    NodeType* curr = view->head;
     size_t idx = 0;
-    for (idx; idx < start; i++) {
+    for (idx; idx < start; idx++) {
         curr = curr->next;
     }
 
@@ -31,7 +33,7 @@ inline size_t index_single(
     int comp;
     while (idx < stop) {
         // C API equivalent of the == operator
-        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
+        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
         if (comp == -1) {  // comparison raised an exception
             return MAX_SIZE_T;
         } else if (comp == 1) {  // found a match
@@ -57,35 +59,7 @@ inline size_t index_single(
     size_t start,
     size_t stop
 ) {
-    // check if item is in set
-    Hashed<NodeType>* node = view->search(item);
-    if (node == NULL) {
-        PyErr_Format(PyExc_ValueError, "%R is not in set", item);
-        return MAX_SIZE_T;
-    }
-
-    // skip to start index
-    Hashed<NodeType>* curr = view->head;
-    size_t idx = 0;
-    for (idx; idx < start; i++) {
-        curr = (Hashed<NodeType>*)curr->next;
-    }
-
-    // search until we hit stop index
-    // NOTE: no need to use Python API here since we already know the target node
-    while (idx < stop) {
-        if (curr == node) {  // found a match
-            return idx;
-        }
-
-        // advance to next node
-        curr = (Hashed<NodeType>*)curr->next;
-        idx++;
-    }
-
-    // item not found
-    PyErr_Format(PyExc_ValueError, "%R is not in list", item);
-    return MAX_SIZE_T;
+    return _index_set(view, view->head, item, start, stop);
 }
 
 
@@ -97,42 +71,14 @@ inline size_t index_single(
     size_t start,
     size_t stop
 ) {
-    // check if item is in set
-    Mapped<NodeType>* node = view->search(item);
-    if (node == NULL) {
-        PyErr_Format(PyExc_ValueError, "%R is not in set", item);
-        return MAX_SIZE_T;
-    }
-
-    // skip to start index
-    Mapped<NodeType>* curr = view->head;
-    size_t idx = 0;
-    for (idx; idx < start; i++) {
-        curr = (Mapped<NodeType>*)curr->next;
-    }
-
-    // search until we hit stop index
-    // NOTE: no need to use Python API here since we already know the target node
-    while (idx < stop) {
-        if (curr == node) {  // found a match
-            return idx;
-        }
-
-        // advance to next node
-        curr = (Mapped<NodeType>*)curr->next;
-        idx++;
-    }
-
-    // item not found
-    PyErr_Format(PyExc_ValueError, "%R is not in list", item);
-    return MAX_SIZE_T;
+    return _index_set(view, view->head, item, start, stop);
 }
 
 
 /* Get the index of an item within a doubly-linked list. */
-template <template<typename> class ViewType, typename NodeType>
-size_t index_double(
-    ViewType<NodeType>* view,
+template <typename NodeType>
+inline size_t index_double(
+    ListView<NodeType>* view,
     PyObject* item,
     size_t start,
     size_t stop
@@ -155,7 +101,7 @@ size_t index_double(
     bool found = false;
     while (idx >= start) {
         // C API equivalent of the == operator
-        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ)
+        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
         if (comp == -1) {  // comparison raised an exception
             return MAX_SIZE_T;
         } else if (comp == 1) {  // found a match
@@ -181,66 +127,76 @@ size_t index_double(
 
 /* Get the index of an item within a doubly-linked set. */
 template <typename NodeType>
-size_t index_double(
+inline size_t index_double(
     SetView<NodeType>* view,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
-    // check if item is in set
-    Hashed<NodeType>* node = view->search(item);
-    if (node == NULL) {
-        PyErr_Format(PyExc_ValueError, "%R is not in set", item);
-        return MAX_SIZE_T;
-    }
-
-    // count backwards to find index
-    size_t idx = 0;
-    while (node != NULL && idx < stop) {
-        node = (Hashed<NodeType>*)node->prev;
-        idx++;
-    }
-
-    // check if index is in range
-    if (idx >= start && idx < stop) {
-        return idx;
-    }
-
-    // item not found
-    PyErr_Format(PyExc_ValueError, "%R is not in set", item);
-    return MAX_SIZE_T;
+    return _index_set(view, view->head, item, start, stop);
 }
 
 
 /* Get the index of an item within a doubly-linked dictionary. */
 template <typename NodeType>
-size_t index_double(
+inline size_t index_double(
     DictView<NodeType>* view,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
+    return _index_set(view, view->head, item, start, stop);
+}
+
+
+///////////////////////
+////    PRIVATE    ////
+///////////////////////
+
+
+// NOTE: we don't need to check for NULL due to view->normalize_index()
+
+
+/* Get the index of an item within a set-like list. */
+template <template <typename> class ViewType, typename T, typename U>
+inline size_t _index_set(
+    ViewType<T>* view,
+    U* head,
+    PyObject* item,
+    size_t start,
+    size_t stop
+) {
     // check if item is in set
-    Mapped<NodeType>* node = view->search(item);
+    U* node = view->search(item);
     if (node == NULL) {
-        PyErr_Format(PyExc_ValueError, "%R is not in set", item);
+        PyErr_Format(PyExc_ValueError, "%R is not in the set", item);
         return MAX_SIZE_T;
     }
 
-    // count backwards to find index
+    // skip to start index
+    U* curr = view->head;
     size_t idx = 0;
-    while (node != NULL && idx < stop) {
-        node = (Mapped<NodeType>*)node->prev;
+    for (idx; idx < start; idx++) {
+        if (curr == node) {  // item exists, but comes before range
+            PyErr_Format(PyExc_ValueError, "%R is not in the set", item);
+            return MAX_SIZE_T;
+        }
+        curr = (U*)curr->next;
+    }
+
+    // search until we hit stop index
+    while (curr != node && idx < stop) {
+        curr = (U*)curr->next;
         idx++;
     }
 
-    // check if index is in range
-    if (idx >= start && idx < stop) {
+    // check for match
+    if (curr == node) {
         return idx;
     }
 
-    // item not found
-    PyErr_Format(PyExc_ValueError, "%R is not in set", item);
+    // item exists, but comes after range
+    PyErr_Format(PyExc_ValueError, "%R is not in the set", item);
     return MAX_SIZE_T;
 }
 
