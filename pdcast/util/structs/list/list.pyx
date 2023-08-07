@@ -622,8 +622,6 @@ cdef class DoublyLinkedList(LinkedList):
         # cdef size_t index, end_index, abs_step, i
         # cdef bint reverse
 
-        cdef ListView[DoubleNode]* result
-
         # support slicing
         if isinstance(key, slice):
             # create a new DoublyLinkedList to hold the slice
@@ -634,17 +632,11 @@ cdef class DoublyLinkedList(LinkedList):
             # in both directions.  To account for this, we convert the slice into
             # a closed interval so we're free to iterate in either direction.
             start, stop, step = key.indices(self.size)
-            stop -= (stop - start) % step or step  # make stop inclusive
-            if (step > 0 and stop < start) or (step < 0 and start < stop):
-                return type(self)()  # Python returns an empty list in these cases
+            # stop -= (stop - start) % step or step  # make stop inclusive
+            # if (step > 0 and stop < start) or (step < 0 and start < stop):
+            #     return type(self)()  # Python returns an empty list in these cases
 
-            result = get_slice_double(
-                self.view,
-                <size_t>start,
-                <size_t>stop,
-                <ssize_t>step
-            )
-            return self.from_view(result)
+            return self.from_view(get_slice_single(self.view, start, stop, step))
 
             # # determine direction of traversal to avoid backtracking
             # index, end_index = get_slice_direction(
@@ -698,21 +690,9 @@ cdef class DoublyLinkedList(LinkedList):
             # return result
 
         # index directly
-        cdef size_t i
-        cdef DoubleNode* curr
         cdef size_t index = normalize_index(key, self.size)
-        if index <= self.size // 2:  # iterate from head
-            curr = self.view.head
-            for i in range(index):
-                curr = <DoubleNode*>curr.next
-        else:  # iterate from tail
-            curr = self.view.tail
-            for i in range(self.size - index - 1):
-                curr = <DoubleNode*>curr.prev
-
-        # curr = node_at_index(index, self.head, self.tail, self.size)
-        Py_INCREF(curr.value)
-        return <object>curr.value  # this returns ownership to Python
+        cdef PyObject* borrowed = get_index_double(self.view, index)  # from index.h
+        return <object>borrowed  # this returns ownership to Python
 
 #     def __setitem__(self, key: int | slice, value: object | Iterable[object]) -> None:
 #         """Set the value of an item or slice in the list.
@@ -926,16 +906,11 @@ cdef class DoublyLinkedList(LinkedList):
             # in both directions.  To account for this, we convert the slice into
             # a closed interval so we're free to iterate in either direction.
             start, stop, step = key.indices(self.size)
-            stop -= (stop - start) % step or step  # make stop inclusive
-            if (start > stop and step > 0) or (start < stop and step < 0):
-                return  # Python does nothing in this case
+            # stop -= (stop - start) % step or step  # make stop inclusive
+            # if (start > stop and step > 0) or (start < stop and step < 0):
+            #     return  # Python does nothing in this case
 
-            delete_slice_double(
-                self.view,
-                <size_t>start,
-                <size_t>stop,
-                <ssize_t>step
-            )
+            delete_slice_double(self.view, start, stop, step)
 
             # # determine direction of traversal to avoid backtracking
             # index, end_index = get_slice_direction(
@@ -985,27 +960,7 @@ cdef class DoublyLinkedList(LinkedList):
         # index directly
         else:
             index = normalize_index(key, self.size)
-            if index <= self.size // 2:  # iterate from head
-                prev = NULL
-                curr = self.view.head
-                for i in range(index):
-                    prev = curr
-                    curr = <DoubleNode*>curr.next
-                next = <DoubleNode*>curr.next
-            else:  # iterate from tail
-                next = NULL
-                curr = self.view.tail
-                for i in range(self.size - index - 1):
-                    next = curr
-                    curr = <DoubleNode*>curr.prev
-                prev = <DoubleNode*>curr.prev
-
-            self.view.unlink(prev, curr, next)
-            self.view.deallocate(curr)
-
-            # curr = node_at_index(index, self.head, self.tail, self.size)
-            # Py_INCREF(curr.value)
-            # return <object>curr.value  # this returns ownership to Python
+            delete_index_double(self.view, index)
 
     def __contains__(self, item: object) -> bool:
         """Check if the item is contained in the list.

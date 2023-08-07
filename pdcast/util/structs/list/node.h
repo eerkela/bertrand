@@ -6,6 +6,13 @@
 #include <Python.h>  // for CPython API
 
 
+// TODO: Keyed<> nodes call initialize() directly with a single PyObject* value
+// argument, but this fails for Mapped<>, which expects two arguments.
+
+
+// TODO: Keyed<> should probably just be placed here rather than in sort.h
+
+
 /////////////////////////
 ////    CONSTANTS    ////
 /////////////////////////
@@ -247,6 +254,10 @@ struct Hashed : public NodeType {
         }
 
         initialize(node, value);
+        if (PyErr_Occurred()) {  // error during hash()
+            deallocate(freelist, node);
+            return NULL;
+        }
         return node;
     }
 
@@ -322,6 +333,10 @@ struct Mapped : public NodeType {
         }
 
         initialize(node, value, mapped);
+        if (PyErr_Occurred()) {  // error during hash()
+            deallocate(freelist, node);
+            return NULL;
+        }
         return node;
     }
 
@@ -373,8 +388,8 @@ struct Mapped : public NodeType {
         // initialize node
         NodeType::initialize(new_node, node->value);
         new_node->hash = node->hash;  // reuse the pre-computed hash
-        Py_INCREF(node->mapped);
         new_node->mapped = node->mapped;  // copy mapped value
+        Py_INCREF(node->mapped);
         return new_node;
     }
 

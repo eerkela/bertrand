@@ -9,6 +9,11 @@
 #include <view.h>  // for views
 
 
+// TODO: consider having pop() start from the front of the dictionary in order to
+// make it O(1) for singly-linked lists rather than O(n).  Index just defaults
+// to 0 rather than -1.
+
+
 //////////////////////
 ////    PUBLIC    ////
 //////////////////////

@@ -9,6 +9,17 @@
 #include <view.h>  // for views
 
 
+// append() for sets and dicts should mimic set.update() and dict.update(),
+// respectively.  If the item is already contained in the set or dict, then
+// we just ignore it and move on.  Errors are only thrown if the input is
+// invalid, i.e. not hashable or not a tuple of length 2 in the case of
+// dictionaries, or if a memory allocation error occurs.
+
+// in the case of dictionaries, we should replace the current node's value
+// with the new value if the key is already contained in the dictionary.  This
+// overwrites the current mapped value without allocating a new node.
+
+
 //////////////////////
 ////    PUBLIC    ////
 //////////////////////

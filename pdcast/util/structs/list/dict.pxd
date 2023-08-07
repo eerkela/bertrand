@@ -12,3 +12,6 @@ from .index cimport *
 from .pop cimport *
 from .remove cimport *
 from .reverse cimport *
+from .get_slice cimport *
+from .set_slice cimport *
+from .delete_slice cimport *

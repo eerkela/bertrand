@@ -13,6 +13,14 @@
 // initialization, etc.  Also, check that the decorators are freed properly.
 
 
+// TODO: Since the sort algorithm works on singly-linked lists, Keyed<> never
+// needs a prev pointer.  We can implement it as a pure singly-linked list,
+// without inheriting from T.  This saves memory during the sorting process,
+// too.
+
+// TODO: Do Keyed<> lists even need a corresponding view?
+
+
 ///////////////////////
 ////    STRUCTS    ////
 ///////////////////////

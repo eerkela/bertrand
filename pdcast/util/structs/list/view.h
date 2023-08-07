@@ -505,7 +505,7 @@ private:
     }
 
     /* Abort the construction of a ListView and free its resources. */
-    void abort(PyObject* iterator, PyObject* item = NULL) {
+    void abort_init(PyObject* iterator, PyObject* item = NULL) {
         Py_DECREF(iterator);  // release reference on iterator
         if (item != NULL) {  // release reference on item
             Py_DECREF(item);
@@ -549,7 +549,7 @@ public:
             item = PyIter_Next(iterator);
             if (item == NULL) { // end of iterator or error
                 if (PyErr_Occurred()) {  // error during next()
-                    abort(iterator);
+                    abort_init(iterator);
                     throw std::runtime_error("could not get item from iterator");
                 }
                 break;
@@ -559,7 +559,7 @@ public:
             try {
                 node = allocate(item);
             } catch (const std::bad_alloc& err) {
-                abort(iterator, item);
+                abort_init(iterator, item);
                 throw err;
             }
 
@@ -760,7 +760,7 @@ private:
     }
 
     /* Abort the construction of a SetView and free its resources. */
-    void abort(PyObject* iterator, PyObject* item = NULL) {
+    void abort_init(PyObject* iterator, PyObject* item = NULL) {
         Py_DECREF(iterator);  // release reference on iterator
         if (item != NULL) {  // release reference on item
             Py_DECREF(item);
@@ -809,7 +809,7 @@ public:
             item = PyIter_Next(iterator);
             if (item == NULL) { // end of iterator or error
                 if (PyErr_Occurred()) {  // error during next()
-                    abort(iterator);
+                    abort_init(iterator);
                     throw std::runtime_error("could not get item from iterator");
                 }
                 break;
@@ -819,7 +819,7 @@ public:
             try {
                 node = allocate(item);
             } catch (const std::bad_alloc& err) {
-                abort(iterator, item);
+                abort_init(iterator, item);
                 throw err;
             }
             if (PyErr_Occurred()) {  // TypeError(): value is not hashable
@@ -831,7 +831,7 @@ public:
                     Py_DECREF(python_repr);
                     printf("    -> free: %s\n", c_repr);
                 }
-                abort(iterator, item);
+                abort_init(iterator, item);
                 throw std::runtime_error("value is not hashable");
             }
 
@@ -843,13 +843,13 @@ public:
                     link(tail, node, NULL);
                 }
             } catch (const std::bad_alloc& err) {  // memory error during resize()
-                deallocate(node);  // NOTE: if DEBUG, prints messages before abort()
-                abort(iterator, item);
+                deallocate(node);  // NOTE: if DEBUG, prints messages before aborting
+                abort_init(iterator, item);
                 throw err;
             }
             if (PyErr_Occurred()) {  // ValueError(): item is already contained in set
                 deallocate(node);
-                abort(iterator, item);
+                abort_init(iterator, item);
                 throw std::runtime_error("item is already contained in set");
             }
 
@@ -1086,7 +1086,7 @@ private:
     }
 
     /* Abort the construction of a DictView and free its resources. */
-    void abort(PyObject* iterator, PyObject* item = NULL) {
+    void abort_init(PyObject* iterator, PyObject* item = NULL) {
         Py_DECREF(iterator);  // release reference on iterator
         if (item != NULL) {  // release reference on item
             Py_DECREF(item);
@@ -1135,7 +1135,7 @@ public:
             item = PyIter_Next(iterator);
             if (item == NULL) { // end of iterator or error
                 if (PyErr_Occurred()) {  // error during next()
-                    abort(iterator);
+                    abort_init(iterator);
                     throw std::runtime_error("could not get item from iterator");
                 }
                 break;  // end of iterator
@@ -1145,7 +1145,7 @@ public:
             try {
                 node = allocate(item);
             } catch (const std::bad_alloc& err) {
-                abort(iterator, item);
+                abort_init(iterator, item);
                 throw err;
             }
             if (PyErr_Occurred()) {  // TypeError(): not hashable or tuple of size 2
@@ -1157,7 +1157,7 @@ public:
                     Py_DECREF(python_repr);
                     printf("    -> free: %s\n", c_repr);
                 }
-                abort(iterator, item);
+                abort_init(iterator, item);
                 throw std::runtime_error("value is not hashable or tuple of size 2");
             }
 
@@ -1169,13 +1169,13 @@ public:
                     link(tail, node, NULL);
                 }
             } catch (const std::bad_alloc& err) {  // memory error during resize()
-                deallocate(node);  // NOTE: if DEBUG, prints messages before abort()
-                abort(iterator, item);
+                deallocate(node);  // NOTE: if DEBUG, prints messages before aborting
+                abort_init(iterator, item);
                 throw err;
             }
             if (PyErr_Occurred()) {  // ValueError(): item is already contained in dict
                 deallocate(node);
-                abort(iterator, item);
+                abort_init(iterator, item);
                 throw std::runtime_error("item is already contained in dictionary");
             }
 
