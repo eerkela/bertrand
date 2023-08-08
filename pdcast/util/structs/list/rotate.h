@@ -201,10 +201,10 @@ std::pair<NodeType*, NodeType*> _rotate_single(
     // break list at junction
     NodeType::split(staged_tail, staged_head);
 
-    // link staged nodes to head/tail based on direction of rotation
-    if (steps < 0) {  // append to tail
+    // link sublists based on direction of rotation
+    if (steps < 0) {  // rotate left
         NodeType::join(tail, staged_head);
-    } else {  // append to head
+    } else {  // rotate right
         NodeType::join(staged_tail, head);
     }
 
@@ -232,13 +232,13 @@ std::pair<NodeType*, NodeType*> _rotate_double(
     // identify new head and tail of rotated list
     NodeType* staged_head;
     NodeType* staged_tail;
-    if (split_index <= size / 2) {  // iterate from head
+    if (split_index <= size / 2) {  // forward traversal
         staged_tail = head;
         for (size_t i = 0; i < split_index; i++) {
             staged_tail = (NodeType*)staged_tail->next;
         }
         staged_head = (NodeType*)staged_tail->next;
-    } else {  // iterate from tail
+    } else {  // backward traversal
         staged_head = tail;
         for (size_t i = size - 1; i > split_index; i--) {
             staged_head = (NodeType*)staged_head->prev;
@@ -250,9 +250,9 @@ std::pair<NodeType*, NodeType*> _rotate_double(
     NodeType::split(staged_tail, staged_head);
 
     // link staged nodes to head/tail based on direction of rotation
-    if (steps < 0) {  // append to tail
+    if (steps < 0) {  // rotate left
         NodeType::join(tail, staged_head);
-    } else {  // append to head
+    } else {  // rotate right
         NodeType::join(staged_tail, head);
     }
 

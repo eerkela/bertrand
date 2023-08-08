@@ -6,6 +6,7 @@
 #include <cstddef>  // for size_t
 #include <queue>  // for std::queue
 #include <Python.h>  // for CPython API
+#include <node.h>  // for nodes
 #include <view.h>  // for views
 
 
@@ -18,7 +19,8 @@
 // without inheriting from T.  This saves memory during the sorting process,
 // too.
 
-// TODO: Do Keyed<> lists even need a corresponding view?
+// TODO: Keyed<> basically just reimplements the SingleNode interface.  Might
+// actually just inherit from it.
 
 
 ///////////////////////
