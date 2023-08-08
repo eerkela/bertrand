@@ -7,10 +7,18 @@
 #include <view.h>  // for views
 
 
+/* Check if an item is contained within a set or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline int contains(ViewType<NodeType>* view, PyObject* item) {
+    return view->search(item) != NULL;
+}
+
+
 /* Check if an item is contained within a list. */
 template <typename NodeType>
 inline int contains(ListView<NodeType>* view, PyObject* item) {
-    NodeType* curr = view->head;
+    using Node = typename ListView<NodeType>::Node;
+    Node* curr = view->head;
     int comp;
 
     // search until we find the item or hit stop index
@@ -24,25 +32,11 @@ inline int contains(ListView<NodeType>* view, PyObject* item) {
         }
 
         // advance to next node
-        curr = curr->next;
+        curr = (Node*)curr->next;
     }
 
     // item not found
     return 0;
-}
-
-
-/* Check if an item is contained within a set. */
-template <typename NodeType>
-inline int contains(SetView<NodeType>* view, PyObject* item) {
-    return view->search(item) != NULL;
-}
-
-
-/* Check if a key is contained within a dictionary. */
-template <typename NodeType>
-inline int contains(DictView<NodeType>* view, PyObject* item) {
-    return view->search(item) != NULL;
 }
 
 

@@ -134,7 +134,6 @@ inline size_t normalize_index(
 }
 
 
-
 /////////////////////
 ////    TABLE    ////
 /////////////////////
@@ -165,7 +164,8 @@ private:
         // allocate new table
         table = (T*)calloc(new_capacity, sizeof(T));
         if (table == NULL) {
-            throw std::bad_alloc();
+            PyErr_NoMemory();
+            return;  // propagate error
         }
 
         // update table parameters
@@ -211,7 +211,7 @@ public:
     HashTable(HashTable&&) = delete;                    // move constructor
     HashTable& operator=(HashTable&&) = delete;         // move assignment
 
-    /* Constructor. */
+    /* Construct an empty HashTable. */
     HashTable() {
         if (DEBUG) {
             printf("    -> malloc: HashTable(%lu)\n", INITIAL_TABLE_CAPACITY);
@@ -220,13 +220,13 @@ public:
         // initialize hash table
         table = (T*)calloc(INITIAL_TABLE_CAPACITY, sizeof(T));
         if (table == NULL) {
-            throw std::bad_alloc();
+            throw std::bad_alloc();  // we have to use C++ exceptions here
         }
 
         // initialize tombstone
         tombstone = (T)malloc(sizeof(T));
         if (tombstone == NULL) {
-            free(table);
+            free(table);  // clean up staged table
             throw std::bad_alloc();
         }
 
@@ -252,6 +252,9 @@ public:
         // resize if necessary
         if (occupied > capacity * MAX_LOAD_FACTOR) {
             resize(exponent + 1);
+            if (PyErr_Occurred()) {  // error occurred during resize()
+                return;
+            }
         }
 
         // get index and step for double hashing
@@ -323,19 +326,19 @@ public:
 
     /* Clear the hash table and reset it to its initial state. */
     void clear() {
-        // free old table
         if (DEBUG) {
             printf("    -> free: HashTable(%lu)\n", capacity);
+            printf("    -> malloc: HashTable(%lu)\n", INITIAL_TABLE_CAPACITY);
         }
+
+        // free old table
         free(table);
 
         // allocate new table
-        if (DEBUG) {
-            printf("    -> malloc: HashTable(%lu)\n", INITIAL_TABLE_CAPACITY);
-        }
         table = (T*)calloc(INITIAL_TABLE_CAPACITY, sizeof(T));
-        if (table == NULL) {
-            throw std::bad_alloc();
+        if (table == NULL) {  // this should pretty much never happen, but just in case
+            PyErr_NoMemory();
+            return;  // propagate error
         }
 
         // reset table parameters
@@ -421,7 +424,8 @@ public:
         // allocate new hash table
         table = (T*)calloc(capacity, sizeof(T));
         if (table == NULL) {
-            throw std::bad_alloc();
+            PyErr_NoMemory();
+            return;  // propagate error
         }
 
         size_t new_index, step;
@@ -518,13 +522,11 @@ public:
             }
 
             // allocate a new node and link it to the list
-            try {
-                stage(item, reverse);
-            } catch (const std::bad_alloc& err) {  // error during allocate()/link()
+            stage(item, reverse);
+            if (PyErr_Occurred()) {  // error during stage()
                 Py_DECREF(iterator);
-                Py_DECREF(item);
                 Allocater<Node>::discard_list(head);
-                throw err;
+                throw std::runtime_error("could not stage item");
             }
 
             // advance to next item
@@ -542,17 +544,17 @@ public:
         // NOTE: head, tail, size, and queue are automatically destroyed
     }
 
-    /* Allocate a new node for the list. */
-    inline Node* allocate(PyObject* value) {
+    /* Construct a new node for the list. */
+    inline Node* node(PyObject* value) {
         return Allocater<Node>::create(freelist, value);
     }
 
-    /* Free a node. */
-    inline void deallocate(Node* node) {
+    /* Release a node, pushing it into the freelist. */
+    inline void recycle(Node* node) {
         Allocater<Node>::recycle(freelist, node);
     }
 
-    /* Copy a single node in the list. */
+    /* Copy a node in the list. */
     inline Node* copy(Node* node) {
         return Allocater<Node>::copy(freelist, node);
     }
@@ -566,11 +568,10 @@ public:
 
         // copy each node in list
         while (old_node != NULL) {
-            try {
-                new_node = copy(old_node);  // copy node
-            } catch (const std::bad_alloc& err) {  // memory error during copy()
+            new_node = copy(old_node);  // copy node
+            if (new_node == NULL) {  // error during copy()
                 delete copied;  // discard staged list
-                throw err;
+                return NULL;
             }
 
             // link to tail of copied list
@@ -649,13 +650,18 @@ private:
     it in the event of an error. */
     inline void stage(PyObject* item, bool reverse) {
         // allocate a new node
-        Node* node = allocate(item);  // can throw std::bad_alloc()
+        Node* curr = node(item);
+        if (curr == NULL) {  // error during node initialization
+            return;
+        }
 
-        // link the node to the staged list - cannot cause an error for ListViews
+        // link the node to the staged list
+        // NOTE: this will never cause an error for ListViews, so we can can
+        // omit the error-handling logic.
         if (reverse) {
-            link(NULL, node, head);
+            link(NULL, curr, head);
         } else {
-            link(tail, node, NULL);
+            link(tail, curr, NULL);
         }
     }
 
@@ -700,7 +706,7 @@ public:
             tail = NULL;
             size = 0;
             freelist = std::queue<Node*>();
-            table = new HashTable<Node*>();
+            table = new HashTable<Node*>();  // can throw std::bad_alloc
         } catch (const std::bad_alloc& err) {
             Py_DECREF(iterator);
             throw err;
@@ -722,20 +728,12 @@ public:
             }
 
             // allocate a new node and link it to the list
-            try {
-                stage(item, reverse);
-            } catch (const std::bad_alloc& err) {  // error during allocate()/link()
+            stage(item, reverse);
+            if (PyErr_Occurred()) {
                 Py_DECREF(iterator);
-                Py_DECREF(item);
                 Allocater<Node>::discard_list(head);
                 delete table;
-                throw err;
-            } catch (const std::runtime_error& err) {  // error during link()
-                Py_DECREF(iterator);
-                Py_DECREF(item);
-                Allocater<Node>::discard_list(head);
-                delete table;
-                throw err;
+                throw std::runtime_error("could not stage item");
             }
 
             // advance to next item
@@ -754,17 +752,17 @@ public:
         // NOTE: head, tail, size, and queue are automatically destroyed
     }
 
-    /* Allocate a new node for the list. */
-    inline Node* allocate(PyObject* value) {
+    /* Construct a new node for the list. */
+    inline Node* node(PyObject* value) {
         return Allocater<Node>::create(freelist, value);
     }
 
-    /* Free a node. */
-    inline void deallocate(Node* node) {
+    /* Release a node, pushing it into the freelist. */
+    inline void recycle(Node* node) {
         Allocater<Node>::recycle(freelist, node);
     }
 
-    /* Copy a single node in the list. */
+    /* Copy a node in the list. */
     inline Node* copy(Node* node) {
         return Allocater<Node>::copy(freelist, node);
     }
@@ -778,19 +776,17 @@ public:
 
         // copy each node in list
         while (old_node != NULL) {
-            try {
-                new_node = copy(old_node);  // copy node
-            } catch (const std::bad_alloc& err) {  // memory error during copy()
-                delete copied;
-                throw err;
+            new_node = copy(old_node);  // copy node
+            if (new_node == NULL) {  // error during copy()
+                delete copied;  // discard staged list
+                return NULL;
             }
 
             // link to tail of copied list
-            try {
-                copied->link(new_prev, new_node, NULL);
-            } catch (const std::bad_alloc& err) {  // error during resize()
-                delete copied;
-                throw err;
+            copied->link(new_prev, new_node, NULL);
+            if (PyErr_Occurred()) {  // error during link()
+                delete copied;  // discard staged list
+                return NULL;
             }
 
             // advance to next node
@@ -822,7 +818,7 @@ public:
     inline void link(Node* prev, Node* curr, Node* next) {
         // add node to hash table
         table->remember(curr);
-        if (PyErr_Occurred()) {
+        if (PyErr_Occurred()) {  // node is already present in table
             return;
         }
 
@@ -843,7 +839,7 @@ public:
     inline void unlink(Node* prev, Node* curr, Node* next) {
         // remove node from hash table
         table->forget(curr);
-        if (PyErr_Occurred()) {
+        if (PyErr_Occurred()) {  // node is not present in table
             return;
         }
 
@@ -897,37 +893,24 @@ private:
     it in the event of an error. */
     inline void stage(PyObject* item, bool reverse) {
         // allocate a new node
-        Node* node = allocate(item);  // can throw std::bad_alloc()
-
-        // check for TypeError(): value is not hashable
-        if (PyErr_Occurred()) {
-            // NOTE: this print statement is for QoL during debugging.  Nothing
-            // has really been allocated, so we don't actually free anything.
+        Node* curr = node(item);
+        if (curr == NULL) {  // error during node initialization
             if (DEBUG) {
-                PyObject* python_repr = PyObject_Repr(item);
-                const char* c_repr = PyUnicode_AsUTF8(python_repr);
-                Py_DECREF(python_repr);
-                printf("    -> free: %s\n", c_repr);
+                // QoL - nothing has been allocated, so we don't actually free anything
+                printf("    -> free: %s\n", repr(item));
             }
-            throw std::runtime_error("value is not hashable");
+            return;  // propagate error
         }
 
         // link the node to the staged list
-        try {
-            if (reverse) {
-                link(NULL, node, head);
-            } else {
-                link(tail, node, NULL);
-            }
-        } catch (const std::bad_alloc& err) {  // bad_alloc() during resize()
-            Allocater<Node>::discard(node);  // clean up staged node
-            throw err;
+        if (reverse) {
+            link(NULL, curr, head);
+        } else {
+            link(tail, curr, NULL);
         }
-
-        // check for ValueError(): item is already contained in set
-        if (PyErr_Occurred()) {
-            Allocater<Node>::discard(node);  // clean up staged node
-            throw std::runtime_error("item is already contained in set");
+        if (PyErr_Occurred()) {  // error during link()
+            Allocater<Node>::discard(curr);  // clean up staged node
+            return;
         }
     }
 
@@ -972,7 +955,7 @@ public:
             tail = NULL;
             size = 0;
             freelist = std::queue<Node*>();
-            table = new HashTable<Node*>();
+            table = new HashTable<Node*>();  // can throw std::bad_alloc
         } catch (const std::bad_alloc& err) {
             Py_DECREF(iterator);
             throw err;
@@ -994,20 +977,12 @@ public:
             }
 
             // allocate a new node and link it to the list
-            try {
-                stage(item, reverse);
-            } catch (const std::bad_alloc& err) {  // error during allocate()/link()
+            stage(item, reverse);
+            if (PyErr_Occurred()) {  // error during stage()
                 Py_DECREF(iterator);
-                Py_DECREF(item);
                 Allocater<Node>::discard_list(head);
                 delete table;
-                throw err;
-            } catch (const std::runtime_error& err) {  // error during unpack/link()
-                Py_DECREF(iterator);
-                Py_DECREF(item);
-                Allocater<Node>::discard_list(head);
-                delete table;
-                throw err;
+                throw std::runtime_error("could not stage item");
             }
 
             // advance to next item
@@ -1027,17 +1002,17 @@ public:
     }
 
     /* Allocate a new node from a packed key-value pair. */
-    inline Node* allocate(PyObject* value) {
+    inline Node* node(PyObject* value) {
         return Allocater<Node>::create(freelist, value);
     }
 
     /* Allocate a new node from an unpacked key-value pair. */
-    inline Node* allocate(PyObject* value, PyObject* mapped) {
+    inline Node* node(PyObject* value, PyObject* mapped) {
         return Allocater<Node>::create(freelist, value, mapped);
     }
 
     /* Free a node. */
-    inline void deallocate(Node* node) {
+    inline void recycle(Node* node) {
         Allocater<Node>::recycle(freelist, node);
     }
 
@@ -1055,19 +1030,17 @@ public:
 
         // copy each node in list
         while (old_node != NULL) {
-            try {
-                new_node = copy(old_node);  // copy node
-            } catch (const std::bad_alloc& err) {  // memory error during copy()
-                delete copied;
-                throw err;
+            new_node = copy(old_node);  // copy node
+            if (new_node == NULL) {  // error during copy()
+                delete copied;  // discard staged list
+                return NULL;
             }
 
             // link to tail of copied list
-            try {
-                copied->link(new_prev, new_node, NULL);
-            } catch (const std::bad_alloc& err) {  // error during resize()
-                delete copied;
-                throw err;
+            copied->link(new_prev, new_node, NULL);
+            if (PyErr_Occurred()) {  // error during link()
+                delete copied;  // discard staged list
+                return NULL;
             }
 
             // advance to next node
@@ -1174,37 +1147,24 @@ private:
     it in the event of an error. */
     inline void stage(PyObject* item, bool reverse) {
         // allocate a new node
-        Node* node = allocate(item);  // can throw std::bad_alloc()
-
-        // check for TypeError(): value is not hashable
+        Node* curr = node(item);
         if (PyErr_Occurred()) {
-            // NOTE: this print statement is for QoL during debugging.  Nothing
-            // has really been allocated, so we don't actually free anything.
+            // QoL - nothing has been allocated, so we don't actually free anything
             if (DEBUG) {
-                PyObject* python_repr = PyObject_Repr(item);
-                const char* c_repr = PyUnicode_AsUTF8(python_repr);
-                Py_DECREF(python_repr);
-                printf("    -> free: %s\n", c_repr);
+                printf("    -> free: %s\n", repr(item));
             }
-            throw std::runtime_error("value is not hashable");
+            return;
         }
 
         // link the node to the staged list
-        try {
-            if (reverse) {
-                link(NULL, node, head);
-            } else {
-                link(tail, node, NULL);
-            }
-        } catch (const std::bad_alloc& err) {  // bad_alloc() during resize()
-            Allocater<Node>::discard(node);  // clean up staged node
-            throw err;
+        if (reverse) {
+            link(NULL, curr, head);
+        } else {
+            link(tail, curr, NULL);
         }
-
-        // check for ValueError(): item is already contained in set
         if (PyErr_Occurred()) {
-            Allocater<Node>::discard(node);  // clean up staged node
-            throw std::runtime_error("item is already contained in set");
+            Allocater<Node>::discard(curr);  // clean up staged node
+            return;
         }
     }
 

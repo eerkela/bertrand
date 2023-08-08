@@ -9,15 +9,31 @@
 #include <view.h>  // for view definitions
 
 
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
-
-
 /* Insert an item into a singly-linked list, set, or dictionary at the given index. */
 template <template <typename> class ViewType, typename NodeType>
 void insert_single(ViewType<NodeType>* view, size_t index, PyObject* item) {
-    _insert_forward(view, view->head, index, item);
+    using Node = typename ViewType<NodeType>::Node;
+
+    // construct a new node
+    Node* node = view->node(item);
+    if (node == NULL) {
+        return;
+    }
+
+    // iterate from head to find junction
+    Node* prev = NULL;
+    Node* curr = view->head;
+    for (size_t i = 0; i < index; i++) {
+        prev = curr;
+        curr = (Node*)curr->next;
+    }
+
+    // insert node
+    view->link(prev, node, curr);
+    if (PyErr_Occurred()) {
+        view->recycle(node);  // clean up staged node
+        return;
+    }
 }
 
 
@@ -26,76 +42,30 @@ template <template <typename> class ViewType, typename NodeType>
 void insert_double(ViewType<NodeType>* view, size_t index, PyObject* item) {
     // if index is closer to head, use singly-linked version
     if (index <= view->size / 2) {
-        _insert_forward(view, view->head, index, item);
-    } else {
-        _insert_backward(view, view->tail, index, item);
+        _insert_single(view, index, item);
     }
-}
 
+    using Node = typename ViewType<NodeType>::Node;
 
-///////////////////////
-////    PRIVATE    ////
-///////////////////////
-
-
-/* Iterate forwards from head and insert a node at the given index. */
-template <template <typename> class ViewType, typename T, typename U>
-void _insert_forward(ViewType<T>* view, U* head, size_t index, PyObject* item) {
     // allocate a new node
-    U* node = view->allocate(item);
-    if (node == NULL) {  // TypeError() during hash() / tuple unpacking
-        return;
-    }
-
-    // iterate from head to find junction
-    U* curr = view->head;
-    U* prev = NULL;  // shadows curr
-    for (size_t i = 0; i < index; i++) {
-        prev = curr;
-        curr = (U*)curr->next;
-    }
-
-    // insert node
-    try {
-        view->link(prev, node, curr);
-    } catch (const std::bad_alloc&) {  // error during resize()
-        view->deallocate(node);
-        throw;
-    }
-    if (PyErr_Occurred()) {  // ValueError() item is already contained in set
-        view->deallocate(node);
-        throw;
-    }
-}
-
-
-/* Iterate backwards from tail and insert a node at the given index. */
-template <template <typename> class ViewType, typename T, typename U>
-void _insert_backward(ViewType<T>* view, U* tail, size_t index, PyObject* item) {
-    // allocate a new node
-    U* node = view->allocate(item);
-    if (node == NULL) {  // TypeError() during hash() / tuple unpacking
+    Node* node = view->node(item);
+    if (node == NULL) {
         return;
     }
 
     // iterate from tail to find junction
-    U* curr = view->tail;
-    U* next = NULL;  // shadows curr
+    Node* next = NULL;
+    Node* curr = view->tail;
     for (size_t i = view->size - 1; i > index; i--) {
         next = curr;
-        curr = (U*)curr->prev;
+        curr = (Node*)curr->prev;
     }
 
     // insert node
-    try {
-        view->link(curr, node, next);
-    } catch (const std::bad_alloc&) {  // error during resize()
-        view->deallocate(node);
-        throw;
-    }
-    if (PyErr_Occurred()) {  // ValueError() item is already contained in set
-        view->deallocate(node);
-        throw;
+    view->link(curr, node, next);
+    if (PyErr_Occurred()) {
+        view->recycle(node);  // clean up staged node
+        return;
     }
 }
 

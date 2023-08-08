@@ -35,7 +35,6 @@ inline void delete_slice_single(
     // forward traversal
     _drop_slice_forward(
         view,
-        view->head,
         bounds.first,
         bounds.second,
         (size_t)abs(step)
@@ -64,7 +63,6 @@ inline void delete_slice_double(
     if (bounds.first <= bounds.second) {
         _drop_slice_forward(
             view,
-            view->head,
             bounds.first,
             bounds.second,
             (size_t)abs(step)
@@ -72,7 +70,6 @@ inline void delete_slice_double(
     } else {  // backward traversal
         _drop_slice_backward(
             view,
-            view->tail,
             bounds.first,
             bounds.second,
             (size_t)abs(step)
@@ -84,7 +81,7 @@ inline void delete_slice_double(
 /* Delete a node at a particular index of a singly-linked list, set, or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
 inline void delete_index_single(ViewType<NodeType>* view, size_t index) {
-    _drop_index_forward(view, view->head, index);
+    _drop_index_forward(view, index);
 }
 
 
@@ -92,9 +89,9 @@ inline void delete_index_single(ViewType<NodeType>* view, size_t index) {
 template <template <typename> class ViewType, typename NodeType>
 inline void delete_index_double(ViewType<NodeType>* view, size_t index) {
     if (index < view->size / 2) {  // forward traversal
-        _drop_index_forward(view, view->head, index);
+        _drop_index_forward(view, index);
     } else {  // backward traversal
-        _drop_index_backward(view, view->tail, index);
+        _drop_index_backward(view, index);
     }
 }
 
@@ -105,37 +102,38 @@ inline void delete_index_double(ViewType<NodeType>* view, size_t index) {
 
 
 /* Remove a slice from left to right. */
-template <template <typename> class ViewType, typename T, typename U>
+template <template <typename> class ViewType, typename NodeType>
 inline void _drop_slice_forward(
-    ViewType<T>* view,
-    U* head,
+    ViewType<NodeType>* view,
     size_t begin,
     size_t end,
     size_t abs_step
 ) {
+    using Node = typename ViewType<NodeType>::Node;
+
     // skip to start index
-    U* prev = NULL;
-    U* curr = head;
+    Node* prev = NULL;
+    Node* curr = view->head;
     for (size_t i = 0; i < begin; i++) {
         prev = curr;
-        curr = (U*)curr->next;
+        curr = (Node*)curr->next;
     }
 
     // delete all nodes in slice
-    U* next;
+    Node* next;
     size_t small_step = abs_step - 1;  // we jump by 1 whenever we remove a node
     for (size_t i = begin; i <= end; i += abs_step) {
         // unlink and deallocate node
-        next = (U*)curr->next;
+        next = (Node*)curr->next;
         view->unlink(prev, curr, next);
-        view->deallocate(curr);
+        view->recycle(curr);
         curr = next;
 
         // advance node according to step size
         if (i != end) {  // don't jump on final iteration
             for (size_t j = 0; j < small_step; j++) {
                 prev = curr;
-                curr = (U*)curr->next;
+                curr = (Node*)curr->next;
             }
         }
     }
@@ -143,37 +141,38 @@ inline void _drop_slice_forward(
 
 
 /* Remove a slice from right to left. */
-template <template <typename> class ViewType, typename T, typename U>
+template <template <typename> class ViewType, typename NodeType>
 inline void _drop_slice_backward(
-    ViewType<T>* view,
-    U* tail,
+    ViewType<NodeType>* view,
     size_t begin,
     size_t end,
     size_t abs_step
 ) {
+    using Node = typename ViewType<NodeType>::Node;
+
     // skip to start index
-    U* next = NULL;
-    U* curr = tail;
+    Node* next = NULL;
+    Node* curr = view->tail;
     for (size_t i = view->size - 1; i > begin; i--) {
         next = curr;
-        curr = (U*)curr->prev;
+        curr = (Node*)curr->prev;
     }
 
     // delete all nodes in slice
-    U* prev;
+    Node* prev;
     size_t small_step = abs_step - 1;  // we jump by 1 whenever we remove a node
     for (size_t i = begin; i >= end; i -= abs_step) {
         // unlink and deallocate node
-        prev = (U*)curr->prev;
+        prev = (Node*)curr->prev;
         view->unlink(prev, curr, next);
-        view->deallocate(curr);
+        view->recycle(curr);
         curr = prev;
 
         // advance node according to step size
         if (i != end) {  // don't jump on final iteration
             for (size_t j = 0; j < small_step; j++) {
                 next = curr;
-                curr = (U*)curr->prev;
+                curr = (Node*)curr->prev;
             }
         }
     }
@@ -181,36 +180,40 @@ inline void _drop_slice_backward(
 
 
 /* Remove the node at the given index by iterating forwards from the head. */
-template <template <typename> class ViewType, typename T, typename U>
-inline void _drop_index_forward(ViewType<T>* view, U* head, size_t index) {
+template <template <typename> class ViewType, typename NodeType>
+inline void _drop_index_forward(ViewType<NodeType>* view, size_t index) {
+    using Node = typename ViewType<NodeType>::Node;
+
     // skip to start index
-    U* prev = NULL;
-    U* curr = head;
+    Node* prev = NULL;
+    Node* curr = view->head;
     for (size_t i = 0; i < index; i++) {
         prev = curr;
-        curr = (U*)curr->next;
+        curr = (Node*)curr->next;
     }
 
     // unlink and deallocate node
-    view->unlink(prev, curr, (U*)curr->next);
-    view->deallocate(curr);
+    view->unlink(prev, curr, (Node*)curr->next);
+    view->recycle(curr);
 }
 
 
 /* Remove the node at the given index by iterating backwards from the tail. */
-template <template <typename> class ViewType, typename T, typename U>
-inline void _drop_index_backward(ViewType<T>* view, U* tail, size_t index) {
+template <template <typename> class ViewType, typename NodeType>
+inline void _drop_index_backward(ViewType<NodeType>* view, size_t index) {
+    using Node = typename ViewType<NodeType>::Node;
+
     // skip to start index
-    U* next = NULL;
-    U* curr = tail;
+    Node* next = NULL;
+    Node* curr = view->tail;
     for (size_t i = view->size - 1; i > index; i--) {
         next = curr;
-        curr = (U*)curr->prev;
+        curr = (Node*)curr->prev;
     }
 
     // unlink and deallocate node
-    view->unlink((U*)curr->prev, curr, next);
-    view->deallocate(curr);
+    view->unlink((Node*)curr->prev, curr, next);
+    view->recycle(curr);
 }
 
 

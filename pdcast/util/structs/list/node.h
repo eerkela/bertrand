@@ -28,6 +28,34 @@ allocation/deallocation. */
 const unsigned int FREELIST_SIZE = 32;  // max size of each View's freelist
 
 
+/////////////////////////
+////    FUNCTIONS    ////
+/////////////////////////
+
+
+/* Get the Python repr() of an arbitrary PyObject* */
+const char* repr(PyObject* obj) {
+    if (obj == NULL) {
+        return "NULL";
+    }
+
+    // call repr()
+    PyObject* py_repr = PyObject_Repr(obj);
+    if (py_repr == NULL) {
+        return "NULL";
+    }
+
+    // convert to UTF-8
+    const char* c_repr = PyUnicode_AsUTF8(py_repr);
+    if (c_repr == NULL) {
+        return "NULL";
+    }
+
+    Py_DECREF(py_repr);
+    return c_repr;
+}
+
+
 //////////////////////////
 ////    ALLOCATORS    ////
 //////////////////////////
@@ -42,31 +70,21 @@ private:
     inline static Derived* malloc_node(PyObject* value) {
         // print allocation/deallocation messages if DEBUG=TRUE
         if (DEBUG) {
-            PyObject* python_repr = PyObject_Repr(value);
-            const char* c_repr = PyUnicode_AsUTF8(python_repr);
-            Py_DECREF(python_repr);
-            printf("    -> malloc: %s\n", c_repr);
+            printf("    -> malloc: %s\n", repr(value));
         }
 
-        // malloc() node
-        Derived* node = (Derived*)malloc(sizeof(Derived));
-        if (node == NULL) {
-            throw std::bad_alloc();
-        }
-        return node;
+        // malloc()
+        return (Derived*)malloc(sizeof(Derived));  // may be NULL
     }
 
     /* A wrapper around free() that can help catch memory leaks. */
     inline static void free_node(Derived* node) {
         // print allocation/deallocation messages if DEBUG=TRUE
         if (DEBUG) {
-            PyObject* python_repr = PyObject_Repr(node->value);
-            const char* c_repr = PyUnicode_AsUTF8(python_repr);
-            Py_DECREF(python_repr);
-            printf("    -> free: %s\n", c_repr);
+            printf("    -> free: %s\n", repr(node->value));
         }
 
-        // free() node
+        // free()
         free(node);
     }
 
@@ -79,7 +97,7 @@ private:
         } else {
             node = malloc_node(value);  // allocate new node
         }
-        return node;
+        return node;  // may be NULL if malloc() failed
     }
 
     /* Push a node to the freelist or free it directly. */
@@ -95,11 +113,20 @@ public:
 
     /* Allocate a new node for the specified value. */
     inline static Derived* create(std::queue<Derived*>& freelist, PyObject* value) {
+        // get blank node
         Derived* node = pop(freelist, value);
-        node = Derived::init(node, value);  // 1-argument init()
-        if (node == NULL) {
-            push(freelist, node);
+        if (node == NULL) {  // malloc() failed
+            PyErr_NoMemory();  // set MemoryError
+            return NULL;
         }
+
+        // initialize according to template parameter
+        node = Derived::init(node, value);
+        if (node == NULL) {  // error during init()
+            push(freelist, node);  // push allocated node to freelist
+        }
+
+        // return initialized node
         return node;
     }
 
@@ -109,21 +136,39 @@ public:
         PyObject* value,
         PyObject* mapped
     ) {
+        // get blank node
         Derived* node = pop(freelist, value);
+        if (node == NULL) {  // malloc() failed
+            PyErr_NoMemory();  // set MemoryError
+            return NULL;
+        }
+
+        // initialize according to template parameter
         node = Derived::init(node, value, mapped);  // 2-argument init()
         if (node == NULL) {
             push(freelist, node);
         }
+
+        // return initialized node
         return node;
     }
 
     /* Allocate a copy of an existing node. */
     inline static Derived* copy(std::queue<Derived*>& freelist, Derived* old_node) {
+        // get blank node
         Derived* new_node = pop(freelist, old_node->value);
+        if (new_node == NULL) {  // malloc() failed
+            PyErr_NoMemory();  // set MemoryError
+            return NULL;
+        }
+
+        // initialize according to template parameter
         new_node = Derived::init_copy(new_node, old_node);
         if (new_node == NULL) {  // error during init_copy()
-            push(freelist, new_node);
+            push(freelist, new_node);  // push allocated node to freelist
         }
+
+        // return initialized node
         return new_node;
     }
 
@@ -332,14 +377,14 @@ struct Hashed : public NodeType {
         // delegate to templated init() method
         node = (Hashed<NodeType>*)NodeType::init(node, value);
         if (node == NULL) {  // Error during templated init()
-            return NULL;
+            return NULL;  // propagate
         }
 
         // compute hash
         node->hash = PyObject_Hash(value);
-        if (node->hash == -1 && PyErr_Occurred()) {  // TypeError() during hash()
+        if (node->hash == -1 && PyErr_Occurred()) {
             NodeType::teardown(node);  // free any resources allocated during init()
-            return NULL;
+            return NULL;  // propagate TypeError()
         }
 
         // return initialized node
@@ -354,7 +399,7 @@ struct Hashed : public NodeType {
         // delegate to templated init_copy() method
         new_node = (Hashed<NodeType>*)NodeType::init_copy(new_node, old_node);
         if (new_node == NULL) {  // Error during templated init_copy()
-            return NULL;
+            return NULL;  // propagate
         }
 
         // reuse the pre-computed hash
@@ -379,7 +424,7 @@ struct Mapped : public NodeType {
                 "Expected tuple of size 2 (key, value), not: %R",
                 value
             );
-            return NULL;
+            return NULL;  // propagate TypeError()
         }
 
         // unpack tuple and pass to 2-argument version
@@ -397,14 +442,14 @@ struct Mapped : public NodeType {
         // delegate to templated init() method
         node = (Mapped<NodeType>*)NodeType::init(node, value);
         if (node == NULL) {  // Error during templated init()
-            return NULL;
+            return NULL;  // propagate
         }
 
         // compute hash
         node->hash = PyObject_Hash(value);
-        if (node->hash == -1 && PyErr_Occurred()) {  // TypeError() during hash()
+        if (node->hash == -1 && PyErr_Occurred()) {
             NodeType::teardown(node);  // free any resources allocated during init()
-            return NULL;
+            return NULL;  // propagate TypeError()
         }
 
         // store a reference to the mapped value
@@ -423,7 +468,7 @@ struct Mapped : public NodeType {
         // delegate to templated init_copy() method
         new_node = (Mapped<NodeType>*)NodeType::init_copy(new_node, old_node);
         if (new_node == NULL) {  // Error during templated init_copy()
-            return NULL;
+            return NULL;  // propagate
         }
 
         // reuse the pre-computed hash

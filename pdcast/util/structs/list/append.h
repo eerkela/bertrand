@@ -3,7 +3,6 @@
 #define APPEND_H
 
 #include <Python.h>  // for CPython API
-#include <node.h>  // for node definitions
 #include <view.h>  // for view definitions
 
 
@@ -15,160 +14,87 @@
 
 
 //////////////////////
-////    PUBLIC    ////
+////    APPEND    ////
 //////////////////////
 
 
-/* Add an item to the end of a list. */
-template <typename NodeType>
-inline void append(ListView<NodeType> view, PyObject* item) {
-    NodeType* node = view->allocate(item);
-    view->link(view->tail, node, NULL);
-}
+/* Add an item to the end of a list, set, or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline void append(ViewType<NodeType>* view, PyObject* item) {
+    using Node = typename ViewType<NodeType>::Node;
 
-
-/* Add an item to the end of a set. */
-template <typename NodeType>
-inline void append(SetView<NodeType> view, PyObject* item) {
     // allocate a new node
-    Hashed<NodeType>* node = view->allocate(item);
-    if (node == NULL) {  // TypeError() during hash()
+    Node* node = view->node(item);
+    if (node == NULL) {  // Error during node initialization
         return;
     }
 
-    // link node to end of list
-    try {
-        view->link(view->tail, node, NULL);
-    } catch (const std::bad_alloc&) {  // error during resize()
-        view->deallocate(node);
-        throw;
-    }
-    if (PyErr_Occurred()) {  // ValueError() item is already contained in set
-        view->deallocate(node);
-        throw;
+    // link to end of list
+    view->link(view->tail, node, NULL);
+    if (PyErr_Occurred()) {
+        view->recycle(node);  // free node on error
     }
 }
 
 
 /* Add a key-value pair to the end of a dictionary. */
 template <typename NodeType>
-inline void append(DictView<NodeType> view, PyObject* item) {
+inline void append(DictView<NodeType>* view, PyObject* item, PyObject* mapped) {
+    using Node = typename DictView<NodeType>::Node;
+
     // allocate a new node
-    Mapped<NodeType>* node = view->allocate(item);
-    if (node == NULL) {  // TypeError() during hash() / tuple unpacking
+    Node* node = view->node(item, mapped);  // use 2-argument init()
+    if (node == NULL) {  // Error during node initialization
         return;
     }
 
-    // link node to end of list
-    try {
-        view->link(view->tail, node, NULL);
-    } catch (const std::bad_alloc&) {  // error during resize()
-        view->deallocate(node);
-        throw;
-    }
-    if (PyErr_Occurred()) {  // ValueError() item is already contained in dictionary
-        view->deallocate(node);
-        throw;
+    // link to end of list
+    view->link(view->tail, node, NULL);
+    if (PyErr_Occurred()) {
+        view->recycle(node);  // free node on error
     }
 }
 
 
-/* Add a separate key and value to the end of a dictionary. */
-template <typename NodeType>
-inline void append(DictView<NodeType> view, PyObject* item, PyObject* mapped) {
+//////////////////////////
+////    APPENDLEFT    ////
+//////////////////////////
+
+
+/* Add an item to the beginning of a list, set, or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline void appendleft(ViewType<NodeType>* view, PyObject* item) {
+    using Node = typename ViewType<NodeType>::Node;
+
     // allocate a new node
-    Mapped<NodeType>* node = view->allocate(item, mapped);
-    if (node == NULL) {  // TypeError() during hash()
+    Node* node = view->node(item);
+    if (node == NULL) {  // Error during node initialization
         return;
     }
 
-    // link node to end of list
-    try {
-        view->link(view->tail, node, NULL);
-    } catch (const std::bad_alloc&) {  // error during resize()
-        view->deallocate(node);
-        throw;
-    }
-    if (PyErr_Occurred()) {  // ValueError() item is already contained in dictionary
-        view->deallocate(node);
-        throw;
-    }
-}
-
-
-/* Add an item to the beginning of a list. */
-template <typename NodeType>
-inline void appendleft(ListView<NodeType> view, PyObject* item) {
-    NodeType* node = view->allocate(item);
+    // link to beginning of list
     view->link(NULL, node, view->head);
-}
-
-
-/* Add an item to the beginning of a set. */
-template <typename NodeType>
-inline void appendleft(SetView<NodeType> view, PyObject* item) {
-    // allocate a new node
-    Hashed<NodeType>* node = view->allocate(item);
-    if (node == NULL) {  // TypeError() during hash()
-        return;
-    }
-
-    // link node to beginning of list
-    try {
-        view->link(NULL, node, view->head);
-    } catch (const std::bad_alloc&) {  // error during resize()
-        view->deallocate(node);
-        throw;
-    }
-    if (PyErr_Occurred()) {  // ValueError() item is already contained in set
-        view->deallocate(node);
-        throw;
+    if (PyErr_Occurred()) {
+        view->recycle(node);  // free node on error
     }
 }
 
 
-/* Add a key-value pair to the beginning of the dictionary. */
+/* Add a key-value pair to the beginning of a dictionary. */
 template <typename NodeType>
-inline void appendleft(DictView<NodeType> view, PyObject* item) {
+inline void appendleft(DictView<NodeType>* view, PyObject* item, PyObject* mapped) {
+    using Node = typename DictView<NodeType>::Node;
+
     // allocate a new node
-    Mapped<NodeType>* node = view->allocate(item);
-    if (node == NULL) {  // TypeError() during hash() / tuple unpacking
+    Node* node = view->node(item, mapped);  // use 2-argument init()
+    if (node == NULL) {  // Error during node initialization
         return;
     }
 
-    // link node to beginning of list
-    try {
-        view->link(NULL, node, view->head);
-    } catch (const std::bad_alloc&) {  // error during resize()
-        view->deallocate(node);
-        throw;
-    }
-    if (PyErr_Occurred()) {  // ValueError() item is already contained in dictionary
-        view->deallocate(node);
-        throw;
-    }
-}
-
-
-/* Add a separate key and value to the beginning of a dictionary. */
-template <typename NodeType>
-inline void appendleft(DictView<NodeType> view, PyObject* item, PyObject* mapped) {
-    // allocate a new node
-    Mapped<NodeType>* node = view->allocate(item, mapped);
-    if (node == NULL) {  // TypeError() during hash()
-        return;
-    }
-
-    // link node to beginning of list
-    try {
-        view->link(NULL, node, view->head);
-    } catch (const std::bad_alloc&) {  // error during resize()
-        view->deallocate(node);
-        throw;
-    }
-    if (PyErr_Occurred()) {  // ValueError() item is already contained in dictionary
-        view->deallocate(node);
-        throw;
+    // link to beginning of list
+    view->link(NULL, node, view->head);
+    if (PyErr_Occurred()) {
+        view->recycle(node);  // free node on error
     }
 }
 

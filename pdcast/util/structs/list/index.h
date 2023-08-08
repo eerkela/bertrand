@@ -14,6 +14,18 @@
 //////////////////////
 
 
+/* Get the index of an item within a singly-linked set or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline size_t index_single(
+    ViewType<NodeType>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+) {
+    return _index_setlike(view, item, start, stop);
+}
+
+
 /* Get the index of an item within a singly-linked list. */
 template <typename NodeType>
 inline size_t index_single(
@@ -22,26 +34,27 @@ inline size_t index_single(
     size_t start,
     size_t stop
 ) {
+    using Node = typename ListView<NodeType>::Node;
+
     // skip to start index
-    NodeType* curr = view->head;
+    Node* curr = view->head;
     size_t idx = 0;
     for (idx; idx < start; idx++) {
-        curr = curr->next;
+        curr = (Node*)curr->next;
     }
 
     // search until we hit stop index
-    int comp;
     while (idx < stop) {
         // C API equivalent of the == operator
-        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
-        if (comp == -1) {  // comparison raised an exception
+        int comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
+        if (comp == -1) {  // `==` raised an exception
             return MAX_SIZE_T;
         } else if (comp == 1) {  // found a match
             return idx;
         }
 
         // advance to next node
-        curr = curr->next;
+        curr = (Node*)curr->next;
         idx++;
     }
 
@@ -51,27 +64,15 @@ inline size_t index_single(
 }
 
 
-/* Get the index of an item within a singly-linked set. */
-template <typename NodeType>
-inline size_t index_single(
-    SetView<NodeType>* view,
+/* Get the index of an item within a doubly-linked set or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline size_t index_double(
+    ViewType<NodeType>* view,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
-    return _index_set(view, view->head, item, start, stop);
-}
-
-
-/* Get the index of a key within a singly-linked dictionary. */
-template <typename NodeType>
-inline size_t index_single(
-    DictView<NodeType>* view,
-    PyObject* item,
-    size_t start,
-    size_t stop
-) {
-    return _index_set(view, view->head, item, start, stop);
+    return _index_setlike(view, item, start, stop);
 }
 
 
@@ -88,20 +89,21 @@ inline size_t index_double(
         return index_single(view, item, start, stop);
     }
 
+    using Node = typename ListView<NodeType>::Node;
+
     // else, start from tail
-    NodeType* curr = view->tail;
+    Node* curr = view->tail;
     size_t idx = view->size - 1;
     for (idx; idx > stop; idx--) {  // skip to stop index
-        curr = curr->prev;
+        curr = (Node*)curr->prev;
     }
 
     // search until we hit start index
-    int comp;
-    size_t last_observed;
     bool found = false;
+    size_t last_observed;
     while (idx >= start) {
         // C API equivalent of the == operator
-        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
+        int comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
         if (comp == -1) {  // comparison raised an exception
             return MAX_SIZE_T;
         } else if (comp == 1) {  // found a match
@@ -110,7 +112,7 @@ inline size_t index_double(
         }
 
         // advance to next node
-        curr = curr->prev;
+        curr = (Node*)curr->prev;
         idx--;
     }
 
@@ -125,72 +127,45 @@ inline size_t index_double(
 }
 
 
-/* Get the index of an item within a doubly-linked set. */
-template <typename NodeType>
-inline size_t index_double(
-    SetView<NodeType>* view,
-    PyObject* item,
-    size_t start,
-    size_t stop
-) {
-    return _index_set(view, view->head, item, start, stop);
-}
-
-
-/* Get the index of an item within a doubly-linked dictionary. */
-template <typename NodeType>
-inline size_t index_double(
-    DictView<NodeType>* view,
-    PyObject* item,
-    size_t start,
-    size_t stop
-) {
-    return _index_set(view, view->head, item, start, stop);
-}
-
 
 ///////////////////////
 ////    PRIVATE    ////
 ///////////////////////
 
 
-// NOTE: we don't need to check for NULL due to view->normalize_index()
-
-
 /* Get the index of an item within a set-like list. */
 template <template <typename> class ViewType, typename T, typename U>
-inline size_t _index_set(
+inline size_t _index_setlike(
     ViewType<T>* view,
-    U* head,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
-    // check if item is in set
-    U* node = view->search(item);
+    using Node = typename ViewType<T>::Node;
+
+    // search for item in hash table
+    Node* node = view->search(item);
     if (node == NULL) {
         PyErr_Format(PyExc_ValueError, "%R is not in the set", item);
         return MAX_SIZE_T;
     }
 
     // skip to start index
-    U* curr = view->head;
+    Node* curr = view->head;
     size_t idx = 0;
     for (idx; idx < start; idx++) {
         if (curr == node) {  // item exists, but comes before range
             PyErr_Format(PyExc_ValueError, "%R is not in the set", item);
             return MAX_SIZE_T;
         }
-        curr = (U*)curr->next;
+        curr = (Node*)curr->next;
     }
 
-    // search until we hit stop index
+    // iterate until we hit match or stop index
     while (curr != node && idx < stop) {
-        curr = (U*)curr->next;
+        curr = (Node*)curr->next;
         idx++;
     }
-
-    // check for match
     if (curr == node) {
         return idx;
     }

@@ -83,7 +83,8 @@ inline std::pair<size_t, size_t> _get_slice_direction_single(
 
     // check if slice is not a valid range
     if (!is_valid(start, stop, step)) {
-        throw std::invalid_argument("invalid slice");
+        PyErr_SetString(PyExc_ValueError, "invalid slice");
+        return std::make_pair(MAX_SIZE_T, MAX_SIZE_T);
     }
 
     // determine direction of traversal for singly-linked list
@@ -109,7 +110,8 @@ inline std::pair<size_t, size_t> _get_slice_direction_double(
 
     // check if slice is not a valid range
     if (!is_valid(start, stop, step)) {
-        throw std::invalid_argument("invalid slice");
+        PyErr_SetString(PyExc_ValueError, "invalid slice");
+        return std::make_pair(MAX_SIZE_T, MAX_SIZE_T);
     }
 
     // determine direction of traversal for doubly-linked list

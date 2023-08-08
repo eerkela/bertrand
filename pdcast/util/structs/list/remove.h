@@ -9,28 +9,28 @@
 
 
 //////////////////////
-////    PUBLIC    ////
+////    REMOVE    ////
 //////////////////////
 
 
 /* Remove the first occurrence of an item within a list. */
 template <typename NodeType>
 inline void remove(ListView<NodeType>* view, PyObject* item) {
+    using Node = typename ListView<NodeType>::Node;
+
     // find the node to remove
-    NodeType* prev = NULL;
-    NodeType* curr = view->head;
-    NodeType* next;
-    int comp;
+    Node* prev = NULL;
+    Node* curr = view->head;
     while (curr != NULL) {
-        next = curr->next;
+        Node* next = (Node*)curr->next;
 
         // C API equivalent of the == operator
-        comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
+        int comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
         if (comp == -1) {  // comparison raised an exception
             return;
         } else if (comp == 1) {  // found a match
             view->unlink(prev, curr, next);
-            view->deallocate(curr);
+            view->recycle(curr);
             return;
         }
 
@@ -44,238 +44,150 @@ inline void remove(ListView<NodeType>* view, PyObject* item) {
 }
 
 
-/* Remove an item from a singly-linked set. */
-template <typename NodeType>
-inline void remove_single(SetView<NodeType>* view, PyObject* item) {
+/* Remove an item from a singly-linked set or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline void remove_single(ViewType<NodeType>* view, PyObject* item) {
+    using Node = typename ViewType<NodeType>::Node;
+
     // search for node
-    Hashed<NodeType>* node = view->search(item);
+    Node* node = view->search(item);
     if (node == NULL) {  // item not found
         PyErr_Format(PyExc_KeyError, "%R not in set", item);
         return;
     }
 
-    _set_remove_single(view, node);
+    // NOTE: this is O(n) for singly-linked sets and dictionaries because we
+    // have to traverse the whole list to find the previous node.
+
+    // iterate forwards from head to find previous node
+    Node* prev = NULL;
+    Node* curr = view->head;
+    while (curr != node) {
+        prev = curr;
+        curr = (Node*)curr->next;
+    }
+
+    // unlink and free node
+    view->unlink(prev, curr, (Node*)curr->next);
+    view->recycle(curr);
 }
 
 
-/* Remove a key from a singly-linked dictionary. */
-template <typename NodeType>
-inline void remove_single(DictView<NodeType>* view, PyObject* item) {
+/* Remove an item from a doubly-linked set or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline void remove_double(ViewType<NodeType>* view, PyObject* item) {
+    using Node = typename ViewType<NodeType>::Node;
+
     // search for node
-    Mapped<NodeType>* node = view->search(item);
+    Node* node = view->search(item);
     if (node == NULL) {  // item not found
         PyErr_Format(PyExc_KeyError, "%R not in set", item);
         return;
     }
 
-    _set_remove_single(view, node);
+    // NOTE: this is O(1) for doubly-linked sets and dictionaries because we
+    // already have a pointer to the node that precedes the popped node.
+
+    // unlink and free node
+    view->unlink((Node*)node->prev, node, (Node*)node->next);
+    view->recycle(node);
 }
 
 
-/* Remove an item from a doubly-linked set. */
-template <typename NodeType>
-inline void remove_double(SetView<NodeType>* view, PyObject* item) {
-    // search for node
-    Hashed<NodeType>* node = view->search(item);
-    if (node == NULL) {  // item not found
-        PyErr_Format(PyExc_KeyError, "%R not in set", item);
-        return;
-    }
-
-    _set_remove_double(view, node);
-}
+///////////////////////////
+////    REMOVEAFTER    ////
+///////////////////////////
 
 
-/* Remove a key from a doubly-linked dictionary. */
-template <typename NodeType>
-inline void remove_double(DictView<NodeType>* view, PyObject* item) {
-    // search for node
-    Mapped<NodeType>* node = view->search(item);
-    if (node == NULL) {  // item not found
-        PyErr_Format(PyExc_KeyError, "%R not in set", item);
-        return;
-    }
-
-    _set_remove_double(view, node);
-}
-
-
-/* Remove an item from a set immediately after the specified sentinel value. */
-template <typename NodeType>
-inline void removeafter(SetView<NodeType>* view, PyObject* sentinel) {
-    // search for node
-    Hashed<NodeType>* node = view->search(sentinel);
-    if (node == NULL) {  // sentinel not found
-        PyErr_Format(PyExc_KeyError, "%R not in set", sentinel);
-        return;
-    }
-
-    _remove_next(view, node);
-}
-
-
-/* Remove an key from a dictionary immediately after the specified sentinel value. */
-template <typename NodeType>
-inline void removeafter(DictView<NodeType>* view, PyObject* sentinel) {
-    // search for node
-    Mapped<NodeType>* node = view->search(sentinel);
-    if (node == NULL) {  // sentinel not found
-        PyErr_Format(PyExc_KeyError, "%R not in set", sentinel);
-        return;
-    }
-
-    _remove_next(view, node);
-}
-
-
-/* Remove an item from a singly-linked set immediately before the specified sentinel
-value. */
-template <typename NodeType>
-inline void removebefore_single(SetView<NodeType>* view, PyObject* sentinel) {
-    // search for node
-    Hashed<NodeType>* node = view->search(sentinel);
-    if (node == NULL) {  // sentinel not found
-        PyErr_Format(PyExc_KeyError, "%R not in set", sentinel);
-        return;
-    }
-
-    _remove_prev_single(view, node);
-}
-
-
-/* Remove an item from a singly-linked dictionary immediately before the specified
+/* Remove an item from a set or dictionary immediately after the specified
 sentinel value. */
-template <typename NodeType>
-inline void removebefore_single(DictView<NodeType>* view, PyObject* sentinel) {
+template <template <typename> class ViewType, typename NodeType>
+inline void removeafter(ViewType<NodeType>* view, PyObject* sentinel) {
+    using Node = typename ViewType<NodeType>::Node;
+
     // search for node
-    Mapped<NodeType>* node = view->search(sentinel);
+    Node* node = view->search(sentinel);
     if (node == NULL) {  // sentinel not found
         PyErr_Format(PyExc_KeyError, "%R not in set", sentinel);
         return;
     }
-
-    _remove_prev_single(view, node);
-}
-
-
-/* Remove an item from a doubly-linked set immediately before the specified sentinel
-value. */
-template <typename NodeType>
-inline void removebefore_double(SetView<NodeType>* view, PyObject* sentinel) {
-    // search for node
-    Hashed<NodeType>* node = view->search(sentinel);
-    if (node == NULL) {  // sentinel not found
-        PyErr_Format(PyExc_KeyError, "%R not in set", sentinel);
-        return;
-    }
-
-    _remove_prev_double(view, node);
-}
-
-
-/* Remove an item from a doubly-linked dictionary immediately before the specified
-sentinel value. */
-template <typename NodeType>
-inline void removebefore_double(DictView<NodeType>* view, PyObject* sentinel) {
-    // search for node
-    Mapped<NodeType>* node = view->search(sentinel);
-    if (node == NULL) {  // sentinel not found
-        PyErr_Format(PyExc_KeyError, "%R not in set", sentinel);
-        return;
-    }
-
-    _remove_prev_double(view, node);
-}
-
-
-///////////////////////
-////    PRIVATE    ////
-///////////////////////
-
-
-/* Remove the node immediately after a given sentinel. */
-template <template <typename> class ViewType, typename T, typename U>
-inline void _remove_next(ViewType<T>* view, U* node) {
-    // get neighboring nodes
-    U* curr = (U*)node->next;
-    if (curr == NULL) {
+    if (node == view->tail) {
         PyErr_SetString(PyExc_IndexError, "node is tail of list");
         return;
     }
 
     // unlink and free node
-    view->unlink(node, curr, (U*)curr->next);
-    view->deallocate(curr);
+    Node* curr = (Node*)node->next;
+    view->unlink(node, curr, (Node*)curr->next);
+    view->recycle(curr);
 }
 
 
-/* Remove the node immediately before a doubly-linked sentinel node. */
-template <template <typename> class ViewType, typename T, typename U>
-inline void _remove_prev_double(ViewType<T>* view, U* node) {
-    // get neighboring nodes
-    U* curr = (U*)node->prev;
-    if (curr == NULL) {
+////////////////////////////
+////    REMOVEBEFORE    ////
+////////////////////////////
+
+
+/* Remove an item from a singly-linked set immediately before the specified sentinel
+value. */
+template <template <typename> class ViewType, typename NodeType>
+inline void removebefore_single(ViewType<NodeType>* view, PyObject* sentinel) {
+    using Node = typename ViewType<NodeType>::Node;
+
+    // search for node
+    Node* node = view->search(sentinel);
+    if (node == NULL) {  // sentinel not found
+        PyErr_Format(PyExc_KeyError, "%R not in set", sentinel);
+        return;
+    }
+    if (node == view->head) {
         PyErr_SetString(PyExc_IndexError, "node is head of list");
         return;
     }
 
-    // unlink and free node
-    view->unlink((U*)curr->prev, curr, node);
-    view->deallocate(curr);
-}
+    // NOTE: this is O(n) for singly-linked sets because we have to traverse
+    // the whole list to find the previous node.
 
-
-/* Remove the node immediately before a singly-linked sentinel node. */
-template <template <typename> class ViewType, typename T, typename U>
-inline void _remove_prev_single(ViewType<T>* view, U* node) {
     // iterate from head to find previous node
-    U* curr = view->head;
-    if (curr == node) {
-        PyErr_SetString(PyExc_IndexError, "node is head of list");
-        return;
-    }
-
-    U* prev = NULL;
-    U* next = curr->next;
+    Node* prev = NULL;
+    Node* curr = view->head;
+    Node* next = (Node*)curr->next;
     while (next != node) {
         prev = curr;
         curr = next;
-        next = (U*)next->next;
+        next = (Node*)next->next;
     }
 
     // unlink and free node
     view->unlink(prev, curr, next);
-    view->deallocate(curr);
+    view->recycle(curr);
 }
 
 
-/* Remove a node from a doubly-linked set. */
-template <template <typename> class ViewType, typename T, typename U>
-inline void _set_remove_double(ViewType<T>* view, U* node) {
-    // get neighboring nodes
-    U* prev = (U*)node->prev;
-    U* next = (U*)node->next;
+/* Remove an item from a doubly-linked set immediately before the specified sentinel
+value. */
+template <template <typename> class ViewType, typename NodeType>
+inline void removebefore_double(ViewType<NodeType>* view, PyObject* sentinel) {
+    using Node = typename ViewType<NodeType>::Node;
 
-    // unlink and free node
-    view->unlink(prev, node, next);
-    view->deallocate(node);
-}
-
-
-/* Remove a node from a singly-linked set. */
-template <template <typename> class ViewType, typename T, typename U>
-inline void _set_remove_single(ViewType<T>* view, U* node) {
-    // iterate from head to find previous node
-    U* prev = NULL;
-    U* curr = view->head;
-    while (curr != node) {
-        prev = curr;
-        curr = (U*)curr->next;
+    // search for node
+    Node* node = view->search(sentinel);
+    if (node == NULL) {  // sentinel not found
+        PyErr_Format(PyExc_KeyError, "%R not in set", sentinel);
+        return;
+    }
+    if (node == view->head) {
+        PyErr_SetString(PyExc_IndexError, "node is head of list");
+        return;
     }
 
+    // NOTE: this is O(1) for doubly-linked sets because we already have a
+    // pointer to the node that precedes the sentinel.
+
     // unlink and free node
-    view->unlink(prev, curr, (U*)curr->next);
-    view->deallocate(curr);
+    Node* curr = (Node*)node->prev;
+    view->unlink((Node*)curr->prev, curr, node);
+    view->recycle(curr);
 }
 
 

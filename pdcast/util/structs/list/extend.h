@@ -21,203 +21,120 @@
 
 
 //////////////////////
-////    PUBLIC    ////
+////    EXTEND    ////
 //////////////////////
 
 
-/* Add multiple items to the end of a list. */
-template <typename NodeType>
-inline void extend(ListView<NodeType>* view, PyObject* items) {
-    _extend_left_to_right(view, view->tail, NULL, items);  // handles errors
+/* Add multiple items to the end of a list, set, or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline void extend(ViewType<NodeType>* view, PyObject* items) {
+    _extend_left_to_right(view, view->tail, NULL, items);
 }
 
 
-/* Add multiple items to the end of a set. */
-template <typename NodeType>
-inline void extend(SetView<NodeType>* view, PyObject* items) {
-    _extend_left_to_right(view, view->tail, NULL, items);  // handles errors
+//////////////////////////
+////    EXTENDLEFT    ////
+//////////////////////////
+
+
+/* Add multiple items to the beginning of a list, set, or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline void extendleft(ViewType<NodeType>* view, PyObject* items) {
+    _extend_right_to_left(view, NULL, view->head, items);
 }
 
 
-/* Add multiple items to the end of a dictionary. */
-template <typename NodeType>
-inline void extend(DictView<NodeType>* view, PyObject* items) {
-    _extend_left_to_right(view, view->tail, NULL, items);  // handles errors
-}
+///////////////////////////
+////    EXTENDAFTER    ////
+///////////////////////////
 
 
-/* Add multiple items to the beginning of a list. */
-template <typename NodeType>
-inline void extendleft(ListView<NodeType>* view, PyObject* items) {
-    _extend_right_to_left(view, NULL, view->head, items);  // handles errors
-}
-
-
-/* Add multiple items to the beginning of a list. */
-template <typename NodeType>
-inline void extendleft(SetView<NodeType>* view, PyObject* items) {
-    _extend_right_to_left(view, NULL, view->head, items);  // handles errors
-}
-
-
-/* Add multiple items to the beginning of a list. */
-template <typename NodeType>
-inline void extendleft(DictView<NodeType>* view, PyObject* items) {
-    _extend_right_to_left(view, NULL, view->head, items);  // handles errors
-}
-
-
-/* Insert elements into a set after a given sentinel value. */
-template <typename NodeType>
+/* Insert elements into a set or dictionary immediately after the given sentinel
+value. */
+template <template <typename> class ViewType, typename NodeType>
 inline void extendafter(
-    SetView<NodeType>* view,
+    ViewType<NodeType>* view,
     PyObject* sentinel,
     PyObject* items
 ) {
+    using Node = typename ViewType<NodeType>::Node;
+
     // search for sentinel
-    Hashed<NodeType>* left = view->search(sentinel);
+    Node* left = view->search(sentinel);
     if (left == NULL) {  // sentinel not found
         PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
         return;
     }
-    Hashed<NodeType>* right = (Hashed<NodeType>*)left->next;
 
-    // insert items between the left and right bounds
-    _extend_left_to_right(view, left, right, items);  // handles errors
+    // insert items after sentinel
+    _extend_left_to_right(view, left, (Node*)left->next, items);
 }
 
 
-/* Insert elements into a dictionary after a given sentinel value. */
-template <typename NodeType>
-inline void extendafter(
-    DictView<NodeType>* view,
-    PyObject* sentinel,
-    PyObject* items
-) {
-    // search for sentinel
-    Mapped<NodeType>* left = view->search(sentinel);
-    if (left == NULL) {  // sentinel not found
-        PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
-        return;
-    }
-    Mapped<NodeType>* right = (Mapped<NodeType>*)left->next;
-
-    // insert items between the left and right bounds
-    _extend_left_to_right(view, left, right, items);  // handles errors
-}
+////////////////////////////
+////    EXTENDBEFORE    ////
+////////////////////////////
 
 
-// NOTE: due to the singly-linked nature of the list, extendafter() is
-// O(m) while extendbefore() is O(n + m).  This is because we need to
-// traverse the whole list to find the node before the sentinel.
-
-
-/* Insert elements into a singly-linked set before a given sentinel value. */
-template <typename NodeType>
+/* Insert elements into a singly-linked set or dictionary immediately before a given
+sentinel value. */
+template <template <typename> class ViewType, typename NodeType>
 inline void extendbefore_single(
-    SetView<NodeType>* view,
+    ViewType<NodeType>* view,
     PyObject* sentinel,
     PyObject* items
 ) {
+    // NOTE: due to the singly-linked nature of the list, extendafter() is
+    // O(m) while extendbefore() is O(n + m).  This is because we need to
+    // traverse the whole list to find the node before the sentinel.
+    using Node = typename ViewType<NodeType>::Node;
+
     // search for sentinel
-    Hashed<NodeType>* right = view->search(sentinel);
+    Node* right = view->search(sentinel);
     if (right == NULL) {  // sentinel not found
         PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
         return;
     }
 
-    // iterate from head to find left bound
-    Hashed<NodeType>* left;
-    Hashed<NodeType>* next;
+    // iterate from head to find left bound (O(n))
+    Node* left;
+    Node* next;
     if (right == view->head) {
         left = NULL;
     } else {
         left = view->head;
-        next = (Hashed<NodeType>*)left->next;
+        next = (Node*)left->next;
         while (next != right) {
             left = next;
-            next = (Hashed<NodeType>*)next->next;
+            next = (Node*)next->next;
         }
     }
 
     // insert items between the left and right bounds
-    _extend_right_to_left(view, left, right, items);  // handles errors
+    _extend_right_to_left(view, left, right, items);
 }
 
 
-/* Insert elements into a singly-linked dictionary before a given sentinel value. */
-template <typename NodeType>
-inline void extendbefore_single(
-    DictView<NodeType>* view,
-    PyObject* sentinel,
-    PyObject* items
-) {
-            // search for sentinel
-    Mapped<NodeType>* right = view->search(sentinel);
-    if (right == NULL) {  // sentinel not found
-        PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
-        return;
-    }
-
-    // iterate from head to find left bound
-    Mapped<NodeType>* left;
-    Mapped<NodeType>* next;
-    if (right == view->head) {
-        left = NULL;
-    } else {
-        left = view->head;
-        next = (Mapped<NodeType>*)left->next;
-        while (next != right) {
-            left = next;
-            next = (Mapped<NodeType>*)next->next;
-        }
-    }
-
-    // insert items between the left and right bounds
-    _extend_right_to_left(view, left, right, items);  // handles errors
-}
-
-
-// NOTE: doubly-linked lists, on the other hand, can do it in O(m) time.
-
-
-/* Insert elements into a doubly-linked set after a given sentinel value. */
-template <typename NodeType>
+/* Insert elements into a doubly-linked set or dictionary immediately after a given
+sentinel value. */
+template <template <typename> class ViewType, typename NodeType>
 inline void extendbefore_double(
-    SetView<NodeType>* view,
+    ViewType<NodeType>* view,
     PyObject* sentinel,
     PyObject* items
 ) {
+    // NOTE: doubly-linked lists can extend in either direction in O(m) time.
+    using Node = typename ViewType<NodeType>::Node;
+
     // search for sentinel
-    Hashed<NodeType>* right = view->search(sentinel);
+    Node* right = view->search(sentinel);
     if (right == NULL) {  // sentinel not found
         PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
         return;
     }
-    Hashed<NodeType>* left = (Hashed<NodeType>*)view->prev;  // use prev pointer
 
-    // insert items between the left and right bounds
-    _extend_right_to_left(view, left, right, items);  // handles errors
-}
-
-
-/* Insert elements into a doubly-linked dictionary after a given sentinel value. */
-template <typename NodeType>
-inline void extendbefore_double(
-    DictView<NodeType>* view,
-    PyObject* sentinel,
-    PyObject* items
-) {
-    // search for sentinel
-    Mapped<NodeType>* right = view->search(sentinel);
-    if (right == NULL) {  // sentinel not found
-        PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
-        return;
-    }
-    Mapped<NodeType>* left = (Mapped<NodeType>*)view->prev;  // use prev pointer
-
-    // insert items between the left and right bounds
-    _extend_right_to_left(view, left, right, items);  // handles errors
+    // insert items before sentinel
+    _extend_right_to_left(view, (Node*)view->prev, right, items);
 }
 
 
@@ -227,8 +144,13 @@ inline void extendbefore_double(
 
 
 /* Insert items from the left node to the right node. */
-template <template <typename> class ViewType, typename T, typename U>
-void _extend_left_to_right(ViewType<T>* view, U* left, U* right, PyObject* items) {
+template <template <typename> class ViewType, typename NodeType, typename Node>
+void _extend_left_to_right(
+    ViewType<NodeType>* view,
+    Node* left,
+    Node* right,
+    PyObject* items
+) {
     // CPython API equivalent of `iter(items)`
     PyObject* iterator = PyObject_GetIter(items);
     if (iterator == NULL) {  // TypeError() during iter()
@@ -236,43 +158,29 @@ void _extend_left_to_right(ViewType<T>* view, U* left, U* right, PyObject* items
     }
 
     // CPython API equivalent of `for item in items:`
-    U* node;
-    U* prev = left;
-    PyObject* item;
+    Node* prev = left;
     while (true) {
-        item = PyIter_Next(iterator);  // next(iterator)
+        PyObject* item = PyIter_Next(iterator);  // next(iterator)
         if (item == NULL) {  // end of iterator or error
             break;
         }
 
         // allocate a new node
-        try {
-            node = view->allocate(item);
-        } catch (const std::bad_alloc& err) {  // memory error during node allocation
+        Node* node = view->node(item);
+        if (node == NULL) {
             Py_DECREF(item);
-            PyErr_NoMemory();
-            break;
-        }
-        if (node == NULL) {  // TypeError() during hash() / tuple unpacking
-            Py_DECREF(item);
-            break;
+            break;  // enter undo branch
         }
 
         // insert from left to right
-        try {
-            view->link(prev, node, right);
-        } catch (const std::bad_alloc& err) {  // memory error during resize()
-            Py_DECREF(item);
-            PyErr_NoMemory();
-            break;
-        }
+        view->link(prev, node, right);
         if (PyErr_Occurred()) {  // ValueError() item is already in list
             Py_DECREF(item);
-            break;
+            break;  // enter undo branch
         }
 
         // advance to next item
-        prev = node;
+        prev = node;  // left bound becomes new node
         Py_DECREF(item);
     }
 
@@ -290,8 +198,13 @@ void _extend_left_to_right(ViewType<T>* view, U* left, U* right, PyObject* items
 
 
 /* Insert items from the right node to the left node. */
-template <template <typename> class ViewType, typename T, typename U>
-void _extend_right_to_left(ViewType<T>* view, U* left, U* right, PyObject* items) {
+template <template <typename> class ViewType, typename NodeType, typename Node>
+void _extend_right_to_left(
+    ViewType<NodeType>* view,
+    Node* left,
+    Node* right,
+    PyObject* items
+) {
     // CPython API equivalent of `iter(items)`
     PyObject* iterator = PyObject_GetIter(items);
     if (iterator == NULL) {  // TypeError() during iter()
@@ -299,43 +212,29 @@ void _extend_right_to_left(ViewType<T>* view, U* left, U* right, PyObject* items
     }
 
     // CPython API equivalent of `for item in items:`
-    U* node;
-    U* prev = right;
-    PyObject* item;
+    Node* next = right;
     while (true) {
-        item = PyIter_Next(iterator);  // next(iterator)
+        PyObject* item = PyIter_Next(iterator);  // next(iterator)
         if (item == NULL) {  // end of iterator or error
             break;
         }
 
         // allocate a new node
-        try {
-            node = view->allocate(item);
-        } catch (const std::bad_alloc& err) {  // memory error during node allocation
-            Py_DECREF(item);
-            PyErr_NoMemory();
-            break;
-        }
+        Node* node = view->node(item);
         if (node == NULL) {  // TypeError() during hash() / tuple unpacking
             Py_DECREF(item);
-            break;
+            break;  // enter undo branch
         }
 
         // insert from right to left
-        try {
-            view->link(left, node, prev);
-        } catch (const std::bad_alloc& err) {  // memory error during resize()
-            Py_DECREF(item);
-            PyErr_NoMemory();
-            break;
-        }
+        view->link(left, node, next);
         if (PyErr_Occurred()) {  // ValueError() item is already in list
             Py_DECREF(item);
-            break;
+            break;  // enter undo branch
         }
 
         // advance to next item
-        prev = node;
+        next = node;  // right bound becomes new node
         Py_DECREF(item);
     }
 
@@ -353,31 +252,35 @@ void _extend_right_to_left(ViewType<T>* view, U* left, U* right, PyObject* items
 
 
 /* Rewind an `extend()`/`extendafter()` call in the event of an error. */
-template <template <typename> class ViewType, typename T, typename U>
-void _undo_left_to_right(ViewType<T>* view, U* left, U* right) {
-    // NOTE: we always assume left is not NULL.  right may be, however.
-    U* prev = left;
-
-    // free staged nodes
-    U* curr = (U*)prev->next;
-    U* next;
+template <template <typename> class ViewType, typename NodeType, typename Node>
+void _undo_left_to_right(
+    ViewType<NodeType>* view,
+    Node* left,
+    Node* right
+) {
+    Node* prev = left;  // NOTE: left must not be NULL, but right can be
+    Node* curr = (Node*)prev->next;
     while (curr != right) {
-        next = (U*)curr->next;
+        Node* next = (Node*)curr->next;
         view->unlink(prev, curr, next);
-        view->deallocate(curr);
+        view->recycle(curr);
         curr = next;
     }
 
     // join left and right
-    U::join(left, right);  // handles NULLs
+    Node::join(left, right);  // handles NULLs
 }
 
 
 /* Rewind an `extendleft()`/`extendbefore()` call in the event of an error. */
-template <template <typename> class ViewType, typename T, typename U>
-void _undo_right_to_left(ViewType<T>* view, U* left, U* right) {
-    // NOTE: we always assume right is not NULL.  left may be, however.
-    U* prev;
+template <template <typename> class ViewType, typename NodeType, typename Node>
+void _undo_right_to_left(
+    ViewType<NodeType>* view,
+    Node* left,
+    Node* right
+) {
+    // NOTE: right must not be NULL, but left can be
+    Node* prev;
     if (left == NULL) {
         prev = view->head;
     } else {
@@ -385,17 +288,16 @@ void _undo_right_to_left(ViewType<T>* view, U* left, U* right) {
     }
 
     // free staged nodes
-    U* curr = (U*)prev->next;
-    U* next;
+    Node* curr = (Node*)prev->next;
     while (curr != right) {
-        next = (U*)curr->next;
+        Node* next = (Node*)curr->next;
         view->unlink(prev, curr, next);
-        view->deallocate(curr);
+        view->recycle(curr);
         curr = next;
     }
 
     // join left and right
-    U::join(left, right);  // handles NULLs
+    Node::join(left, right);  // handles NULLs
 }
 
 

@@ -12,6 +12,24 @@
 // NOTE: we don't need to check for NULLs due to view->normalize_index()
 
 
+//////////////////////
+////    PUBLIC    ////
+//////////////////////
+
+
+/* Count the number of occurrences of an item within a singly-linked set or
+dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline size_t count_single(
+    ViewType<NodeType>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+) {
+    return _count_setlike(view, item, start, stop);
+}
+
+
 /* Count the number of occurrences of an item within a singly-linked list. */
 template <typename NodeType>
 inline size_t count_single(
@@ -20,11 +38,13 @@ inline size_t count_single(
     size_t start,
     size_t stop
 ) {
+    using Node = typename ListView<NodeType>::Node;
+
     // skip to start index
-    NodeType* curr = view->head;
+    Node* curr = view->head;
     size_t idx = 0;
     for (idx; idx < start; idx++) {
-        curr = curr->next;
+        curr = (Node*)curr->next;
     }
 
     // search until we hit stop index
@@ -40,7 +60,7 @@ inline size_t count_single(
         }
 
         // advance to next node
-        curr = curr->next;
+        curr = (Node*)curr->next;
         idx++;
     }
 
@@ -48,27 +68,16 @@ inline size_t count_single(
 }
 
 
-/* Count the number of occurrences of an item within a singly-linked set. */
-template <typename NodeType>
-inline size_t count_single(
-    SetView<NodeType>* view,
+/* Count the number of occurrences of an item within a doubly-linked set or
+dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline size_t count_double(
+    ViewType<NodeType>* view,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
-    return _count_set(view, view->head, item, start, stop);
-}
-
-
-/* Count the number of occurrences of an item within a singly-linked set. */
-template <typename NodeType>
-inline size_t count_single(
-    DictView<NodeType>* view,
-    PyObject* item,
-    size_t start,
-    size_t stop
-) {
-    return _count_set(view, view->head, item, start, stop);
+    return _count_setlike(view, item, start, stop);
 }
 
 
@@ -80,16 +89,18 @@ inline size_t count_double(
     size_t start,
     size_t stop
 ) {
+    using Node = typename ListView<NodeType>::Node;
+
     // if starting index is closer to head, use singly-linked version
     if (start <= view->size / 2) {
         return count_single(view, item, start, stop);
     }
 
     // else, start from tail
-    NodeType* curr = view->tail;
+    Node* curr = view->tail;
     size_t i = view->size - 1;
     for (i; i >= stop; i--) {  // skip to stop index
-        curr = curr->prev;
+        curr = (Node*)curr->prev;
     }
 
     // search until we hit start index
@@ -105,36 +116,12 @@ inline size_t count_double(
         }
 
         // advance to next node
-        curr = curr->prev;
+        curr = (Node*)curr->prev;
         i--;
     }
 
     // return final count
     return observed;
-}
-
-
-/* Count the number of occurrences of an item within a doubly-linked set. */
-template <typename NodeType>
-inline size_t count_double(
-    SetView<NodeType>* view,
-    PyObject* item,
-    size_t start,
-    size_t stop
-) {
-    return _count_set(view, view->head, item, start, stop);
-}
-
-
-/* Count the number of occurrences of a key within a doubly-linked dictionary. */
-template <typename NodeType>
-inline size_t count_double(
-    DictView<NodeType>* view,
-    PyObject* item,
-    size_t start,
-    size_t stop
-) {
-    return _count_set(view, view->head, item, start, stop);
 }
 
 
@@ -144,16 +131,17 @@ inline size_t count_double(
 
 
 /* Count the number of occurrences of an item within a set-like list. */
-template <template <typename> class ViewType, typename T, typename U>
-inline size_t _count_set(
-    ViewType<T>* view,
-    U* head,
+template <template <typename> class ViewType, typename NodeType>
+inline size_t _count_setlike(
+    ViewType<NodeType>* view,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
+    using Node = typename ViewType<NodeType>::Node;
+
     // check if item is contained in set
-    U* node = view->search(item);
+    Node* node = view->search(item);
     if (node == NULL) {
         return 0;
     }
@@ -164,10 +152,10 @@ inline size_t _count_set(
     }
 
     // else, find index of item
-    U* curr = view->head;
+    Node* curr = view->head;
     size_t idx = 0;
     while (curr != node && idx < stop) {
-        curr = (U*)curr->next;
+        curr = (Node*)curr->next;
         idx++;
     }
 
