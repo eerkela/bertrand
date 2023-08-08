@@ -6,13 +6,6 @@
 #include <Python.h>  // for CPython API
 
 
-// TODO: Keyed<> nodes call initialize() directly with a single PyObject* value
-// argument, but this fails for Mapped<>, which expects two arguments.
-
-
-// TODO: Keyed<> should probably just be placed here rather than in sort.h
-
-
 /////////////////////////
 ////    CONSTANTS    ////
 /////////////////////////
@@ -112,29 +105,11 @@ private:
 public:
 
     /* Allocate a new node for the specified value. */
-    inline static Derived* create(std::queue<Derived*>& freelist, PyObject* value) {
-        // get blank node
-        Derived* node = pop(freelist, value);
-        if (node == NULL) {  // malloc() failed
-            PyErr_NoMemory();  // set MemoryError
-            return NULL;
-        }
-
-        // initialize according to template parameter
-        node = Derived::init(node, value);
-        if (node == NULL) {  // error during init()
-            push(freelist, node);  // push allocated node to freelist
-        }
-
-        // return initialized node
-        return node;
-    }
-
-    /* Allocate a new node for the specified key-value pair. */
+    template <typename... Args>
     inline static Derived* create(
         std::queue<Derived*>& freelist,
         PyObject* value,
-        PyObject* mapped
+        Args... args
     ) {
         // get blank node
         Derived* node = pop(freelist, value);
@@ -143,9 +118,10 @@ public:
             return NULL;
         }
 
-        // initialize according to template parameter
-        node = Derived::init(node, value, mapped);  // 2-argument init()
-        if (node == NULL) {
+        // NOTE: we select one of the init() methods defined on the derived
+        // class, which can be arbitrarily specialized.
+        node = Derived::init(node, value, args...);  // variadic init()
+        if (node == NULL) {  // error during dispatched init()
             push(freelist, node);
         }
 
@@ -222,6 +198,7 @@ public:
 /////////////////////
 
 
+/* A singly-linked list node containing a single PyObject* reference. */
 struct SingleNode {
     PyObject* value;
     SingleNode* next;
@@ -288,6 +265,7 @@ struct SingleNode {
 };
 
 
+/* A doubly-linked list node containing a single PyObject* reference. */
 struct DoubleNode {
     PyObject* value;
     DoubleNode* next;
@@ -368,6 +346,8 @@ struct DoubleNode {
 };
 
 
+/* A node decorator that computes the hash of the Python object and caches it
+alongside the node's original fields. */
 template <typename NodeType>
 struct Hashed : public NodeType {
     Py_hash_t hash;
@@ -410,6 +390,8 @@ struct Hashed : public NodeType {
 };
 
 
+/* A special case of Hashed<NodeType> that adds a second PyObject* reference,
+allowing the list to act as a dictionary. */
 template <typename NodeType>
 struct Mapped : public NodeType {
     Py_hash_t hash;
@@ -486,6 +468,78 @@ struct Mapped : public NodeType {
     inline static void teardown(Mapped<NodeType>* node) {
         Py_DECREF(node->mapped);  // release mapped value
         NodeType::teardown(node);
+    }
+
+};
+
+
+/* A node decorator that computes a key function on a node's underlying value
+for use in sorting algorithms. */
+template <typename NodeType>
+struct Keyed {
+    NodeType* node;  // reference to decorated node
+    PyObject* value;  // precomputed key
+    Keyed<NodeType>* next;
+
+    /* Initialize a newly-allocated node. */
+    inline static Keyed<NodeType>* init(
+        Keyed<NodeType>* node,
+        PyObject* key_value,
+        NodeType* wrapped
+    ) {
+        // NOTE: We mask the node's original value with the precomputed key,
+        // allowing us to use the exact same algorithm in both cases.
+        node->value = key_value;
+        node->node = wrapped;
+        node->next = NULL;
+    }
+
+    // NOTE: we do not provide an init_copy() method because we're storing a
+    // direct reference to another node.  We shouldn't ever be copying a
+    // Keyed<> node anyways, since they're only meant to be used during sort().
+    // This omission just makes it explicit.
+
+    /* Tear down a node before freeing it. */
+    inline static void teardown(Keyed<NodeType>* node) {
+        Py_DECREF(node->value);  // release reference on precomputed key
+    }
+
+    /* Link the node to its neighbors to form a singly-linked list. */
+    inline static void link(
+        Keyed<NodeType>* prev,
+        Keyed<NodeType>* curr,
+        Keyed<NodeType>* next
+    ) {
+        if (prev != NULL) {
+            prev->next = curr;
+        }
+        curr->next = next;
+    }
+
+    /* Unlink the node from its neighbors. */
+    inline static void unlink(
+        Keyed<NodeType>* prev,
+        Keyed<NodeType>* curr,
+        Keyed<NodeType>* next
+    ) {
+        if (prev != NULL) {
+            prev->next = next;
+        }
+        curr->next = NULL;
+    }
+
+    /* Break a linked list at the specified nodes. */
+    inline static void split(Keyed<NodeType>* prev, Keyed<NodeType>* curr) {
+        if (prev != NULL) {
+            prev->next = NULL;
+        }
+    }
+
+    /* Join the list at the specified nodes. */
+    inline static void join(Keyed<NodeType>* prev, Keyed<NodeType>* curr) {
+        if (prev != NULL) {
+            prev->next = curr;
+        }
     }
 
 };

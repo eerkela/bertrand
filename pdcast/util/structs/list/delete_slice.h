@@ -10,9 +10,59 @@
 #include <get_slice.h>  // for _get_slice_direction()
 
 
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
+////////////////////////////
+////    DELETE INDEX    ////
+////////////////////////////
+
+
+/* Delete a node at a particular index of a singly-linked list, set, or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline void delete_index_single(ViewType<NodeType>* view, size_t index) {
+    using Node = typename ViewType<NodeType>::Node;
+
+    // skip to start index
+    Node* prev = NULL;
+    Node* curr = view->head;
+    for (size_t i = 0; i < index; i++) {
+        prev = curr;
+        curr = (Node*)curr->next;
+    }
+
+    // unlink and deallocate node
+    view->unlink(prev, curr, (Node*)curr->next);
+    view->recycle(curr);
+}
+
+
+/* Delete a node at a particular index of a doubly-linked list, set, or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+inline void delete_index_double(ViewType<NodeType>* view, size_t index) {
+    // if index is closer to head, use singly-linked version
+    if (index < view->size / 2) {
+        delete_index_single(view, index);
+        return;
+    }
+
+    // otherwise, iterate from tail
+    using Node = typename ViewType<NodeType>::Node;
+
+    // skip to start index
+    Node* next = NULL;
+    Node* curr = view->tail;
+    for (size_t i = view->size - 1; i > index; i--) {
+        next = curr;
+        curr = (Node*)curr->prev;
+    }
+
+    // unlink and deallocate node
+    view->unlink((Node*)curr->prev, curr, next);
+    view->recycle(curr);
+}
+
+
+////////////////////////////
+////    DELETE SLICE    ////
+////////////////////////////
 
 
 /* Delete a slice within a linked list, set, or dictionary. */
@@ -26,19 +76,14 @@ inline void delete_slice_single(
     std::pair<size_t, size_t> bounds;
     
     // determine direction of traversal to avoid backtracking
-    try {
-        bounds = _get_slice_direction_single(start, stop, step, view->size);
-    } catch (const std::invalid_argument&) {  // invalid slice
+    bounds = _get_slice_direction_single(start, stop, step, view->size);
+    if (PyErr_Occurred()) {
         return;  // Python does nothing here
     }
 
     // forward traversal
-    _drop_slice_forward(
-        view,
-        bounds.first,
-        bounds.second,
-        (size_t)abs(step)
-    );
+    size_t abs_step = (size_t)abs(step);
+    _drop_slice_forward(view, bounds.first, bounds.second, abs_step);
 }
 
 
@@ -53,45 +98,17 @@ inline void delete_slice_double(
     std::pair<size_t, size_t> bounds;
     
     // determine direction of traversal to avoid backtracking
-    try {
-        bounds = _get_slice_direction_double(start, stop, step, view->size);
-    } catch (const std::invalid_argument&) {  // invalid slice
+    bounds = _get_slice_direction_double(start, stop, step, view->size);
+    if (PyErr_Occurred()) {
         return;  // Python does nothing here
     }
 
-    // forward traversal
-    if (bounds.first <= bounds.second) {
-        _drop_slice_forward(
-            view,
-            bounds.first,
-            bounds.second,
-            (size_t)abs(step)
-        );
+    // iterate from closest end
+    size_t abs_step = (size_t)abs(step);
+    if (bounds.first <= bounds.second) {  // forward traversal
+        _drop_slice_forward(view, bounds.first, bounds.second, abs_step);
     } else {  // backward traversal
-        _drop_slice_backward(
-            view,
-            bounds.first,
-            bounds.second,
-            (size_t)abs(step)
-        );
-    }
-}
-
-
-/* Delete a node at a particular index of a singly-linked list, set, or dictionary. */
-template <template <typename> class ViewType, typename NodeType>
-inline void delete_index_single(ViewType<NodeType>* view, size_t index) {
-    _drop_index_forward(view, index);
-}
-
-
-/* Delete a node at a particular index of a doubly-linked list, set, or dictionary. */
-template <template <typename> class ViewType, typename NodeType>
-inline void delete_index_double(ViewType<NodeType>* view, size_t index) {
-    if (index < view->size / 2) {  // forward traversal
-        _drop_index_forward(view, index);
-    } else {  // backward traversal
-        _drop_index_backward(view, index);
+        _drop_slice_backward(view, bounds.first, bounds.second, abs_step);
     }
 }
 
@@ -176,44 +193,6 @@ inline void _drop_slice_backward(
             }
         }
     }
-}
-
-
-/* Remove the node at the given index by iterating forwards from the head. */
-template <template <typename> class ViewType, typename NodeType>
-inline void _drop_index_forward(ViewType<NodeType>* view, size_t index) {
-    using Node = typename ViewType<NodeType>::Node;
-
-    // skip to start index
-    Node* prev = NULL;
-    Node* curr = view->head;
-    for (size_t i = 0; i < index; i++) {
-        prev = curr;
-        curr = (Node*)curr->next;
-    }
-
-    // unlink and deallocate node
-    view->unlink(prev, curr, (Node*)curr->next);
-    view->recycle(curr);
-}
-
-
-/* Remove the node at the given index by iterating backwards from the tail. */
-template <template <typename> class ViewType, typename NodeType>
-inline void _drop_index_backward(ViewType<NodeType>* view, size_t index) {
-    using Node = typename ViewType<NodeType>::Node;
-
-    // skip to start index
-    Node* next = NULL;
-    Node* curr = view->tail;
-    for (size_t i = view->size - 1; i > index; i--) {
-        next = curr;
-        curr = (Node*)curr->prev;
-    }
-
-    // unlink and deallocate node
-    view->unlink((Node*)curr->prev, curr, next);
-    view->recycle(curr);
 }
 
 

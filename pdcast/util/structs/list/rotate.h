@@ -13,7 +13,7 @@
 
 /* Rotate a singly-linked list to the right by the specified number of steps. */
 template <template <typename> class ViewType, typename NodeType>
-inline void rotate_single(ViewType<NodeType>* view, ssize_t steps) {
+void rotate_single(ViewType<NodeType>* view, ssize_t steps) {
     // NOTE: due to the singly-linked nature of the list, rotating to the left
     // is O(1) while rotating to the right is O(n).  This is because we need to
     // iterate through the entire list in order to find the new tail.

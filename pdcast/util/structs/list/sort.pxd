@@ -1,7 +1,7 @@
 """Cython headers for pdcast/util/structs/list/sort.h"""
 from cpython.ref cimport PyObject
 
-from .node cimport ListView, SetView, DictView
+from .view cimport ListView, SetView, DictView
 
 cdef extern from "sort.h":
     void sort[T](ListView[T]* view, PyObject* key, bint reverse) except *

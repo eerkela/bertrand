@@ -350,7 +350,7 @@ public:
     }
 
     /* Search for a node in the hash map by value. */
-    T search(PyObject* value) {
+    T search(PyObject* value) const {
         // CPython API equivalent of hash(value)
         Py_hash_t hash = PyObject_Hash(value);
         if (hash == -1 && PyErr_Occurred()) {  // error occurred during hash()
@@ -385,7 +385,7 @@ public:
     }
 
     /* Search for a node directly. */
-    T search(T value) {
+    T search(T value) const {
         // reuse the node's pre-computed hash
         size_t index = value->hash % capacity;
         size_t step = prime - (value->hash % prime);
@@ -458,7 +458,7 @@ public:
     }
 
     /*Get the total amount of memory consumed by the hash table.*/
-    inline size_t nbytes() {
+    inline size_t nbytes() const {
         return sizeof(HashTable<T>);
     }
 
@@ -545,22 +545,24 @@ public:
     }
 
     /* Construct a new node for the list. */
-    inline Node* node(PyObject* value) {
-        return Allocater<Node>::create(freelist, value);
+    template <typename... Args>
+    inline Node* node(PyObject* value, Args... args) const {
+        // variadic dispatch to Node::init()
+        return Allocater<Node>::create(freelist, value, args...);
     }
 
     /* Release a node, pushing it into the freelist. */
-    inline void recycle(Node* node) {
+    inline void recycle(Node* node) const {
         Allocater<Node>::recycle(freelist, node);
     }
 
     /* Copy a node in the list. */
-    inline Node* copy(Node* node) {
+    inline Node* copy(Node* node) const {
         return Allocater<Node>::copy(freelist, node);
     }
 
     /* Make a shallow copy of the entire list. */
-    inline ListView<NodeType>* copy() {
+    inline ListView<NodeType>* copy() const {
         ListView<NodeType>* copied = new ListView<NodeType>();
         Node* old_node = head;
         Node* new_node = NULL;
@@ -635,7 +637,7 @@ public:
     the `std::queue` freelist.  The actual memory usage is always slightly
     higher than is reported here.
     */
-    inline size_t nbytes() {
+    inline size_t nbytes() const {
         size_t total = sizeof(ListView<NodeType>);  // ListView object
         total += size * sizeof(Node); // nodes
         total += sizeof(freelist);  // freelist queue
@@ -644,7 +646,7 @@ public:
     }
 
 private:
-    std::queue<Node*> freelist;
+    mutable std::queue<Node*> freelist;
 
     /* Allocate a new node for the item and append it to the list, discarding
     it in the event of an error. */
@@ -753,22 +755,24 @@ public:
     }
 
     /* Construct a new node for the list. */
-    inline Node* node(PyObject* value) {
-        return Allocater<Node>::create(freelist, value);
+    template <typename... Args>
+    inline Node* node(PyObject* value, Args... args) const {
+        // variadic dispatch to Node::init()
+        return Allocater<Node>::create(freelist, value, args...);
     }
 
     /* Release a node, pushing it into the freelist. */
-    inline void recycle(Node* node) {
+    inline void recycle(Node* node) const {
         Allocater<Node>::recycle(freelist, node);
     }
 
     /* Copy a node in the list. */
-    inline Node* copy(Node* node) {
+    inline Node* copy(Node* node) const {
         return Allocater<Node>::copy(freelist, node);
     }
 
     /* Make a shallow copy of the entire list. */
-    inline SetView<NodeType>* copy() {
+    inline SetView<NodeType>* copy() const {
         SetView<NodeType>* copied = new SetView<NodeType>();
         Node* old_node = head;
         Node* new_node = NULL;
@@ -857,12 +861,12 @@ public:
     }
 
     /* Search for a node by its value. */
-    inline Node* search(PyObject* value) {
+    inline Node* search(PyObject* value) const {
         return table->search(value);
     }
 
     /* Search for a node by its value. */
-    inline Node* search(Node* value) {
+    inline Node* search(Node* value) const {
         return table->search(value);
     }
 
@@ -876,7 +880,7 @@ public:
     NOTE: this is a lower bound and does not include the control structure of
     the `std::queue` freelist.  The actual memory usage is always slightly
     higher than is reported here. */
-    inline size_t nbytes() {
+    inline size_t nbytes() const {
         size_t total = sizeof(SetView<NodeType>);  // SetView object
         total += table->nbytes();  // hash table
         total += size * sizeof(Node);  // nodes
@@ -886,7 +890,7 @@ public:
     }
 
 private:
-    std::queue<Node*> freelist;
+    mutable std::queue<Node*> freelist;
     HashTable<Node*>* table;
 
     /* Allocate a new node for the item and append it to the list, discarding
@@ -1001,28 +1005,24 @@ public:
         // NOTE: head, tail, size, and queue are automatically destroyed
     }
 
-    /* Allocate a new node from a packed key-value pair. */
-    inline Node* node(PyObject* value) {
-        return Allocater<Node>::create(freelist, value);
-    }
-
-    /* Allocate a new node from an unpacked key-value pair. */
-    inline Node* node(PyObject* value, PyObject* mapped) {
-        return Allocater<Node>::create(freelist, value, mapped);
+    /* Construct a new node for the list. */
+    template <typename... Args>
+    inline Node* node(PyObject* value, Args... args) const {
+        return Allocater<Node>::create(freelist, value, args...);
     }
 
     /* Free a node. */
-    inline void recycle(Node* node) {
+    inline void recycle(Node* node) const {
         Allocater<Node>::recycle(freelist, node);
     }
 
     /* Copy a single node in the list. */
-    inline Node* copy(Node* node) {
+    inline Node* copy(Node* node) const {
         return Allocater<Node>::copy(freelist, node);
     }
 
     /* Make a shallow copy of the list. */
-    inline DictView<NodeType>* copy() {
+    inline DictView<NodeType>* copy() const {
         DictView<NodeType>* copied = new DictView<NodeType>();
         Node* old_node = head;
         Node* new_node = NULL;
@@ -1111,12 +1111,12 @@ public:
     }
 
     /* Search for a node by its value. */
-    inline Node* search(PyObject* value) {
+    inline Node* search(PyObject* value) const {
         return table->search(value);
     }
 
     /* Search for a node by its value. */
-    inline Node* search(Node* value) {
+    inline Node* search(Node* value) const {
         return table->search(value);
     }
 
@@ -1130,7 +1130,7 @@ public:
     NOTE: this is a lower bound and does not include the control structure of
     the `std::queue` freelist.  The actual memory usage is always slightly
     higher than is reported here. */
-    inline size_t nbytes() {
+    inline size_t nbytes() const {
         size_t total = sizeof(DictView<NodeType>);  // SetView object
         total += table->nbytes();  // hash table
         total += size * sizeof(Node);  // contents of dictionary
@@ -1140,7 +1140,7 @@ public:
     }
 
 private:
-    std::queue<Node*> freelist;
+    mutable std::queue<Node*> freelist;
     HashTable<Node*>* table;
 
     /* Allocate a new node for the item and append it to the list, discarding

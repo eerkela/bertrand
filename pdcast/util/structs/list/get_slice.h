@@ -1,7 +1,7 @@
 
 // include guard prevents multiple inclusion
-#ifndef SLICE_H
-#define SLICE_H
+#ifndef GET_SLICE_H
+#define GET_SLICE_H
 
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
@@ -127,9 +127,49 @@ inline std::pair<size_t, size_t> _get_slice_direction_double(
 }
 
 
-//////////////////////
-////    PUBLIC    ////
-//////////////////////
+/////////////////////////
+////    GET INDEX    ////
+/////////////////////////
+
+
+/* Get the value at a particular index of a singly-linked list. */
+template <template <typename> class ViewType, typename NodeType>
+inline PyObject* get_index_single(ViewType<NodeType>* view, size_t index) {
+    using Node = typename ViewType<NodeType>::Node;
+
+    // forward traversal
+    Node* curr = view->head;
+    for (size_t i = 0; i < index; i++) {
+        curr = (Node*)curr->next;
+    }
+    Py_INCREF(curr->value);  // caller takes ownership of reference
+    return curr->value;
+}
+
+
+/* Get the value at a particular index of a doubly-linked list. */
+template <template <typename> class ViewType, typename NodeType>
+inline PyObject* get_index_double(ViewType<NodeType>* view, size_t index) {
+    // if index is closer to head, use singly-linked version
+    if (index <= view->size / 2) {
+        return get_index_single(view, index);
+    }
+
+    using Node = typename ViewType<NodeType>::Node;
+
+    // backward traversal
+    Node* curr = view->tail;
+    for (size_t i = view->size - 1; i > index; i--) {
+        curr = (Node*)curr->prev;
+    }
+    Py_INCREF(curr->value);  // caller takes ownership of reference
+    return curr->value;
+}
+
+
+/////////////////////////
+////    GET SLICE    ////
+/////////////////////////
 
 
 /* Extract a slice from a singly-linked list. */
@@ -144,16 +184,14 @@ inline ViewType<NodeType> get_slice_single(
     std::pair<size_t, size_t> bounds;
 
     // determine direction of traversal to avoid backtracking
-    try {
-        bounds = _get_slice_direction_single(start, stop, step, view->size);
-    } catch (const std::invalid_argument&) {  // invalid slice
+    bounds = _get_slice_direction_single(start, stop, step, view->size);
+    if (PyErr_Occurred()) {
         return new ViewType<NodeType>();  // Python returns an empty list here
     }
 
     // forward traversal
-    return _get_slice_forward(
+    return _extract_slice_forward(
         view,
-        view->head,
         bounds.first,
         bounds.second,
         abs_step,
@@ -174,26 +212,23 @@ inline ViewType<NodeType> get_slice_double(
     std::pair<size_t, size_t> bounds;
 
     // determine direction of traversal to avoid backtracking
-    try {
-        bounds = _get_slice_direction_double(start, stop, step, view->size);
-    } catch (const std::invalid_argument&) {  // invalid slice
+    bounds = _get_slice_direction_double(start, stop, step, view->size);
+    if (PyErr_Occurred()) {
         return new ViewType<NodeType>();  // Python returns an empty list here
     }
 
     // extract slice
     if (bounds.first <= bounds.second) {  // forward traversal
-        return _get_slice_forward(
+        return _extract_slice_forward(
             view,
-            view->head,
             bounds.first,
             bounds.second,
             abs_step,
             (step < 0)
         );
     } else {  // backward traversal
-        return _get_slice_backward(
+        return _extract_slice_backward(
             view,
-            view->tail,
             bounds.first,
             bounds.second,
             abs_step,
@@ -203,81 +238,53 @@ inline ViewType<NodeType> get_slice_double(
 }
 
 
-/* Get the value at a particular index of a singly-linked list. */
-template <template <typename> class ViewType, typename NodeType>
-inline PyObject* get_index_single(ViewType<NodeType>* view, size_t index) {
-    // forward traversal
-    PyObject* value = _get_value_forward(view->head, index, view->size);
-    Py_INCREF(value);
-    return value;
-}
-
-
-/* Get the value at a particular index of a doubly-linked list. */
-template <template <typename> class ViewType, typename NodeType>
-inline PyObject* get_index_double(ViewType<NodeType>* view, size_t index) {
-    // if index is closer to head, use singly-linked version
-    if (index <= view->size / 2) {
-        return get_index_single(view, index);
-    }
-
-    // backward traversal
-    PyObject* value = _get_value_backward(view->head, index, view->size);
-    Py_INCREF(value);
-    return value;
-}
-
-
 ///////////////////////
 ////    PRIVATE    ////
 ///////////////////////
 
 
 /* Extract a slice from left to right. */
-template <template <typename> class ViewType, typename T, typename U>
-ViewType<T>* _get_slice_forward(
-    ViewType<T>* view,
-    U* head,
+template <template <typename> class ViewType, typename NodeType>
+ViewType<NodeType>* _extract_slice_forward(
+    ViewType<NodeType>* view,
     size_t begin,
     size_t end,
     size_t abs_step,
     bool reverse
 ) {
+    using Node = typename ViewType<NodeType>::Node;
+
     // create a new view to hold the slice
-    ViewType<T>* slice;
+    ViewType<NodeType>* slice;
     try {
-        slice = new ViewType<T>();
+        slice = new ViewType<NodeType>();
     } catch (const std::bad_alloc&) {  // MemoryError()
         PyErr_NoMemory();
         return NULL;
     }
 
     // get first node in slice by iterating from head
-    U* curr = head;
+    Node* curr = view->head;
     for (size_t i = 0; i < begin; i++) {
-        curr = (U*)curr->next;
+        curr = (Node*)curr->next;
     }
 
     // copy nodes from original view
-    U* copy;
     for (size_t i = begin; i <= end; i += abs_step) {
-        try {
-            copy = slice->copy(curr);
-        } catch (const std::bad_alloc&) {  // MemoryError()
-            PyErr_NoMemory();
+        Node* copy = slice->copy(curr);
+        if (copy == NULL) {  // error during copy()
             delete slice;
             return NULL;
         }
 
         // link to slice
-        try {
-            if (reverse) {  // reverse slice as we add nodes
-                slice->link(slice->tail, copy, NULL);
-            } else {
-                slice->link(NULL, copy, slice->head);
-            }
-        } catch (const std::bad_alloc&) {  // error during resize()
-            slice->deallocate(copy);
+        if (reverse) {  // reverse slice as we add nodes
+            slice->link(slice->tail, copy, NULL);
+        } else {
+            slice->link(NULL, copy, slice->head);
+        }
+        if (PyErr_Occurred()) {  // error during resize()
+            slice->recycle(copy);
             delete slice;
             return NULL;
         }
@@ -285,61 +292,59 @@ ViewType<T>* _get_slice_forward(
         // advance node according to step size
         if (i != end) {  // don't jump on final iteration
             for (size_t j = 0; j < abs_step; j++) {
-                curr = (U*)curr->next;
+                curr = (Node*)curr->next;
             }
         }
     }
 
-    // return new view
+    // caller takes ownership of slice
     return slice;
 }
 
 
 /* Extract a slice from right to left. */
-template <template <typename> class ViewType, typename T, typename U>
-ViewType<T>* _get_slice_backward(
-    ViewType<T>* view,
-    U* tail,
+template <template <typename> class ViewType, typename NodeType>
+ViewType<NodeType>* _extract_slice_backward(
+    ViewType<NodeType>* view,
     size_t begin,
     size_t end,
     size_t abs_step,
     bool reverse
 ) {
+    using Node = typename ViewType<NodeType>::Node;
+
     // create a new view to hold the slice
-    ViewType<T>* slice;
+    ViewType<NodeType>* slice;
     try {
-        slice = new ViewType<T>();
+        slice = new ViewType<NodeType>();
     } catch (const std::bad_alloc&) {  // MemoryError()
         PyErr_NoMemory();
         return NULL;
     }
 
     // get first node in slice by iterating from tail
-    U* curr = tail;
+    Node* curr = view->tail;
     for (size_t i = view->size - 1; i > begin; i--) {
-        curr = (U*)curr->prev;
+        curr = (Node*)curr->prev;
     }
 
     // copy nodes from original view
-    U* copy;
+    Node* copy;
     for (size_t i = begin; i >= end; i -= abs_step) {
-        try {
-            copy = slice->copy(curr);
-        } catch (const std::bad_alloc&) {  // MemoryError()
-            PyErr_NoMemory();
+        Node* copy = slice->copy(curr);
+        if (copy == NULL) {  // error during copy()
             delete slice;
             return NULL;
         }
 
         // link to slice
-        try {
-            if (reverse) {  // reverse slice as we add nodes
-                slice->link(slice->tail, copy, NULL);
-            } else {
-                slice->link(NULL, copy, slice->head);
-            }
-        } catch (const std::bad_alloc&) {  // error during resize()
-            slice->deallocate(copy);
+        if (reverse) {  // reverse slice as we add nodes
+            slice->link(slice->tail, copy, NULL);
+        } else {
+            slice->link(NULL, copy, slice->head);
+        }
+        if (PyErr_Occurred()) {  // error during resize()
+            slice->recycle(copy);
             delete slice;
             return NULL;
         }
@@ -347,36 +352,14 @@ ViewType<T>* _get_slice_backward(
         // advance node according to step size
         if (i != end) {  // don't jump on final iteration
             for (size_t j = 0; j < abs_step; j++) {
-                curr = (U*)curr->prev;
+                curr = (Node*)curr->prev;
             }
         }
     }
 
-    // return new view
+    // caller takes ownership of slice
     return slice;
 }
 
 
-/* Get a node at at a particular index of a list by iterating forward from the head. */
-template <typename U>
-inline PyObject* _get_value_forward(U* head, size_t index, size_t size) {
-    U* curr = head;
-    for (size_t i = 0; i < index; i++) {
-        curr = (U*)curr->next;
-    }
-    return curr->value;
-}
-
-
-/* Get a node at a particular index of a list by iterating backward from the tail. */
-template <typename U>
-inline PyObject* _get_value_backward(U* tail, size_t index, size_t size) {
-    U* curr = tail;
-    for (size_t i = size - 1; i > index; i--) {
-        curr = (U*)curr->prev;
-    }
-    return curr->value;
-}
-
-
-#endif // SLICE_H include guard
+#endif // GET_SLICE_H include guard

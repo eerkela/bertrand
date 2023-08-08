@@ -15,4 +15,5 @@ from .remove cimport *
 from .reverse cimport *
 from .rotate cimport *
 from .set_slice cimport *
+from .sort cimport *
 from .view cimport *
