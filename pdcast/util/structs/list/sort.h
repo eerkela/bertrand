@@ -10,9 +10,6 @@
 #include <view.h>  // for views
 
 
-// TODO: Seqfault when decoration causes error
-
-
 //////////////////////
 ////    PUBLIC    ////
 //////////////////////

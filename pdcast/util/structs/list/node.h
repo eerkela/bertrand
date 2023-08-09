@@ -13,7 +13,7 @@
 
 /* DEBUG=TRUE adds print statements for every node allocation/deallocation to
 help catch memory leaks. */
-const bool DEBUG = true;
+const bool DEBUG = false;
 
 
 /* Every View maintains a freelist of blank nodes that can be reused for fast
@@ -119,11 +119,8 @@ struct SingleNode {
     }
 
     /* Check that the wrapped value is an instance of the specialized class. */
-    inline static int typecheck(
-        SingleNode* node,
-        PyTypeObject* specialization
-    ) {
-        int comp = PyObject_IsInstance(node->value, (PyObject*)specialization);
+    inline static int typecheck(SingleNode* node, PyObject* specialization) {
+        int comp = PyObject_IsInstance(node->value, specialization);
         if (comp == 0) {  // value is not an instance of specialization
             PyErr_Format(
                 PyExc_TypeError,
@@ -219,11 +216,8 @@ struct DoubleNode {
     }
 
     /* Check that the wrapped value is an instance of the specialized class. */
-    inline static int typecheck(
-        DoubleNode* node,
-        PyTypeObject* specialization
-    ) {
-        int comp = PyObject_IsInstance(node->value, (PyObject*)specialization);
+    inline static int typecheck(DoubleNode* node, PyObject* specialization) {
+        int comp = PyObject_IsInstance(node->value, specialization);
         if (comp == 0) {  // value is not an instance of specialization
             PyErr_Format(
                 PyExc_TypeError,
@@ -438,11 +432,8 @@ struct Keyed {
     }
 
     /* Check that the wrapped value is an instance of the specialized class. */
-    inline static int typecheck(
-        Keyed<NodeType>* node,
-        PyTypeObject* specialization
-    ) {
-        int comp = PyObject_IsInstance(node->value, (PyObject*)specialization);
+    inline static int typecheck(Keyed<NodeType>* node, PyObject* specialization) {
+        int comp = PyObject_IsInstance(node->value, specialization);
         if (comp == 0) {  // value is not an instance of specialization
             PyErr_Format(
                 PyExc_TypeError,

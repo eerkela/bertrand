@@ -66,7 +66,40 @@ cdef class LinkedList:
         -----
         Creating a string representation of a list is O(n).
         """
-        return f"{type(self).__name__}([{', '.join(repr(item) for item in self)}])"
+        prefix = f"{type(self).__name__}"
+
+        # append specialization if given
+        if self.specialization is not None:
+            prefix += f"<{self.specialization.__name__}>"
+
+        # abbreviate in order to avoid spamming the console
+        if len(self) > 64:
+            contents = ", ".join(repr(item) for item in self[:32])
+            contents += ", ..., "
+            contents += ", ".join(repr(item) for item in self[-32:])
+        else:
+            contents = ", ".join(repr(item) for item in self)
+
+        return f"{prefix}([{contents}])"
+
+    def __class_getitem__(cls, key: Any) -> type:
+        # we return a decorated class that permanently specializes itself
+        # with the given type.
+        class TypedList(cls):
+
+            def __init__(
+                self,
+                items: Iterable[object] | None = None,
+                reverse: bool = False,
+            ) -> None:
+                """Disable the `spec` argument for TypedLists."""
+                super().__init__(items, reverse=reverse, spec=key)
+
+            def specialize(self, spec: object) -> None:
+                """Disable runtime specialization for TypedLists."""
+                raise TypeError(f"TypedList is already specialized to {repr(key)}")
+
+        return TypedList
 
 
 #############################
@@ -152,6 +185,7 @@ cdef class DoublyLinkedList(LinkedList):
         self,
         items: Iterable[object] | None = None,
         reverse: bool = False,
+        spec: object | None = None,
     ) -> None:
         """Initialize the list.
 
@@ -163,20 +197,58 @@ cdef class DoublyLinkedList(LinkedList):
             If ``True``, reverse the order of `items` during list construction.
             The default is ``False``.
         """
-        cdef PyObject* borrowed  # Cython requires PyObject* to be forward declared
+        cdef PyObject* items_
+        cdef PyObject* spec_
 
+        if spec is None:
+            spec_ = <PyObject*>NULL
+        else:
+            spec_ = <PyObject*>spec
+
+        # init empty
         if items is None:
             self.view = new ListView[DoubleNode]()
+            if spec is not None:
+                self.view.specialize(spec_)
+
+        # init from iterable
         else:
-            borrowed = <PyObject*>items
-            self.view = new ListView[DoubleNode](borrowed, reverse)
+            items_ = <PyObject*>items
+            if spec is not None:
+                self.view = new ListView[DoubleNode](items_, reverse, spec_)
+            else:
+                self.view = new ListView[DoubleNode](items_, reverse, spec_)
 
     def __dealloc__(self):
         del self.view
 
-    ########################
-    ####    CONCRETE    ####
-    ########################
+    ##############################
+    ####    LIST INTERFACE    ####
+    ##############################
+
+    @property
+    def specialization(self) -> Any:
+        """Return the type specialization enforced by the list.
+
+        Returns
+        -------
+        Any
+            The type specialization enforced by the list, or ``None`` if the
+            list is generic.
+
+        See Also
+        --------
+        DoublyLinkedList.specialize :
+            Specialize the list with a particular type.
+
+        Notes
+        -----
+        This is equivalent to the ``spec`` argument passed to the constructor
+        and/or :meth:`specialize() <DoublyLinkedList.specialize>` method.
+        """
+        cdef PyObject* spec = self.view.get_specialization()  # from view.h
+
+        return None if spec is NULL else <object>spec
 
     def append(self, item: object) -> None:
         """Add an item to the end of the list.
@@ -230,7 +302,11 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Inserts are O(n) on average.
         """
-        cdef size_t norm_index = normalize_index(<PyObject*>index, self.view.size, True)
+        cdef size_t norm_index = normalize_index(
+            <PyObject*>index,
+            self.view.size,
+            truncate=True
+        )
 
         insert(self.view, norm_index, <PyObject*>item)  # from insert.h
 
@@ -290,8 +366,16 @@ cdef class DoublyLinkedList(LinkedList):
         Indexing is O(n) on average.
         """
         # allow Python-style negative indexing + bounds checking
-        cdef size_t norm_start = normalize_index(<PyObject*>start, self.view.size, True)
-        cdef size_t norm_stop = normalize_index(<PyObject*>stop, self.view.size, True)
+        cdef size_t norm_start = normalize_index(
+            <PyObject*>start,
+            self.view.size,
+            truncate=True
+        )
+        cdef size_t norm_stop = normalize_index(
+            <PyObject*>stop,
+            self.view.size,
+            truncate=True
+        )
 
         # check that start and stop indices are consistent
         if norm_start > norm_stop:
@@ -318,8 +402,16 @@ cdef class DoublyLinkedList(LinkedList):
         Counting is O(n).
         """
         # allow Python-style negative indexing + bounds checking
-        cdef size_t norm_start = normalize_index(<PyObject*>start, self.view.size, True)
-        cdef size_t norm_stop = normalize_index(<PyObject*>stop, self.view.size, True)
+        cdef size_t norm_start = normalize_index(
+            <PyObject*>start,
+            self.view.size,
+            truncate=True
+        )
+        cdef size_t norm_stop = normalize_index(
+            <PyObject*>stop,
+            self.view.size,
+            truncate=True
+        )
 
         # check that start and stop indices are consistent
         if norm_start > norm_stop:
@@ -372,7 +464,11 @@ cdef class DoublyLinkedList(LinkedList):
         Pops are O(1) if ``index`` points to either of the list's ends, and
         O(n) otherwise.
         """
-        cdef size_t norm_index = normalize_index(<PyObject*>index, self.view.size, True)
+        cdef size_t norm_index = normalize_index(
+            <PyObject*>index,
+            self.view.size,
+            truncate=True
+        )
 
         return <object>pop(self.view, norm_index)  # from pop.h
 
@@ -514,6 +610,48 @@ cdef class DoublyLinkedList(LinkedList):
         """
         rotate(self.view, <Py_ssize_t>steps)  # from rotate.h
 
+    def specialize(self, object spec) -> None:
+        """Specialize the list with a particular type.
+
+        Parameters
+        ----------
+        spec : Any
+            The type to enforce for elements of the list.  This can be in any
+            format recognized by :func:`isinstance() <python:isinstance>`.  If
+            it is set to ``None``, then type checking will be disabled for the
+            list.
+
+        Raises
+        ------
+        TypeError
+            If the list contains elements that do not match the specified type.
+
+        Notes
+        -----
+        Specializing a list is O(n).
+
+        The way type specialization works is by adding an extra
+        :func:`isinstance() <python:isinstance>` check during node allocation.
+        If the type of the new item does not match the specialized type, then
+        an exception will be raised and the type will not be added to the list.
+        This ensures that the list is type-safe at all times.
+
+        If the list is not empty when this method is called, then the type of
+        each existing item will be checked against the new type.  If any of
+        them do not match, then the specialization will be aborted and an
+        error will be raised.  The list is not modified by this process.
+
+        .. note::
+
+            Typed lists are slightly slower at appending items due to the extra
+            type check.  Otherwise, they have identical performance to their
+            untyped brethren.
+        """
+        if spec is None:
+            self.view.specialize(<PyObject*>NULL)  # from view.h
+        else:
+            self.view.specialize(<PyObject*>spec)  # from view.h
+
     def nbytes(self) -> int:
         """The total memory consumption of the list in bytes.
 
@@ -623,12 +761,12 @@ cdef class DoublyLinkedList(LinkedList):
         if isinstance(key, slice):
             start, stop, step = key.indices(self.view.size)
             result = DoublyLinkedList.__new__(DoublyLinkedList)
-            result.view = get_slice_double(self.view, start, stop, step)
+            result.view = get_slice(self.view, start, stop, step)
             return result
 
         # index directly
-        index = normalize_index(<PyObject*>key, self.view.size, False)
-        new_ref = get_index_double(self.view, index)  # from index.h
+        index = normalize_index(<PyObject*>key, self.view.size, truncate=False)
+        new_ref = get_index(self.view, index)  # from index.h
         return <object>new_ref
 
     def __setitem__(self, key: int | slice, value: object | Iterable[object]) -> None:
@@ -674,12 +812,12 @@ cdef class DoublyLinkedList(LinkedList):
         # support slicing
         if isinstance(key, slice):
             start, stop, step = key.indices(self.view.size)
-            set_slice_double(self.view, start, stop, step, <PyObject*>value)
+            set_slice(self.view, start, stop, step, <PyObject*>value)
 
         # index directly
         else:
-            index = normalize_index(<PyObject*>key, self.view.size, False)
-            set_index_double(self.view, index, <PyObject*>value)
+            index = normalize_index(<PyObject*>key, self.view.size, truncate=False)
+            set_index(self.view, index, <PyObject*>value)
 
     def __delitem__(self, key: int | slice) -> None:
         """Delete an item or slice from the list.
@@ -718,12 +856,12 @@ cdef class DoublyLinkedList(LinkedList):
         # support slicing
         if isinstance(key, slice):
             start, stop, step = key.indices(self.view.size)
-            delete_slice_double(self.view, start, stop, step)
+            delete_slice(self.view, start, stop, step)
 
         # index directly
         else:
             index = normalize_index(<PyObject*>key, self.view.size, truncate=False)
-            delete_index_double(self.view, index)
+            delete_index(self.view, index)
 
     def __contains__(self, item: object) -> bool:
         """Check if the item is contained in the list.

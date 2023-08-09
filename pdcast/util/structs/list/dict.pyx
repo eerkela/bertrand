@@ -19,8 +19,16 @@ cdef object iterable = [3, 5, 2, 6, 1, 4]
 cdef ListView[DoubleNode]* view = new ListView[DoubleNode](<PyObject*>iterable, False)
 
 
-cdef object item = 3
-print(count(view, <PyObject*>item, 0, 6))
+cdef Py_ssize_t start, stop, step
+
+start = 3
+stop = 5
+step = 1
+print(view.normalize_slice(start, stop, step))
+
+
+# cdef object item = 3
+# print(count(view, <PyObject*>item, 0, 6))
 
 
 

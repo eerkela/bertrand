@@ -6,74 +6,50 @@ from .view cimport ListView, SetView, DictView
 
 cdef extern from "set_slice.h":
     # set_index()
-    void set_index_single(ListView[SingleNode]* view, size_t index, PyObject* item) except *
-    void set_index_single(SetView[SingleNode]* view, size_t index, PyObject* item) except *
-    void set_index_single(DictView[SingleNode]* view, size_t index, PyObject* item) except *
-    void set_index_single(ListView[DoubleNode]* view, size_t index, PyObject* item) except *
-    void set_index_single(SetView[DoubleNode]* view, size_t index, PyObject* item) except *
-    void set_index_single(DictView[DoubleNode]* view, size_t index, PyObject* item) except *
-    void set_index_double(ListView[DoubleNode]* view, size_t index, PyObject* item) except *
-    void set_index_double(SetView[DoubleNode]* view, size_t index, PyObject* item) except *
-    void set_index_double(DictView[DoubleNode]* view, size_t index, PyObject* item) except *
+    void set_index(ListView[SingleNode]* view, size_t index, PyObject* item) except *
+    void set_index(SetView[SingleNode]* view, size_t index, PyObject* item) except *
+    void set_index(DictView[SingleNode]* view, size_t index, PyObject* item) except *
+    void set_index(ListView[DoubleNode]* view, size_t index, PyObject* item) except *
+    void set_index(SetView[DoubleNode]* view, size_t index, PyObject* item) except *
+    void set_index(DictView[DoubleNode]* view, size_t index, PyObject* item) except *
 
     # set_slice()
-    void set_slice_single(
+    void set_slice(
         ListView[SingleNode]* view,
         Py_ssize_t start,
         Py_ssize_t stop,
         Py_ssize_t step,
         PyObject* items
     ) except *
-    void set_slice_single(
+    void set_slice(
         SetView[SingleNode]* view,
         Py_ssize_t start,
         Py_ssize_t stop,
         Py_ssize_t step,
         PyObject* items
     ) except *
-    void set_slice_single(
+    void set_slice(
         DictView[SingleNode]* view,
         Py_ssize_t start,
         Py_ssize_t stop,
         Py_ssize_t step,
         PyObject* items
     ) except *
-    void set_slice_single(
+    void set_slice(
         ListView[DoubleNode]* view,
         Py_ssize_t start,
         Py_ssize_t stop,
         Py_ssize_t step,
         PyObject* items
     ) except *
-    void set_slice_single(
+    void set_slice(
         SetView[DoubleNode]* view,
         Py_ssize_t start,
         Py_ssize_t stop,
         Py_ssize_t step,
         PyObject* items
     ) except *
-    void set_slice_single(
-        DictView[DoubleNode]* view,
-        Py_ssize_t start,
-        Py_ssize_t stop,
-        Py_ssize_t step,
-        PyObject* items
-    ) except *
-    void set_slice_double(
-        ListView[DoubleNode]* view,
-        Py_ssize_t start,
-        Py_ssize_t stop,
-        Py_ssize_t step,
-        PyObject* items
-    ) except *
-    void set_slice_double(
-        SetView[DoubleNode]* view,
-        Py_ssize_t start,
-        Py_ssize_t stop,
-        Py_ssize_t step,
-        PyObject* items
-    ) except *
-    void set_slice_double(
+    void set_slice(
         DictView[DoubleNode]* view,
         Py_ssize_t start,
         Py_ssize_t stop,

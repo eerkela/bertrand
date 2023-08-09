@@ -8,22 +8,43 @@
 #include <utility>  // for std::pair
 #include <node.h>  // for nodes
 #include <view.h>  // for views
-#include <get_slice.h>  // for _get_slice_direction()
 
 
-////////////////////////////
-////    DELETE INDEX    ////
-////////////////////////////
+//////////////////////
+////    PUBLIC    ////
+//////////////////////
 
 
 /* Delete a node at a particular index of a singly-linked list, set, or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
-inline void delete_index_single(ViewType<NodeType>* view, size_t index) {
+inline void delete_index(ViewType<NodeType>* view, size_t index) {
     using Node = typename ViewType<NodeType>::Node;
+    Node* prev;
+    Node* curr;
+    Node* next;
 
-    // skip to start index
-    Node* prev = NULL;
-    Node* curr = view->head;
+    // NOTE: if the index is closer to tail and the list is doubly-linked, we
+    // can iterate from the tail to save time.
+    if constexpr (is_doubly_linked<Node>::value) {
+        if (index > view->size / 2) {
+            // backward traversal
+            next = NULL;
+            curr = view->tail;
+            for (size_t i = view->size - 1; i > index; i--) {
+                next = curr;
+                curr = (Node*)curr->prev;
+            }
+
+            // unlink and deallocate node
+            view->unlink((Node*)curr->prev, curr, next);
+            view->recycle(curr);
+            return;
+        }
+    }
+
+    // forward traversal
+    prev = NULL;
+    curr = view->head;
     for (size_t i = 0; i < index; i++) {
         prev = curr;
         curr = (Node*)curr->next;
@@ -35,82 +56,34 @@ inline void delete_index_single(ViewType<NodeType>* view, size_t index) {
 }
 
 
-/* Delete a node at a particular index of a doubly-linked list, set, or dictionary. */
-template <template <typename> class ViewType, typename NodeType>
-inline void delete_index_double(ViewType<NodeType>* view, size_t index) {
-    // if index is closer to head, use singly-linked version
-    if (index < view->size / 2) {
-        delete_index_single(view, index);
-        return;
-    }
-
-    // otherwise, iterate from tail
-    using Node = typename ViewType<NodeType>::Node;
-
-    // skip to start index
-    Node* next = NULL;
-    Node* curr = view->tail;
-    for (size_t i = view->size - 1; i > index; i--) {
-        next = curr;
-        curr = (Node*)curr->prev;
-    }
-
-    // unlink and deallocate node
-    view->unlink((Node*)curr->prev, curr, next);
-    view->recycle(curr);
-}
-
-
-////////////////////////////
-////    DELETE SLICE    ////
-////////////////////////////
-
-
 /* Delete a slice within a linked list, set, or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
-inline void delete_slice_single(
+inline void delete_slice(
     ViewType<NodeType>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
     Py_ssize_t step
 ) {
-    std::pair<size_t, size_t> bounds;
-    
-    // determine direction of traversal to avoid backtracking
-    bounds = _get_slice_direction_single(start, stop, step, view->size);
+    size_t abs_step = (size_t)abs(step);
+
+    // get direction in which to traverse slice that minimizes iterations
+    std::pair<size_t, size_t> bounds = normalize_slice(view, start, stop, step);
     if (PyErr_Occurred()) {
-        return;  // Python does nothing here
+            return;  // Python does nothing here
+        }
+
+    if constexpr (is_doubly_linked<NodeType>::value) {
+        // NOTE: if the list is doubly-linked, then we can traverse from either
+        // end.  As such, we choose whichever end is closest to a slice
+        // boundary, which minimizes iterations.
+        if (bounds.first > bounds.second) {
+            _drop_slice_backward(view, bounds.first, bounds.second, abs_step);
+            return;
+        }
     }
 
     // forward traversal
-    size_t abs_step = (size_t)abs(step);
     _drop_slice_forward(view, bounds.first, bounds.second, abs_step);
-}
-
-
-/* Delete a slice within a linked list, set, or dictionary. */
-template <template <typename> class ViewType, typename NodeType>
-inline void delete_slice_double(
-    ViewType<NodeType>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step
-) {
-    std::pair<size_t, size_t> bounds;
-    
-    // determine direction of traversal to avoid backtracking
-    bounds = _get_slice_direction_double(start, stop, step, view->size);
-    if (PyErr_Occurred()) {
-        return;  // Python does nothing here
-    }
-
-    // iterate from closest end
-    size_t abs_step = (size_t)abs(step);
-    if (bounds.first <= bounds.second) {  // forward traversal
-        _drop_slice_forward(view, bounds.first, bounds.second, abs_step);
-    } else {  // backward traversal
-        _drop_slice_backward(view, bounds.first, bounds.second, abs_step);
-    }
 }
 
 
@@ -210,64 +183,43 @@ inline void _drop_slice_backward(
 // Maybe in a future release we won't have to do this:
 
 
-template void delete_index_single(ListView<SingleNode>* view, size_t index);
-template void delete_index_single(SetView<SingleNode>* view, size_t index);
-template void delete_index_single(DictView<SingleNode>* view, size_t index);
-template void delete_index_single(ListView<DoubleNode>* view, size_t index);
-template void delete_index_single(SetView<DoubleNode>* view, size_t index);
-template void delete_index_single(DictView<DoubleNode>* view, size_t index);
-template void delete_index_double(ListView<DoubleNode>* view, size_t index);
-template void delete_index_double(SetView<DoubleNode>* view, size_t index);
-template void delete_index_double(DictView<DoubleNode>* view, size_t index);
-template void delete_slice_single(
+template void delete_index(ListView<SingleNode>* view, size_t index);
+template void delete_index(SetView<SingleNode>* view, size_t index);
+template void delete_index(DictView<SingleNode>* view, size_t index);
+template void delete_index(ListView<DoubleNode>* view, size_t index);
+template void delete_index(SetView<DoubleNode>* view, size_t index);
+template void delete_index(DictView<DoubleNode>* view, size_t index);
+template void delete_slice(
     ListView<SingleNode>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
     Py_ssize_t step
 );
-template void delete_slice_single(
+template void delete_slice(
     SetView<SingleNode>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
     Py_ssize_t step
 );
-template void delete_slice_single(
+template void delete_slice(
     DictView<SingleNode>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
     Py_ssize_t step
 );
-template void delete_slice_single(
+template void delete_slice(
     ListView<DoubleNode>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
     Py_ssize_t step
 );
-template void delete_slice_single(
+template void delete_slice(
     SetView<DoubleNode>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
     Py_ssize_t step
 );
-template void delete_slice_single(
-    DictView<DoubleNode>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step
-);
-template void delete_slice_double(
-    ListView<DoubleNode>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step
-);
-template void delete_slice_double(
-    SetView<DoubleNode>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step
-);
-template void delete_slice_double(
+template void delete_slice(
     DictView<DoubleNode>* view,
     Py_ssize_t start,
     Py_ssize_t stop,

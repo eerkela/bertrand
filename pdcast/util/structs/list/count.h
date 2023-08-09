@@ -6,8 +6,7 @@
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
 #include <node.h>  // for nodes
-#include <view.h>  // for views
-#include <index.h>  // for MAX_SIZE_T
+#include <view.h>  // for views, MAX_SIZE_T
 
 
 //////////////////////

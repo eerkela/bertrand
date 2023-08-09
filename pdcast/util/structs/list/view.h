@@ -23,6 +23,11 @@
 /////////////////////////
 
 
+/* MAX_SIZE_T is used to signal errors in indexing operations where NULL would
+not be a valid return value, and 0 is likely to be valid output. */
+const size_t MAX_SIZE_T = std::numeric_limits<size_t>::max();
+
+
 /* Some Views use hash tables for fast access to each element. */
 const size_t INITIAL_TABLE_CAPACITY = 16;  // initial size of hash table
 const float MAX_LOAD_FACTOR = 0.7;  // grow if load factor exceeds threshold
@@ -61,6 +66,207 @@ const size_t PRIMES[29] = {  // prime numbers to use for double hashing
     3006477127,     // 4294967296 (2**32)       3221225473
     // NOTE: HASH PRIME is the first prime number larger than 0.7 * TABLE_SIZE
 };
+
+
+/////////////////////////////
+////    INDEX HELPERS    ////
+/////////////////////////////
+
+
+// NOTE: We may not always be able to efficiently iterate through a linked list
+// in reverse order.  As a result, we can't always guarantee that we iterate
+// over a slice in the same direction as the step size would normally indicate.
+// For instance, if we have a singly-linked list and we want to iterate over a
+// slice with a negative step size, we'll have to start from the head and
+// traverse over it backwards.  We can compensate for this by manually
+// reversing the slice again as we extract each node, which counteracts the
+// previous effect and produces the intended result.
+
+// In the case of doubly-linked lists, we can use this trick to minimize total
+// iterations and avoid backtracking.  Since we're free to start from either
+// end of the list, we always choose whichever one that is closer to a slice
+// boundary, and then reflect the results to match the intended output.
+
+// This changes the way we have to approach our slice indices.  Python slices
+// are normally asymmetric and half-open at the stop index, but this presents a
+// problem for our optimization strategy.  Because we might be iterating from
+// the stop index to the start index rather than the other way around, we need
+// to be able to treat the slice symmetrically in both directions.  To
+// facilitate this, we convert the slice into a closed interval by rounding the
+// stop index to the nearest included step.  This means that both the start and
+// stop indices are always included in the slice, allowing us to iterate
+// equally in either direction.
+
+
+/* A modulo operator (%) that matches Python's behavior with respect to
+negative numbers. */
+template <typename T>
+inline T py_modulo(T a, T b) {
+    // NOTE: Python's `%` operator is defined such that the result has the same
+    // sign as the divisor (b).  This differs from C, where the result has the
+    // same sign as the dividend (a).  This function uses the Python version.
+    return (a % b + b) % b;
+}
+
+
+/* Adjust the stop index in a slice to make it closed on both ends. */
+template <typename T>
+inline T closed_interval(T start, T stop, T step) {
+    T remainder = py_modulo((stop - start), step);
+    if (remainder == 0) {
+        return stop - step; // decrement stop by 1 full step
+    }
+    return stop - remainder;  // decrement stop to nearest multiple of step
+}
+
+
+/* Allow Python-style negative indexing with wraparound and boundschecking. */
+template <typename T>
+inline size_t normalize_index(T index, size_t size, bool truncate) {
+    // wraparound negative indices
+    if (index < 0) {
+        index += size;
+    }
+
+    // boundscheck
+    if (index < 0 || index >= (T)size) {
+        if (truncate) {
+            if (index < 0) {
+                return 0;
+            }
+            return size - 1;
+        }
+        PyErr_SetString(PyExc_IndexError, "list index out of range");
+        return MAX_SIZE_T;
+    }
+
+    // return as size_t
+    return (size_t)index;
+}
+
+
+/* A specialized version of normalize_index() for use with Python integers. */
+template <>
+inline size_t normalize_index(PyObject* index, size_t size, bool truncate) {
+    // NOTE: this is the same algorithm as _normalize_index() except that it
+    // accepts Python integers and handles the associated reference counting.
+    if (!PyLong_Check(index)) {
+        PyErr_SetString(PyExc_TypeError, "Index must be a Python integer");
+        return MAX_SIZE_T;
+    }
+
+    // comparisons are kept at the python level until we're ready to return
+    PyObject* py_zero = PyLong_FromSize_t(0);  // new reference
+    PyObject* py_size = PyLong_FromSize_t(size);  // new reference
+    int index_lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
+
+    // wraparound negative indices
+    bool release_index = false;
+    if (index_lt_zero) {
+        index = PyNumber_Add(index, py_size);  // new reference
+        index_lt_zero = PyObject_RichCompareBool(index, py_zero, Py_LT);
+        release_index = true;  // remember to free index later
+    }
+
+    // boundscheck
+    if (index_lt_zero || PyObject_RichCompareBool(index, py_size, Py_GE)) {
+        // clean up references
+        Py_DECREF(py_zero);
+        Py_DECREF(py_size);
+        if (release_index) {
+            Py_DECREF(index);
+        }
+
+        // apply truncation if directed
+        if (truncate) {
+            if (index_lt_zero) {
+                return 0;
+            }
+            return size - 1;
+        }
+
+        // raise IndexError
+        PyErr_SetString(PyExc_IndexError, "list index out of range");
+        return MAX_SIZE_T;
+    }
+
+    // value is good - convert to size_t
+    size_t result = PyLong_AsSize_t(index);
+
+    // clean up references
+    Py_DECREF(py_zero);
+    Py_DECREF(py_size);
+    if (release_index) {
+        Py_DECREF(index);
+    }
+
+    return result;
+}
+
+
+/* Get the direction in which to traverse a slice according to the structure of
+the list. */
+template <template <typename> class ViewType, typename NodeType>
+inline std::pair<size_t, size_t> normalize_slice(
+    ViewType<NodeType>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+) {
+    // NOTE: the input to this function is assumed to be the output of
+    // slice.indices(), which handles negative indices and 0 step size step
+    // size.  Its behavior is undefined if these conditions are not met.
+    using Node = typename ViewType<NodeType>::Node;
+
+    // convert from half-open to closed interval
+    stop = closed_interval(start, stop, step);
+
+    // check if slice is not a valid interval
+    if ((step > 0 && start > stop) || (step < 0 && start < stop)) {
+        // NOTE: even though the inputs are never negative, the result of
+        // closed_interval() may cause `stop` to run off the end of the list.
+        // This branch catches that case, in addition to unbounded slices.
+        PyErr_SetString(PyExc_ValueError, "invalid slice");
+        return std::make_pair(MAX_SIZE_T, MAX_SIZE_T);
+    }
+
+    // convert to size_t
+    size_t norm_start = (size_t)start;
+    size_t norm_stop = (size_t)stop;
+    size_t begin, end;
+
+    // get begin and end indices
+    if constexpr (is_doubly_linked<Node>::value) {
+        // NOTE: if the list is doubly-linked, then we can iterate from either
+        // direction.  We therefore choose the direction that's closest to its
+        // respective slice boundary.
+        if (
+            (step > 0 && norm_start <= view->size - norm_stop) ||
+            (step < 0 && view->size - norm_start <= norm_stop)
+        ) {  // iterate normally
+            begin = norm_start;
+            end = norm_stop;
+        } else {  // reverse
+            begin = norm_stop;
+            end = norm_start;
+        }
+    } else {
+        // NOTE: if the list is singly-linked, then we can only iterate in one
+        // direction, even when the step size is negative.
+        if (step > 0) {  // iterate normally
+            begin = norm_start;
+            end = norm_stop;
+        } else {  // reverse
+            begin = norm_stop;
+            end = norm_start;
+        }
+    }
+
+    // NOTE: comparing the begin and end indices reveals the direction of
+    // traversal for the slice.  If begin < end, then we iterate from the head
+    // of the list.  If begin > end, then we iterate from the tail.
+    return std::make_pair(begin, end);
+}
 
 
 /////////////////////
@@ -423,7 +629,7 @@ public:
     }
 
     /* Construct a ListView from an input iterable. */
-    ListView(PyObject* iterable, bool reverse = false) {
+    ListView(PyObject* iterable, bool reverse = false, PyObject* spec = NULL) {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
         if (iterator == NULL) {  // TypeError()
@@ -434,7 +640,10 @@ public:
         head = NULL;
         tail = NULL;
         size = 0;
-        specialization = NULL;
+        specialization = spec;
+        if (spec != NULL) {
+            Py_INCREF(spec);  // hold reference to specialization
+        }
 
         // unpack iterator into ListView
         PyObject* item;
@@ -478,8 +687,8 @@ public:
     inline Node* node(PyObject* value, Args... args) const {
         // variadic dispatch to Node::init()
         Node* result = Allocater<Node>::create(freelist, value, args...);
-        if (specialization != NULL) {
-            if (result != NULL && !Node::typecheck(result, specialization)) {
+        if (specialization != NULL && result != NULL) {
+            if (!Node::typecheck(result, specialization)) {
                 recycle(result);  // clean up allocated node
                 return NULL;  // propagate TypeError()
             }
@@ -569,26 +778,39 @@ public:
     }
 
     /* Enforce strict type checking for elements of this list. */
-    inline void specialize(PyTypeObject* spec) {
+    inline void specialize(PyObject* spec) {
         // check the contents of the list
-        Node* curr = head;
-        for (size_t i = 0; i < size; i++) {
-            if (!Node::typecheck(curr, spec)) {
-                return;  // propagate TypeError()
+        if (spec != NULL) {
+            Node* curr = head;
+            for (size_t i = 0; i < size; i++) {
+                if (!Node::typecheck(curr, spec)) {
+                    return;  // propagate TypeError()
+                }
+                curr = (Node*)curr->next;
             }
-            curr = (Node*)curr->next;
         }
 
-        // set specialization flag
+        // release old specialization
+        if (specialization != NULL) {
+            Py_DECREF(specialization);  // release old specialization
+        }
+
+        // set new specialization
         specialization = spec;  // NULL disables typechecking
+        if (spec != NULL) {
+            Py_INCREF(spec);  // hold reference
+        }
     }
 
-    /* Get the total memory consumed by the ListView (in bytes).
+    /* Get the type specialization for elements of this list. */
+    inline PyObject* get_specialization() const {
+        if (specialization != NULL) {
+            Py_INCREF(specialization);
+        }
+        return specialization;  // return a new reference or NULL
+    }
 
-    NOTE: this is a lower bound and does not include the control structure of
-    the `std::queue` freelist.  The actual memory usage is always slightly
-    higher than is reported here.
-    */
+    /* Get the total memory consumed by the list (in bytes). */
     inline size_t nbytes() const {
         size_t total = sizeof(ListView<NodeType>);  // ListView object
         total += size * sizeof(Node); // nodes
@@ -598,7 +820,7 @@ public:
     }
 
 private:
-    PyTypeObject* specialization;  // specialized type for elements of this list
+    PyObject* specialization;  // specialized type for elements of this list
     mutable std::queue<Node*> freelist;
 
     /* Allocate a new node for the item and append it to the list, discarding
@@ -647,7 +869,7 @@ public:
     }
 
     /* Construct a SetView from an input iterable. */
-    SetView(PyObject* iterable, bool reverse = false) {
+    SetView(PyObject* iterable, bool reverse = false, PyObject* spec = NULL) {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
         if (iterator == NULL) {
@@ -658,7 +880,10 @@ public:
         head = NULL;
         tail = NULL;
         size = 0;
-        specialization = NULL;
+        specialization = spec;
+        if (spec != NULL) {
+            Py_INCREF(spec);  // hold reference to specialization
+        }
 
         // unpack iterator into SetView
         PyObject* item;
@@ -702,8 +927,8 @@ public:
     inline Node* node(PyObject* value, Args... args) const {
         // variadic dispatch to Node::init()
         Node* result = Allocater<Node>::create(freelist, value, args...);
-        if (specialization != NULL) {
-            if (result != NULL && !Node::typecheck(result, specialization)) {
+        if (specialization != NULL && result != NULL) {
+            if (!Node::typecheck(result, specialization)) {
                 recycle(result);  // clean up allocated node
                 return NULL;  // propagate TypeError()
             }
@@ -812,18 +1037,36 @@ public:
     }
 
     /* Enforce strict type checking for elements of this list. */
-    inline void specialize(PyTypeObject* spec) {
+    inline void specialize(PyObject* spec) {
         // check the contents of the list
-        Node* curr = head;
-        for (size_t i = 0; i < size; i++) {
-            if (!Node::typecheck(curr, spec)) {
-                return;  // propagate TypeError()
+        if (spec != NULL) {
+            Node* curr = head;
+            for (size_t i = 0; i < size; i++) {
+                if (!Node::typecheck(curr, spec)) {
+                    return;  // propagate TypeError()
+                }
+                curr = (Node*)curr->next;
             }
-            curr = (Node*)curr->next;
         }
 
-        // set specialization flag
+        // release old specialization
+        if (specialization != NULL) {
+            Py_DECREF(specialization);  // release old specialization
+        }
+
+        // set new specialization
         specialization = spec;  // NULL disables typechecking
+        if (spec != NULL) {
+            Py_INCREF(spec);  // hold reference
+        }
+    }
+
+    /* Get the type specialization for elements of this list. */
+    inline PyObject* get_specialization() const {
+        if (specialization != NULL) {
+            Py_INCREF(specialization);
+        }
+        return specialization;  // return a new reference or NULL
     }
 
     /* Search for a node by its value. */
@@ -841,11 +1084,7 @@ public:
         table.clear_tombstones();
     }
 
-    /* Get the total amount of memory consumed by the hash table.
-
-    NOTE: this is a lower bound and does not include the control structure of
-    the `std::queue` freelist.  The actual memory usage is always slightly
-    higher than is reported here. */
+    /* Get the total amount of memory consumed by the set (in bytes).  */
     inline size_t nbytes() const {
         size_t total = sizeof(SetView<NodeType>);  // SetView object
         total += table.nbytes();  // hash table
@@ -856,7 +1095,7 @@ public:
     }
 
 private:
-    PyTypeObject* specialization;
+    PyObject* specialization;  // specialized type for elements of this list
     mutable std::queue<Node*> freelist;  // stack allocated
     HashTable<Node*> table;  // stack allocated
 
@@ -912,7 +1151,7 @@ public:
     }
 
     /* Construct a DictView from an input iterable. */
-    DictView(PyObject* iterable, bool reverse = false) {
+    DictView(PyObject* iterable, bool reverse = false, PyObject* spec = NULL) {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
         if (iterator == NULL) {
@@ -923,7 +1162,10 @@ public:
         head = NULL;
         tail = NULL;
         size = 0;
-        specialization = NULL;
+        specialization = spec;
+        if (spec != NULL) {
+            Py_INCREF(spec);  // hold reference to specialization
+        }
 
         // unpack iterator into DictView
         PyObject* item;
@@ -967,8 +1209,8 @@ public:
     inline Node* node(PyObject* value, Args... args) const {
         // variadic dispatch to Node::init()
         Node* result = Allocater<Node>::create(freelist, value, args...);
-        if (specialization != NULL) {
-            if (result != NULL && !Node::typecheck(result, specialization)) {
+        if (specialization != NULL && result != NULL) {
+            if (!Node::typecheck(result, specialization)) {
                 recycle(result);  // clean up allocated node
                 return NULL;  // propagate TypeError()
             }
@@ -1077,18 +1319,36 @@ public:
     }
 
     /* Enforce strict type checking for elements of this list. */
-    inline void specialize(PyTypeObject* spec) {
+    inline void specialize(PyObject* spec) {
         // check the contents of the list
-        Node* curr = head;
-        for (size_t i = 0; i < size; i++) {
-            if (!Node::typecheck(curr, spec)) {
-                return;  // propagate TypeError()
+        if (spec != NULL) {
+            Node* curr = head;
+            for (size_t i = 0; i < size; i++) {
+                if (!Node::typecheck(curr, spec)) {
+                    return;  // propagate TypeError()
+                }
+                curr = (Node*)curr->next;
             }
-            curr = (Node*)curr->next;
         }
 
-        // set specialization flag
+        // release old specialization
+        if (specialization != NULL) {
+            Py_DECREF(specialization);  // release old specialization
+        }
+
+        // set new specialization
         specialization = spec;  // NULL disables typechecking
+        if (spec != NULL) {
+            Py_INCREF(spec);  // hold reference
+        }
+    }
+
+    /* Get the type specialization for elements of this list. */
+    inline PyObject* get_specialization() const {
+        if (specialization != NULL) {
+            Py_INCREF(specialization);
+        }
+        return specialization;  // return a new reference or NULL
     }
 
     /* Search for a node by its value. */
@@ -1122,11 +1382,7 @@ public:
         table.clear_tombstones();
     }
 
-    /* Get the total amount of memory consumed by the hash table.
-
-    NOTE: this is a lower bound and does not include the control structure of
-    the `std::queue` freelist.  The actual memory usage is always slightly
-    higher than is reported here. */
+    /* Get the total amount of memory consumed by the dictionary (in bytes). */
     inline size_t nbytes() const {
         size_t total = sizeof(DictView<NodeType>);  // SetView object
         total += table.nbytes();  // hash table
@@ -1137,7 +1393,7 @@ public:
     }
 
 private:
-    PyTypeObject* specialization;
+    PyObject* specialization;  // specialized type for elements of this list
     mutable std::queue<Node*> freelist;  // stack allocated
     HashTable<Node*> table;  // stack allocated
 

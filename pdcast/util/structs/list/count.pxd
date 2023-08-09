@@ -2,8 +2,7 @@
 from cpython.ref cimport PyObject
 
 from .node cimport SingleNode, DoubleNode
-from .view cimport ListView, SetView, DictView
-from .index cimport MAX_SIZE_T
+from .view cimport MAX_SIZE_T, ListView, SetView, DictView
 
 cdef extern from "count.h":
     size_t count(

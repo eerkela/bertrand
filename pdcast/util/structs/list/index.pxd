@@ -2,17 +2,9 @@
 from cpython.ref cimport PyObject
 
 from .node cimport SingleNode, DoubleNode
-from .view cimport ListView, SetView, DictView
+from .view cimport MAX_SIZE_T, ListView, SetView, DictView
 
 cdef extern from "index.h":
-    # shared
-    const size_t MAX_SIZE_T
-    size_t normalize_index(
-        PyObject* index,
-        size_t size,
-        bint truncate
-    ) except? MAX_SIZE_T
-
     # singly-linked
     size_t index(
         ListView[SingleNode]* view,

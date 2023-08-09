@@ -8,7 +8,6 @@
 #include <utility>  // for std::pair
 #include <node.h>  // for nodes
 #include <view.h>  // for views
-#include <get_slice.h>  // for _get_slice_direction()
 
 
 // TODO: what about the case where the slice length does not match the sequence
@@ -66,15 +65,23 @@
 // source of bugs, so we should be careful to test these cases thoroughly.
 
 
-/////////////////////////
-////    SET INDEX    ////
-/////////////////////////
+//////////////////////
+////    PUBLIC    ////
+//////////////////////
+
+
+// NOTE: because ListViews do not use a hash table to keep track of nodes,
+// we are free to overwrite the existing values directly, rather than
+// allocating a new node and linking them to the list.
 
 
 /* Set the value at a particular index of a singly-linked list, set, or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
-void set_index_single(ViewType<NodeType>* view, size_t index, PyObject* item) {
+void set_index(ViewType<NodeType>* view, size_t index, PyObject* item) {
     using Node = typename ViewType<NodeType>::Node;
+    Node* prev;
+    Node* curr;
+    Node* next;
 
     // allocate a new node
     Node* new_node = view->node(item);
@@ -82,14 +89,42 @@ void set_index_single(ViewType<NodeType>* view, size_t index, PyObject* item) {
         return;
     }
 
+    // get neighboring nodes
+    if constexpr (is_doubly_linked<Node>::value) {
+        // NOTE: if the list is doubly-linked, then we can iterate from either
+        // end to find the preceding node.
+        if (index > view->size / 2) {  // backward traversal
+            next = NULL;
+            curr = view->tail;
+            for (size_t i = view->size - 1; i > index; i--) {
+                next = curr;
+                curr = (Node*)curr->prev;
+            }
+            prev = (Node*)curr->prev;
+
+            // replace node
+            view->unlink(prev, curr, next);
+            view->link(prev, new_node, next);
+            if (PyErr_Occurred()) {  // error during link()
+                view->link(prev, curr, next);  // restore list to original state
+                view->recycle(new_node);  // free new node
+                return;  // propagate error
+            }
+
+            // free old node
+            view->recycle(curr);
+            return;
+        }
+    }
+
     // iterate forwards from head
-    Node* prev = NULL;
-    Node* curr = view->head;
+    prev = NULL;
+    curr = view->head;
     for (size_t i = 0; i < index; i++) {
         prev = curr;
         curr = (Node*)curr->next;
     }
-    Node* next = (Node*)curr->next;
+    next = (Node*)curr->next;
 
     // replace node
     view->unlink(prev, curr, next);
@@ -107,106 +142,46 @@ void set_index_single(ViewType<NodeType>* view, size_t index, PyObject* item) {
 
 /* Overwrite the value at a particular index of a singly-linked list. */
 template <typename NodeType>
-void set_index_single(ListView<NodeType>* view, size_t index, PyObject* item) {
+void set_index(ListView<NodeType>* view, size_t index, PyObject* item) {
     using Node = typename ListView<NodeType>::Node;
+    Node* curr;
+    PyObject* old_value;
 
-    // NOTE: because ListViews do not use a hash table to keep track of nodes,
-    // we are free to overwrite the existing value directly, rather than
-    // allocating a new node and linking it to the list.
+    // NOTE: if the list is doubly linked and the index is closer to the tail,
+    // we can iterate from the tail to save time.
+    if constexpr (is_doubly_linked<Node>::value) {
+        if (index > view->size / 2) {  // backward traversal
+            curr = view->tail;
+            for (size_t i = view->size - 1; i > index; i--) {
+                curr = (Node*)curr->prev;
+            }
 
-    // iterate forwards from head
-    Node* curr = view->head;
+            // overwrite value (unrecoverable)
+            old_value = curr->value;
+            Py_INCREF(item);
+            curr->value = item;
+            Py_DECREF(old_value);
+            return;
+        }
+    }
+
+    // forward traversal
+    curr = view->head;
     for (size_t i = 0; i < index; i++) {
         curr = (Node*)curr->next;
     }
 
-    // overwrite value
-    PyObject* old = curr->value;
+    // overwrite value (unrecoverable)
+    old_value = curr->value;
     Py_INCREF(item);
     curr->value = item;
-    Py_DECREF(old);
+    Py_DECREF(old_value);
 }
-
-
-/* Set the value at a particular index of a doubly-linked list, set, or dictionary. */
-template <template <typename> class ViewType, typename NodeType>
-void set_index_double(ViewType<NodeType>* view, size_t index, PyObject* item) {
-    // if index is closer to head, use singly-linked version
-    if (index <= view->size / 2) {
-        set_index_single(view, index, item);
-        return;
-    }
-
-    // otherwise, iterate backwards from tail
-    using Node = typename ViewType<NodeType>::Node;
-
-    // allocate a new node
-    Node* new_node = view->node(item);
-    if (new_node == NULL) {
-        return;
-    }
-
-    // get neighboring nodes
-    Node* next = NULL;
-    Node* curr = view->tail;
-    for (size_t i = view->size - 1; i > index; i--) {
-        next = curr;
-        curr = (Node*)curr->prev;
-    }
-    Node* prev = (Node*)curr->prev;
-
-    // replace node
-    view->unlink(prev, curr, next);
-    view->link(prev, new_node, next);
-    if (PyErr_Occurred()) {  // error during link()
-        view->link(prev, curr, next);  // restore list to original state
-        view->recycle(new_node);  // free new node
-        return;  // propagate error
-    }
-
-    // free old node
-    view->recycle(curr);
-}
-
-
-/* Overwrite the value at a particular index of a doubly-linked list. */
-template <typename NodeType>
-void set_index_double(ListView<NodeType>* view, size_t index, PyObject* item) {
-    // if index is closer to head, use singly-linked version
-    if (index <= view->size / 2) {
-        set_index_single(view, index, item);
-        return;
-    }
-
-    // otherwise, iterate backwards from tail
-    using Node = typename ListView<NodeType>::Node;
-
-    // NOTE: because ListViews do not use a hash table to keep track of nodes,
-    // we are free to overwrite the existing value directly, rather than
-    // allocating a new node and linking it to the list.
-
-    // get existing node
-    Node* curr = view->tail;
-    for (size_t i = view->size - 1; i > index; i--) {
-        curr = (Node*)curr->prev;
-    }
-
-    // overwrite value
-    PyObject* old = curr->value;
-    Py_INCREF(item);
-    curr->value = item;
-    Py_DECREF(old);
-}
-
-
-/////////////////////////
-////    SET SLICE    ////
-/////////////////////////
 
 
 /* Set a slice within a singly-linked list, set, or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
-void set_slice_single(
+void set_slice(
     ViewType<NodeType>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
@@ -214,7 +189,6 @@ void set_slice_single(
     PyObject* items
 ) {
     size_t abs_step = (size_t)abs(step);
-    std::pair<size_t, size_t> bounds;
 
     // unpack iterable into a reversible sequence
     PyObject* sequence = PySequence_Fast(items, "can only assign an iterable");
@@ -224,17 +198,18 @@ void set_slice_single(
     Py_ssize_t seq_length = PySequence_Fast_GET_SIZE(sequence);
 
     // determine direction of traversal to avoid backtracking
-    bounds = _get_slice_direction_single(start, stop, step, view->size);
+    std::pair<size_t, size_t> bounds = normalize_slice(view, start, stop, step);
     if (PyErr_Occurred()) {  // invalid slice
         if (step == 1) {  // Python allows inserting slices in this case only
-            _replace_slice_forward(
+            _replace_slice(
                 view,
                 (size_t)start,  // start inserting nodes at start index
-                0,              // slice is of length 0
-                seq_length,     // insert all items from sequence
+                (size_t)stop,   // determines whether to traverse from head/tail
                 abs_step,
+                0,              // slice length
+                seq_length,     // insert all items from sequence
                 sequence,
-                (step < 0)
+                (start > stop)  // reverse if traversing from tail
             );
         } else {
             PyErr_Format(
@@ -259,15 +234,16 @@ void set_slice_single(
         return;
     }
 
-    // replace existing nodes with new ones and rewind if an error occurs
-    _replace_slice_forward(
+    // replace nodes in slice and rewind if an error occurs
+    _replace_slice(
         view,
         bounds.first,
+        bounds.second,
+        abs_step,
         slice_length,
         seq_length,
-        abs_step,
         sequence,
-        (step < 0)
+        (step < 0) ^ (bounds.first > bounds.second)
     );
 
     // release sequence
@@ -277,7 +253,7 @@ void set_slice_single(
 
 /* Overwrite a slice within a singly-linked list. */
 template <typename NodeType>
-void set_slice_single(
+void set_slice(
     ListView<NodeType>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
@@ -285,7 +261,6 @@ void set_slice_single(
     PyObject* items
 ) {
     size_t abs_step = (size_t)abs(step);
-    std::pair<size_t, size_t> bounds;
 
     // unpack iterable into a reversible sequence
     PyObject* sequence = PySequence_Fast(items, "can only assign an iterable");
@@ -295,17 +270,18 @@ void set_slice_single(
     Py_ssize_t seq_length = PySequence_Fast_GET_SIZE(sequence);
 
     // determine direction of traversal to avoid backtracking
-    bounds = _get_slice_direction_single(start, stop, step, view->size);
+    std::pair<size_t, size_t> bounds = normalize_slice(view, start, stop, step);
     if (PyErr_Occurred()) {  // invalid slice
         if (step == 1) {  // Python allows inserting slices in this case only
-            _replace_slice_forward(
+            _replace_slice(
                 view,
                 (size_t)start,  // start inserting nodes at start index
-                0,              // slice is of length 0
-                seq_length,     // insert all items from sequence
+                (size_t)stop,   // determines whether to traverse from head/tail
                 abs_step,
+                0,              // slice length
+                seq_length,     // insert all items from sequence
                 sequence,
-                (step < 0)
+                (start > stop)  // reverse if traversing from tail
             );
         } else {
             PyErr_Format(
@@ -322,14 +298,15 @@ void set_slice_single(
     slice_length = (abs(slice_length) / (Py_ssize_t)abs_step) + 1;
     if (slice_length != seq_length) {
         if (step == 1) {  // Python allows inserting slices in this case only
-            _replace_slice_forward(
+            _replace_slice(
                 view,
-                bounds.first,
-                slice_length,  // replace all nodes in slice
-                seq_length,    // continue inserting the remaining items
+                (size_t)start,  // start inserting nodes at start index
+                (size_t)stop,   // determines whether to traverse from head/tail
                 abs_step,
+                0,              // slice length
+                seq_length,     // insert all items from sequence
                 sequence,
-                (step < 0)
+                (start > stop)  // reverse if traversing from tail
             );
         } else {
             PyErr_Format(
@@ -342,12 +319,11 @@ void set_slice_single(
         return;
     }
 
-    // NOTE: Since ListViews don't employ a hash table, we are free to
-    // directly overwrite the values in the slice.  This avoids the need to
-    // allocate new nodes and link them to the list manually.
-    _overwrite_slice_forward(
+    // overwrite existing values (unrecoverable)
+    _overwrite_slice(
         view,
         bounds.first,
+        bounds.second,
         seq_length,
         abs_step,
         sequence,
@@ -359,223 +335,97 @@ void set_slice_single(
 }
 
 
-/* Set a slice within a doubly-linked list, set, or dictionary. */
-template <template <typename> class ViewType, typename NodeType>
-void set_slice_double(
-    ViewType<NodeType>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step,
-    PyObject* items
-) {
-    size_t abs_step = (size_t)abs(step);
-    std::pair<size_t, size_t> bounds;
-
-    // unpack iterable into a reversible sequence
-    PyObject* sequence = PySequence_Fast(items, "can only assign an iterable");
-    if (sequence == NULL) {  // TypeError(): items do not support sequence protocol
-        return;
-    }
-    Py_ssize_t seq_length = PySequence_Fast_GET_SIZE(sequence);
-
-    // determine direction of traversal to avoid backtracking
-    bounds = _get_slice_direction_single(start, stop, step, view->size);
-    if (PyErr_Occurred()) {
-        if (step == 1) {  // Python allows inserting slices in this case only
-            if ((size_t)start <= view->size / 2) {  // closer to head
-                _replace_slice_forward(
-                    view,
-                    (size_t)start,  // start inserting nodes at start index
-                    0,              // slice is of length 0
-                    seq_length,     // insert all items from sequence
-                    abs_step,
-                    sequence,
-                    (step < 0)
-                );
-            } else {  // closer to tail
-                _replace_slice_backward(
-                    view,
-                    (size_t)start,  // start inserting nodes at start index
-                    0,              // slice is of length 0
-                    seq_length,     // insert all items from sequence
-                    abs_step,
-                    sequence,
-                    (step > 0)
-                );
-            }
-        } else {
-            PyErr_Format(
-                PyExc_ValueError,
-                "attempt to assign sequence of size %zd to extended slice of size 0",
-                seq_length
-            );
-        }
-        return;
-    }
-
-    // ensure that the slice is the same length as the sequence
-    Py_ssize_t slice_length = (Py_ssize_t)bounds.second - (Py_ssize_t)bounds.first;
-    slice_length = (abs(slice_length) / (Py_ssize_t)abs_step) + 1;
-    if (step != 1 && slice_length != seq_length) {  // allow mismatch if step == 1
-        PyErr_Format(
-            PyExc_ValueError,
-            "attempt to assign sequence of size %zd to extended slice of size %zd",
-            seq_length,
-            slice_length
-        );
-        return;
-    }
-
-    // replace existing nodes with new ones and rewind if an error occurs
-    if (bounds.first <= bounds.second) {  // forward traversal
-        _replace_slice_forward(
-            view,
-            bounds.first,
-            slice_length,
-            seq_length,
-            abs_step,
-            sequence,
-            (step < 0)
-        );
-    } else {  // backward traversal
-        _replace_slice_backward(
-            view,
-            bounds.first,
-            slice_length,
-            seq_length,
-            abs_step,
-            sequence,
-            (step > 0)
-        );
-    }
-
-    // release sequence
-    Py_DECREF(sequence);
-}
-
-
-/* Overwrite a slice within a doubly-linked list. */
-template <typename NodeType>
-void set_slice_double(
-    ListView<NodeType>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step,
-    PyObject* items
-) {
-    size_t abs_step = (size_t)abs(step);
-    std::pair<size_t, size_t> bounds;
-
-    // unpack iterable into a reversible sequence
-    PyObject* sequence = PySequence_Fast(items, "can only assign an iterable");
-    if (sequence == NULL) {  // TypeError(): items do not support sequence protocol
-        return;
-    }
-    Py_ssize_t seq_length = PySequence_Fast_GET_SIZE(sequence);
-
-    // determine direction of traversal to avoid backtracking
-    bounds = _get_slice_direction_double(start, stop, step, view->size);
-    if (PyErr_Occurred()) {  // invalid slice
-        if (step == 1) {  // Python allows inserting slices in this case only
-            if ((size_t)start <= view->size / 2) {  // closer to head
-                _replace_slice_forward(
-                    view,
-                    (size_t)start,  // start inserting nodes at start index
-                    0,              // slice is of length 0
-                    seq_length,     // insert all items from sequence
-                    abs_step,
-                    sequence,
-                    (step < 0)
-                );
-            } else {  // closer to tail
-                _replace_slice_backward(
-                    view,
-                    (size_t)start,  // start inserting nodes at start index
-                    0,              // slice is of length 0
-                    seq_length,     // insert all items from sequence
-                    abs_step,
-                    sequence,
-                    (step > 0)
-                );
-            }
-        } else {
-            PyErr_Format(
-                PyExc_ValueError,
-                "attempt to assign sequence of size %zd to extended slice of size 0",
-                seq_length
-            );
-        }
-        return;
-    }
-
-    // ensure that the slice is the same length as the sequence
-    Py_ssize_t slice_length = (Py_ssize_t)bounds.second - (Py_ssize_t)bounds.first;
-    slice_length = (abs(slice_length) / (Py_ssize_t)abs_step) + 1;
-    if (slice_length != seq_length) {
-        if (step == 1) {  // Python allows inserting slices in this case only
-            if (bounds.first <= bounds.second) {  // closer to head
-                _replace_slice_forward(
-                    view,
-                    bounds.first,
-                    slice_length,   // replace all nodes in slice
-                    seq_length,     // continue inserting the remaining items
-                    abs_step,
-                    sequence,
-                    (step < 0)
-                );
-            } else {  // closer to tail
-                _replace_slice_backward(
-                    view,
-                    bounds.first,
-                    slice_length,   // replace all nodes in slice
-                    seq_length,     // continue inserting the remaining items
-                    abs_step,
-                    sequence,
-                    (step > 0)
-                );
-            }
-        } else {
-            PyErr_Format(
-                PyExc_ValueError,
-                "attempt to assign sequence of size %zd to extended slice of size %zd",
-                seq_length,
-                slice_length
-            );
-        }
-        return;
-    }
-
-    // NOTE: Since ListViews don't employ a hash table, we are free to
-    // directly overwrite the values in the slice.  This avoids the need to
-    // allocate new nodes and link them to the list manually.
-    if (bounds.first <= bounds.second) {  // forward traversal
-        _overwrite_slice_forward(
-            view,
-            bounds.first,
-            seq_length,
-            abs_step,
-            sequence,
-            (step < 0)
-        );
-    } else {  // backward traversal
-        _overwrite_slice_backward(
-            view,
-            bounds.first,
-            seq_length,
-            abs_step,
-            sequence,
-            (step > 0)
-        );
-    }
-
-    // release sequence
-    Py_DECREF(sequence);
-}
-
-
 ///////////////////////
 ////    PRIVATE    ////
 ///////////////////////
+
+
+/* Overwrite a slice in a linked list, set, or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+void _overwrite_slice(
+    ViewType<NodeType>* view,
+    size_t begin,
+    size_t end,
+    size_t abs_step,
+    Py_ssize_t slice_length,
+    PyObject* sequence,
+    bool reverse
+) {
+    using Node = typename ViewType<NodeType>::Node;
+
+    // overwrite existing nodes with new ones and rewind if an error occurs
+    if constexpr (is_doubly_linked<Node>::value) {
+        if (begin > end) {  // backward traversal
+            _overwrite_slice_backward(
+                view,
+                begin,
+                slice_length,
+                abs_step,
+                sequence,
+                reverse
+            );
+            return;
+        }
+    }
+
+    // forward traversal
+    _overwrite_slice_forward(
+        view,
+        begin,
+        slice_length,
+        abs_step,
+        sequence,
+        reverse
+    );
+}
+
+
+/* Replace a slice in a linked list, set, or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+void _replace_slice(
+    ViewType<NodeType>* view,
+    size_t begin,
+    size_t end,
+    size_t abs_step,
+    Py_ssize_t slice_length,
+    Py_ssize_t seq_length,
+    PyObject* sequence,
+    bool reverse
+) {
+    using Node = typename ViewType<NodeType>::Node;
+
+    // replace existing nodes with new ones and rewind if an error occurs
+    if constexpr (is_doubly_linked<Node>::value) {
+        if (begin > end) {  // backward traversal
+            _replace_slice_backward(
+                view,
+                begin,
+                slice_length,
+                seq_length,
+                abs_step,  // TODO: move this
+                sequence,
+                reverse
+            );
+            return;
+        }
+    }
+
+    // forward traversal
+    _replace_slice_forward(
+        view,
+        begin,
+        slice_length,
+        seq_length,
+        abs_step,  // TODO: move this
+        sequence,
+        reverse
+    );
+}
+
+
+/////////////////////////
+////    OVERWRITE    ////
+/////////////////////////
 
 
 /* Assign a slice from left to right, directly overwriting exisiting values. */
@@ -672,6 +522,11 @@ void _overwrite_slice_backward(
         }
     }
 }
+
+
+///////////////////////
+////    REPLACE    ////
+///////////////////////
 
 
 /* Assign a slice from left to right, replacing the existing nodes with new ones. */
@@ -881,6 +736,11 @@ inline Node* _insert_node(
 }
 
 
+////////////////////////
+////    RECOVERY    ////
+////////////////////////
+
+
 /* Undo a slice assignment. */
 template <template <typename> class ViewType, typename NodeType, typename Node>
 void _undo_set_slice_forward(
@@ -1020,108 +880,48 @@ void _undo_set_slice_backward(
 // Maybe in a future release we won't have to do this:
 
 
-template void set_index_single(
-    ListView<SingleNode>* view,
-    size_t index,
-    PyObject* item
-);
-template void set_index_single(
-    SetView<SingleNode>* view,
-    size_t index,
-    PyObject* item
-);
-template void set_index_single(
-    DictView<SingleNode>* view,
-    size_t index,
-    PyObject* item
-);
-template void set_index_single(
-    ListView<DoubleNode>* view,
-    size_t index,
-    PyObject* item
-);
-template void set_index_single(
-    SetView<DoubleNode>* view,
-    size_t index,
-    PyObject* item
-);
-template void set_index_single(
-    DictView<DoubleNode>* view,
-    size_t index,
-    PyObject* item
-);
-template void set_index_double(
-    ListView<DoubleNode>* view,
-    size_t index,
-    PyObject* item
-);
-template void set_index_double(
-    SetView<DoubleNode>* view,
-    size_t index,
-    PyObject* item
-);
-template void set_index_double(
-    DictView<DoubleNode>* view,
-    size_t index,
-    PyObject* item
-);
-template void set_slice_single(
+template void set_index(ListView<SingleNode>* view, size_t index, PyObject* item);
+template void set_index(SetView<SingleNode>* view, size_t index, PyObject* item);
+template void set_index(DictView<SingleNode>* view, size_t index, PyObject* item);
+template void set_index(ListView<DoubleNode>* view, size_t index, PyObject* item);
+template void set_index(SetView<DoubleNode>* view, size_t index, PyObject* item);
+template void set_index(DictView<DoubleNode>* view, size_t index, PyObject* item);
+template void set_slice(
     ListView<SingleNode>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
     Py_ssize_t step,
     PyObject* items
 );
-template void set_slice_single(
+template void set_slice(
     SetView<SingleNode>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
     Py_ssize_t step,
     PyObject* items
 );
-template void set_slice_single(
+template void set_slice(
     DictView<SingleNode>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
     Py_ssize_t step,
     PyObject* items
 );
-template void set_slice_single(
+template void set_slice(
     ListView<DoubleNode>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
     Py_ssize_t step,
     PyObject* items
 );
-template void set_slice_single(
+template void set_slice(
     SetView<DoubleNode>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
     Py_ssize_t step,
     PyObject* items
 );
-template void set_slice_single(
-    DictView<DoubleNode>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step,
-    PyObject* items
-);
-template void set_slice_double(
-    ListView<DoubleNode>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step,
-    PyObject* items
-);
-template void set_slice_double(
-    SetView<DoubleNode>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step,
-    PyObject* items
-);
-template void set_slice_double(
+template void set_slice(
     DictView<DoubleNode>* view,
     Py_ssize_t start,
     Py_ssize_t stop,

@@ -6,66 +6,45 @@ from .view cimport ListView, SetView, DictView
 
 cdef extern from "delete_slice.h":
     # delete_index()
-    void delete_index_single(ListView[SingleNode]* view, size_t index) except *
-    void delete_index_single(SetView[SingleNode]* view, size_t index) except *
-    void delete_index_single(DictView[SingleNode]* view, size_t index) except *
-    void delete_index_single(ListView[DoubleNode]* view, size_t index) except *
-    void delete_index_single(SetView[DoubleNode]* view, size_t index) except *
-    void delete_index_single(DictView[DoubleNode]* view, size_t index) except *
-    void delete_index_double(ListView[DoubleNode]* view, size_t index) except *
-    void delete_index_double(SetView[DoubleNode]* view, size_t index) except *
-    void delete_index_double(DictView[DoubleNode]* view, size_t index) except *
+    void delete_index(ListView[SingleNode]* view, size_t index) except *
+    void delete_index(SetView[SingleNode]* view, size_t index) except *
+    void delete_index(DictView[SingleNode]* view, size_t index) except *
+    void delete_index(ListView[DoubleNode]* view, size_t index) except *
+    void delete_index(SetView[DoubleNode]* view, size_t index) except *
+    void delete_index(DictView[DoubleNode]* view, size_t index) except *
 
     # delete_slice()
-    void delete_slice_single(
+    void delete_slice(
         ListView[SingleNode]* view,
         size_t start,
         size_t stop,
         size_t step
     ) except *
-    void delete_slice_single(
+    void delete_slice(
         SetView[SingleNode]* view,
         size_t start,
         size_t stop,
         size_t step
     ) except *
-    void delete_slice_single(
+    void delete_slice(
         DictView[SingleNode]* view,
         size_t start,
         size_t stop,
         size_t step
     ) except *
-    void delete_slice_single(
+    void delete_slice(
         ListView[DoubleNode]* view,
         size_t start,
         size_t stop,
         size_t step
     ) except *
-    void delete_slice_single(
+    void delete_slice(
         SetView[DoubleNode]* view,
         size_t start,
         size_t stop,
         size_t step
     ) except *
-    void delete_slice_single(
-        DictView[DoubleNode]* view,
-        size_t start,
-        size_t stop,
-        size_t step
-    ) except *
-    void delete_slice_double(
-        ListView[DoubleNode]* view,
-        size_t start,
-        size_t stop,
-        size_t step
-    ) except *
-    void delete_slice_double(
-        SetView[DoubleNode]* view,
-        size_t start,
-        size_t stop,
-        size_t step
-    ) except *
-    void delete_slice_double(
+    void delete_slice(
         DictView[DoubleNode]* view,
         size_t start,
         size_t stop,

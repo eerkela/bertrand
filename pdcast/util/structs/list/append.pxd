@@ -2,7 +2,7 @@
 from cpython cimport PyObject
 
 from .node cimport SingleNode, DoubleNode
-from .view cimport ListView, SetView, DictView, ViewType
+from .view cimport ListView, SetView, DictView
 
 cdef extern from "append.h":
     # append()
