@@ -20,18 +20,33 @@
 ///////////////////
 
 
-/* Pop an item from a singly-linked list, set, or dictionary at the given index. */
+/* Pop an item from a linked list, set, or dictionary at the given index. */
 template <template <typename> class ViewType, typename NodeType>
-inline PyObject* pop_single(ViewType<NodeType>* view, size_t index) {
+inline PyObject* pop(ViewType<NodeType>* view, size_t index) {
+    using Node = typename ViewType<NodeType>::Node;
+    Node* prev;
+    Node* curr;
+
+    // get neighboring nodes
+    if constexpr (is_doubly_linked<Node>::value) {
+        // NOTE: if the list is doubly-linked, then we can iterate from either
+        // end to find the node that preceding node.
+        if (index > view->size / 2) {
+            curr = view->tail;
+            for (size_t i = view->size - 1; i > index; i--) {
+                curr = (Node*)curr->prev;
+            }
+            prev = (Node*)curr->prev;
+            return _pop_node(view, prev, curr, (Node*)curr->next);
+        }
+    }
+
     // NOTE: due to the singly-linked nature of the list, popping from the
     // front of the list is O(1) while popping from the back is O(n). This
     // is because we need to traverse the entire list to find the node that
     // precedes the popped node.
-    using Node = typename ViewType<NodeType>::Node;
-
-    // iterate forwards from head
-    Node* prev = NULL;
-    Node* curr = view->head;
+    prev = NULL;
+    curr = view->head;
     for (size_t i = 0; i < index; i++) {
         prev = curr;
         curr = (Node*)curr->next;
@@ -42,84 +57,42 @@ inline PyObject* pop_single(ViewType<NodeType>* view, size_t index) {
 }
 
 
-/* Pop a key from a singly-linked dictionary and return its corresponding value. */
+/* Pop a key from a linked dictionary and return its corresponding value. */
 template <typename NodeType>
-inline PyObject* pop_single(
+inline PyObject* pop(
     DictView<NodeType>* view,
     PyObject* key,
     PyObject* default_value
 ) {
     using Node = typename DictView<NodeType>::Node;
+    Node* prev;
+    Node* curr;
 
     // search for node
-    Node* curr = view->search(key);
+    curr = view->search(key);
     if (curr == NULL) {
         return default_value;
     }
 
-    // NOTE: this is O(n) for singly-linked dictionaries because we have to
-    // traverse the whole list to find the node that precedes the popped node.
-
-    // iterate forwards from head to find prev
-    Node* prev = NULL;
-    Node* node = view->head;
-    while (node != curr) {
-        prev = node;
-        node = (Node*)node->next;
+    // get neighboring nodes
+    if constexpr (is_doubly_linked<Node>::value) {
+        // NOTE: this is O(1) for doubly-linked dictionaries because we can use
+        // the node's prev and next pointers to unlink it from the list.
+        prev = (Node*)curr->prev;
+    } else {
+        // NOTE: this is O(n) for singly-linked dictionaries because we have to
+        // traverse the whole list to find the node that precedes the popped node.
+        prev = NULL;
+        Node* node = view->head;
+        while (node != curr) {
+            prev = node;
+            node = (Node*)node->next;
+        }
     }
 
     // destroy node and return its value
     return _pop_node(view, prev, curr, (Node*)curr->next);
 }
-
-
-/* Pop an item from a doubly-linked list, set, or dictionary at the given index. */
-template <template <typename> class ViewType, typename NodeType>
-inline PyObject* pop_double(ViewType<NodeType>* view, size_t index) {
-    // NOTE: doubly-linked lists can pop from both sides in O(1) time.
-    if (index <= view->size / 2) {
-        return pop_single(view, index);  // use singly-linked version
-    }
-
-    using Node = typename ViewType<NodeType>::Node;
-
-    // iterate backwards from tail
-    Node* curr = view->tail;
-    for (size_t i = view->size - 1; i > index; i--) {
-        curr = (Node*)curr->prev;
-    }
-
-    // destroy node and return its value
-    return _pop_node(view, (Node*)curr->prev, curr, (Node*)curr->next);
-}
-
-
-/* Pop a key from a doubly-linked dictionary and return its corresponding value. */
-template <typename NodeType>
-inline PyObject* pop_double(
-    DictView<NodeType>* view,
-    PyObject* key,
-    PyObject* default_value
-) {
-    using Node = typename DictView<NodeType>::Node;
-
-    // search for node
-    Node* curr = view->search(key);
-    if (curr == NULL) {
-        return default_value;
-    }
-
-    // NOTE: this is O(1) for doubly-linked dictionaries because we can use
-    // the node's prev and next pointers to unlink it from the list.
-
-    // destroy node and return its value
-    return _pop_node(view, (Node*)curr->prev, curr, (Node*)curr->next);
-}
-
-
-///////////////////////
-////    POPLEFT    ////
-///////////////////////
 
 
 /* Pop an item from the beginning of a list, set, or dictionary. */
@@ -138,39 +111,25 @@ inline PyObject* popleft(ViewType<NodeType>* view) {
 }
 
 
-////////////////////////
-////    POPRIGHT    ////
-////////////////////////
-
-
 /* Pop an item from the end of a singly-linked list. */
 template <template <typename> class ViewType, typename NodeType>
-inline PyObject* popright_single(ViewType<NodeType>* view) {
+inline PyObject* popright(ViewType<NodeType>* view) {
+    using Node = typename ViewType<NodeType>::Node;
+
     if (view->size == 0) {
         PyErr_SetString(PyExc_IndexError, "pop from empty list");
         return NULL;
     }
 
-    // NOTE: this is O(n) for singly-linked lists because we have to traverse
-    // the whole list to find the node that precedes the tail.
-    return pop_single(view, view->size - 1);
-}
-
-
-/* Pop an item from the end of a doubly-linked list. */
-template <template <typename> class ViewType, typename NodeType>
-inline PyObject* popright_double(ViewType<NodeType>* view) {
-    if (view->size == 0) {
-        PyErr_SetString(PyExc_IndexError, "pop from empty dictionary");
-        return NULL;
+    // NOTE: this is O(1) for doubly-linked lists because we can use the
+    // tail's prev pointer to unlink it from the list.
+    if constexpr (is_doubly_linked<Node>::value) {
+        return _pop_node(view, (Node*)view->tail->prev, view->tail, (Node*)NULL);
     }
 
-    using Node = typename ViewType<NodeType>::Node;
-
-    // NOTE: this is O(1) for doubly-linked lists because we can use the tail's
-    // prev pointer to unlink it from the list.
-    Node* tail = view->tail;
-    return _pop_node(view, (Node*)tail->prev, tail, (Node*)NULL);
+    // otherwise, we have to traverse the whole list to find the node that
+    // precedes the tail.
+    return pop(view, view->size - 1);
 }
 
 
@@ -189,12 +148,12 @@ inline PyObject* _pop_node(
 ) {
     // get return value
     PyObject* value = curr->value;
-    Py_INCREF(value);  // have to INCREF because we DECREF in deallocate()
+    Py_INCREF(value);  // have to INCREF because we DECREF in recycle()
 
     // unlink and deallocate node
     view->unlink(prev, curr, next);
     view->recycle(curr);
-    return value;
+    return value;  // caller takes ownership
 }
 
 
@@ -211,26 +170,18 @@ inline PyObject* _pop_node(
 // Maybe in a future release we won't have to do this:
 
 
-template PyObject* pop_single(ListView<SingleNode>* view, size_t index);
-template PyObject* pop_single(SetView<SingleNode>* view, size_t index);
-template PyObject* pop_single(DictView<SingleNode>* view, size_t index);
-template PyObject* pop_single(
+template PyObject* pop(ListView<SingleNode>* view, size_t index);
+template PyObject* pop(SetView<SingleNode>* view, size_t index);
+template PyObject* pop(DictView<SingleNode>* view, size_t index);
+template PyObject* pop(
     DictView<SingleNode>* view,
     PyObject* key,
     PyObject* default_value
 );
-template PyObject* pop_single(ListView<DoubleNode>* view, size_t index);
-template PyObject* pop_single(SetView<DoubleNode>* view, size_t index);
-template PyObject* pop_single(DictView<DoubleNode>* view, size_t index);
-template PyObject* pop_single(
-    DictView<DoubleNode>* view,
-    PyObject* key,
-    PyObject* default_value
-);
-template PyObject* pop_double(ListView<DoubleNode>* view, size_t index);
-template PyObject* pop_double(SetView<DoubleNode>* view, size_t index);
-template PyObject* pop_double(DictView<DoubleNode>* view, size_t index);
-template PyObject* pop_double(
+template PyObject* pop(ListView<DoubleNode>* view, size_t index);
+template PyObject* pop(SetView<DoubleNode>* view, size_t index);
+template PyObject* pop(DictView<DoubleNode>* view, size_t index);
+template PyObject* pop(
     DictView<DoubleNode>* view,
     PyObject* key,
     PyObject* default_value
@@ -238,15 +189,15 @@ template PyObject* pop_double(
 template PyObject* popleft(ListView<SingleNode>* view);
 template PyObject* popleft(SetView<SingleNode>* view);
 template PyObject* popleft(DictView<SingleNode>* view);
-template PyObject* popright_single(ListView<SingleNode>* view);
-template PyObject* popright_single(SetView<SingleNode>* view);
-template PyObject* popright_single(DictView<SingleNode>* view);
-template PyObject* popright_single(ListView<DoubleNode>* view);
-template PyObject* popright_single(SetView<DoubleNode>* view);
-template PyObject* popright_single(DictView<DoubleNode>* view);
-template PyObject* popright_double(ListView<DoubleNode>* view);
-template PyObject* popright_double(SetView<DoubleNode>* view);
-template PyObject* popright_double(DictView<DoubleNode>* view);
+template PyObject* popleft(ListView<DoubleNode>* view);
+template PyObject* popleft(SetView<DoubleNode>* view);
+template PyObject* popleft(DictView<DoubleNode>* view);
+template PyObject* popright(ListView<SingleNode>* view);
+template PyObject* popright(SetView<SingleNode>* view);
+template PyObject* popright(DictView<SingleNode>* view);
+template PyObject* popright(ListView<DoubleNode>* view);
+template PyObject* popright(SetView<DoubleNode>* view);
+template PyObject* popright(DictView<DoubleNode>* view);
 
 
 #endif // POP_H include guard

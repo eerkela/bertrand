@@ -10,7 +10,7 @@
 #include <view.h>  // for views
 
 
-// TODO: I get a double free() when sorting with a key function
+// TODO: Seqfault when decoration causes error
 
 
 //////////////////////
@@ -120,6 +120,7 @@ ListView<Keyed<Node>>* _decorate(ListView<Node>* view, PyObject* key_func) {
         // initialize a new keyed decorator
         Keyed<Node>* keyed = decorated->node(key_value, node);
         if (keyed == NULL) {
+            Py_DECREF(key_value);  // release the key value
             delete decorated;  // free the decorated list
             return NULL;  // propagate the error
         }

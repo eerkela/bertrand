@@ -8,6 +8,7 @@
 #include <utility>  // for std::pair
 #include <node.h>  // for nodes
 #include <view.h>  // for views
+#include <index.h>  // for MAX_SIZE_T
 
 
 // NOTE: Due to the nature of linked lists, indexing in general and slicing in

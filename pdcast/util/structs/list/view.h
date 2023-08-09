@@ -23,11 +23,6 @@
 /////////////////////////
 
 
-/* MAX_SIZE_T is used to signal errors in indexing operations where NULL would
-not be a valid return value, and 0 is likely to be valid output. */
-const size_t MAX_SIZE_T = std::numeric_limits<size_t>::max();
-
-
 /* Some Views use hash tables for fast access to each element. */
 const size_t INITIAL_TABLE_CAPACITY = 16;  // initial size of hash table
 const float MAX_LOAD_FACTOR = 0.7;  // grow if load factor exceeds threshold
@@ -66,72 +61,6 @@ const size_t PRIMES[29] = {  // prime numbers to use for double hashing
     3006477127,     // 4294967296 (2**32)       3221225473
     // NOTE: HASH PRIME is the first prime number larger than 0.7 * TABLE_SIZE
 };
-
-
-/////////////////////////
-////    FUNCTIONS    ////
-/////////////////////////
-
-
-/* Allow Python-style negative indexing with wraparound and boundschecking. */
-inline size_t normalize_index(
-    PyObject* index,
-    size_t size,
-    bool truncate
-) {
-    // check that index is a Python integer
-    if (!PyLong_Check(index)) {
-        PyErr_SetString(PyExc_TypeError, "Index must be a Python integer");
-        return MAX_SIZE_T;
-    }
-
-    PyObject* pylong_zero = PyLong_FromSize_t(0);
-    PyObject* pylong_size = PyLong_FromSize_t(size);
-    int index_lt_zero = PyObject_RichCompareBool(index, pylong_zero, Py_LT);
-
-    // wraparound negative indices
-    // if index < 0:
-    //     index += size
-    bool release_index = false;
-    if (index_lt_zero) {
-        index = PyNumber_Add(index, pylong_size);
-        index_lt_zero = PyObject_RichCompareBool(index, pylong_zero, Py_LT);
-        release_index = true;
-    }
-
-    // boundscheck
-    // if index < 0 or index >= size:
-    //     if truncate:
-    //         if index < 0:
-    //             return 0
-    //         return size - 1
-    //    raise IndexError("list index out of range")
-    if (index_lt_zero || PyObject_RichCompareBool(index, pylong_size, Py_GE)) {
-        Py_DECREF(pylong_zero);
-        Py_DECREF(pylong_size);
-        if (release_index) {
-            Py_DECREF(index);  // index reference was created by PyNumber_Add()
-        }
-        if (truncate) {
-            if (index_lt_zero) {
-                return 0;
-            }
-            return size - 1;
-        }
-        PyErr_SetString(PyExc_IndexError, "list index out of range");
-        return MAX_SIZE_T;
-    }
-
-    // release references
-    Py_DECREF(pylong_zero);
-    Py_DECREF(pylong_size);
-    if (release_index) {
-        Py_DECREF(index);  // index reference was created by PyNumber_Add()
-    }
-
-    // return as size_t
-    return PyLong_AsSize_t(index);
-}
 
 
 /////////////////////

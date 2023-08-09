@@ -26,7 +26,7 @@ const unsigned int FREELIST_SIZE = 32;  // max size of each View's freelist
 /////////////////////////
 
 
-/* Get the Python repr() of an arbitrary PyObject* */
+/* Get the Python repr() of an arbitrary PyObject* as a C string. */
 const char* repr(PyObject* obj) {
     if (obj == NULL) {
         return "NULL";
@@ -47,150 +47,6 @@ const char* repr(PyObject* obj) {
     Py_DECREF(py_repr);
     return c_repr;
 }
-
-
-//////////////////////////
-////    ALLOCATORS    ////
-//////////////////////////
-
-
-/* A factory for the templated node that uses a freelist to speed up allocation. */
-template <typename Derived>
-struct Allocater {
-private:
-
-    /* A wrapper around malloc() that can help catch memory leaks. */
-    inline static Derived* malloc_node(PyObject* value) {
-        // print allocation/deallocation messages if DEBUG=TRUE
-        if (DEBUG) {
-            printf("    -> malloc: %s\n", repr(value));
-        }
-
-        // malloc()
-        return (Derived*)malloc(sizeof(Derived));  // may be NULL
-    }
-
-    /* A wrapper around free() that can help catch memory leaks. */
-    inline static void free_node(Derived* node) {
-        // print allocation/deallocation messages if DEBUG=TRUE
-        if (DEBUG) {
-            printf("    -> free: %s\n", repr(node->value));
-        }
-
-        // free()
-        free(node);
-    }
-
-    /* Pop a node from the freelist or allocate a new one directly. */
-    inline static Derived* pop(std::queue<Derived*>& freelist, PyObject* value) {
-        Derived* node;
-        if (!freelist.empty()) {
-            node = freelist.front();  // pop from freelist
-            freelist.pop();
-        } else {
-            node = malloc_node(value);  // allocate new node
-        }
-        return node;  // may be NULL if malloc() failed
-    }
-
-    /* Push a node to the freelist or free it directly. */
-    inline static void push(std::queue<Derived*>& freelist, Derived* node) {
-        if (freelist.size() < FREELIST_SIZE) {
-            freelist.push(node);
-        } else {
-            free_node(node);
-        }
-    }
-
-public:
-
-    /* Allocate a new node for the specified value. */
-    template <typename... Args>
-    inline static Derived* create(
-        std::queue<Derived*>& freelist,
-        PyObject* value,
-        Args... args
-    ) {
-        // get blank node
-        Derived* node = pop(freelist, value);
-        if (node == NULL) {  // malloc() failed
-            PyErr_NoMemory();  // set MemoryError
-            return NULL;
-        }
-
-        // NOTE: we select one of the init() methods defined on the derived
-        // class, which can be arbitrarily specialized.
-        node = Derived::init(node, value, args...);  // variadic init()
-        if (node == NULL) {  // error during dispatched init()
-            push(freelist, node);
-        }
-
-        // return initialized node
-        return node;
-    }
-
-    /* Allocate a copy of an existing node. */
-    inline static Derived* copy(std::queue<Derived*>& freelist, Derived* old_node) {
-        // get blank node
-        Derived* new_node = pop(freelist, old_node->value);
-        if (new_node == NULL) {  // malloc() failed
-            PyErr_NoMemory();  // set MemoryError
-            return NULL;
-        }
-
-        // initialize according to template parameter
-        new_node = Derived::init_copy(new_node, old_node);
-        if (new_node == NULL) {  // error during init_copy()
-            push(freelist, new_node);  // push allocated node to freelist
-        }
-
-        // return initialized node
-        return new_node;
-    }
-
-    /* Release a node, freeing its resources and pushing it to the freelist. */
-    inline static void recycle(std::queue<Derived*>& freelist, Derived* node) {
-        Derived::teardown(node);  // release allocated resources
-        push(freelist, node);
-    }
-
-    /* Clear a list from head to tail, recycling all of the contained nodes. */
-    inline static void recycle_list(std::queue<Derived*>& freelist, Derived* head) {
-        Derived* next;
-        while (head != NULL) {
-            next = (Derived*)head->next;
-            recycle(freelist, head);
-            head = next;
-        }
-    }
-
-    /* Delete a node, freeing its resources without adding it to the freelist. */
-    inline static void discard(Derived* node) {
-        Derived::teardown(node);  // release allocated resources
-        free_node(node);
-    }
-
-    /* Clear a list from head to tail, discarding all of the contained nodes. */
-    inline static void discard_list(Derived* head) {
-        Derived* next;
-        while (head != NULL) {
-            next = (Derived*)head->next;
-            discard(head);
-            head = next;
-        }
-    }
-
-    /* Clear a freelist, discarding all of its stored nodes. */
-    inline static void discard_freelist(std::queue<Derived*>& freelist) {
-        Derived* node;
-        while (!freelist.empty()) {
-            node = freelist.front();
-            freelist.pop();
-            free_node(node);  // no teardown() necessary
-        }
-    }
-
-};
 
 
 /////////////////////
@@ -526,6 +382,7 @@ struct Keyed {
     ) {
         // NOTE: We mask the node's original value with the precomputed key,
         // allowing us to use the exact same algorithm in both cases.
+        Py_INCREF(key_value);
         node->value = key_value;
         node->node = wrapped;
         node->next = NULL;
@@ -596,6 +453,183 @@ struct Keyed {
         }
 
         return comp + (comp < 0);  // 0 signals TypeError()
+    }
+
+};
+
+
+//////////////////////
+////    TRAITS    ////
+//////////////////////
+
+
+// We can make algorithm decisions based on whether the underlying node is
+// singly- or doubly-linked.
+
+
+template <typename Node>
+struct is_doubly_linked {
+    static constexpr bool value = false;  // defaults False
+};
+
+
+template <>
+struct is_doubly_linked<DoubleNode> {
+    static constexpr bool value = true;
+};
+
+
+template <>
+struct is_doubly_linked<Hashed<DoubleNode>> {
+    static constexpr bool value = true;
+};
+
+
+template <>
+struct is_doubly_linked<Mapped<DoubleNode>> {
+    static constexpr bool value = true;
+};
+
+
+//////////////////////////
+////    ALLOCATORS    ////
+//////////////////////////
+
+
+/* A factory for the templated node that uses a freelist to speed up allocation. */
+template <typename Node>
+struct Allocater {
+private:
+
+    /* A wrapper around malloc() that can help catch memory leaks. */
+    inline static Node* malloc_node(PyObject* value) {
+        // print allocation/deallocation messages if DEBUG=TRUE
+        if (DEBUG) {
+            printf("    -> malloc: %s\n", repr(value));
+        }
+
+        // malloc()
+        return (Node*)malloc(sizeof(Node));  // may be NULL
+    }
+
+    /* A wrapper around free() that can help catch memory leaks. */
+    inline static void free_node(Node* node) {
+        // print allocation/deallocation messages if DEBUG=TRUE
+        if (DEBUG) {
+            printf("    -> free: %s\n", repr(node->value));
+        }
+
+        // free()
+        free(node);
+    }
+
+    /* Pop a node from the freelist or allocate a new one directly. */
+    inline static Node* pop(std::queue<Node*>& freelist, PyObject* value) {
+        Node* node;
+        if (!freelist.empty()) {
+            node = freelist.front();  // pop from freelist
+            freelist.pop();
+        } else {
+            node = malloc_node(value);  // allocate new node
+        }
+        return node;  // may be NULL if malloc() failed
+    }
+
+    /* Push a node to the freelist or free it directly. */
+    inline static void push(std::queue<Node*>& freelist, Node* node) {
+        if (freelist.size() < FREELIST_SIZE) {
+            freelist.push(node);
+        } else {
+            free_node(node);
+        }
+    }
+
+public:
+
+    /* Allocate a new node for the specified value. */
+    template <typename... Args>
+    inline static Node* create(
+        std::queue<Node*>& freelist,
+        PyObject* value,
+        Args... args
+    ) {
+        // get blank node
+        Node* node = pop(freelist, value);
+        if (node == NULL) {  // malloc() failed
+            PyErr_NoMemory();  // set MemoryError
+            return NULL;
+        }
+
+        // NOTE: we select one of the init() methods defined on the derived
+        // class, which can be arbitrarily specialized.
+        node = Node::init(node, value, args...);  // variadic init()
+        if (node == NULL) {  // error during dispatched init()
+            push(freelist, node);
+        }
+
+        // return initialized node
+        return node;
+    }
+
+    /* Allocate a copy of an existing node. */
+    inline static Node* copy(std::queue<Node*>& freelist, Node* old_node) {
+        // get blank node
+        Node* new_node = pop(freelist, old_node->value);
+        if (new_node == NULL) {  // malloc() failed
+            PyErr_NoMemory();  // set MemoryError
+            return NULL;
+        }
+
+        // initialize according to template parameter
+        new_node = Node::init_copy(new_node, old_node);
+        if (new_node == NULL) {  // error during init_copy()
+            push(freelist, new_node);  // push allocated node to freelist
+        }
+
+        // return initialized node
+        return new_node;
+    }
+
+    /* Release a node, freeing its resources and pushing it to the freelist. */
+    inline static void recycle(std::queue<Node*>& freelist, Node* node) {
+        Node::teardown(node);  // release allocated resources
+        push(freelist, node);
+    }
+
+    /* Clear a list from head to tail, recycling all of the contained nodes. */
+    inline static void recycle_list(std::queue<Node*>& freelist, Node* head) {
+        Node* next;
+        while (head != NULL) {
+            next = (Node*)head->next;
+            recycle(freelist, head);
+            head = next;
+        }
+    }
+
+    /* Delete a node, freeing its resources without adding it to the freelist. */
+    inline static void discard(Node* node) {
+        Node::teardown(node);  // release allocated resources
+        free_node(node);
+    }
+
+    /* Clear a list from head to tail, discarding all of the contained nodes. */
+    inline static void discard_list(Node* head) {
+        Node* next;
+        while (head != NULL) {
+            next = (Node*)head->next;
+            discard(head);
+            head = next;
+        }
+    }
+
+    /* Clear a freelist, discarding all of its stored nodes. */
+    inline static void discard_freelist(std::queue<Node*>& freelist) {
+        Node* node;
+        while (!freelist.empty()) {
+            node = freelist.front();
+            freelist.pop();
+            free_node(node);  // no teardown() necessary
+        }
     }
 
 };

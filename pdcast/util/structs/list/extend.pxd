@@ -5,19 +5,23 @@ from .node cimport SingleNode, DoubleNode
 from .view cimport ListView, SetView, DictView
 
 cdef extern from "extend.h":
-    # shared
+    # extend()
     void extend(ListView[SingleNode]* view, PyObject* items) except +*
     void extend(SetView[SingleNode]* view, PyObject* items) except +*
     void extend(DictView[SingleNode]* view, PyObject* items) except +*
     void extend(ListView[DoubleNode]* view, PyObject* items) except +*
     void extend(SetView[DoubleNode]* view, PyObject* items) except +*
     void extend(DictView[DoubleNode]* view, PyObject* items) except +*
+
+    # extendleft()
     void extendleft(ListView[SingleNode]* view, PyObject* items) except +*
     void extendleft(SetView[SingleNode]* view, PyObject* items) except +*
     void extendleft(DictView[SingleNode]* view, PyObject* items) except +*
     void extendleft(ListView[DoubleNode]* view, PyObject* items) except +*
     void extendleft(SetView[DoubleNode]* view, PyObject* items) except +*
     void extendleft(DictView[DoubleNode]* view, PyObject* items) except +*
+
+    # extendafter()
     void extendafter(
         SetView[SingleNode]* view,
         PyObject* sentinel,
@@ -39,35 +43,23 @@ cdef extern from "extend.h":
         PyObject* items
     ) except +*
 
-    # singly-linked
-    void extendbefore_single(
+    # extendbefore()
+    void extendbefore(
         SetView[SingleNode]* view,
         PyObject* sentinel,
         PyObject* items
     ) except +*
-    void extendbefore_single(
+    void extendbefore(
         DictView[SingleNode]* view,
         PyObject* sentinel,
         PyObject* items
     ) except +*
-    void extendbefore_single(
+    void extendbefore(
         SetView[DoubleNode]* view,
         PyObject* sentinel,
         PyObject* items
     ) except +*
-    void extendbefore_single(
-        DictView[DoubleNode]* view,
-        PyObject* sentinel,
-        PyObject* items
-    ) except +*
-
-    # doubly-linked
-    void extendbefore_double(
-        SetView[DoubleNode]* view,
-        PyObject* sentinel,
-        PyObject* items
-    ) except +*
-    void extendbefore_double(
+    void extendbefore(
         DictView[DoubleNode]* view,
         PyObject* sentinel,
         PyObject* items

@@ -21,7 +21,7 @@
 
 
 //////////////////////
-////    EXTEND    ////
+////    PUBLIC    ////
 //////////////////////
 
 
@@ -34,11 +34,6 @@ inline void extend(ViewType<NodeType>* view, PyObject* items) {
 }
 
 
-//////////////////////////
-////    EXTENDLEFT    ////
-//////////////////////////
-
-
 /* Add multiple items to the beginning of a list, set, or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
 inline void extendleft(ViewType<NodeType>* view, PyObject* items) {
@@ -46,11 +41,6 @@ inline void extendleft(ViewType<NodeType>* view, PyObject* items) {
 
     _extend_right_to_left(view, (Node*)NULL, view->head, items);
 }
-
-
-///////////////////////////
-////    EXTENDAFTER    ////
-///////////////////////////
 
 
 /* Insert elements into a set or dictionary immediately after the given sentinel
@@ -75,22 +65,14 @@ inline void extendafter(
 }
 
 
-////////////////////////////
-////    EXTENDBEFORE    ////
-////////////////////////////
-
-
-/* Insert elements into a singly-linked set or dictionary immediately before a given
+/* Insert elements into a linked set or dictionary immediately before a given
 sentinel value. */
 template <template <typename> class ViewType, typename NodeType>
-inline void extendbefore_single(
+inline void extendbefore(
     ViewType<NodeType>* view,
     PyObject* sentinel,
     PyObject* items
 ) {
-    // NOTE: due to the singly-linked nature of the list, extendafter() is
-    // O(m) while extendbefore() is O(n + m).  This is because we need to
-    // traverse the whole list to find the node before the sentinel.
     using Node = typename ViewType<NodeType>::Node;
 
     // search for sentinel
@@ -100,7 +82,14 @@ inline void extendbefore_single(
         return;
     }
 
-    // iterate from head to find left bound (O(n))
+    // NOTE: if the list is doubly-linked, then we can just use the node's
+    // `prev` pointer to find the left bound.
+    if constexpr (is_doubly_linked<Node>::value) {
+        _extend_right_to_left(view, (Node*)right->prev, right, items);
+        return;
+    }
+
+    // NOTE: otherwise, we have to iterate from the head of the list.
     Node* left;
     Node* next;
     if (right == view->head) {
@@ -116,29 +105,6 @@ inline void extendbefore_single(
 
     // insert items between the left and right bounds
     _extend_right_to_left(view, left, right, items);
-}
-
-
-/* Insert elements into a doubly-linked set or dictionary immediately after a given
-sentinel value. */
-template <template <typename> class ViewType, typename NodeType>
-inline void extendbefore_double(
-    ViewType<NodeType>* view,
-    PyObject* sentinel,
-    PyObject* items
-) {
-    // NOTE: doubly-linked lists can extend in either direction in O(m) time.
-    using Node = typename ViewType<NodeType>::Node;
-
-    // search for sentinel
-    Node* right = view->search(sentinel);
-    if (right == NULL) {  // sentinel not found
-        PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
-        return;
-    }
-
-    // insert items before sentinel
-    _extend_right_to_left(view, (Node*)right->prev, right, items);
 }
 
 
@@ -350,32 +316,22 @@ template void extendafter(
     PyObject* sentinel,
     PyObject* items
 );
-template void extendbefore_single(
+template void extendbefore(
     SetView<SingleNode>* view,
     PyObject* sentinel,
     PyObject* items
 );
-template void extendbefore_single(
+template void extendbefore(
     DictView<SingleNode>* view,
     PyObject* sentinel,
     PyObject* items
 );
-template void extendbefore_single(
+template void extendbefore(
     SetView<DoubleNode>* view,
     PyObject* sentinel,
     PyObject* items
 );
-template void extendbefore_single(
-    DictView<DoubleNode>* view,
-    PyObject* sentinel,
-    PyObject* items
-);
-template void extendbefore_double(
-    SetView<DoubleNode>* view,
-    PyObject* sentinel,
-    PyObject* items
-);
-template void extendbefore_double(
+template void extendbefore(
     DictView<DoubleNode>* view,
     PyObject* sentinel,
     PyObject* items

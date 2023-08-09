@@ -7,45 +7,37 @@
 #include <view.h>  // for views
 
 
+//////////////////////
+////    PUBLIC    ////
+//////////////////////
+
+
 /* Reverse a singly-linked list in-place. */
 template <template <typename> class ViewType, typename NodeType>
-inline void reverse_single(ViewType<NodeType>* view) {
+inline void reverse(ViewType<NodeType>* view) {
     using Node = typename ViewType<NodeType>::Node;
 
     // save original `head` pointer
     Node* head = view->head;
-
-    // swap all `next` pointers
-    Node* prev = NULL;
     Node* curr = head;
-    while (curr != NULL) {
-        Node* next = (Node*)curr->next;
-        curr->next = prev;
-        prev = curr;
-        curr = next;
-    }
-
-    // swap `head`/`tail` pointers
-    view->head = view->tail;
-    view->tail = head;
-}
-
-
-/* Reverse a doubly-linked list in-place. */
-template <template <typename> class ViewType, typename NodeType>
-inline void reverse_double(ViewType<NodeType>* view) {
-    using Node = typename ViewType<NodeType>::Node;
-
-    // save original `head` pointer
-    Node* head = view->head;
-
-    // swap all `next`/`prev` pointers
-    Node* curr = head;
-    while (curr != NULL) {
-        Node* next = (Node*)curr->next;
-        curr->next = (Node*)curr->prev;
-        curr->prev = next;
-        curr = next;
+    
+    if constexpr (is_doubly_linked<Node>::value) {
+        // swap all `next`/`prev` pointers
+        while (curr != NULL) {
+            Node* next = (Node*)curr->next;
+            curr->next = (Node*)curr->prev;
+            curr->prev = next;
+            curr = next;
+        }
+    } else {
+        // swap all `next` pointers
+        Node* prev = NULL;
+        while (curr != NULL) {
+            Node* next = (Node*)curr->next;
+            curr->next = prev;
+            prev = curr;
+            curr = next;
+        }
     }
 
     // swap `head`/`tail` pointers
@@ -67,16 +59,12 @@ inline void reverse_double(ViewType<NodeType>* view) {
 // Maybe in a future release we won't have to do this:
 
 
-template void reverse_single(ListView<SingleNode>* view);
-template void reverse_single(SetView<SingleNode>* view);
-template void reverse_single(DictView<SingleNode>* view);
-template void reverse_single(ListView<DoubleNode>* view);
-template void reverse_single(SetView<DoubleNode>* view);
-template void reverse_single(DictView<DoubleNode>* view);
-template void reverse_double(ListView<DoubleNode>* view);
-template void reverse_double(SetView<DoubleNode>* view);
-template void reverse_double(DictView<DoubleNode>* view);
-
+template void reverse(ListView<SingleNode>* view);
+template void reverse(SetView<SingleNode>* view);
+template void reverse(DictView<SingleNode>* view);
+template void reverse(ListView<DoubleNode>* view);
+template void reverse(SetView<DoubleNode>* view);
+template void reverse(DictView<DoubleNode>* view);
 
 
 #endif // REVERSE_H include guard

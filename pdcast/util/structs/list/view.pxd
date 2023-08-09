@@ -6,19 +6,12 @@ from libcpp.queue cimport queue
 from .node cimport Hashed, Mapped
 
 cdef extern from "view.h":
-    const size_t MAX_SIZE_T
-    size_t normalize_index(
-        PyObject* index,
-        size_t size,
-        bint truncate
-    ) except? MAX_SIZE_T
-
     cdef cppclass ListView[T]:
         size_t size
         T* head
         T* tail
         ListView() except +
-        ListView(PyObject* iterable, bint reverse = False) except +
+        ListView(PyObject* iterable, bint reverse) except +
         T* node(PyObject* value) except NULL
         void recycle(T* node)
         void link(T* prev, T* curr, T* next)
@@ -34,7 +27,7 @@ cdef extern from "view.h":
         Hashed[T]* head
         Hashed[T]* tail
         SetView() except +
-        SetView(PyObject* iterable, bint reverse = False) except +
+        SetView(PyObject* iterable, bint reverse) except +
         Hashed[T]* node(PyObject* value, PyObject* mapped) except NULL
         void recycle(Hashed[T]* node)
         void link(Hashed[T]* prev, Hashed[T]* curr, Hashed[T]* next) except *
@@ -53,7 +46,7 @@ cdef extern from "view.h":
         Mapped[T]* head
         Mapped[T]* tail
         DictView() except +
-        DictView(PyObject* iterable, bint reverse = False) except +
+        DictView(PyObject* iterable, bint reverse) except +
         Mapped[T]* node(PyObject* value) except NULL
         Mapped[T]* node(PyObject* value, PyObject* mapped) except NULL
         void recycle(Mapped[T]* node)
