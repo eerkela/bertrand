@@ -6,6 +6,7 @@
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
 #include <utility>  // for std::pair
+#include <node.h>  // for nodes
 #include <view.h>  // for views
 #include <get_slice.h>  // for _get_slice_direction()
 
@@ -194,6 +195,84 @@ inline void _drop_slice_backward(
         }
     }
 }
+
+
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template void delete_index_single(ListView<SingleNode>* view, size_t index);
+template void delete_index_single(SetView<SingleNode>* view, size_t index);
+template void delete_index_single(DictView<SingleNode>* view, size_t index);
+template void delete_index_single(ListView<DoubleNode>* view, size_t index);
+template void delete_index_single(SetView<DoubleNode>* view, size_t index);
+template void delete_index_single(DictView<DoubleNode>* view, size_t index);
+template void delete_index_double(ListView<DoubleNode>* view, size_t index);
+template void delete_index_double(SetView<DoubleNode>* view, size_t index);
+template void delete_index_double(DictView<DoubleNode>* view, size_t index);
+template void delete_slice_single(
+    ListView<SingleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template void delete_slice_single(
+    SetView<SingleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template void delete_slice_single(
+    DictView<SingleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template void delete_slice_single(
+    ListView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template void delete_slice_single(
+    SetView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template void delete_slice_single(
+    DictView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template void delete_slice_double(
+    ListView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template void delete_slice_double(
+    SetView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template void delete_slice_double(
+    DictView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
 
 
 #endif // DELETE_SLICE_H include guard

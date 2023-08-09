@@ -3,7 +3,8 @@
 #define APPEND_H
 
 #include <Python.h>  // for CPython API
-#include <view.h>  // for view definitions
+#include <node.h>  // for nodes
+#include <view.h>  // for views
 
 
 // append() for sets and dicts should mimic set.add() and dict.__setitem__(),
@@ -97,6 +98,37 @@ inline void appendleft(DictView<NodeType>* view, PyObject* item, PyObject* mappe
         view->recycle(node);  // free node on error
     }
 }
+
+
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template void append(ListView<SingleNode>* view, PyObject* item);
+template void append(SetView<SingleNode>* view, PyObject* item);
+template void append(DictView<SingleNode>* view, PyObject* item);
+template void append(DictView<SingleNode>* view, PyObject* item, PyObject* mapped);
+template void append(ListView<DoubleNode>* view, PyObject* item);
+template void append(SetView<DoubleNode>* view, PyObject* item);
+template void append(DictView<DoubleNode>* view, PyObject* item);
+template void append(DictView<DoubleNode>* view, PyObject* item, PyObject* mapped);
+template void appendleft(ListView<SingleNode>* view, PyObject* item);
+template void appendleft(SetView<SingleNode>* view, PyObject* item);
+template void appendleft(DictView<SingleNode>* view, PyObject* item);
+template void appendleft(DictView<SingleNode>* view, PyObject* item, PyObject* mapped);
+template void appendleft(ListView<DoubleNode>* view, PyObject* item);
+template void appendleft(SetView<DoubleNode>* view, PyObject* item);
+template void appendleft(DictView<DoubleNode>* view, PyObject* item);
+template void appendleft(DictView<DoubleNode>* view, PyObject* item, PyObject* mapped);
 
 
 #endif // APPEND_H include guard

@@ -4,6 +4,7 @@
 #define CONTAINS_H
 
 #include <Python.h>  // for CPython API
+#include <node.h>  // for nodes
 #include <view.h>  // for views
 
 
@@ -38,6 +39,27 @@ inline int contains(ListView<NodeType>* view, PyObject* item) {
     // item not found
     return 0;
 }
+
+
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template int contains(ListView<SingleNode>* view, PyObject* item);
+template int contains(SetView<SingleNode>* view, PyObject* item);
+template int contains(DictView<SingleNode>* view, PyObject* item);
+template int contains(ListView<DoubleNode>* view, PyObject* item);
+template int contains(SetView<DoubleNode>* view, PyObject* item);
+template int contains(DictView<DoubleNode>* view, PyObject* item);
 
 
 #endif // CONTAINS_H include guard

@@ -10,6 +10,9 @@
 #include <view.h>  // for views
 
 
+// TODO: I get a double free() when sorting with a key function
+
+
 //////////////////////
 ////    PUBLIC    ////
 //////////////////////
@@ -27,7 +30,7 @@ template <template <typename> class ViewType, typename NodeType>
 void sort(ViewType<NodeType>* view, PyObject* key_func, bool reverse) {
     using Node = typename ViewType<NodeType>::Node;
 
-    // create a temporary ListView on the given view
+    // create a temporary ListView into the given view
     ListView<Node>* list_view;
     try {
         list_view = new ListView<Node>();
@@ -40,10 +43,13 @@ void sort(ViewType<NodeType>* view, PyObject* key_func, bool reverse) {
     list_view->size = view->size;
 
     // sort the viewed list
-    sort(list_view, key_func, reverse);  // updates the parent view in-place
+    sort(list_view, key_func, reverse);  // updates the original view in-place
 
     // free the temporary ListView
-    free(list_view);  // avoids calling destructor on nodes
+    list_view->head = NULL;  // avoids calling destructor on nodes
+    list_view->tail = NULL;
+    list_view->size = 0;
+    delete list_view;
 }
 
 
@@ -139,6 +145,7 @@ std::pair<Node*, Node*> _undecorate(ListView<Keyed<Node>>* view) {
     // NOTE: we rearrange the nodes in the undecorated list to match their
     // positions in the decorated equivalent.  This is done in-place, and we
     // free the decorators as we go in order to avoid a second iteration.
+    Keyed<Node>* keyed_prev = NULL;
     Keyed<Node>* keyed = view->head;
     while (keyed != NULL) {
         Node* wrapped = keyed->node;
@@ -153,7 +160,8 @@ std::pair<Node*, Node*> _undecorate(ListView<Keyed<Node>>* view) {
         sorted.second = wrapped;  // set tail of undecorated list
 
         // advance to next node
-        Keyed<Node>::deallocate(keyed);  // free the keyed decorator
+        view->unlink(keyed_prev, keyed, keyed_next);
+        view->recycle(keyed);
         keyed = keyed_next;
     }
 
@@ -351,6 +359,27 @@ std::pair<Node*, Node*> _recover(
     // return the head and tail of the recovered list
     return std::make_pair(sorted.first, unsorted.second);
 }
+
+
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template void sort(ListView<SingleNode>* view, PyObject* key_func, bool reverse);
+template void sort(SetView<SingleNode>* view, PyObject* key_func, bool reverse);
+template void sort(DictView<SingleNode>* view, PyObject* key_func, bool reverse);
+template void sort(ListView<DoubleNode>* view, PyObject* key_func, bool reverse);
+template void sort(SetView<DoubleNode>* view, PyObject* key_func, bool reverse);
+template void sort(DictView<DoubleNode>* view, PyObject* key_func, bool reverse);
 
 
 #endif // SORT_H include guard

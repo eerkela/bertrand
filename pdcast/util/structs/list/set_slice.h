@@ -6,6 +6,7 @@
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
 #include <utility>  // for std::pair
+#include <node.h>  // for nodes
 #include <view.h>  // for views
 #include <get_slice.h>  // for _get_slice_direction()
 
@@ -295,7 +296,7 @@ void set_slice_single(
 
     // determine direction of traversal to avoid backtracking
     bounds = _get_slice_direction_single(start, stop, step, view->size);
-    if (PyErr_Occurred) {  // invalid slice
+    if (PyErr_Occurred()) {  // invalid slice
         if (step == 1) {  // Python allows inserting slices in this case only
             _replace_slice_forward(
                 view,
@@ -515,7 +516,6 @@ void set_slice_double(
             if (bounds.first <= bounds.second) {  // closer to head
                 _replace_slice_forward(
                     view,
-                    view->head,
                     bounds.first,
                     slice_length,   // replace all nodes in slice
                     seq_length,     // continue inserting the remaining items
@@ -526,7 +526,6 @@ void set_slice_double(
             } else {  // closer to tail
                 _replace_slice_backward(
                     view,
-                    view->tail,
                     bounds.first,
                     slice_length,   // replace all nodes in slice
                     seq_length,     // continue inserting the remaining items
@@ -615,7 +614,7 @@ void _overwrite_slice_forward(
         PyObject* old = curr->value;
         Py_INCREF(item);  // Fast_GET_ITEM() returns a borrowed reference
         curr->value = item;
-        Py_DECREF(curr->value);
+        Py_DECREF(old);
 
         // advance node according to step size
         if (seq_idx < last_idx) {  // don't jump on final iteration
@@ -632,7 +631,7 @@ template <template <typename> class ViewType, typename NodeType>
 void _overwrite_slice_backward(
     ViewType<NodeType>* view,
     size_t begin,
-    size_t seq_length,
+    Py_ssize_t seq_length,
     size_t abs_step,
     PyObject* sequence,
     bool reverse
@@ -663,7 +662,7 @@ void _overwrite_slice_backward(
         PyObject* old = curr->value;
         Py_INCREF(item);  // Fast_GET_ITEM() returns a borrowed reference
         curr->value = item;
-        Py_DECREF(curr->value);
+        Py_DECREF(old);
 
         // advance node according to step size
         if (seq_idx < last_idx) {  // don't jump on final iteration
@@ -699,7 +698,7 @@ void _replace_slice_forward(
 
     // remember beginning of slice so we can reset later
     Node* source = prev;
-    std::queue<Node*> removed = new std::queue<Node*>();
+    std::queue<Node*> removed;
 
     // loop 1: unlink nodes in slice
     size_t small_step = abs_step - 1;  // we jump by 1 whenever we remove a node
@@ -739,7 +738,7 @@ void _replace_slice_forward(
         }
 
         // allocate a new node and link it to the list
-        curr == _insert_node(view, item, prev, next);
+        curr = _insert_node(view, item, prev, next);
         if (curr == NULL) {
             _undo_set_slice_forward(view, source, seq_idx, abs_step, removed);
             return;
@@ -787,7 +786,7 @@ void _replace_slice_backward(
 
     // remember beginning of slice so we can reset later
     Node* source = next;
-    std::queue<Node*> removed = new std::queue<Node*>();
+    std::queue<Node*> removed;
 
     // loop 1: unlink nodes in slice
     size_t small_step = abs_step - 1;  // we jump by 1 whenever we remove a node
@@ -827,14 +826,14 @@ void _replace_slice_backward(
         }
 
         // allocate a new node and link it to the list
-        curr == _insert_node(view, item, prev, next);
+        curr = _insert_node(view, item, prev, next);
         if (curr == NULL) {
             _undo_set_slice_backward(  // replace original nodes
                 view,
-                removed,
-                seq_idx,
                 source,
-                abs_step
+                seq_idx,
+                abs_step,
+                removed
             );
             return;
         }
@@ -1006,6 +1005,129 @@ void _undo_set_slice_backward(
         }
     }
 }
+
+
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template void set_index_single(
+    ListView<SingleNode>* view,
+    size_t index,
+    PyObject* item
+);
+template void set_index_single(
+    SetView<SingleNode>* view,
+    size_t index,
+    PyObject* item
+);
+template void set_index_single(
+    DictView<SingleNode>* view,
+    size_t index,
+    PyObject* item
+);
+template void set_index_single(
+    ListView<DoubleNode>* view,
+    size_t index,
+    PyObject* item
+);
+template void set_index_single(
+    SetView<DoubleNode>* view,
+    size_t index,
+    PyObject* item
+);
+template void set_index_single(
+    DictView<DoubleNode>* view,
+    size_t index,
+    PyObject* item
+);
+template void set_index_double(
+    ListView<DoubleNode>* view,
+    size_t index,
+    PyObject* item
+);
+template void set_index_double(
+    SetView<DoubleNode>* view,
+    size_t index,
+    PyObject* item
+);
+template void set_index_double(
+    DictView<DoubleNode>* view,
+    size_t index,
+    PyObject* item
+);
+template void set_slice_single(
+    ListView<SingleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step,
+    PyObject* items
+);
+template void set_slice_single(
+    SetView<SingleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step,
+    PyObject* items
+);
+template void set_slice_single(
+    DictView<SingleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step,
+    PyObject* items
+);
+template void set_slice_single(
+    ListView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step,
+    PyObject* items
+);
+template void set_slice_single(
+    SetView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step,
+    PyObject* items
+);
+template void set_slice_single(
+    DictView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step,
+    PyObject* items
+);
+template void set_slice_double(
+    ListView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step,
+    PyObject* items
+);
+template void set_slice_double(
+    SetView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step,
+    PyObject* items
+);
+template void set_slice_double(
+    DictView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step,
+    PyObject* items
+);
 
 
 #endif // SET_SLICE_H include guard

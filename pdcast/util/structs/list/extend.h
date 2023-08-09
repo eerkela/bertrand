@@ -5,11 +5,11 @@
 
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
-#include <node.h>  // for node definitions
+#include <node.h>  // for nodes
 #include <view.h>  // for views
 
 
-// append() for sets and dicts should mimic set.update() and dict.update(),
+// TODO: append() for sets and dicts should mimic set.update() and dict.update(),
 // respectively.  If the item is already contained in the set or dict, then
 // we just ignore it and move on.  Errors are only thrown if the input is
 // invalid, i.e. not hashable or not a tuple of length 2 in the case of
@@ -28,7 +28,9 @@
 /* Add multiple items to the end of a list, set, or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
 inline void extend(ViewType<NodeType>* view, PyObject* items) {
-    _extend_left_to_right(view, view->tail, NULL, items);
+    using Node = typename ViewType<NodeType>::Node;
+
+    _extend_left_to_right(view, view->tail, (Node*)NULL, items);
 }
 
 
@@ -40,7 +42,9 @@ inline void extend(ViewType<NodeType>* view, PyObject* items) {
 /* Add multiple items to the beginning of a list, set, or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
 inline void extendleft(ViewType<NodeType>* view, PyObject* items) {
-    _extend_right_to_left(view, NULL, view->head, items);
+    using Node = typename ViewType<NodeType>::Node;
+
+    _extend_right_to_left(view, (Node*)NULL, view->head, items);
 }
 
 
@@ -134,7 +138,7 @@ inline void extendbefore_double(
     }
 
     // insert items before sentinel
-    _extend_right_to_left(view, (Node*)view->prev, right, items);
+    _extend_right_to_left(view, (Node*)right->prev, right, items);
 }
 
 
@@ -299,6 +303,83 @@ void _undo_right_to_left(
     // join left and right
     Node::join(left, right);  // handles NULLs
 }
+
+
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template void extend(ListView<SingleNode>* view, PyObject* items);
+template void extend(SetView<SingleNode>* view, PyObject* items);
+template void extend(DictView<SingleNode>* view, PyObject* items);
+template void extend(ListView<DoubleNode>* view, PyObject* items);
+template void extend(SetView<DoubleNode>* view, PyObject* items);
+template void extend(DictView<DoubleNode>* view, PyObject* items);
+template void extendleft(ListView<SingleNode>* view, PyObject* items);
+template void extendleft(SetView<SingleNode>* view, PyObject* items);
+template void extendleft(DictView<SingleNode>* view, PyObject* items);
+template void extendleft(ListView<DoubleNode>* view, PyObject* items);
+template void extendleft(SetView<DoubleNode>* view, PyObject* items);
+template void extendleft(DictView<DoubleNode>* view, PyObject* items);
+template void extendafter(
+    SetView<SingleNode>* view,
+    PyObject* sentinel,
+    PyObject* items
+);
+template void extendafter(
+    DictView<SingleNode>* view,
+    PyObject* sentinel,
+    PyObject* items
+);
+template void extendafter(
+    SetView<DoubleNode>* view,
+    PyObject* sentinel,
+    PyObject* items
+);
+template void extendafter(
+    DictView<DoubleNode>* view,
+    PyObject* sentinel,
+    PyObject* items
+);
+template void extendbefore_single(
+    SetView<SingleNode>* view,
+    PyObject* sentinel,
+    PyObject* items
+);
+template void extendbefore_single(
+    DictView<SingleNode>* view,
+    PyObject* sentinel,
+    PyObject* items
+);
+template void extendbefore_single(
+    SetView<DoubleNode>* view,
+    PyObject* sentinel,
+    PyObject* items
+);
+template void extendbefore_single(
+    DictView<DoubleNode>* view,
+    PyObject* sentinel,
+    PyObject* items
+);
+template void extendbefore_double(
+    SetView<DoubleNode>* view,
+    PyObject* sentinel,
+    PyObject* items
+);
+template void extendbefore_double(
+    DictView<DoubleNode>* view,
+    PyObject* sentinel,
+    PyObject* items
+);
 
 
 #endif // EXTEND_H include guard

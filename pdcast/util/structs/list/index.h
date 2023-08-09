@@ -5,8 +5,8 @@
 
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
-#include <node.h>  // for node definitions
-#include <view.h>  // for view definitions
+#include <node.h>  // for nodes
+#include <view.h>  // for views
 
 
 //////////////////////
@@ -38,8 +38,8 @@ inline size_t index_single(
 
     // skip to start index
     Node* curr = view->head;
-    size_t idx = 0;
-    for (idx; idx < start; idx++) {
+    size_t idx;
+    for (idx = 0; idx < start; idx++) {
         curr = (Node*)curr->next;
     }
 
@@ -93,8 +93,8 @@ inline size_t index_double(
 
     // else, start from tail
     Node* curr = view->tail;
-    size_t idx = view->size - 1;
-    for (idx; idx > stop; idx--) {  // skip to stop index
+    size_t idx;
+    for (idx = view->size - 1; idx > stop; idx--) {  // skip to stop index
         curr = (Node*)curr->prev;
     }
 
@@ -134,14 +134,14 @@ inline size_t index_double(
 
 
 /* Get the index of an item within a set-like list. */
-template <template <typename> class ViewType, typename T, typename U>
+template <template <typename> class ViewType, typename NodeType>
 inline size_t _index_setlike(
-    ViewType<T>* view,
+    ViewType<NodeType>* view,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
-    using Node = typename ViewType<T>::Node;
+    using Node = typename ViewType<NodeType>::Node;
 
     // search for item in hash table
     Node* node = view->search(item);
@@ -152,8 +152,8 @@ inline size_t _index_setlike(
 
     // skip to start index
     Node* curr = view->head;
-    size_t idx = 0;
-    for (idx; idx < start; idx++) {
+    size_t idx;
+    for (idx = 0; idx < start; idx++) {
         if (curr == node) {  // item exists, but comes before range
             PyErr_Format(PyExc_ValueError, "%R is not in the set", item);
             return MAX_SIZE_T;
@@ -174,6 +174,75 @@ inline size_t _index_setlike(
     PyErr_Format(PyExc_ValueError, "%R is not in the set", item);
     return MAX_SIZE_T;
 }
+
+
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template size_t index_single(
+    ListView<SingleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t index_single(
+    SetView<SingleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t index_single(
+    DictView<SingleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t index_single(
+    ListView<DoubleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t index_single(
+    SetView<DoubleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t index_single(
+    DictView<DoubleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t index_double(
+    ListView<DoubleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t index_double(
+    SetView<DoubleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t index_double(
+    DictView<DoubleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
 
 
 #endif // INDEX_H include guard

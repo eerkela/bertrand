@@ -147,7 +147,7 @@ cdef class DoublyLinkedList(LinkedList):
             self.view = new ListView[DoubleNode]()
         else:
             borrowed = <PyObject*>items
-            self.view = new ListView[DoubleNode](borrowed)
+            self.view = new ListView[DoubleNode](borrowed)  # figure out what to do with reverse flag
 
     def __dealloc__(self):
         del self.view
@@ -234,7 +234,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Inserts are O(n) on average.
         """
-        cdef size_t norm_index = normalize_index(index, self.view.size, True)
+        cdef size_t norm_index = normalize_index(<PyObject*>index, self.view.size, True)
 
         insert_double(self.view, norm_index, <PyObject*>item)  # from insert.h
 
@@ -294,8 +294,8 @@ cdef class DoublyLinkedList(LinkedList):
         Indexing is O(n) on average.
         """
         # allow Python-style negative indexing + bounds checking
-        cdef size_t norm_start = normalize_index(start, self.view.size, True)
-        cdef size_t norm_stop = normalize_index(stop, self.view.size, True)
+        cdef size_t norm_start = normalize_index(<PyObject*>start, self.view.size, True)
+        cdef size_t norm_stop = normalize_index(<PyObject*>stop, self.view.size, True)
 
         # check that start and stop indices are consistent
         if norm_start > norm_stop:
@@ -322,8 +322,8 @@ cdef class DoublyLinkedList(LinkedList):
         Counting is O(n).
         """
         # allow Python-style negative indexing + bounds checking
-        cdef size_t norm_start = normalize_index(start, self.view.size, True)
-        cdef size_t norm_stop = normalize_index(stop, self.view.size, True)
+        cdef size_t norm_start = normalize_index(<PyObject*>start, self.view.size, True)
+        cdef size_t norm_stop = normalize_index(<PyObject*>stop, self.view.size, True)
 
         # check that start and stop indices are consistent
         if norm_start > norm_stop:
@@ -376,7 +376,7 @@ cdef class DoublyLinkedList(LinkedList):
         Pops are O(1) if ``index`` points to either of the list's ends, and
         O(n) otherwise.
         """
-        cdef size_t norm_index = normalize_index(index, self.view.size, True)
+        cdef size_t norm_index = normalize_index(<PyObject*>index, self.view.size, True)
 
         return <object>pop_double(self.view, norm_index)  # from pop.h
 
@@ -422,7 +422,7 @@ cdef class DoublyLinkedList(LinkedList):
         """
         return <object>popright_double(self.view)  # from pop.h
 
-    def copy(self) -> "DoublyLinkedList":
+    def copy(self) -> DoublyLinkedList:
         """Create a shallow copy of the list.
 
         Returns
@@ -434,7 +434,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Copying a :class:`DoublyLinkedList` is O(n).
         """
-        return self.from_view(self.view.copy())  # from view.h
+        return DoublyLinkedList.from_view(self.view.copy())  # from view.h
 
     def clear(self) -> None:
         """Remove all items from the list.
@@ -484,9 +484,9 @@ cdef class DoublyLinkedList(LinkedList):
         gracefully.
         """
         if key is None:
-            sort(self.view, NULL, reverse)  # from sort.h
+            sort(self.view, <PyObject*>NULL, <bint>reverse)  # from sort.h
         else:
-            sort(self.view, <PyObject*>key, reverse)  # from sort.h
+            sort(self.view, <PyObject*>key, <bint>reverse)  # from sort.h
 
     def reverse(self) -> None:
         """Reverse the order of the list in-place.
@@ -514,7 +514,7 @@ cdef class DoublyLinkedList(LinkedList):
         This method is consistent with the standard library's
         :class:`collections.deque <python:collections.deque>` class.
         """
-        rotate_double(self.view, steps)  # from rotate.h
+        rotate_double(self.view, <Py_ssize_t>steps)  # from rotate.h
 
     def nbytes(self) -> int:
         """The total memory consumption of the list in bytes.
@@ -618,7 +618,7 @@ cdef class DoublyLinkedList(LinkedList):
         """
         # cdef LinkedList result
         # cdef DoubleNode* curr
-        cdef object start, stop, step  # kept at Python level
+        cdef Py_ssize_t start, stop, step  # kept at Python level
         # cdef size_t index, end_index, abs_step, i
         # cdef bint reverse
 
@@ -631,12 +631,14 @@ cdef class DoublyLinkedList(LinkedList):
             # optimization strategy because we can't treat the slices symmetrically
             # in both directions.  To account for this, we convert the slice into
             # a closed interval so we're free to iterate in either direction.
-            start, stop, step = key.indices(self.size)
+            start, stop, step = key.indices(self.view.size)
             # stop -= (stop - start) % step or step  # make stop inclusive
             # if (step > 0 and stop < start) or (step < 0 and start < stop):
             #     return type(self)()  # Python returns an empty list in these cases
 
-            return self.from_view(get_slice_single(self.view, start, stop, step))
+            return DoublyLinkedList.from_view(
+                get_slice_double(self.view, start, stop, step)
+            )
 
             # # determine direction of traversal to avoid backtracking
             # index, end_index = get_slice_direction(
@@ -690,7 +692,7 @@ cdef class DoublyLinkedList(LinkedList):
             # return result
 
         # index directly
-        cdef size_t index = normalize_index(key, self.size)
+        cdef size_t index = normalize_index(<PyObject*>key, self.view.size, False)
         cdef PyObject* borrowed = get_index_double(self.view, index)  # from index.h
         return <object>borrowed  # this returns ownership to Python
 
@@ -848,7 +850,7 @@ cdef class DoublyLinkedList(LinkedList):
 #             return
 # 
 #         # index directly
-#         index = normalize_index(key, self.size)
+#         index = normalize_index(<PyObject*>key, self.size)
 #         curr = node_at_index(index, self.head, self.tail, self.size)
 #         Py_INCREF(<PyObject*>value)
 #         Py_DECREF(curr.value)
@@ -889,15 +891,9 @@ cdef class DoublyLinkedList(LinkedList):
         complete.
         """
         # cdef DoubleNode* curr
-        cdef object start, stop, step  # kept at Python level
+        cdef Py_ssize_t start, stop, step  # kept at Python level
         # cdef size_t abs_step, small_step, index, end_index, i
         # cdef DoubleNode* temp  # temporary node for deletion
-
-        cdef ListNode[DoubleNode]* result
-        cdef size_t index, i
-        cdef DoubleNode* curr
-        cdef DoubleNode* prev
-        cdef DoubleNode* next
 
         # support slicing
         if isinstance(key, slice):
@@ -905,7 +901,7 @@ cdef class DoublyLinkedList(LinkedList):
             # optimization strategy because we can't treat the slices symmetrically
             # in both directions.  To account for this, we convert the slice into
             # a closed interval so we're free to iterate in either direction.
-            start, stop, step = key.indices(self.size)
+            start, stop, step = key.indices(self.view.size)
             # stop -= (stop - start) % step or step  # make stop inclusive
             # if (start > stop and step > 0) or (start < stop and step < 0):
             #     return  # Python does nothing in this case
@@ -959,7 +955,7 @@ cdef class DoublyLinkedList(LinkedList):
 
         # index directly
         else:
-            index = normalize_index(key, self.size)
+            index = normalize_index(<PyObject*>key, self.view.size, False)
             delete_index_double(self.view, index)
 
     def __contains__(self, item: object) -> bool:
@@ -999,9 +995,7 @@ cdef class DoublyLinkedList(LinkedList):
         Concatenation is O(n), where `n` is the length of the other list.
         """
         cdef DoublyLinkedList result = self.copy()
-        cdef PyObject* other_list = <PyObject*>other
-
-        result._extend(other_list)
+        result.extend(other)
         return result
 
     def __iadd__(self, other: Iterable[object]) -> "DoublyLinkedList":
@@ -1021,7 +1015,7 @@ cdef class DoublyLinkedList(LinkedList):
         -----
         Concatenation is O(m), where `m` is the length of the ``other`` list.
         """
-        self.extend(other_list)
+        self.extend(other)
         return self
 
     def __mul__(self, repeat: int) -> "DoublyLinkedList":
@@ -1043,12 +1037,10 @@ cdef class DoublyLinkedList(LinkedList):
         Repetition is O(n * repeat).
         """
         cdef DoublyLinkedList result = self.copy()
-        cdef DoublyLinkedList temp
         cdef size_t i
 
         for i in range(<size_t>repeat):
-            temp = self._copy()
-            result._extend(<PyObject*>temp)
+            result.extend(self.copy())
         return result
 
     def __imul__(self, repeat: int) -> "DoublyLinkedList":

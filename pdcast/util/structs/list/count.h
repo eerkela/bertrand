@@ -5,8 +5,8 @@
 
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
-#include <node.h>  // for node definitions
-#include <view.h>  // for view definitions
+#include <node.h>  // for nodes
+#include <view.h>  // for views
 
 
 // NOTE: we don't need to check for NULLs due to view->normalize_index()
@@ -42,8 +42,8 @@ inline size_t count_single(
 
     // skip to start index
     Node* curr = view->head;
-    size_t idx = 0;
-    for (idx; idx < start; idx++) {
+    size_t idx;
+    for (idx = 0; idx < start; idx++) {
         curr = (Node*)curr->next;
     }
 
@@ -98,15 +98,15 @@ inline size_t count_double(
 
     // else, start from tail
     Node* curr = view->tail;
-    size_t i = view->size - 1;
-    for (i; i >= stop; i--) {  // skip to stop index
+    size_t idx;
+    for (idx = view->size - 1; idx >= stop; idx--) {  // skip to stop index
         curr = (Node*)curr->prev;
     }
 
     // search until we hit start index
     int comp;
     size_t observed = 0;
-    while (i >= start) {
+    while (idx >= start) {
         // C API equivalent of the == operator
         comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
         if (comp == -1) {  // comparison raised an exception
@@ -117,7 +117,7 @@ inline size_t count_double(
 
         // advance to next node
         curr = (Node*)curr->prev;
-        i--;
+        idx--;
     }
 
     // return final count
@@ -165,6 +165,75 @@ inline size_t _count_setlike(
     }
     return 0;
 }
+
+
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template size_t count_single(
+    ListView<SingleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count_single(
+    SetView<SingleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count_single(
+    DictView<SingleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count_single(
+    ListView<DoubleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count_single(
+    SetView<DoubleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count_single(
+    DictView<DoubleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count_double(
+    ListView<DoubleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count_double(
+    SetView<DoubleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count_double(
+    DictView<DoubleNode>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
 
 
 #endif // COUNT_H include guard

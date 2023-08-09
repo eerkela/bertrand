@@ -262,6 +262,24 @@ struct SingleNode {
         }
     }
 
+    /* Check that the wrapped value is an instance of the specialized class. */
+    inline static int typecheck(
+        SingleNode* node,
+        PyTypeObject* specialization
+    ) {
+        int comp = PyObject_IsInstance(node->value, (PyObject*)specialization);
+        if (comp == 0) {  // value is not an instance of specialization
+            PyErr_Format(
+                PyExc_TypeError,
+                "%R is not of type %R",
+                node->value,
+                specialization
+            );
+        }
+
+        return comp + (comp < 0);  // 0 signals TypeError()
+    }
+
 };
 
 
@@ -343,6 +361,25 @@ struct DoubleNode {
             curr->prev = prev;
         }
     }
+
+    /* Check that the wrapped value is an instance of the specialized class. */
+    inline static int typecheck(
+        DoubleNode* node,
+        PyTypeObject* specialization
+    ) {
+        int comp = PyObject_IsInstance(node->value, (PyObject*)specialization);
+        if (comp == 0) {  // value is not an instance of specialization
+            PyErr_Format(
+                PyExc_TypeError,
+                "%R is not of type %R",
+                node->value,
+                specialization
+            );
+        }
+
+        return comp + (comp < 0);  // 0 signals TypeError()
+    }
+
 };
 
 
@@ -492,6 +529,7 @@ struct Keyed {
         node->value = key_value;
         node->node = wrapped;
         node->next = NULL;
+        return node;
     }
 
     // NOTE: we do not provide an init_copy() method because we're storing a
@@ -540,6 +578,24 @@ struct Keyed {
         if (prev != NULL) {
             prev->next = curr;
         }
+    }
+
+    /* Check that the wrapped value is an instance of the specialized class. */
+    inline static int typecheck(
+        Keyed<NodeType>* node,
+        PyTypeObject* specialization
+    ) {
+        int comp = PyObject_IsInstance(node->value, (PyObject*)specialization);
+        if (comp == 0) {  // value is not an instance of specialization
+            PyErr_Format(
+                PyExc_TypeError,
+                "%R is not of type %R",
+                node->value,
+                specialization
+            );
+        }
+
+        return comp + (comp < 0);  // 0 signals TypeError()
     }
 
 };

@@ -4,7 +4,7 @@
 
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
-#include <node.h>  // for node definitions
+#include <node.h>  // for nodes
 #include <view.h>  // for views
 
 
@@ -189,6 +189,39 @@ inline void removebefore_double(ViewType<NodeType>* view, PyObject* sentinel) {
     view->unlink((Node*)curr->prev, curr, node);
     view->recycle(curr);
 }
+
+
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template void remove(ListView<SingleNode>* view, PyObject* item);
+template void remove(ListView<DoubleNode>* view, PyObject* item);
+template void remove_single(SetView<SingleNode>* view, PyObject* item);
+template void remove_single(DictView<SingleNode>* view, PyObject* item);
+template void remove_single(SetView<DoubleNode>* view, PyObject* item);
+template void remove_single(DictView<DoubleNode>* view, PyObject* item);
+template void remove_double(SetView<DoubleNode>* view, PyObject* item);
+template void remove_double(DictView<DoubleNode>* view, PyObject* item);
+template void removeafter(SetView<SingleNode>* view, PyObject* sentinel);
+template void removeafter(DictView<SingleNode>* view, PyObject* sentinel);
+template void removeafter(SetView<DoubleNode>* view, PyObject* sentinel);
+template void removeafter(DictView<DoubleNode>* view, PyObject* sentinel);
+template void removebefore_single(SetView<SingleNode>* view, PyObject* sentinel);
+template void removebefore_single(DictView<SingleNode>* view, PyObject* sentinel);
+template void removebefore_single(SetView<DoubleNode>* view, PyObject* sentinel);
+template void removebefore_single(DictView<DoubleNode>* view, PyObject* sentinel);
+template void removebefore_double(SetView<DoubleNode>* view, PyObject* sentinel);
+template void removebefore_double(DictView<DoubleNode>* view, PyObject* sentinel);
 
 
 #endif  // REMOVE_H include guard

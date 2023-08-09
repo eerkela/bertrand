@@ -5,8 +5,8 @@
 
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
-#include <node.h>  // for node definitions
-#include <view.h>  // for view definitions
+#include <node.h>  // for nodes
+#include <view.h>  // for views
 
 
 /* Insert an item into a singly-linked list, set, or dictionary at the given index. */
@@ -42,7 +42,7 @@ template <template <typename> class ViewType, typename NodeType>
 void insert_double(ViewType<NodeType>* view, size_t index, PyObject* item) {
     // if index is closer to head, use singly-linked version
     if (index <= view->size / 2) {
-        _insert_single(view, index, item);
+        insert_single(view, index, item);
     }
 
     using Node = typename ViewType<NodeType>::Node;
@@ -68,6 +68,30 @@ void insert_double(ViewType<NodeType>* view, size_t index, PyObject* item) {
         return;
     }
 }
+
+
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template void insert_single(ListView<SingleNode>* view, size_t index, PyObject* item);
+template void insert_single(SetView<SingleNode>* view, size_t index, PyObject* item);
+template void insert_single(DictView<SingleNode>* view, size_t index, PyObject* item);
+template void insert_single(ListView<DoubleNode>* view, size_t index, PyObject* item);
+template void insert_single(SetView<DoubleNode>* view, size_t index, PyObject* item);
+template void insert_single(DictView<DoubleNode>* view, size_t index, PyObject* item);
+template void insert_double(ListView<DoubleNode>* view, size_t index, PyObject* item);
+template void insert_double(SetView<DoubleNode>* view, size_t index, PyObject* item);
+template void insert_double(DictView<DoubleNode>* view, size_t index, PyObject* item);
 
 
 #endif // INSERT_H include guard

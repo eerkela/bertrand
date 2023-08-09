@@ -6,6 +6,7 @@
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
 #include <utility>  // for std::pair
+#include <node.h>  // for nodes
 #include <view.h>  // for views
 
 
@@ -174,7 +175,7 @@ inline PyObject* get_index_double(ViewType<NodeType>* view, size_t index) {
 
 /* Extract a slice from a singly-linked list. */
 template <template <typename> class ViewType, typename NodeType>
-inline ViewType<NodeType> get_slice_single(
+inline ViewType<NodeType>* get_slice_single(
     ViewType<NodeType>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
@@ -202,7 +203,7 @@ inline ViewType<NodeType> get_slice_single(
 
 /* Extract a slice from a doubly-linked list. */
 template <template <typename> class ViewType, typename NodeType>
-inline ViewType<NodeType> get_slice_double(
+inline ViewType<NodeType>* get_slice_double(
     ViewType<NodeType>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
@@ -329,7 +330,6 @@ ViewType<NodeType>* _extract_slice_backward(
     }
 
     // copy nodes from original view
-    Node* copy;
     for (size_t i = begin; i >= end; i -= abs_step) {
         Node* copy = slice->copy(curr);
         if (copy == NULL) {  // error during copy()
@@ -360,6 +360,63 @@ ViewType<NodeType>* _extract_slice_backward(
     // caller takes ownership of slice
     return slice;
 }
+
+
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template PyObject* get_index_single(ListView<SingleNode>* view, size_t index);
+template PyObject* get_index_single(SetView<SingleNode>* view, size_t index);
+template PyObject* get_index_single(DictView<SingleNode>* view, size_t index);
+template PyObject* get_index_double(ListView<DoubleNode>* view, size_t index);
+template PyObject* get_index_double(SetView<DoubleNode>* view, size_t index);
+template PyObject* get_index_double(DictView<DoubleNode>* view, size_t index);
+template ListView<SingleNode>* get_slice_single(
+    ListView<SingleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template SetView<SingleNode>* get_slice_single(
+    SetView<SingleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template DictView<SingleNode>* get_slice_single(
+    DictView<SingleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template ListView<DoubleNode>* get_slice_double(
+    ListView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template SetView<DoubleNode>* get_slice_double(
+    SetView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
+template DictView<DoubleNode>* get_slice_double(
+    DictView<DoubleNode>* view,
+    Py_ssize_t start,
+    Py_ssize_t stop,
+    Py_ssize_t step
+);
 
 
 #endif // GET_SLICE_H include guard

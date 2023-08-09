@@ -107,4 +107,28 @@ void rotate_double(ViewType<NodeType>* view, ssize_t steps) {
 }
 
 
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template void rotate_single(ListView<SingleNode>* view, ssize_t steps);
+template void rotate_single(SetView<SingleNode>* view, ssize_t steps);
+template void rotate_single(DictView<SingleNode>* view, ssize_t steps);
+template void rotate_single(ListView<DoubleNode>* view, ssize_t steps);
+template void rotate_single(SetView<DoubleNode>* view, ssize_t steps);
+template void rotate_single(DictView<DoubleNode>* view, ssize_t steps);
+template void rotate_double(ListView<DoubleNode>* view, ssize_t steps);
+template void rotate_double(SetView<DoubleNode>* view, ssize_t steps);
+template void rotate_double(DictView<DoubleNode>* view, ssize_t steps);
+
+
 #endif // ROTATE_H include guard

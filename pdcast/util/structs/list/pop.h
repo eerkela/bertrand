@@ -6,6 +6,7 @@
 #include <cstddef>  // for size_t
 #include <queue>  // for std::queue
 #include <Python.h>  // for CPython API
+#include <node.h>  // for nodes
 #include <view.h>  // for views
 
 
@@ -133,7 +134,7 @@ inline PyObject* popleft(ViewType<NodeType>* view) {
 
     // destroy node and return its value
     Node* head = view->head;
-    return _pop_node(view, NULL, head, (Node*)head->next);
+    return _pop_node(view, (Node*)NULL, head, (Node*)head->next);
 }
 
 
@@ -169,7 +170,7 @@ inline PyObject* popright_double(ViewType<NodeType>* view) {
     // NOTE: this is O(1) for doubly-linked lists because we can use the tail's
     // prev pointer to unlink it from the list.
     Node* tail = view->tail;
-    return _pop_node(view, (Node*)tail->prev, tail, NULL);
+    return _pop_node(view, (Node*)tail->prev, tail, (Node*)NULL);
 }
 
 
@@ -179,12 +180,12 @@ inline PyObject* popright_double(ViewType<NodeType>* view) {
 
 
 /* Unlink and remove a node and return its value. */
-template <template <typename> class ViewType, typename NodeType>
+template <template <typename> class ViewType, typename NodeType, typename Node>
 inline PyObject* _pop_node(
     ViewType<NodeType>* view,
-    NodeType* prev,
-    NodeType* curr,
-    NodeType* next
+    Node* prev,
+    Node* curr,
+    Node* next
 ) {
     // get return value
     PyObject* value = curr->value;
@@ -195,6 +196,57 @@ inline PyObject* _pop_node(
     view->recycle(curr);
     return value;
 }
+
+
+////////////////////////
+////    WRAPPERS    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with nested templates, so we need to
+// explicitly instantiate specializations for each combination of node/view
+// type.  This is a bit of a pain, put it's the only way to get Cython to
+// properly recognize the functions.
+
+// Maybe in a future release we won't have to do this:
+
+
+template PyObject* pop_single(ListView<SingleNode>* view, size_t index);
+template PyObject* pop_single(SetView<SingleNode>* view, size_t index);
+template PyObject* pop_single(DictView<SingleNode>* view, size_t index);
+template PyObject* pop_single(
+    DictView<SingleNode>* view,
+    PyObject* key,
+    PyObject* default_value
+);
+template PyObject* pop_single(ListView<DoubleNode>* view, size_t index);
+template PyObject* pop_single(SetView<DoubleNode>* view, size_t index);
+template PyObject* pop_single(DictView<DoubleNode>* view, size_t index);
+template PyObject* pop_single(
+    DictView<DoubleNode>* view,
+    PyObject* key,
+    PyObject* default_value
+);
+template PyObject* pop_double(ListView<DoubleNode>* view, size_t index);
+template PyObject* pop_double(SetView<DoubleNode>* view, size_t index);
+template PyObject* pop_double(DictView<DoubleNode>* view, size_t index);
+template PyObject* pop_double(
+    DictView<DoubleNode>* view,
+    PyObject* key,
+    PyObject* default_value
+);
+template PyObject* popleft(ListView<SingleNode>* view);
+template PyObject* popleft(SetView<SingleNode>* view);
+template PyObject* popleft(DictView<SingleNode>* view);
+template PyObject* popright_single(ListView<SingleNode>* view);
+template PyObject* popright_single(SetView<SingleNode>* view);
+template PyObject* popright_single(DictView<SingleNode>* view);
+template PyObject* popright_single(ListView<DoubleNode>* view);
+template PyObject* popright_single(SetView<DoubleNode>* view);
+template PyObject* popright_single(DictView<DoubleNode>* view);
+template PyObject* popright_double(ListView<DoubleNode>* view);
+template PyObject* popright_double(SetView<DoubleNode>* view);
+template PyObject* popright_double(DictView<DoubleNode>* view);
 
 
 #endif // POP_H include guard

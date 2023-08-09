@@ -16,8 +16,11 @@ print(timeit(lambda: d["c"], number=10**7))
 
 
 # cdef object iterable = [3, 5, 2, 6, 1, 4]
-# cdef SetView[SingleNode]* view = new SetView[SingleNode](<PyObject*>iterable)
+# cdef SetView[DoubleNode]* view = new SetView[DoubleNode](<PyObject*>iterable)
 
+
+# cdef object item = 7
+# append(view, <PyObject*>item)
 
 
 del view

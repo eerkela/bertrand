@@ -10,12 +10,12 @@
 #include <node.h>  // for Hashed<T>, Mapped<T>
 
 
-// TODO: search.h should be a separate header file that implements __getitem__
-// and __setitem__ for dictionary lookup.  This handles the reference counting
-// and error handling, and it includes LRU functionality that moves the node
-// whenever it is searched.  It has a __setitem__ equivalent that always links
-// to the head of the list.  It also implements a purge() function that removes
-// any stagnant nodes at the C++ level.  __setitem__() calls purge() internally.
+// TODO: support specialization with more than one type parameter via variadic
+// templates.  This would allow someone to write DoublyLinkedList[(int, float, str)]
+// to support union types in a list.
+
+// DictViews can use slices to represent key/value types
+// `DoublyLinkedDictionary[str: int]`
 
 
 /////////////////////////
@@ -490,7 +490,7 @@ public:
         head = NULL;
         tail = NULL;
         size = 0;
-        freelist = std::queue<Node*>();
+        specialization = NULL;
     }
 
     /* Construct a ListView from an input iterable. */
@@ -505,7 +505,7 @@ public:
         head = NULL;
         tail = NULL;
         size = 0;
-        freelist = std::queue<Node*>();
+        specialization = NULL;
 
         // unpack iterator into ListView
         PyObject* item;
@@ -548,7 +548,15 @@ public:
     template <typename... Args>
     inline Node* node(PyObject* value, Args... args) const {
         // variadic dispatch to Node::init()
-        return Allocater<Node>::create(freelist, value, args...);
+        Node* result = Allocater<Node>::create(freelist, value, args...);
+        if (specialization != NULL) {
+            if (result != NULL && !Node::typecheck(result, specialization)) {
+                recycle(result);  // clean up allocated node
+                return NULL;  // propagate TypeError()
+            }
+        }
+
+        return result;
     }
 
     /* Release a node, pushing it into the freelist. */
@@ -631,6 +639,21 @@ public:
         }
     }
 
+    /* Enforce strict type checking for elements of this list. */
+    inline void specialize(PyTypeObject* spec) {
+        // check the contents of the list
+        Node* curr = head;
+        for (size_t i = 0; i < size; i++) {
+            if (!Node::typecheck(curr, spec)) {
+                return;  // propagate TypeError()
+            }
+            curr = (Node*)curr->next;
+        }
+
+        // set specialization flag
+        specialization = spec;  // NULL disables typechecking
+    }
+
     /* Get the total memory consumed by the ListView (in bytes).
 
     NOTE: this is a lower bound and does not include the control structure of
@@ -646,6 +669,7 @@ public:
     }
 
 private:
+    PyTypeObject* specialization;  // specialized type for elements of this list
     mutable std::queue<Node*> freelist;
 
     /* Allocate a new node for the item and append it to the list, discarding
@@ -690,8 +714,7 @@ public:
         head = NULL;
         tail = NULL;
         size = 0;
-        freelist = std::queue<Node*>();
-        table = new HashTable<Node*>();
+        specialization = NULL;
     }
 
     /* Construct a SetView from an input iterable. */
@@ -703,16 +726,10 @@ public:
         }
 
         // init empty SetView
-        try {
-            head = NULL;
-            tail = NULL;
-            size = 0;
-            freelist = std::queue<Node*>();
-            table = new HashTable<Node*>();  // can throw std::bad_alloc
-        } catch (const std::bad_alloc& err) {
-            Py_DECREF(iterator);
-            throw err;
-        }
+        head = NULL;
+        tail = NULL;
+        size = 0;
+        specialization = NULL;
 
         // unpack iterator into SetView
         PyObject* item;
@@ -723,7 +740,6 @@ public:
                 if (PyErr_Occurred()) {  // error during next()
                     Py_DECREF(iterator);
                     Allocater<Node>::discard_list(head);
-                    delete table;
                     throw std::runtime_error("could not get item from iterator");
                 }
                 break;
@@ -734,7 +750,6 @@ public:
             if (PyErr_Occurred()) {
                 Py_DECREF(iterator);
                 Allocater<Node>::discard_list(head);
-                delete table;
                 throw std::runtime_error("could not stage item");
             }
 
@@ -750,7 +765,6 @@ public:
     ~SetView() {
         Allocater<Node>::discard_list(head);
         Allocater<Node>::discard_freelist(freelist);
-        delete table;
         // NOTE: head, tail, size, and queue are automatically destroyed
     }
 
@@ -758,7 +772,15 @@ public:
     template <typename... Args>
     inline Node* node(PyObject* value, Args... args) const {
         // variadic dispatch to Node::init()
-        return Allocater<Node>::create(freelist, value, args...);
+        Node* result = Allocater<Node>::create(freelist, value, args...);
+        if (specialization != NULL) {
+            if (result != NULL && !Node::typecheck(result, specialization)) {
+                recycle(result);  // clean up allocated node
+                return NULL;  // propagate TypeError()
+            }
+        }
+
+        return result;
     }
 
     /* Release a node, pushing it into the freelist. */
@@ -812,7 +834,7 @@ public:
         size = 0;
 
         // reset hash table to initial size
-        table->clear();
+        table.clear();
 
         // recycle all nodes, filling up the freelist
         Allocater<Node>::recycle_list(freelist, curr);
@@ -821,7 +843,7 @@ public:
     /* Link a node to its neighbors to form a linked list. */
     inline void link(Node* prev, Node* curr, Node* next) {
         // add node to hash table
-        table->remember(curr);
+        table.remember(curr);
         if (PyErr_Occurred()) {  // node is already present in table
             return;
         }
@@ -842,7 +864,7 @@ public:
     /* Unlink a node from its neighbors. */
     inline void unlink(Node* prev, Node* curr, Node* next) {
         // remove node from hash table
-        table->forget(curr);
+        table.forget(curr);
         if (PyErr_Occurred()) {  // node is not present in table
             return;
         }
@@ -860,19 +882,34 @@ public:
         }
     }
 
+    /* Enforce strict type checking for elements of this list. */
+    inline void specialize(PyTypeObject* spec) {
+        // check the contents of the list
+        Node* curr = head;
+        for (size_t i = 0; i < size; i++) {
+            if (!Node::typecheck(curr, spec)) {
+                return;  // propagate TypeError()
+            }
+            curr = (Node*)curr->next;
+        }
+
+        // set specialization flag
+        specialization = spec;  // NULL disables typechecking
+    }
+
     /* Search for a node by its value. */
     inline Node* search(PyObject* value) const {
-        return table->search(value);
+        return table.search(value);
     }
 
     /* Search for a node by its value. */
     inline Node* search(Node* value) const {
-        return table->search(value);
+        return table.search(value);
     }
 
     /* Clear all tombstones from the hash table. */
     inline void clear_tombstones() {
-        table->clear_tombstones();
+        table.clear_tombstones();
     }
 
     /* Get the total amount of memory consumed by the hash table.
@@ -882,7 +919,7 @@ public:
     higher than is reported here. */
     inline size_t nbytes() const {
         size_t total = sizeof(SetView<NodeType>);  // SetView object
-        total += table->nbytes();  // hash table
+        total += table.nbytes();  // hash table
         total += size * sizeof(Node);  // nodes
         total += sizeof(freelist);  // freelist queue
         total += freelist.size() * (sizeof(Node) + sizeof(Node*));  // freelist
@@ -890,8 +927,9 @@ public:
     }
 
 private:
-    mutable std::queue<Node*> freelist;
-    HashTable<Node*>* table;
+    PyTypeObject* specialization;
+    mutable std::queue<Node*> freelist;  // stack allocated
+    HashTable<Node*> table;  // stack allocated
 
     /* Allocate a new node for the item and append it to the list, discarding
     it in the event of an error. */
@@ -941,8 +979,7 @@ public:
         head = NULL;
         tail = NULL;
         size = 0;
-        freelist = std::queue<Node*>();
-        table = new HashTable<Node*>();
+        specialization = NULL;
     }
 
     /* Construct a DictView from an input iterable. */
@@ -954,16 +991,10 @@ public:
         }
 
         // init empty DictView
-        try {
-            head = NULL;
-            tail = NULL;
-            size = 0;
-            freelist = std::queue<Node*>();
-            table = new HashTable<Node*>();  // can throw std::bad_alloc
-        } catch (const std::bad_alloc& err) {
-            Py_DECREF(iterator);
-            throw err;
-        }
+        head = NULL;
+        tail = NULL;
+        size = 0;
+        specialization = NULL;
 
         // unpack iterator into DictView
         PyObject* item;
@@ -974,7 +1005,6 @@ public:
                 if (PyErr_Occurred()) {  // error during next()
                     Py_DECREF(iterator);
                     Allocater<Node>::discard_list(head);
-                    delete table;
                     throw std::runtime_error("could not get item from iterator");
                 }
                 break;  // end of iterator
@@ -985,7 +1015,6 @@ public:
             if (PyErr_Occurred()) {  // error during stage()
                 Py_DECREF(iterator);
                 Allocater<Node>::discard_list(head);
-                delete table;
                 throw std::runtime_error("could not stage item");
             }
 
@@ -1001,14 +1030,22 @@ public:
     ~DictView() {
         Allocater<Node>::discard_list(head);
         Allocater<Node>::discard_freelist(freelist);
-        delete table;
         // NOTE: head, tail, size, and queue are automatically destroyed
     }
 
     /* Construct a new node for the list. */
     template <typename... Args>
     inline Node* node(PyObject* value, Args... args) const {
-        return Allocater<Node>::create(freelist, value, args...);
+        // variadic dispatch to Node::init()
+        Node* result = Allocater<Node>::create(freelist, value, args...);
+        if (specialization != NULL) {
+            if (result != NULL && !Node::typecheck(result, specialization)) {
+                recycle(result);  // clean up allocated node
+                return NULL;  // propagate TypeError()
+            }
+        }
+
+        return result;
     }
 
     /* Free a node. */
@@ -1062,7 +1099,7 @@ public:
         size = 0;
 
         // reset hash table to initial size
-        table->clear();
+        table.clear();
 
         // recycle all nodes, filling up the freelist
         Allocater<Node>::recycle_list(freelist, curr);
@@ -1071,7 +1108,7 @@ public:
     /* Link a node to its neighbors to form a linked list. */
     inline void link(Node* prev, Node* curr, Node* next) {
         // add node to hash table
-        table->remember(curr);
+        table.remember(curr);
         if (PyErr_Occurred()) {
             return;
         }
@@ -1092,7 +1129,7 @@ public:
     /* Unlink a node from its neighbors. */
     inline void unlink(Node* prev, Node* curr, Node* next) {
         // remove node from hash table
-        table->forget(curr);
+        table.forget(curr);
         if (PyErr_Occurred()) {
             return;
         }
@@ -1110,19 +1147,50 @@ public:
         }
     }
 
+    /* Enforce strict type checking for elements of this list. */
+    inline void specialize(PyTypeObject* spec) {
+        // check the contents of the list
+        Node* curr = head;
+        for (size_t i = 0; i < size; i++) {
+            if (!Node::typecheck(curr, spec)) {
+                return;  // propagate TypeError()
+            }
+            curr = (Node*)curr->next;
+        }
+
+        // set specialization flag
+        specialization = spec;  // NULL disables typechecking
+    }
+
     /* Search for a node by its value. */
     inline Node* search(PyObject* value) const {
-        return table->search(value);
+        return table.search(value);
     }
 
     /* Search for a node by its value. */
     inline Node* search(Node* value) const {
-        return table->search(value);
+        return table.search(value);
+    }
+
+    /* Search for a node and move it to the front of the list at the same time. */
+    inline Node* lru_search(PyObject* value) const {
+        // move node to head of list
+        Node* curr = table.search(value);
+        if (curr != NULL && curr != head) {
+            if (curr == tail) {
+                tail = (Node*)curr->prev;
+            }
+            Node::unlink((Node*)curr->prev, curr, (Node*)curr->next);
+            Node::link(NULL, curr, head);
+            head = curr;
+        }
+
+        return curr;
     }
 
     /* Clear all tombstones from the hash table. */
     inline void clear_tombstones() {
-        table->clear_tombstones();
+        table.clear_tombstones();
     }
 
     /* Get the total amount of memory consumed by the hash table.
@@ -1132,7 +1200,7 @@ public:
     higher than is reported here. */
     inline size_t nbytes() const {
         size_t total = sizeof(DictView<NodeType>);  // SetView object
-        total += table->nbytes();  // hash table
+        total += table.nbytes();  // hash table
         total += size * sizeof(Node);  // contents of dictionary
         total += sizeof(freelist);  // freelist queue
         total += freelist.size() * (sizeof(Node) + sizeof(Node*));
@@ -1140,8 +1208,9 @@ public:
     }
 
 private:
-    mutable std::queue<Node*> freelist;
-    HashTable<Node*>* table;
+    PyTypeObject* specialization;
+    mutable std::queue<Node*> freelist;  // stack allocated
+    HashTable<Node*> table;  // stack allocated
 
     /* Allocate a new node for the item and append it to the list, discarding
     it in the event of an error. */
