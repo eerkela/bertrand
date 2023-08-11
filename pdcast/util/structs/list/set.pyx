@@ -5,7 +5,1821 @@ that uses a hash map to support fast lookups by value.
 from typing import Hashable, Iterable
 
 
-cdef class HashedList(LinkedList):
+####################
+####    BASE    ####
+####################
+
+
+cdef class LinkedSet:
+    """A pure Cython/C++ implementation of an ordered set using a linked list
+    and a hash table for fast access to each node.
+
+    Parameters
+    ----------
+    items : Iterable[Any], optional
+        An iterable of items to initialize the list.  Each value must be both
+        unique and hashable.
+    reverse : bool, optional
+        If ``True``, reverse the order of `items` during list construction.
+        The default is ``False``.
+    spec : Any, optional
+        A type to enforce for elements of the list, allowing the creation of
+        type-safe containers.  This can be in any format recognized by
+        :func:`isinstance() <python:isinstance>`.  If it is set to ``None``,
+        then type checking will be disabled for the list.  Defaults to ``None``.
+
+    Attributes
+    ----------
+    view : SetView*
+        A low-level view into the list.  This is a pointer to a C++ object that
+        tracks the list's head and tail pointers and manages memory for each of
+        its nodes.  It also encapsulates the list's hash table, which is
+        automatically updated whenever a node is added or removed from the
+        list.  This object is not intended to be accessed by the user, and
+        manipulating it directly it can result in memory leaks and/or undefined
+        behavior.  Thorough inspection of the C++ header files is recommended
+        before attempting to access this attribute, which can only be done in
+        Cython.
+
+    Notes
+    -----
+    Because of the extra hash table, this data structure offers O(1) access to
+    any node in the list by its value.  In the doubly-linked variant, it also
+    supports O(1) removals.
+
+    .. warning::
+
+        These sets are not thread-safe.  If you need to use them in a
+        multithreaded context, you should use a :class:`threading.Lock` to
+        synchronize access.
+    """
+
+    def __init__(
+        self,
+        items: Iterable[object] | None = None,
+        reverse: bool = False,
+        spec: object | None = None,
+    ):
+        raise NotImplementedError(
+            "`LinkedSet` is an abstract class and cannot be instantiated.  "
+            "Use `SinglyLinkedSet` or `DoublyLinkedSet` instead."
+        )
+
+    ########################
+    ####    ABSTRACT    ####
+    ########################
+
+    def append(self, item: object) -> None:
+        """Add an item to the end of the list.
+
+        Parameters
+        ----------
+        item : Any
+            The item to add to the list.
+
+        Notes
+        -----
+        Appends are O(1) for both ends of the list.
+        """
+        raise NotImplementedError()
+
+    def appendleft(self, item: object) -> None:
+        """Add an item to the beginning of the list.
+
+        Parameters
+        ----------
+        item : Any
+            The item to add to the list.
+
+        Notes
+        -----
+        Appends are O(1) for both ends of the list.
+        
+        This method is consistent with the standard library's
+        :class:`collections.deque <python:collections.deque>` class.
+        """
+        raise NotImplementedError()
+
+    def add(self, item: object) -> None:
+        """An alias for :meth:`LinkedSet.append` that is consistent with the
+        standard :class:`set <python:set>` interface.
+        """
+        # TODO: call the C++ method directly instead of going through Python
+        raise NotImplementedError()
+
+    def insert(self, index: int, item: object) -> None:
+        """Insert an item at the specified index.
+
+        Parameters
+        ----------
+        index : int
+            The index at which to insert the item.  This can be negative,
+            following the same convention as Python's standard
+            :class:`list <python:list>`.
+        item : Any
+            The item to add to the list.
+
+        Raises
+        ------
+        IndexError
+            If the index is out of bounds.
+
+        Notes
+        -----
+        Inserts are O(n) on average.
+        """
+        raise NotImplementedError()
+
+    def insertafter(self, sentinel: object, item: object, steps: int = 1) -> None:
+        """Insert an item after a given sentinel value.
+
+        Parameters
+        ----------
+        sentinel : Any
+            The value to insert the item after.
+        item : Any
+            The item to add to the list.
+        steps : int, optional
+            An offset from the sentinel value.  If this is positive, this
+            method will count to the right the specified number of spaces from
+            the sentinel and insert the item at that index.  Negative values
+            count to the left.  The default is ``1``.
+
+        Raises
+        ------
+        ValueError
+            If the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.insert :
+            Insert an item at the specified index.
+        LinkedSet.insertbefore :
+            Insert an item relative to a given sentinel value.
+
+        Notes
+        -----
+        Inserts are O(steps).
+
+        Calling this method with negative steps is equivalent to calling
+        :meth:`insertbefore() <LinkedSet.insertbefore>` with ``steps=-steps``.
+        """
+        raise NotImplementedError()
+
+    def insertbefore(self, sentinel: object, item: object, steps: int = 1) -> None:
+        """Insert an item before a given sentinel value.
+
+        Parameters
+        ----------
+        sentinel : Any
+            The value to insert the item before.
+        item : Any
+            The item to add to the list.
+        steps : int, optional
+            An offset from the sentinel value.  If this is positive, this
+            method will count to the left the specified number of spaces from
+            the sentinel and insert the item at that index.  Negative values
+            count to the right.  The default is ``1``.
+
+        Raises
+        ------
+        ValueError
+            If the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.insert :
+            Insert an item at the specified index.
+        LinkedSet.insertafter :
+            Insert an item relative to a given sentinel value.
+
+        Notes
+        -----
+        Inserts are O(steps).
+
+        Calling this method with negative steps is equivalent to calling
+        :meth:`insertafter() <LinkedSet.insertafter>` with ``steps=-steps``.
+        """
+        raise NotImplementedError()
+
+    def extend(self, items: Iterable[object]) -> None:
+        """Add multiple items to the end of the list.
+
+        Parameters
+        ----------
+        items : Iterable[Any]
+            An iterable of items to add to the list.
+
+        Notes
+        -----
+        Extends are O(m), where `m` is the length of ``items``.
+        """
+        raise NotImplementedError()
+
+    def extendleft(self, items: Iterable[object]) -> None:
+        """Add multiple items to the beginning of the set.
+
+        Parameters
+        ----------
+        items : Iterable[Any]
+            An iterable of items to add to the set.
+
+        Notes
+        -----
+        Extends are O(m), where `m` is the length of ``items``.
+
+        This method is consistent with the standard library's
+        :class:`collections.deque <python:collections.deque>` class.  Just like
+        that class, the series of left appends results in reversing the order
+        of elements in ``items``.
+        """
+        raise NotImplementedError()
+
+    def extendafter(self, sentinel: object, items: Iterable[object]) -> None:
+        """Add multiple items after a given sentinel value.
+
+        Parameters
+        ----------
+        items : Iterable[Any]
+            An iterable of items to add to the set.
+
+        See Also
+        --------
+        LinkedSet.extend :
+            Add multiple items to the end of the set.
+        LinkedSet.extendleft :
+            Add multiple items to the beginning of the set.
+        LinkedSet.extendbefore :
+            Add multiple items before a given sentinel value.
+
+        Notes
+        -----
+        Extends are O(m), where `m` is the length of ``items``.
+        """
+        raise NotImplementedError()
+
+    def extendbefore(self, sentinel: object, items: Iterable[object]) -> None:
+        """Add multiple items before a given sentinel value.
+
+        Parameters
+        ----------
+        items : Iterable[Any]
+            An iterable of items to add to the set.
+
+        See Also
+        --------
+        LinkedSet.extend :
+            Add multiple items to the end of the set.
+        LinkedSet.extendleft :
+            Add multiple items to the beginning of the set.
+        LinkedSet.extendafter :
+            Add multiple items after a given sentinel value.
+
+        Notes
+        -----
+        Extends are O(m), where `m` is the length of ``items``.
+
+        Just like :meth:`extendleft() <LinkedSet.extendleft>`, this method
+        implicitly reverses the order of elements in ``items``.
+        """
+        raise NotImplementedError()
+
+    def index(self, item: object, start: int = 0, stop: int = -1) -> int:
+        """Get the index of an item within the set.
+
+        Parameters
+        ----------
+        item : Any
+            The item to search for.
+
+        Returns
+        -------
+        int
+            The index of the item within the set.
+
+        Raises
+        ------
+        ValueError
+            If the item is not contained in the set.
+
+        Notes
+        -----
+        Indexing is O(n) on average.
+        """
+        raise NotImplementedError()
+
+    def count(self, item: object, start: int = 0, stop: int = -1) -> int:
+        """Count the number of occurrences of an item in the set.
+
+        Parameters
+        ----------
+        item : Any
+            The item to count.
+
+        Returns
+        -------
+        int
+            The number of occurrences of the item in the set.
+
+        Notes
+        -----
+        Counting is O(1).
+        """
+        raise NotImplementedError()
+
+    def remove(self, item: object) -> None:
+        """Remove an item from the set.
+
+        Parameters
+        ----------
+        item : Any
+            The item to remove from the set.
+
+        Raises
+        ------
+        ValueError
+            If the item is not contained in the set.
+
+        Notes
+        -----
+        Removals are O(1).
+        """
+        raise NotImplementedError()
+
+    def discard(self, item: object) -> None:
+        """An alias for :meth:`LinkedSet.remove` that is consistent with the
+        standard :class:`set <python:set>` interface.
+        """
+        # TODO: provide a C++ implementation that does not raise an error, and
+        # therefore does not generate a stack trace.
+        raise NotImplementedError()
+
+    def discardafter(self, sentinel: object, item: object, steps: int = 1) -> None:
+        """Remove an item from the set, relative to a given sentinel value.
+
+        Parameters
+        ----------
+        item : Any
+            The item to remove from the set.
+        sentinel : Any
+            The value to remove the item after.
+        steps : int, optional
+            An offset from the sentinel value.  If this is positive, this
+            method will count to the right the specified number of spaces from
+            the sentinel and remove the item at that index.  Negative values
+            count to the left.  The default is ``1``.
+
+        Raises
+        ------
+        ValueError
+            If either the item or the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.remove :
+            Remove an item from the set.
+        LinkedSet.removebefore :
+            Remove an item from the set relative to a given sentinel value.
+
+        Notes
+        -----
+        Removals are O(steps).
+        """
+        raise NotImplementedError()
+
+    def discardbefore(self, sentinel: object, item: object, steps: int = 1) -> None:
+        """Remove an item from the set, relative to a given sentinel value.
+
+        Parameters
+        ----------
+        item : Any
+            The item to remove from the set.
+        sentinel : Any
+            The value to remove the item before.
+        steps : int, optional
+            An offset from the sentinel value.  If this is positive, this
+            method will count to the left the specified number of spaces from
+            the sentinel and remove the item at that index.  Negative values
+            count to the right.  The default is ``1``.
+
+        Raises
+        ------
+        ValueError
+            If either the item or the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.remove :
+            Remove an item from the set.
+        LinkedSet.removeafter :
+            Remove an item from the set relative to a given sentinel value.
+
+        Notes
+        -----
+        Removals are O(steps).
+        """
+        raise NotImplementedError()
+
+    def pop(self, index: int = -1) -> object:
+        """Remove and return the item at the specified index.
+
+        Parameters
+        ----------
+        index : int, optional
+            The index of the item to remove.  If this is negative, it will be
+            translated to a positive index by counting backwards from the end
+            of the set.  The default is ``-1``, which removes the last item.
+
+        Returns
+        -------
+        Any
+            The item that was removed from the set.
+
+        Raises
+        ------
+        IndexError
+            If the index is out of bounds.
+
+        Notes
+        -----
+        Pops are O(1) if ``index`` points to either of the set's ends, and
+        O(n) otherwise.
+        """
+        raise NotImplementedError()
+
+    def popleft(self) -> object:
+        """Remove and return the first item in the set.
+
+        Returns
+        -------
+        Any
+            The item that was removed from the set.
+
+        Raises
+        ------
+        IndexError
+            If the set is empty.
+
+        Notes
+        -----
+        This is equivalent to :meth:`LinkedSet.pop` with ``index=0``, but it
+        avoids the overhead of handling indices and is thus more efficient in
+        the specific case of removing the first item.
+        """
+        raise NotImplementedError()
+
+    def popright(self) -> object:
+        """Remove and return the last item in the set.
+
+        Returns
+        -------
+        Any
+            The item that was removed from the set.
+
+        Raises
+        ------
+        IndexError
+            If the set is empty.
+
+        Notes
+        -----
+        This is equivalent to :meth:`LinkedSet.pop` with ``index=-1``, but it
+        avoids the overhead of handling indices and is thus more efficient in
+        the specific case of removing the last item.
+        """
+        raise NotImplementedError()
+
+    def popafter(self, sentinel: object, steps: int = 1) -> None:
+        """Remove an item from the set relative to a given sentinel and return
+        its value.
+
+        Parameters
+        ----------
+        sentinel : Any
+            The value to remove after.
+        steps : int, optional
+            An offset from the sentinel value.  If this is positive, this
+            method will count to the right the specified number of spaces from
+            the sentinel and pop the item at that index.  Negative values
+            count to the left.  The default is ``1``.
+
+        Raises
+        ------
+        ValueError
+            If the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.pop :
+            Remove and return the item at the specified index.
+        LinkedSet.popleft :
+            Remove and return the first item in the set.
+        LinkedSet.popright :
+            Remove and return the last item in the set.
+        LinkedSet.popbefore :
+            Remove an item from the set relative to a given sentinel value.
+
+        Notes
+        -----
+        Pops are O(steps).
+        """
+        raise NotImplementedError()
+
+    def popbefore(self, sentinel: object, steps: int = 1) -> None:
+        """Remove an item from the set relative to a given sentinel and return
+        its value.
+
+        Parameters
+        ----------
+        sentinel : Any
+            The value to remove before.
+        steps : int, optional
+            An offset from the sentinel value.  If this is positive, this
+            method will count to the left the specified number of spaces from
+            the sentinel and pop the item at that index.  Negative values
+            count to the right.  The default is ``1``.
+
+        Raises
+        ------
+        ValueError
+            If the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.pop :
+            Remove and return the item at the specified index.
+        LinkedSet.popleft :
+            Remove and return the first item in the set.
+        LinkedSet.popright :
+            Remove and return the last item in the set.
+        LinkedSet.popafter :
+            Remove an item from the set relative to a given sentinel value.
+
+        Notes
+        -----
+        Pops are O(steps).
+        """
+        raise NotImplementedError()
+
+    def copy(self) -> LinkedSet:
+        """Create a shallow copy of the set.
+
+        Returns
+        -------
+        DoublyLinkedList
+            A new set containing the same items as this one.
+
+        Notes
+        -----
+        Copying a :class:`LinkedSet` is O(n).
+        """
+        raise NotImplementedError()
+
+    def clear(self) -> None:
+        """Remove all items from the set.
+
+        Notes
+        -----
+        Clearing a set is O(n).
+        """
+        raise NotImplementedError()
+
+    def clearafter(self, sentinel: object, length: int = -1):
+        """Remove multiple items after a given sentinel value.
+
+        Parameters
+        ----------
+        sentinel : Any
+            The value to remove items after.
+        length : int, optional
+            The number of items to remove.  If this is negative, then every
+            value after the sentinel will be removed, making it the new tail.
+
+        Raises
+        ------
+        ValueError
+            If the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.clear :
+            Remove all items from the set.
+        LinkedSet.clearbefore :
+            Remove all items before a given sentinel value.
+
+        Notes
+        -----
+        Clearing is O(length).
+        """
+        raise NotImplementedError()
+
+    def clearbefore(self, sentinel: object, length: int = -1):
+        """Remove multiple items before a given sentinel value.
+
+        Parameters
+        ----------
+        sentinel : Any
+            The value to remove items before.
+        length : int, optional
+            The number of items to remove.  If this is negative, then every
+            value before the sentinel will be removed, making it the new head.
+
+        Raises
+        ------
+        ValueError
+            If the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.clear :
+            Remove all items from the set.
+        LinkedSet.clearafter :
+            Remove all items after a given sentinel value.
+
+        Notes
+        -----
+        Clearing is O(length).
+        """
+        raise NotImplementedError()
+
+    def sort(self, *, key: object = None, reverse: bool = False) -> None:
+        """Sort the set in-place.
+
+        Parameters
+        ----------
+        key : Callable[[Any], Any], optional
+            A function that takes an item from the set and returns a value to
+            use for sorting.  If this is not given, then the items will be
+            compared directly.
+        reverse : bool, optional
+            Indicates whether to sort the set in descending order.  The
+            default is ``False``, which sorts in ascending order.
+
+        Notes
+        -----
+        Sorting is O(n log n), using an iterative merge sort algorithm that
+        avoids recursion.  The sort is stable, meaning that the relative order
+        of elements that compare equal will not change, and it is performed
+        in-place for minimal memory overhead.
+
+        If a ``key`` function is provided, then the keys will be computed once
+        and reused for all iterations of the sorting algorithm.  Otherwise,
+        each element will be compared directly using the ``<`` operator.  If
+        ``reverse=True``, then the value of the comparison will be inverted
+        (i.e. ``not a < b``).
+
+        One quirk of this implementation is how it handles errors.  By default,
+        if a comparison throws an exception, then the sort will be aborted and
+        the list will be left in a partially-sorted state.  This is consistent
+        with the behavior of Python's built-in :meth:`list.sort() <python:list.sort>`
+        method.  However, when a ``key`` function is provided, we actually end
+        up sorting an auxiliary list of ``(key, value)`` pairs, which is then
+        reflected in the original list.  This means that if a comparison throws
+        an exception, the original list will not be changed.  This holds even
+        if the ``key`` is a simple identity function (``lambda x: x``), which
+        opens up the possibility of anticipating errors and handling them
+        gracefully.
+        """
+        raise NotImplementedError()
+
+    def reverse(self) -> None:
+        """Reverse the order of the set in-place.
+
+        Notes
+        -----
+        Reversing a :class:`LinkedSet` is O(n).
+        """
+        raise NotImplementedError()
+
+    def rotate(self, steps: int = 1) -> None:
+        """Rotate the set to the right by the specified number of steps.
+
+        Parameters
+        ----------
+        steps : int, optional
+            The number of steps to rotate the set.  If this is positive, the
+            set will be rotated to the right.  If this is negative, it will be
+            rotated to the left.  The default is ``1``.
+
+        Notes
+        -----
+        Rotations are O(steps).
+
+        This method is consistent with the standard library's
+        :class:`collections.deque <python:collections.deque>` class.
+        """
+        raise NotImplementedError()
+
+    def move(self, item: object, index: int = 0):
+        """Move an item to a specific index in the set.
+
+        Parameters
+        ----------
+        item : Any
+            The item to move.
+        index : int, optional
+            The index to move the item to.  If this is negative, it will be
+            translated to a positive index by counting backwards from the end
+            of the set.  The default is ``0``, which moves the item to the
+            beginning of the set.
+
+        Raises
+        ------
+        KeyError
+            If the item is not contained in the set.
+        IndexError
+            If the index is out of bounds.
+
+        Notes
+        -----
+        Moves are O(1) for either end of the set, and scale up to O(n)
+        towards the middle of the list.
+        """
+        raise NotImplementedError()
+
+    def moveright(self, item: object, steps: int = 1):
+        """Move an item to the right by the specified number of steps.
+
+        Parameters
+        ----------
+        item : Any
+            The item to move.
+        steps : int, optional
+            The number of steps to move the item.  If this is positive, the
+            item will be moved to the right.  If it is negative, the item will
+            be moved to the left.  The default is to move 1 index to the right.
+
+        Raises
+        ------
+        KeyError
+            If the item is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.move :
+            Move an item to a specific index in the set.
+        LinkedSet.moveleft :
+            Move an item to the left by the specified number of steps.
+        LinkedSet.moveafter :
+            Move an item relative to a given sentinel value.
+        LinkedSet.movebefore :
+            Move an item relative to a given sentinel value.
+
+        Notes
+        -----
+        Moves are O(steps).
+
+        Calling this method with negative steps is equivalent to calling
+        :meth:`moveleft() <LinkedSet.moveleft>` with ``steps=-steps``.
+        """
+        raise NotImplementedError()
+
+    def moveleft(self, item: object, steps: int = 1):
+        """Move an item to the left by the specified number of steps.
+
+        Parameters
+        ----------
+        item : Any
+            The item to move.
+        steps : int, optional
+            The number of steps to move the item.  If this is positive, the
+            item will be moved to the left.  If it is negative, the item will
+            be moved to the right.  The default is to move 1 index to the left.
+
+        Raises
+        ------
+        KeyError
+            If the item is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.move :
+            Move an item to a specific index in the set.
+        LinkedSet.moveright :
+            Move an item to the right by the specified number of steps.
+        LinkedSet.moveafter :
+            Move an item relative to a given sentinel value.
+        LinkedSet.movebefore :
+            Move an item relative to a given sentinel value.
+
+        Notes
+        -----
+        Moves are O(steps).
+
+        Calling this method with negative steps is equivalent to calling
+        :meth:`moveright() <LinkedSet.moveright>` with ``steps=-steps``.
+        """
+        raise NotImplementedError()
+
+    def moveafter(self, item: object, sentinel: object, steps: int = 1):
+        """Move an item to the right of a given sentinel value.
+
+        Parameters
+        ----------
+        item : Any
+            The item to move.
+        sentinel : Any
+            The value to move the item after.
+        steps : int, optional
+            The number of steps to move the item.  If this is positive, the
+            item will be moved to the right.  If it is negative, the item will
+            be moved to the left.  The default is to move 1 index to the right
+            of the sentinel.
+
+        Raises
+        ------
+        KeyError
+            If either the item or the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.move :
+            Move an item to a specific index in the set.
+        LinkedSet.moveleft :
+            Move an item to the left by the specified number of steps.
+        LinkedSet.moveright :
+            Move an item to the right by the specified number of steps.
+        LinkedSet.movebefore :
+            Move an item relative to a given sentinel value.
+
+        Notes
+        -----
+        Moves are O(steps).
+
+        Calling this method with negative steps is equivalent to calling
+        :meth:`movebefore() <LinkedSet.movebefore>` with ``steps=-steps``.
+        """
+        raise NotImplementedError()
+
+    def movebefore(self, item: object, sentinel: object, steps: int = 1):
+        """Move an item to the left of a given sentinel value.
+
+        Parameters
+        ----------
+        item : Any
+            The item to move.
+        sentinel : Any
+            The value to move the item before.
+        steps : int, optional
+            The number of steps to move the item.  If this is positive, the
+            item will be moved to the right.  If it is negative, the item will
+            be moved to the left.  The default is to move 1 index to the left
+            of the sentinel.
+
+        Raises
+        ------
+        KeyError
+            If either the item or the sentinel is not contained in the set.
+
+        See Also
+        --------
+        LinkedSet.move :
+            Move an item to a specific index in the set.
+        LinkedSet.moveleft :
+            Move an item to the left by the specified number of steps.
+        LinkedSet.moveright :
+            Move an item to the right by the specified number of steps.
+        LinkedSet.moveafter :
+            Move an item relative to a given sentinel value.
+
+        Notes
+        -----
+        Moves are O(steps).
+
+        Calling this method with negative steps is equivalent to calling
+        :meth:`moveafter() <LinkedSet.moveafter>` with ``steps=-steps``.
+        """
+        raise NotImplementedError()
+
+    def swap(self, item1: object, item2: object) -> None:
+        """Swap the positions of two items in the set.
+
+        Parameters
+        ----------
+        item1 : Any
+            The first item to swap.
+        item2 : Any
+            The second item to swap.
+
+        Raises
+        ------
+        KeyError
+            If either item is not contained in the set.
+
+        Notes
+        -----
+        Swaps are O(1).
+        """
+        raise NotImplementedError()
+
+    def specialize(self, object spec) -> None:
+        """Specialize the set with a particular type.
+
+        Parameters
+        ----------
+        spec : Any
+            The type to enforce for elements of the set.  This can be in any
+            format recognized by :func:`isinstance() <python:isinstance>`.  If
+            it is set to ``None``, then type checking will be disabled for the
+            list.
+
+        Raises
+        ------
+        TypeError
+            If the set contains elements that do not match the specified type.
+
+        Notes
+        -----
+        Specializing a set is O(n).
+
+        The way type specialization works is by adding an extra
+        :func:`isinstance() <python:isinstance>` check during node allocation.
+        If the type of the new item does not match the specialized type, then
+        an exception will be raised and the type will not be added to the set.
+        This ensures that the set is type-safe at all times.
+
+        If the set is not empty when this method is called, then the type of
+        each existing item will be checked against the new type.  If any of
+        them do not match, then the specialization will be aborted and an
+        error will be raised.  The set is not modified by this process.
+
+        .. note::
+
+            Typed sets are slightly slower at appending items due to the extra
+            type check.  Otherwise, they have identical performance to their
+            untyped equivalents.
+        """
+        raise NotImplementedError()
+
+    @property
+    def specialization(self) -> Any:
+        """Return the type specialization that is being enforced by the set.
+
+        Returns
+        -------
+        Any
+            The type specialization of the list, or ``None`` if the set is
+            generic.
+
+        See Also
+        --------
+        LinkedSet.specialize :
+            Specialize the list with a particular type.
+
+        Notes
+        -----
+        This is equivalent to the ``spec`` argument passed to the constructor
+        and/or :meth:`specialize() <LinkedSet.specialize>` method.
+        """
+        raise NotImplementedError()
+
+    def nbytes(self) -> int:
+        """The total memory consumption of the set in bytes.
+
+        Returns
+        -------
+        int
+            The total number of bytes consumed by the set, including all its
+            nodes (but not their values), as well as the internal hash table.
+        """
+        raise NotImplementedError()
+
+    def __len__(self) -> int:
+        """Get the total number of items in the set.
+
+        Returns
+        -------
+        int
+            The number of items in the set.
+        """
+        raise NotImplementedError()
+
+    def __iter__(self) -> Iterator[object]:
+        """Iterate through the set items in order.
+
+        Yields
+        ------
+        Any
+            The next item in the set.
+
+        Notes
+        -----
+        Iterating through a :class:`LinkedSet` is O(n).
+        """
+        raise NotImplementedError()
+
+    def __reversed__(self) -> Iterator[object]:
+        """Iterate through the list in reverse order.
+
+        Yields
+        ------
+        Any
+            The next item in the list.
+
+        Notes
+        -----
+        Iterating through a :class:`LinkedSet` is O(n).
+        """
+        raise NotImplementedError()
+
+    def __getitem__(self, key: int | slice) -> object | LinkedSet:
+        """Index the set for a particular item or slice.
+
+        Parameters
+        ----------
+        key : int or slice
+            The index or slice to retrieve from the set.  If this is a slice,
+            the result will be a new :class:`LinkedSet` containing the
+            specified items.  This can be negative, following the same
+            convention as Python's standard :class:`list <python:list>`.
+
+        Returns
+        -------
+        scalar or LinkedSet
+            The item or set of items corresponding to the specified index or
+            slice.
+
+        Raises
+        ------
+        IndexError
+            If the index is out of bounds.
+
+        See Also
+        --------
+        LinkedSet.__setitem__ :
+            Set the value of an item or slice in the set.
+        LinkedSet.__delitem__ :
+            Delete an item or slice from the set.
+
+        Notes
+        -----
+        Integer-based indexing is O(n) on average.
+
+        Slicing is optimized to always begin iterating from the end nearest to
+        a slice boundary, and to never backtrack.  It collects all values in a
+        single iteration and stops as soon as the slice is complete.
+        """
+        raise NotImplementedError()
+
+    def __setitem__(self, key: int | slice, value: object | Iterable[object]) -> None:
+        """Set the value of an item or slice in the set.
+
+        Parameters
+        ----------
+        key : int or slice
+            The index or slice to assign in the set.  This can be negative,
+            following the same convention as Python's standard
+            :class:`list <python:list>`.
+        value : Any | Iterable[Any]
+            The value or values to set at the specified index or slice.  If
+            ``key`` is a slice, then ``value`` must be an iterable of the same
+            length.
+
+        Raises
+        ------
+        IndexError
+            If the index is out of bounds.
+        ValueError
+            If the length of ``value`` does not match the length of the slice.
+
+        See Also
+        --------
+        LinkedSet.__getitem__ :
+            Index the set for a particular item or slice.
+        LinkedSet.__delitem__ :
+            Delete an item or slice from the set.
+
+        Notes
+        -----
+        Integer-based assignment is O(n) on average.
+
+        Slice assignment is optimized to always begin iterating from the end
+        nearest to a slice boundary, and to never backtrack.  It assigns all
+        values in a single iteration and stops as soon as the slice is
+        complete.
+        """
+        raise NotImplementedError()
+
+    def __delitem__(self, key: int | slice) -> None:
+        """Delete an item or slice from the set.
+
+        Parameters
+        ----------
+        key : int or slice
+            The index or slice to delete from the set.  This can be negative,
+            following the same convention as Python's standard
+            :class:`list <python:list>`.
+
+        Raises
+        ------
+        IndexError
+            If the index is out of bounds.
+
+        See Also
+        --------
+        LinkedSet.__getitem__ :
+            Index the set for a particular item or slice.
+        LinkedSet.__setitem__ :
+            Set the value of an item or slice in the set.
+
+        Notes
+        -----
+        Integer-based deletion is O(n) on average.
+
+        Slice deletion is optimized to always begin iterating from the end
+        nearest to a slice boundary, and to never backtrack.  It deletes all
+        values in a single iteration and stops as soon as the slice is
+        complete.
+        """
+        raise NotImplementedError()
+
+    def __contains__(self, item: object) -> bool:
+        """Check if the item is contained in the set.
+
+        Parameters
+        ----------
+        item : Any
+            The item to search for.
+
+        Returns
+        -------
+        bool
+            Indicates whether the item is contained in the set.
+
+        Notes
+        -----
+        Membership checks are O(1) due to the integrated hash table.
+        """
+        raise NotImplementedError()
+
+    def __iand__(self, other: set | LinkedSet) -> LinkedSet:
+        """Update this set with the intersection of itself and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the intersection with.
+
+        Returns
+        -------
+        LinkedSet
+            A combination of this set with the elements of the other set.
+        """
+        # this should be implemented in C++
+        cdef self.view.Node* prev = NULL
+        cdef self.view.Node* curr = self.view.head
+        cdef PyObject* value
+
+        while curr is not NULL:
+            value = <object>curr.value
+            if <object>curr.value not in other:
+                if prev is NULL:
+                    self.view.head = curr.next
+                else:
+                    prev.next = curr.next
+
+                stack.push(curr)
+            else:
+                prev = curr
+
+            curr = curr.next
+
+        return self
+
+    def __isub__(self, other: set | LinkedSet) -> LinkedSet:
+        """Update this set with the difference of itself and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the difference with.
+
+        Returns
+        -------
+        LinkedSet
+            A combination of this set with the elements of the other set.
+        """
+        # TODO: implement this in C++ under a set_compare.h header
+        # -> this is the opposite of __iand__(), so we can do it in one
+        return self
+
+    #########################
+    ####    INHERITED    ####
+    #########################
+
+    def isdisjoint(self, other: Iterable[object]) -> bool:
+        """Check if this set is disjoint with another iterable.
+
+        Parameters
+        ----------
+        other : Iterable[Any]
+            The other iterable to check for disjointness.
+
+        Returns
+        -------
+        bool
+            Indicates whether the set is disjoint with the other iterable.
+
+        Notes
+        -----
+        This is equivalent to ``len(self.intersection(other)) == 0``.
+        """
+        return not (self & other)
+
+    def issubset(self, other: Iterable[object]) -> bool:
+        """Check if this set is a subset of another iterable.
+
+        Parameters
+        ----------
+        other : Iterable[Any]
+            The other iterable to check for subsetness.
+
+        Returns
+        -------
+        bool
+            Indicates whether the set is a subset of the other iterable.
+
+        Notes
+        -----
+        This is equivalent to ``len(self.difference(other)) == 0``.
+        """
+        return self <= other
+
+    def issuperset(self, other: Iterable[object]) -> bool:
+        """Check if this set is a superset of another iterable.
+
+        Parameters
+        ----------
+        other : Iterable[Any]
+            The other iterable to check for supersetness.
+
+        Returns
+        -------
+        bool
+            Indicates whether the set is a superset of the other iterable.
+
+        Notes
+        -----
+        This is equivalent to ``len(self.symmetric_difference(other)) == 0``.
+        """
+        return self >= other
+
+    def union(self, *others: Iterable[object]) -> LinkedSet:
+        """Return a new set with elements from this set and all others.
+
+        Parameters
+        ----------
+        *others : Iterable[Any]
+            Any number of iterables containing items to add to the set.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the combination of this set with each of the
+            inputs.
+
+        Notes
+        -----
+        This translates to a series of :meth:`extend() <LinkedSet.extend>`
+        calls for each iterable.
+        """
+        result = self.copy()
+        result.update(*others)
+        return result
+
+    def intersection(self, *others: Iterable[object]) -> LinkedSet:
+        """Return a new set with elements common to this set and all others.
+
+        Parameters
+        ----------
+        *others : Iterable[Any]
+            Any number of iterables containing items to intersect with the set.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the intersection of this set with each of the
+            inputs.
+        """
+        result = self.copy()
+        result.intersection_update(*others)
+        return result
+
+    def difference(self, *others: Iterable[object]) -> LinkedSet:
+        """Return a new set with elements in this set that are not in others.
+
+        Parameters
+        ----------
+        *others : Iterable[Any]
+            Any number of iterables containing items to subtract from the set.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the difference of this set with each of the
+            inputs.
+        """
+        result = self.copy()
+        result.difference_update(*others)
+        return result
+
+    def symmetric_difference(self, other: Iterable[object]) -> LinkedSet:
+        """Return a new set with elements in either this set or ``other``, but
+        not both.
+
+        Parameters
+        ----------
+        other : Iterable[Any]
+            An iterable containing items to compare with the set.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the symmetric difference of this set with the
+            input.
+        """
+        result = self.copy()
+        result.symmetric_difference_update(other)
+        return result
+
+    def update(self, *others: Iterable[object]) -> None:
+        """Update the set, adding elements from all others.
+
+        Parameters
+        ----------
+        *others : Iterable[Any]
+            Any number of iterables containing items to add to the set.
+
+        Notes
+        -----
+        This behaves just like the standard :meth:`set.update()` method.  It
+        translates to a series of :meth:`extend() <LinkedSet.extend>` calls for
+        each iterable.
+        """
+        for items in others:
+            self.extend(items)
+
+    def intersection_update(self, *others: Iterable[object]) -> None:
+        """Update the set, keeping only elements found in all others.
+
+        Parameters
+        ----------
+        *others : Iterable[Any]
+            Any number of iterables containing items to intersect with the set.
+
+        Notes
+        -----
+        This behaves just like the standard :meth:`set.intersection_update()`
+        method.
+        """
+        for other in others:
+            self &= other
+
+    def difference_update(self, *others: Iterable[object]) -> None:
+        """Update the set, removing elements found in others.
+
+        Parameters
+        ----------
+        *others : Iterable[Any]
+            Any number of iterables containing items to remove from the set.
+
+        Notes
+        -----
+        This behaves just like the standard :meth:`set.difference_update()`
+        method.
+        """
+        for other in others:
+            self -= other
+
+    def symmetric_difference_update(self, other: Iterable[object]) -> None:
+        """Update the set, keeping only elements found in either set, but not
+        in both.
+
+        Parameters
+        ----------
+        other : Iterable[Any]
+            An iterable containing items to compare with the set.
+
+        Notes
+        -----
+        This behaves just like the standard
+        :meth:`set.symmetric_difference_update()` method.
+        """
+        self ^= other
+
+    __hash__ = None  # mutable containers are not hashable
+
+    def __bool__(self) -> bool:
+        """Treat empty sets as Falsy in boolean logic.
+
+        Returns
+        -------
+        bool
+            Indicates whether the set is empty.
+        """
+        return bool(len(self))
+
+    def __str__(self):
+        """Return a standard string representation of the set.
+
+        Returns
+        -------
+        str
+            A string representation of the set.
+
+        Notes
+        -----
+        Creating a string representation of a set is O(n).
+        """
+        return f"{{{', '.join(str(item) for item in self)}}}"
+
+    def __repr__(self):
+        """Return an annotated string representation of the set.
+
+        Returns
+        -------
+        str
+            An annotated string representation of the set.
+
+        Notes
+        -----
+        Creating a string representation of a set is O(n).
+        """
+        prefix = f"{type(self).__name__}"
+
+        # append specialization if given
+        if self.specialization is not None:
+            prefix += f"[{repr(self.specialization)}]"
+
+        # abbreviate in order to avoid spamming the console
+        if len(self) > 64:
+            contents = ", ".join(repr(item) for item in self[:32])
+            contents += ", ..., "
+            contents += ", ".join(repr(item) for item in self[-32:])
+        else:
+            contents = ", ".join(repr(item) for item in self)
+
+        return f"{prefix}({{{contents}}})"
+
+    def __class_getitem__(cls, key: Any) -> type:
+        """Subscribe a linked set class to a particular type specialization.
+
+        Parameters
+        ----------
+        key : Any
+            The type to enforce for elements of the list.  This can be in any
+            format recognized by :func:`isinstance() <python:isinstance>`,
+            including tuples and
+            :func:`runtime-checkable <python:typing.runtime_checkable>`
+            :class:`typing.Protocol <python:typing.Protocol>` objects.
+
+        See Also
+        --------
+        LinkedSet.specialize :
+            Specialize a list at runtime.
+
+        Returns
+        -------
+        type
+            A variant of the linked set that is permanently specialized to the
+            templated type.  Constructing such a list is equivalent to calling
+            the constructor with the ``spec`` argument, except that the
+            specialization cannot be changed for the lifetime of the object.
+
+        Notes
+        -----
+        :class:`LinkedSets <LinkedSet>` provide 3 separate mechanisms for
+        enforcing type safety:
+
+            #.  The :meth:`specialize() <LinkedSet.specialize>` method, which
+                allows runtime specialization of a list with a particular type.
+                If the list is not empty when this method is called, it will
+                loop through the set and check whether the contents satisfy
+                the specialized type, and then enforce that type for any future
+                additions to the set.
+            #.  The ``spec`` argument to the constructor, which allows
+                specialization at the time of list creation.  This is
+                equivalent to calling :meth:`specialize() <LinkedSet.specialize>`
+                immediately after construction, but avoids an extra loop.
+            #.  Direct subscription via the
+                :meth:`__class_getitem__() <python:object.__class_getitem__>`
+                syntax.  This is equivalent to using the ``spec`` argument to
+                create a typed list, except that the specialization is
+                permanent and cannot be changed afterwards.  This is the most
+                restrictive form of type safety, but also allows users to be
+                absolutely sure about the list's contents.
+
+        In any case, a set's specialization can be checked at any time by
+        accessing its :attr:`specialization` attribute, which can be used in
+        :func:`isinstance() <python:isinstance>` and
+        :func:`issubclass() <python:issubclass>` checks directly.
+
+        Examples
+        --------
+        .. doctest::
+
+            >>> d = DoublyLinkedSet[int]([1, 2, 3])
+            TypedList[<class 'int'>]([1, 2, 3])
+            >>> d.specialization
+            <class 'int'>
+            >>> d.append(4)
+            >>> d
+            TypedList[<class 'int'>]([1, 2, 3, 4])
+            >>> d.append("foo")
+            Traceback (most recent call last):
+                ...
+            TypeError: 'foo' is not of type <class 'int'>
+            >>> d.specialize((int, str))
+            Traceback (most recent call last):
+                ...
+            TypeError: TypedList is already specialized to <class 'int'>
+
+        Because type specialization is enforced through the
+        :func:`isinstance() <python:isinstance>` function, it is possible to
+        specialize a list with any type that implements the
+        :func:`__instancecheck__() <python:object.__instancecheck__>` special
+        method, including :func:`runtime-checkable <python:typing.runtime_checkable>`
+        :class:`typing.Protocol <python:typing.Protocol>` objects.
+
+        .. doctest::
+
+            >>> from typing import Iterable
+
+            >>> d = DoublyLinkedSet[Iterable]()
+            >>> d.append([1, 2, 3])
+            >>> d
+            TypedList[typing.Iterable]([[1, 2, 3]])
+            >>> d.append("foo")
+            >>> d
+            TypedList[typing.Iterable]([[1, 2, 3], 'foo'])
+            >>> d.append(4)
+            Traceback (most recent call last):
+                ...
+            TypeError: 4 is not of type typing.Iterable
+
+        .. note::
+
+            Type checking with
+            :func:`runtime-checkable <python:typing.runtime_checkable>` protocols
+            can significantly slow down set appends and inserts.  Other operations
+            are unaffected, however.
+        """
+        if key is None:
+            return cls
+
+        # TODO: We can maybe maintain an LRU dictionary of specialized classes
+        # to avoid creating a new one every time.  This would also allow
+        # isinstance() checks to work properly on specialized lists, provided
+        # that the class is in the LRU dictionary.
+
+        # we return a decorated class that permanently specializes itself
+        # with the given type.
+        class TypedSet(cls):
+            """A strictly-typed set class."""
+
+            def __init__(
+                self,
+                items: Iterable[object] | None = None,
+                reverse: bool = False,
+            ) -> None:
+                """Disable the `spec` argument for TypedLists."""
+                super().__init__(items, reverse=reverse, spec=key)
+
+            def specialize(self, spec: object) -> None:
+                """Disable runtime specialization for TypedLists."""
+                raise TypeError(f"TypedList is already specialized to {repr(key)}")
+
+        return TypedList
+
+    def __or__(self, other: set | LinkedSet) -> LinkedSet:
+        """Return the union of this set and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the union with.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the union of this set and the other iterable.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        cdef LinkedSet result = self.copy()
+        result.extend(other)
+        return result
+
+    def __ior__(self, other: set | LinkedSet) -> LinkedSet:
+        """Update this set with the union of itself and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the union with.
+
+        Returns
+        -------
+        LinkedSet
+            A combination of this set with the elements of the other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        self.extend(other)
+        return self
+
+    def __and__(self, other: set | LinkedSet) -> LinkedSet:
+        """Return the intersection of this set and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the intersection with.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the intersection of this set and the other
+            iterable.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return LinkedSet(item for item in other if item in self)
+
+    def __sub__(self, other: set | LinkedSet) -> LinkedSet:
+        """Return the difference of this set and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the difference with.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the difference of this set and the other
+            iterable.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return LinkedSet(item for item in self if item not in other)
+
+    def __xor__(self, other: set | LinkedSet) -> LinkedSet:
+        """Return the symmetric difference of this set and another iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the symmetric difference with.
+
+        Returns
+        -------
+        LinkedSet
+            A new set containing the symmetric difference of this set and the
+            other iterable.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        cdef set left = set(item for item in self if item not in other)
+        cdef set right = set(item for item in other if item not in self)
+
+        return LinkedSet(left | right)
+
+    def __ixor__(self, other: set | LinkedSet) -> LinkedSet:
+        """Update this set with the symmetric difference of itself and another
+        iterable.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to take the symmetric difference with.
+
+        Returns
+        -------
+        LinkedSet
+            A combination of this set with the symmetric difference of the
+            other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        cdef set left = set(item for item in self if item not in other)
+        cdef set right = set(item for item in other if item not in self)
+
+        self.clear()
+        self.extend(left | right)
+        return self
+
+    def __lt__(self, other: set | LinkedSet) -> bool:
+        """Return whether this set is a proper subset of another.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to compare with.
+
+        Returns
+        -------
+        bool
+            Whether this set is a proper subset of the other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return len(self) < len(other) and all(item in other for item in self)
+
+    def __le__(self, other: set | LinkedSet) -> bool:
+        """Return whether this set is a subset of another.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to compare with.
+
+        Returns
+        -------
+        bool
+            Whether this set is a subset of the other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return len(self) <= len(other) and all(item in other for item in self)
+
+    def __eq__(self, other: set | LinkedSet) -> bool:
+        """Return whether this set is equal to another.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to compare with.
+
+        Returns
+        -------
+        bool
+            Whether this set is equal to the other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return len(self) == len(other) and all(item in self for item in other)
+
+    def __ge__(self, other: set | LinkedSet) -> bool:
+        """Return whether this set is a superset of another.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to compare with.
+
+        Returns
+        -------
+        bool
+            Whether this set is a superset of the other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return len(self) >= len(other) and all(item in self for item in other)
+
+    def __gt__(self, other: set | LinkedSet) -> bool:
+        """Return whether this set is a proper superset of another.
+
+        Parameters
+        ----------
+        other : set or LinkedSet
+            The other set to compare with.
+
+        Returns
+        -------
+        bool
+            Whether this set is a proper superset of the other set.
+        """
+        if not isinstance(other, (set, LinkedSet)):
+            return NotImplemented
+
+        return len(self) > len(other) and all(item in self for item in other)
+
+#############################
+####    SINGLY-LINKED    ####
+#############################
+
+
+
+
+
+
+#############################
+####    DOUBLY-LINKED    ####
+#############################
+
+
+cdef class DoublyLinkedSet(LinkedSet):
     """A pure Cython implementation of a doubly-linked list where every element
     is hashable and unique.
 

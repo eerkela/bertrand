@@ -5,26 +5,28 @@ from .node cimport SingleNode, DoubleNode
 from .view cimport ListView, SetView, DictView
 
 cdef extern from "remove.h":
-    # shared
+    # remove()
     void remove(ListView[SingleNode]* view, PyObject* item) except *
+    void remove(SetView[SingleNode]* view, PyObject* item) except *
+    void remove(DictView[SingleNode]* view, PyObject* item) except *
     void remove(ListView[DoubleNode]* view, PyObject* item) except *
-    void removeafter(SetView[SingleNode]* view, PyObject* sentinel) except *
-    void removeafter(DictView[SingleNode]* view, PyObject* sentinel) except *
-    void removeafter(SetView[DoubleNode]* view, PyObject* sentinel) except *
-    void removeafter(DictView[DoubleNode]* view, PyObject* sentinel) except *
+    void remove(SetView[DoubleNode]* view, PyObject* item) except *
+    void remove(DictView[DoubleNode]* view, PyObject* item) except *
 
-    # singly-linked
-    void remove_single(SetView[SingleNode]* view, PyObject* item) except *
-    void remove_single(DictView[SingleNode]* view, PyObject* item) except *
-    void remove_single(SetView[DoubleNode]* view, PyObject* item) except *
-    void remove_single(DictView[DoubleNode]* view, PyObject* item) except *
-    void removebefore_single(SetView[SingleNode]* view, PyObject* sentinel) except *
-    void removebefore_single(DictView[SingleNode]* view, PyObject* sentinel) except *
-    void removebefore_single(SetView[DoubleNode]* view, PyObject* sentinel) except *
-    void removebefore_single(DictView[DoubleNode]* view, PyObject* sentinel) except *
-    
-    # doubly-linked
-    void remove_double(SetView[DoubleNode]* view, PyObject* item) except *
-    void remove_double(DictView[DoubleNode]* view, PyObject* item) except *
-    void removebefore_double(SetView[DoubleNode]* view, PyObject* sentinel) except *
-    void removebefore_double(DictView[DoubleNode]* view, PyObject* sentinel) except *
+    # discard()
+    void discard(SetView[SingleNode]* view, PyObject* item) except *
+    void discard(DictView[SingleNode]* view, PyObject* item) except *
+    void discard(SetView[DoubleNode]* view, PyObject* item) except *
+    void discard(DictView[DoubleNode]* view, PyObject* item) except *
+
+    # discardafter()
+    void discardafter(SetView[SingleNode]* view, PyObject* sentinel) except *
+    void discardafter(DictView[SingleNode]* view, PyObject* sentinel) except *
+    void discardafter(SetView[DoubleNode]* view, PyObject* sentinel) except *
+    void discardafter(DictView[DoubleNode]* view, PyObject* sentinel) except *
+
+    # discardbefore()
+    void discardbefore(SetView[SingleNode]* view, PyObject* sentinel) except *
+    void discardbefore(DictView[SingleNode]* view, PyObject* sentinel) except *
+    void discardbefore(SetView[DoubleNode]* view, PyObject* sentinel) except *
+    void discardbefore(DictView[DoubleNode]* view, PyObject* sentinel) except *

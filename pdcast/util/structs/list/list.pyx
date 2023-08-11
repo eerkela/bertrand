@@ -71,9 +71,9 @@ cdef class LinkedList:
     Attributes
     ----------
     view : ListView*
-        The underlying view into the list.  This is a pointer to a C++ object
-        that tracks the list's head and tail pointers and manages memory for
-        each of its nodes.  It is not intended to be accessed by the user, and
+        A low-level view into the list.  This is a pointer to a C++ object that
+        tracks the list's head and tail pointers and manages memory for each of
+        its nodes.  It is not intended to be accessed by the user, and
         manipulating it directly it can result in memory leaks and/or undefined
         behavior.  Thorough inspection of the C++ header files is recommended
         before attempting to access this attribute, which can only be done in
@@ -99,8 +99,8 @@ cdef class LinkedList:
         spec: object | None = None,
     ):
         raise NotImplementedError(
-            "`LinkedList` is an abstract class.  Use `SinglyLinkedList` or "
-            "`DoublyLinkedList` instead."
+            "`LinkedList` is an abstract class and cannot be instantiated.  "
+            "Use `SinglyLinkedList` or `DoublyLinkedList` instead."
         )
 
     ########################
@@ -451,7 +451,7 @@ cdef class LinkedList:
 
             Typed lists are slightly slower at appending items due to the extra
             type check.  Otherwise, they have identical performance to their
-            untyped brethren.
+            untyped equivalents.
         """
         raise NotImplementedError()
 
@@ -508,7 +508,7 @@ cdef class LinkedList:
 
         Notes
         -----
-        Iterating through a :class:`DoublyLinkedList` is O(n) on average.
+        Iterating through a :class:`LinkedList` is O(n).
         """
         raise NotImplementedError()
 
@@ -522,7 +522,7 @@ cdef class LinkedList:
 
         Notes
         -----
-        Iterating through a :class:`DoublyLinkedList` is O(n) on average.
+        Iterating through a :class:`LinkedList` is O(n).
         """
         raise NotImplementedError()
 
