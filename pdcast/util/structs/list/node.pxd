@@ -11,16 +11,3 @@ cdef extern from "node.h":
         PyObject* value
         DoubleNode* next
         DoubleNode* prev
-
-    cdef cppclass Hashed[T]:
-        PyObject* value
-        Py_hash_t hash
-        Hashed[T]* next
-        Hashed[T]* prev  # not all Hashed nodes have this
-
-    cdef cppclass Mapped[T]:
-        PyObject* value
-        PyObject* mapped
-        Py_hash_t hash
-        Mapped[T]* next
-        Mapped[T]* prev  # not all Mapped nodes have this

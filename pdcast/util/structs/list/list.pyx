@@ -14,11 +14,6 @@ from typing import Iterable, Iterator
 ####################
 
 
-# TODO: implement class_getitem for mypy hints, just like list[].
-# -> in the case of HashedList, this could check if the contained type is
-# a subclass of Hashable, and if not, raise an error.
-
-
 cdef class LinkedList:
     """Base class for all linked list data structures.
 
@@ -70,7 +65,7 @@ cdef class LinkedList:
 
         # append specialization if given
         if self.specialization is not None:
-            prefix += f"<{self.specialization.__name__}>"
+            prefix += f"[{repr(self.specialization)}]"
 
         # abbreviate in order to avoid spamming the console
         if len(self) > 64:
@@ -83,9 +78,23 @@ cdef class LinkedList:
         return f"{prefix}([{contents}])"
 
     def __class_getitem__(cls, key: Any) -> type:
+        """Subscribe a linked list class to a particular type specialization.
+
+        Parameters
+        ----------
+        """
+        if key is None:
+            return cls
+
+        # TODO: We can maybe maintain an LRU dictionary of specialized classes
+        # to avoid creating a new one every time.  This would also allow
+        # isinstance() checks to work properly on specialized lists, provided
+        # that the class is in the LRU dictionary.
+
         # we return a decorated class that permanently specializes itself
         # with the given type.
         class TypedList(cls):
+            """Implement `TypedList` for the given specialization."""
 
             def __init__(
                 self,
@@ -130,9 +139,8 @@ cdef class LinkedList:
 
 
 # TODO: rotate() is broken
-# TODO: __getitem__() sometimes throws unexpected ValueErrors and seems to have
-# a problem with properly reversing slices.  It also occasionally causes a
-# segfault.
+# TODO: __getitem__() sometimes throws unexpected ValueErrors and occasionally
+# causes a segfault.
 
 
 # TODO: in order to rigorously test these, we should copy over the tests from

@@ -3,6 +3,7 @@
 #define NODE_H
 
 #include <queue>  // for std::queue
+#include <type_traits>  // for std::integer_constant, std::is_base_of
 #include <Python.h>  // for CPython API
 
 
@@ -11,9 +12,9 @@
 /////////////////////////
 
 
-/* DEBUG=TRUE adds print statements for every node allocation/deallocation to
-help catch memory leaks. */
-const bool DEBUG = false;
+/* DEBUG=TRUE adds print statements for every call to malloc()/free() in order
+to help catch memory leaks. */
+const bool DEBUG = true;
 
 
 /* Every View maintains a freelist of blank nodes that can be reused for fast
@@ -233,133 +234,6 @@ struct DoubleNode {
 };
 
 
-/* A node decorator that computes the hash of the Python object and caches it
-alongside the node's original fields. */
-template <typename NodeType>
-struct Hashed : public NodeType {
-    Py_hash_t hash;
-
-    /* Initialize a newly-allocated node. */
-    inline static Hashed<NodeType>* init(Hashed<NodeType>* node, PyObject* value) {
-        // delegate to templated init() method
-        node = (Hashed<NodeType>*)NodeType::init(node, value);
-        if (node == NULL) {  // Error during templated init()
-            return NULL;  // propagate
-        }
-
-        // compute hash
-        node->hash = PyObject_Hash(value);
-        if (node->hash == -1 && PyErr_Occurred()) {
-            NodeType::teardown(node);  // free any resources allocated during init()
-            return NULL;  // propagate TypeError()
-        }
-
-        // return initialized node
-        return node;
-    }
-
-    /* Initialize a copied node. */
-    inline static Hashed<NodeType>* init_copy(
-        Hashed<NodeType>* new_node,
-        Hashed<NodeType>* old_node
-    ) {
-        // delegate to templated init_copy() method
-        new_node = (Hashed<NodeType>*)NodeType::init_copy(new_node, old_node);
-        if (new_node == NULL) {  // Error during templated init_copy()
-            return NULL;  // propagate
-        }
-
-        // reuse the pre-computed hash
-        new_node->hash = old_node->hash;
-        return new_node;
-    }
-
-};
-
-
-/* A special case of Hashed<NodeType> that adds a second PyObject* reference,
-allowing the list to act as a dictionary. */
-template <typename NodeType>
-struct Mapped : public NodeType {
-    Py_hash_t hash;
-    PyObject* mapped;
-
-    /* Initialize a newly-allocated node (1-argument version). */
-    inline static Mapped<NodeType>* init(Mapped<NodeType>* node, PyObject* value) {
-        // Check that item is a tuple of size 2 (key-value pair)
-        if (!PyTuple_Check(value) || PyTuple_Size(value) != 2) {
-            PyErr_Format(
-                PyExc_TypeError,
-                "Expected tuple of size 2 (key, value), not: %R",
-                value
-            );
-            return NULL;  // propagate TypeError()
-        }
-
-        // unpack tuple and pass to 2-argument version
-        PyObject* key = PyTuple_GetItem(value, 0);
-        PyObject* mapped = PyTuple_GetItem(value, 1);
-        return init(node, key, mapped);
-    }
-
-    /* Initialize a newly-allocated node (2-argument version). */
-    inline static Mapped<NodeType>* init(
-        Mapped<NodeType>* node,
-        PyObject* value,
-        PyObject* mapped
-    ) {
-        // delegate to templated init() method
-        node = (Mapped<NodeType>*)NodeType::init(node, value);
-        if (node == NULL) {  // Error during templated init()
-            return NULL;  // propagate
-        }
-
-        // compute hash
-        node->hash = PyObject_Hash(value);
-        if (node->hash == -1 && PyErr_Occurred()) {
-            NodeType::teardown(node);  // free any resources allocated during init()
-            return NULL;  // propagate TypeError()
-        }
-
-        // store a reference to the mapped value
-        Py_INCREF(mapped);
-        node->mapped = mapped;
-
-        // return initialized node
-        return node;
-    }
-
-    /* Initialize a copied node. */
-    inline static Mapped<NodeType>* init_copy(
-        Mapped<NodeType>* new_node,
-        Mapped<NodeType>* old_node
-    ) {
-        // delegate to templated init_copy() method
-        new_node = (Mapped<NodeType>*)NodeType::init_copy(new_node, old_node);
-        if (new_node == NULL) {  // Error during templated init_copy()
-            return NULL;  // propagate
-        }
-
-        // reuse the pre-computed hash
-        new_node->hash = old_node->hash;
-
-        // store a new reference to mapped value
-        Py_INCREF(old_node->mapped);
-        new_node->mapped = old_node->mapped;
-
-        // return initialized node
-        return new_node;
-    }
-
-    /* Tear down a node before freeing it. */
-    inline static void teardown(Mapped<NodeType>* node) {
-        Py_DECREF(node->mapped);  // release mapped value
-        NodeType::teardown(node);
-    }
-
-};
-
-
 /* A node decorator that computes a key function on a node's underlying value
 for use in sorting algorithms. */
 template <typename NodeType>
@@ -375,7 +249,7 @@ struct Keyed {
         NodeType* wrapped
     ) {
         // NOTE: We mask the node's original value with the precomputed key,
-        // allowing us to use the exact same algorithm in both cases.
+        // allowing us to use the exact same sorting algorithms in both cases.
         Py_INCREF(key_value);
         node->value = key_value;
         node->node = wrapped;
@@ -443,9 +317,54 @@ struct Keyed {
             );
         }
 
+        // NOTE: we adjust the return value to use this method as a boolean
+        // expression in a simple if statement
         return comp + (comp < 0);  // 0 signals TypeError()
     }
 
+};
+
+
+/* A node decorator that adds a frequency count to the underyling node type. */
+template <typename NodeType>
+struct Counted : public NodeType {
+    size_t frequency;
+
+    /* Initialize a newly-allocated node. */
+    inline static Counted<NodeType>* init(Counted<NodeType>* node, PyObject* value) {
+        node = (Counted<NodeType>*)NodeType::init(node, value);
+        if (node == NULL) {  // Error during decorated init()
+            return NULL;  // propagate
+        }
+
+        // initialize frequency
+        node->frequency = 1;
+
+        // return initialized node
+        return node;
+    }
+
+    /* Initialize a copied node. */
+    inline static Counted<NodeType>* init_copy(
+        Counted<NodeType>* new_node,
+        Counted<NodeType>* old_node
+    ) {
+        // delegate to templated init_copy() method
+        new_node = (Counted<NodeType>*)NodeType::init_copy(new_node, old_node);
+        if (new_node == NULL) {  // Error during templated init_copy()
+            return NULL;  // propagate
+        }
+
+        // copy frequency
+        new_node->frequency = old_node->frequency;
+        return new_node;
+    }
+
+    /* Tear down a node before freeing it. */
+    inline static void teardown(Counted<NodeType>* node) {
+        node->frequency = 0; // reset frequency
+        NodeType::teardown(node);
+    }
 };
 
 
@@ -454,32 +373,14 @@ struct Keyed {
 //////////////////////
 
 
-// We can make algorithm decisions based on whether the underlying node is
-// singly- or doubly-linked.
-
-
+/* A trait that detects whether the templated node type is doubly-linked (i.e.
+has a `prev` pointer). */
 template <typename Node>
-struct is_doubly_linked {
-    static constexpr bool value = false;  // defaults False
-};
-
-
-template <>
-struct is_doubly_linked<DoubleNode> {
-    static constexpr bool value = true;
-};
-
-
-template <>
-struct is_doubly_linked<Hashed<DoubleNode>> {
-    static constexpr bool value = true;
-};
-
-
-template <>
-struct is_doubly_linked<Mapped<DoubleNode>> {
-    static constexpr bool value = true;
-};
+struct is_doubly_linked : std::integral_constant<
+    bool,
+    std::is_base_of<DoubleNode, Node>::value
+    // || std::is_base_of<OtherNode, Node>::value  // additional node types
+> {};
 
 
 //////////////////////////
@@ -495,7 +396,7 @@ private:
     /* A wrapper around malloc() that can help catch memory leaks. */
     inline static Node* malloc_node(PyObject* value) {
         // print allocation/deallocation messages if DEBUG=TRUE
-        if (DEBUG) {
+        if constexpr (DEBUG) {
             printf("    -> malloc: %s\n", repr(value));
         }
 
@@ -506,7 +407,7 @@ private:
     /* A wrapper around free() that can help catch memory leaks. */
     inline static void free_node(Node* node) {
         // print allocation/deallocation messages if DEBUG=TRUE
-        if (DEBUG) {
+        if constexpr (DEBUG) {
             printf("    -> free: %s\n", repr(node->value));
         }
 

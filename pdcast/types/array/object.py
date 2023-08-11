@@ -72,14 +72,13 @@ def construct_object_dtype(
     This method is only invoked if no explicit ``dtype`` is assigned to
     this ``ScalarType``.
     """
+    # hack - allows us to use the same name for the global and local classes
+    global ObjectDtype
+    _ObjectDtype = ObjectDtype
     _kind = kind
-    class_doc = (
-        f"An abstract data type, automatically generated to store\n "
-        f"{pdcast_type.type_def} objects."
-    )
 
     @register_extension_dtype
-    class _ObjectDtype(ObjectDtype):
+    class ObjectDtype(_ObjectDtype):
 
         _pdcast_type = pdcast_type
         name = str(pdcast_type)
@@ -126,28 +125,33 @@ def construct_object_dtype(
                 return self
             return common_dtype
 
-    _ObjectDtype.__doc__ = class_doc
-    return _ObjectDtype()
+    ObjectDtype.__doc__ = (
+        f"An abstract data type, automatically generated to store\n "
+        f"{pdcast_type.type_def} objects."
+    )
+    return ObjectDtype()
 
 
 def construct_array_type(pdcast_type: Any) -> type[ObjectArray]:
     """Create a new ExtensionArray definition to store objects of the given
     type.
     """
-    class_doc = (
-        f"An abstract data type, automatically generated to store\n "
-        f"{str(pdcast_type)} objects."
-    )
+    # hack - allows us to use the same name for the global and local classes
+    global ObjectArray
+    _ObjectArray = ObjectArray
 
-    class _ObjectArray(ObjectArray):
+    class ObjectArray(_ObjectArray):
 
         def __init__(self, *args, **kwargs):
             self._pdcast_type = pdcast_type
             super().__init__(*args, **kwargs)
 
     # replace docstring
-    _ObjectArray.__doc__ = class_doc
-    return _ObjectArray
+    ObjectArray.__doc__ = (
+        f"An abstract data type, automatically generated to store\n "
+        f"{str(pdcast_type)} objects."
+    )
+    return ObjectArray
 
 
 #######################

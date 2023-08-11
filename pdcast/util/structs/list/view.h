@@ -10,13 +10,6 @@
 #include <node.h>  // for Hashed<T>, Mapped<T>
 
 
-// TODO: support specialization with more than one type parameter via variadic
-// templates.  This would allow someone to write DoublyLinkedList[(int, float, str)]
-// to support union types in a list.
-
-// DictViews can use slices to represent key/value types
-// `DoublyLinkedDictionary[str: int]`
-
 
 /////////////////////////
 ////    CONSTANTS    ////
@@ -274,7 +267,7 @@ inline std::pair<size_t, size_t> normalize_slice(
 /////////////////////
 
 
-/* HashTables allow O(1) lookup for elements within SetViews and DictViews. */
+/* HashTables allow O(1) lookup for nodes within SetViews and DictViews. */
 template <typename T>
 class HashTable {
 private:
@@ -292,7 +285,7 @@ private:
         size_t old_capacity = capacity;
         size_t new_capacity = 1 << new_exponent;
 
-        if (DEBUG) {
+        if constexpr (DEBUG) {
             printf("    -> malloc: HashTable(%lu)\n", new_capacity);
         }
 
@@ -331,7 +324,7 @@ private:
         tombstones = 0;
 
         // free old table
-        if (DEBUG) {
+        if constexpr (DEBUG) {
             printf("    -> free: HashTable(%lu)\n", old_capacity);
         }
         free(old_table);
@@ -348,7 +341,7 @@ public:
 
     /* Construct an empty HashTable. */
     HashTable() {
-        if (DEBUG) {
+        if constexpr (DEBUG) {
             printf("    -> malloc: HashTable(%lu)\n", INITIAL_TABLE_CAPACITY);
         }
 
@@ -375,7 +368,7 @@ public:
 
     /* Destructor.*/
     ~HashTable() {
-        if (DEBUG) {
+        if constexpr (DEBUG) {
             printf("    -> free: HashTable(%lu)\n", capacity);
         }
         free(table);
@@ -461,7 +454,7 @@ public:
 
     /* Clear the hash table and reset it to its initial state. */
     void clear() {
-        if (DEBUG) {
+        if constexpr (DEBUG) {
             printf("    -> free: HashTable(%lu)\n", capacity);
             printf("    -> malloc: HashTable(%lu)\n", INITIAL_TABLE_CAPACITY);
         }
@@ -552,7 +545,7 @@ public:
     void clear_tombstones() {
         T* old_table = table;
 
-        if (DEBUG) {
+        if constexpr (DEBUG) {
             printf("    -> malloc: HashTable(%lu)\n", capacity);
         }
 
@@ -586,7 +579,7 @@ public:
         tombstones = 0;
 
         // free old table
-        if (DEBUG) {
+        if constexpr (DEBUG) {
             printf("    -> free: HashTable(%lu)\n", capacity);
         }
         free(old_table);
@@ -848,7 +841,43 @@ private:
 template <typename NodeType>
 class SetView {
 public:
-    using Node = Hashed<NodeType>;
+    /* A node decorator that computes the hash of the underlying object and
+    caches it alongside the node's original fields. */
+    struct Node : public NodeType {
+        Py_hash_t hash;
+
+        /* Initialize a newly-allocated node. */
+        inline static Node* init(Node* node, PyObject* value) {
+            node = (Node*)NodeType::init(node, value);
+            if (node == NULL) {  // Error during decorated init()
+                return NULL;  // propagate
+            }
+
+            // compute hash
+            node->hash = PyObject_Hash(value);
+            if (node->hash == -1 && PyErr_Occurred()) {
+                NodeType::teardown(node);  // free any resources allocated during init()
+                return NULL;  // propagate TypeError()
+            }
+
+            // return initialized node
+            return node;
+        }
+
+        /* Initialize a copied node. */
+        inline static Node* init_copy(Node* new_node, Node* old_node) {
+            new_node = (Node*)NodeType::init_copy(new_node, old_node);
+            if (new_node == NULL) {  // Error during decorated init_copy()
+                return NULL;  // propagate
+            }
+
+            // reuse the pre-computed hash
+            new_node->hash = old_node->hash;
+            return new_node;
+        }
+
+    };
+
     Node* head;
     Node* tail;
     size_t size;
@@ -1105,7 +1134,7 @@ private:
         // allocate a new node
         Node* curr = node(item);
         if (curr == NULL) {  // error during node initialization
-            if (DEBUG) {
+            if constexpr (DEBUG) {
                 // QoL - nothing has been allocated, so we don't actually free anything
                 printf("    -> free: %s\n", repr(item));
             }
@@ -1130,7 +1159,78 @@ private:
 template <typename NodeType>
 class DictView {
 public:
-    using Node = Mapped<NodeType>;
+    /* A node decorator that hashes the underlying object and adds a second
+    PyObject* reference, allowing the list to act as a dictionary. */
+    struct Node : public NodeType {
+        Py_hash_t hash;
+        PyObject* mapped;
+
+        /* Initialize a newly-allocated node (1-argument version). */
+        inline static Node* init(Node* node, PyObject* value) {
+            // Check that item is a tuple of size 2 (key-value pair)
+            if (!PyTuple_Check(value) || PyTuple_Size(value) != 2) {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "Expected tuple of size 2 (key, value), not: %R",
+                    value
+                );
+                return NULL;  // propagate TypeError()
+            }
+
+            // unpack tuple and pass to 2-argument version
+            PyObject* key = PyTuple_GetItem(value, 0);
+            PyObject* mapped = PyTuple_GetItem(value, 1);
+            return init(node, key, mapped);
+        }
+
+        /* Initialize a newly-allocated node (2-argument version). */
+        inline static Node* init(Node* node, PyObject* value, PyObject* mapped) {
+            node = (Node*)NodeType::init(node, value);
+            if (node == NULL) {  // Error during decorated init()
+                return NULL;  // propagate
+            }
+
+            // compute hash
+            node->hash = PyObject_Hash(value);
+            if (node->hash == -1 && PyErr_Occurred()) {
+                NodeType::teardown(node);  // free any resources allocated during init()
+                return NULL;  // propagate TypeError()
+            }
+
+            // store a reference to the mapped value
+            Py_INCREF(mapped);
+            node->mapped = mapped;
+
+            // return initialized node
+            return node;
+        }
+
+        /* Initialize a copied node. */
+        inline static Node* init_copy(Node* new_node, Node* old_node) {
+            new_node = (Node*)NodeType::init_copy(new_node, old_node);
+            if (new_node == NULL) {  // Error during decrated init_copy()
+                return NULL;  // propagate
+            }
+
+            // reuse the pre-computed hash
+            new_node->hash = old_node->hash;
+
+            // store a new reference to mapped value
+            Py_INCREF(old_node->mapped);
+            new_node->mapped = old_node->mapped;
+
+            // return initialized node
+            return new_node;
+        }
+
+        /* Tear down a node before freeing it. */
+        inline static void teardown(Node* node) {
+            Py_DECREF(node->mapped);  // release mapped value
+            NodeType::teardown(node);
+        }
+
+    };
+
     Node* head;
     Node* tail;
     size_t size;
@@ -1404,7 +1504,7 @@ private:
         Node* curr = node(item);
         if (PyErr_Occurred()) {
             // QoL - nothing has been allocated, so we don't actually free anything
-            if (DEBUG) {
+            if constexpr (DEBUG) {
                 printf("    -> free: %s\n", repr(item));
             }
             return;
@@ -1423,6 +1523,166 @@ private:
     }
 
 };
+
+
+///////////////////////////////
+////    VIEW DECORATORS    ////
+///////////////////////////////
+
+
+// TODO: Sorted<> becomes a decorator for a view, not a node.  It automatically
+// converts a view of any type into a sorted view, which stores its nodes in a
+// skip list.  This makes the sortedness immutable, and blocks operations that
+// would unsort the list.  Every node in the list is decorated with a key value
+// that is supplied by the user.  This key is provided in the constructor, and
+// is cached on the node itself under a universal `key` attribute.  The SortKey
+// template parameter defines what is stored in this key, and under what
+// circumstances it is modified.
+
+// using MFUCache = typename Sorted<DictView<DoubleNode>, Frequency, Descending>;
+
+// This would create a doubly-linked skip list where each node maintains a
+// value, mapped value, frequency count, hash, and prev/next pointers.  The
+// view itself would maintain a hash map for fast lookups.  If the default
+// SortKey is used, then we can also make the the index() method run in log(n)
+// by exploiting the skip list.  These can be specific overloads in the methods
+// themselves.
+
+// This decorator can be extended to any of the existing views.
+
+
+
+// template <
+//     template <typename> class ViewType,
+//     typename NodeType,
+//     typename SortKey = Value,
+//     typename SortOrder = Ascending
+// >
+// class Sorted : public ViewType<NodeType> {
+// public:
+//     /* A node decorator that maintains vectors of next and prev pointers for use in
+//     sorted, skip list-based data structures. */
+//     struct Node : public ViewType::Node {
+//         std::vector<Node*> skip_next;
+//         std::vector<Node*> skip_prev;
+
+//         /* Initialize a newly-allocated node. */
+//         inline static Node* init(Node* node, PyObject* value) {
+//             node = (Node*)NodeType::init(node, value);
+//             if (node == NULL) {  // Error during decorated init()
+//                 return NULL;  // propagate
+//             }
+
+//             // NOTE: skip_next and skip_prev are stack-allocated, so there's no
+//             // need to initialize them here.
+
+//             // return initialized node
+//             return node;
+//         }
+
+//         /* Initialize a copied node. */
+//         inline static Node* init_copy(Node* new_node, Node* old_node) {
+//             // delegate to templated init_copy() method
+//             new_node = (Node*)NodeType::init_copy(new_node, old_node);
+//             if (new_node == NULL) {  // Error during templated init_copy()
+//                 return NULL;  // propagate
+//             }
+
+//             // copy skip pointers
+//             new_node->skip_next = old_node->skip_next;
+//             new_node->skip_prev = old_node->skip_prev;
+//             return new_node;
+//         }
+
+//         /* Tear down a node before freeing it. */
+//         inline static void teardown(Node* node) {
+//             node->skip_next.clear();  // reset skip pointers
+//             node->skip_prev.clear();
+//             NodeType::teardown(node);
+//         }
+
+//         // TODO: override link() and unlink() to update skip pointers and maintain
+//         // sorted order
+//     }
+// }
+
+
+// ////////////////////////
+// ////    POLICIES    ////
+// ////////////////////////
+
+
+// // TODO: Value and Frequency should be decorators for nodes to give them full
+// // type information.  They can even wrap
+
+
+// /* A SortKey that stores a reference to a node's value in its key. */
+// struct Value {
+//     /* Decorate a freshly-initialized node. */
+//     template <typename Node>
+//     inline static void decorate(Node* node) {
+//         node->key = node->value;
+//     }
+
+//     /* Clear a node's sort key. */
+//     template <typename Node>
+//     inline static void undecorate(Node* node) {
+//         node->key = NULL;
+//     }
+// };
+
+
+// /* A SortKey that stores a frequency counter as a node's key. */
+// struct Frequency {
+//     /* Initialize a node's sort key. */
+//     template <typename Node>
+//     inline static void decorate(Node* node) {
+//         node->key = 0;
+//     }
+
+//     /* Clear a node's sort key */
+
+// };
+
+
+// /* A Sorted<> policy that sorts nodes in ascending order based on key. */
+// template <typename SortValue>
+// struct Ascending {
+//     /* Check whether two keys are in sorted order relative to one another. */
+//     template <typename KeyValue>
+//     inline static bool compare(KeyValue left, KeyValue right) {
+//         return left <= right;
+//     }
+
+//     /* A specialization for compare to use with Python objects as keys. */
+//     template <>
+//     inline static bool compare(PyObject* left, PyObject* right) {
+//         return PyObject_RichCompareBool(left, right, Py_LE);  // -1 signals error
+//     }
+// };
+
+
+// /* A specialized version of Ascending that compares PyObject* references. */
+// template <>
+// struct Ascending<Value> {
+    
+// };
+
+
+// /* A Sorted<> policy that sorts nodes in descending order based on key. */
+// struct Descending {
+//     /* Check whether two keys are in sorted order relative to one another. */
+//     template <typename KeyValue>
+//     inline static int compare(KeyValue left, KeyValue right) {
+//         return left >= right;
+//     }
+
+//     /* A specialization for compare() to use with Python objects as keys. */
+//     template <>
+//     inline static int compare(PyObject* left, PyObject* right) {
+//         return PyObject_RichCompareBool(left, right, Py_GE);  // -1 signals error
+//     }
+// };
 
 
 #endif // VIEW_H include guard

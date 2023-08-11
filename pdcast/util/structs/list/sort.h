@@ -175,7 +175,7 @@ std::pair<Node*, Node*> _undecorate(ListView<Keyed<Node>>* view) {
 /* Sort a linked list in-place using an iterative merge sort algorithm. */
 template <typename Node>
 void _merge_sort(ListView<Node>* view, bool reverse) {
-    if (DEBUG) {
+    if constexpr (DEBUG) {
         printf("    -> malloc: temp node\n");
     }
 
@@ -236,7 +236,7 @@ void _merge_sort(ListView<Node>* view, bool reverse) {
                 merged = _recover(sorted, left, right, unsorted);
                 view->head = merged.first;  // view is partially sorted, but free()able
                 view->tail = merged.second;
-                if (DEBUG) {
+                if constexpr (DEBUG) {
                     printf("    -> free: temp node\n");
                 }
                 free(temp);  // clean up temporary node
@@ -259,7 +259,7 @@ void _merge_sort(ListView<Node>* view, bool reverse) {
     }
 
     // clean up temporary node
-    if (DEBUG) {
+    if constexpr (DEBUG) {
         printf("    -> free: temp node\n");
     }
     free(temp);

@@ -15,7 +15,7 @@
 
 
 //////////////////////
-////    APPEND    ////
+////    PUBLIC    ////
 //////////////////////
 
 
@@ -32,8 +32,8 @@ inline void append(ViewType<NodeType>* view, PyObject* item) {
 
     // link to end of list
     view->link(view->tail, node, NULL);
-    if (PyErr_Occurred()) {
-        view->recycle(node);  // free node on error
+    if (PyErr_Occurred()) {  // Error during link
+        view->recycle(node);
     }
 }
 
@@ -51,15 +51,10 @@ inline void append(DictView<NodeType>* view, PyObject* item, PyObject* mapped) {
 
     // link to end of list
     view->link(view->tail, node, NULL);
-    if (PyErr_Occurred()) {
-        view->recycle(node);  // free node on error
+    if (PyErr_Occurred()) {  // Error during link
+        view->recycle(node);
     }
 }
-
-
-//////////////////////////
-////    APPENDLEFT    ////
-//////////////////////////
 
 
 /* Add an item to the beginning of a list, set, or dictionary. */
@@ -75,8 +70,8 @@ inline void appendleft(ViewType<NodeType>* view, PyObject* item) {
 
     // link to beginning of list
     view->link(NULL, node, view->head);
-    if (PyErr_Occurred()) {
-        view->recycle(node);  // free node on error
+    if (PyErr_Occurred()) {  // Error during link
+        view->recycle(node);
     }
 }
 
@@ -94,8 +89,8 @@ inline void appendleft(DictView<NodeType>* view, PyObject* item, PyObject* mappe
 
     // link to beginning of list
     view->link(NULL, node, view->head);
-    if (PyErr_Occurred()) {
-        view->recycle(node);  // free node on error
+    if (PyErr_Occurred()) {  // Error during link
+        view->recycle(node);
     }
 }
 

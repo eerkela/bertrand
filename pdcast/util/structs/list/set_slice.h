@@ -10,11 +10,6 @@
 #include <view.h>  // for views
 
 
-// TODO: what about the case where the slice length does not match the sequence
-// length and we're iterating backwards from the tail?  This only occurs if
-// step == 1, so check the logic for that case.
-
-
 // NOTE: slice assignment in general can be extremely complicated in Python,
 // and is especially difficult to translate over to linked lists.  This is made
 // worse in the case of sets and dictionaries, where the uniqueness of keys
@@ -70,12 +65,7 @@
 //////////////////////
 
 
-// NOTE: because ListViews do not use a hash table to keep track of nodes,
-// we are free to overwrite the existing values directly, rather than
-// allocating a new node and linking them to the list.
-
-
-/* Set the value at a particular index of a singly-linked list, set, or dictionary. */
+/* Set the value at a particular index of a linked list, set, or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
 void set_index(ViewType<NodeType>* view, size_t index, PyObject* item) {
     using Node = typename ViewType<NodeType>::Node;
@@ -140,7 +130,7 @@ void set_index(ViewType<NodeType>* view, size_t index, PyObject* item) {
 }
 
 
-/* Overwrite the value at a particular index of a singly-linked list. */
+/* Overwrite the value at a particular index of a linked list. */
 template <typename NodeType>
 void set_index(ListView<NodeType>* view, size_t index, PyObject* item) {
     using Node = typename ListView<NodeType>::Node;
@@ -179,7 +169,7 @@ void set_index(ListView<NodeType>* view, size_t index, PyObject* item) {
 }
 
 
-/* Set a slice within a singly-linked list, set, or dictionary. */
+/* Set a slice within a linked list, set, or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
 void set_slice(
     ViewType<NodeType>* view,
@@ -251,7 +241,7 @@ void set_slice(
 }
 
 
-/* Overwrite a slice within a singly-linked list. */
+/* Overwrite a slice within a linked list. */
 template <typename NodeType>
 void set_slice(
     ListView<NodeType>* view,
@@ -296,48 +286,59 @@ void set_slice(
     // ensure that the slice is the same length as the sequence
     Py_ssize_t slice_length = (Py_ssize_t)bounds.second - (Py_ssize_t)bounds.first;
     slice_length = (abs(slice_length) / (Py_ssize_t)abs_step) + 1;
-    if (slice_length != seq_length) {
-        if (step == 1) {  // Python allows inserting slices in this case only
-            _replace_slice(
-                view,
-                (size_t)start,  // start inserting nodes at start index
-                (size_t)stop,   // determines whether to traverse from head/tail
-                abs_step,
-                0,              // slice length
-                seq_length,     // insert all items from sequence
-                sequence,
-                (start > stop)  // reverse if traversing from tail
-            );
-        } else {
-            PyErr_Format(
-                PyExc_ValueError,
-                "attempt to assign sequence of size %zd to extended slice of size %zd",
-                seq_length,
-                slice_length
-            );
-        }
-        return;
-    }
+    bool length_match = (slice_length == seq_length);
 
-    // overwrite existing values (unrecoverable)
-    _overwrite_slice(
-        view,
-        bounds.first,
-        bounds.second,
-        seq_length,
-        abs_step,
-        sequence,
-        (step < 0)
-    );
+    // NOTE: we can only overwrite the existing values if the following
+    // conditions are met:
+    //  1)  The view is a ListView (no hashing/uniqueness).
+    //  2)  The slice length matches the sequence length (no insertions/removals).
+    //  3)  The view is not specialized (no type checking)
+
+    // If all of these conditions are met, then we are guaranteed not to
+    // encounter any errors during the assignment, and can thus overwrite the
+    // existing values directly.  This is much faster than allocating new nodes
+    // and replacing the existing ones, but it is only safe in this narrow
+    // context.
+
+    if (length_match && view->get_specialization() == NULL) {  // overwrite values
+        _overwrite_slice(
+            view,
+            bounds.first,
+            bounds.second,
+            seq_length,
+            abs_step,
+            sequence,
+            (step < 0)
+        );
+    } else if (length_match || step == 1) {  // replace nodes
+        _replace_slice(
+            view,
+            bounds.first,
+            bounds.second,
+            abs_step,
+            slice_length,
+            seq_length,
+            sequence,
+            (step < 0) ^ (bounds.first > bounds.second)
+        );
+    } else {  // raise error
+        PyErr_Format(
+            PyExc_ValueError,
+            "attempt to assign sequence of size %zd to extended slice of size %zd",
+            seq_length,
+            slice_length
+        );
+        return;  // propagate
+    }
 
     // release sequence
     Py_DECREF(sequence);
 }
 
 
-///////////////////////
-////    PRIVATE    ////
-///////////////////////
+/////////////////////////
+////    OVERWRITE    ////
+/////////////////////////
 
 
 /* Overwrite a slice in a linked list, set, or dictionary. */
@@ -359,8 +360,8 @@ void _overwrite_slice(
             _overwrite_slice_backward(
                 view,
                 begin,
-                slice_length,
                 abs_step,
+                slice_length,
                 sequence,
                 reverse
             );
@@ -372,60 +373,12 @@ void _overwrite_slice(
     _overwrite_slice_forward(
         view,
         begin,
-        slice_length,
         abs_step,
-        sequence,
-        reverse
-    );
-}
-
-
-/* Replace a slice in a linked list, set, or dictionary. */
-template <template <typename> class ViewType, typename NodeType>
-void _replace_slice(
-    ViewType<NodeType>* view,
-    size_t begin,
-    size_t end,
-    size_t abs_step,
-    Py_ssize_t slice_length,
-    Py_ssize_t seq_length,
-    PyObject* sequence,
-    bool reverse
-) {
-    using Node = typename ViewType<NodeType>::Node;
-
-    // replace existing nodes with new ones and rewind if an error occurs
-    if constexpr (is_doubly_linked<Node>::value) {
-        if (begin > end) {  // backward traversal
-            _replace_slice_backward(
-                view,
-                begin,
-                slice_length,
-                seq_length,
-                abs_step,  // TODO: move this
-                sequence,
-                reverse
-            );
-            return;
-        }
-    }
-
-    // forward traversal
-    _replace_slice_forward(
-        view,
-        begin,
         slice_length,
-        seq_length,
-        abs_step,  // TODO: move this
         sequence,
         reverse
     );
 }
-
-
-/////////////////////////
-////    OVERWRITE    ////
-/////////////////////////
 
 
 /* Assign a slice from left to right, directly overwriting exisiting values. */
@@ -433,8 +386,8 @@ template <template <typename> class ViewType, typename NodeType>
 void _overwrite_slice_forward(
     ViewType<NodeType>* view,
     size_t begin,
-    Py_ssize_t seq_length,
     size_t abs_step,
+    Py_ssize_t seq_length,
     PyObject* sequence,
     bool reverse
 ) {
@@ -529,14 +482,57 @@ void _overwrite_slice_backward(
 ///////////////////////
 
 
+/* Replace a slice in a linked list, set, or dictionary. */
+template <template <typename> class ViewType, typename NodeType>
+void _replace_slice(
+    ViewType<NodeType>* view,
+    size_t begin,
+    size_t end,
+    size_t abs_step,
+    Py_ssize_t slice_length,
+    Py_ssize_t seq_length,
+    PyObject* sequence,
+    bool reverse
+) {
+    using Node = typename ViewType<NodeType>::Node;
+
+    // replace existing nodes with new ones and rewind if an error occurs
+    if constexpr (is_doubly_linked<Node>::value) {
+        if (begin > end) {  // backward traversal
+            _replace_slice_backward(
+                view,
+                begin,
+                abs_step,
+                slice_length,
+                seq_length,
+                sequence,
+                reverse
+            );
+            return;
+        }
+    }
+
+    // forward traversal
+    _replace_slice_forward(
+        view,
+        begin,
+        abs_step,
+        slice_length,
+        seq_length,
+        sequence,
+        reverse
+    );
+}
+
+
 /* Assign a slice from left to right, replacing the existing nodes with new ones. */
 template <template <typename> class ViewType, typename NodeType>
 void _replace_slice_forward(
     ViewType<NodeType>* view,
     size_t begin,
+    size_t abs_step,
     Py_ssize_t slice_length,
     Py_ssize_t seq_length,
-    size_t abs_step,
     PyObject* sequence,
     bool reverse
 ) {
@@ -622,9 +618,9 @@ template <template <typename> class ViewType, typename NodeType>
 void _replace_slice_backward(
     ViewType<NodeType>* view,
     size_t begin,
+    size_t abs_step,
     Py_ssize_t slice_length,
     Py_ssize_t seq_length,
-    size_t abs_step,
     PyObject* sequence,
     bool reverse
 ) {
