@@ -6,8 +6,8 @@
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
 #include <utility>  // for std::pair
-#include <node.h>  // for nodes
-#include <view.h>  // for views
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 //////////////////////
@@ -28,30 +28,30 @@ inline void delete_index(ViewType<NodeType>* view, size_t index) {
     if constexpr (is_doubly_linked<Node>::value) {
         if (index > view->size / 2) {
             // backward traversal
-            next = NULL;
+            next = nullptr;
             curr = view->tail;
             for (size_t i = view->size - 1; i > index; i--) {
                 next = curr;
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
 
             // unlink and deallocate node
-            view->unlink((Node*)curr->prev, curr, next);
+            view->unlink(static_cast<Node*>(curr->prev), curr, next);
             view->recycle(curr);
             return;
         }
     }
 
     // forward traversal
-    prev = NULL;
+    prev = nullptr;
     curr = view->head;
     for (size_t i = 0; i < index; i++) {
         prev = curr;
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // unlink and deallocate node
-    view->unlink(prev, curr, (Node*)curr->next);
+    view->unlink(prev, curr, static_cast<Node*>(curr->next));
     view->recycle(curr);
 }
 
@@ -94,7 +94,7 @@ inline void delete_slice(
 
 /* Remove a slice from left to right. */
 template <template <typename> class ViewType, typename NodeType>
-inline void _drop_slice_forward(
+void _drop_slice_forward(
     ViewType<NodeType>* view,
     size_t begin,
     size_t end,
@@ -103,11 +103,11 @@ inline void _drop_slice_forward(
     using Node = typename ViewType<NodeType>::Node;
 
     // skip to start index
-    Node* prev = NULL;
+    Node* prev = nullptr;
     Node* curr = view->head;
     for (size_t i = 0; i < begin; i++) {
         prev = curr;
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // delete all nodes in slice
@@ -115,7 +115,7 @@ inline void _drop_slice_forward(
     size_t small_step = abs_step - 1;  // we jump by 1 whenever we remove a node
     for (size_t i = begin; i <= end; i += abs_step) {
         // unlink and deallocate node
-        next = (Node*)curr->next;
+        next = static_cast<Node*>(curr->next);
         view->unlink(prev, curr, next);
         view->recycle(curr);
         curr = next;
@@ -124,7 +124,7 @@ inline void _drop_slice_forward(
         if (i != end) {  // don't jump on final iteration
             for (size_t j = 0; j < small_step; j++) {
                 prev = curr;
-                curr = (Node*)curr->next;
+                curr = static_cast<Node*>(curr->next);
             }
         }
     }
@@ -133,7 +133,7 @@ inline void _drop_slice_forward(
 
 /* Remove a slice from right to left. */
 template <template <typename> class ViewType, typename NodeType>
-inline void _drop_slice_backward(
+void _drop_slice_backward(
     ViewType<NodeType>* view,
     size_t begin,
     size_t end,
@@ -142,11 +142,11 @@ inline void _drop_slice_backward(
     using Node = typename ViewType<NodeType>::Node;
 
     // skip to start index
-    Node* next = NULL;
+    Node* next = nullptr;
     Node* curr = view->tail;
     for (size_t i = view->size - 1; i > begin; i--) {
         next = curr;
-        curr = (Node*)curr->prev;
+        curr = static_cast<Node*>(curr->prev);
     }
 
     // delete all nodes in slice
@@ -154,7 +154,7 @@ inline void _drop_slice_backward(
     size_t small_step = abs_step - 1;  // we jump by 1 whenever we remove a node
     for (size_t i = begin; i >= end; i -= abs_step) {
         // unlink and deallocate node
-        prev = (Node*)curr->prev;
+        prev = static_cast<Node*>(curr->prev);
         view->unlink(prev, curr, next);
         view->recycle(curr);
         curr = prev;
@@ -163,7 +163,7 @@ inline void _drop_slice_backward(
         if (i != end) {  // don't jump on final iteration
             for (size_t j = 0; j < small_step; j++) {
                 next = curr;
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
         }
     }

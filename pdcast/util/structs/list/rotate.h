@@ -7,8 +7,8 @@
 #include <cmath>  // for abs()
 #include <Python.h>  // for CPython API
 #include <utility>  // for std::pair
-#include <node.h>  // for nodes
-#include <view.h>  // for views
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 //////////////////////
@@ -29,51 +29,52 @@ void rotate(ViewType<NodeType>* view, ssize_t steps) {
 
     // get index at which to split the list
     size_t index;
-    if (steps < 0) {  // split early and join head to tail
+    size_t rotate_left = (steps < 0);
+    if (rotate_left) {  // count from head
         index = norm_steps;
-    } else {  // split late and join tail to head
+    } else {  // count from tail
         index = view->size - norm_steps;
     }
 
-    Node* head;
-    Node* tail;
+    Node* new_head;
+    Node* new_tail;
 
     // identify new head and tail of rotated list
     if constexpr (is_doubly_linked<Node>::value) {
         // NOTE: if the list is doubly-linked, then we can iterate in either
         // direction to find the junction point.
-        if (index <= view->size / 2) {  // forward traversal
-            tail = view->head;
-            for (size_t i = 0; i < index; i++) {
-                tail = (Node*)tail->next;
-            }
-            head = (Node*)tail->next;
-        } else {  // backward traversal
-            head = view->tail;
+        if (index > view->size / 2) {  // backward traversal
+            new_head = view->tail;
             for (size_t i = view->size - 1; i > index; i--) {
-                head = (Node*)head->prev;
+                new_head = static_cast<Node*>(new_head->prev);
             }
-            tail = (Node*)head->prev;
+            new_tail = static_cast<Node*>(new_head->prev);
+
+            // split list at junction and join previous head/tail
+            Node::split(new_tail, new_head);
+            Node::join(view->tail, view->head);
+
+            // update head/tail pointers
+            view->head = new_head;
+            view->tail = new_tail;
+            return;
         }
-    } else {
-        tail = view->head;
-        for (size_t i = 0; i < index; i++) {
-            tail = (Node*)tail->next;
-        }
-        head = (Node*)tail->next;
     }
 
-    // split list at junction and join head/tail based on direction of rotation
-    Node::split(tail, head);
-    if (steps < 0) {  // rotate left
-        Node::join(view->tail, head);
-    } else {  // rotate right
-        Node::join(tail, view->head);
+    // forward traversal
+    new_tail = view->head;
+    for (size_t i = 1; i < index; i++) {
+        new_tail = static_cast<Node*>(new_tail->next);
     }
+    new_head = static_cast<Node*>(new_tail->next);
+
+    // split at junction and join previous head/tail
+    Node::split(new_tail, new_head);
+    Node::join(view->tail, view->head);
 
     // update head/tail pointers
-    view->head = head;
-    view->tail = tail;
+    view->head = new_head;
+    view->tail = new_tail;
 }
 
 

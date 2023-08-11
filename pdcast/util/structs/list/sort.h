@@ -6,8 +6,8 @@
 #include <cstddef>  // for size_t
 #include <queue>  // for std::queue
 #include <Python.h>  // for CPython API
-#include <node.h>  // for nodes
-#include <view.h>  // for views
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 //////////////////////
@@ -43,8 +43,8 @@ void sort(ViewType<NodeType>* view, PyObject* key_func, bool reverse) {
     sort(list_view, key_func, reverse);  // updates the original view in-place
 
     // free the temporary ListView
-    list_view->head = NULL;  // avoids calling destructor on nodes
-    list_view->tail = NULL;
+    list_view->head = nullptr;  // avoids calling destructor on nodes
+    list_view->tail = nullptr;
     list_view->size = 0;
     delete list_view;
 }
@@ -61,14 +61,14 @@ void sort(ListView<NodeType>* view, PyObject* key_func, bool reverse) {
     }
 
     // if no key function is given, sort the list in-place
-    if (key_func == NULL) {
+    if (key_func == nullptr) {
         _merge_sort(view, reverse);
         return;
     }
 
     // decorate the list with precomputed keys
     ListView<Keyed<Node>>* key_view = _decorate(view, key_func);
-    if (key_view == NULL) {
+    if (key_view == nullptr) {
         return;  // propagate
     }
 
@@ -98,35 +98,35 @@ template <typename Node>
 ListView<Keyed<Node>>* _decorate(ListView<Node>* view, PyObject* key_func) {
     // initialize an empty ListView to hold the decorated list
     ListView<Keyed<Node>>* decorated = new ListView<Keyed<Node>>();
-    if (decorated == NULL) {
+    if (decorated == nullptr) {
         PyErr_NoMemory();
-        return NULL;
+        return nullptr;
     }
 
     // iterate through the list and decorate each node with the precomputed key
     Node* node = view->head;
-    while (node != NULL) {
+    while (node != nullptr) {
         // CPython API equivalent of `key_func(node.value)`
         PyObject* key_value;
-        key_value = PyObject_CallFunctionObjArgs(key_func, node->value, NULL);
-        if (key_value == NULL) {  // error during key_func()
+        key_value = PyObject_CallFunctionObjArgs(key_func, node->value, nullptr);
+        if (key_value == nullptr) {  // error during key_func()
             delete decorated;  // free the decorated list
-            return NULL;
+            return nullptr;
         }
 
         // initialize a new keyed decorator
         Keyed<Node>* keyed = decorated->node(key_value, node);
-        if (keyed == NULL) {
+        if (keyed == nullptr) {
             Py_DECREF(key_value);  // release the key value
             delete decorated;  // free the decorated list
-            return NULL;  // propagate the error
+            return nullptr;  // propagate the error
         }
 
         // link the decorator to the decorated list
-        decorated->link(decorated->tail, keyed, NULL);
+        decorated->link(decorated->tail, keyed, nullptr);
 
         // advance to the next node
-        node = (Node*)node->next;
+        node = static_cast<Node*>(node->next);
     }
 
     // return decorated list
@@ -143,17 +143,17 @@ std::pair<Node*, Node*> _undecorate(ListView<Keyed<Node>>* view) {
     // NOTE: we rearrange the nodes in the undecorated list to match their
     // positions in the decorated equivalent.  This is done in-place, and we
     // free the decorators as we go in order to avoid a second iteration.
-    Keyed<Node>* keyed_prev = NULL;
+    Keyed<Node>* keyed_prev = nullptr;
     Keyed<Node>* keyed = view->head;
-    while (keyed != NULL) {
+    while (keyed != nullptr) {
         Node* wrapped = keyed->node;
         Keyed<Node>* keyed_next = (Keyed<Node>*)keyed->next;
 
         // link the wrapped node to the undecorated list
-        if (sorted.first == NULL) {
+        if (sorted.first == nullptr) {
             sorted.first = wrapped;
         } else {
-            Node::link(sorted.second, wrapped, NULL);
+            Node::link(sorted.second, wrapped, nullptr);
         }
         sorted.second = wrapped;  // set tail of undecorated list
 
@@ -183,8 +183,8 @@ void _merge_sort(ListView<Node>* view, bool reverse) {
     // If we allocate it here, we can pass it to `_merge()` as an argument and
     // reuse it for every sublist.  This avoids an extra malloc/free cycle in
     // each iteration.
-    Node* temp = (Node*)malloc(sizeof(Node));
-    if (temp == NULL) {
+    Node* temp = static_cast<Node*>(malloc(sizeof(Node)));
+    if (temp == nullptr) {
         PyErr_NoMemory();
         return;
     }
@@ -208,20 +208,20 @@ void _merge_sort(ListView<Node>* view, bool reverse) {
     size_t length = 1;  // length of sublists for current iteration
     while (length <= view->size) {
         // reset head and tail of sorted list
-        sorted.first = NULL;
-        sorted.second = NULL;
+        sorted.first = nullptr;
+        sorted.second = nullptr;
 
         // divide and conquer
-        while (unsorted.first != NULL) {
+        while (unsorted.first != nullptr) {
             // split the list into two sublists of size `length`
             left.first = unsorted.first;
             left.second = _walk(left.first, length - 1);
-            right.first = (Node*)left.second->next;  // may be NULL
+            right.first = static_cast<Node*>(left.second->next);  // may be NULL
             right.second = _walk(right.first, length - 1);
-            if (right.second == NULL) {  // right sublist is empty
-                unsorted.first = NULL;  // terminate the loop
+            if (right.second == nullptr) {  // right sublist is empty
+                unsorted.first = nullptr;  // terminate the loop
             } else {
-                unsorted.first = (Node*)right.second->next;
+                unsorted.first = static_cast<Node*>(right.second->next);
             }
 
             // unlink the sublists from the original list
@@ -244,7 +244,7 @@ void _merge_sort(ListView<Node>* view, bool reverse) {
             }
 
             // link combined sublist to sorted
-            if (sorted.first == NULL) {
+            if (sorted.first == nullptr) {
                 sorted.first = merged.first;
             } else {  // link the merged sublist to the previous one
                 Node::join(sorted.second, merged.first);
@@ -274,16 +274,16 @@ void _merge_sort(ListView<Node>* view, bool reverse) {
 template <typename Node>
 inline Node* _walk(Node* curr, size_t length) {
     // if we're at the end of the list, there's nothing left to traverse
-    if (curr == NULL) {
-        return NULL;
+    if (curr == nullptr) {
+        return nullptr;
     }
 
     // walk forward `length` nodes from `curr`
     for (size_t i = 0; i < length; i++) {
-        if (curr->next == NULL) {  // list terminates before `length`
+        if (curr->next == nullptr) {  // list terminates before `length`
             break;
         }
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
     return curr;
 }
@@ -303,7 +303,7 @@ std::pair<Node*, Node*> _merge(
     // and appending the smaller of the two to the merged result.  We repeat
     // this process until one of the sublists has been exhausted, giving us a
     // sorted list of size `length * 2`.
-    while (left.first != NULL && right.first != NULL) {
+    while (left.first != nullptr && right.first != nullptr) {
         // CPython API equivalent of `left.value < right.value`
         int comp = PyObject_RichCompareBool(left.first->value, right.first->value, Py_LT);
         if (comp == -1) {
@@ -313,20 +313,20 @@ std::pair<Node*, Node*> _merge(
         // append the smaller of the two candidates to the merged list
         if (comp ^ reverse) {  // [not] left < right
             Node::join(curr, left.first);  // push from left sublist
-            left.first = (Node*)left.first->next;  // advance left
+            left.first = static_cast<Node*>(left.first->next);  // advance left
         } else {
             Node::join(curr, right.first);  // push from right sublist
-            right.first = (Node*)right.first->next;  // advance right
+            right.first = static_cast<Node*>(right.first->next);  // advance right
         }
 
         // advance to next comparison
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // NOTE: at this point, one of the sublists has been exhausted, so we can
     // safely append the remaining nodes to the merged result.
     Node* tail;
-    if (left.first != NULL) {
+    if (left.first != nullptr) {
         Node::join(curr, left.first);  // link remaining nodes
         tail = left.second;  // update tail of merged list
     } else {
@@ -335,7 +335,7 @@ std::pair<Node*, Node*> _merge(
     }
 
     // unlink temporary head from list and return the proper head and tail
-    curr = (Node*)temp->next;
+    curr = static_cast<Node*>(temp->next);
     Node::split(temp, curr);  // `temp` can be reused
     return std::make_pair(curr, tail);
 }

@@ -29,19 +29,19 @@ const unsigned int FREELIST_SIZE = 32;  // max size of each View's freelist
 
 /* Get the Python repr() of an arbitrary PyObject* as a C string. */
 const char* repr(PyObject* obj) {
-    if (obj == NULL) {
+    if (obj == nullptr) {
         return "NULL";
     }
 
     // call repr()
     PyObject* py_repr = PyObject_Repr(obj);
-    if (py_repr == NULL) {
+    if (py_repr == nullptr) {
         return "NULL";
     }
 
     // convert to UTF-8
     const char* c_repr = PyUnicode_AsUTF8(py_repr);
-    if (c_repr == NULL) {
+    if (c_repr == nullptr) {
         return "NULL";
     }
 
@@ -64,7 +64,7 @@ struct SingleNode {
     inline static SingleNode* init(SingleNode* node, PyObject* value) {
         Py_INCREF(value);
         node->value = value;
-        node->next = NULL;
+        node->next = nullptr;
         return node;
     }
 
@@ -72,7 +72,7 @@ struct SingleNode {
     inline static SingleNode* init_copy(SingleNode* new_node, SingleNode* old_node) {
         Py_INCREF(old_node->value);
         new_node->value = old_node->value;
-        new_node->next = NULL;
+        new_node->next = nullptr;
         return new_node;
     }
 
@@ -87,7 +87,7 @@ struct SingleNode {
         SingleNode* curr,
         SingleNode* next
     ) {
-        if (prev != NULL) {
+        if (prev != nullptr) {
             prev->next = curr;
         }
         curr->next = next;
@@ -99,22 +99,22 @@ struct SingleNode {
         SingleNode* curr,
         SingleNode* next
     ) {
-        if (prev != NULL) {
+        if (prev != nullptr) {
             prev->next = next;
         }
-        curr->next = NULL;
+        curr->next = nullptr;
     }
 
     /* Break a linked list at the specified nodes. */
     inline static void split(SingleNode* prev, SingleNode* curr) {
-        if (prev != NULL) {
-            prev->next = NULL;
+        if (prev != nullptr) {
+            prev->next = nullptr;
         }
     }
 
     /* Join the list at the specified nodes. */
     inline static void join(SingleNode* prev, SingleNode* curr) {
-        if (prev != NULL) {
+        if (prev != nullptr) {
             prev->next = curr;
         }
     }
@@ -147,8 +147,8 @@ struct DoubleNode {
     inline static DoubleNode* init(DoubleNode* node, PyObject* value) {
         Py_INCREF(value);
         node->value = value;
-        node->next = NULL;
-        node->prev = NULL;
+        node->next = nullptr;
+        node->prev = nullptr;
         return node;
     }
 
@@ -156,8 +156,8 @@ struct DoubleNode {
     inline static DoubleNode* init_copy(DoubleNode* new_node, DoubleNode* old_node) {
         Py_INCREF(old_node->value);
         new_node->value = old_node->value;
-        new_node->next = NULL;
-        new_node->prev = NULL;
+        new_node->next = nullptr;
+        new_node->prev = nullptr;
         return new_node;
     }
 
@@ -172,12 +172,12 @@ struct DoubleNode {
         DoubleNode* curr,
         DoubleNode* next
     ) {
-        if (prev != NULL) {
+        if (prev != nullptr) {
             prev->next = curr;
         }
         curr->prev = prev;
         curr->next = next;
-        if (next != NULL) {
+        if (next != nullptr) {
             next->prev = curr;
         }
     }
@@ -188,30 +188,30 @@ struct DoubleNode {
         DoubleNode* curr,
         DoubleNode* next
     ) {
-        if (prev != NULL) {
+        if (prev != nullptr) {
             prev->next = next;
         }
-        if (next != NULL) {
+        if (next != nullptr) {
             next->prev = prev;
         }
     }
 
     /* Break a linked list at the specified nodes. */
     inline static void split(DoubleNode* prev, DoubleNode* curr) {
-        if (prev != NULL) {
-            prev->next = NULL;
+        if (prev != nullptr) {
+            prev->next = nullptr;
         }
-        if (curr != NULL) {
-            curr->prev = NULL;
+        if (curr != nullptr) {
+            curr->prev = nullptr;
         }
     }
 
     /* Join the list at the specified nodes. */
     inline static void join(DoubleNode* prev, DoubleNode* curr) {
-        if (prev != NULL) {
+        if (prev != nullptr) {
             prev->next = curr;
         }
-        if (curr != NULL) {
+        if (curr != nullptr) {
             curr->prev = prev;
         }
     }
@@ -253,7 +253,7 @@ struct Keyed {
         Py_INCREF(key_value);
         node->value = key_value;
         node->node = wrapped;
-        node->next = NULL;
+        node->next = nullptr;
         return node;
     }
 
@@ -273,7 +273,7 @@ struct Keyed {
         Keyed<NodeType>* curr,
         Keyed<NodeType>* next
     ) {
-        if (prev != NULL) {
+        if (prev != nullptr) {
             prev->next = curr;
         }
         curr->next = next;
@@ -285,22 +285,22 @@ struct Keyed {
         Keyed<NodeType>* curr,
         Keyed<NodeType>* next
     ) {
-        if (prev != NULL) {
+        if (prev != nullptr) {
             prev->next = next;
         }
-        curr->next = NULL;
+        curr->next = nullptr;
     }
 
     /* Break a linked list at the specified nodes. */
     inline static void split(Keyed<NodeType>* prev, Keyed<NodeType>* curr) {
-        if (prev != NULL) {
-            prev->next = NULL;
+        if (prev != nullptr) {
+            prev->next = nullptr;
         }
     }
 
     /* Join the list at the specified nodes. */
     inline static void join(Keyed<NodeType>* prev, Keyed<NodeType>* curr) {
-        if (prev != NULL) {
+        if (prev != nullptr) {
             prev->next = curr;
         }
     }
@@ -333,8 +333,8 @@ struct Counted : public NodeType {
     /* Initialize a newly-allocated node. */
     inline static Counted<NodeType>* init(Counted<NodeType>* node, PyObject* value) {
         node = (Counted<NodeType>*)NodeType::init(node, value);
-        if (node == NULL) {  // Error during decorated init()
-            return NULL;  // propagate
+        if (node == nullptr) {  // Error during decorated init()
+            return nullptr;  // propagate
         }
 
         // initialize frequency
@@ -351,8 +351,8 @@ struct Counted : public NodeType {
     ) {
         // delegate to templated init_copy() method
         new_node = (Counted<NodeType>*)NodeType::init_copy(new_node, old_node);
-        if (new_node == NULL) {  // Error during templated init_copy()
-            return NULL;  // propagate
+        if (new_node == nullptr) {  // Error during templated init_copy()
+            return nullptr;  // propagate
         }
 
         // copy frequency
@@ -401,7 +401,7 @@ private:
         }
 
         // malloc()
-        return (Node*)malloc(sizeof(Node));  // may be NULL
+        return static_cast<Node*>(malloc(sizeof(Node)));  // may be NULL
     }
 
     /* A wrapper around free() that can help catch memory leaks. */
@@ -447,15 +447,15 @@ public:
     ) {
         // get blank node
         Node* node = pop(freelist, value);
-        if (node == NULL) {  // malloc() failed
+        if (node == nullptr) {  // malloc() failed
             PyErr_NoMemory();  // set MemoryError
-            return NULL;
+            return nullptr;
         }
 
         // NOTE: we select one of the init() methods defined on the derived
         // class, which can be arbitrarily specialized.
         node = Node::init(node, value, args...);  // variadic init()
-        if (node == NULL) {  // error during dispatched init()
+        if (node == nullptr) {  // error during dispatched init()
             push(freelist, node);
         }
 
@@ -467,14 +467,14 @@ public:
     inline static Node* copy(std::queue<Node*>& freelist, Node* old_node) {
         // get blank node
         Node* new_node = pop(freelist, old_node->value);
-        if (new_node == NULL) {  // malloc() failed
+        if (new_node == nullptr) {  // malloc() failed
             PyErr_NoMemory();  // set MemoryError
-            return NULL;
+            return nullptr;
         }
 
         // initialize according to template parameter
         new_node = Node::init_copy(new_node, old_node);
-        if (new_node == NULL) {  // error during init_copy()
+        if (new_node == nullptr) {  // error during init_copy()
             push(freelist, new_node);  // push allocated node to freelist
         }
 
@@ -491,8 +491,8 @@ public:
     /* Clear a list from head to tail, recycling all of the contained nodes. */
     inline static void recycle_list(std::queue<Node*>& freelist, Node* head) {
         Node* next;
-        while (head != NULL) {
-            next = (Node*)head->next;
+        while (head != nullptr) {
+            next = static_cast<Node*>(head->next);
             recycle(freelist, head);
             head = next;
         }
@@ -507,8 +507,8 @@ public:
     /* Clear a list from head to tail, discarding all of the contained nodes. */
     inline static void discard_list(Node* head) {
         Node* next;
-        while (head != NULL) {
-            next = (Node*)head->next;
+        while (head != nullptr) {
+            next = static_cast<Node*>(head->next);
             discard(head);
             head = next;
         }

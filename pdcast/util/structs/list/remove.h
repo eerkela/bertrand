@@ -4,8 +4,8 @@
 
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
-#include <node.h>  // for nodes
-#include <view.h>  // for views
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 //////////////////////
@@ -15,14 +15,14 @@
 
 /* Remove the first occurrence of an item within a list. */
 template <typename NodeType>
-inline void remove(ListView<NodeType>* view, PyObject* item) {
+void remove(ListView<NodeType>* view, PyObject* item) {
     using Node = typename ListView<NodeType>::Node;
 
     // find the node to remove
-    Node* prev = NULL;
+    Node* prev = nullptr;
     Node* curr = view->head;
-    while (curr != NULL) {
-        Node* next = (Node*)curr->next;
+    while (curr != nullptr) {
+        Node* next = static_cast<Node*>(curr->next);
 
         // C API equivalent of the == operator
         int comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
@@ -46,12 +46,12 @@ inline void remove(ListView<NodeType>* view, PyObject* item) {
 
 /* Remove an item from a singly-linked set or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
-inline void remove_single(ViewType<NodeType>* view, PyObject* item) {
+void remove_single(ViewType<NodeType>* view, PyObject* item) {
     using Node = typename ViewType<NodeType>::Node;
 
     // search for node
     Node* node = view->search(item);
-    if (node == NULL) {  // item not found
+    if (node == nullptr) {  // item not found
         PyErr_Format(PyExc_KeyError, "%R not in set", item);
         return;
     }
@@ -60,15 +60,15 @@ inline void remove_single(ViewType<NodeType>* view, PyObject* item) {
     // have to traverse the whole list to find the previous node.
 
     // iterate forwards from head to find previous node
-    Node* prev = NULL;
+    Node* prev = nullptr;
     Node* curr = view->head;
     while (curr != node) {
         prev = curr;
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // unlink and free node
-    view->unlink(prev, curr, (Node*)curr->next);
+    view->unlink(prev, curr, static_cast<Node*>(curr->next));
     view->recycle(curr);
 }
 
@@ -80,7 +80,7 @@ inline void remove_double(ViewType<NodeType>* view, PyObject* item) {
 
     // search for node
     Node* node = view->search(item);
-    if (node == NULL) {  // item not found
+    if (node == nullptr) {  // item not found
         PyErr_Format(PyExc_KeyError, "%R not in set", item);
         return;
     }
@@ -89,7 +89,7 @@ inline void remove_double(ViewType<NodeType>* view, PyObject* item) {
     // already have a pointer to the node that precedes the popped node.
 
     // unlink and free node
-    view->unlink((Node*)node->prev, node, (Node*)node->next);
+    view->unlink(static_cast<Node*>(node->prev), node, static_cast<Node*>(node->next));
     view->recycle(node);
 }
 
@@ -107,7 +107,7 @@ inline void removeafter(ViewType<NodeType>* view, PyObject* sentinel) {
 
     // search for node
     Node* node = view->search(sentinel);
-    if (node == NULL) {  // sentinel not found
+    if (node == nullptr) {  // sentinel not found
         PyErr_Format(PyExc_KeyError, "%R not in set", sentinel);
         return;
     }
@@ -117,8 +117,8 @@ inline void removeafter(ViewType<NodeType>* view, PyObject* sentinel) {
     }
 
     // unlink and free node
-    Node* curr = (Node*)node->next;
-    view->unlink(node, curr, (Node*)curr->next);
+    Node* curr = static_cast<Node*>(node->next);
+    view->unlink(node, curr, static_cast<Node*>(curr->next));
     view->recycle(curr);
 }
 
@@ -136,7 +136,7 @@ inline void removebefore_single(ViewType<NodeType>* view, PyObject* sentinel) {
 
     // search for node
     Node* node = view->search(sentinel);
-    if (node == NULL) {  // sentinel not found
+    if (node == nullptr) {  // sentinel not found
         PyErr_Format(PyExc_KeyError, "%R not in set", sentinel);
         return;
     }
@@ -149,13 +149,13 @@ inline void removebefore_single(ViewType<NodeType>* view, PyObject* sentinel) {
     // the whole list to find the previous node.
 
     // iterate from head to find previous node
-    Node* prev = NULL;
+    Node* prev = nullptr;
     Node* curr = view->head;
-    Node* next = (Node*)curr->next;
+    Node* next = static_cast<Node*>(curr->next);
     while (next != node) {
         prev = curr;
         curr = next;
-        next = (Node*)next->next;
+        next = static_cast<Node*>(next->next);
     }
 
     // unlink and free node
@@ -172,7 +172,7 @@ inline void removebefore_double(ViewType<NodeType>* view, PyObject* sentinel) {
 
     // search for node
     Node* node = view->search(sentinel);
-    if (node == NULL) {  // sentinel not found
+    if (node == nullptr) {  // sentinel not found
         PyErr_Format(PyExc_KeyError, "%R not in set", sentinel);
         return;
     }
@@ -185,8 +185,8 @@ inline void removebefore_double(ViewType<NodeType>* view, PyObject* sentinel) {
     // pointer to the node that precedes the sentinel.
 
     // unlink and free node
-    Node* curr = (Node*)node->prev;
-    view->unlink((Node*)curr->prev, curr, node);
+    Node* curr = static_cast<Node*>(node->prev);
+    view->unlink(static_cast<Node*>(curr->prev), curr, node);
     view->recycle(curr);
 }
 

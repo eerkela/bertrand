@@ -5,8 +5,8 @@
 
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
-#include <node.h>  // for nodes
-#include <view.h>  // for views, MAX_SIZE_T
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 //////////////////////
@@ -17,7 +17,7 @@
 /* Count the number of occurrences of an item within a singly-linked set or
 dictionary. */
 template <template <typename> class ViewType, typename NodeType>
-inline size_t count(
+size_t count(
     ViewType<NodeType>* view,
     PyObject* item,
     size_t start,
@@ -27,7 +27,7 @@ inline size_t count(
 
     // check if item is contained in hash table
     Node* node = view->search(item);
-    if (node == NULL) {
+    if (node == nullptr) {
         return 0;
     }
 
@@ -40,7 +40,7 @@ inline size_t count(
     Node* curr = view->head;
     size_t idx = 0;
     while (curr != node && idx < stop) {
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
         idx++;
     }
 
@@ -54,7 +54,7 @@ inline size_t count(
 
 /* Count the number of occurrences of an item within a singly-linked list. */
 template <typename NodeType>
-inline size_t count(
+size_t count(
     ListView<NodeType>* view,
     PyObject* item,
     size_t start,
@@ -72,7 +72,7 @@ inline size_t count(
             // else, start from tail
             curr = view->tail;
             for (idx = view->size - 1; idx >= stop; idx--) {  // skip to stop index
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
 
             // search until we hit start index
@@ -86,7 +86,7 @@ inline size_t count(
                 }
 
                 // advance to next node
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
                 idx--;
             }
 
@@ -97,7 +97,7 @@ inline size_t count(
     // NOTE: otherwise, we iterate forward from the head
     curr = view->head;
     for (idx = 0; idx < start; idx++) {  // skip to start index
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // search until we hit stop index
@@ -111,7 +111,7 @@ inline size_t count(
         }
 
         // advance to next node
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
         idx++;
     }
 

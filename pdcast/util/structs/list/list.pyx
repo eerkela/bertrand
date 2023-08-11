@@ -29,7 +29,6 @@ from typing import Iterable, Iterator
 
 
 
-# TODO: rotate() is broken (head and tail seem not to update properly)
 # TODO: __getitem__() sometimes throws unexpected ValueErrors and occasionally
 # causes a segfault.
 

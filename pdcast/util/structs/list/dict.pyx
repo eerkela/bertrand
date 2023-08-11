@@ -7,9 +7,11 @@ cdef object od = OrderedDict(d)
 cdef object items = d.items()
 cdef DictView[DoubleNode]* view = new DictView[DoubleNode](<PyObject*>items, False, NULL)
 
+
 cdef object lookup(object val):
     cdef DictView[DoubleNode].Node* node = view.lru_search(<PyObject*>val)
     return <object>node.mapped
+
 
 cdef object od_lru(object val):
     cdef object value = od[val]

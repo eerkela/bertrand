@@ -5,8 +5,8 @@
 
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
-#include <node.h>  // for nodes
-#include <view.h>  // for views
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 //////////////////////
@@ -16,7 +16,7 @@
 
 /* Get the index of an item within a linked set or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
-inline size_t index(
+size_t index(
     ViewType<NodeType>* view,
     PyObject* item,
     size_t start,
@@ -26,7 +26,7 @@ inline size_t index(
 
     // search for item in hash table
     Node* node = view->search(item);
-    if (node == NULL) {
+    if (node == nullptr) {
         PyErr_Format(PyExc_ValueError, "%R is not in the set", item);
         return MAX_SIZE_T;
     }
@@ -39,12 +39,12 @@ inline size_t index(
             PyErr_Format(PyExc_ValueError, "%R is not in the set", item);
             return MAX_SIZE_T;
         }
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // iterate until we hit match or stop index
     while (curr != node && idx < stop) {
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
         idx++;
     }
     if (curr == node) {
@@ -59,7 +59,7 @@ inline size_t index(
 
 /* Get the index of an item within a linked list. */
 template <typename NodeType>
-inline size_t index(
+size_t index(
     ListView<NodeType>* view,
     PyObject* item,
     size_t start,
@@ -75,7 +75,7 @@ inline size_t index(
         if (start > view->size / 2) {
             curr = view->tail;
             for (idx = view->size - 1; idx > stop; idx--) {  // skip to stop index
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
 
             // search until we hit start index
@@ -92,7 +92,7 @@ inline size_t index(
                 }
 
                 // advance to next node
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
                 idx--;
             }
 
@@ -110,7 +110,7 @@ inline size_t index(
     // NOTE: otherwise, we iterate forward from the head
     curr = view->head;
     for (idx = 0; idx < start; idx++) {  // skip to start index
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // search until we hit stop index
@@ -124,7 +124,7 @@ inline size_t index(
         }
 
         // advance to next node
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
         idx++;
     }
 

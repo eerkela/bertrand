@@ -7,7 +7,7 @@
 #include <queue>  // for std::queue
 #include <limits>  // for std::numeric_limits
 #include <Python.h>  // for CPython API
-#include <node.h>  // for Hashed<T>, Mapped<T>
+#include "node.h"  // for Hashed<T>, Mapped<T>
 
 
 
@@ -115,7 +115,7 @@ inline T closed_interval(T start, T stop, T step) {
 
 /* Allow Python-style negative indexing with wraparound and boundschecking. */
 template <typename T>
-inline size_t normalize_index(T index, size_t size, bool truncate) {
+size_t normalize_index(T index, size_t size, bool truncate) {
     // wraparound negative indices
     if (index < 0) {
         index += size;
@@ -140,7 +140,7 @@ inline size_t normalize_index(T index, size_t size, bool truncate) {
 
 /* A specialized version of normalize_index() for use with Python integers. */
 template <>
-inline size_t normalize_index(PyObject* index, size_t size, bool truncate) {
+size_t normalize_index(PyObject* index, size_t size, bool truncate) {
     // NOTE: this is the same algorithm as _normalize_index() except that it
     // accepts Python integers and handles the associated reference counting.
     if (!PyLong_Check(index)) {
@@ -200,7 +200,7 @@ inline size_t normalize_index(PyObject* index, size_t size, bool truncate) {
 /* Get the direction in which to traverse a slice according to the structure of
 the list. */
 template <template <typename> class ViewType, typename NodeType>
-inline std::pair<size_t, size_t> normalize_slice(
+std::pair<size_t, size_t> normalize_slice(
     ViewType<NodeType>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
@@ -268,20 +268,20 @@ inline std::pair<size_t, size_t> normalize_slice(
 
 
 /* HashTables allow O(1) lookup for nodes within SetViews and DictViews. */
-template <typename T>
+template <typename Node>
 class HashTable {
 private:
-    T* table;               // array of pointers to nodes
-    T tombstone;            // sentinel value for deleted nodes
-    size_t capacity;        // size of table
-    size_t occupied;        // number of occupied slots (incl. tombstones)
-    size_t tombstones;      // number of tombstones
-    unsigned char exponent; // log2(capacity) - log2(INITIAL_TABLE_SIZE)
-    size_t prime;           // prime number used for double hashing
+    Node** table;               // array of pointers to nodes
+    Node* tombstone;            // sentinel value for deleted nodes
+    size_t capacity;            // size of table
+    size_t occupied;            // number of occupied slots (incl. tombstones)
+    size_t tombstones;          // number of tombstones
+    unsigned char exponent;     // log2(capacity) - log2(INITIAL_TABLE_SIZE)
+    size_t prime;               // prime number used for double hashing
 
     /* Resize the hash table and replace its contents. */
     void resize(unsigned char new_exponent) {
-        T* old_table = table;
+        Node** old_table = table;
         size_t old_capacity = capacity;
         size_t new_capacity = 1 << new_exponent;
 
@@ -290,8 +290,8 @@ private:
         }
 
         // allocate new table
-        table = (T*)calloc(new_capacity, sizeof(T));
-        if (table == NULL) {
+        table = static_cast<Node**>(calloc(new_capacity, sizeof(Node*)));
+        if (table == nullptr) {
             PyErr_NoMemory();
             return;  // propagate error
         }
@@ -302,17 +302,17 @@ private:
         prime = PRIMES[new_exponent];
 
         size_t new_index, step;
-        T lookup;
+        Node* lookup;
 
         // rehash old table and clear tombstones
         for (size_t old_index = 0; old_index < old_capacity; old_index++) {
             lookup = old_table[old_index];
-            if (lookup != NULL && lookup != tombstone) {  // insert into new table
+            if (lookup != nullptr && lookup != tombstone) {  // insert into new table
                 // NOTE: we don't need to check for errors because we already
                 // know that the old table is valid.
                 new_index = lookup->hash % new_capacity;
                 step = prime - (lookup->hash % prime);
-                while (table[new_index] != NULL) {
+                while (table[new_index] != nullptr) {
                     new_index = (new_index + step) % new_capacity;
                 }
                 table[new_index] = lookup;
@@ -346,14 +346,14 @@ public:
         }
 
         // initialize hash table
-        table = (T*)calloc(INITIAL_TABLE_CAPACITY, sizeof(T));
-        if (table == NULL) {
+        table = static_cast<Node**>(calloc(INITIAL_TABLE_CAPACITY, sizeof(Node*)));
+        if (table == nullptr) {
             throw std::bad_alloc();  // we have to use C++ exceptions here
         }
 
         // initialize tombstone
-        tombstone = (T)malloc(sizeof(T));
-        if (tombstone == NULL) {
+        tombstone = static_cast<Node*>(malloc(sizeof(Node)));
+        if (tombstone == nullptr) {
             free(table);  // clean up staged table
             throw std::bad_alloc();
         }
@@ -376,7 +376,7 @@ public:
     }
 
     /* Add a node to the hash map for direct access. */
-    void remember(T node) {
+    void remember(Node* node) {
         // resize if necessary
         if (occupied > capacity * MAX_LOAD_FACTOR) {
             resize(exponent + 1);
@@ -388,11 +388,11 @@ public:
         // get index and step for double hashing
         size_t index = node->hash % capacity;
         size_t step = prime - (node->hash % prime);
-        T lookup = table[index];
+        Node* lookup = table[index];
         int comp;
 
         // search table
-        while (lookup != NULL) {
+        while (lookup != nullptr) {
             if (lookup != tombstone) {
                 // CPython API equivalent of == operator
                 comp = PyObject_RichCompareBool(lookup->value, node->value, Py_EQ);
@@ -415,16 +415,16 @@ public:
     }
 
     /* Remove a node from the hash map. */
-    void forget(T node) {
+    void forget(Node* node) {
         // get index and step for double hashing
         size_t index = node->hash % capacity;
         size_t step = prime - (node->hash % prime);
-        T lookup = table[index];
+        Node* lookup = table[index];
         int comp;
         size_t n = occupied - tombstones;
 
         // search table
-        while (lookup != NULL) {
+        while (lookup != nullptr) {
             if (lookup != tombstone) {
                 // CPython API equivalent of == operator
                 comp = PyObject_RichCompareBool(lookup->value, node->value, Py_EQ);
@@ -463,8 +463,8 @@ public:
         free(table);
 
         // allocate new table
-        table = (T*)calloc(INITIAL_TABLE_CAPACITY, sizeof(T));
-        if (table == NULL) {  // this should pretty much never happen, but just in case
+        table = static_cast<Node**>(calloc(INITIAL_TABLE_CAPACITY, sizeof(Node*)));
+        if (table == nullptr) {  // this should never happen, but just in case
             PyErr_NoMemory();
             return;  // propagate error
         }
@@ -478,26 +478,26 @@ public:
     }
 
     /* Search for a node in the hash map by value. */
-    T search(PyObject* value) const {
+    Node* search(PyObject* value) const {
         // CPython API equivalent of hash(value)
         Py_hash_t hash = PyObject_Hash(value);
         if (hash == -1 && PyErr_Occurred()) {  // error occurred during hash()
-            return NULL;
+            return nullptr;
         }
 
         // get index and step for double hashing
         size_t index = hash % capacity;
         size_t step = prime - (hash % prime);
-        T lookup = table[index];
+        Node* lookup = table[index];
         int comp;
 
         // search table
-        while (lookup != NULL) {
+        while (lookup != nullptr) {
             if (lookup != tombstone) {
                 // CPython API equivalent of == operator
                 comp = PyObject_RichCompareBool(lookup->value, value, Py_EQ);
                 if (comp == -1) {  // error occurred during ==
-                    return NULL;
+                    return nullptr;
                 } else if (comp == 1) {  // value found
                     return lookup;
                 }
@@ -509,24 +509,24 @@ public:
         }
 
         // value not found
-        return NULL;
+        return nullptr;
     }
 
     /* Search for a node directly. */
-    T search(T value) const {
+    Node* search(Node* value) const {
         // reuse the node's pre-computed hash
         size_t index = value->hash % capacity;
         size_t step = prime - (value->hash % prime);
-        T lookup = table[index];
+        Node* lookup = table[index];
         int comp;
 
         // search table
-        while (lookup != NULL) {
+        while (lookup != nullptr) {
             if (lookup != tombstone) {
                 // CPython API equivalent of == operator
                 comp = PyObject_RichCompareBool(lookup->value, value->value, Py_EQ);
                 if (comp == -1) {  // error occurred during ==
-                    return NULL;
+                    return nullptr;
                 } else if (comp == 1) {  // value found
                     return lookup;
                 }
@@ -538,36 +538,36 @@ public:
         }
 
         // value was not found
-        return NULL;
+        return nullptr;
     }
 
     /* Clear tombstones from the hash table. */
     void clear_tombstones() {
-        T* old_table = table;
+        Node** old_table = table;
 
         if constexpr (DEBUG) {
             printf("    -> malloc: HashTable(%lu)\n", capacity);
         }
 
         // allocate new hash table
-        table = (T*)calloc(capacity, sizeof(T));
-        if (table == NULL) {
+        table = static_cast<Node**>(calloc(capacity, sizeof(Node*)));
+        if (table == nullptr) {
             PyErr_NoMemory();
             return;  // propagate error
         }
 
         size_t new_index, step;
-        T lookup;
+        Node* lookup;
 
         // rehash old table and remove tombstones
         for (size_t old_index = 0; old_index < capacity; old_index++) {
             lookup = old_table[old_index];
-            if (lookup != NULL && lookup != tombstone) {
+            if (lookup != nullptr && lookup != tombstone) {
                 // NOTE: we don't need to check for errors because we already
                 // know that the old table is valid.
                 new_index = lookup->hash % capacity;
                 step = prime - (lookup->hash % prime);
-                while (table[new_index] != NULL) {
+                while (table[new_index] != nullptr) {
                     new_index = (new_index + step) % capacity;
                 }
                 table[new_index] = lookup;
@@ -587,7 +587,7 @@ public:
 
     /*Get the total amount of memory consumed by the hash table.*/
     inline size_t nbytes() const {
-        return sizeof(HashTable<T>);
+        return sizeof(HashTable<Node>);
     }
 
 };
@@ -615,26 +615,26 @@ public:
 
     /* Construct an empty ListView. */
     ListView() {
-        head = NULL;
-        tail = NULL;
+        head = nullptr;
+        tail = nullptr;
         size = 0;
-        specialization = NULL;
+        specialization = nullptr;
     }
 
     /* Construct a ListView from an input iterable. */
-    ListView(PyObject* iterable, bool reverse = false, PyObject* spec = NULL) {
+    ListView(PyObject* iterable, bool reverse = false, PyObject* spec = nullptr) {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
-        if (iterator == NULL) {  // TypeError()
+        if (iterator == nullptr) {  // TypeError()
             throw std::invalid_argument("Value is not iterable");
         }
 
         // init empty ListView
-        head = NULL;
-        tail = NULL;
+        head = nullptr;
+        tail = nullptr;
         size = 0;
         specialization = spec;
-        if (spec != NULL) {
+        if (spec != nullptr) {
             Py_INCREF(spec);  // hold reference to specialization
         }
 
@@ -643,7 +643,7 @@ public:
         while (true) {
             // C API equivalent of next(iterator)
             item = PyIter_Next(iterator);
-            if (item == NULL) { // end of iterator or error
+            if (item == nullptr) { // end of iterator or error
                 if (PyErr_Occurred()) {
                     Py_DECREF(iterator);
                     Allocater<Node>::discard_list(head);
@@ -673,7 +673,7 @@ public:
         // NOTE: head, tail, size, and queue are automatically destroyed
         Allocater<Node>::discard_list(head);
         clear_freelist();
-        if (specialization != NULL) {
+        if (specialization != nullptr) {
             Py_DECREF(specialization);
         }
     }
@@ -683,10 +683,10 @@ public:
     inline Node* node(PyObject* value, Args... args) const {
         // variadic dispatch to Node::init()
         Node* result = Allocater<Node>::create(freelist, value, args...);
-        if (specialization != NULL && result != NULL) {
+        if (specialization != nullptr && result != nullptr) {
             if (!Node::typecheck(result, specialization)) {
                 recycle(result);  // clean up allocated node
-                return NULL;  // propagate TypeError()
+                return nullptr;  // propagate TypeError()
             }
         }
 
@@ -707,23 +707,23 @@ public:
     inline ListView<NodeType>* copy() const {
         ListView<NodeType>* copied = new ListView<NodeType>();
         Node* old_node = head;
-        Node* new_node = NULL;
-        Node* new_prev = NULL;
+        Node* new_node = nullptr;
+        Node* new_prev = nullptr;
 
         // copy each node in list
-        while (old_node != NULL) {
+        while (old_node != nullptr) {
             new_node = copy(old_node);  // copy node
-            if (new_node == NULL) {  // error during copy()
+            if (new_node == nullptr) {  // error during copy()
                 delete copied;  // discard staged list
-                return NULL;
+                return nullptr;
             }
 
             // link to tail of copied list
-            copied->link(new_prev, new_node, NULL);
+            copied->link(new_prev, new_node, nullptr);
 
             // advance to next node
             new_prev = new_node;
-            old_node = (Node*)old_node->next;
+            old_node = static_cast<Node*>(old_node->next);
         }
 
         // return copied list
@@ -735,8 +735,8 @@ public:
         Node* curr = head;  // store temporary reference to head
 
         // reset list parameters
-        head = NULL;
-        tail = NULL;
+        head = nullptr;
+        tail = nullptr;
         size = 0;
 
         // recycle all nodes, filling up the freelist
@@ -750,10 +750,10 @@ public:
 
         // update list parameters
         size++;
-        if (prev == NULL) {
+        if (prev == nullptr) {
             head = curr;
         }
-        if (next == NULL) {
+        if (next == nullptr) {
             tail = curr;
         }
     }
@@ -765,30 +765,30 @@ public:
 
         // update list parameters
         size--;
-        if (prev == NULL) {
+        if (prev == nullptr) {
             head = next;
         }
-        if (next == NULL) {
+        if (next == nullptr) {
             tail = prev;
         }
     }
 
     /* Enforce strict type checking for elements of this list. */
-    inline void specialize(PyObject* spec) {
+    void specialize(PyObject* spec) {
         // check the contents of the list
-        if (spec != NULL) {
+        if (spec != nullptr) {
             Node* curr = head;
             for (size_t i = 0; i < size; i++) {
                 if (!Node::typecheck(curr, spec)) {
                     return;  // propagate TypeError()
                 }
-                curr = (Node*)curr->next;
+                curr = static_cast<Node*>(curr->next);
             }
             Py_INCREF(spec);
         }
 
         // replace old specialization
-        if (specialization != NULL) {
+        if (specialization != nullptr) {
             Py_DECREF(specialization);
         }
         specialization = spec;
@@ -796,7 +796,7 @@ public:
 
     /* Get the type specialization for elements of this list. */
     inline PyObject* get_specialization() const {
-        if (specialization != NULL) {
+        if (specialization != nullptr) {
             Py_INCREF(specialization);
         }
         return specialization;  // return a new reference or NULL
@@ -825,7 +825,7 @@ private:
     inline void stage(PyObject* item, bool reverse) {
         // allocate a new node
         Node* curr = node(item);
-        if (curr == NULL) {  // error during node initialization
+        if (curr == nullptr) {  // error during node initialization
             return;
         }
 
@@ -833,9 +833,9 @@ private:
         // NOTE: this will never cause an error for ListViews, so we can can
         // omit the error-handling logic.
         if (reverse) {
-            link(NULL, curr, head);
+            link(nullptr, curr, head);
         } else {
-            link(tail, curr, NULL);
+            link(tail, curr, nullptr);
         }
     }
 
@@ -852,16 +852,16 @@ public:
 
         /* Initialize a newly-allocated node. */
         inline static Node* init(Node* node, PyObject* value) {
-            node = (Node*)NodeType::init(node, value);
-            if (node == NULL) {  // Error during decorated init()
-                return NULL;  // propagate
+            node = static_cast<Node*>(NodeType::init(node, value));
+            if (node == nullptr) {  // Error during decorated init()
+                return nullptr;  // propagate
             }
 
             // compute hash
             node->hash = PyObject_Hash(value);
             if (node->hash == -1 && PyErr_Occurred()) {
                 NodeType::teardown(node);  // free any resources allocated during init()
-                return NULL;  // propagate TypeError()
+                return nullptr;  // propagate TypeError()
             }
 
             // return initialized node
@@ -870,9 +870,9 @@ public:
 
         /* Initialize a copied node. */
         inline static Node* init_copy(Node* new_node, Node* old_node) {
-            new_node = (Node*)NodeType::init_copy(new_node, old_node);
-            if (new_node == NULL) {  // Error during decorated init_copy()
-                return NULL;  // propagate
+            new_node = static_cast<Node*>(NodeType::init_copy(new_node, old_node));
+            if (new_node == nullptr) {  // Error during decorated init_copy()
+                return nullptr;  // propagate
             }
 
             // reuse the pre-computed hash
@@ -895,26 +895,26 @@ public:
 
     /* Construct an empty SetView. */
     SetView() {
-        head = NULL;
-        tail = NULL;
+        head = nullptr;
+        tail = nullptr;
         size = 0;
-        specialization = NULL;
+        specialization = nullptr;
     }
 
     /* Construct a SetView from an input iterable. */
-    SetView(PyObject* iterable, bool reverse = false, PyObject* spec = NULL) {
+    SetView(PyObject* iterable, bool reverse = false, PyObject* spec = nullptr) {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
-        if (iterator == NULL) {
+        if (iterator == nullptr) {
             throw std::invalid_argument("Value is not iterable");
         }
 
         // init empty SetView
-        head = NULL;
-        tail = NULL;
+        head = nullptr;
+        tail = nullptr;
         size = 0;
         specialization = spec;
-        if (spec != NULL) {
+        if (spec != nullptr) {
             Py_INCREF(spec);  // hold reference to specialization
         }
 
@@ -923,7 +923,7 @@ public:
         while (true) {
             // C API equivalent of next(iterator)
             item = PyIter_Next(iterator);
-            if (item == NULL) { // end of iterator or error
+            if (item == nullptr) { // end of iterator or error
                 if (PyErr_Occurred()) {  // error during next()
                     Py_DECREF(iterator);
                     Allocater<Node>::discard_list(head);
@@ -953,7 +953,7 @@ public:
         // NOTE: head, tail, size, queue, and table are automatically destroyed.
         Allocater<Node>::discard_list(head);
         clear_freelist();
-        if (specialization != NULL) {
+        if (specialization != nullptr) {
             Py_DECREF(specialization);
         }
     }
@@ -963,10 +963,10 @@ public:
     inline Node* node(PyObject* value, Args... args) const {
         // variadic dispatch to Node::init()
         Node* result = Allocater<Node>::create(freelist, value, args...);
-        if (specialization != NULL && result != NULL) {
+        if (specialization != nullptr && result != nullptr) {
             if (!Node::typecheck(result, specialization)) {
                 recycle(result);  // clean up allocated node
-                return NULL;  // propagate TypeError()
+                return nullptr;  // propagate TypeError()
             }
         }
 
@@ -987,27 +987,27 @@ public:
     inline SetView<NodeType>* copy() const {
         SetView<NodeType>* copied = new SetView<NodeType>();
         Node* old_node = head;
-        Node* new_node = NULL;
-        Node* new_prev = NULL;
+        Node* new_node = nullptr;
+        Node* new_prev = nullptr;
 
         // copy each node in list
-        while (old_node != NULL) {
+        while (old_node != nullptr) {
             new_node = copy(old_node);  // copy node
-            if (new_node == NULL) {  // error during copy()
+            if (new_node == nullptr) {  // error during copy()
                 delete copied;  // discard staged list
-                return NULL;
+                return nullptr;
             }
 
             // link to tail of copied list
-            copied->link(new_prev, new_node, NULL);
+            copied->link(new_prev, new_node, nullptr);
             if (PyErr_Occurred()) {  // error during link()
                 delete copied;  // discard staged list
-                return NULL;
+                return nullptr;
             }
 
             // advance to next node
             new_prev = new_node;
-            old_node = (Node*)old_node->next;
+            old_node = static_cast<Node*>(old_node->next);
         }
 
         // return copied view
@@ -1019,8 +1019,8 @@ public:
         Node* curr = head;  // store temporary reference to head
 
         // reset list parameters
-        head = NULL;
-        tail = NULL;
+        head = nullptr;
+        tail = nullptr;
         size = 0;
 
         // reset hash table to initial size
@@ -1043,10 +1043,10 @@ public:
 
         // update list parameters
         size++;
-        if (prev == NULL) {
+        if (prev == nullptr) {
             head = curr;
         }
-        if (next == NULL) {
+        if (next == nullptr) {
             tail = curr;
         }
     }
@@ -1064,42 +1064,38 @@ public:
 
         // update list parameters
         size--;
-        if (prev == NULL) {
+        if (prev == nullptr) {
             head = next;
         }
-        if (next == NULL) {
+        if (next == nullptr) {
             tail = prev;
         }
     }
 
     /* Enforce strict type checking for elements of this list. */
-    inline void specialize(PyObject* spec) {
+    void specialize(PyObject* spec) {
         // check the contents of the list
-        if (spec != NULL) {
+        if (spec != nullptr) {
             Node* curr = head;
             for (size_t i = 0; i < size; i++) {
                 if (!Node::typecheck(curr, spec)) {
                     return;  // propagate TypeError()
                 }
-                curr = (Node*)curr->next;
+                curr = static_cast<Node*>(curr->next);
             }
+            Py_INCREF(spec);
         }
 
-        // release old specialization
-        if (specialization != NULL) {
-            Py_DECREF(specialization);  // release old specialization
+        // replace old specialization
+        if (specialization != nullptr) {
+            Py_DECREF(specialization);
         }
-
-        // set new specialization
-        specialization = spec;  // NULL disables typechecking
-        if (spec != NULL) {
-            Py_INCREF(spec);  // hold reference
-        }
+        specialization = spec;
     }
 
     /* Get the type specialization for elements of this list. */
     inline PyObject* get_specialization() const {
-        if (specialization != NULL) {
+        if (specialization != nullptr) {
             Py_INCREF(specialization);
         }
         return specialization;  // return a new reference or NULL
@@ -1138,14 +1134,14 @@ public:
 private:
     PyObject* specialization;  // specialized type for elements of this list
     mutable std::queue<Node*> freelist;  // stack allocated
-    HashTable<Node*> table;  // stack allocated
+    HashTable<Node> table;  // stack allocated
 
     /* Allocate a new node for the item and append it to the list, discarding
     it in the event of an error. */
-    inline void stage(PyObject* item, bool reverse) {
+    void stage(PyObject* item, bool reverse) {
         // allocate a new node
         Node* curr = node(item);
-        if (curr == NULL) {  // error during node initialization
+        if (curr == nullptr) {  // error during node initialization
             if constexpr (DEBUG) {
                 // QoL - nothing has been allocated, so we don't actually free anything
                 printf("    -> free: %s\n", repr(item));
@@ -1155,9 +1151,9 @@ private:
 
         // link the node to the staged list
         if (reverse) {
-            link(NULL, curr, head);
+            link(nullptr, curr, head);
         } else {
-            link(tail, curr, NULL);
+            link(tail, curr, nullptr);
         }
         if (PyErr_Occurred()) {  // error during link()
             Allocater<Node>::discard(curr);  // clean up staged node
@@ -1186,7 +1182,7 @@ public:
                     "Expected tuple of size 2 (key, value), not: %R",
                     value
                 );
-                return NULL;  // propagate TypeError()
+                return nullptr;  // propagate TypeError()
             }
 
             // unpack tuple and pass to 2-argument version
@@ -1197,16 +1193,16 @@ public:
 
         /* Initialize a newly-allocated node (2-argument version). */
         inline static Node* init(Node* node, PyObject* value, PyObject* mapped) {
-            node = (Node*)NodeType::init(node, value);
-            if (node == NULL) {  // Error during decorated init()
-                return NULL;  // propagate
+            node = static_cast<Node*>(NodeType::init(node, value));
+            if (node == nullptr) {  // Error during decorated init()
+                return nullptr;  // propagate
             }
 
             // compute hash
             node->hash = PyObject_Hash(value);
             if (node->hash == -1 && PyErr_Occurred()) {
                 NodeType::teardown(node);  // free any resources allocated during init()
-                return NULL;  // propagate TypeError()
+                return nullptr;  // propagate TypeError()
             }
 
             // store a reference to the mapped value
@@ -1219,9 +1215,9 @@ public:
 
         /* Initialize a copied node. */
         inline static Node* init_copy(Node* new_node, Node* old_node) {
-            new_node = (Node*)NodeType::init_copy(new_node, old_node);
-            if (new_node == NULL) {  // Error during decrated init_copy()
-                return NULL;  // propagate
+            new_node = static_cast<Node*>(NodeType::init_copy(new_node, old_node));
+            if (new_node == nullptr) {  // Error during decrated init_copy()
+                return nullptr;  // propagate
             }
 
             // reuse the pre-computed hash
@@ -1256,26 +1252,26 @@ public:
 
     /* Construct an empty DictView. */
     DictView() {
-        head = NULL;
-        tail = NULL;
+        head = nullptr;
+        tail = nullptr;
         size = 0;
-        specialization = NULL;
+        specialization = nullptr;
     }
 
     /* Construct a DictView from an input iterable. */
-    DictView(PyObject* iterable, bool reverse = false, PyObject* spec = NULL) {
+    DictView(PyObject* iterable, bool reverse = false, PyObject* spec = nullptr) {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
-        if (iterator == NULL) {
+        if (iterator == nullptr) {
             throw std::invalid_argument("Value is not iterable");
         }
 
         // init empty DictView
-        head = NULL;
-        tail = NULL;
+        head = nullptr;
+        tail = nullptr;
         size = 0;
         specialization = spec;
-        if (spec != NULL) {
+        if (spec != nullptr) {
             Py_INCREF(spec);  // hold reference to specialization
         }
 
@@ -1284,7 +1280,7 @@ public:
         while (true) {
             // C API equivalent of next(iterator)
             item = PyIter_Next(iterator);
-            if (item == NULL) { // end of iterator or error
+            if (item == nullptr) { // end of iterator or error
                 if (PyErr_Occurred()) {  // error during next()
                     Py_DECREF(iterator);
                     Allocater<Node>::discard_list(head);
@@ -1314,7 +1310,7 @@ public:
         // NOTE: head, tail, size, queue, and table are automatically destroyed.
         Allocater<Node>::discard_list(head);
         clear_freelist();
-        if (specialization != NULL) {
+        if (specialization != nullptr) {
             Py_DECREF(specialization);
         }
     }
@@ -1324,10 +1320,10 @@ public:
     inline Node* node(PyObject* value, Args... args) const {
         // variadic dispatch to Node::init()
         Node* result = Allocater<Node>::create(freelist, value, args...);
-        if (specialization != NULL && result != NULL) {
+        if (specialization != nullptr && result != nullptr) {
             if (!Node::typecheck(result, specialization)) {
                 recycle(result);  // clean up allocated node
-                return NULL;  // propagate TypeError()
+                return nullptr;  // propagate TypeError()
             }
         }
 
@@ -1348,27 +1344,27 @@ public:
     inline DictView<NodeType>* copy() const {
         DictView<NodeType>* copied = new DictView<NodeType>();
         Node* old_node = head;
-        Node* new_node = NULL;
-        Node* new_prev = NULL;
+        Node* new_node = nullptr;
+        Node* new_prev = nullptr;
 
         // copy each node in list
-        while (old_node != NULL) {
+        while (old_node != nullptr) {
             new_node = copy(old_node);  // copy node
-            if (new_node == NULL) {  // error during copy()
+            if (new_node == nullptr) {  // error during copy()
                 delete copied;  // discard staged list
-                return NULL;
+                return nullptr;
             }
 
             // link to tail of copied list
-            copied->link(new_prev, new_node, NULL);
+            copied->link(new_prev, new_node, nullptr);
             if (PyErr_Occurred()) {  // error during link()
                 delete copied;  // discard staged list
-                return NULL;
+                return nullptr;
             }
 
             // advance to next node
             new_prev = new_node;
-            old_node = (Node*)old_node->next;
+            old_node = static_cast<Node*>(old_node->next);
         }
 
         // return copied view
@@ -1380,8 +1376,8 @@ public:
         Node* curr = head;  // store temporary reference to head
 
         // reset list parameters
-        head = NULL;
-        tail = NULL;
+        head = nullptr;
+        tail = nullptr;
         size = 0;
 
         // reset hash table to initial size
@@ -1404,10 +1400,10 @@ public:
 
         // update list parameters
         size++;
-        if (prev == NULL) {
+        if (prev == nullptr) {
             head = curr;
         }
-        if (next == NULL) {
+        if (next == nullptr) {
             tail = curr;
         }
     }
@@ -1425,42 +1421,38 @@ public:
 
         // update list parameters
         size--;
-        if (prev == NULL) {
+        if (prev == nullptr) {
             head = next;
         }
-        if (next == NULL) {
+        if (next == nullptr) {
             tail = prev;
         }
     }
 
     /* Enforce strict type checking for elements of this list. */
-    inline void specialize(PyObject* spec) {
+    void specialize(PyObject* spec) {
         // check the contents of the list
-        if (spec != NULL) {
+        if (spec != nullptr) {
             Node* curr = head;
             for (size_t i = 0; i < size; i++) {
                 if (!Node::typecheck(curr, spec)) {
                     return;  // propagate TypeError()
                 }
-                curr = (Node*)curr->next;
+                curr = static_cast<Node*>(curr->next);
             }
+            Py_INCREF(spec);
         }
 
-        // release old specialization
-        if (specialization != NULL) {
-            Py_DECREF(specialization);  // release old specialization
+        // replace old specialization
+        if (specialization != nullptr) {
+            Py_DECREF(specialization);
         }
-
-        // set new specialization
-        specialization = spec;  // NULL disables typechecking
-        if (spec != NULL) {
-            Py_INCREF(spec);  // hold reference
-        }
+        specialization = spec;
     }
 
     /* Get the type specialization for elements of this list. */
     inline PyObject* get_specialization() const {
-        if (specialization != NULL) {
+        if (specialization != nullptr) {
             Py_INCREF(specialization);
         }
         return specialization;  // return a new reference or NULL
@@ -1480,12 +1472,14 @@ public:
     inline Node* lru_search(PyObject* value) {
         // move node to head of list
         Node* curr = table.search(value);
-        if (curr != NULL && curr != head) {
+        if (curr != nullptr && curr != head) {
             if (curr == tail) {
-                tail = (Node*)curr->prev;
+                tail = static_cast<Node*>(curr->prev);
             }
-            Node::unlink((Node*)curr->prev, curr, (Node*)curr->next);
-            Node::link(NULL, curr, head);
+            Node* prev = static_cast<Node*>(curr->prev);
+            Node* next = static_cast<Node*>(curr->next);
+            Node::unlink(prev, curr, next);
+            Node::link(nullptr, curr, head);
             head = curr;
         }
 
@@ -1515,11 +1509,11 @@ public:
 private:
     PyObject* specialization;  // specialized type for elements of this list
     mutable std::queue<Node*> freelist;  // stack allocated
-    HashTable<Node*> table;  // stack allocated
+    HashTable<Node> table;  // stack allocated
 
     /* Allocate a new node for the item and append it to the list, discarding
     it in the event of an error. */
-    inline void stage(PyObject* item, bool reverse) {
+    void stage(PyObject* item, bool reverse) {
         // allocate a new node
         Node* curr = node(item);
         if (PyErr_Occurred()) {
@@ -1532,9 +1526,9 @@ private:
 
         // link the node to the staged list
         if (reverse) {
-            link(NULL, curr, head);
+            link(nullptr, curr, head);
         } else {
-            link(tail, curr, NULL);
+            link(tail, curr, nullptr);
         }
         if (PyErr_Occurred()) {
             Allocater<Node>::discard(curr);  // clean up staged node
@@ -1588,9 +1582,9 @@ private:
 
 //         /* Initialize a newly-allocated node. */
 //         inline static Node* init(Node* node, PyObject* value) {
-//             node = (Node*)NodeType::init(node, value);
-//             if (node == NULL) {  // Error during decorated init()
-//                 return NULL;  // propagate
+//             node = static_cast<Node*>(NodeType::init(node, value));
+//             if (node == nullptr) {  // Error during decorated init()
+//                 return nullptr;  // propagate
 //             }
 
 //             // NOTE: skip_next and skip_prev are stack-allocated, so there's no
@@ -1603,9 +1597,9 @@ private:
 //         /* Initialize a copied node. */
 //         inline static Node* init_copy(Node* new_node, Node* old_node) {
 //             // delegate to templated init_copy() method
-//             new_node = (Node*)NodeType::init_copy(new_node, old_node);
-//             if (new_node == NULL) {  // Error during templated init_copy()
-//                 return NULL;  // propagate
+//             new_node = static_cast<Node*>(NodeType::init_copy(new_node, old_node));
+//             if (new_node == nullptr) {  // Error during templated init_copy()
+//                 return nullptr;  // propagate
 //             }
 
 //             // copy skip pointers
@@ -1647,7 +1641,7 @@ private:
 //     /* Clear a node's sort key. */
 //     template <typename Node>
 //     inline static void undecorate(Node* node) {
-//         node->key = NULL;
+//         node->key = nullptr;
 //     }
 // };
 

@@ -4,14 +4,14 @@
 #define CONTAINS_H
 
 #include <Python.h>  // for CPython API
-#include <node.h>  // for nodes
-#include <view.h>  // for views
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 /* Check if an item is contained within a set or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
 inline int contains(ViewType<NodeType>* view, PyObject* item) {
-    return view->search(item) != NULL;
+    return view->search(item) != nullptr;
 }
 
 
@@ -23,7 +23,7 @@ inline int contains(ListView<NodeType>* view, PyObject* item) {
     int comp;
 
     // search until we find the item or hit stop index
-    while (curr != NULL) {
+    while (curr != nullptr) {
         // C API equivalent of the == operator
         comp = PyObject_RichCompareBool(curr->value, item, Py_EQ);
         if (comp == -1) {  // == comparison raised an exception
@@ -33,7 +33,7 @@ inline int contains(ListView<NodeType>* view, PyObject* item) {
         }
 
         // advance to next node
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // item not found

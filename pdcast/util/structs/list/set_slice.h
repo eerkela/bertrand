@@ -6,8 +6,8 @@
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
 #include <utility>  // for std::pair
-#include <node.h>  // for nodes
-#include <view.h>  // for views
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 // NOTE: slice assignment in general can be extremely complicated in Python,
@@ -75,7 +75,7 @@ void set_index(ViewType<NodeType>* view, size_t index, PyObject* item) {
 
     // allocate a new node
     Node* new_node = view->node(item);
-    if (new_node == NULL) {
+    if (new_node == nullptr) {
         return;
     }
 
@@ -84,13 +84,13 @@ void set_index(ViewType<NodeType>* view, size_t index, PyObject* item) {
         // NOTE: if the list is doubly-linked, then we can iterate from either
         // end to find the preceding node.
         if (index > view->size / 2) {  // backward traversal
-            next = NULL;
+            next = nullptr;
             curr = view->tail;
             for (size_t i = view->size - 1; i > index; i--) {
                 next = curr;
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
-            prev = (Node*)curr->prev;
+            prev = static_cast<Node*>(curr->prev);
 
             // replace node
             view->unlink(prev, curr, next);
@@ -108,13 +108,13 @@ void set_index(ViewType<NodeType>* view, size_t index, PyObject* item) {
     }
 
     // iterate forwards from head
-    prev = NULL;
+    prev = nullptr;
     curr = view->head;
     for (size_t i = 0; i < index; i++) {
         prev = curr;
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
-    next = (Node*)curr->next;
+    next = static_cast<Node*>(curr->next);
 
     // replace node
     view->unlink(prev, curr, next);
@@ -143,7 +143,7 @@ void set_index(ListView<NodeType>* view, size_t index, PyObject* item) {
         if (index > view->size / 2) {  // backward traversal
             curr = view->tail;
             for (size_t i = view->size - 1; i > index; i--) {
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
 
             // overwrite value (unrecoverable)
@@ -158,7 +158,7 @@ void set_index(ListView<NodeType>* view, size_t index, PyObject* item) {
     // forward traversal
     curr = view->head;
     for (size_t i = 0; i < index; i++) {
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // overwrite value (unrecoverable)
@@ -182,7 +182,7 @@ void set_slice(
 
     // unpack iterable into a reversible sequence
     PyObject* sequence = PySequence_Fast(items, "can only assign an iterable");
-    if (sequence == NULL) {  // TypeError(): items do not support sequence protocol
+    if (sequence == nullptr) {  // TypeError(): items do not support sequence protocol
         return;
     }
     Py_ssize_t seq_length = PySequence_Fast_GET_SIZE(sequence);
@@ -254,7 +254,7 @@ void set_slice(
 
     // unpack iterable into a reversible sequence
     PyObject* sequence = PySequence_Fast(items, "can only assign an iterable");
-    if (sequence == NULL) {  // TypeError(): items do not support sequence protocol
+    if (sequence == nullptr) {  // TypeError(): items do not support sequence protocol
         return;
     }
     Py_ssize_t seq_length = PySequence_Fast_GET_SIZE(sequence);
@@ -300,7 +300,7 @@ void set_slice(
     // and replacing the existing ones, but it is only safe in this narrow
     // context.
 
-    if (length_match && view->get_specialization() == NULL) {  // overwrite values
+    if (length_match && view->get_specialization() == nullptr) {  // overwrite values
         _overwrite_slice(
             view,
             bounds.first,
@@ -399,7 +399,7 @@ void _overwrite_slice_forward(
     // get first node in slice by iterating from head
     Node* curr = view->head;
     for (size_t i = 0; i < begin; i++) {
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // iterate through sequence
@@ -422,7 +422,7 @@ void _overwrite_slice_forward(
         // advance node according to step size
         if (seq_idx < last_idx) {  // don't jump on final iteration
             for (size_t j = 0; j < abs_step; j++) {
-                curr = (Node*)curr->next;
+                curr = static_cast<Node*>(curr->next);
             }
         }
     }
@@ -447,7 +447,7 @@ void _overwrite_slice_backward(
     // get first node in slice by iterating from tail
     Node* curr = view->tail;
     for (size_t i = view->size - 1; i > begin; i--) {
-        curr = (Node*)curr->prev;
+        curr = static_cast<Node*>(curr->prev);
     }
 
     // iterate through sequence
@@ -470,7 +470,7 @@ void _overwrite_slice_backward(
         // advance node according to step size
         if (seq_idx < last_idx) {  // don't jump on final iteration
             for (size_t j = 0; j < abs_step; j++) {
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
         }
     }
@@ -539,12 +539,12 @@ void _replace_slice_forward(
     using Node = typename ViewType<NodeType>::Node;
 
     // get first node in slice by iterating from head
-    Node* prev = NULL;
+    Node* prev = nullptr;
     Node* curr = view->head;
     Node* next;
     for (size_t i = 0; i < begin; i++) {
         prev = curr;
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // remember beginning of slice so we can reset later
@@ -556,7 +556,7 @@ void _replace_slice_forward(
     Py_ssize_t last_iter = slice_length - 1;
     for (Py_ssize_t i = 0; i < slice_length; i ++) {
         // unlink node
-        next = (Node*)curr->next;
+        next = static_cast<Node*>(curr->next);
         view->unlink(prev, curr, next);
         removed.push(curr);  // push to recovery queue
 
@@ -564,7 +564,7 @@ void _replace_slice_forward(
         if (i < last_iter) {  // don't jump on final iteration
             for (size_t j = 0; j < small_step; j++) {
                 prev = curr;
-                curr = (Node*)curr->next;
+                curr = static_cast<Node*>(curr->next);
             }
         }
     }
@@ -582,15 +582,15 @@ void _replace_slice_forward(
         }
 
         // get next node in slice
-        if (prev == NULL) {  // slice originates from head of list
+        if (prev == nullptr) {  // slice originates from head of list
             next = view->head;  // points to new head (head->next)
         } else {
-            next = (Node*)prev->next;
+            next = static_cast<Node*>(prev->next);
         }
 
         // allocate a new node and link it to the list
         curr = _insert_node(view, item, prev, next);
-        if (curr == NULL) {
+        if (curr == nullptr) {
             _undo_set_slice_forward(view, source, seq_idx, abs_step, removed);
             return;
         }
@@ -599,7 +599,7 @@ void _replace_slice_forward(
         if (seq_idx < last_idx) {  // don't jump on final iteration
             for (size_t j = 0; j < abs_step; j++) {
                 prev = curr;
-                curr = (Node*)curr->next;
+                curr = static_cast<Node*>(curr->next);
             }
         }
     }
@@ -629,10 +629,10 @@ void _replace_slice_backward(
     // get first node in slice by iterating from tail
     Node* prev;
     Node* curr = view->tail;
-    Node* next = NULL;
+    Node* next = nullptr;
     for (size_t i = 0; i < begin; i++) {
         next = curr;
-        curr = (Node*)curr->prev;
+        curr = static_cast<Node*>(curr->prev);
     }
 
     // remember beginning of slice so we can reset later
@@ -644,7 +644,7 @@ void _replace_slice_backward(
     Py_ssize_t last_iter = slice_length - 1;
     for (Py_ssize_t i = 0; i < slice_length; i++) {
         // unlink node
-        prev = (Node*)curr->prev;
+        prev = static_cast<Node*>(curr->prev);
         view->unlink(prev, curr, next);
         removed.push(curr);  // push to recovery queue
 
@@ -652,7 +652,7 @@ void _replace_slice_backward(
         if (i < last_iter) {  // don't jump on final iteration
             for (size_t j = 0; j < small_step; j++) {
                 prev = curr;
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
         }
     }
@@ -670,15 +670,15 @@ void _replace_slice_backward(
         }
 
         // get previous node in slice
-        if (next == NULL) {  // slice originates from tail of list
+        if (next == nullptr) {  // slice originates from tail of list
             prev = view->tail;  // points to new tail (tail->prev)
         } else {
-            prev = (Node*)next->prev;
+            prev = static_cast<Node*>(next->prev);
         }
 
         // allocate a new node and link it to the list
         curr = _insert_node(view, item, prev, next);
-        if (curr == NULL) {
+        if (curr == nullptr) {
             _undo_set_slice_backward(  // replace original nodes
                 view,
                 source,
@@ -693,7 +693,7 @@ void _replace_slice_backward(
         if (seq_idx < last_idx) {  // don't jump on final iteration
             for (size_t j = 0; j < abs_step; j++) {
                 next = curr;
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
         }
     }
@@ -717,15 +717,15 @@ inline Node* _insert_node(
 ) {
     // allocate a new node
     Node* curr = view->node(item);
-    if (curr == NULL) {  // error during init()
-        return NULL;
+    if (curr == nullptr) {  // error during init()
+        return nullptr;
     }
 
     // link to list
     view->link(prev, curr, next);
     if (PyErr_Occurred()) {  // item violates hash invariant
         view->recycle(curr);  // clean up orphaned node
-        return NULL;
+        return nullptr;
     }
 
     return curr;
@@ -749,10 +749,10 @@ void _undo_set_slice_forward(
     Node* prev = source;
     Node* curr;
     Node* next;
-    if (prev == NULL) {  // slice originates from head of list
+    if (prev == nullptr) {  // slice originates from head of list
         curr = view->head;  // points to new head (head->next)
     } else {
-        curr = (Node*)prev->next;
+        curr = static_cast<Node*>(prev->next);
     }
 
     // loop 3: unlink and deallocate nodes that have already been added to slice
@@ -760,7 +760,7 @@ void _undo_set_slice_forward(
     Py_ssize_t last_iter = n_staged - 1;
     for (Py_ssize_t i = 0; i < n_staged; i++) {
         // unlink node
-        next = (Node*)curr->next;
+        next = static_cast<Node*>(curr->next);
         view->unlink(prev, curr, next);
         view->recycle(curr);  // free node
 
@@ -768,7 +768,7 @@ void _undo_set_slice_forward(
         if (i < last_iter) {  // don't jump on final iteration
             for (size_t j = 0; j < small_step; j++) {
                 prev = curr;
-                curr = (Node*)curr->next;
+                curr = static_cast<Node*>(curr->next);
             }
         }
     }
@@ -782,10 +782,10 @@ void _undo_set_slice_forward(
         original.pop();
 
         // link to list
-        if (prev == NULL) {  // slice originates from head of list
+        if (prev == nullptr) {  // slice originates from head of list
             next = view->head;  // points to new head (head->next)
         } else {
-            next = (Node*)prev->next;
+            next = static_cast<Node*>(prev->next);
         }
         view->link(prev, curr, next);  // NOTE: cannot cause error
 
@@ -793,7 +793,7 @@ void _undo_set_slice_forward(
         if (i < last_queued) {  // don't jump on final iteration
             for (size_t j = 0; j < abs_step; j++) {
                 prev = curr;
-                curr = (Node*)curr->next;
+                curr = static_cast<Node*>(curr->next);
             }
         }
     }
@@ -812,10 +812,10 @@ void _undo_set_slice_backward(
     Node* prev;
     Node* curr;
     Node* next = source;
-    if (next == NULL) {  // slice originates from tail of list
+    if (next == nullptr) {  // slice originates from tail of list
         curr = view->tail;  // points to new tail (tail->prev)
     } else {
-        curr = (Node*)next->prev;
+        curr = static_cast<Node*>(next->prev);
     }
 
     // loop 3: unlink and deallocate nodes that have already been added to slice
@@ -823,7 +823,7 @@ void _undo_set_slice_backward(
     Py_ssize_t last_iter = n_staged - 1;
     for (Py_ssize_t i = 0; i < n_staged; i++) {
         // unlink node
-        prev = (Node*)curr->prev;
+        prev = static_cast<Node*>(curr->prev);
         view->unlink(prev, curr, next);
         view->recycle(curr);  // free node
 
@@ -831,7 +831,7 @@ void _undo_set_slice_backward(
         if (i < last_iter) {  // don't jump on final iteration
             for (size_t j = 0; j < small_step; j++) {
                 next = curr;
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
         }
     }
@@ -845,10 +845,10 @@ void _undo_set_slice_backward(
         original.pop();
 
         // link to list
-        if (next == NULL) {  // slice originates from tail of list
+        if (next == nullptr) {  // slice originates from tail of list
             prev = view->tail;  // points to new tail (tail->prev)
         } else {
-            prev = (Node*)next->prev;
+            prev = static_cast<Node*>(next->prev);
         }
         view->link(prev, curr, next);  // NOTE: cannot cause error
 
@@ -856,7 +856,7 @@ void _undo_set_slice_backward(
         if (i < last_queued) {  // don't jump on final iteration
             for (size_t j = 0; j < abs_step; j++) {
                 next = curr;
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
         }
     }

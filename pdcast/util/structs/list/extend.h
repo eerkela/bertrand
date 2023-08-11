@@ -5,8 +5,8 @@
 
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
-#include <node.h>  // for nodes
-#include <view.h>  // for views
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 // TODO: append() for sets and dicts should mimic set.update() and dict.update(),
@@ -30,7 +30,7 @@ template <template <typename> class ViewType, typename NodeType>
 inline void extend(ViewType<NodeType>* view, PyObject* items) {
     using Node = typename ViewType<NodeType>::Node;
 
-    _extend_left_to_right(view, view->tail, (Node*)NULL, items);
+    _extend_left_to_right(view, view->tail, static_cast<Node*>(nullptr), items);
 }
 
 
@@ -39,7 +39,7 @@ template <template <typename> class ViewType, typename NodeType>
 inline void extendleft(ViewType<NodeType>* view, PyObject* items) {
     using Node = typename ViewType<NodeType>::Node;
 
-    _extend_right_to_left(view, (Node*)NULL, view->head, items);
+    _extend_right_to_left(view, static_cast<Node*>(nullptr), view->head, items);
 }
 
 
@@ -55,13 +55,13 @@ inline void extendafter(
 
     // search for sentinel
     Node* left = view->search(sentinel);
-    if (left == NULL) {  // sentinel not found
+    if (left == nullptr) {  // sentinel not found
         PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
         return;
     }
 
     // insert items after sentinel
-    _extend_left_to_right(view, left, (Node*)left->next, items);
+    _extend_left_to_right(view, left, static_cast<Node*>(left->next), items);
 }
 
 
@@ -77,7 +77,7 @@ inline void extendbefore(
 
     // search for sentinel
     Node* right = view->search(sentinel);
-    if (right == NULL) {  // sentinel not found
+    if (right == nullptr) {  // sentinel not found
         PyErr_Format(PyExc_KeyError, "%R is not contained in the list", sentinel);
         return;
     }
@@ -85,7 +85,7 @@ inline void extendbefore(
     // NOTE: if the list is doubly-linked, then we can just use the node's
     // `prev` pointer to find the left bound.
     if constexpr (is_doubly_linked<Node>::value) {
-        _extend_right_to_left(view, (Node*)right->prev, right, items);
+        _extend_right_to_left(view, static_cast<Node*>(right->prev), right, items);
         return;
     }
 
@@ -93,13 +93,13 @@ inline void extendbefore(
     Node* left;
     Node* next;
     if (right == view->head) {
-        left = NULL;
+        left = nullptr;
     } else {
         left = view->head;
-        next = (Node*)left->next;
+        next = static_cast<Node*>(left->next);
         while (next != right) {
             left = next;
-            next = (Node*)next->next;
+            next = static_cast<Node*>(next->next);
         }
     }
 
@@ -123,7 +123,7 @@ void _extend_left_to_right(
 ) {
     // CPython API equivalent of `iter(items)`
     PyObject* iterator = PyObject_GetIter(items);
-    if (iterator == NULL) {  // TypeError() during iter()
+    if (iterator == nullptr) {  // TypeError() during iter()
         return;
     }
 
@@ -131,13 +131,13 @@ void _extend_left_to_right(
     Node* prev = left;
     while (true) {
         PyObject* item = PyIter_Next(iterator);  // next(iterator)
-        if (item == NULL) {  // end of iterator or error
+        if (item == nullptr) {  // end of iterator or error
             break;
         }
 
         // allocate a new node
         Node* node = view->node(item);
-        if (node == NULL) {
+        if (node == nullptr) {
             Py_DECREF(item);
             break;  // enter undo branch
         }
@@ -160,7 +160,7 @@ void _extend_left_to_right(
     // check for error
     if (PyErr_Occurred()) {
         _undo_left_to_right(view, left, right);  // recover original list
-        if (right == NULL) {
+        if (right == nullptr) {
             view->tail = right;  // replace original tail
         }
     }
@@ -177,7 +177,7 @@ void _extend_right_to_left(
 ) {
     // CPython API equivalent of `iter(items)`
     PyObject* iterator = PyObject_GetIter(items);
-    if (iterator == NULL) {  // TypeError() during iter()
+    if (iterator == nullptr) {  // TypeError() during iter()
         return;
     }
 
@@ -185,13 +185,13 @@ void _extend_right_to_left(
     Node* next = right;
     while (true) {
         PyObject* item = PyIter_Next(iterator);  // next(iterator)
-        if (item == NULL) {  // end of iterator or error
+        if (item == nullptr) {  // end of iterator or error
             break;
         }
 
         // allocate a new node
         Node* node = view->node(item);
-        if (node == NULL) {  // TypeError() during hash() / tuple unpacking
+        if (node == nullptr) {  // TypeError() during hash() / tuple unpacking
             Py_DECREF(item);
             break;  // enter undo branch
         }
@@ -214,7 +214,7 @@ void _extend_right_to_left(
     // check for error
     if (PyErr_Occurred()) {
         _undo_right_to_left(view, left, right);  // recover original list
-        if (left == NULL) {
+        if (left == nullptr) {
             view->head = left;  // replace original head
         }
     }
@@ -229,9 +229,9 @@ void _undo_left_to_right(
     Node* right
 ) {
     Node* prev = left;  // NOTE: left must not be NULL, but right can be
-    Node* curr = (Node*)prev->next;
+    Node* curr = static_cast<Node*>(prev->next);
     while (curr != right) {
-        Node* next = (Node*)curr->next;
+        Node* next = static_cast<Node*>(curr->next);
         view->unlink(prev, curr, next);
         view->recycle(curr);
         curr = next;
@@ -251,16 +251,16 @@ void _undo_right_to_left(
 ) {
     // NOTE: right must not be NULL, but left can be
     Node* prev;
-    if (left == NULL) {
+    if (left == nullptr) {
         prev = view->head;
     } else {
         prev = left;
     }
 
     // free staged nodes
-    Node* curr = (Node*)prev->next;
+    Node* curr = static_cast<Node*>(prev->next);
     while (curr != right) {
-        Node* next = (Node*)curr->next;
+        Node* next = static_cast<Node*>(curr->next);
         view->unlink(prev, curr, next);
         view->recycle(curr);
         curr = next;

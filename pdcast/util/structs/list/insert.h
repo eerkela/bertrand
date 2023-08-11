@@ -5,8 +5,8 @@
 
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
-#include <node.h>  // for nodes
-#include <view.h>  // for views
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 //////////////////////
@@ -21,7 +21,7 @@ void insert(ViewType<NodeType>* view, size_t index, PyObject* item) {
 
     // allocate a new node
     Node* node = view->node(item);
-    if (node == NULL) {
+    if (node == nullptr) {
         return;
     }
 
@@ -30,11 +30,11 @@ void insert(ViewType<NodeType>* view, size_t index, PyObject* item) {
     if constexpr (is_doubly_linked<Node>::value) {
         if (index > view->size / 2) {
             // iterate from tail to find junction
-            Node* next = NULL;
+            Node* next = nullptr;
             Node* curr = view->tail;
             for (size_t i = view->size - 1; i > index; i--) {
                 next = curr;
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
 
             // insert node
@@ -47,11 +47,11 @@ void insert(ViewType<NodeType>* view, size_t index, PyObject* item) {
     }
 
     // NOTE: otherwise, we iterate from the head
-    Node* prev = NULL;
+    Node* prev = nullptr;
     Node* curr = view->head;
     for (size_t i = 0; i < index; i++) {
         prev = curr;
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // insert node

@@ -6,8 +6,8 @@
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
 #include <utility>  // for std::pair
-#include <node.h>  // for nodes
-#include <view.h>  // for views, MAX_SIZE_T
+#include "node.h"  // for nodes
+#include "view.h"  // for views, MAX_SIZE_T
 
 
 // NOTE: Due to the nature of linked lists, indexing in general and slicing in
@@ -34,7 +34,7 @@ inline PyObject* get_index(ViewType<NodeType>* view, size_t index) {
             // backward traversal
             curr = view->tail;
             for (size_t i = view->size - 1; i > index; i--) {
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
             Py_INCREF(curr->value);  // caller takes ownership of reference
             return curr->value;
@@ -44,7 +44,7 @@ inline PyObject* get_index(ViewType<NodeType>* view, size_t index) {
     // forward traversal
     curr = view->head;
     for (size_t i = 0; i < index; i++) {
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
     Py_INCREF(curr->value);  // caller takes ownership of reference
     return curr->value;
@@ -116,39 +116,39 @@ ViewType<NodeType>* _extract_slice_forward(
         slice = new ViewType<NodeType>();
     } catch (const std::bad_alloc&) {  // MemoryError()
         PyErr_NoMemory();
-        return NULL;
+        return nullptr;
     }
 
     // get first node in slice by iterating from head
     Node* curr = view->head;
     for (size_t i = 0; i < begin; i++) {
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // copy nodes from original view
     for (size_t i = begin; i <= end; i += abs_step) {
         Node* copy = slice->copy(curr);
-        if (copy == NULL) {  // error during copy()
+        if (copy == nullptr) {  // error during copy()
             delete slice;
-            return NULL;
+            return nullptr;
         }
 
         // link to slice
         if (reverse) {  // reverse slice as we add nodes
-            slice->link(NULL, copy, slice->head);
+            slice->link(nullptr, copy, slice->head);
         } else {
-            slice->link(slice->tail, copy, NULL);
+            slice->link(slice->tail, copy, nullptr);
         }
         if (PyErr_Occurred()) {  // error during resize()
             slice->recycle(copy);
             delete slice;
-            return NULL;
+            return nullptr;
         }
 
         // advance node according to step size
         if (i != end) {  // don't jump on final iteration
             for (size_t j = 0; j < abs_step; j++) {
-                curr = (Node*)curr->next;
+                curr = static_cast<Node*>(curr->next);
             }
         }
     }
@@ -175,39 +175,39 @@ ViewType<NodeType>* _extract_slice_backward(
         slice = new ViewType<NodeType>();
     } catch (const std::bad_alloc&) {  // MemoryError()
         PyErr_NoMemory();
-        return NULL;
+        return nullptr;
     }
 
     // get first node in slice by iterating from tail
     Node* curr = view->tail;
     for (size_t i = view->size - 1; i > begin; i--) {
-        curr = (Node*)curr->prev;
+        curr = static_cast<Node*>(curr->prev);
     }
 
     // copy nodes from original view
     for (size_t i = begin; i >= end; i -= abs_step) {
         Node* copy = slice->copy(curr);
-        if (copy == NULL) {  // error during copy()
+        if (copy == nullptr) {  // error during copy()
             delete slice;
-            return NULL;
+            return nullptr;
         }
 
         // link to slice
         if (reverse) {  // reverse slice as we add nodes
-            slice->link(NULL, copy, slice->head);
+            slice->link(nullptr, copy, slice->head);
         } else {
-            slice->link(slice->tail, copy, NULL);
+            slice->link(slice->tail, copy, nullptr);
         }
         if (PyErr_Occurred()) {  // error during resize()
             slice->recycle(copy);
             delete slice;
-            return NULL;
+            return nullptr;
         }
 
         // advance node according to step size
         if (i != end) {  // don't jump on final iteration
             for (size_t j = 0; j < abs_step; j++) {
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
         }
     }

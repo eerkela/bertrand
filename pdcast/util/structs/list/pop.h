@@ -6,8 +6,8 @@
 #include <cstddef>  // for size_t
 #include <queue>  // for std::queue
 #include <Python.h>  // for CPython API
-#include <node.h>  // for nodes
-#include <view.h>  // for views
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 // TODO: consider having pop() start from the front of the dictionary in order to
@@ -34,10 +34,10 @@ inline PyObject* pop(ViewType<NodeType>* view, size_t index) {
         if (index > view->size / 2) {
             curr = view->tail;
             for (size_t i = view->size - 1; i > index; i--) {
-                curr = (Node*)curr->prev;
+                curr = static_cast<Node*>(curr->prev);
             }
-            prev = (Node*)curr->prev;
-            return _pop_node(view, prev, curr, (Node*)curr->next);
+            prev = static_cast<Node*>(curr->prev);
+            return _pop_node(view, prev, curr, static_cast<Node*>(curr->next));
         }
     }
 
@@ -45,15 +45,15 @@ inline PyObject* pop(ViewType<NodeType>* view, size_t index) {
     // front of the list is O(1) while popping from the back is O(n). This
     // is because we need to traverse the entire list to find the node that
     // precedes the popped node.
-    prev = NULL;
+    prev = nullptr;
     curr = view->head;
     for (size_t i = 0; i < index; i++) {
         prev = curr;
-        curr = (Node*)curr->next;
+        curr = static_cast<Node*>(curr->next);
     }
 
     // destroy node and return its value
-    return _pop_node(view, prev, curr, (Node*)curr->next);
+    return _pop_node(view, prev, curr, static_cast<Node*>(curr->next));
 }
 
 
@@ -70,7 +70,7 @@ inline PyObject* pop(
 
     // search for node
     curr = view->search(key);
-    if (curr == NULL) {
+    if (curr == nullptr) {
         return default_value;
     }
 
@@ -78,20 +78,20 @@ inline PyObject* pop(
     if constexpr (is_doubly_linked<Node>::value) {
         // NOTE: this is O(1) for doubly-linked dictionaries because we can use
         // the node's prev and next pointers to unlink it from the list.
-        prev = (Node*)curr->prev;
+        prev = static_cast<Node*>(curr->prev);
     } else {
         // NOTE: this is O(n) for singly-linked dictionaries because we have to
         // traverse the whole list to find the node that precedes the popped node.
-        prev = NULL;
+        prev = nullptr;
         Node* node = view->head;
         while (node != curr) {
             prev = node;
-            node = (Node*)node->next;
+            node = static_cast<Node*>(node->next);
         }
     }
 
     // destroy node and return its value
-    return _pop_node(view, prev, curr, (Node*)curr->next);
+    return _pop_node(view, prev, curr, static_cast<Node*>(curr->next));
 }
 
 
@@ -100,14 +100,15 @@ template <template <typename> class ViewType, typename NodeType>
 inline PyObject* popleft(ViewType<NodeType>* view) {
     if (view->size == 0) {
         PyErr_SetString(PyExc_IndexError, "pop from empty list");
-        return NULL;
+        return nullptr;
     }
 
     using Node = typename ViewType<NodeType>::Node;
 
     // destroy node and return its value
     Node* head = view->head;
-    return _pop_node(view, (Node*)NULL, head, (Node*)head->next);
+    Node* next = static_cast<Node*>(head->next);
+    return _pop_node(view, static_cast<Node*>(nullptr), head, next);
 }
 
 
@@ -118,13 +119,14 @@ inline PyObject* popright(ViewType<NodeType>* view) {
 
     if (view->size == 0) {
         PyErr_SetString(PyExc_IndexError, "pop from empty list");
-        return NULL;
+        return nullptr;
     }
 
     // NOTE: this is O(1) for doubly-linked lists because we can use the
     // tail's prev pointer to unlink it from the list.
     if constexpr (is_doubly_linked<Node>::value) {
-        return _pop_node(view, (Node*)view->tail->prev, view->tail, (Node*)NULL);
+        Node* prev = static_cast<Node*>(view->tail->prev);
+        return _pop_node(view, prev, view->tail, static_cast<Node*>(nullptr));
     }
 
     // otherwise, we have to traverse the whole list to find the node that

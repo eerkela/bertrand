@@ -3,8 +3,8 @@
 #define APPEND_H
 
 #include <Python.h>  // for CPython API
-#include <node.h>  // for nodes
-#include <view.h>  // for views
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 // append() for sets and dicts should mimic set.add() and dict.__setitem__(),
@@ -26,12 +26,12 @@ inline void append(ViewType<NodeType>* view, PyObject* item) {
 
     // allocate a new node
     Node* node = view->node(item);
-    if (node == NULL) {  // Error during node initialization
+    if (node == nullptr) {  // Error during node initialization
         return;
     }
 
     // link to end of list
-    view->link(view->tail, node, NULL);
+    view->link(view->tail, node, nullptr);
     if (PyErr_Occurred()) {  // Error during link
         view->recycle(node);
     }
@@ -45,12 +45,12 @@ inline void append(DictView<NodeType>* view, PyObject* item, PyObject* mapped) {
 
     // allocate a new node
     Node* node = view->node(item, mapped);  // use 2-argument init()
-    if (node == NULL) {  // Error during node initialization
+    if (node == nullptr) {  // Error during node initialization
         return;
     }
 
     // link to end of list
-    view->link(view->tail, node, NULL);
+    view->link(view->tail, node, nullptr);
     if (PyErr_Occurred()) {  // Error during link
         view->recycle(node);
     }
@@ -64,12 +64,12 @@ inline void appendleft(ViewType<NodeType>* view, PyObject* item) {
 
     // allocate a new node
     Node* node = view->node(item);
-    if (node == NULL) {  // Error during node initialization
+    if (node == nullptr) {  // Error during node initialization
         return;
     }
 
     // link to beginning of list
-    view->link(NULL, node, view->head);
+    view->link(nullptr, node, view->head);
     if (PyErr_Occurred()) {  // Error during link
         view->recycle(node);
     }
@@ -83,12 +83,12 @@ inline void appendleft(DictView<NodeType>* view, PyObject* item, PyObject* mappe
 
     // allocate a new node
     Node* node = view->node(item, mapped);  // use 2-argument init()
-    if (node == NULL) {  // Error during node initialization
+    if (node == nullptr) {  // Error during node initialization
         return;
     }
 
     // link to beginning of list
-    view->link(NULL, node, view->head);
+    view->link(nullptr, node, view->head);
     if (PyErr_Occurred()) {  // Error during link
         view->recycle(node);
     }

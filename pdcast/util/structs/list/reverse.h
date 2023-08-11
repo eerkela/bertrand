@@ -3,8 +3,8 @@
 #ifndef REVERSE_H
 #define REVERSE_H
 
-#include <node.h>  // for nodes
-#include <view.h>  // for views
+#include "node.h"  // for nodes
+#include "view.h"  // for views
 
 
 //////////////////////
@@ -14,7 +14,7 @@
 
 /* Reverse a singly-linked list in-place. */
 template <template <typename> class ViewType, typename NodeType>
-inline void reverse(ViewType<NodeType>* view) {
+void reverse(ViewType<NodeType>* view) {
     using Node = typename ViewType<NodeType>::Node;
 
     // save original `head` pointer
@@ -23,17 +23,17 @@ inline void reverse(ViewType<NodeType>* view) {
     
     if constexpr (is_doubly_linked<Node>::value) {
         // swap all `next`/`prev` pointers
-        while (curr != NULL) {
-            Node* next = (Node*)curr->next;
-            curr->next = (Node*)curr->prev;
+        while (curr != nullptr) {
+            Node* next = static_cast<Node*>(curr->next);
+            curr->next = static_cast<Node*>(curr->prev);
             curr->prev = next;
             curr = next;
         }
     } else {
         // swap all `next` pointers
-        Node* prev = NULL;
-        while (curr != NULL) {
-            Node* next = (Node*)curr->next;
+        Node* prev = nullptr;
+        while (curr != nullptr) {
+            Node* next = static_cast<Node*>(curr->next);
             curr->next = prev;
             prev = curr;
             curr = next;
