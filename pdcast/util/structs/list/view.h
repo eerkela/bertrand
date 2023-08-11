@@ -607,7 +607,7 @@ public:
     size_t size;
 
     /* Disabled copy/move constructors.  These are dangerous because we're
-    managing memory manually. */
+    manually managing memory for each node. */
     ListView(const ListView& other) = delete;       // copy constructor
     ListView& operator=(const ListView&) = delete;  // copy assignment
     ListView(ListView&&) = delete;                  // move constructor
@@ -670,9 +670,12 @@ public:
 
     /* Destroy a ListView and free all its nodes. */
     ~ListView() {
-        Allocater<Node>::discard_list(head);
-        Allocater<Node>::discard_freelist(freelist);
         // NOTE: head, tail, size, and queue are automatically destroyed
+        Allocater<Node>::discard_list(head);
+        clear_freelist();
+        if (specialization != NULL) {
+            Py_DECREF(specialization);
+        }
     }
 
     /* Construct a new node for the list. */
@@ -781,18 +784,14 @@ public:
                 }
                 curr = (Node*)curr->next;
             }
+            Py_INCREF(spec);
         }
 
-        // release old specialization
+        // replace old specialization
         if (specialization != NULL) {
-            Py_DECREF(specialization);  // release old specialization
+            Py_DECREF(specialization);
         }
-
-        // set new specialization
-        specialization = spec;  // NULL disables typechecking
-        if (spec != NULL) {
-            Py_INCREF(spec);  // hold reference
-        }
+        specialization = spec;
     }
 
     /* Get the type specialization for elements of this list. */
@@ -801,6 +800,11 @@ public:
             Py_INCREF(specialization);
         }
         return specialization;  // return a new reference or NULL
+    }
+
+    /* Clear the internal freelist to remove dead nodes. */
+    inline void clear_freelist() {
+        Allocater<Node>::discard_freelist(freelist);
     }
 
     /* Get the total memory consumed by the list (in bytes). */
@@ -841,7 +845,7 @@ private:
 template <typename NodeType>
 class SetView {
 public:
-    /* A node decorator that computes the hash of the underlying object and
+    /* A node decorator that computes the hash of the underlying PyObject* and
     caches it alongside the node's original fields. */
     struct Node : public NodeType {
         Py_hash_t hash;
@@ -883,7 +887,7 @@ public:
     size_t size;
 
     /* Disabled copy/move constructors.  These are dangerous because we're
-    managing memory manually. */
+    manually managing memory for each node. */
     SetView(const SetView& other) = delete;       // copy constructor
     SetView& operator=(const SetView&) = delete;  // copy assignment
     SetView(SetView&&) = delete;                  // move constructor
@@ -946,9 +950,12 @@ public:
 
     /* Destroy a SetView and free all its resources. */
     ~SetView() {
+        // NOTE: head, tail, size, queue, and table are automatically destroyed.
         Allocater<Node>::discard_list(head);
-        Allocater<Node>::discard_freelist(freelist);
-        // NOTE: head, tail, size, and queue are automatically destroyed
+        clear_freelist();
+        if (specialization != NULL) {
+            Py_DECREF(specialization);
+        }
     }
 
     /* Construct a new node for the list. */
@@ -1113,6 +1120,11 @@ public:
         table.clear_tombstones();
     }
 
+    /* Clear the internal freelist to remove dead nodes. */
+    inline void clear_freelist() {
+        Allocater<Node>::discard_freelist(freelist);
+    }
+
     /* Get the total amount of memory consumed by the set (in bytes).  */
     inline size_t nbytes() const {
         size_t total = sizeof(SetView<NodeType>);  // SetView object
@@ -1236,7 +1248,7 @@ public:
     size_t size;
 
     /* Disabled copy/move constructors.  These are dangerous because we're
-    managing memory manually. */
+    manually managing memory for each node. */
     DictView(const DictView& other) = delete;       // copy constructor
     DictView& operator=(const DictView&) = delete;  // copy assignment
     DictView(DictView&&) = delete;                  // move constructor
@@ -1299,9 +1311,12 @@ public:
 
     /* Destroy a DictView and free all its resources. */
     ~DictView() {
+        // NOTE: head, tail, size, queue, and table are automatically destroyed.
         Allocater<Node>::discard_list(head);
-        Allocater<Node>::discard_freelist(freelist);
-        // NOTE: head, tail, size, and queue are automatically destroyed
+        clear_freelist();
+        if (specialization != NULL) {
+            Py_DECREF(specialization);
+        }
     }
 
     /* Construct a new node for the list. */
@@ -1319,7 +1334,7 @@ public:
         return result;
     }
 
-    /* Free a node. */
+    /* Free a node, pushing it into the freelist if possible. */
     inline void recycle(Node* node) const {
         Allocater<Node>::recycle(freelist, node);
     }
@@ -1462,7 +1477,7 @@ public:
     }
 
     /* Search for a node and move it to the front of the list at the same time. */
-    inline Node* lru_search(PyObject* value) const {
+    inline Node* lru_search(PyObject* value) {
         // move node to head of list
         Node* curr = table.search(value);
         if (curr != NULL && curr != head) {
@@ -1480,6 +1495,11 @@ public:
     /* Clear all tombstones from the hash table. */
     inline void clear_tombstones() {
         table.clear_tombstones();
+    }
+
+    /* Clear the internal freelist to remove dead nodes. */
+    inline void clear_freelist() {
+        Allocater<Node>::discard_freelist(freelist);
     }
 
     /* Get the total amount of memory consumed by the dictionary (in bytes). */

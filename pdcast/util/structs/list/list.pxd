@@ -1,6 +1,8 @@
 """Cython headers for pdcast/util/structs/list/double.pyx"""
 from cpython.ref cimport PyObject
 
+from libcpp.stack cimport stack
+
 from .node cimport SingleNode, DoubleNode
 from .view cimport ListView, normalize_index
 from .append cimport append, appendleft
@@ -18,7 +20,6 @@ from .rotate cimport rotate
 from .set_slice cimport set_index, set_slice
 from .sort cimport sort
 
-
 cdef extern from "Python.h":
     void Py_INCREF(PyObject* obj)
     void Py_DECREF(PyObject* obj)
@@ -28,9 +29,9 @@ cdef class LinkedList:
     pass
 
 
-# cdef class SinglyLinkedList(LinkedList):
-#     cdef:
-#         ListView[SingleNode]* view
+cdef class SinglyLinkedList(LinkedList):
+    cdef:
+        ListView[SingleNode]* view
 
 
 cdef class DoublyLinkedList(LinkedList):
