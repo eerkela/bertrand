@@ -2,18 +2,19 @@
 from cpython.ref cimport PyObject
 
 from libcpp.stack cimport stack
+from libcpp.utility cimport pair
 
 from .node cimport SingleNode, DoubleNode
-from .view cimport ListView, normalize_index
-from .append cimport append, appendleft
+from .view cimport ListView, normalize_index, normalize_bounds
+from .append cimport append
 from .contains cimport contains
 from .count cimport count
 from .delete_slice cimport delete_index, delete_slice
-from .extend cimport extend, extendleft
+from .extend cimport extend
 from .get_slice cimport get_index, get_slice
 from .index cimport index
 from .insert cimport insert
-from .pop cimport pop, popleft, popright
+from .pop cimport pop
 from .remove cimport remove
 from .reverse cimport reverse
 from .rotate cimport rotate

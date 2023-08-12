@@ -21,7 +21,7 @@
 
 /* Add an item to the end of a list, set, or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
-inline void append(ViewType<NodeType>* view, PyObject* item) {
+inline void append(ViewType<NodeType>* view, PyObject* item, bool left) {
     using Node = typename ViewType<NodeType>::Node;
 
     // allocate a new node
@@ -30,8 +30,12 @@ inline void append(ViewType<NodeType>* view, PyObject* item) {
         return;
     }
 
-    // link to end of list
-    view->link(view->tail, node, nullptr);
+    // link to beginning/end of list
+    if (left) {
+        view->link(nullptr, node, view->head);
+    } else {
+        view->link(view->tail, node, nullptr);
+    }
     if (PyErr_Occurred()) {  // Error during link
         view->recycle(node);
     }
@@ -40,7 +44,12 @@ inline void append(ViewType<NodeType>* view, PyObject* item) {
 
 /* Add a key-value pair to the end of a dictionary. */
 template <typename NodeType>
-inline void append(DictView<NodeType>* view, PyObject* item, PyObject* mapped) {
+inline void append(
+    DictView<NodeType>* view,
+    PyObject* item,
+    PyObject* mapped,
+    bool left
+) {
     using Node = typename DictView<NodeType>::Node;
 
     // allocate a new node
@@ -49,46 +58,13 @@ inline void append(DictView<NodeType>* view, PyObject* item, PyObject* mapped) {
         return;
     }
 
-    // link to end of list
+    // link to beginning/end of list
+    if (left) {
+        view->link(nullptr, node, view->head);
+    } else {
+        view->link(view->tail, node, nullptr);
+    }
     view->link(view->tail, node, nullptr);
-    if (PyErr_Occurred()) {  // Error during link
-        view->recycle(node);
-    }
-}
-
-
-/* Add an item to the beginning of a list, set, or dictionary. */
-template <template <typename> class ViewType, typename NodeType>
-inline void appendleft(ViewType<NodeType>* view, PyObject* item) {
-    using Node = typename ViewType<NodeType>::Node;
-
-    // allocate a new node
-    Node* node = view->node(item);
-    if (node == nullptr) {  // Error during node initialization
-        return;
-    }
-
-    // link to beginning of list
-    view->link(nullptr, node, view->head);
-    if (PyErr_Occurred()) {  // Error during link
-        view->recycle(node);
-    }
-}
-
-
-/* Add a key-value pair to the beginning of a dictionary. */
-template <typename NodeType>
-inline void appendleft(DictView<NodeType>* view, PyObject* item, PyObject* mapped) {
-    using Node = typename DictView<NodeType>::Node;
-
-    // allocate a new node
-    Node* node = view->node(item, mapped);  // use 2-argument init()
-    if (node == nullptr) {  // Error during node initialization
-        return;
-    }
-
-    // link to beginning of list
-    view->link(nullptr, node, view->head);
     if (PyErr_Occurred()) {  // Error during link
         view->recycle(node);
     }
@@ -100,30 +76,29 @@ inline void appendleft(DictView<NodeType>* view, PyObject* item, PyObject* mappe
 ////////////////////////
 
 
-// NOTE: Cython doesn't play well with nested templates, so we need to
-// explicitly instantiate specializations for each combination of node/view
-// type.  This is a bit of a pain, put it's the only way to get Cython to
-// properly recognize the functions.
-
-// Maybe in a future release we won't have to do this:
+// NOTE: Cython doesn't play well with heavily templated functions, so we need
+// to explicitly instantiate the specializations we need.  Maybe in a future
+// release we won't have to do this:
 
 
-template void append(ListView<SingleNode>* view, PyObject* item);
-template void append(SetView<SingleNode>* view, PyObject* item);
-template void append(DictView<SingleNode>* view, PyObject* item);
-template void append(DictView<SingleNode>* view, PyObject* item, PyObject* mapped);
-template void append(ListView<DoubleNode>* view, PyObject* item);
-template void append(SetView<DoubleNode>* view, PyObject* item);
-template void append(DictView<DoubleNode>* view, PyObject* item);
-template void append(DictView<DoubleNode>* view, PyObject* item, PyObject* mapped);
-template void appendleft(ListView<SingleNode>* view, PyObject* item);
-template void appendleft(SetView<SingleNode>* view, PyObject* item);
-template void appendleft(DictView<SingleNode>* view, PyObject* item);
-template void appendleft(DictView<SingleNode>* view, PyObject* item, PyObject* mapped);
-template void appendleft(ListView<DoubleNode>* view, PyObject* item);
-template void appendleft(SetView<DoubleNode>* view, PyObject* item);
-template void appendleft(DictView<DoubleNode>* view, PyObject* item);
-template void appendleft(DictView<DoubleNode>* view, PyObject* item, PyObject* mapped);
+template void append(ListView<SingleNode>* view, PyObject* item, bool left);
+template void append(SetView<SingleNode>* view, PyObject* item, bool left);
+template void append(DictView<SingleNode>* view, PyObject* item, bool left);
+template void append(
+    DictView<SingleNode>* view,
+    PyObject* item,
+    PyObject* mapped,
+    bool left
+);
+template void append(ListView<DoubleNode>* view, PyObject* item, bool left);
+template void append(SetView<DoubleNode>* view, PyObject* item, bool left);
+template void append(DictView<DoubleNode>* view, PyObject* item, bool left);
+template void append(
+    DictView<DoubleNode>* view,
+    PyObject* item,
+    PyObject* mapped,
+    bool left
+);
 
 
 #endif // APPEND_H include guard

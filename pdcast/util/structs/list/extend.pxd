@@ -6,20 +6,12 @@ from .view cimport ListView, SetView, DictView
 
 cdef extern from "extend.h":
     # extend()
-    void extend(ListView[SingleNode]* view, PyObject* items) except +*
-    void extend(SetView[SingleNode]* view, PyObject* items) except +*
-    void extend(DictView[SingleNode]* view, PyObject* items) except +*
-    void extend(ListView[DoubleNode]* view, PyObject* items) except +*
-    void extend(SetView[DoubleNode]* view, PyObject* items) except +*
-    void extend(DictView[DoubleNode]* view, PyObject* items) except +*
-
-    # extendleft()
-    void extendleft(ListView[SingleNode]* view, PyObject* items) except +*
-    void extendleft(SetView[SingleNode]* view, PyObject* items) except +*
-    void extendleft(DictView[SingleNode]* view, PyObject* items) except +*
-    void extendleft(ListView[DoubleNode]* view, PyObject* items) except +*
-    void extendleft(SetView[DoubleNode]* view, PyObject* items) except +*
-    void extendleft(DictView[DoubleNode]* view, PyObject* items) except +*
+    void extend(ListView[SingleNode]* view, PyObject* items, bint left) except +*
+    void extend(SetView[SingleNode]* view, PyObject* items, bint left) except +*
+    void extend(DictView[SingleNode]* view, PyObject* items, bint left) except +*
+    void extend(ListView[DoubleNode]* view, PyObject* items, bint left) except +*
+    void extend(SetView[DoubleNode]* view, PyObject* items, bint left) except +*
+    void extend(DictView[DoubleNode]* view, PyObject* items, bint left) except +*
 
     # extendafter()
     void extendafter(

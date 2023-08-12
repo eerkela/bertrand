@@ -8,6 +8,11 @@
 #include "view.h"  // for views
 
 
+//////////////////////
+////    PUBLIC    ////
+//////////////////////
+
+
 /* Check if an item is contained within a set or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
 inline int contains(ViewType<NodeType>* view, PyObject* item) {
@@ -46,12 +51,9 @@ inline int contains(ListView<NodeType>* view, PyObject* item) {
 ////////////////////////
 
 
-// NOTE: Cython doesn't play well with nested templates, so we need to
-// explicitly instantiate specializations for each combination of node/view
-// type.  This is a bit of a pain, put it's the only way to get Cython to
-// properly recognize the functions.
-
-// Maybe in a future release we won't have to do this:
+// NOTE: Cython doesn't play well with heavily templated functions, so we need
+// to explicitly instantiate the specializations we need.  Maybe in a future
+// release we won't have to do this:
 
 
 template int contains(ListView<SingleNode>* view, PyObject* item);

@@ -10,11 +10,6 @@
 #include "view.h"  // for views
 
 
-// TODO: consider having pop() start from the front of the dictionary in order to
-// make it O(1) for singly-linked lists rather than O(n).  Index just defaults
-// to 0 rather than -1.
-
-
 ///////////////////
 ////    POP    ////
 ///////////////////
@@ -26,34 +21,54 @@ inline PyObject* pop(ViewType<NodeType>* view, size_t index) {
     using Node = typename ViewType<NodeType>::Node;
     Node* prev;
     Node* curr;
+    Node* next;
+
+    // NOTE: index is normalized at the Cython level and raises an out of bounds
+    // error, so we don't need to worry about negative values or empty lists.
+
+    // check for pop at head of list (O(1) in both cases)
+    if (index == 0) {
+        prev = nullptr;
+        curr = view->head;
+        next = static_cast<Node*>(curr->next);
+        return _pop_node(view, prev, curr, next);
+    }
 
     // get neighboring nodes
     if constexpr (is_doubly_linked<Node>::value) {
+        // check for pop at tail of list
+        if (index == view->size - 1) {
+            next = nullptr;
+            curr = view->tail;
+            prev = static_cast<Node*>(curr->prev);  // use tail's prev pointer
+            return _pop_node(view, prev, curr, next);
+
         // NOTE: if the list is doubly-linked, then we can iterate from either
-        // end to find the node that preceding node.
-        if (index > view->size / 2) {
+        // end to find the neighboring nodes.
+        } else if (index > view->size / 2) {
             curr = view->tail;
             for (size_t i = view->size - 1; i > index; i--) {
                 curr = static_cast<Node*>(curr->prev);
             }
             prev = static_cast<Node*>(curr->prev);
-            return _pop_node(view, prev, curr, static_cast<Node*>(curr->next));
+            next = static_cast<Node*>(curr->next);
+            return _pop_node(view, prev, curr, next);
         }
     }
 
     // NOTE: due to the singly-linked nature of the list, popping from the
-    // front of the list is O(1) while popping from the back is O(n). This
-    // is because we need to traverse the entire list to find the node that
-    // precedes the popped node.
+    // front of the list is O(1) while popping from the back is O(n).  This is
+    // because we need to traverse the entire list to find the previous node.
     prev = nullptr;
     curr = view->head;
     for (size_t i = 0; i < index; i++) {
         prev = curr;
         curr = static_cast<Node*>(curr->next);
     }
+    next = static_cast<Node*>(curr->next);
 
-    // destroy node and return its value
-    return _pop_node(view, prev, curr, static_cast<Node*>(curr->next));
+    // recycle node and return a new reference to its value
+    return _pop_node(view, prev, curr, next);
 }
 
 
@@ -83,55 +98,15 @@ inline PyObject* pop(
         // NOTE: this is O(n) for singly-linked dictionaries because we have to
         // traverse the whole list to find the node that precedes the popped node.
         prev = nullptr;
-        Node* node = view->head;
-        while (node != curr) {
-            prev = node;
-            node = static_cast<Node*>(node->next);
+        Node* temp = view->head;
+        while (temp != curr) {
+            prev = temp;
+            temp = static_cast<Node*>(temp->next);
         }
     }
 
-    // destroy node and return its value
+    // recycle node and return a new reference to its value
     return _pop_node(view, prev, curr, static_cast<Node*>(curr->next));
-}
-
-
-/* Pop an item from the beginning of a list, set, or dictionary. */
-template <template <typename> class ViewType, typename NodeType>
-inline PyObject* popleft(ViewType<NodeType>* view) {
-    if (view->size == 0) {
-        PyErr_SetString(PyExc_IndexError, "pop from empty list");
-        return nullptr;
-    }
-
-    using Node = typename ViewType<NodeType>::Node;
-
-    // destroy node and return its value
-    Node* head = view->head;
-    Node* next = static_cast<Node*>(head->next);
-    return _pop_node(view, static_cast<Node*>(nullptr), head, next);
-}
-
-
-/* Pop an item from the end of a singly-linked list. */
-template <template <typename> class ViewType, typename NodeType>
-inline PyObject* popright(ViewType<NodeType>* view) {
-    using Node = typename ViewType<NodeType>::Node;
-
-    if (view->size == 0) {
-        PyErr_SetString(PyExc_IndexError, "pop from empty list");
-        return nullptr;
-    }
-
-    // NOTE: this is O(1) for doubly-linked lists because we can use the
-    // tail's prev pointer to unlink it from the list.
-    if constexpr (is_doubly_linked<Node>::value) {
-        Node* prev = static_cast<Node*>(view->tail->prev);
-        return _pop_node(view, prev, view->tail, static_cast<Node*>(nullptr));
-    }
-
-    // otherwise, we have to traverse the whole list to find the node that
-    // precedes the tail.
-    return pop(view, view->size - 1);
 }
 
 
@@ -155,7 +130,7 @@ inline PyObject* _pop_node(
     // unlink and deallocate node
     view->unlink(prev, curr, next);
     view->recycle(curr);
-    return value;  // caller takes ownership
+    return value;  // caller takes ownership of value
 }
 
 
@@ -164,12 +139,9 @@ inline PyObject* _pop_node(
 ////////////////////////
 
 
-// NOTE: Cython doesn't play well with nested templates, so we need to
-// explicitly instantiate specializations for each combination of node/view
-// type.  This is a bit of a pain, put it's the only way to get Cython to
-// properly recognize the functions.
-
-// Maybe in a future release we won't have to do this:
+// NOTE: Cython doesn't play well with heavily templated functions, so we need
+// to explicitly instantiate the specializations we need.  Maybe in a future
+// release we won't have to do this:
 
 
 template PyObject* pop(ListView<SingleNode>* view, size_t index);
@@ -188,18 +160,6 @@ template PyObject* pop(
     PyObject* key,
     PyObject* default_value
 );
-template PyObject* popleft(ListView<SingleNode>* view);
-template PyObject* popleft(SetView<SingleNode>* view);
-template PyObject* popleft(DictView<SingleNode>* view);
-template PyObject* popleft(ListView<DoubleNode>* view);
-template PyObject* popleft(SetView<DoubleNode>* view);
-template PyObject* popleft(DictView<DoubleNode>* view);
-template PyObject* popright(ListView<SingleNode>* view);
-template PyObject* popright(SetView<SingleNode>* view);
-template PyObject* popright(DictView<SingleNode>* view);
-template PyObject* popright(ListView<DoubleNode>* view);
-template PyObject* popright(SetView<DoubleNode>* view);
-template PyObject* popright(DictView<DoubleNode>* view);
 
 
 #endif // POP_H include guard

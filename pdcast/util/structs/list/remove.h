@@ -36,7 +36,7 @@ void remove(ViewType<NodeType>* view, PyObject* item) {
         // have to traverse the whole list to find the previous node.
         prev = nullptr;
         Node* temp = view->head;
-        while (temp != node) {
+        while (temp != curr) {
             prev = temp;
             temp = static_cast<Node*>(temp->next);
         }
@@ -81,7 +81,7 @@ void remove(ListView<NodeType>* view, PyObject* item) {
 
 /* Remove an item from a linked set or dictionary if it is present. */
 template <template <typename> class ViewType, typename NodeType>
-void discard(ViewType<NodeType>, PyObject* item) {
+void discard(ViewType<NodeType>* view, PyObject* item) {
     using Node = typename ViewType<NodeType>::Node;
 
     // search for node
@@ -101,7 +101,7 @@ void discard(ViewType<NodeType>, PyObject* item) {
         // have to traverse the whole list to find the previous node.
         prev = nullptr;
         Node* temp = view->head;
-        while (temp != node) {
+        while (temp != curr) {
             prev = temp;
             temp = static_cast<Node*>(temp->next);
         }
@@ -176,12 +176,9 @@ inline void discardbefore(ViewType<NodeType>* view, PyObject* sentinel) {
 ////////////////////////
 
 
-// NOTE: Cython doesn't play well with nested templates, so we need to
-// explicitly instantiate specializations for each combination of node/view
-// type.  This is a bit of a pain, put it's the only way to get Cython to
-// properly recognize the functions.
-
-// Maybe in a future release we won't have to do this:
+// NOTE: Cython doesn't play well with heavily templated functions, so we need
+// to explicitly instantiate the specializations we need.  Maybe in a future
+// release we won't have to do this:
 
 
 template void remove(ListView<SingleNode>* view, PyObject* item);

@@ -10,7 +10,7 @@ from typing import Hashable, Iterable
 ####################
 
 
-cdef class LinkedSet:
+cdef class LinkedSet(LinkedList):
     """A pure Cython/C++ implementation of an ordered set using a linked list
     and a hash table for fast access to each node.
 
@@ -59,6 +59,7 @@ cdef class LinkedSet:
         items: Iterable[object] | None = None,
         reverse: bool = False,
         spec: object | None = None,
+        size: int = -1,
     ):
         raise NotImplementedError(
             "`LinkedSet` is an abstract class and cannot be instantiated.  "
@@ -69,13 +70,16 @@ cdef class LinkedSet:
     ####    ABSTRACT    ####
     ########################
 
-    def append(self, item: object) -> None:
+    def append(self, item: object, left: bool = False) -> None:
         """Add an item to the end of the list.
 
         Parameters
         ----------
         item : Any
             The item to add to the list.
+        left : bool, optional
+            If ``True``, add the item to the beginning of the list instead of
+            the end.  The default is ``False``.
 
         Notes
         -----
@@ -83,28 +87,11 @@ cdef class LinkedSet:
         """
         raise NotImplementedError()
 
-    def appendleft(self, item: object) -> None:
-        """Add an item to the beginning of the list.
-
-        Parameters
-        ----------
-        item : Any
-            The item to add to the list.
-
-        Notes
-        -----
-        Appends are O(1) for both ends of the list.
-        
-        This method is consistent with the standard library's
-        :class:`collections.deque <python:collections.deque>` class.
-        """
-        raise NotImplementedError()
-
-    def add(self, item: object) -> None:
+    def add(self, item: object, left: bool = False) -> None:
         """An alias for :meth:`LinkedSet.append` that is consistent with the
         standard :class:`set <python:set>` interface.
         """
-        # TODO: call the C++ method directly instead of going through Python
+        # NOTE: call the C++ method directly instead of going through Python
         raise NotImplementedError()
 
     def insert(self, index: int, item: object) -> None:
@@ -138,7 +125,7 @@ cdef class LinkedSet:
         sentinel : Any
             The value to insert the item after.
         item : Any
-            The item to add to the list.
+            The item to add to the set.
         steps : int, optional
             An offset from the sentinel value.  If this is positive, this
             method will count to the right the specified number of spaces from
@@ -200,38 +187,29 @@ cdef class LinkedSet:
         Calling this method with negative steps is equivalent to calling
         :meth:`insertafter() <LinkedSet.insertafter>` with ``steps=-steps``.
         """
+        # NOTE: call the same C++ method as insertafter, but with a negative
+        # offset.
         raise NotImplementedError()
 
-    def extend(self, items: Iterable[object]) -> None:
+    def extend(self, items: Iterable[object], left: bool = False) -> None:
         """Add multiple items to the end of the list.
 
         Parameters
         ----------
         items : Iterable[Any]
             An iterable of items to add to the list.
-
-        Notes
-        -----
-        Extends are O(m), where `m` is the length of ``items``.
-        """
-        raise NotImplementedError()
-
-    def extendleft(self, items: Iterable[object]) -> None:
-        """Add multiple items to the beginning of the set.
-
-        Parameters
-        ----------
-        items : Iterable[Any]
-            An iterable of items to add to the set.
+        left : bool, optional
+            If ``True``, add the items to the beginning of the list instead of
+            the end.  The default is ``False``.
 
         Notes
         -----
         Extends are O(m), where `m` is the length of ``items``.
 
-        This method is consistent with the standard library's
-        :class:`collections.deque <python:collections.deque>` class.  Just like
-        that class, the series of left appends results in reversing the order
-        of elements in ``items``.
+        If ``left`` is ``True``, then this method is consistent with the
+        standard library's :class:`collections.deque <python:collections.deque>`
+        class.  Just like that class, the series of left appends results in
+        reversing the order of elements in ``items``.
         """
         raise NotImplementedError()
 
@@ -285,7 +263,7 @@ cdef class LinkedSet:
         raise NotImplementedError()
 
     def index(self, item: object, start: int = 0, stop: int = -1) -> int:
-        """Get the index of an item within the set.
+        """Get the index of an item within the list.
 
         Parameters
         ----------
@@ -295,12 +273,12 @@ cdef class LinkedSet:
         Returns
         -------
         int
-            The index of the item within the set.
+            The index of the item within the list.
 
         Raises
         ------
         ValueError
-            If the item is not contained in the set.
+            If the item is not contained in the list.
 
         Notes
         -----
@@ -323,7 +301,10 @@ cdef class LinkedSet:
 
         Notes
         -----
-        Counting is O(1).
+        If start and stop indices are not given, then counting devolves into a
+        simple membership check across the whole set, which is O(1).
+        Otherwise, it is O(n) on average, where ``n`` is the number of items in
+        the set.
         """
         raise NotImplementedError()
 
@@ -342,7 +323,7 @@ cdef class LinkedSet:
 
         Notes
         -----
-        Removals are O(1).
+        Removals are O(1) due to the extra hash table.
         """
         raise NotImplementedError()
 
@@ -350,8 +331,8 @@ cdef class LinkedSet:
         """An alias for :meth:`LinkedSet.remove` that is consistent with the
         standard :class:`set <python:set>` interface.
         """
-        # TODO: provide a C++ implementation that does not raise an error, and
-        # therefore does not generate a stack trace.
+        # NOTE: essentially the same as remove, but does not generate a stack
+        # trace if the item is not found.
         raise NotImplementedError()
 
     def discardafter(self, sentinel: object, item: object, steps: int = 1) -> None:
@@ -444,48 +425,6 @@ cdef class LinkedSet:
         -----
         Pops are O(1) if ``index`` points to either of the set's ends, and
         O(n) otherwise.
-        """
-        raise NotImplementedError()
-
-    def popleft(self) -> object:
-        """Remove and return the first item in the set.
-
-        Returns
-        -------
-        Any
-            The item that was removed from the set.
-
-        Raises
-        ------
-        IndexError
-            If the set is empty.
-
-        Notes
-        -----
-        This is equivalent to :meth:`LinkedSet.pop` with ``index=0``, but it
-        avoids the overhead of handling indices and is thus more efficient in
-        the specific case of removing the first item.
-        """
-        raise NotImplementedError()
-
-    def popright(self) -> object:
-        """Remove and return the last item in the set.
-
-        Returns
-        -------
-        Any
-            The item that was removed from the set.
-
-        Raises
-        ------
-        IndexError
-            If the set is empty.
-
-        Notes
-        -----
-        This is equivalent to :meth:`LinkedSet.pop` with ``index=-1``, but it
-        avoids the overhead of handling indices and is thus more efficient in
-        the specific case of removing the last item.
         """
         raise NotImplementedError()
 
@@ -1840,9 +1779,9 @@ cdef class DoublyLinkedSet(LinkedSet):
     Notes
     -----
     This data structure is a special case of :class:`LinkedList` where every
-    value is both unique and hashable.  This allows it to use a dictionary to
-    map values to their corresponding nodes, which allows for O(1) removals and
-    membership checks.
+    value is both unique and hashable.  This allows it to use a hash table to
+    map each value to its corresponding node, which allows for O(1) removals
+    and membership checks.
 
     For an implementation without these constraints, see the base
     :class:`LinkedList`.

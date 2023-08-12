@@ -83,12 +83,9 @@ void rotate(ViewType<NodeType>* view, ssize_t steps) {
 ////////////////////////
 
 
-// NOTE: Cython doesn't play well with nested templates, so we need to
-// explicitly instantiate specializations for each combination of node/view
-// type.  This is a bit of a pain, put it's the only way to get Cython to
-// properly recognize the functions.
-
-// Maybe in a future release we won't have to do this:
+// NOTE: Cython doesn't play well with heavily templated functions, so we need
+// to explicitly instantiate the specializations we need.  Maybe in a future
+// release we won't have to do this:
 
 
 template void rotate(ListView<SingleNode>* view, ssize_t steps);

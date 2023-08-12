@@ -4,9 +4,14 @@ from cpython.ref cimport PyObject
 from libcpp.queue cimport queue
 from libcpp.utility cimport pair
 
+
 cdef extern from "view.h":
     const size_t MAX_SIZE_T
-    size_t normalize_index[T](T index, size_t size, bint truncate)
+    const pair[size_t, size_t] MAX_SIZE_T_PAIR
+    size_t normalize_index[T](T index, size_t size, bint truncate) except? MAX_SIZE_T
+    pair[size_t, size_t] normalize_bounds[T](
+        T start, T stop, size_t size, bint truncate
+    ) except? MAX_SIZE_T_PAIR
 
     cdef cppclass ListView[T]:
         size_t size

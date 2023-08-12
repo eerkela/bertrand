@@ -38,10 +38,6 @@ from typing import Iterable, Iterator
 # https://github.com/python/cpython/blob/3.11/Lib/test/list_tests.py
 
 
-# TODO: add "a detailed comparison of the performance of these data structures
-# against each other and the standard library can be found <here>".
-
-
 ####################
 ####    BASE    ####
 ####################
@@ -97,6 +93,7 @@ cdef class LinkedList:
         items: Iterable[object] | None = None,
         reverse: bool = False,
         spec: object | None = None,
+        size: int = -1,
     ):
         raise NotImplementedError(
             "`LinkedList` is an abstract class and cannot be instantiated.  "
@@ -107,34 +104,20 @@ cdef class LinkedList:
     ####    ABSTRACT    ####
     ########################
 
-    def append(self, item: object) -> None:
+    def append(self, item: object, left: bool = False) -> None:
         """Add an item to the end of the list.
 
         Parameters
         ----------
         item : Any
             The item to add to the list.
+        left : bool, optional
+            If ``True``, add the item to the beginning of the list instead of
+            the end.  The default is ``False``.
 
         Notes
         -----
         Appends are O(1) for both ends of the list.
-        """
-        raise NotImplementedError()
-
-    def appendleft(self, item: object) -> None:
-        """Add an item to the beginning of the list.
-
-        Parameters
-        ----------
-        item : Any
-            The item to add to the list.
-
-        Notes
-        -----
-        Appends are O(1) for both ends of the list.
-        
-        This method is consistent with the standard library's
-        :class:`collections.deque <python:collections.deque>` class.
         """
         raise NotImplementedError()
 
@@ -161,36 +144,25 @@ cdef class LinkedList:
         """
         raise NotImplementedError()
 
-    def extend(self, items: Iterable[object]) -> None:
+    def extend(self, items: Iterable[object], left: bool = False) -> None:
         """Add multiple items to the end of the list.
 
         Parameters
         ----------
         items : Iterable[Any]
             An iterable of items to add to the list.
-
-        Notes
-        -----
-        Extends are O(m), where `m` is the length of ``items``.
-        """
-        raise NotImplementedError()
-
-    def extendleft(self, items: Iterable[object]) -> None:
-        """Add multiple items to the beginning of the list.
-
-        Parameters
-        ----------
-        items : Iterable[Any]
-            An iterable of items to add to the list.
+        left : bool, optional
+            If ``True``, add the items to the beginning of the list instead of
+            the end.  The default is ``False``.
 
         Notes
         -----
         Extends are O(m), where `m` is the length of ``items``.
 
-        This method is consistent with the standard library's
-        :class:`collections.deque <python:collections.deque>` class.  Just like
-        that class, the series of left appends results in reversing the order
-        of elements in ``items``.
+        If ``left`` is ``True``, then this method is consistent with the
+        standard library's :class:`collections.deque <python:collections.deque>`
+        class.  Just like that class, the series of left appends results in
+        reversing the order of elements in ``items``.
         """
         raise NotImplementedError()
 
@@ -280,48 +252,6 @@ cdef class LinkedList:
         -----
         Pops are O(1) if ``index`` points to either of the list's ends, and
         O(n) otherwise.
-        """
-        raise NotImplementedError()
-
-    def popleft(self) -> object:
-        """Remove and return the first item in the list.
-
-        Returns
-        -------
-        Any
-            The item that was removed from the list.
-
-        Raises
-        ------
-        IndexError
-            If the list is empty.
-
-        Notes
-        -----
-        This is equivalent to :meth:`DoublyLinkedList.pop` with ``index=0``, but it
-        avoids the overhead of handling indices and is thus more efficient in
-        the specific case of removing the first item.
-        """
-        raise NotImplementedError()
-
-    def popright(self) -> object:
-        """Remove and return the last item in the list.
-
-        Returns
-        -------
-        Any
-            The item that was removed from the list.
-
-        Raises
-        ------
-        IndexError
-            If the list is empty.
-
-        Notes
-        -----
-        This is equivalent to :meth:`DoublyLinkedList.pop` with ``index=-1``, but it
-        avoids the overhead of handling indices and is thus more efficient in
-        the specific case of removing the last item.
         """
         raise NotImplementedError()
 
@@ -416,6 +346,28 @@ cdef class LinkedList:
         """
         raise NotImplementedError()
 
+    @property
+    def specialization(self) -> Any:
+        """Return the type specialization that is being enforced by the list.
+
+        Returns
+        -------
+        Any
+            The type specialization of the list, or ``None`` if the list is
+            generic.
+
+        See Also
+        --------
+        DoublyLinkedList.specialize :
+            Specialize the list with a particular type.
+
+        Notes
+        -----
+        This is equivalent to the ``spec`` argument passed to the constructor
+        and/or :meth:`specialize() <DoublyLinkedList.specialize>` method.
+        """
+        raise NotImplementedError()
+
     def specialize(self, object spec) -> None:
         """Specialize the list with a particular type.
 
@@ -452,28 +404,6 @@ cdef class LinkedList:
             Typed lists are slightly slower at appending items due to the extra
             type check.  Otherwise, they have identical performance to their
             untyped equivalents.
-        """
-        raise NotImplementedError()
-
-    @property
-    def specialization(self) -> Any:
-        """Return the type specialization that is being enforced by the list.
-
-        Returns
-        -------
-        Any
-            The type specialization of the list, or ``None`` if the list is
-            generic.
-
-        See Also
-        --------
-        DoublyLinkedList.specialize :
-            Specialize the list with a particular type.
-
-        Notes
-        -----
-        This is equivalent to the ``spec`` argument passed to the constructor
-        and/or :meth:`specialize() <DoublyLinkedList.specialize>` method.
         """
         raise NotImplementedError()
 
@@ -1150,30 +1080,15 @@ cdef class SinglyLinkedList(LinkedList):
         """Free the underlying ListView when the list is garbage collected."""
         del self.view
 
-    ##############################
-    ####    LIST INTERFACE    ####
-    ##############################
+    ########################
+    ####    CONCRETE    ####
+    ########################
 
-    @property
-    def specialization(self) -> Any:
-        """Implement :attr:`LinkedList.specialization` for
-        :class:`SinglyLinkedLists <SinglyLinkedList>`.
-        """
-        cdef PyObject* spec = self.view.get_specialization()  # from view.h
-
-        return None if spec is NULL else <object>spec
-
-    def append(self, item: object) -> None:
+    def append(self, item: object, bint left = False) -> None:
         """Implement :meth:`LinkedList.append` for
         :class:`SinglyLinkedLists <SinglyLinkedList>`.
         """
-        append(self.view, <PyObject*>item)  # from append.h
-
-    def appendleft(self, item: object) -> None:
-        """Implement :meth:`LinkedList.appendleft` for
-        :class:`SinglyLinkedLists <SinglyLinkedList>`.
-        """
-        appendleft(self.view, <PyObject*>item)  # from append.h
+        append(self.view, <PyObject*>item, left)  # from append.h
 
     def insert(self, index: int, item: object) -> None:
         """Implement :meth:`LinkedList.insert` for
@@ -1187,63 +1102,35 @@ cdef class SinglyLinkedList(LinkedList):
 
         insert(self.view, norm_index, <PyObject*>item)  # from insert.h
 
-    def extend(self, items: Iterable[object]) -> None:
+    def extend(self, items: Iterable[object], bint left = False) -> None:
         """Implement :meth:`LinkedList.extend` for
         :class:`SinglyLinkedLists <SinglyLinkedList>`.
         """
-        extend(self.view, <PyObject*>items)  # from extend.h
-
-    def extendleft(self, items: Iterable[object]) -> None:
-        """Implement :meth:`LinkedList.extendleft` for
-        :class:`SinglyLinkedLists <SinglyLinkedList>`.
-        """
-        extendleft(self.view, <PyObject*>items)  # from extend.h
+        extend(self.view, <PyObject*>items, left)  # from extend.h
 
     def index(self, item: object, start: int = 0, stop: int = -1) -> int:
         """Implement :meth:`LinkedList.index` for
         :class:`SinglyLinkedLists <SinglyLinkedList>`.
         """
         # allow Python-style negative indexing + bounds checking
-        cdef size_t norm_start = normalize_index(
-            <PyObject*>start,
-            self.view.size,
-            truncate=True
+        cdef pair[size_t, size_t] bounds = normalize_bounds(
+            start, stop, size=self.view.size, truncate=True
         )
-        cdef size_t norm_stop = normalize_index(
-            <PyObject*>stop,
-            self.view.size,
-            truncate=True
-        )
-
-        # check that start and stop indices are consistent
-        if norm_start > norm_stop:
-            raise ValueError("start index must be less than or equal to stop index")
 
         # delegate to index.h
-        return index(self.view, <PyObject*>item, norm_start, norm_stop)
+        return index(self.view, <PyObject*>item, bounds.first, bounds.second)
 
     def count(self, item: object, start: int = 0, stop: int = -1) -> int:
         """Implement :meth:`LinkedList.count` for
         :class:`SinglyLinkedLists <SinglyLinkedList>`.
         """
         # allow Python-style negative indexing + bounds checking
-        cdef size_t norm_start = normalize_index(
-            <PyObject*>start,
-            self.view.size,
-            truncate=True
+        cdef pair[size_t, size_t] bounds = normalize_bounds(
+            start, stop, size=self.view.size, truncate=True
         )
-        cdef size_t norm_stop = normalize_index(
-            <PyObject*>stop,
-            self.view.size,
-            truncate=True
-        )
-
-        # check that start and stop indices are consistent
-        if norm_start > norm_stop:
-            raise ValueError("start index must be less than or equal to stop index")
 
         # delegate to count.h
-        return count(self.view, <PyObject*>item, norm_start, norm_stop)
+        return count(self.view, <PyObject*>item, bounds.first, bounds.second)
 
     def remove(self, item: object) -> None:
         """Implement :meth:`LinkedList.remove` for
@@ -1258,22 +1145,10 @@ cdef class SinglyLinkedList(LinkedList):
         cdef size_t norm_index = normalize_index(
             <PyObject*>index,
             self.view.size,
-            truncate=True
+            truncate=False
         )
 
         return <object>pop(self.view, norm_index)  # from pop.h
-
-    def popleft(self) -> object:
-        """Implement :meth:`LinkedList.popleft` for
-        :class:`SinglyLinkedLists <SinglyLinkedList>`.
-        """
-        return <object>popleft(self.view)  # from pop.h
-
-    def popright(self) -> object:
-        """Implement :meth:`LinkedList.popright` for
-        :class:`SinglyLinkedLists <SinglyLinkedList>`.
-        """
-        return <object>popright(self.view)  # from pop.h
 
     def copy(self) -> SinglyLinkedList:
         """Implement :meth:`LinkedList.copy` for
@@ -1309,6 +1184,15 @@ cdef class SinglyLinkedList(LinkedList):
         :class:`SinglyLinkedLists <SinglyLinkedList>`.
         """
         rotate(self.view, <Py_ssize_t>steps)  # from rotate.h
+
+    @property
+    def specialization(self) -> Any:
+        """Implement :attr:`LinkedList.specialization` for
+        :class:`SinglyLinkedLists <SinglyLinkedList>`.
+        """
+        cdef PyObject* spec = self.view.get_specialization()  # from view.h
+
+        return None if spec is NULL else <object>spec
 
     def specialize(self, object spec) -> None:
         """Implement :meth:`LinkedList.specialize` for
@@ -1485,26 +1369,11 @@ cdef class DoublyLinkedList(LinkedList):
     ####    LIST INTERFACE    ####
     ##############################
 
-    @property
-    def specialization(self) -> Any:
-        """Implement :attr:`LinkedList.specialization` for
-        :class:`DoublyLinkedLists <DoublyLinkedList>`.
-        """
-        cdef PyObject* spec = self.view.get_specialization()  # from view.h
-
-        return None if spec is NULL else <object>spec
-
-    def append(self, item: object) -> None:
+    def append(self, item: object, bint left = False) -> None:
         """Implement :meth:`LinkedList.append` for
         :class:`DoublyLinkedLists <DoublyLinkedList>`.
         """
-        append(self.view, <PyObject*>item)  # from append.h
-
-    def appendleft(self, item: object) -> None:
-        """Implement :meth:`LinkedList.appendleft` for
-        :class:`DoublyLinkedLists <DoublyLinkedList>`.
-        """
-        appendleft(self.view, <PyObject*>item)  # from append.h
+        append(self.view, <PyObject*>item, left)  # from append.h
 
     def insert(self, index: int, item: object) -> None:
         """Implement :meth:`LinkedList.insert` for
@@ -1518,63 +1387,35 @@ cdef class DoublyLinkedList(LinkedList):
 
         insert(self.view, norm_index, <PyObject*>item)  # from insert.h
 
-    def extend(self, items: Iterable[object]) -> None:
+    def extend(self, items: Iterable[object], bint left = False) -> None:
         """Implement :meth:`LinkedList.extend` for
         :class:`DoublyLinkedLists <DoublyLinkedList>`.
         """
-        extend(self.view, <PyObject*>items)  # from extend.h
-
-    def extendleft(self, items: Iterable[object]) -> None:
-        """Implement :meth:`LinkedList.extendleft` for
-        :class:`DoublyLinkedLists <DoublyLinkedList>`.
-        """
-        extendleft(self.view, <PyObject*>items)  # from extend.h
+        extend(self.view, <PyObject*>items, left)  # from extend.h
 
     def index(self, item: object, start: int = 0, stop: int = -1) -> int:
         """Implement :meth:`LinkedList.index` for
         :class:`DoublyLinkedLists <DoublyLinkedList>`.
         """
         # allow Python-style negative indexing + bounds checking
-        cdef size_t norm_start = normalize_index(
-            <PyObject*>start,
-            self.view.size,
-            truncate=True
+        cdef pair[size_t, size_t] bounds = normalize_bounds(
+            start, stop, size=self.view.size, truncate=True
         )
-        cdef size_t norm_stop = normalize_index(
-            <PyObject*>stop,
-            self.view.size,
-            truncate=True
-        )
-
-        # check that start and stop indices are consistent
-        if norm_start > norm_stop:
-            raise ValueError("start index must be less than or equal to stop index")
 
         # delegate to index.h
-        return index(self.view, <PyObject*>item, norm_start, norm_stop)
+        return index(self.view, <PyObject*>item, bounds.first, bounds.second)
 
     def count(self, item: object, start: int = 0, stop: int = -1) -> int:
         """Implement :meth:`LinkedList.count` for
         :class:`DoublyLinkedLists <DoublyLinkedList>`.
         """
         # allow Python-style negative indexing + bounds checking
-        cdef size_t norm_start = normalize_index(
-            <PyObject*>start,
-            self.view.size,
-            truncate=True
+        cdef pair[size_t, size_t] bounds = normalize_bounds(
+            start, stop, size=self.view.size, truncate=True
         )
-        cdef size_t norm_stop = normalize_index(
-            <PyObject*>stop,
-            self.view.size,
-            truncate=True
-        )
-
-        # check that start and stop indices are consistent
-        if norm_start > norm_stop:
-            raise ValueError("start index must be less than or equal to stop index")
 
         # delegate to count.h
-        return count(self.view, <PyObject*>item, norm_start, norm_stop)
+        return count(self.view, <PyObject*>item, bounds.first, bounds.second)
 
     def remove(self, item: object) -> None:
         """Implement :meth:`LinkedList.remove` for
@@ -1589,22 +1430,10 @@ cdef class DoublyLinkedList(LinkedList):
         cdef size_t norm_index = normalize_index(
             <PyObject*>index,
             self.view.size,
-            truncate=True
+            truncate=False
         )
 
         return <object>pop(self.view, norm_index)  # from pop.h
-
-    def popleft(self) -> object:
-        """Implement :meth:`LinkedList.popleft` for
-        :class:`DoublyLinkedLists <DoublyLinkedList>`.
-        """
-        return <object>popleft(self.view)  # from pop.h
-
-    def popright(self) -> object:
-        """Implement :meth:`LinkedList.popright` for
-        :class:`DoublyLinkedLists <DoublyLinkedList>`.
-        """
-        return <object>popright(self.view)  # from pop.h
 
     def copy(self) -> DoublyLinkedList:
         """Implement :meth:`LinkedList.copy` for
@@ -1640,6 +1469,15 @@ cdef class DoublyLinkedList(LinkedList):
         :class:`DoublyLinkedLists <DoublyLinkedList>`.
         """
         rotate(self.view, <Py_ssize_t>steps)  # from rotate.h
+
+    @property
+    def specialization(self) -> Any:
+        """Implement :attr:`LinkedList.specialization` for
+        :class:`DoublyLinkedLists <DoublyLinkedList>`.
+        """
+        cdef PyObject* spec = self.view.get_specialization()  # from view.h
+
+        return None if spec is NULL else <object>spec
 
     def specialize(self, object spec) -> None:
         """Implement :meth:`LinkedList.specialize` for

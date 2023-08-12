@@ -19,6 +19,9 @@
 /* MAX_SIZE_T is used to signal errors in indexing operations where NULL would
 not be a valid return value, and 0 is likely to be valid output. */
 const size_t MAX_SIZE_T = std::numeric_limits<size_t>::max();
+const std::pair<size_t, size_t> MAX_SIZE_T_PAIR = (
+    std::make_pair(MAX_SIZE_T, MAX_SIZE_T)
+);
 
 
 /* Some Views use hash tables for fast access to each element. */
@@ -116,15 +119,18 @@ inline T closed_interval(T start, T stop, T step) {
 /* Allow Python-style negative indexing with wraparound and boundschecking. */
 template <typename T>
 size_t normalize_index(T index, size_t size, bool truncate) {
+    bool index_lt_zero = index < 0;
+
     // wraparound negative indices
-    if (index < 0) {
+    if (index_lt_zero) {
         index += size;
+        index_lt_zero = index < 0;
     }
 
     // boundscheck
-    if (index < 0 || index >= (T)size) {
+    if (index_lt_zero || index >= static_cast<T>(size)) {
         if (truncate) {
-            if (index < 0) {
+            if (index_lt_zero) {
                 return 0;
             }
             return size - 1;
@@ -194,6 +200,38 @@ size_t normalize_index(PyObject* index, size_t size, bool truncate) {
     }
 
     return result;
+}
+
+
+/* Create a bounded interval over a subset of a list, for use in index(), count(),
+etc. */
+template <typename T>
+std::pair<size_t, size_t> normalize_bounds(
+    T start,
+    T stop,
+    size_t size,
+    bool truncate
+) {
+    // pass both start and stop through normalize_index()
+    size_t norm_start = normalize_index(start, size, truncate);
+    size_t norm_stop = normalize_index(stop, size, truncate);
+
+    // check for errors
+    if ((norm_start == MAX_SIZE_T || norm_stop == MAX_SIZE_T) && PyErr_Occurred()) {
+        return std::make_pair(MAX_SIZE_T, MAX_SIZE_T);  // propagate error
+    }
+
+    // check bounds are in order
+    if (norm_start > norm_stop) {
+        PyErr_SetString(
+            PyExc_ValueError,
+            "start index must be less than or equal to stop index"
+        );
+        return std::make_pair(MAX_SIZE_T, MAX_SIZE_T);
+    }
+
+    // return normalized bounds
+    return std::make_pair(norm_start, norm_stop);
 }
 
 

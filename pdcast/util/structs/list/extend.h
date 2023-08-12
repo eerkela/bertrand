@@ -27,19 +27,15 @@
 
 /* Add multiple items to the end of a list, set, or dictionary. */
 template <template <typename> class ViewType, typename NodeType>
-inline void extend(ViewType<NodeType>* view, PyObject* items) {
+inline void extend(ViewType<NodeType>* view, PyObject* items, bool left) {
     using Node = typename ViewType<NodeType>::Node;
+    Node* null = static_cast<Node*>(nullptr);
 
-    _extend_left_to_right(view, view->tail, static_cast<Node*>(nullptr), items);
-}
-
-
-/* Add multiple items to the beginning of a list, set, or dictionary. */
-template <template <typename> class ViewType, typename NodeType>
-inline void extendleft(ViewType<NodeType>* view, PyObject* items) {
-    using Node = typename ViewType<NodeType>::Node;
-
-    _extend_right_to_left(view, static_cast<Node*>(nullptr), view->head, items);
+    if (left) {
+        _extend_right_to_left(view, null, view->head, items);
+    } else {
+        _extend_left_to_right(view, view->tail, null, items);
+    }
 }
 
 
@@ -276,26 +272,17 @@ void _undo_right_to_left(
 ////////////////////////
 
 
-// NOTE: Cython doesn't play well with nested templates, so we need to
-// explicitly instantiate specializations for each combination of node/view
-// type.  This is a bit of a pain, put it's the only way to get Cython to
-// properly recognize the functions.
-
-// Maybe in a future release we won't have to do this:
+// NOTE: Cython doesn't play well with heavily templated functions, so we need
+// to explicitly instantiate the specializations we need.  Maybe in a future
+// release we won't have to do this:
 
 
-template void extend(ListView<SingleNode>* view, PyObject* items);
-template void extend(SetView<SingleNode>* view, PyObject* items);
-template void extend(DictView<SingleNode>* view, PyObject* items);
-template void extend(ListView<DoubleNode>* view, PyObject* items);
-template void extend(SetView<DoubleNode>* view, PyObject* items);
-template void extend(DictView<DoubleNode>* view, PyObject* items);
-template void extendleft(ListView<SingleNode>* view, PyObject* items);
-template void extendleft(SetView<SingleNode>* view, PyObject* items);
-template void extendleft(DictView<SingleNode>* view, PyObject* items);
-template void extendleft(ListView<DoubleNode>* view, PyObject* items);
-template void extendleft(SetView<DoubleNode>* view, PyObject* items);
-template void extendleft(DictView<DoubleNode>* view, PyObject* items);
+template void extend(ListView<SingleNode>* view, PyObject* items, bool left);
+template void extend(SetView<SingleNode>* view, PyObject* items, bool left);
+template void extend(DictView<SingleNode>* view, PyObject* items, bool left);
+template void extend(ListView<DoubleNode>* view, PyObject* items, bool left);
+template void extend(SetView<DoubleNode>* view, PyObject* items, bool left);
+template void extend(DictView<DoubleNode>* view, PyObject* items, bool left);
 template void extendafter(
     SetView<SingleNode>* view,
     PyObject* sentinel,
