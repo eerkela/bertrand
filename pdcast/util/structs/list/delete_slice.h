@@ -170,9 +170,9 @@ void _drop_slice_backward(
 }
 
 
-////////////////////////
-////    WRAPPERS    ////
-////////////////////////
+///////////////////////
+////    ALIASES    ////
+///////////////////////
 
 
 // NOTE: Cython doesn't play well with heavily templated functions, so we need

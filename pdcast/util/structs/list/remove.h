@@ -171,9 +171,9 @@ inline void discardbefore(ViewType<NodeType>* view, PyObject* sentinel) {
 }
 
 
-////////////////////////
-////    WRAPPERS    ////
-////////////////////////
+///////////////////////
+////    ALIASES    ////
+///////////////////////
 
 
 // NOTE: Cython doesn't play well with heavily templated functions, so we need

@@ -63,9 +63,9 @@ void insert(ViewType<NodeType>* view, size_t index, PyObject* item) {
 }
 
 
-////////////////////////
-////    WRAPPERS    ////
-////////////////////////
+///////////////////////
+////    ALIASES    ////
+///////////////////////
 
 
 // NOTE: Cython doesn't play well with heavily templated functions, so we need

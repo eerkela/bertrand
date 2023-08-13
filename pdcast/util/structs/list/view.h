@@ -491,7 +491,7 @@ public:
     }
 
     /* Clear the hash table and reset it to its initial state. */
-    void clear() {
+    void reset() {
         if constexpr (DEBUG) {
             printf("    -> free: HashTable(%lu)\n", capacity);
             printf("    -> malloc: HashTable(%lu)\n", INITIAL_TABLE_CAPACITY);
@@ -636,7 +636,7 @@ public:
 /////////////////////
 
 
-template <typename NodeType>
+template <typename NodeType, template <typename> class Allocator>
 class ListView {
 public:
     using Node = NodeType;
@@ -652,28 +652,27 @@ public:
     ListView& operator=(ListView&&) = delete;       // move assignment
 
     /* Construct an empty ListView. */
-    ListView() {
-        head = nullptr;
-        tail = nullptr;
-        size = 0;
-        specialization = nullptr;
-    }
+    ListView()
+        : head(nullptr), tail(nullptr), size(0), specialization(nullptr),
+          allocator() {}
 
     /* Construct a ListView from an input iterable. */
-    ListView(PyObject* iterable, bool reverse = false, PyObject* spec = nullptr) {
+    ListView(
+        PyObject* iterable,
+        bool reverse = false,
+        PyObject* spec = nullptr
+    ) : head(nullptr), tail(nullptr), size(0), specialization(spec),
+        allocator(FREELIST_SIZE)
+    {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
         if (iterator == nullptr) {  // TypeError()
             throw std::invalid_argument("Value is not iterable");
         }
 
-        // init empty ListView
-        head = nullptr;
-        tail = nullptr;
-        size = 0;
-        specialization = spec;
+        // hold reference to specialization, if given
         if (spec != nullptr) {
-            Py_INCREF(spec);  // hold reference to specialization
+            Py_INCREF(spec);
         }
 
         // unpack iterator into ListView
@@ -684,7 +683,7 @@ public:
             if (item == nullptr) { // end of iterator or error
                 if (PyErr_Occurred()) {
                     Py_DECREF(iterator);
-                    Allocater<Node>::discard_list(head);
+                    self_destruct();
                     throw std::runtime_error("could not get item from iterator");
                 }
                 break;
@@ -692,9 +691,10 @@ public:
 
             // allocate a new node and link it to the list
             stage(item, reverse);
-            if (PyErr_Occurred()) {  // error during stage()
+            if (PyErr_Occurred()) {
                 Py_DECREF(iterator);
-                Allocater<Node>::discard_list(head);
+                Py_DECREF(item);
+                self_destruct();
                 throw std::runtime_error("could not stage item");
             }
 
@@ -708,42 +708,36 @@ public:
 
     /* Destroy a ListView and free all its nodes. */
     ~ListView() {
-        // NOTE: head, tail, size, and queue are automatically destroyed
-        Allocater<Node>::discard_list(head);
-        clear_freelist();
-        if (specialization != nullptr) {
-            Py_DECREF(specialization);
-        }
+        self_destruct();
     }
 
     /* Construct a new node for the list. */
     template <typename... Args>
-    inline Node* node(PyObject* value, Args... args) const {
+    inline Node* node(Args... args) const {
         // variadic dispatch to Node::init()
-        Node* result = Allocater<Node>::create(freelist, value, args...);
+        Node* result = allocator.create(args...);
         if (specialization != nullptr && result != nullptr) {
             if (!Node::typecheck(result, specialization)) {
                 recycle(result);  // clean up allocated node
                 return nullptr;  // propagate TypeError()
             }
         }
-
         return result;
     }
 
-    /* Release a node, pushing it into the freelist. */
+    /* Release a node, returning it to the allocator. */
     inline void recycle(Node* node) const {
-        Allocater<Node>::recycle(freelist, node);
+        allocator.recycle(node);
     }
 
     /* Copy a node in the list. */
     inline Node* copy(Node* node) const {
-        return Allocater<Node>::copy(freelist, node);
+        return allocator.copy(node);
     }
 
     /* Make a shallow copy of the entire list. */
-    inline ListView<NodeType>* copy() const {
-        ListView<NodeType>* copied = new ListView<NodeType>();
+    ListView<NodeType, Allocator>* copy() const {
+        ListView<NodeType, Allocator>* copied = new ListView<NodeType, Allocator>();
         Node* old_node = head;
         Node* new_node = nullptr;
         Node* new_prev = nullptr;
@@ -751,13 +745,13 @@ public:
         // copy each node in list
         while (old_node != nullptr) {
             new_node = copy(old_node);  // copy node
-            if (new_node == nullptr) {  // error during copy()
+            if (new_node == nullptr) {  // error during copy(node)
                 delete copied;  // discard staged list
                 return nullptr;
             }
 
             // link to tail of copied list
-            copied->link(new_prev, new_node, nullptr);
+            copied->link(new_prev, new_node, nullptr);  // cannot fail
 
             // advance to next node
             new_prev = new_node;
@@ -769,7 +763,7 @@ public:
     }
 
     /* Clear the list. */
-    inline void clear() {
+    void clear() {
         Node* curr = head;  // store temporary reference to head
 
         // reset list parameters
@@ -777,8 +771,12 @@ public:
         tail = nullptr;
         size = 0;
 
-        // recycle all nodes, filling up the freelist
-        Allocater<Node>::recycle_list(freelist, curr);
+        // recycle all nodes
+        while (curr != nullptr) {
+            Node* next = static_cast<Node*>(curr->next);
+            recycle(curr);
+            curr = next;
+        }
     }
 
     /* Link a node to its neighbors to form a linked list. */
@@ -840,23 +838,14 @@ public:
         return specialization;  // return a new reference or NULL
     }
 
-    /* Clear the internal freelist to remove dead nodes. */
-    inline void clear_freelist() {
-        Allocater<Node>::discard_freelist(freelist);
-    }
-
     /* Get the total memory consumed by the list (in bytes). */
     inline size_t nbytes() const {
-        size_t total = sizeof(ListView<NodeType>);  // ListView object
-        total += size * sizeof(Node); // nodes
-        total += sizeof(freelist);  // freelist queue
-        total += freelist.size() * (sizeof(Node) + sizeof(Node*));  // freelist
-        return total;
+        return allocator.nbytes() + sizeof(*this);
     }
 
 private:
     PyObject* specialization;  // specialized type for elements of this list
-    mutable std::queue<Node*> freelist;
+    mutable Allocator<Node> allocator;
 
     /* Allocate a new node for the item and append it to the list, discarding
     it in the event of an error. */
@@ -868,8 +857,8 @@ private:
         }
 
         // link the node to the staged list
-        // NOTE: this will never cause an error for ListViews, so we can can
-        // omit the error-handling logic.
+        // NOTE: since ListViews do not maintain a hash table, this can never
+        // cause an error
         if (reverse) {
             link(nullptr, curr, head);
         } else {
@@ -877,48 +866,24 @@ private:
         }
     }
 
+    /* Release the resources being managed by the ListView. */
+    inline void self_destruct() {
+        // NOTE: allocator is stack allocated, so it doesn't need to be freed
+        // here.  Their destructors will be called automatically when the
+        // ListView is destroyed.
+        clear();  // clear all nodes in list
+        if (specialization != nullptr) {
+            Py_DECREF(specialization);
+        }
+    }
+
 };
 
 
-template <typename NodeType>
+template <typename NodeType, template <typename> class Allocator>
 class SetView {
 public:
-    /* A node decorator that computes the hash of the underlying PyObject* and
-    caches it alongside the node's original fields. */
-    struct Node : public NodeType {
-        Py_hash_t hash;
-
-        /* Initialize a newly-allocated node. */
-        inline static Node* init(Node* node, PyObject* value) {
-            node = static_cast<Node*>(NodeType::init(node, value));
-            if (node == nullptr) {  // Error during decorated init()
-                return nullptr;  // propagate
-            }
-
-            // compute hash
-            node->hash = PyObject_Hash(value);
-            if (node->hash == -1 && PyErr_Occurred()) {
-                NodeType::teardown(node);  // free any resources allocated during init()
-                return nullptr;  // propagate TypeError()
-            }
-
-            // return initialized node
-            return node;
-        }
-
-        /* Initialize a copied node. */
-        inline static Node* init_copy(Node* new_node, Node* old_node) {
-            new_node = static_cast<Node*>(NodeType::init_copy(new_node, old_node));
-            if (new_node == nullptr) {  // Error during decorated init_copy()
-                return nullptr;  // propagate
-            }
-
-            // reuse the pre-computed hash
-            new_node->hash = old_node->hash;
-            return new_node;
-        }
-
-    };
+    using Node = Hashed<NodeType>;
 
     Node* head;
     Node* tail;
@@ -932,28 +897,27 @@ public:
     SetView& operator=(SetView&&) = delete;       // move assignment
 
     /* Construct an empty SetView. */
-    SetView() {
-        head = nullptr;
-        tail = nullptr;
-        size = 0;
-        specialization = nullptr;
-    }
+    SetView() :
+        head(nullptr), tail(nullptr), size(0), specialization(nullptr),
+        table(), allocator() {}
 
     /* Construct a SetView from an input iterable. */
-    SetView(PyObject* iterable, bool reverse = false, PyObject* spec = nullptr) {
+    SetView(
+        PyObject* iterable,
+        bool reverse = false,
+        PyObject* spec = nullptr
+    ) : head(nullptr), tail(nullptr), size(0), specialization(spec),
+        allocator()
+    {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
-        if (iterator == nullptr) {
+        if (iterator == nullptr) {  // TypeError()
             throw std::invalid_argument("Value is not iterable");
         }
 
-        // init empty SetView
-        head = nullptr;
-        tail = nullptr;
-        size = 0;
-        specialization = spec;
+        // hold reference to specialization, if given
         if (spec != nullptr) {
-            Py_INCREF(spec);  // hold reference to specialization
+            Py_INCREF(spec);
         }
 
         // unpack iterator into SetView
@@ -962,9 +926,9 @@ public:
             // C API equivalent of next(iterator)
             item = PyIter_Next(iterator);
             if (item == nullptr) { // end of iterator or error
-                if (PyErr_Occurred()) {  // error during next()
+                if (PyErr_Occurred()) {
                     Py_DECREF(iterator);
-                    Allocater<Node>::discard_list(head);
+                    self_destruct();
                     throw std::runtime_error("could not get item from iterator");
                 }
                 break;
@@ -974,7 +938,8 @@ public:
             stage(item, reverse);
             if (PyErr_Occurred()) {
                 Py_DECREF(iterator);
-                Allocater<Node>::discard_list(head);
+                Py_DECREF(item);
+                self_destruct();
                 throw std::runtime_error("could not stage item");
             }
 
@@ -988,19 +953,14 @@ public:
 
     /* Destroy a SetView and free all its resources. */
     ~SetView() {
-        // NOTE: head, tail, size, queue, and table are automatically destroyed.
-        Allocater<Node>::discard_list(head);
-        clear_freelist();
-        if (specialization != nullptr) {
-            Py_DECREF(specialization);
-        }
+        self_destruct();
     }
 
     /* Construct a new node for the list. */
     template <typename... Args>
-    inline Node* node(PyObject* value, Args... args) const {
+    inline Node* node(Args... args) const {
         // variadic dispatch to Node::init()
-        Node* result = Allocater<Node>::create(freelist, value, args...);
+        Node* result = allocator.create(args...);
         if (specialization != nullptr && result != nullptr) {
             if (!Node::typecheck(result, specialization)) {
                 recycle(result);  // clean up allocated node
@@ -1011,19 +971,19 @@ public:
         return result;
     }
 
-    /* Release a node, pushing it into the freelist. */
+    /* Release a node, returning it to the allocator. */
     inline void recycle(Node* node) const {
-        Allocater<Node>::recycle(freelist, node);
+        allocator.recycle(node);
     }
 
     /* Copy a node in the list. */
     inline Node* copy(Node* node) const {
-        return Allocater<Node>::copy(freelist, node);
+        return allocator.copy(node);
     }
 
     /* Make a shallow copy of the entire list. */
-    inline SetView<NodeType>* copy() const {
-        SetView<NodeType>* copied = new SetView<NodeType>();
+    SetView<NodeType, Allocator>* copy() const {
+        SetView<NodeType, Allocator>* copied = new SetView<NodeType, Allocator>();
         Node* old_node = head;
         Node* new_node = nullptr;
         Node* new_prev = nullptr;
@@ -1054,22 +1014,12 @@ public:
 
     /* Clear the list and reset the associated hash table. */
     inline void clear() {
-        Node* curr = head;  // store temporary reference to head
-
-        // reset list parameters
-        head = nullptr;
-        tail = nullptr;
-        size = 0;
-
-        // reset hash table to initial size
-        table.clear();
-
-        // recycle all nodes, filling up the freelist
-        Allocater<Node>::recycle_list(freelist, curr);
+        purge_list();  // free all nodes
+        table.reset();  // reset hash table
     }
 
     /* Link a node to its neighbors to form a linked list. */
-    inline void link(Node* prev, Node* curr, Node* next) {
+    void link(Node* prev, Node* curr, Node* next) {
         // add node to hash table
         table.remember(curr);
         if (PyErr_Occurred()) {  // node is already present in table
@@ -1090,7 +1040,7 @@ public:
     }
 
     /* Unlink a node from its neighbors. */
-    inline void unlink(Node* prev, Node* curr, Node* next) {
+    void unlink(Node* prev, Node* curr, Node* next) {
         // remove node from hash table
         table.forget(curr);
         if (PyErr_Occurred()) {  // node is not present in table
@@ -1154,24 +1104,14 @@ public:
         table.clear_tombstones();
     }
 
-    /* Clear the internal freelist to remove dead nodes. */
-    inline void clear_freelist() {
-        Allocater<Node>::discard_freelist(freelist);
-    }
-
     /* Get the total amount of memory consumed by the set (in bytes).  */
     inline size_t nbytes() const {
-        size_t total = sizeof(SetView<NodeType>);  // SetView object
-        total += table.nbytes();  // hash table
-        total += size * sizeof(Node);  // nodes
-        total += sizeof(freelist);  // freelist queue
-        total += freelist.size() * (sizeof(Node) + sizeof(Node*));  // freelist
-        return total;
+        return allocator.nbytes() + table.nbytes() + sizeof(*this);
     }
 
 private:
     PyObject* specialization;  // specialized type for elements of this list
-    mutable std::queue<Node*> freelist;  // stack allocated
+    mutable Allocator<Node> allocator;  // stack allocated
     HashTable<Node> table;  // stack allocated
 
     /* Allocate a new node for the item and append it to the list, discarding
@@ -1193,89 +1133,49 @@ private:
         } else {
             link(tail, curr, nullptr);
         }
-        if (PyErr_Occurred()) {  // error during link()
-            Allocater<Node>::discard(curr);  // clean up staged node
+        if (PyErr_Occurred()) {  // node already exists
+            recycle(curr);
             return;
+        }
+    }
+
+    /* Clear all nodes in the list. */
+    void purge_list() {
+        // NOTE: this does not reset the hash table, and is therefore unsafe.
+        // It should only be used to destroy a DictView or clear its contents.
+        Node* curr = head;  // store temporary reference to head
+
+        // reset list parameters
+        head = nullptr;
+        tail = nullptr;
+        size = 0;
+
+        // recycle all nodes
+        while (curr != nullptr) {
+            Node* next = static_cast<Node*>(curr->next);
+            recycle(curr);
+            curr = next;
+        }
+    }
+
+    /* Release the resources being managed by the SetView. */
+    inline void self_destruct() {
+        // NOTE: allocator and table are stack allocated, so they don't need to
+        // be freed here.  Their destructors will be called automatically when
+        // the SetView is destroyed.
+        purge_list();
+        if (specialization != nullptr) {
+            Py_DECREF(specialization);
         }
     }
 
 };
 
 
-template <typename NodeType>
+template <typename NodeType, template <typename> class Allocator>
 class DictView {
 public:
-    /* A node decorator that hashes the underlying object and adds a second
-    PyObject* reference, allowing the list to act as a dictionary. */
-    struct Node : public NodeType {
-        Py_hash_t hash;
-        PyObject* mapped;
-
-        /* Initialize a newly-allocated node (1-argument version). */
-        inline static Node* init(Node* node, PyObject* value) {
-            // Check that item is a tuple of size 2 (key-value pair)
-            if (!PyTuple_Check(value) || PyTuple_Size(value) != 2) {
-                PyErr_Format(
-                    PyExc_TypeError,
-                    "Expected tuple of size 2 (key, value), not: %R",
-                    value
-                );
-                return nullptr;  // propagate TypeError()
-            }
-
-            // unpack tuple and pass to 2-argument version
-            PyObject* key = PyTuple_GetItem(value, 0);
-            PyObject* mapped = PyTuple_GetItem(value, 1);
-            return init(node, key, mapped);
-        }
-
-        /* Initialize a newly-allocated node (2-argument version). */
-        inline static Node* init(Node* node, PyObject* value, PyObject* mapped) {
-            node = static_cast<Node*>(NodeType::init(node, value));
-            if (node == nullptr) {  // Error during decorated init()
-                return nullptr;  // propagate
-            }
-
-            // compute hash
-            node->hash = PyObject_Hash(value);
-            if (node->hash == -1 && PyErr_Occurred()) {
-                NodeType::teardown(node);  // free any resources allocated during init()
-                return nullptr;  // propagate TypeError()
-            }
-
-            // store a reference to the mapped value
-            Py_INCREF(mapped);
-            node->mapped = mapped;
-
-            // return initialized node
-            return node;
-        }
-
-        /* Initialize a copied node. */
-        inline static Node* init_copy(Node* new_node, Node* old_node) {
-            new_node = static_cast<Node*>(NodeType::init_copy(new_node, old_node));
-            if (new_node == nullptr) {  // Error during decrated init_copy()
-                return nullptr;  // propagate
-            }
-
-            // reuse the pre-computed hash
-            new_node->hash = old_node->hash;
-
-            // store a new reference to mapped value
-            Py_INCREF(old_node->mapped);
-            new_node->mapped = old_node->mapped;
-
-            // return initialized node
-            return new_node;
-        }
-
-        /* Tear down a node before freeing it. */
-        inline static void teardown(Node* node) {
-            Py_DECREF(node->mapped);  // release mapped value
-            NodeType::teardown(node);
-        }
-
-    };
+    using Node = Mapped<NodeType>;
 
     Node* head;
     Node* tail;
@@ -1289,28 +1189,27 @@ public:
     DictView& operator=(DictView&&) = delete;       // move assignment
 
     /* Construct an empty DictView. */
-    DictView() {
-        head = nullptr;
-        tail = nullptr;
-        size = 0;
-        specialization = nullptr;
-    }
+    DictView() :
+        head(nullptr), tail(nullptr), size(0), specialization(nullptr),
+        table(), allocator() {}
 
     /* Construct a DictView from an input iterable. */
-    DictView(PyObject* iterable, bool reverse = false, PyObject* spec = nullptr) {
+    DictView(
+        PyObject* iterable,
+        bool reverse = false,
+        PyObject* spec = nullptr
+    ) : head(nullptr), tail(nullptr), size(0), specialization(nullptr),
+        table(), allocator()
+    {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
         if (iterator == nullptr) {
             throw std::invalid_argument("Value is not iterable");
         }
 
-        // init empty DictView
-        head = nullptr;
-        tail = nullptr;
-        size = 0;
-        specialization = spec;
+        // hold reference to specialization, if given
         if (spec != nullptr) {
-            Py_INCREF(spec);  // hold reference to specialization
+            Py_INCREF(spec);
         }
 
         // unpack iterator into DictView
@@ -1319,9 +1218,9 @@ public:
             // C API equivalent of next(iterator)
             item = PyIter_Next(iterator);
             if (item == nullptr) { // end of iterator or error
-                if (PyErr_Occurred()) {  // error during next()
+                if (PyErr_Occurred()) {
                     Py_DECREF(iterator);
-                    Allocater<Node>::discard_list(head);
+                    self_destruct();
                     throw std::runtime_error("could not get item from iterator");
                 }
                 break;  // end of iterator
@@ -1329,9 +1228,10 @@ public:
 
             // allocate a new node and link it to the list
             stage(item, reverse);
-            if (PyErr_Occurred()) {  // error during stage()
+            if (PyErr_Occurred()) {
                 Py_DECREF(iterator);
-                Allocater<Node>::discard_list(head);
+                Py_DECREF(item);
+                self_destruct();
                 throw std::runtime_error("could not stage item");
             }
 
@@ -1345,19 +1245,14 @@ public:
 
     /* Destroy a DictView and free all its resources. */
     ~DictView() {
-        // NOTE: head, tail, size, queue, and table are automatically destroyed.
-        Allocater<Node>::discard_list(head);
-        clear_freelist();
-        if (specialization != nullptr) {
-            Py_DECREF(specialization);
-        }
+        self_destruct();
     }
 
     /* Construct a new node for the list. */
     template <typename... Args>
     inline Node* node(PyObject* value, Args... args) const {
         // variadic dispatch to Node::init()
-        Node* result = Allocater<Node>::create(freelist, value, args...);
+        Node* result = allocator.create(value, args...);
         if (specialization != nullptr && result != nullptr) {
             if (!Node::typecheck(result, specialization)) {
                 recycle(result);  // clean up allocated node
@@ -1368,19 +1263,19 @@ public:
         return result;
     }
 
-    /* Free a node, pushing it into the freelist if possible. */
+    /* Release a node, returning it to the allocator. */
     inline void recycle(Node* node) const {
-        Allocater<Node>::recycle(freelist, node);
+        allocator.recycle(node);
     }
 
     /* Copy a single node in the list. */
     inline Node* copy(Node* node) const {
-        return Allocater<Node>::copy(freelist, node);
+        return allocator.copy(node);
     }
 
     /* Make a shallow copy of the list. */
-    inline DictView<NodeType>* copy() const {
-        DictView<NodeType>* copied = new DictView<NodeType>();
+    DictView<NodeType, Allocator>* copy() const {
+        DictView<NodeType, Allocator>* copied = new DictView<NodeType, Allocator>();
         Node* old_node = head;
         Node* new_node = nullptr;
         Node* new_prev = nullptr;
@@ -1411,22 +1306,12 @@ public:
 
     /* Clear the list and reset the associated hash table. */
     inline void clear() {
-        Node* curr = head;  // store temporary reference to head
-
-        // reset list parameters
-        head = nullptr;
-        tail = nullptr;
-        size = 0;
-
-        // reset hash table to initial size
-        table.clear();
-
-        // recycle all nodes, filling up the freelist
-        Allocater<Node>::recycle_list(freelist, curr);
+        purge_list();  // free all nodes
+        table.reset();  // reset hash table to initial size
     }
 
     /* Link a node to its neighbors to form a linked list. */
-    inline void link(Node* prev, Node* curr, Node* next) {
+    void link(Node* prev, Node* curr, Node* next) {
         // add node to hash table
         table.remember(curr);
         if (PyErr_Occurred()) {
@@ -1447,7 +1332,7 @@ public:
     }
 
     /* Unlink a node from its neighbors. */
-    inline void unlink(Node* prev, Node* curr, Node* next) {
+    void unlink(Node* prev, Node* curr, Node* next) {
         // remove node from hash table
         table.forget(curr);
         if (PyErr_Occurred()) {
@@ -1529,24 +1414,14 @@ public:
         table.clear_tombstones();
     }
 
-    /* Clear the internal freelist to remove dead nodes. */
-    inline void clear_freelist() {
-        Allocater<Node>::discard_freelist(freelist);
-    }
-
     /* Get the total amount of memory consumed by the dictionary (in bytes). */
     inline size_t nbytes() const {
-        size_t total = sizeof(DictView<NodeType>);  // SetView object
-        total += table.nbytes();  // hash table
-        total += size * sizeof(Node);  // contents of dictionary
-        total += sizeof(freelist);  // freelist queue
-        total += freelist.size() * (sizeof(Node) + sizeof(Node*));
-        return total;
+        return allocator.nbytes() + table.nbytes() + sizeof(*this);
     }
 
 private:
     PyObject* specialization;  // specialized type for elements of this list
-    mutable std::queue<Node*> freelist;  // stack allocated
+    mutable Allocator<Node>allocator;  // stack allocated
     HashTable<Node> table;  // stack allocated
 
     /* Allocate a new node for the item and append it to the list, discarding
@@ -1568,13 +1443,65 @@ private:
         } else {
             link(tail, curr, nullptr);
         }
-        if (PyErr_Occurred()) {
-            Allocater<Node>::discard(curr);  // clean up staged node
+        if (PyErr_Occurred()) {  // node already exists
+            recycle(curr);
             return;
         }
     }
 
+    /* Clear all nodes in the list. */
+    void purge_list() {
+        // NOTE: this does not reset the hash table, and is therefore unsafe.
+        // It should only be used to destroy a DictView or clear its contents.
+        Node* curr = head;  // store temporary reference to head
+
+        // reset list parameters
+        head = nullptr;
+        tail = nullptr;
+        size = 0;
+
+        // recycle all nodes
+        while (curr != nullptr) {
+            Node* next = static_cast<Node*>(curr->next);
+            recycle(curr);
+            curr = next;
+        }
+    }
+
+    /* Release the resources being managed by the DictView. */
+    inline void self_destruct() {
+        // NOTE: allocator and table are stack allocated, so they don't need to
+        // be freed here.  Their destructors will be called automatically when
+        // the DictView is destroyed.
+        purge_list();
+        if (specialization != nullptr) {
+            Py_DECREF(specialization);
+        }
+    }
+
 };
+
+
+////////////////////////
+////    ALIASES    ////
+////////////////////////
+
+
+// NOTE: Cython doesn't play well with heavily templated C++ code, so we need
+// to explicitly instantiate the specializations we need.  Maybe in a future
+// release we won't have to do this:
+
+
+template <typename NodeType>
+using DynamicListView = ListView<NodeType, FreeListAllocator>;
+
+
+template <typename NodeType>
+using DynamicSetView = SetView<NodeType, DirectAllocator>;
+
+
+template <typename NodeType>
+using DynamicDictView = DictView<NodeType, DirectAllocator>;
 
 
 ///////////////////////////////

@@ -2,23 +2,23 @@
 from cpython cimport PyObject
 
 from .node cimport SingleNode, DoubleNode
-from .view cimport ListView, SetView, DictView
+from .view cimport DynamicListView, DynamicSetView, DynamicDictView
 
 cdef extern from "append.h":
-    void append(ListView[SingleNode]* view, PyObject* item, bint left) except *
-    void append(SetView[SingleNode]* view, PyObject* item, bint left) except *
-    void append(DictView[SingleNode]* view, PyObject* item, bint left) except *
+    void append(DynamicListView[SingleNode]* view, PyObject* item, bint left) except *
+    void append(DynamicSetView[SingleNode]* view, PyObject* item, bint left) except *
+    void append(DynamicDictView[SingleNode]* view, PyObject* item, bint left) except *
     void append(
-        DictView[SingleNode]* view,
+        DynamicDictView[SingleNode]* view,
         PyObject* item,
         PyObject* mapped,
         bint left
     ) except *
-    void append(ListView[DoubleNode]* view, PyObject* item, bint left) except *
-    void append(SetView[DoubleNode]* view, PyObject* item, bint left) except *
-    void append(DictView[DoubleNode]* view, PyObject* item, bint left) except *
+    void append(DynamicListView[DoubleNode]* view, PyObject* item, bint left) except *
+    void append(DynamicSetView[DoubleNode]* view, PyObject* item, bint left) except *
+    void append(DynamicDictView[DoubleNode]* view, PyObject* item, bint left) except *
     void append(
-        DictView[DoubleNode]* view,
+        DynamicDictView[DoubleNode]* view,
         PyObject* item,
         PyObject* mapped,
         bint left

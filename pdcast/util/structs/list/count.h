@@ -16,14 +16,14 @@
 
 /* Count the number of occurrences of an item within a singly-linked set or
 dictionary. */
-template <template <typename> class ViewType, typename NodeType>
+template <template <typename> class ViewType, typename NodeType, typename Allocator>
 size_t count(
-    ViewType<NodeType>* view,
+    ViewType<NodeType, Allocator>* view,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
-    using Node = typename ViewType<NodeType>::Node;
+    using Node = typename ViewType<NodeType, Allocator>::Node;
 
     // check if item is contained in hash table
     Node* node = view->search(item);
@@ -53,14 +53,14 @@ size_t count(
 
 
 /* Count the number of occurrences of an item within a singly-linked list. */
-template <typename NodeType>
+template <typename NodeType, typename Allocator>
 size_t count(
-    ListView<NodeType>* view,
+    ListView<NodeType, Allocator>* view,
     PyObject* item,
     size_t start,
     size_t stop
 ) {
-    using Node = typename ListView<NodeType>::Node;
+    using Node = typename ListView<NodeType, Allocator>::Node;
     size_t observed = 0;
     Node* curr;
     size_t idx;
@@ -119,9 +119,9 @@ size_t count(
 }
 
 
-////////////////////////
-////    WRAPPERS    ////
-////////////////////////
+///////////////////////
+////    ALIASES    ////
+///////////////////////
 
 
 // NOTE: Cython doesn't play well with heavily templated functions, so we need
@@ -129,38 +129,78 @@ size_t count(
 // release we won't have to do this:
 
 
+// direct allocation
 template size_t count(
-    ListView<SingleNode>* view,
+    ListView<SingleNode, DirectAllocator>* view,
     PyObject* item,
     size_t start,
     size_t stop
 );
 template size_t count(
-    SetView<SingleNode>* view,
+    SetView<SingleNode, DirectAllocator>* view,
     PyObject* item,
     size_t start,
     size_t stop
 );
 template size_t count(
-    DictView<SingleNode>* view,
+    DictView<SingleNode, DirectAllocator>* view,
     PyObject* item,
     size_t start,
     size_t stop
 );
 template size_t count(
-    ListView<DoubleNode>* view,
+    ListView<DoubleNode, DirectAllocator>* view,
     PyObject* item,
     size_t start,
     size_t stop
 );
 template size_t count(
-    SetView<DoubleNode>* view,
+    SetView<DoubleNode, DirectAllocator>* view,
     PyObject* item,
     size_t start,
     size_t stop
 );
 template size_t count(
-    DictView<DoubleNode>* view,
+    DictView<DoubleNode, DirectAllocator>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+
+
+// freelist allocation
+template size_t count(
+    ListView<SingleNode, FreeListAllocator>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count(
+    SetView<SingleNode, FreeListAllocator>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count(
+    DictView<SingleNode, FreeListAllocator>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count(
+    ListView<DoubleNode, FreeListAllocator>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count(
+    SetView<DoubleNode, FreeListAllocator>* view,
+    PyObject* item,
+    size_t start,
+    size_t stop
+);
+template size_t count(
+    DictView<DoubleNode, FreeListAllocator>* view,
     PyObject* item,
     size_t start,
     size_t stop

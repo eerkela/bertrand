@@ -20,10 +20,17 @@
 
 
 /* Add an item to the end of a list, set, or dictionary. */
-template <template <typename> class ViewType, typename NodeType>
-inline void append(ViewType<NodeType>* view, PyObject* item, bool left) {
-    using Node = typename ViewType<NodeType>::Node;
-
+template <
+    template <typename, typename> class ViewType,
+    typename NodeType,
+    template <typename> class Allocator,
+    typename Node
+>
+inline void append(
+    ViewType<NodeType, Allocator<Node>>* view,
+    PyObject* item,
+    bool left
+) {
     // allocate a new node
     Node* node = view->node(item);
     if (node == nullptr) {  // Error during node initialization
@@ -43,14 +50,17 @@ inline void append(ViewType<NodeType>* view, PyObject* item, bool left) {
 
 
 /* Add a key-value pair to the end of a dictionary. */
-template <typename NodeType>
+template <
+    typename NodeType,
+    template <typename> class Allocator
+>
 inline void append(
-    DictView<NodeType>* view,
+    DictView<NodeType, Allocator>* view,
     PyObject* item,
     PyObject* mapped,
     bool left
 ) {
-    using Node = typename DictView<NodeType>::Node;
+    using Node = typename DictView<NodeType, Allocator>::Node;
 
     // allocate a new node
     Node* node = view->node(item, mapped);  // use 2-argument init()
@@ -71,9 +81,9 @@ inline void append(
 }
 
 
-////////////////////////
-////    WRAPPERS    ////
-////////////////////////
+///////////////////////
+////    ALIASES    ////
+///////////////////////
 
 
 // NOTE: Cython doesn't play well with heavily templated functions, so we need
@@ -81,20 +91,20 @@ inline void append(
 // release we won't have to do this:
 
 
-template void append(ListView<SingleNode>* view, PyObject* item, bool left);
-template void append(SetView<SingleNode>* view, PyObject* item, bool left);
-template void append(DictView<SingleNode>* view, PyObject* item, bool left);
+template void append(DynamicListView<SingleNode>* view, PyObject* item, bool left);
+template void append(DynamicSetView<SingleNode>* view, PyObject* item, bool left);
+template void append(DynamicDictView<SingleNode>* view, PyObject* item, bool left);
 template void append(
-    DictView<SingleNode>* view,
+    DynamicDictView<SingleNode>* view,
     PyObject* item,
     PyObject* mapped,
     bool left
 );
-template void append(ListView<DoubleNode>* view, PyObject* item, bool left);
-template void append(SetView<DoubleNode>* view, PyObject* item, bool left);
-template void append(DictView<DoubleNode>* view, PyObject* item, bool left);
+template void append(DynamicListView<DoubleNode>* view, PyObject* item, bool left);
+template void append(DynamicSetView<DoubleNode>* view, PyObject* item, bool left);
+template void append(DynamicDictView<DoubleNode>* view, PyObject* item, bool left);
 template void append(
-    DictView<DoubleNode>* view,
+    DynamicDictView<DoubleNode, DirectAllocator>* view,
     PyObject* item,
     PyObject* mapped,
     bool left

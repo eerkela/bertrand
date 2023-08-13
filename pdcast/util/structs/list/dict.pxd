@@ -9,11 +9,11 @@ from .append cimport *
 # from .get_slice cimport *
 # from .index cimport *
 # from .insert cimport *
-# from .node cimport *
+from .node cimport *
 # from .pop cimport *
 # from .remove cimport *
 # from .reverse cimport *
 # from .rotate cimport *
 # from .set_slice cimport *
 # from .sort cimport *
-# from .view cimport *
+from .view cimport *

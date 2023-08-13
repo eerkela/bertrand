@@ -14,16 +14,16 @@
 
 
 /* Check if an item is contained within a set or dictionary. */
-template <template <typename> class ViewType, typename NodeType>
-inline int contains(ViewType<NodeType>* view, PyObject* item) {
+template <template <typename> class ViewType, typename NodeType, typename Allocator>
+inline int contains(ViewType<NodeType, Allocator>* view, PyObject* item) {
     return view->search(item) != nullptr;
 }
 
 
 /* Check if an item is contained within a list. */
-template <typename NodeType>
-inline int contains(ListView<NodeType>* view, PyObject* item) {
-    using Node = typename ListView<NodeType>::Node;
+template <typename NodeType, Allocator>
+inline int contains(ListView<NodeType, Allocator>* view, PyObject* item) {
+    using Node = typename ListView<NodeType, Allocator>::Node;
     Node* curr = view->head;
     int comp;
 
@@ -46,9 +46,9 @@ inline int contains(ListView<NodeType>* view, PyObject* item) {
 }
 
 
-////////////////////////
-////    WRAPPERS    ////
-////////////////////////
+///////////////////////
+////    ALIASES    ////
+///////////////////////
 
 
 // NOTE: Cython doesn't play well with heavily templated functions, so we need
