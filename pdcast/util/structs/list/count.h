@@ -16,7 +16,11 @@
 
 /* Count the number of occurrences of an item within a singly-linked set or
 dictionary. */
-template <template <typename> class ViewType, typename NodeType, typename Allocator>
+template <
+    template <typename, template <typename> class> class ViewType,
+    typename NodeType,
+    template <typename> class Allocator
+>
 size_t count(
     ViewType<NodeType, Allocator>* view,
     PyObject* item,
@@ -53,7 +57,7 @@ size_t count(
 
 
 /* Count the number of occurrences of an item within a singly-linked list. */
-template <typename NodeType, typename Allocator>
+template <typename NodeType, template <typename> class Allocator>
 size_t count(
     ListView<NodeType, Allocator>* view,
     PyObject* item,

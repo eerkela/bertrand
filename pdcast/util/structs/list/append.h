@@ -1,6 +1,6 @@
 // include guard prevents multiple inclusion
-#ifndef APPEND_H
-#define APPEND_H
+#ifndef BERTRAND_STRUCTS_ALGORITHMS_APPEND_H
+#define BERTRAND_STRUCTS_ALGORITHMS_APPEND_H
 
 #include <Python.h>  // for CPython API
 #include "node.h"  // for nodes
@@ -21,20 +21,29 @@
 
 /* Add an item to the end of a list, set, or dictionary. */
 template <
-    template <typename, typename> class ViewType,
+    template <typename, template <typename> class> class ViewType,
     typename NodeType,
-    template <typename> class Allocator,
-    typename Node
+    template <typename> class Allocator
 >
 inline void append(
-    ViewType<NodeType, Allocator<Node>>* view,
+    ViewType<NodeType, Allocator>* view,
     PyObject* item,
     bool left
 ) {
+    using Node = typename ViewType<NodeType, Allocator>::Node;
+
     // allocate a new node
     Node* node = view->node(item);
     if (node == nullptr) {  // Error during node initialization
         return;
+    }
+
+    if constexpr (is_setlike<ViewType, NodeType, Allocator>::value) {
+        // check if item is contained in hash table
+        if (view->search(node) != nullptr) {  // item already exists
+            view->recycle(node);
+            return;  // do nothing
+        }
     }
 
     // link to beginning/end of list
@@ -50,10 +59,7 @@ inline void append(
 
 
 /* Add a key-value pair to the end of a dictionary. */
-template <
-    typename NodeType,
-    template <typename> class Allocator
->
+template <typename NodeType, template <typename> class Allocator>
 inline void append(
     DictView<NodeType, Allocator>* view,
     PyObject* item,
@@ -66,6 +72,12 @@ inline void append(
     Node* node = view->node(item, mapped);  // use 2-argument init()
     if (node == nullptr) {  // Error during node initialization
         return;
+    }
+
+    // check if item is contained in hash table
+    if (view->search(node) != nullptr) {  // item already exists
+        view->recycle(node);
+        return;  // do nothing
     }
 
     // link to beginning/end of list
@@ -91,24 +103,138 @@ inline void append(
 // release we won't have to do this:
 
 
-template void append(DynamicListView<SingleNode>* view, PyObject* item, bool left);
-template void append(DynamicSetView<SingleNode>* view, PyObject* item, bool left);
-template void append(DynamicDictView<SingleNode>* view, PyObject* item, bool left);
+// list.append()
 template void append(
-    DynamicDictView<SingleNode>* view,
+    ListView<SingleNode, DirectAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    ListView<SingleNode, FreeListAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    ListView<SingleNode, PreAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    ListView<DoubleNode, DirectAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    ListView<DoubleNode, FreeListAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    ListView<DoubleNode, PreAllocator>* view,
+    PyObject* item,
+    bool left
+);
+
+
+// set.add/append()
+template void append(
+    SetView<SingleNode, DirectAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    SetView<SingleNode, FreeListAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    SetView<SingleNode, PreAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    SetView<DoubleNode, DirectAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    SetView<DoubleNode, FreeListAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    SetView<DoubleNode, PreAllocator>* view,
+    PyObject* item,
+    bool left
+);
+
+// dict.append()
+template void append(
+    DictView<SingleNode, DirectAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    DictView<SingleNode, DirectAllocator>* view,
     PyObject* item,
     PyObject* mapped,
     bool left
 );
-template void append(DynamicListView<DoubleNode>* view, PyObject* item, bool left);
-template void append(DynamicSetView<DoubleNode>* view, PyObject* item, bool left);
-template void append(DynamicDictView<DoubleNode>* view, PyObject* item, bool left);
 template void append(
-    DynamicDictView<DoubleNode, DirectAllocator>* view,
+    DictView<SingleNode, FreeListAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    DictView<SingleNode, FreeListAllocator>* view,
+    PyObject* item,
+    PyObject* mapped,
+    bool left
+);
+template void append(
+    DictView<SingleNode, PreAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    DictView<SingleNode, PreAllocator>* view,
+    PyObject* item,
+    PyObject* mapped,
+    bool left
+);
+template void append(
+    DictView<DoubleNode, DirectAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    DictView<DoubleNode, DirectAllocator>* view,
+    PyObject* item,
+    PyObject* mapped,
+    bool left
+);
+template void append(
+    DictView<DoubleNode, FreeListAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    DictView<DoubleNode, FreeListAllocator>* view,
+    PyObject* item,
+    PyObject* mapped,
+    bool left
+);
+template void append(
+    DictView<DoubleNode, PreAllocator>* view,
+    PyObject* item,
+    bool left
+);
+template void append(
+    DictView<DoubleNode, PreAllocator>* view,
     PyObject* item,
     PyObject* mapped,
     bool left
 );
 
 
-#endif // APPEND_H include guard
+#endif // BERTRAND_STRUCTS_ALGORITHMS_APPEND_H

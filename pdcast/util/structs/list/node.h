@@ -3,6 +3,7 @@
 #define NODE_H
 
 #include <queue>  // for std::queue
+#include <stdexcept>  // for std::invalid_argument
 #include <type_traits>  // for std::integer_constant, std::is_base_of
 #include <Python.h>  // for CPython API
 
@@ -350,129 +351,6 @@ struct Keyed {
 //////////////////////////
 
 
-/* A node decorator that computes the hash of the underlying PyObject* and
-caches it alongside the node's original fields. */
-template <typename NodeType>
-struct Hashed : public NodeType {
-    // NOTE: this is used internally by the SetView class to avoid recomputing
-    // a node's hash every time it is requested.  It is automatically applied
-    // to the `NodeType` template parameter when a SetView is constructed.
-    using Node = Hashed<NodeType>;
-
-    Py_hash_t hash;
-
-    /* Initialize a newly-allocated node. */
-    inline static Node* init(Node* node, PyObject* value) {
-        node = static_cast<Node*>(NodeType::init(node, value));
-        if (node == nullptr) {  // Error during decorated init()
-            return nullptr;  // propagate
-        }
-
-        // compute hash
-        node->hash = PyObject_Hash(value);
-        if (node->hash == -1 && PyErr_Occurred()) {
-            NodeType::teardown(node);  // free any resources allocated during init()
-            return nullptr;  // propagate TypeError()
-        }
-
-        // return initialized node
-        return node;
-    }
-
-    /* Initialize a copied node. */
-    inline static Node* init_copy(Node* new_node, Node* old_node) {
-        new_node = static_cast<Node*>(NodeType::init_copy(new_node, old_node));
-        if (new_node == nullptr) {  // Error during decorated init_copy()
-            return nullptr;  // propagate
-        }
-
-        // reuse the pre-computed hash
-        new_node->hash = old_node->hash;
-        return new_node;
-    }
-
-};
-
-
-/* A node decorator that hashes the underlying object and adds a second
-PyObject* reference, allowing the list to act as a dictionary. */
-template <typename NodeType>
-struct Mapped : public NodeType {
-    // NOTE: this is used internally by the DictView class to map keys to
-    // values during dictionary lookups.  It is automatically applied to the
-    // `NodeType` template parameter when a DictView is constructed.
-    using Node = Mapped<NodeType>;
-
-    Py_hash_t hash;
-    PyObject* mapped;
-
-    /* Initialize a newly-allocated node (1-argument version). */
-    inline static Node* init(Node* node, PyObject* value) {
-        // Check that item is a tuple of size 2 (key-value pair)
-        if (!PyTuple_Check(value) || PyTuple_Size(value) != 2) {
-            PyErr_Format(
-                PyExc_TypeError,
-                "Expected tuple of size 2 (key, value), not: %R",
-                value
-            );
-            return nullptr;  // propagate TypeError()
-        }
-
-        // unpack tuple and pass to 2-argument version
-        PyObject* key = PyTuple_GetItem(value, 0);
-        PyObject* mapped = PyTuple_GetItem(value, 1);
-        return init(node, key, mapped);
-    }
-
-    /* Initialize a newly-allocated node (2-argument version). */
-    inline static Node* init(Node* node, PyObject* value, PyObject* mapped) {
-        node = static_cast<Node*>(NodeType::init(node, value));
-        if (node == nullptr) {  // Error during decorated init()
-            return nullptr;  // propagate
-        }
-
-        // compute hash
-        node->hash = PyObject_Hash(value);
-        if (node->hash == -1 && PyErr_Occurred()) {
-            NodeType::teardown(node);  // free any resources allocated during init()
-            return nullptr;  // propagate TypeError()
-        }
-
-        // store a reference to the mapped value
-        Py_INCREF(mapped);
-        node->mapped = mapped;
-
-        // return initialized node
-        return node;
-    }
-
-    /* Initialize a copied node. */
-    inline static Node* init_copy(Node* new_node, Node* old_node) {
-        new_node = static_cast<Node*>(NodeType::init_copy(new_node, old_node));
-        if (new_node == nullptr) {  // Error during decrated init_copy()
-            return nullptr;  // propagate
-        }
-
-        // reuse the pre-computed hash
-        new_node->hash = old_node->hash;
-
-        // store a new reference to mapped value
-        Py_INCREF(old_node->mapped);
-        new_node->mapped = old_node->mapped;
-
-        // return initialized node
-        return new_node;
-    }
-
-    /* Tear down a node before freeing it. */
-    inline static void teardown(Node* node) {
-        Py_DECREF(node->mapped);  // release mapped value
-        NodeType::teardown(node);
-    }
-
-};
-
-
 /* A node decorator that adds a frequency count to the underyling node type. */
 template <typename NodeType>
 struct Counted : public NodeType {
@@ -540,27 +418,29 @@ struct is_doubly_linked : std::integral_constant<
 template <typename Node>
 class BaseAllocator {
 protected:
-    size_t alive;  // number of currently-alive nodes (for memory usage/debugging)
+    size_t alive;  // number of currently-alive nodes
 
     /* A wrapper around malloc() that can help catch memory leaks. */
-    inline static Node* malloc_node(PyObject* value) {
+    inline Node* malloc_node(PyObject* value) {
         // print allocation/deallocation messages if DEBUG=TRUE
         if constexpr (DEBUG) {
             printf("    -> malloc: %s\n", repr(value));
         }
 
         // malloc()
+        ++alive;
         return static_cast<Node*>(malloc(sizeof(Node)));  // may be NULL
     }
 
     /* A wrapper around free() that can help catch memory leaks. */
-    inline static void free_node(Node* node) {
+    inline void free_node(Node* node) {
         // print allocation/deallocation messages if DEBUG=TRUE
         if constexpr (DEBUG) {
             printf("    -> free: %s\n", repr(node->value));
         }
 
         // free()
+        --alive;
         free(node);
     }
 
@@ -575,27 +455,30 @@ public:
 
     /* Return the number of currently-allocated nodes. */
     inline size_t allocated() {
-        return this->alive;
+        return alive;
     };
 
     /* Return the total amount of memory being managed by this allocator. */
     inline size_t nbytes() {
-        return this->alive * sizeof(Node) + sizeof(*this);
+        return alive * sizeof(Node) + sizeof(*this);
     };
 
 };
 
 
-/* An allocator that directly allocates and frees each node. */
+/* A factory for the templated node that directly allocates and frees each node. */
 template <typename Node>
 class DirectAllocator : public BaseAllocator<Node> {
 public:
+
+    /* Create a DirectAllocator for the given node. */
+    DirectAllocator(ssize_t max_size) : BaseAllocator<Node>() {}
 
     /* Initialize a new node for the list. */
     template <typename... Args>
     inline Node* create(PyObject* value, Args... args) {
         // allocate a blank node
-        Node* node = BaseAllocator<Node>::malloc_node(value);
+        Node* node = this->malloc_node(value);
         if (node == nullptr) {  // malloc() failed
             PyErr_NoMemory();
             return nullptr;  // propagate
@@ -604,17 +487,16 @@ public:
         // variadic dispatch to one of the node's init() methods
         Node* initialized = Node::init(node, value, args...);
         if (initialized == nullptr) {  // Error during init()
-            BaseAllocator<Node>::free_node(node);
+            this->free_node(node);
         }
 
         // return initialized node
-        this->alive++;
         return initialized;
     }
 
     /* Copy an existing node. */
     inline Node* copy(Node* node) {
-        Node* copied = BaseAllocator<Node>::malloc_node(node->value);
+        Node* copied = this->malloc_node(node->value);
         if (copied == nullptr) {  // malloc() failed
             PyErr_NoMemory();
             return nullptr;  // propagate
@@ -623,19 +505,17 @@ public:
         // dispatch to node's init_copy() method
         Node* initialized = Node::init_copy(copied, node);
         if (initialized == nullptr) {  // Error during init_copy()
-            BaseAllocator<Node>::free_node(copied);
+            this->free_node(copied);
         }
 
         // return initialized node
-        this->alive++;
         return initialized;
     }
 
     /* Free a node, returning its resources to the allocator. */
     inline void recycle(Node* node) {
         Node::teardown(node);
-        BaseAllocator<Node>::free_node(node);
-        this->alive--;
+        this->free_node(node);
     }
 
 };
@@ -654,27 +534,24 @@ private:
             node = freelist.front();  // pop from freelist
             freelist.pop();
         } else {
-            node = BaseAllocator<Node>::malloc_node(value);  // malloc()
+            node = this->malloc_node(value);  // malloc()
         }
         return node;  // may be NULL
     }
 
     /* Push a node to the freelist or free it directly. */
     inline void push_node(Node* node) {
-        if (freelist.size() < max_size) {
+        if (freelist.size() < FREELIST_SIZE) {
             freelist.push(node);  // push to freelist
         } else {
-            BaseAllocator<Node>::free_node(node);  // free()
+            this->free_node(node);  // free()
         }
     }
 
 public:
-    size_t max_size;
 
-    /* Create a freelist of the given size */
-    FreeListAllocator(size_t freelist_size) : BaseAllocator<Node>() {
-        max_size = freelist_size;
-    }
+    /* Create a freelist allocator for the given node. */
+    FreeListAllocator(ssize_t max_size) : BaseAllocator<Node>() {}
 
     /* Destroy the freelist and release all nodes within it. */
     ~FreeListAllocator() {
@@ -698,7 +575,6 @@ public:
         }
 
         // return initialized node
-        this->alive++;
         return node;
     }
 
@@ -732,20 +608,121 @@ public:
         while (!freelist.empty()) {
             Node* node = freelist.front();
             freelist.pop();
-            BaseAllocator<Node>::free_node(node);
+            this->free_node(node);
         }
     }
 
     /* Get the number of nodes stored in the freelist. */
-    inline size_t size() const {
+    inline size_t reserved() const {
         return freelist.size();
     }
 
 };
 
 
+/* A factory for the templated node that preallocates a contiguous block of nodes. */
+template <typename Node>
+class PreAllocator : public BaseAllocator<Node> {
+private:
+    size_t max_size;  // length of block
+    Node* block;  // contiguous block of nodes
+    std::queue<Node*> available;  // stack of open node addresses
 
+public:
 
+    /* Pre-allocate the given number of nodes as a contiguous block. */
+    PreAllocator(ssize_t size) {
+        // check for invalid size
+        if (size < 0) {
+            throw std::invalid_argument("PreAllocator size must be >= 0");
+        }
+        size_t max_size = static_cast<size_t>(size);
+
+        // print allocation/deallocation messages if DEBUG=TRUE
+        if constexpr (DEBUG) {
+            printf("    -> malloc: %zu preallocated nodes\n", max_size);
+        }
+
+        // allocate a contiguous block of nodes
+        block = static_cast<Node*>(malloc(max_size * sizeof(Node)));
+        if (block == nullptr) {  // malloc() failed
+            throw std::bad_alloc();
+        }
+
+        // build stack of open node addresses
+        for (size_t i = 0; i < max_size; ++i) {
+            available.push(&block[i]);
+        }
+        this->alive = max_size;
+    }
+
+    /* Free the pre-allocated nodes as a contiguous block. */
+    ~PreAllocator() {
+        // print allocation/deallocation messages if DEBUG=TRUE
+        if constexpr (DEBUG) {
+            printf("    -> free: %zu preallocated nodes\n", max_size);
+        }
+
+        free(block);
+    }
+
+    /* Initialize a new node for the list. */
+    template <typename... Args>
+    inline Node* create(PyObject* value, Args... args) {
+        // check if block is full
+        if (available.empty()) {
+            PyErr_NoMemory();
+            return nullptr;  // propagate
+        }
+
+        // get blank node
+        Node* node = available.front();
+        available.pop();
+
+        // NOTE: variadic dispatch to one of the node's init() methods
+        node = Node::init(node, value, args...);
+        if (node == nullptr) {
+            available.push(node);  // init failed, return to block
+        }
+
+        // return initialized node
+        return node;
+    }
+
+    /* Copy an existing node. */
+    inline Node* copy(Node* old_node) {
+        // check if block is full
+        if (available.empty()) {
+            PyErr_NoMemory();
+            return nullptr;  // propagate
+        }
+
+        // get blank node
+        Node* new_node = available.front();
+        available.pop();
+
+        // dispatch to node's init_copy() method
+        new_node = Node::init_copy(new_node, old_node);
+        if (new_node == nullptr) {
+            available.push(new_node);  // init failed, return to block
+        }
+
+        // return initialized node
+        return new_node;
+    }
+
+    /* Free a node, returning its resources to the allocator. */
+    inline void recycle(Node* node) {
+        Node::teardown(node);  // release references
+        available.push(node);  // return to block
+    }
+
+    /* Get the number of nodes waiting to be allocated. */
+    inline size_t reserved() const {
+        return available.size();
+    }
+
+};
 
 
 #endif // NODE_H include guard

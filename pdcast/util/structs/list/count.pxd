@@ -2,41 +2,43 @@
 from cpython.ref cimport PyObject
 
 from .node cimport SingleNode, DoubleNode
-from .view cimport MAX_SIZE_T, ListView, SetView, DictView
+from .view cimport (
+    MAX_SIZE_T, DynamicListView, DynamicSetView, DynamicDictView
+)
 
 cdef extern from "count.h":
     size_t count(
-        ListView[SingleNode]* view,
+        DynamicListView[SingleNode]* view,
         PyObject* item,
         size_t start,
         size_t stop
     ) except? MAX_SIZE_T
     size_t count(
-        SetView[SingleNode]* view,
+        DynamicSetView[SingleNode]* view,
         PyObject* item,
         size_t start,
         size_t stop
     ) except? MAX_SIZE_T
     size_t count(
-        DictView[SingleNode]* view,
+        DynamicDictView[SingleNode]* view,
         PyObject* item,
         size_t start,
         size_t stop
     ) except? MAX_SIZE_T
     size_t count(
-        ListView[DoubleNode]* view,
+        DynamicListView[DoubleNode]* view,
         PyObject* item,
         size_t start,
         size_t stop
     ) except? MAX_SIZE_T
     size_t count(
-        SetView[DoubleNode]* view,
+        DynamicSetView[DoubleNode]* view,
         PyObject* item,
         size_t start,
         size_t stop
     ) except? MAX_SIZE_T
     size_t count(
-        DictView[DoubleNode]* view,
+        DynamicDictView[DoubleNode]* view,
         PyObject* item,
         size_t start,
         size_t stop

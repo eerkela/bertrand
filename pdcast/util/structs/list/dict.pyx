@@ -25,11 +25,12 @@ from timeit import timeit
 
 
 cdef object iterable = [3, 5, 2, 6, 1, 4]
-cdef DynamicListView[DoubleNode]* view = new DynamicListView[DoubleNode](<PyObject*>iterable, False, NULL)
+cdef ListView[DoubleNode, PreAllocator]* view
+view = new ListView[DoubleNode, PreAllocator](<PyObject*>iterable, False, NULL, -32)
 
 
-# cdef object item = 7
-# append(view, <PyObject*>item, False)
+cdef object item = 7
+append(view, <PyObject*>item, False)
 
 
 del view

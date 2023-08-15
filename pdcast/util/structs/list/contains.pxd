@@ -2,12 +2,12 @@
 from cpython.ref cimport PyObject
 
 from .node cimport SingleNode, DoubleNode
-from .view cimport ListView, SetView, DictView
+from .view cimport DynamicListView, DynamicSetView, DynamicDictView
 
 cdef extern from "contains.h":
-    int contains(ListView[SingleNode]* view, PyObject* item) except -1
-    int contains(SetView[SingleNode]* view, PyObject* item) except *
-    int contains(DictView[SingleNode]* view, PyObject* item) except *
-    int contains(ListView[DoubleNode]* view, PyObject* item) except -1
-    int contains(SetView[DoubleNode]* view, PyObject* item) except *
-    int contains(DictView[DoubleNode]* view, PyObject* item) except *
+    int contains(DynamicListView[SingleNode]* view, PyObject* item) except -1
+    int contains(DynamicSetView[SingleNode]* view, PyObject* item) except *
+    int contains(DynamicDictView[SingleNode]* view, PyObject* item) except *
+    int contains(DynamicListView[DoubleNode]* view, PyObject* item) except -1
+    int contains(DynamicSetView[DoubleNode]* view, PyObject* item) except *
+    int contains(DynamicDictView[DoubleNode]* view, PyObject* item) except *

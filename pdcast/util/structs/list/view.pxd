@@ -13,12 +13,12 @@ cdef extern from "view.h":
         T start, T stop, size_t size, bint truncate
     ) except? MAX_SIZE_T_PAIR
 
-    cdef cppclass DynamicListView[T]:
+    cdef cppclass ListView[T, U]:
         size_t size
         T* head
         T* tail
-        DynamicListView() except +
-        DynamicListView(PyObject* iterable, bint reverse, PyObject* spec) except +
+        ListView(ssize_t max_size) except +
+        ListView(PyObject* iterable, bint reverse, PyObject* spec, ssize_t max_size) except +
         T* node(PyObject* value) except NULL
         void recycle(T* node)
         void link(T* prev, T* curr, T* next)
@@ -27,10 +27,10 @@ cdef extern from "view.h":
         void specialize(PyObject* spec) except *
         PyObject* get_specialization()
         T* copy(T* curr) except NULL
-        DynamicListView[T]* copy() except NULL
+        ListView[T, U]* copy() except NULL
         size_t nbytes()
 
-    cdef cppclass DynamicSetView[T]:
+    cdef cppclass SetView[T, U]:
         cppclass Node:
             Py_hash_t hash
             PyObject* value
@@ -39,8 +39,8 @@ cdef extern from "view.h":
         size_t size
         Node* head
         Node* tail
-        DynamicSetView() except +
-        DynamicSetView(PyObject* iterable, bint reverse, PyObject* spec) except +
+        SetView() except +
+        SetView(PyObject* iterable, bint reverse, PyObject* spec) except +
         Node* node(PyObject* value, PyObject* mapped) except NULL
         void recycle(Node* node)
         void link(Node* prev, Node* curr, Node* next) except *
@@ -48,14 +48,14 @@ cdef extern from "view.h":
         void clear() except *
         void specialize(PyObject* spec) except *
         PyObject* get_specialization()
-        DynamicSetView[T]* copy() except NULL
+        SetView[T, U]* copy() except NULL
         Node* copy(Node* curr) except NULL
         Node* search(PyObject* value) except? NULL
         Node* search(Node* value) except? NULL
         void clear_tombstones() except *
         size_t nbytes()
 
-    cdef cppclass DynamicDictView[T]:
+    cdef cppclass DictView[T, U]:
         cppclass Node:
             Py_hash_t hash
             PyObject* mapped
@@ -65,8 +65,8 @@ cdef extern from "view.h":
         size_t size
         Node* head
         Node* tail
-        DynamicDictView() except +
-        DynamicDictView(PyObject* iterable, bint reverse, PyObject* spec) except +
+        DictView() except +
+        DictView(PyObject* iterable, bint reverse, PyObject* spec) except +
         Node* node(PyObject* value) except NULL
         Node* node(PyObject* value, PyObject* mapped) except NULL
         void recycle(Node* node)
@@ -76,7 +76,7 @@ cdef extern from "view.h":
         void specialize(PyObject* spec) except *
         PyObject* get_specialization()
         Node* copy(Node* curr) except NULL
-        DynamicDictView[T]* copy() except NULL
+        DictView[T, U]* copy() except NULL
         Node* search(PyObject* value) except? NULL
         Node* search(Node* value) except? NULL
         Node* lru_search(PyObject* value) except? NULL

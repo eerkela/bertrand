@@ -14,14 +14,18 @@
 
 
 /* Check if an item is contained within a set or dictionary. */
-template <template <typename> class ViewType, typename NodeType, typename Allocator>
+template <
+    template <typename, template <typename> class> class ViewType,
+    typename NodeType,
+    template <typename> class Allocator
+>
 inline int contains(ViewType<NodeType, Allocator>* view, PyObject* item) {
     return view->search(item) != nullptr;
 }
 
 
 /* Check if an item is contained within a list. */
-template <typename NodeType, Allocator>
+template <typename NodeType, template <typename> class Allocator>
 inline int contains(ListView<NodeType, Allocator>* view, PyObject* item) {
     using Node = typename ListView<NodeType, Allocator>::Node;
     Node* curr = view->head;
@@ -56,12 +60,18 @@ inline int contains(ListView<NodeType, Allocator>* view, PyObject* item) {
 // release we won't have to do this:
 
 
-template int contains(ListView<SingleNode>* view, PyObject* item);
-template int contains(SetView<SingleNode>* view, PyObject* item);
-template int contains(DictView<SingleNode>* view, PyObject* item);
-template int contains(ListView<DoubleNode>* view, PyObject* item);
-template int contains(SetView<DoubleNode>* view, PyObject* item);
-template int contains(DictView<DoubleNode>* view, PyObject* item);
+template int contains(DynamicListView<SingleNode>* view, PyObject* item);
+template int contains(DynamicSetView<SingleNode>* view, PyObject* item);
+template int contains(DynamicDictView<SingleNode>* view, PyObject* item);
+template int contains(DynamicListView<DoubleNode>* view, PyObject* item);
+template int contains(DynamicSetView<DoubleNode>* view, PyObject* item);
+template int contains(DynamicDictView<DoubleNode>* view, PyObject* item);
+template int contains(FixedListView<SingleNode>* view, PyObject* item);
+template int contains(FixedSetView<SingleNode>* view, PyObject* item);
+template int contains(FixedDictView<SingleNode>* view, PyObject* item);
+template int contains(FixedListView<DoubleNode>* view, PyObject* item);
+template int contains(FixedSetView<DoubleNode>* view, PyObject* item);
+template int contains(FixedDictView<DoubleNode>* view, PyObject* item);
 
 
 #endif // CONTAINS_H include guard

@@ -6,6 +6,7 @@
 #include <cstddef>  // for size_t
 #include <queue>  // for std::queue
 #include <limits>  // for std::numeric_limits
+#include <type_traits>  // for std::integer_constant, std::is_base_of
 #include <Python.h>  // for CPython API
 #include "node.h"  // for Hashed<T>, Mapped<T>
 
@@ -643,6 +644,7 @@ public:
     Node* head;
     Node* tail;
     size_t size;
+    size_t max_size;
 
     /* Disabled copy/move constructors.  These are dangerous because we're
     manually managing memory for each node. */
@@ -652,22 +654,48 @@ public:
     ListView& operator=(ListView&&) = delete;       // move assignment
 
     /* Construct an empty ListView. */
-    ListView()
-        : head(nullptr), tail(nullptr), size(0), specialization(nullptr),
-          allocator() {}
+    ListView(ssize_t max_size = -1) :
+        head(nullptr), tail(nullptr), size(0), specialization(nullptr)
+    {
+        // init allocator
+        if (max_size < 0) {
+            if constexpr (std::is_same_v<Allocator<Node>, PreAllocator<Node>>) {
+                throw std::invalid_argument(
+                    "`max_size` must be >= 0 for PreAllocator"
+                );
+            }
+            this->max_size = MAX_SIZE_T;
+        } else {
+            this->max_size = static_cast<size_t>(max_size);
+            if constexpr (std::is_same_v<Allocator<Node>, PreAllocator<Node>>) {
+                allocator = Allocator<Node>(this->max_size);  // preallocate nodes
+            } else {
+                allocator = Allocator<Node>();
+            }
+        }
+    }
 
     /* Construct a ListView from an input iterable. */
     ListView(
         PyObject* iterable,
         bool reverse = false,
-        PyObject* spec = nullptr
+        PyObject* spec = nullptr,
+        ssize_t max_size = -1
     ) : head(nullptr), tail(nullptr), size(0), specialization(spec),
-        allocator(FREELIST_SIZE)
+        allocator(max_size)
     {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
         if (iterator == nullptr) {  // TypeError()
             throw std::invalid_argument("Value is not iterable");
+        }
+
+        // init allocator
+        // allocator = Allocator<Node>(max_size);
+        if (max_size < 0) {
+            this->max_size = MAX_SIZE_T;
+        } else {
+            this->max_size = static_cast<size_t>(max_size);
         }
 
         // hold reference to specialization, if given
@@ -883,7 +911,42 @@ private:
 template <typename NodeType, template <typename> class Allocator>
 class SetView {
 public:
-    using Node = Hashed<NodeType>;
+    /* A node decorator that computes the hash of the underlying PyObject* and
+    caches it alongside the node's original fields. */
+    struct Node : public NodeType {
+        Py_hash_t hash;
+
+        /* Initialize a newly-allocated node. */
+        inline static Node* init(Node* node, PyObject* value) {
+            node = static_cast<Node*>(NodeType::init(node, value));
+            if (node == nullptr) {  // Error during decorated init()
+                return nullptr;  // propagate
+            }
+
+            // compute hash
+            node->hash = PyObject_Hash(value);
+            if (node->hash == -1 && PyErr_Occurred()) {
+                NodeType::teardown(node);  // free any resources allocated during init()
+                return nullptr;  // propagate TypeError()
+            }
+
+            // return initialized node
+            return node;
+        }
+
+        /* Initialize a copied node. */
+        inline static Node* init_copy(Node* new_node, Node* old_node) {
+            new_node = static_cast<Node*>(NodeType::init_copy(new_node, old_node));
+            if (new_node == nullptr) {  // Error during decorated init_copy()
+                return nullptr;  // propagate
+            }
+
+            // reuse the pre-computed hash
+            new_node->hash = old_node->hash;
+            return new_node;
+        }
+
+    };
 
     Node* head;
     Node* tail;
@@ -1175,7 +1238,77 @@ private:
 template <typename NodeType, template <typename> class Allocator>
 class DictView {
 public:
-    using Node = Mapped<NodeType>;
+    /* A node decorator that hashes the underlying object and adds a second
+    PyObject* reference, allowing the list to act as a dictionary. */
+    struct Node : public NodeType {
+        Py_hash_t hash;
+        PyObject* mapped;
+
+        /* Initialize a newly-allocated node (1-argument version). */
+        inline static Node* init(Node* node, PyObject* value) {
+            // Check that item is a tuple of size 2 (key-value pair)
+            if (!PyTuple_Check(value) || PyTuple_Size(value) != 2) {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "Expected tuple of size 2 (key, value), not: %R",
+                    value
+                );
+                return nullptr;  // propagate TypeError()
+            }
+
+            // unpack tuple and pass to 2-argument version
+            PyObject* key = PyTuple_GetItem(value, 0);
+            PyObject* mapped = PyTuple_GetItem(value, 1);
+            return init(node, key, mapped);
+        }
+
+        /* Initialize a newly-allocated node (2-argument version). */
+        inline static Node* init(Node* node, PyObject* value, PyObject* mapped) {
+            node = static_cast<Node*>(NodeType::init(node, value));
+            if (node == nullptr) {  // Error during decorated init()
+                return nullptr;  // propagate
+            }
+
+            // compute hash
+            node->hash = PyObject_Hash(value);
+            if (node->hash == -1 && PyErr_Occurred()) {
+                NodeType::teardown(node);  // free any resources allocated during init()
+                return nullptr;  // propagate TypeError()
+            }
+
+            // store a reference to the mapped value
+            Py_INCREF(mapped);
+            node->mapped = mapped;
+
+            // return initialized node
+            return node;
+        }
+
+        /* Initialize a copied node. */
+        inline static Node* init_copy(Node* new_node, Node* old_node) {
+            new_node = static_cast<Node*>(NodeType::init_copy(new_node, old_node));
+            if (new_node == nullptr) {  // Error during decrated init_copy()
+                return nullptr;  // propagate
+            }
+
+            // reuse the pre-computed hash
+            new_node->hash = old_node->hash;
+
+            // store a new reference to mapped value
+            Py_INCREF(old_node->mapped);
+            new_node->mapped = old_node->mapped;
+
+            // return initialized node
+            return new_node;
+        }
+
+        /* Tear down a node before freeing it. */
+        inline static void teardown(Node* node) {
+            Py_DECREF(node->mapped);  // release mapped value
+            NodeType::teardown(node);
+        }
+
+    };
 
     Node* head;
     Node* tail;
@@ -1241,7 +1374,7 @@ public:
 
         // release reference on iterator
         Py_DECREF(iterator);
-    }
+    };
 
     /* Destroy a DictView and free all its resources. */
     ~DictView() {
@@ -1482,26 +1615,23 @@ private:
 };
 
 
-////////////////////////
-////    ALIASES    ////
-////////////////////////
+///////////////////////////
+////    VIEW TRAITS    ////
+///////////////////////////
 
 
-// NOTE: Cython doesn't play well with heavily templated C++ code, so we need
-// to explicitly instantiate the specializations we need.  Maybe in a future
-// release we won't have to do this:
-
-
-template <typename NodeType>
-using DynamicListView = ListView<NodeType, FreeListAllocator>;
-
-
-template <typename NodeType>
-using DynamicSetView = SetView<NodeType, DirectAllocator>;
-
-
-template <typename NodeType>
-using DynamicDictView = DictView<NodeType, DirectAllocator>;
+/* A trait that detects whether the templated view type is set-like (i.e. uses
+a hash table to track each node). */
+template <
+    template <typename, template <typename> class> class ViewType,
+    typename NodeType,
+    template <typename> class Allocator
+>
+struct is_setlike : std::integral_constant<
+    bool,
+    std::is_base_of_v<SetView<NodeType, Allocator>, ViewType<NodeType, Allocator>> ||
+    std::is_base_of_v<DictView<NodeType, Allocator>, ViewType<NodeType, Allocator>>
+> {};
 
 
 ///////////////////////////////
