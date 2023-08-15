@@ -1,7 +1,7 @@
 
 // include guard prevents multiple inclusion
-#ifndef SORT_H
-#define SORT_H
+#ifndef BERTRAND_STRUCTS_ALGORITHMS_SORT_H
+#define BERTRAND_STRUCTS_ALGORITHMS_SORT_H
 
 #include <cstddef>  // for size_t
 #include <queue>  // for std::queue
@@ -22,69 +22,76 @@
 // `Keyed<>` nodes to be as light as possible, minimizing overhead.
 
 
-/* Sort a generic view in-place. */
-template <template <typename> class ViewType, typename NodeType>
-void sort(ViewType<NodeType>* view, PyObject* key_func, bool reverse) {
-    using Node = typename ViewType<NodeType>::Node;
+namespace Ops {
 
-    // create a temporary ListView into the given view
-    ListView<Node>* list_view;
-    try {
-        list_view = new ListView<Node>();
-    } catch (std::bad_alloc& ba) {
-        PyErr_NoMemory();
-        return;
-    }
-    list_view->head = view->head;
-    list_view->tail = view->tail;
-    list_view->size = view->size;
+    /* Sort a generic view in-place. */
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    void sort(ViewType<NodeType, Allocator>* view, PyObject* key_func, bool reverse) {
+        using Node = typename ViewType<NodeType, Allocator>::Node;
 
-    // sort the viewed list
-    sort(list_view, key_func, reverse);  // updates the original view in-place
+        // create a temporary ListView into the given view
+        ListView<Node, Allocator>* list_view;
+        try {
+            list_view = new ListView<Node, Allocator>();
+        } catch (std::bad_alloc& ba) {
+            PyErr_NoMemory();
+            return;
+        }
+        list_view->head = view->head;
+        list_view->tail = view->tail;
+        list_view->size = view->size;
 
-    // free the temporary ListView
-    list_view->head = nullptr;  // avoids calling destructor on nodes
-    list_view->tail = nullptr;
-    list_view->size = 0;
-    delete list_view;
-}
+        // sort the viewed list
+        sort(list_view, key_func, reverse);  // updates the original view in-place
 
-
-/* Sort a ListView in-place. */
-template <typename NodeType>
-void sort(ListView<NodeType>* view, PyObject* key_func, bool reverse) {
-    using Node = typename ListView<NodeType>::Node;
-
-    // trivial case: empty list
-    if (view->size == 0) {
-        return;
+        // free the temporary ListView
+        list_view->head = nullptr;  // avoids calling destructor on nodes
+        list_view->tail = nullptr;
+        list_view->size = 0;
+        delete list_view;
     }
 
-    // if no key function is given, sort the list in-place
-    if (key_func == nullptr) {
-        _merge_sort(view, reverse);
-        return;
+    /* Sort a ListView in-place. */
+    template <typename NodeType, template <typename> class Allocator>
+    void sort(ListView<NodeType, Allocator>* view, PyObject* key_func, bool reverse) {
+        using Node = typename ListView<NodeType, Allocator>::Node;
+
+        // trivial case: empty list
+        if (view->size == 0) {
+            return;
+        }
+
+        // if no key function is given, sort the list in-place
+        if (key_func == nullptr) {
+            _merge_sort(view, reverse);
+            return;
+        }
+
+        // decorate the list with precomputed keys
+        ListView<Keyed<Node>, Allocator>* key_view = _decorate(view, key_func);
+        if (key_view == nullptr) {
+            return;  // propagate
+        }
+
+        // sort the decorated list in-place
+        _merge_sort(key_view, reverse);
+        if (PyErr_Occurred()) {  // error during `<` comparison
+            delete key_view;  // free the decorated list
+            return;  // propagate without modifying the original list
+        }
+
+        // rearrange the list to reflect the changes from the sort operation
+        std::pair<Node*, Node*> sorted = _undecorate(key_view);  // frees key_view
+
+        // update view parameters to match the sorted list
+        view->head = sorted.first;
+        view->tail = sorted.second;
     }
 
-    // decorate the list with precomputed keys
-    ListView<Keyed<Node>>* key_view = _decorate(view, key_func);
-    if (key_view == nullptr) {
-        return;  // propagate
-    }
-
-    // sort the decorated list in-place
-    _merge_sort(key_view, reverse);
-    if (PyErr_Occurred()) {  // error during `<` comparison
-        delete key_view;  // free the decorated list
-        return;  // propagate without modifying the original list
-    }
-
-    // rearrange the list to reflect the changes from the sort operation
-    std::pair<Node*, Node*> sorted = _undecorate(key_view);  // frees key_view
-
-    // update view parameters to match the sorted list
-    view->head = sorted.first;
-    view->tail = sorted.second;
 }
 
 
@@ -94,10 +101,14 @@ void sort(ListView<NodeType>* view, PyObject* key_func, bool reverse) {
 
 
 /* Decorate a linked list with the specified key function. */
-template <typename Node>
-ListView<Keyed<Node>>* _decorate(ListView<Node>* view, PyObject* key_func) {
+template <typename Node, template <typename> class Allocator>
+ListView<Keyed<Node>, Allocator>* _decorate(
+    ListView<Node, Allocator>* view,
+    PyObject* key_func
+) {
     // initialize an empty ListView to hold the decorated list
-    ListView<Keyed<Node>>* decorated = new ListView<Keyed<Node>>();
+    ListView<Keyed<Node>, Allocator>* decorated;
+    decorated = new ListView<Keyed<Node>, Allocator>();
     if (decorated == nullptr) {
         PyErr_NoMemory();
         return nullptr;
@@ -135,8 +146,8 @@ ListView<Keyed<Node>>* _decorate(ListView<Node>* view, PyObject* key_func) {
 
 
 /* Rearrange a linked list to reflect the changes from a keyed sort operation. */
-template <typename Node>
-std::pair<Node*, Node*> _undecorate(ListView<Keyed<Node>>* view) {
+template <typename Node, template <typename> class Allocator>
+std::pair<Node*, Node*> _undecorate(ListView<Keyed<Node>, Allocator>* view) {
     // allocate a pair to hold the head and tail of the undecorated list
     std::pair<Node*, Node*> sorted = std::make_pair(nullptr, nullptr);
 
@@ -173,8 +184,8 @@ std::pair<Node*, Node*> _undecorate(ListView<Keyed<Node>>* view) {
 
 
 /* Sort a linked list in-place using an iterative merge sort algorithm. */
-template <typename Node>
-void _merge_sort(ListView<Node>* view, bool reverse) {
+template <typename Node, template <typename> class Allocator>
+void _merge_sort(ListView<Node, Allocator>* view, bool reverse) {
     if constexpr (DEBUG) {
         printf("    -> malloc: temp node\n");
     }
@@ -358,23 +369,4 @@ std::pair<Node*, Node*> _recover(
     return std::make_pair(sorted.first, unsorted.second);
 }
 
-
-///////////////////////
-////    ALIASES    ////
-///////////////////////
-
-
-// NOTE: Cython doesn't play well with heavily templated functions, so we need
-// to explicitly instantiate the specializations we need.  Maybe in a future
-// release we won't have to do this:
-
-
-template void sort(ListView<SingleNode>* view, PyObject* key_func, bool reverse);
-template void sort(SetView<SingleNode>* view, PyObject* key_func, bool reverse);
-template void sort(DictView<SingleNode>* view, PyObject* key_func, bool reverse);
-template void sort(ListView<DoubleNode>* view, PyObject* key_func, bool reverse);
-template void sort(SetView<DoubleNode>* view, PyObject* key_func, bool reverse);
-template void sort(DictView<DoubleNode>* view, PyObject* key_func, bool reverse);
-
-
-#endif // SORT_H include guard
+#endif // BERTRAND_STRUCTS_ALGORITHMS_SORT_H include guard

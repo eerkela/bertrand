@@ -1,7 +1,7 @@
 
 // include guard prevents multiple inclusion
-#ifndef VIEW_H
-#define VIEW_H
+#ifndef BERTRAND_STRUCTS_CORE_VIEW_H
+#define BERTRAND_STRUCTS_CORE_VIEW_H
 
 #include <cstddef>  // for size_t
 #include <queue>  // for std::queue
@@ -238,9 +238,13 @@ std::pair<size_t, size_t> normalize_bounds(
 
 /* Get the direction in which to traverse a slice according to the structure of
 the list. */
-template <template <typename> class ViewType, typename NodeType>
+template <
+    template <typename, template <typename> class> class ViewType,
+    typename NodeType,
+    template <typename> class Allocator
+>
 std::pair<size_t, size_t> normalize_slice(
-    ViewType<NodeType>* view,
+    ViewType<NodeType, Allocator>* view,
     Py_ssize_t start,
     Py_ssize_t stop,
     Py_ssize_t step
@@ -248,7 +252,7 @@ std::pair<size_t, size_t> normalize_slice(
     // NOTE: the input to this function is assumed to be the output of
     // slice.indices(), which handles negative indices and 0 step size step
     // size.  Its behavior is undefined if these conditions are not met.
-    using Node = typename ViewType<NodeType>::Node;
+    using Node = typename ViewType<NodeType, Allocator>::Node;
 
     // convert from half-open to closed interval
     stop = closed_interval(start, stop, step);
@@ -632,6 +636,37 @@ public:
 };
 
 
+/////////////////////////
+////    ITERATORS    ////
+/////////////////////////
+
+
+/* Forward iterator over the list values. */
+template <typename Node>
+class ForwardIterator {
+public:
+    ForwardIterator(Node* node) : curr(node) {}
+
+    PyObject* operator*() const {
+        PyObject* value = curr->value;
+        Py_INCREF(value);
+        return value;
+    }
+
+    ForwardIterator& operator++() {
+        curr = static_cast<Node*>(curr->next);
+        return *this;
+    }
+
+    bool operator!=(const ForwardIterator& other) const {
+        return curr != other.curr;
+    }
+
+private:
+    Node* curr;
+};
+
+
 /////////////////////
 ////    VIEWS    ////
 /////////////////////
@@ -641,39 +676,17 @@ template <typename NodeType, template <typename> class Allocator>
 class ListView {
 public:
     using Node = NodeType;
+    using Iter = ForwardIterator<NodeType>;
+    // using ReverseIter = ReverseIterator<NodeType>;
     Node* head;
     Node* tail;
     size_t size;
-    size_t max_size;
-
-    /* Disabled copy/move constructors.  These are dangerous because we're
-    manually managing memory for each node. */
-    ListView(const ListView& other) = delete;       // copy constructor
-    ListView& operator=(const ListView&) = delete;  // copy assignment
-    ListView(ListView&&) = delete;                  // move constructor
-    ListView& operator=(ListView&&) = delete;       // move assignment
 
     /* Construct an empty ListView. */
     ListView(ssize_t max_size = -1) :
-        head(nullptr), tail(nullptr), size(0), specialization(nullptr)
-    {
-        // init allocator
-        if (max_size < 0) {
-            if constexpr (std::is_same_v<Allocator<Node>, PreAllocator<Node>>) {
-                throw std::invalid_argument(
-                    "`max_size` must be >= 0 for PreAllocator"
-                );
-            }
-            this->max_size = MAX_SIZE_T;
-        } else {
-            this->max_size = static_cast<size_t>(max_size);
-            if constexpr (std::is_same_v<Allocator<Node>, PreAllocator<Node>>) {
-                allocator = Allocator<Node>(this->max_size);  // preallocate nodes
-            } else {
-                allocator = Allocator<Node>();
-            }
-        }
-    }
+        head(nullptr), tail(nullptr), size(0), specialization(nullptr),
+        allocator(max_size)
+    {}
 
     /* Construct a ListView from an input iterable. */
     ListView(
@@ -688,14 +701,6 @@ public:
         PyObject* iterator = PyObject_GetIter(iterable);
         if (iterator == nullptr) {  // TypeError()
             throw std::invalid_argument("Value is not iterable");
-        }
-
-        // init allocator
-        // allocator = Allocator<Node>(max_size);
-        if (max_size < 0) {
-            this->max_size = MAX_SIZE_T;
-        } else {
-            this->max_size = static_cast<size_t>(max_size);
         }
 
         // hold reference to specialization, if given
@@ -733,6 +738,49 @@ public:
         // release reference on iterator
         Py_DECREF(iterator);
     }
+
+    // TODO: move constructors are necessary for std::variant, but they're tricky
+    // to implement correctly.  Do a deep dive on this later.
+
+    /* Transfer ownership from one ListView to another (move constructor). */
+    ListView(ListView&& other) :
+        head(other.head), tail(other.tail), size(other.size),
+        specialization(other.specialization), allocator(std::move(other.allocator))
+    {
+        // reset other ListView
+        other.head = nullptr;
+        other.tail = nullptr;
+        other.size = 0;
+        other.specialization = nullptr;
+    }
+
+    /* Transfer ownership from one ListView to another (move assignment). */
+    ListView& operator=(ListView&& other) {
+        // free old nodes
+        self_destruct();
+
+        // transfer ownership of nodes
+        head = other.head;
+        tail = other.tail;
+        size = other.size;
+        specialization = other.specialization;
+        allocator = std::move(other.allocator);
+
+        // reset other ListView
+        other.head = nullptr;
+        other.tail = nullptr;
+        other.size = 0;
+        other.specialization = nullptr;
+
+        return *this;
+    }
+
+    /* Disabled copy/move constructors.  These are dangerous because we're
+    manually managing memory for each node. */
+    ListView(const ListView& other) = delete;       // copy constructor
+    ListView& operator=(const ListView&) = delete;  // copy assignment
+    // ListView(ListView&&) = delete;                  // move constructor
+    // ListView& operator=(ListView&&) = delete;       // move assignment
 
     /* Destroy a ListView and free all its nodes. */
     ~ListView() {
@@ -897,8 +945,8 @@ private:
     /* Release the resources being managed by the ListView. */
     inline void self_destruct() {
         // NOTE: allocator is stack allocated, so it doesn't need to be freed
-        // here.  Their destructors will be called automatically when the
-        // ListView is destroyed.
+        // here.  Its destructor will be called automatically when the ListView
+        // is destroyed.
         clear();  // clear all nodes in list
         if (specialization != nullptr) {
             Py_DECREF(specialization);
@@ -960,17 +1008,18 @@ public:
     SetView& operator=(SetView&&) = delete;       // move assignment
 
     /* Construct an empty SetView. */
-    SetView() :
+    SetView(ssize_t max_size = -1) :
         head(nullptr), tail(nullptr), size(0), specialization(nullptr),
-        table(), allocator() {}
+        table(), allocator(max_size) {}
 
     /* Construct a SetView from an input iterable. */
     SetView(
         PyObject* iterable,
         bool reverse = false,
-        PyObject* spec = nullptr
+        PyObject* spec = nullptr,
+        ssize_t max_size = -1
     ) : head(nullptr), tail(nullptr), size(0), specialization(spec),
-        allocator()
+        allocator(max_size)
     {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
@@ -1322,17 +1371,18 @@ public:
     DictView& operator=(DictView&&) = delete;       // move assignment
 
     /* Construct an empty DictView. */
-    DictView() :
+    DictView(ssize_t max_size = -1) :
         head(nullptr), tail(nullptr), size(0), specialization(nullptr),
-        table(), allocator() {}
+        table(), allocator(max_size) {}
 
     /* Construct a DictView from an input iterable. */
     DictView(
         PyObject* iterable,
         bool reverse = false,
-        PyObject* spec = nullptr
+        PyObject* spec = nullptr,
+        ssize_t max_size = -1
     ) : head(nullptr), tail(nullptr), size(0), specialization(nullptr),
-        table(), allocator()
+        table(), allocator(max_size)
     {
         // C API equivalent of iter(iterable)
         PyObject* iterator = PyObject_GetIter(iterable);
@@ -1615,6 +1665,7 @@ private:
 };
 
 
+
 ///////////////////////////
 ////    VIEW TRAITS    ////
 ///////////////////////////
@@ -1794,4 +1845,4 @@ struct is_setlike : std::integral_constant<
 // };
 
 
-#endif // VIEW_H include guard
+#endif // BERTRAND_STRUCTS_CORE_VIEW_H include guard

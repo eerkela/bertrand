@@ -1,6 +1,6 @@
 // include guard prevents multiple inclusion
-#ifndef NODE_H
-#define NODE_H
+#ifndef BERTRAND_STRUCTS_CORE_NODE_H
+#define BERTRAND_STRUCTS_CORE_NODE_H
 
 #include <queue>  // for std::queue
 #include <stdexcept>  // for std::invalid_argument
@@ -636,7 +636,7 @@ public:
         if (size < 0) {
             throw std::invalid_argument("PreAllocator size must be >= 0");
         }
-        size_t max_size = static_cast<size_t>(size);
+        max_size = static_cast<size_t>(size);
 
         // print allocation/deallocation messages if DEBUG=TRUE
         if constexpr (DEBUG) {
@@ -671,7 +671,11 @@ public:
     inline Node* create(PyObject* value, Args... args) {
         // check if block is full
         if (available.empty()) {
-            PyErr_NoMemory();
+            PyErr_Format(
+                PyExc_IndexError,
+                "Could not allocate a new node: list exceeded its maximum size (%zu)",
+                max_size
+            );
             return nullptr;  // propagate
         }
 
@@ -693,7 +697,11 @@ public:
     inline Node* copy(Node* old_node) {
         // check if block is full
         if (available.empty()) {
-            PyErr_NoMemory();
+            PyErr_Format(
+                PyExc_IndexError,
+                "Could not allocate a new node: list exceeded its maximum size (%zu)",
+                max_size
+            );
             return nullptr;  // propagate
         }
 
@@ -725,4 +733,4 @@ public:
 };
 
 
-#endif // NODE_H include guard
+#endif // BERTRAND_STRUCTS_CORE_NODE_H include guard

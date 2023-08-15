@@ -18,7 +18,12 @@ cdef extern from "view.h":
         T* head
         T* tail
         ListView(ssize_t max_size) except +
-        ListView(PyObject* iterable, bint reverse, PyObject* spec, ssize_t max_size) except +
+        ListView(
+            PyObject* iterable,
+            bint reverse,
+            PyObject* spec,
+            ssize_t max_size
+        ) except +
         T* node(PyObject* value) except NULL
         void recycle(T* node)
         void link(T* prev, T* curr, T* next)
@@ -39,8 +44,13 @@ cdef extern from "view.h":
         size_t size
         Node* head
         Node* tail
-        SetView() except +
-        SetView(PyObject* iterable, bint reverse, PyObject* spec) except +
+        SetView(ssize_t max_size) except +
+        SetView(
+            PyObject* iterable,
+            bint reverse,
+            PyObject* spec,
+            ssize_t max_size
+        ) except +
         Node* node(PyObject* value, PyObject* mapped) except NULL
         void recycle(Node* node)
         void link(Node* prev, Node* curr, Node* next) except *
@@ -65,8 +75,13 @@ cdef extern from "view.h":
         size_t size
         Node* head
         Node* tail
-        DictView() except +
-        DictView(PyObject* iterable, bint reverse, PyObject* spec) except +
+        DictView(ssize_t max_size) except +
+        DictView(
+            PyObject* iterable,
+            bint reverse,
+            PyObject* spec,
+            ssize_t max_size
+        ) except +
         Node* node(PyObject* value) except NULL
         Node* node(PyObject* value, PyObject* mapped) except NULL
         void recycle(Node* node)

@@ -1,7 +1,7 @@
 
 // include guard prevents multiple inclusion
-#ifndef GET_SLICE_H
-#define GET_SLICE_H
+#ifndef BERTRAND_STRUCTS_ALGORITHMS_GET_SLICE_H
+#define BERTRAND_STRUCTS_ALGORITHMS_GET_SLICE_H
 
 #include <cstddef>  // for size_t
 #include <Python.h>  // for CPython API
@@ -21,76 +21,87 @@
 //////////////////////
 
 
-/* Get the value at a particular index of a singly-linked list. */
-template <template <typename> class ViewType, typename NodeType>
-inline PyObject* get_index(ViewType<NodeType>* view, size_t index) {
-    using Node = typename ViewType<NodeType>::Node;
-    Node* curr;
+namespace Ops {
 
-    // NOTE: if the index is closer to tail and the list is doubly-linked, we
-    // can iterate from the tail to save time.
-    if constexpr (is_doubly_linked<Node>::value) {
-        if (index > view->size / 2) {
-            // backward traversal
-            curr = view->tail;
-            for (size_t i = view->size - 1; i > index; i--) {
-                curr = static_cast<Node*>(curr->prev);
+    /* Get the value at a particular index of a singly-linked list. */
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    PyObject* get_index(ViewType<NodeType, Allocator>* view, size_t index) {
+        using Node = typename ViewType<NodeType, Allocator>::Node;
+        Node* curr;
+
+        // NOTE: if the index is closer to tail and the list is doubly-linked, we
+        // can iterate from the tail to save time.
+        if constexpr (is_doubly_linked<Node>::value) {
+            if (index > view->size / 2) {
+                // backward traversal
+                curr = view->tail;
+                for (size_t i = view->size - 1; i > index; i--) {
+                    curr = static_cast<Node*>(curr->prev);
+                }
+                Py_INCREF(curr->value);  // caller takes ownership of reference
+                return curr->value;
             }
-            Py_INCREF(curr->value);  // caller takes ownership of reference
-            return curr->value;
         }
-    }
 
-    // forward traversal
-    curr = view->head;
-    for (size_t i = 0; i < index; i++) {
-        curr = static_cast<Node*>(curr->next);
-    }
-    Py_INCREF(curr->value);  // caller takes ownership of reference
-    return curr->value;
-}
-
-
-/* Extract a slice from a singly-linked list. */
-template <template <typename> class ViewType, typename NodeType>
-inline ViewType<NodeType>* get_slice(
-    ViewType<NodeType>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step
-) {
-    using Node = typename ViewType<NodeType>::Node;
-    size_t abs_step = (size_t)abs(step);
-
-    // determine direction of traversal to avoid backtracking
-    std::pair<size_t, size_t> bounds = normalize_slice(view, start, stop, step);
-    if (PyErr_Occurred()) {
-        return new ViewType<NodeType>();  // Python returns an empty list here
-    }
-
-    // NOTE: if the slice is closer to the end of a doubly-linked list, we can
-    // iterate from the tail to save time.
-    if constexpr (is_doubly_linked<Node>::value) {
-        if (bounds.first > bounds.second) {
-            // backward traversal
-            return _extract_slice_backward(
-                view,
-                bounds.first,
-                bounds.second,
-                abs_step,
-                (step > 0)
-            );
+        // forward traversal
+        curr = view->head;
+        for (size_t i = 0; i < index; i++) {
+            curr = static_cast<Node*>(curr->next);
         }
+        Py_INCREF(curr->value);  // caller takes ownership of reference
+        return curr->value;
     }
 
-    // forward traversal
-    return _extract_slice_forward(
-        view,
-        bounds.first,
-        bounds.second,
-        abs_step,
-        (step < 0)
-    );
+    /* Extract a slice from a singly-linked list. */
+    template <
+        template <typename, template <typename> class> class ViewType,
+        typename NodeType,
+        template <typename> class Allocator
+    >
+    inline ViewType<NodeType, Allocator>* get_slice(
+        ViewType<NodeType, Allocator>* view,
+        Py_ssize_t start,
+        Py_ssize_t stop,
+        Py_ssize_t step
+    ) {
+        using Node = typename ViewType<NodeType, Allocator>::Node;
+        size_t abs_step = (size_t)abs(step);
+
+        // determine direction of traversal to avoid backtracking
+        std::pair<size_t, size_t> bounds = normalize_slice(view, start, stop, step);
+        if (PyErr_Occurred()) {  // Python returns an empty list here
+            return new ViewType<NodeType, Allocator>();
+        }
+
+        // NOTE: if the slice is closer to the end of a doubly-linked list, we can
+        // iterate from the tail to save time.
+        if constexpr (is_doubly_linked<Node>::value) {
+            if (bounds.first > bounds.second) {
+                // backward traversal
+                return _extract_slice_backward(
+                    view,
+                    bounds.first,
+                    bounds.second,
+                    abs_step,
+                    (step > 0)
+                );
+            }
+        }
+
+        // forward traversal
+        return _extract_slice_forward(
+            view,
+            bounds.first,
+            bounds.second,
+            abs_step,
+            (step < 0)
+        );
+    }
+
 }
 
 
@@ -100,20 +111,24 @@ inline ViewType<NodeType>* get_slice(
 
 
 /* Extract a slice from left to right. */
-template <template <typename> class ViewType, typename NodeType>
-ViewType<NodeType>* _extract_slice_forward(
-    ViewType<NodeType>* view,
+template <
+    template <typename, template <typename> class> class ViewType,
+    typename NodeType,
+    template <typename> class Allocator
+>
+ViewType<NodeType, Allocator>* _extract_slice_forward(
+    ViewType<NodeType, Allocator>* view,
     size_t begin,
     size_t end,
     size_t abs_step,
     bool reverse
 ) {
-    using Node = typename ViewType<NodeType>::Node;
+    using Node = typename ViewType<NodeType, Allocator>::Node;
 
     // create a new view to hold the slice
-    ViewType<NodeType>* slice;
+    ViewType<NodeType, Allocator>* slice;
     try {
-        slice = new ViewType<NodeType>();
+        slice = new ViewType<NodeType, Allocator>();
     } catch (const std::bad_alloc&) {  // MemoryError()
         PyErr_NoMemory();
         return nullptr;
@@ -159,20 +174,24 @@ ViewType<NodeType>* _extract_slice_forward(
 
 
 /* Extract a slice from right to left. */
-template <template <typename> class ViewType, typename NodeType>
-ViewType<NodeType>* _extract_slice_backward(
-    ViewType<NodeType>* view,
+template <
+    template <typename, template <typename> class> class ViewType,
+    typename NodeType,
+    template <typename> class Allocator
+>
+ViewType<NodeType, Allocator>* _extract_slice_backward(
+    ViewType<NodeType, Allocator>* view,
     size_t begin,
     size_t end,
     size_t abs_step,
     bool reverse
 ) {
-    using Node = typename ViewType<NodeType>::Node;
+    using Node = typename ViewType<NodeType, Allocator>::Node;
 
     // create a new view to hold the slice
-    ViewType<NodeType>* slice;
+    ViewType<NodeType, Allocator>* slice;
     try {
-        slice = new ViewType<NodeType>();
+        slice = new ViewType<NodeType, Allocator>();
     } catch (const std::bad_alloc&) {  // MemoryError()
         PyErr_NoMemory();
         return nullptr;
@@ -217,58 +236,4 @@ ViewType<NodeType>* _extract_slice_backward(
 }
 
 
-///////////////////////
-////    ALIASES    ////
-///////////////////////
-
-
-// NOTE: Cython doesn't play well with heavily templated functions, so we need
-// to explicitly instantiate the specializations we need.  Maybe in a future
-// release we won't have to do this:
-
-
-template PyObject* get_index(ListView<SingleNode>* view, size_t index);
-template PyObject* get_index(SetView<SingleNode>* view, size_t index);
-template PyObject* get_index(DictView<SingleNode>* view, size_t index);
-template PyObject* get_index(ListView<DoubleNode>* view, size_t index);
-template PyObject* get_index(SetView<DoubleNode>* view, size_t index);
-template PyObject* get_index(DictView<DoubleNode>* view, size_t index);
-template ListView<SingleNode>* get_slice(
-    ListView<SingleNode>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step
-);
-template SetView<SingleNode>* get_slice(
-    SetView<SingleNode>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step
-);
-template DictView<SingleNode>* get_slice(
-    DictView<SingleNode>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step
-);
-template ListView<DoubleNode>* get_slice(
-    ListView<DoubleNode>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step
-);
-template SetView<DoubleNode>* get_slice(
-    SetView<DoubleNode>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step
-);
-template DictView<DoubleNode>* get_slice(
-    DictView<DoubleNode>* view,
-    Py_ssize_t start,
-    Py_ssize_t stop,
-    Py_ssize_t step
-);
-
-
-#endif // GET_SLICE_H include guard
+#endif // BERTRAND_STRUCTS_ALGORITHMS_GET_SLICE_H include guard
