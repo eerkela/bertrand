@@ -166,15 +166,8 @@ cdef class LinkedList:
         -----
         Inserts are O(n) on average.
         """
-        # allow Python-style negative indexing + boundschecking
-        cdef size_t norm_index = normalize_index(
-            <PyObject*>index,
-            self.view.size(),
-            truncate=True
-        )
-
         # dispatch to insert.h
-        self.view.insert(norm_index, <PyObject*>item)
+        self.view.insert(<PyObject*>index, <PyObject*>item)
 
     def extend(self, items: Iterable[object], left: bool = False) -> None:
         """Add multiple items to the end of the list.
@@ -221,13 +214,8 @@ cdef class LinkedList:
         -----
         Indexing is O(n) on average.
         """
-        # allow Python-style negative indexing + bounds checking
-        cdef pair[size_t, size_t] bounds = normalize_bounds(
-            start, stop, size=self.view.size(), truncate=True
-        )
-
         # dispatch to index.h
-        return self.view.index(<PyObject*>item, bounds.first, bounds.second)
+        return self.view.index(<PyObject*>item, start, stop)
 
     def count(self, item: object, start: int = 0, stop: int = -1) -> int:
         """Count the number of occurrences of an item in the list.
@@ -246,13 +234,8 @@ cdef class LinkedList:
         -----
         Counting is O(n).
         """
-        # allow Python-style negative indexing + bounds checking
-        cdef pair[size_t, size_t] bounds = normalize_bounds(
-            start, stop, size=self.view.size(), truncate=True
-        )
-
         # dispatch to count.h
-        return self.view.count(<PyObject*>item, bounds.first, bounds.second)
+        return self.view.count(<PyObject*>item, start, stop)
 
     def remove(self, item: object) -> None:
         """Remove an item from the list.
@@ -299,15 +282,8 @@ cdef class LinkedList:
         Pops are O(1) if ``index`` points to either of the list's ends, and
         O(n) otherwise.
         """
-        # allow Python-style negative indexing + bounds checking
-        cdef size_t norm_index = normalize_index(
-            <PyObject*>index,
-            self.view.size(),
-            truncate=False
-        )
-
         # dispatch to pop.h
-        return <object>self.view.pop(norm_index)
+        return <object>self.view.pop(index)
 
     def copy(self) -> LinkedList:
         """Create a shallow copy of the list.

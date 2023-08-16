@@ -1,7 +1,5 @@
 """Cython headers for pdcast/util/structs/base.h"""
 from cpython.ref cimport PyObject
-
-from libcpp.queue cimport queue
 from libcpp.utility cimport pair
 
 

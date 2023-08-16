@@ -26,8 +26,8 @@ namespace Ops {
         using Node = typename ViewType<NodeType, Allocator>::Node;
 
         // allocate a new node
-        Node* node = view->node(item);
-        if (node == nullptr) {
+        Node* curr = view->node(item);
+        if (curr == nullptr) {
             return;
         }
 
@@ -37,34 +37,33 @@ namespace Ops {
             if (index > view->size / 2) {
                 // iterate from tail to find junction
                 Node* next = nullptr;
-                Node* curr = view->tail;
+                Node* prev = view->tail;
                 for (size_t i = view->size - 1; i > index; i--) {
-                    next = curr;
-                    curr = static_cast<Node*>(curr->prev);
+                    next = prev;
+                    prev = static_cast<Node*>(prev->prev);
                 }
 
                 // insert node
-                view->link(curr, node, next);
+                view->link(prev, curr, next);
                 if (PyErr_Occurred()) {
-                    view->recycle(node);  // clean up staged node
-                    return;
+                    view->recycle(curr);  // clean up staged node
                 }
+                return;
             }
         }
 
         // NOTE: otherwise, we iterate from the head
         Node* prev = nullptr;
-        Node* curr = view->head;
+        Node* next = view->head;
         for (size_t i = 0; i < index; i++) {
-            prev = curr;
-            curr = static_cast<Node*>(curr->next);
+            prev = next;
+            next = static_cast<Node*>(next->next);
         }
 
         // insert node
-        view->link(prev, node, curr);
+        view->link(prev, curr, next);
         if (PyErr_Occurred()) {
-            view->recycle(node);  // clean up staged node
-            return;
+            view->recycle(curr);  // clean up staged node
         }
     }
 

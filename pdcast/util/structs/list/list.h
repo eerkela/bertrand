@@ -3,12 +3,10 @@
 #ifndef BERTRAND_STRUCTS_LIST_H
 #define BERTRAND_STRUCTS_LIST_H
 
-
 #include <cstddef>  // for size_t
+#include <utility>  // std::pair
 #include <variant>  // std::variant
 #include <Python.h>  // CPython API
-#include "core/node.h"  // Nodes + Allocators
-#include "core/view.h"  // Views
 
 // Algorithms
 #include "algorithms/append.h"
@@ -25,6 +23,12 @@
 #include "algorithms/rotate.h"
 #include "algorithms/set_slice.h"
 #include "algorithms/sort.h"
+
+// Core
+#include "core/allocate.h"  // Allocator policies
+#include "core/bounds.h"  // normalize_index(), normalize_bounds(), etc.
+#include "core/node.h"  // Nodes
+#include "core/view.h"  // Views
 
 
 ///////////////////////
@@ -139,10 +143,13 @@ public:
     }
 
     /* Dispatch to the correct implementation of insert() for each variant. */
-    inline void insert(size_t index, PyObject* item) {
+    template <typename T>
+    inline void insert(T index, PyObject* item) {
         std::visit(
             [&](auto& view) {
-                Ops::insert(&view, index, item);
+                // allow Python-style negative indexing + boundschecking
+                size_t norm_index = normalize_index(index, view.size, true);
+                Ops::insert(&view, norm_index, item);
             },
             view_variant
         );
@@ -159,20 +166,30 @@ public:
     }
 
     /* Dispatch to the correct implementation of index() for each variant. */
-    inline size_t index(PyObject* item, size_t start, size_t stop) {
+    template <typename T>
+    inline size_t index(PyObject* item, T start, T stop) {
         return std::visit(
             [&](auto& view) {
-                return Ops::index(&view, item, start, stop);
+                // allow Python-style negative indexing + boundschecking
+                std::pair<size_t, size_t> bounds = normalize_bounds(
+                    start, stop, view.size, true
+                );
+                return Ops::index(&view, item, bounds.first, bounds.second);
             },
             view_variant
         );
     }
 
     /* Dispatch to the correct implementation of count() for each variant. */
-    inline size_t count(PyObject* item, size_t start, size_t stop) {
+    template <typename T>
+    inline size_t count(PyObject* item, T start, T stop) {
         return std::visit(
             [&](auto& view) {
-                return Ops::count(&view, item, start, stop);
+                // allow Python-style negative indexing + boundschecking
+                std::pair<size_t, size_t> bounds = normalize_bounds(
+                    start, stop, view.size, true
+                );
+                return Ops::count(&view, item, bounds.first, bounds.second);
             },
             view_variant
         );
@@ -189,10 +206,13 @@ public:
     }
 
     /* Dispatch to the correct implementation of pop() for each variant. */
-    inline PyObject* pop(size_t index) {
+    template <typename T>
+    inline PyObject* pop(T index) {
         return std::visit(
             [&](auto& view) {
-                return Ops::pop(&view, index);
+                // allow Python-style negative indexing + boundschecking
+                size_t norm_index = normalize_index(index, view.size, false);
+                return Ops::pop(&view, norm_index);
             },
             view_variant
         );

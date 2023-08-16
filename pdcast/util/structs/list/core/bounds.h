@@ -1,6 +1,6 @@
 // include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_CORE_CONST_H
-#define BERTRAND_STRUCTS_CORE_CONST_H
+#ifndef BERTRAND_STRUCTS_CORE_BOUNDS_H
+#define BERTRAND_STRUCTS_CORE_BOUNDS_H
 
 #include <cstddef>  // size_t
 #include <utility>  // std::pair
@@ -191,4 +191,4 @@ std::pair<size_t, size_t> normalize_bounds(
 }
 
 
-#endif  // BERTRAND_STRUCTS_CORE_CONST_H include guard
+#endif  // BERTRAND_STRUCTS_CORE_BOUNDS_H include guard

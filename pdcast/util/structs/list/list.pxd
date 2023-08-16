@@ -1,8 +1,6 @@
 """Cython headers for pdcast/util/structs/list/double.pyx"""
 from cpython.ref cimport PyObject
-
 from libcpp.stack cimport stack
-from libcpp.utility cimport pair
 
 from .base cimport (
     MAX_SIZE_T, SingleNode, DoubleNode, normalize_index, normalize_bounds,
@@ -21,12 +19,12 @@ cdef extern from "list.h":
             ssize_t max_size
         ) except +
         void append(PyObject* item, bint left) except *
-        void insert(size_t index, PyObject* item) except *
+        void insert[T](T index, PyObject* item) except *
         void extend(PyObject* items, bint left) except *
-        size_t index(PyObject* item, size_t start, size_t stop) except? MAX_SIZE_T
-        size_t count(PyObject* item, size_t start, size_t stop) except? MAX_SIZE_T
+        size_t index[T](PyObject* item, T start, T stop) except? MAX_SIZE_T
+        size_t count[T](PyObject* item, T start, T stop) except? MAX_SIZE_T
         void remove(PyObject*) except *
-        PyObject* pop(size_t index) except NULL
+        PyObject* pop[T](T index) except NULL
         VariantList* copy() except NULL
         void clear()
         void sort(PyObject* key, bint reverse) except *
