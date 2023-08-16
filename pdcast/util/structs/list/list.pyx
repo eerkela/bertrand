@@ -430,13 +430,30 @@ cdef class LinkedList:
         -----
         Iterating through a :class:`LinkedList` is O(n).
         """
-        # cdef SingleNode* curr = self.view.head
+        cdef SingleNode* curr_single
+        cdef DoubleNode* curr_double
+        cdef PyObject* value
 
-        # while curr is not NULL:
-        #     Py_INCREF(curr.value)
-        #     yield <object>curr.value  # this returns ownership to Python
-        #     curr = <SingleNode*>curr.next
-        raise NotImplementedError()
+        # NOTE: since we're using a VariantList, we have to cover both the
+        # singly-linked and doubly-linked cases here.
+
+        # doubly-linked
+        if self.view.doubly_linked():
+            curr_double = self.view.get_head_double()
+            while curr_double is not NULL:
+                value = curr_double.value
+                Py_INCREF(value)
+                yield <object>value
+                curr_double = curr_double.next
+
+        # singly-linked
+        else:
+            curr_single = self.view.get_head_single()
+            while curr_single is not NULL:
+                value = curr_single.value
+                Py_INCREF(value)
+                yield <object>value
+                curr_single = curr_single.next
 
     def __reversed__(self) -> Iterator[object]:
         """Iterate through the list in reverse order.
@@ -450,21 +467,37 @@ cdef class LinkedList:
         -----
         Iterating through a :class:`LinkedList` is O(n).
         """
-        # cdef SingleNode* curr = self.view.head
-        # cdef stack[SingleNode*] nodes
+        cdef SingleNode* curr_single
+        cdef DoubleNode* curr_double
+        cdef PyObject* value
+        cdef stack[SingleNode*] reverse
 
-        # # push each node to a stack
-        # while curr is not NULL:
-        #     nodes.push(curr)
-        #     curr = <SingleNode*>curr.next
+        # NOTE: since we're using a VariantList, we have to cover both the
+        # singly-linked and doubly-linked cases here.
 
-        # # pop from the stack to reverse the order of iteration
-        # while not nodes.empty():
-        #     curr = nodes.top()
-        #     nodes.pop()
-        #     Py_INCREF(curr.value)
-        #     yield <object>curr.value  # this returns ownership to Python
-        raise NotImplementedError()
+        # doubly-linked
+        if self.view.doubly_linked():
+            curr_double = self.view.get_tail_double()
+            while curr_double is not NULL:
+                value = curr_double.value
+                Py_INCREF(value)
+                yield <object>value
+                curr_double = curr_double.prev
+
+        # singly-linked
+        else:
+            # build a temporary stack
+            curr_single = self.view.get_head_single()
+            while curr_single is not NULL:
+                reverse.push(curr_single)
+                curr_single = curr_single.next
+
+            # yield from the stack to reverse the order of iteration
+            while not reverse.empty():
+                curr_single = reverse.top()
+                reverse.pop()
+                Py_INCREF(curr_single.value)
+                yield <object>curr_single.value
 
     def __getitem__(self, key: int | slice) -> object | LinkedList:
         """Index the list for a particular item or slice.
@@ -908,7 +941,11 @@ cdef class LinkedList:
         This is equivalent to the ``spec`` argument passed to the constructor
         and/or :meth:`specialize() <LinkedList.specialize>` method.
         """
-        return <object>self.view.get_specialization()
+        cdef PyObject* spec = self.view.get_specialization()
+
+        if spec is NULL:
+            return None
+        return <object>spec
 
     def specialize(self, spec: object) -> None:
         """Specialize the list with a particular type.

@@ -68,13 +68,15 @@ public:
     to construct a new `VariantList` from the output of `ListView.copy()` or
     `get_slice()`. */
     template <typename NodeType, template <typename> class Allocator>
-    VariantList(ListView<NodeType, Allocator>& view) {
-        view_variant = view;
+    VariantList(ListView<NodeType, Allocator>&& view) {
+        using Node = typename ListView<NodeType, Allocator>::Node;
+        _doubly_linked = is_doubly_linked<Node>::value;
+        view_variant = std::move(view);
     }
 
     /* Construct an empty ListView to match the given template parameters and
     wrap it as a VariantList. This is called during `LinkedList.__init__()`. */
-    VariantList(bool doubly_linked, ssize_t max_size = -1) {
+    VariantList(bool doubly_linked, ssize_t max_size) : _doubly_linked(doubly_linked) {
         if (doubly_linked) {
             if (max_size < 0) {
                 view_variant = ListView<DoubleNode, FreeListAllocator>(max_size);
@@ -95,10 +97,10 @@ public:
     VariantList(
         PyObject* iterable,
         bool doubly_linked,
-        bool reverse = false,
-        PyObject* spec = nullptr,
-        ssize_t max_size = -1
-    ) {
+        bool reverse,
+        PyObject* spec,
+        ssize_t max_size
+    ) : _doubly_linked(doubly_linked) {
         if (doubly_linked) {
             if (max_size < 0) {
                 view_variant = ListView<DoubleNode, FreeListAllocator>(
@@ -121,6 +123,10 @@ public:
             }
         }
     }
+
+    //////////////////////////////
+    ////    LIST INTERFACE    ////
+    //////////////////////////////
 
     /* Dispatch to the correct implementation of append() for each variant. */
     inline void append(PyObject* item, bool left) {
@@ -195,8 +201,12 @@ public:
     /* Call the variant's copy() method and wrap the result as another VariantList. */
     inline VariantList* copy() {
         return std::visit(
-            [&](auto& view) {
-                return new VariantList(view.copy());
+            [&](auto& view) -> VariantList* {
+                auto copied = view.copy();
+                if (copied == nullptr) {
+                    return nullptr;  // propagate Python errors
+                }
+                return new VariantList(std::move(*copied));
             },
             view_variant
         );
@@ -295,8 +305,12 @@ public:
     /* Dispatch to the correct implementation of get_slice() for each variant. */
     inline VariantList* get_slice(Py_ssize_t start, Py_ssize_t stop, Py_ssize_t step) {
         return std::visit(
-            [&](auto& view) {
-                return new VariantList(Ops::get_slice(&view, start, stop, step));
+            [&](auto& view) -> VariantList* {
+                auto slice = Ops::get_slice(&view, start, stop, step);
+                if (slice == nullptr) {
+                    return nullptr;  // propagate Python errors
+                }
+                return new VariantList(std::move(*slice));
             },
             view_variant
         );
@@ -357,10 +371,70 @@ public:
         );
     }
 
+    /////////////////////////////////
+    ////    ITERATOR PROTOCOL    ////
+    /////////////////////////////////
+
+    /* Check if the underlying view is doubly-linked. */
+    inline bool doubly_linked() const {
+        return _doubly_linked;
+    }
+
+    /* Get the head node of a singly-linked list. */
+    inline SingleNode* get_head_single() {
+        return std::visit(
+            [&](auto& view) -> SingleNode* {
+                using View = std::decay_t<decltype(view)>;
+                using Node = typename View::Node;
+
+                if constexpr (is_doubly_linked<Node>::value) {
+                    throw std::runtime_error("List is not singly-linked.");
+                } else {
+                    return static_cast<SingleNode*>(view.head);
+                }
+            },
+            view_variant
+        );
+    }
+
+    /* Get the head node of a doubly-linked list. */
+    inline DoubleNode* get_head_double() {
+        return std::visit(
+            [&](auto& view) -> DoubleNode* {
+                using View = std::decay_t<decltype(view)>;
+                using Node = typename View::Node;
+
+                if constexpr (is_doubly_linked<Node>::value) {
+                    return static_cast<DoubleNode*>(view.head);
+                } else {
+                    throw std::runtime_error("List is not doubly-linked.");
+                }
+            },
+            view_variant
+        );
+    }
+
+    /* Get the tail node of a doubly-linked list. */
+    inline DoubleNode* get_tail_double() {
+        return std::visit(
+            [&](auto& view) -> DoubleNode* {
+                using View = std::decay_t<decltype(view)>;
+                using Node = typename View::Node;
+
+                if constexpr (is_doubly_linked<Node>::value) {
+                    return static_cast<DoubleNode*>(view.tail);
+                } else {
+                    throw std::runtime_error("List is not doubly-linked.");
+                }
+            },
+            view_variant
+        );
+    }
+
 private:
     ViewVariant view_variant;
+    bool _doubly_linked;
 };
-
 
 
 #endif  // BERTRAND_STRUCTS_LIST_H include guard

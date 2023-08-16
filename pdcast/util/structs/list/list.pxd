@@ -4,6 +4,7 @@ from cpython.ref cimport PyObject
 from libcpp.stack cimport stack
 from libcpp.utility cimport pair
 
+from .node cimport SingleNode, DoubleNode
 from .view cimport MAX_SIZE_T, normalize_index, normalize_bounds
 
 cdef extern from "Python.h":
@@ -27,7 +28,7 @@ cdef extern from "list.h":
         size_t count(PyObject* item, size_t start, size_t stop) except? MAX_SIZE_T
         void remove(PyObject*) except *
         PyObject* pop(size_t index) except NULL
-        VariantList* copy() except *
+        VariantList* copy() except NULL
         void clear()
         void sort(PyObject* key, bint reverse) except *
         void reverse()
@@ -56,6 +57,10 @@ cdef extern from "list.h":
             Py_ssize_t step
         ) except *
         int contains(PyObject* item) except *
+        bint doubly_linked()
+        SingleNode* get_head_single() except +
+        DoubleNode* get_head_double() except +
+        DoubleNode* get_tail_double() except +
 
 
 cdef class LinkedList:

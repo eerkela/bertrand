@@ -3,12 +3,13 @@
 #ifndef BERTRAND_STRUCTS_CORE_VIEW_H
 #define BERTRAND_STRUCTS_CORE_VIEW_H
 
-#include <cstddef>  // for size_t
-#include <queue>  // for std::queue
-#include <limits>  // for std::numeric_limits
-#include <type_traits>  // for std::integer_constant, std::is_base_of
-#include <Python.h>  // for CPython API
-#include "node.h"  // for Hashed<T>, Mapped<T>
+#include <cstddef>  // size_t
+#include <queue>  // std::queue
+#include <limits>  // std::numeric_limits
+#include <optional>  // std::optional
+#include <type_traits>  // std::integer_constant, std::is_base_of
+#include <Python.h>  // CPython API
+#include "node.h"  // Hashed<T>, Mapped<T>
 
 
 
@@ -636,37 +637,6 @@ public:
 };
 
 
-/////////////////////////
-////    ITERATORS    ////
-/////////////////////////
-
-
-/* Forward iterator over the list values. */
-template <typename Node>
-class ForwardIterator {
-public:
-    ForwardIterator(Node* node) : curr(node) {}
-
-    PyObject* operator*() const {
-        PyObject* value = curr->value;
-        Py_INCREF(value);
-        return value;
-    }
-
-    ForwardIterator& operator++() {
-        curr = static_cast<Node*>(curr->next);
-        return *this;
-    }
-
-    bool operator!=(const ForwardIterator& other) const {
-        return curr != other.curr;
-    }
-
-private:
-    Node* curr;
-};
-
-
 /////////////////////
 ////    VIEWS    ////
 /////////////////////
@@ -676,8 +646,6 @@ template <typename NodeType, template <typename> class Allocator>
 class ListView {
 public:
     using Node = NodeType;
-    using Iter = ForwardIterator<NodeType>;
-    // using ReverseIter = ReverseIterator<NodeType>;
     Node* head;
     Node* tail;
     size_t size;
@@ -822,7 +790,7 @@ public:
         while (old_node != nullptr) {
             new_node = copy(old_node);  // copy node
             if (new_node == nullptr) {  // error during copy(node)
-                delete copied;  // discard staged list
+                delete copied;  // clean up copied list
                 return nullptr;
             }
 
