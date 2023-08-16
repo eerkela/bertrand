@@ -3,12 +3,12 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_ROTATE_H
 #define BERTRAND_STRUCTS_ALGORITHMS_ROTATE_H
 
-#include <cstddef>  // for size_t
-#include <cmath>  // for abs()
-#include <Python.h>  // for CPython API
-#include <utility>  // for std::pair
-#include "node.h"  // for nodes
-#include "view.h"  // for views
+#include <cstddef>  // size_t
+#include <cmath>  // abs()
+#include <utility>  // std::pair
+#include <Python.h>  // CPython API
+#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/view.h"  // views
 
 
 //////////////////////

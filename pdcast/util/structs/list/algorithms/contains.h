@@ -3,9 +3,8 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_CONTAINS_H
 #define BERTRAND_STRUCTS_ALGORITHMS_CONTAINS_H
 
-#include <Python.h>  // for CPython API
-#include "node.h"  // for nodes
-#include "view.h"  // for views
+#include <Python.h>  // CPython API
+#include "../core/view.h"  // views
 
 
 //////////////////////

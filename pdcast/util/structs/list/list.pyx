@@ -986,7 +986,7 @@ cdef class LinkedList:
         """
         self.view.specialize(<PyObject*>spec)
 
-    def __class_getitem__(cls, key: Any) -> type:
+    def __class_getitem__(cls, key: object) -> type:
         """Subscribe a linked list class to a particular type specialization.
 
         Parameters

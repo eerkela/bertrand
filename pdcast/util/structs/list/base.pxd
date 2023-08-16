@@ -1,18 +1,60 @@
-"""Cython headers for pdcast/util/structs/list/view.h"""
+"""Cython headers for pdcast/util/structs/base.h"""
 from cpython.ref cimport PyObject
 
 from libcpp.queue cimport queue
 from libcpp.utility cimport pair
 
 
-cdef extern from "view.h":
+# NOTE: since the objects in this subpackage deal with direct memory allocation
+# and reference counting, only a subset of the C++ API is exposed here.  These
+# are mostly for manual testing and diagnostics from the Python side, and not
+# for general use or anything that involves heavy lifting.  The C++ API is
+# easier to interact with directly from C++, due to the heavy use of templates
+# and static polymorphism.
+
+
+cdef extern from "Python.h":
+    void Py_INCREF(PyObject* obj)
+    void Py_DECREF(PyObject* obj)
+
+
+cdef extern from "core/allocate.h":
+    cdef cppclass BaseAllocator:
+        size_t allocated()
+        size_t nbytes()
+
+    cdef cppclass DirectAllocator(BaseAllocator):
+        pass
+
+    cdef cppclass FreeListAllocator(BaseAllocator):
+        size_t reserved()
+
+    cdef cppclass PreAllocator(BaseAllocator):
+        size_t reserved()
+
+
+cdef extern from "core/bounds.h":
     const size_t MAX_SIZE_T
     const pair[size_t, size_t] MAX_SIZE_T_PAIR
+
     size_t normalize_index[T](T index, size_t size, bint truncate) except? MAX_SIZE_T
     pair[size_t, size_t] normalize_bounds[T](
         T start, T stop, size_t size, bint truncate
     ) except? MAX_SIZE_T_PAIR
 
+
+cdef extern from "core/node.h":
+    struct SingleNode:
+        PyObject* value
+        SingleNode* next
+
+    struct DoubleNode:
+        PyObject* value
+        DoubleNode* next
+        DoubleNode* prev
+
+
+cdef extern from "core/view.h":
     cdef cppclass ListView[T, U]:
         size_t size
         T* head

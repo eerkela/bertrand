@@ -4,12 +4,11 @@ from cpython.ref cimport PyObject
 from libcpp.stack cimport stack
 from libcpp.utility cimport pair
 
-from .node cimport SingleNode, DoubleNode
-from .view cimport MAX_SIZE_T, normalize_index, normalize_bounds
+from .base cimport (
+    MAX_SIZE_T, SingleNode, DoubleNode, normalize_index, normalize_bounds,
+    Py_INCREF, Py_DECREF
+)
 
-cdef extern from "Python.h":
-    void Py_INCREF(PyObject* obj)
-    void Py_DECREF(PyObject* obj)
 
 cdef extern from "list.h":
     cdef cppclass VariantList:

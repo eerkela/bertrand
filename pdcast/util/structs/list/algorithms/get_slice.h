@@ -3,11 +3,12 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_GET_SLICE_H
 #define BERTRAND_STRUCTS_ALGORITHMS_GET_SLICE_H
 
-#include <cstddef>  // for size_t
-#include <Python.h>  // for CPython API
-#include <utility>  // for std::pair
-#include "node.h"  // for nodes
-#include "view.h"  // for views, MAX_SIZE_T
+#include <cstddef>  // size_t
+#include <utility>  // std::pair
+#include <Python.h>  // CPython API
+#include "../core/bounds.h"  // normalize_slice()
+#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/view.h"  // views
 
 
 // NOTE: Due to the nature of linked lists, indexing in general and slicing in
@@ -69,7 +70,7 @@ namespace Ops {
         Py_ssize_t step
     ) {
         using Node = typename ViewType<NodeType, Allocator>::Node;
-        size_t abs_step = (size_t)abs(step);
+        size_t abs_step = static_cast<size_t>(llabs(step));
 
         // determine direction of traversal to avoid backtracking
         std::pair<size_t, size_t> bounds = normalize_slice(view, start, stop, step);

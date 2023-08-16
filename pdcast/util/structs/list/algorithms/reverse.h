@@ -3,8 +3,8 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_REVERSE_H
 #define BERTRAND_STRUCTS_ALGORITHMS_REVERSE_H
 
-#include "node.h"  // for nodes
-#include "view.h"  // for views
+#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/view.h"  // views
 
 
 //////////////////////

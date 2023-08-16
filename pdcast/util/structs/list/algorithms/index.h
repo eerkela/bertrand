@@ -3,10 +3,10 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_INDEX_H
 #define BERTRAND_STRUCTS_ALGORITHMS_INDEX_H
 
-#include <cstddef>  // for size_t
-#include <Python.h>  // for CPython API
-#include "node.h"  // for nodes
-#include "view.h"  // for views
+#include <cstddef>  // size_t
+#include <Python.h>  // CPython API
+#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/view.h"  // views, MAX_SIZE_T
 
 
 //////////////////////

@@ -3,11 +3,12 @@
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_SET_SLICE_H
 #define BERTRAND_STRUCTS_ALGORITHMS_SET_SLICE_H
 
-#include <cstddef>  // for size_t
-#include <Python.h>  // for CPython API
-#include <utility>  // for std::pair
-#include "node.h"  // for nodes
-#include "view.h"  // for views
+#include <cstddef>  // size_t
+#include <utility>  // std::pair
+#include <Python.h>  // CPython API
+#include "../core/bounds.h"  // normalize_slice()
+#include "../core/node.h"  // is_doubly_linked<>
+#include "../core/view.h"  // views
 
 
 // NOTE: slice assignment in general can be extremely complicated in Python,
@@ -186,7 +187,7 @@ namespace Ops {
         Py_ssize_t step,
         PyObject* items
     ) {
-        size_t abs_step = (size_t)abs(step);
+        size_t abs_step = static_cast<size_t>(llabs(step));
 
         // unpack iterable into a reversible sequence
         PyObject* sequence = PySequence_Fast(items, "can only assign an iterable");
@@ -221,7 +222,7 @@ namespace Ops {
 
         // ensure that the slice is the same length as the sequence
         Py_ssize_t slice_length = (Py_ssize_t)bounds.second - (Py_ssize_t)bounds.first;
-        slice_length = (abs(slice_length) / (Py_ssize_t)abs_step) + 1;
+        slice_length = (llabs(slice_length) / (Py_ssize_t)abs_step) + 1;
         if (step != 1 && slice_length != seq_length) {  // allow mismatch if step == 1
             PyErr_Format(
                 PyExc_ValueError,
@@ -257,7 +258,7 @@ namespace Ops {
         Py_ssize_t step,
         PyObject* items
     ) {
-        size_t abs_step = (size_t)abs(step);
+        size_t abs_step = static_cast<size_t>(llabs(step));
 
         // unpack iterable into a reversible sequence
         PyObject* sequence = PySequence_Fast(items, "can only assign an iterable");
@@ -292,7 +293,7 @@ namespace Ops {
 
         // ensure that the slice is the same length as the sequence
         Py_ssize_t slice_length = (Py_ssize_t)bounds.second - (Py_ssize_t)bounds.first;
-        slice_length = (abs(slice_length) / (Py_ssize_t)abs_step) + 1;
+        slice_length = (llabs(slice_length) / (Py_ssize_t)abs_step) + 1;
         bool length_match = (slice_length == seq_length);
 
         // NOTE: we can only overwrite the existing values if the following

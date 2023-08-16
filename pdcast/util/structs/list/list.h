@@ -7,24 +7,24 @@
 #include <cstddef>  // for size_t
 #include <variant>  // std::variant
 #include <Python.h>  // CPython API
-#include "node.h"  // Nodes + Allocators
-#include "view.h"  // Views
+#include "core/node.h"  // Nodes + Allocators
+#include "core/view.h"  // Views
 
 // Algorithms
-#include "append.h"
-#include "contains.h"
-#include "count.h"
-#include "delete_slice.h"
-#include "extend.h"
-#include "get_slice.h"
-#include "index.h"
-#include "insert.h"
-#include "pop.h"
-#include "remove.h"
-#include "reverse.h"
-#include "rotate.h"
-#include "set_slice.h"
-#include "sort.h"
+#include "algorithms/append.h"
+#include "algorithms/contains.h"
+#include "algorithms/count.h"
+#include "algorithms/delete_slice.h"
+#include "algorithms/extend.h"
+#include "algorithms/get_slice.h"
+#include "algorithms/index.h"
+#include "algorithms/insert.h"
+#include "algorithms/pop.h"
+#include "algorithms/remove.h"
+#include "algorithms/reverse.h"
+#include "algorithms/rotate.h"
+#include "algorithms/set_slice.h"
+#include "algorithms/sort.h"
 
 
 ///////////////////////
