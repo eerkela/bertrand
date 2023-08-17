@@ -1,4 +1,3 @@
-
 // include guard prevents multiple inclusion
 #ifndef BERTRAND_STRUCTS_CORE_VIEW_H
 #define BERTRAND_STRUCTS_CORE_VIEW_H
@@ -38,6 +37,16 @@
 ////////////////////////
 
 
+// TODO: view needs to store the max_size parameter and pass it to any ListView
+// that it creates via copy().
+
+// When slicing a fixed-size list, the resulting list should also have a fixed
+// size equal to the length of the slice.  This is not currently the case.
+
+// Also, we can potentially stack-allocate the extra views and then just return
+// a reference to them with the & operator.
+
+
 template <typename NodeType, template <typename> class Allocator>
 class ListView {
 public:
@@ -61,8 +70,8 @@ public:
     ListView(
         PyObject* iterable,
         bool reverse = false,
-        PyObject* spec = nullptr,
-        ssize_t max_size = -1
+        ssize_t max_size = -1,
+        PyObject* spec = nullptr
     ) : head(nullptr), tail(nullptr), size(0), specialization(spec),
         allocator(max_size)
     {
@@ -620,6 +629,14 @@ private:
 ////////////////////////
 ////    DICTVIEW    ////
 ////////////////////////
+
+
+// TODO: we can add a separate specialization for an LRU cache that is always
+// implemented as a DictView<DoubleNode, PreAllocator>.  This would allow us to
+// use a pure C++ implementation for the LRU cache, which isn't even wrapped
+// in a Cython class.  We could export this as a Cython alias for use in type
+// inference.  Maybe the instance factories have one of these as a C-level
+// member.
 
 
 template <typename NodeType, template <typename> class Allocator>

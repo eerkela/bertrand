@@ -1,52 +1,65 @@
 """Cython headers for pdcast/util/structs/list/hashed.pyx"""
 from cpython.ref cimport PyObject
-from libc.stdlib cimport malloc, calloc, free
+from libcpp.stack cimport stack
 
-from .base cimport (
-    DEBUG, LinkedList, HashNode, Pair, allocate_hash_node, free_node, normalize_index,
-    get_slice_direction, node_at_index, raise_exception, Py_INCREF, Py_DECREF,
-    PyErr_Occurred, Py_EQ, PyObject_Hash, PyObject_RichCompareBool, PyObject_GetIter,
-    PyIter_Next
-)
-from .sort cimport (
-    KeyedHashNode, SortError, merge_sort, decorate_hash, undecorate_hash
-)
+from .base cimport MAX_SIZE_T, SingleNode, DoubleNode, Py_INCREF, Py_DECREF
 
-cdef extern from "table.h":
-    cdef cppclass ListTable[T]:
-        ListTable() except +
-        int remember(T* node) except -1
-        int forget(T* node) except -1
-        void clear() except +
-        T* search(PyObject* value) except? NULL
-        T* search_node(T* node) except? NULL
-        void resize(unsigned char new_exponent) except +
-        void clear_tombstones() except +
+
+cdef extern from "set.h":
+    cdef cppclass VariantSet:
+        VariantSet(bint doubly_linked, ssize_t max_size) except +
+        VariantSet(
+            PyObject* iterable,
+            bint doubly_linked,
+            bint reverse,
+            ssize_t max_size,
+            PyObject* spec
+        ) except +
+        void append(PyObject* item, bint left) except *
+        void insert[T](T index, PyObject* item) except *
+        void extend(PyObject* items, bint left) except *
+        size_t index[T](PyObject* item, T start, T stop) except? MAX_SIZE_T
+        size_t count[T](PyObject* item, T start, T stop) except? MAX_SIZE_T
+        void remove(PyObject*) except *
+        PyObject* pop[T](T index) except NULL
+        VariantSet* copy() except NULL
+        void clear()
+        void sort(PyObject* key, bint reverse) except *
+        void reverse()
+        void rotate(ssize_t steps)
+        PyObject* get_specialization()
+        void specialize(PyObject* spec) except *
         size_t nbytes()
+        size_t size()
+        PyObject* get_index[T](T index) except NULL
+        VariantSet* get_slice(
+            Py_ssize_t start,
+            Py_ssize_t stop,
+            Py_ssize_t step
+        ) except *
+        void set_index[T](T index, PyObject* item) except *
+        void set_slice(
+            Py_ssize_t start,
+            Py_ssize_t stop,
+            Py_ssize_t step,
+            PyObject* items
+        ) except *
+        void delete_index[T](T index) except *
+        void delete_slice(
+            Py_ssize_t start,
+            Py_ssize_t stop,
+            Py_ssize_t step
+        ) except *
+        int contains(PyObject* item) except *
+        bint doubly_linked()
+        SingleNode* get_head_single() except +
+        DoubleNode* get_head_double() except +
+        DoubleNode* get_tail_double() except +
 
 
-#######################
-####    CLASSES    ####
-#######################
-
-
-cdef class HashedList(LinkedList):
+cdef class LinkedSet:
     cdef:
-        ListTable[HashNode]* table
-        HashNode* head
-        HashNode* tail
+        VariantSet* view
 
-    cdef void _insertafter(self, PyObject* sentinel, PyObject* item)
-    cdef void _insertbefore(self, PyObject* sentinel, PyObject* item)
-    cdef void _extendafter(self, PyObject* sentinel, PyObject* other)
-    cdef void _extendbefore(self, PyObject* sentinel, PyObject* other)
-    cdef void _moveleft(self, PyObject* item, size_t steps = *)
-    cdef void _moveright(self, PyObject* item, size_t steps = *)
-    cdef void _moveafter(self, PyObject* sentinel, PyObject* item)
-    cdef void _movebefore(self, PyObject* sentinel, PyObject* item)
-    cdef void _move(self, PyObject* item, long index)
-    cdef void _link_node(self, HashNode* prev, HashNode* curr, HashNode* next)
-    cdef void _unlink_node(self, HashNode* curr)
-    cdef (HashNode*, HashNode*, size_t) _stage_nodes(
-        self, PyObject* items, bint reverse, set override = *
-    )
+    @staticmethod
+    cdef LinkedSet from_view(VariantSet* view)

@@ -1,91 +1,84 @@
 # distutils: language = c++
-"""This module contains a pure Cython/C++ implementation of both singly-linked
-and doubly-linked list data structures.
+"""This module contains a pure Cython/C++ implementation of a linked list data
+structure.
 """
 from typing import Iterable, Iterator
-
-
-# TODO: list.pyx, set.pyx, and dict.pyx should be lifted to structs/.  Header
-# files can go in structs/algorithms/.
-
-
-# structs/
-#    algorithms/
-#        append.h
-#        contains.h
-#        count.h
-#        etc.
-#    nodes/
-#       base.h  (Constants, HashTable, SingleNode, DoubleNode, Allocater, traits)
-#       list.h  (ListView)
-#       set.h  (SetView)
-#       dict.h  (DictView)
-#       sorted.h  (Sorted<>)
-#    list.pyx  (SinglyLinkedList, LinkedList)
-#    set.pyx  (SinglyLinkedSet, DoublyLinkedSet)
-#    dict.pyx  (SinglyLinkedDict, DoublyLinkedDict)
-#    LRU.pyx  (LRUDict)
-#    MFU.pyx  (MFUDict)
-
 
 
 # TODO: __getitem__() sometimes throws unexpected ValueErrors and occasionally
 # causes a segfault.
 
+# TODO: __repr__() calls `__getitem__()`, which yields a default-constructed
+# list.  This causes an error if the list has a maximum size.
 
 # TODO: in order to rigorously test these, we should copy over the tests from
 # the standard library.
 # https://github.com/python/cpython/blob/3.11/Lib/test/list_tests.py
 
 
-####################
-####    BASE    ####
-####################
-
-
 cdef class LinkedList:
     """A pure Cython/C++ implementation of a linked list data structure.
 
-    These come in 2 forms: :class:`SinglyLinkedList` and :class:`LinkedList`,
-    both of which are drop-in replacements for a standard Python
-    :class:`list <python:list>` or :class:`deque <python:collections.deque>`
-    data structure.
+    These are drop-in replacements for a standard Python :class:`list <python:list>`
+    or :class:`deque <python:collections.deque>` container, and support all of the
+    same operations.
 
     Parameters
     ----------
     items : Iterable[Any], optional
         An iterable of items to initialize the list.
+    doubly_linked : bool, optional
+        Controls how each node is linked to its neighbors.  Doubly-linked lists
+        use more memory, but allow for efficient iteration in both directions,
+        speeding up operations like :meth:`insert() <LinkedList.insert>`,
+        :meth:`pop() <LinkedList.pop>`, and
+        :meth:`__getitem__() <LinkedList.__getitem__>`.  The default is
+        ``True``.
     reverse : bool, optional
-        If ``True``, reverse the order of `items` during list construction.
+        If ``True``, reverse the order of ``items`` during list construction.
+        This is more efficient than calling
+        :meth:`reverse() <LinkedList.reverse>` after construction.  The default
         The default is ``False``.
+    max_size : int, optional
+        The maximum number of items that can be stored in the list.  If this is
+        set to a positive value, then the list will pre-allocate a contiguous
+        block of memory to store each node, reducing memory fragmentation and
+        improving performance for fixed-size lists.  These lists cannot grow
+        beyond the given size, and attempting to append any further items will
+        raise an exception.  The default is ``-1``, which disables this feature.
     spec : Any, optional
-        A type to enforce for elements of the list, allowing the creation of
-        type-safe containers.  This can be in any format recognized by
-        :func:`isinstance() <python:isinstance>`.  If it is set to ``None``,
-        then type checking will be disabled for the list.  Defaults to ``None``.
+        A specific type to enforce for elements of the list, allowing the
+        creation of type-safe containers.  This can be in any format recognized
+        by :func:`isinstance() <python:isinstance>`.  The default is ``None``,
+        which disables strict type checking for the list.  See the
+        :meth:`specialize() <LinkedList.specialize>` method for more details.
 
     Attributes
     ----------
-    view : ListView*
-        A low-level view into the list.  This is a pointer to a C++ object that
-        tracks the list's head and tail pointers and manages memory for each of
-        its nodes.  It is not intended to be accessed by the user, and
-        manipulating it directly it can result in memory leaks and/or undefined
-        behavior.  Thorough inspection of the C++ header files is recommended
-        before attempting to access this attribute, which can only be done in
-        Cython.
+    view : VariantList*
+        A low-level C++ wrapper around the list's contents.  This is a pointer
+        to a C++ object that wraps a set of templated :class:`ListView` classes
+        as a single variant type, which binds the correct implementation for
+        each method statically at compile time.  There are no virtual
+        functions or dynamic dispatch involved other than a single
+        :func:`std::visit()` call to resolve the variant type, so this
+        preserves as much performance as possible from the C++ implementation.
+        This can only be accessed from Cython/C++, and it's not intended for
+        general use.  Thorough inspection of the C++ header files is
+        recommended before attempting to access this attribute.
 
     Notes
     -----
     This implementation retains all the usual tradeoffs of linked lists vs
     arrays (e.g. O(n) indexing vs O(1) appends), but attempts to minimize
-    compromises wherever possible.
+    compromises wherever possible.  Its performance is comparable to the
+    standard library in most cases, and it is well-suited for use as a cache.
 
     .. warning::
 
-        These lists are not thread-safe.  If you need to use them in a
-        multithreaded context, you should use a :class:`threading.Lock` to
-        synchronize access.
+        :class:`LinkedLists <LinkedList>` are not thread-safe.  If you want to
+        use them in a multithreaded context, you should use a
+        :class:`threading.Lock` to synchronize access.
     """
 
     def __init__(
@@ -93,8 +86,8 @@ cdef class LinkedList:
         items: Iterable[object] | None = None,
         doubly_linked: bool = True,
         reverse: bool = False,
-        spec: object | None = None,
         max_size: int = -1,
+        spec: object | None = None,
     ):
         # init empty
         if items is None:
@@ -105,15 +98,14 @@ cdef class LinkedList:
         # unpack iterable
         elif spec is None:
             self.view = new VariantList(
-                <PyObject*>items, doubly_linked, reverse, NULL, max_size
+                <PyObject*>items, doubly_linked, reverse, max_size, NULL
             )
         else:
             self.view = new VariantList(
-                <PyObject*>items, doubly_linked, reverse, <PyObject*>spec, max_size
+                <PyObject*>items, doubly_linked, reverse, max_size, <PyObject*>spec
             )
 
     def __dealloc__(self):
-        """Free underlying ListView when the list is garbage collected."""
         del self.view
 
     @staticmethod
@@ -156,11 +148,6 @@ cdef class LinkedList:
             :class:`list <python:list>`.
         item : Any
             The item to add to the list.
-
-        Raises
-        ------
-        IndexError
-            If the index is out of bounds.
 
         Notes
         -----
@@ -279,8 +266,13 @@ cdef class LinkedList:
 
         Notes
         -----
-        Pops are O(1) if ``index`` points to either of the list's ends, and
-        O(n) otherwise.
+        Pops are always O(1) if they occur at the head of the list.  Otherwise,
+        the behavior depends on whether the list is singly- or doubly-linked.
+        For singly-linked lists, popping from the tail is O(n), while for
+        doubly-linked lists it is O(1).  This is because of the need to
+        traverse the entire list to find the new tail.
+
+        Otherwise, pops are O(n) for nodes in the middle of the list.
         """
         # dispatch to pop.h
         return <object>self.view.pop(index)
@@ -297,9 +289,7 @@ cdef class LinkedList:
         -----
         Copying a :class:`LinkedList` is O(n).
         """
-        cdef LinkedList result = LinkedList().__new__(LinkedList)  # bypass __init__()
-        result.view = self.view.copy()
-        return result
+        return LinkedList.from_view(self.view.copy())
 
     def clear(self) -> None:
         """Remove all items from the list.
@@ -325,10 +315,10 @@ cdef class LinkedList:
 
         Notes
         -----
-        Sorting is O(n log n) on average, using an iterative merge sort
-        algorithm that avoids recursion.  The sort is stable, meaning that the
-        relative order of elements that compare equal will not change, and it
-        is performed in-place for minimal memory overhead.
+        Sorting is O(n log n), using an iterative merge sort algorithm that
+        avoids recursion.  The sort is stable, meaning that the relative order
+        of elements that compare equal will not change, and it is performed
+        in-place for minimal memory overhead.
 
         If a ``key`` function is provided, then the keys will be computed once
         and reused for all iterations of the sorting algorithm.  Otherwise,
@@ -410,9 +400,6 @@ cdef class LinkedList:
         cdef DoubleNode* curr_double
         cdef PyObject* value
 
-        # NOTE: since we're using a VariantList, we have to cover both the
-        # singly-linked and doubly-linked cases here.
-
         # doubly-linked
         if self.view.doubly_linked():
             curr_double = self.view.get_head_double()
@@ -437,19 +424,18 @@ cdef class LinkedList:
         Yields
         ------
         Any
-            The next item in the list.
+            The next item in the reversed list.
 
         Notes
         -----
-        Iterating through a :class:`LinkedList` is O(n).
+        Iterating through a doubly-linked list in reverse is O(n), while for
+        singly-linked lists it is O(2n).  This is because of the need to build a
+        temporary stack to store each element, which forces a second iteration.
         """
         cdef SingleNode* curr_single
         cdef DoubleNode* curr_double
         cdef PyObject* value
         cdef stack[SingleNode*] reverse
-
-        # NOTE: since we're using a VariantList, we have to cover both the
-        # singly-linked and doubly-linked cases here.
 
         # doubly-linked
         if self.view.doubly_linked():
@@ -512,8 +498,6 @@ cdef class LinkedList:
         a slice boundary, and to never backtrack.  It collects all values in a
         single iteration and stops as soon as the slice is complete.
         """
-        cdef size_t index
-        cdef PyObject* new_ref
         cdef Py_ssize_t start, stop, step
 
         # support slicing
@@ -522,9 +506,7 @@ cdef class LinkedList:
             return LinkedList.from_view(self.view.get_slice(start, stop, step))
 
         # index directly
-        index = normalize_index(<PyObject*>key, self.view.size(), truncate=False)
-        new_ref = self.view.get_index(index)
-        return <object>new_ref
+        return <object>self.view.get_index(<PyObject*>key)
 
     def __setitem__(self, key: int | slice, value: object | Iterable[object]) -> None:
         """Set the value of an item or slice in the list.
@@ -563,7 +545,6 @@ cdef class LinkedList:
         values in a single iteration and stops as soon as the slice is
         complete.
         """
-        cdef size_t index
         cdef Py_ssize_t start, stop, step
 
         # support slicing
@@ -573,8 +554,7 @@ cdef class LinkedList:
 
         # index directly
         else:
-            index = normalize_index(<PyObject*>key, self.view.size(), truncate=False)
-            self.view.set_index(index, <PyObject*>value)
+            self.view.set_index(<PyObject*>key, <PyObject*>value)
 
     def __delitem__(self, key: int | slice) -> None:
         """Delete an item or slice from the list.
@@ -607,7 +587,6 @@ cdef class LinkedList:
         values in a single iteration and stops as soon as the slice is
         complete.
         """
-        cdef size_t index
         cdef Py_ssize_t start, stop, step
 
         # support slicing
@@ -617,8 +596,7 @@ cdef class LinkedList:
 
         # index directly
         else:
-            index = normalize_index(<PyObject*>key, self.view.size(), truncate=False)
-            self.view.delete_index(index)
+            self.view.delete_index(<PyObject*>key)
 
     def __contains__(self, item: object) -> bool:
         """Check if the item is contained in the list.
@@ -952,7 +930,7 @@ cdef class LinkedList:
         If the list is not empty when this method is called, then the type of
         each existing item will be checked against the new type.  If any of
         them do not match, then the specialization will be aborted and an
-        error will be raised.  The list is not modified by this process.
+        error will be raised.  The list is not modified during this process.
 
         .. note::
 
@@ -963,7 +941,7 @@ cdef class LinkedList:
         self.view.specialize(<PyObject*>spec)
 
     def __class_getitem__(cls, key: object) -> type:
-        """Subscribe a linked list class to a particular type specialization.
+        """Subscribe a :class:`LinkedList` to a particular type specialization.
 
         Parameters
         ----------
@@ -1081,10 +1059,18 @@ cdef class LinkedList:
             def __init__(
                 self,
                 items: Iterable[object] | None = None,
+                doubly_linked: bool = False,
                 reverse: bool = False,
+                max_size: int = -1,
             ) -> None:
                 """Disable the `spec` argument for TypedLists."""
-                super().__init__(items, reverse=reverse, spec=key)
+                super().__init__(
+                    items,
+                    doubly_linked=doubly_linked,
+                    reverse=reverse,
+                    max_size=max_size,
+                    spec=key
+                )
 
             def specialize(self, spec: object) -> None:
                 """Disable runtime specialization for TypedLists."""

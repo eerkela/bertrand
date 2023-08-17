@@ -368,7 +368,11 @@ class DispatchFunc(FunctionDecorator):
 
         return self._signature.dispatch_map
 
-    def overload(self, *args, **kwargs) -> Callable:
+    def overload(
+        self,
+        *args: type_specifier,
+        **kwargs: type_specifier
+    ) -> Callable[..., Any]:
         """A decorator that transforms a function into a dispatched
         implementation for this :class:`DispatchFunc <pdcast.DispatchFunc>`.
 
@@ -442,7 +446,7 @@ class DispatchFunc(FunctionDecorator):
 
         return implementation
 
-    def fallback(self, *args, **kwargs) -> Any:
+    def fallback(self, *args: Any, **kwargs: Any) -> Any:
         """A reference to the base implementation of the dispatch function.
 
         Parameters
@@ -484,7 +488,7 @@ class DispatchFunc(FunctionDecorator):
         """
         return self.__wrapped__(*args, **kwargs)
 
-    def __call__(self, *args, **kwargs) -> Any:
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Execute the :class:`DispatchFunc <pdcast.DispatchFunc>`, searching
         for an overloaded implementation.
 

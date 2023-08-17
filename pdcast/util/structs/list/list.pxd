@@ -2,10 +2,7 @@
 from cpython.ref cimport PyObject
 from libcpp.stack cimport stack
 
-from .base cimport (
-    MAX_SIZE_T, SingleNode, DoubleNode, normalize_index, normalize_bounds,
-    Py_INCREF, Py_DECREF
-)
+from .base cimport MAX_SIZE_T, SingleNode, DoubleNode, Py_INCREF, Py_DECREF
 
 
 cdef extern from "list.h":
@@ -15,8 +12,8 @@ cdef extern from "list.h":
             PyObject* iterable,
             bint doubly_linked,
             bint reverse,
-            PyObject* spec,
-            ssize_t max_size
+            ssize_t max_size,
+            PyObject* spec
         ) except +
         void append(PyObject* item, bint left) except *
         void insert[T](T index, PyObject* item) except *
@@ -34,20 +31,20 @@ cdef extern from "list.h":
         void specialize(PyObject* spec) except *
         size_t nbytes()
         size_t size()
-        PyObject* get_index(size_t index) except NULL
+        PyObject* get_index[T](T index) except NULL
         VariantList* get_slice(
             Py_ssize_t start,
             Py_ssize_t stop,
             Py_ssize_t step
         ) except *
-        void set_index(size_t index, PyObject* item) except *
+        void set_index[T](T index, PyObject* item) except *
         void set_slice(
             Py_ssize_t start,
             Py_ssize_t stop,
             Py_ssize_t step,
             PyObject* items
         ) except *
-        void delete_index(size_t index) except *
+        void delete_index[T](T index) except *
         void delete_slice(
             Py_ssize_t start,
             Py_ssize_t stop,

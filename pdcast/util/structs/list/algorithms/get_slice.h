@@ -1,4 +1,3 @@
-
 // include guard prevents multiple inclusion
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_GET_SLICE_H
 #define BERTRAND_STRUCTS_ALGORITHMS_GET_SLICE_H
@@ -192,7 +191,7 @@ ViewType<NodeType, Allocator>* _extract_slice_backward(
     // create a new view to hold the slice
     ViewType<NodeType, Allocator>* slice;
     try {
-        slice = new ViewType<NodeType, Allocator>();
+        slice = new ViewType<NodeType, Allocator>();  // TODO: cannot default-construct
     } catch (const std::bad_alloc&) {  // MemoryError()
         PyErr_NoMemory();
         return nullptr;

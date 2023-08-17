@@ -1,4 +1,3 @@
-
 // include guard prevents multiple inclusion
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_INDEX_H
 #define BERTRAND_STRUCTS_ALGORITHMS_INDEX_H
@@ -7,6 +6,10 @@
 #include <Python.h>  // CPython API
 #include "../core/node.h"  // is_doubly_linked<>
 #include "../core/view.h"  // views, MAX_SIZE_T
+
+
+// TODO: add a list.edge(a, b, compare="<") method for sets and dictionaries
+// that checks whether A comes before or after B in the list.
 
 
 //////////////////////

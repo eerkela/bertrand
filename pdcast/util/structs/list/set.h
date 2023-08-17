@@ -1,7 +1,7 @@
 
 // include guard prevents multiple inclusion
-#ifndef BERTRAND_STRUCTS_LIST_H
-#define BERTRAND_STRUCTS_LIST_H
+#ifndef BERTRAND_STRUCTS_SET_H
+#define BERTRAND_STRUCTS_SET_H
 
 #include <cstddef>  // for size_t
 #include <utility>  // std::pair
@@ -38,13 +38,13 @@
 
 /* Using a `std::variant` allows us to expose only a single Cython wrapper for
 all linked lists. */
-using VariantListView = std::variant<
-    ListView<SingleNode, DirectAllocator>,
-    ListView<SingleNode, FreeListAllocator>,
-    ListView<SingleNode, PreAllocator>,
-    ListView<DoubleNode, DirectAllocator>,
-    ListView<DoubleNode, FreeListAllocator>,
-    ListView<DoubleNode, PreAllocator>
+using VariantSetView = std::variant<
+    SetView<SingleNode, DirectAllocator>,
+    SetView<SingleNode, FreeListAllocator>,
+    SetView<SingleNode, PreAllocator>,
+    SetView<DoubleNode, DirectAllocator>,
+    SetView<DoubleNode, FreeListAllocator>,
+    SetView<DoubleNode, PreAllocator>
 >;
 
 
@@ -53,52 +53,40 @@ using VariantListView = std::variant<
 //////////////////////
 
 
-// NOTE: If we did not use a variant here, we would have to implement a dozen
-// or more different wrappers for each configuration of each data structure,
-// each of which would be identical except for the type of its view.  This is a
-// maintenance nightmare, and we would probably end up just wrapping everything
-// in a separate Python layer to achieve a unified interface anyways.  By using
-// a variant, we can the dispatch at the C++ level and avoid writing tons of
-// boilerplate.  This also allows us to keep things statically typed as much as
-// possible, which means no vtable lookups or other forms of indirection.
-
-
-/* A class that binds the appropriate methods for the given view as a std::variant
-of templated `ListView` types. */
-class VariantList {
+class VariantSet {
 public:
 
-    /* Construct a new VariantList from an existing ListView.  This is called
-    to construct a new `VariantList` from the output of `ListView.copy()` or
+    /* Construct a new VariantSet from an existing SetView.  This is called to
+    construct a new `VariantSet` from the output of `SetView.copy()` or
     `get_slice()`. */
     template <typename NodeType, template <typename> class Allocator>
-    VariantList(ListView<NodeType, Allocator>&& view) {
-        using Node = typename ListView<NodeType, Allocator>::Node;
+    VariantSet(SetView<NodeType, Allocator>&& view) {
+        using Node = typename SetView<NodeType, Allocator>::Node;
         _doubly_linked = is_doubly_linked<Node>::value;
         view_variant = std::move(view);
     }
 
-    /* Construct an empty ListView to match the given template parameters and
-    wrap it as a VariantList. This is called during `LinkedList.__init__()`. */
-    VariantList(bool doubly_linked, ssize_t max_size) : _doubly_linked(doubly_linked) {
+    /* Construct an empty SetView to match the given template parameters and
+    wrap it as a VariantSet. This is called during `LinkedSet.__init__()`. */
+    VariantSet(bool doubly_linked, ssize_t max_size) : _doubly_linked(doubly_linked) {
         if (doubly_linked) {
             if (max_size < 0) {
-                view_variant = ListView<DoubleNode, FreeListAllocator>(max_size);
+                view_variant = SetView<DoubleNode, FreeListAllocator>(max_size);
             } else {
-                view_variant = ListView<DoubleNode, PreAllocator>(max_size);
+                view_variant = SetView<DoubleNode, PreAllocator>(max_size);
             }
         } else {
             if (max_size < 0) {
-                view_variant = ListView<SingleNode, FreeListAllocator>(max_size);
+                view_variant = SetView<SingleNode, FreeListAllocator>(max_size);
             } else {
-                view_variant = ListView<SingleNode, PreAllocator>(max_size);
+                view_variant = SetView<SingleNode, PreAllocator>(max_size);
             }
         }
     }
 
     /* Construct a new ListView to match the given parameters and wrap it as a
-    VariantList. This is called during `LinkedList.__init__()`. */
-    VariantList(
+    VariantSet. This is called during `LinkedSet.__init__()`. */
+    VariantSet(
         PyObject* iterable,
         bool doubly_linked,
         bool reverse,
@@ -107,21 +95,21 @@ public:
     ) : _doubly_linked(doubly_linked) {
         if (doubly_linked) {
             if (max_size < 0) {
-                view_variant = ListView<DoubleNode, FreeListAllocator>(
+                view_variant = SetView<DoubleNode, FreeListAllocator>(
                     iterable, reverse, max_size, spec
                 );
             } else {
-                view_variant = ListView<DoubleNode, PreAllocator>(
+                view_variant = SetView<DoubleNode, PreAllocator>(
                     iterable, reverse, max_size, spec
                 );
             }
         } else {
             if (max_size < 0) {
-                view_variant = ListView<SingleNode, FreeListAllocator>(
+                view_variant = SetView<SingleNode, FreeListAllocator>(
                     iterable, reverse, max_size, spec
                 );
             } else {
-                view_variant = ListView<SingleNode, PreAllocator>(
+                view_variant = SetView<SingleNode, PreAllocator>(
                     iterable, reverse, max_size, spec
                 );
             }
@@ -218,15 +206,15 @@ public:
         );
     }
 
-    /* Call the variant's copy() method and wrap the result as another VariantList. */
-    inline VariantList* copy() {
+    /* Call the variant's copy() method and wrap the result as another VariantSet. */
+    inline VariantSet* copy() {
         return std::visit(
-            [&](auto& view) -> VariantList* {
+            [&](auto& view) -> VariantSet* {
                 auto copied = view.copy();
                 if (copied == nullptr) {
                     return nullptr;  // propagate Python errors
                 }
-                return new VariantList(std::move(*copied));
+                return new VariantSet(std::move(*copied));
             },
             view_variant
         );
@@ -326,14 +314,14 @@ public:
     }
 
     /* Dispatch to the correct implementation of get_slice() for each variant. */
-    inline VariantList* get_slice(Py_ssize_t start, Py_ssize_t stop, Py_ssize_t step) {
+    inline VariantSet* get_slice(Py_ssize_t start, Py_ssize_t stop, Py_ssize_t step) {
         return std::visit(
-            [&](auto& view) -> VariantList* {
+            [&](auto& view) -> VariantSet* {
                 auto slice = Ops::get_slice(&view, start, stop, step);
                 if (slice == nullptr) {
                     return nullptr;  // propagate Python errors
                 }
-                return new VariantList(std::move(*slice));
+                return new VariantSet(std::move(*slice));
             },
             view_variant
         );
@@ -395,6 +383,211 @@ public:
         return std::visit(
             [&](auto& view) {
                 return Ops::contains(&view, item);
+            },
+            view_variant
+        );
+    }
+
+    /////////////////////////////
+    ////    SET INTERFACE    ////
+    /////////////////////////////
+
+    /* Dispatch to the correct implementation of add() for each variant. */
+    inline void add(PyObject* item, bool left) {
+        std::visit(
+            [&](auto& view) {
+                Ops::append(&view, item, left);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of discard() for each variant. */
+    inline void discard(PyObject* item) {
+        std::visit(
+            [&](auto& view) {
+                Ops::discard(&view, item);
+            },
+            view_variant
+        );
+    }
+
+
+    // TODO: intersect, difference, issubset, issuperset, isdisjoint, etc.
+
+
+    ///////////////////////////////////
+    ////    RELATIVE OPERATIONS    ////
+    ///////////////////////////////////
+
+    /* Dispatch to the correct implementation of insertafter() for each variant. */
+    inline void insertafter(PyObject* sentinel, PyObject* item) {
+        std::visit(
+            [&](auto& view) {
+                Ops::insertafter(&view, sentinel, item);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of insertbefore() for each variant. */
+    inline void insertbefore(PyObject* sentinel, PyObject* item) {
+        std::visit(
+            [&](auto& view) {
+                Ops::insertbefore(&view, sentinel, item);
+            },
+            view_variant
+        );
+    }    
+
+    /* Dispatch to the correct implementation of extendafter() for each variant. */
+    inline void extendafter(PyObject* sentinel, PyObject* items) {
+        std::visit(
+            [&](auto& view) {
+                Ops::extendafter(&view, sentinel, items);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of extendbefore() for each variant. */
+    inline void extendbefore(PyObject* sentinel, PyObject* items) {
+        std::visit(
+            [&](auto& view) {
+                Ops::extendbefore(&view, sentinel, items);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of discardafter() for each variant. */
+    inline void discardafter(PyObject* sentinel, PyObject* item) {
+        std::visit(
+            [&](auto& view) {
+                Ops::discardafter(&view, sentinel, item);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of discardbefore() for each variant. */
+    inline void discardbefore(PyObject* sentinel, PyObject* item) {
+        std::visit(
+            [&](auto& view) {
+                Ops::discardbefore(&view, sentinel, item);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of popafter() for each variant. */
+    inline void popafter(PyObject* sentinel, PyObject* item) {
+        std::visit(
+            [&](auto& view) {
+                Ops::popafter(&view, sentinel, item);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of popbefore() for each variant. */
+    inline void popbefore(PyObject* sentinel, PyObject* item) {
+        std::visit(
+            [&](auto& view) {
+                Ops::popbefore(&view, sentinel, item);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of clearafter() for each variant. */
+    inline void clearafter(PyObject* sentinel, PyObject* item) {
+        std::visit(
+            [&](auto& view) {
+                Ops::clearafter(&view, sentinel, item);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of clearbefore() for each variant. */
+    inline void clearbefore(PyObject* sentinel, PyObject* item) {
+        std::visit(
+            [&](auto& view) {
+                Ops::clearbefore(&view, sentinel, item);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of move() for each variant. */
+    template <typename T>
+    inline void move(PyObject* item, T index) {
+        std::visit(
+            [&](auto& view) {
+                // allow Python-style negative indexing + boundschecking
+                size_t norm_index = normalize_index(index, view.size, true);
+                Ops::move(&view, item, norm_index);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of moveright() for each variant. */
+    inline void moveright(PyObject* item, ssize_t steps) {
+        std::visit(
+            [&](auto& view) {
+                Ops::moveright(&view, item, steps);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of moveleft() for each variant. */
+    inline void moveleft(PyObject* item, ssize_t steps) {
+        std::visit(
+            [&](auto& view) {
+                Ops::moveleft(&view, item, steps);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of moveafter() for each variant. */
+    inline void moveafter(PyObject* sentinel, PyObject* item) {
+        std::visit(
+            [&](auto& view) {
+                Ops::moveafter(&view, sentinel, item);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of movebefore() for each variant. */
+    inline void movebefore(PyObject* sentinel, PyObject* item) {
+        std::visit(
+            [&](auto& view) {
+                Ops::movebefore(&view, sentinel, item);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of edge() for each variant. */
+    inline void edge(PyObject* item1, PyObject* item2) {
+        std::visit(
+            [&](auto& view) {
+                Ops::edge(&view, item1, item2);
+            },
+            view_variant
+        );
+    }
+
+    /* Dispatch to the correct implementation of swap() for each variant. */
+    inline void swap(PyObject* item1, PyObject* item2) {
+        std::visit(
+            [&](auto& view) {
+                Ops::swap(&view, item1, item2);
             },
             view_variant
         );
@@ -478,9 +671,9 @@ public:
     }
 
 private:
-    VariantListView view_variant;
-    bool _doubly_linked;
+    VariantSetView view_variant;
+    bool _doubly_linked
 };
 
 
-#endif  // BERTRAND_STRUCTS_LIST_H include guard
+#endif  // BERTRAND_STRUCTS_SET_H include guard

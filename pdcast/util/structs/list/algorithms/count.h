@@ -1,4 +1,3 @@
-
 // include guard prevents multiple inclusion
 #ifndef BERTRAND_STRUCTS_ALGORITHMS_COUNT_H
 #define BERTRAND_STRUCTS_ALGORITHMS_COUNT_H

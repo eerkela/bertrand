@@ -6,6 +6,12 @@
 #include <cstdlib>  // calloc, free
 #include <stdexcept>  // std::bad_alloc
 #include <Python.h>  // CPython API
+#include "allocate.h"  // DEBUG
+
+
+// TODO: table should have move constructors, but not copy constructors.
+
+// TODO: table and tombstone should be stack-allocated
 
 
 /////////////////////////
@@ -13,7 +19,8 @@
 /////////////////////////
 
 
-/* Some Views use hash tables for fast access to each element. */
+/* These constants control the resizing and open addressing of elements within
+a HashTable. */
 const size_t INITIAL_TABLE_CAPACITY = 16;  // initial size of hash table
 const float MAX_LOAD_FACTOR = 0.7;  // grow if load factor exceeds threshold
 const float MIN_LOAD_FACTOR = 0.2;  // shrink if load factor drops below threshold
@@ -138,7 +145,10 @@ public:
     HashTable& operator=(HashTable&&) = delete;         // move assignment
 
     /* Construct an empty HashTable. */
-    HashTable() {
+    HashTable() :
+        capacity(INITIAL_TABLE_CAPACITY), occupied(0), tombstones(0), exponent(0),
+        prime(PRIMES[0])
+    {
         if constexpr (DEBUG) {
             printf("    -> malloc: HashTable(%lu)\n", INITIAL_TABLE_CAPACITY);
         }
@@ -155,13 +165,6 @@ public:
             free(table);  // clean up staged table
             throw std::bad_alloc();
         }
-
-        // initialize table parameters
-        capacity = INITIAL_TABLE_CAPACITY;
-        occupied = 0;
-        tombstones = 0;
-        exponent = 0;
-        prime = PRIMES[exponent];
     }
 
     /* Destructor.*/
@@ -385,7 +388,7 @@ public:
 
     /*Get the total amount of memory consumed by the hash table.*/
     inline size_t nbytes() const {
-        return sizeof(HashTable<Node>);
+        return sizeof(*this);
     }
 
 };

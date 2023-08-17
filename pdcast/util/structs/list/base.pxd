@@ -52,6 +52,18 @@ cdef extern from "core/node.h":
         DoubleNode* prev
 
 
+cdef extern from "core/table.h":
+    cdef cppclass HashTable[T]:
+        HashTable() except +
+        int remember(T* node) except -1
+        int forget(T* node) except -1
+        void reset() except *
+        T* search(PyObject* value) except? NULL
+        T* search_node(T* node) except? NULL
+        void clear_tombstones() except +
+        size_t nbytes()
+
+
 cdef extern from "core/view.h":
     cdef cppclass ListView[T, U]:
         size_t size
@@ -61,8 +73,8 @@ cdef extern from "core/view.h":
         ListView(
             PyObject* iterable,
             bint reverse,
-            PyObject* spec,
-            ssize_t max_size
+            ssize_t max_size,
+            PyObject* spec
         ) except +
         T* node(PyObject* value) except NULL
         void recycle(T* node)
